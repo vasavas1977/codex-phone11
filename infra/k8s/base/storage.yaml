@@ -1,0 +1,68 @@
+---
+# PostgreSQL persistent storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 50Gi
+---
+# Redis persistent storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 10Gi
+---
+# FreeSWITCH recordings storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: recordings-pvc
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: freeswitch
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs
+  resources:
+    requests:
+      storage: 200Gi
+---
+# FreeSWITCH voicemail storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: voicemail-pvc
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: freeswitch
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs
+  resources:
+    requests:
+      storage: 50Gi

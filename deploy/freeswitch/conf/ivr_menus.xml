@@ -1,0 +1,85 @@
+<!--
+  ============================================================================
+  FreeSWITCH IVR Menus — CloudPhone11
+  ============================================================================
+  Defines the auto-attendant IVR flow:
+    Press 1 → Sales
+    Press 2 → Support
+    Press 3 → Directory (dial by name)
+    Press 0 → Operator
+    Press 9 → Voicemail
+  ============================================================================
+-->
+
+<include>
+  <!-- ─── Main IVR Menu ──────────────────────────────────────────────────── -->
+  <menus>
+    <menu name="cloudphone11_main_ivr"
+          greet-long="ivr/cloudphone11_welcome.wav"
+          greet-short="ivr/cloudphone11_welcome_short.wav"
+          invalid-sound="ivr/ivr-that_was_an_invalid_entry.wav"
+          exit-sound="voicemail/vm-goodbye.wav"
+          confirm-macro=""
+          confirm-key=""
+          tts-engine="flite"
+          tts-voice="slt"
+          confirm-attempts="3"
+          inter-digit-timeout="2000"
+          digit-len="4"
+          timeout="10000"
+          max-failures="3"
+          max-timeouts="3">
+
+      <!-- Press 1 for Sales -->
+      <entry action="menu-exec-app" digits="1" param="transfer 7001 XML cloudphone11"/>
+      <!-- Press 2 for Support -->
+      <entry action="menu-exec-app" digits="2" param="transfer 7002 XML cloudphone11"/>
+      <!-- Press 3 for Directory -->
+      <entry action="menu-exec-app" digits="3" param="directory default ${domain_name} default"/>
+      <!-- Press 0 for Operator -->
+      <entry action="menu-exec-app" digits="0" param="transfer 1000 XML cloudphone11"/>
+      <!-- Press 9 for Voicemail -->
+      <entry action="menu-exec-app" digits="9" param="transfer *98 XML cloudphone11"/>
+      <!-- Direct extension dialing (4 digits) -->
+      <entry action="menu-exec-app" digits="/^([1-9]\d{3})$/" param="transfer $1 XML cloudphone11"/>
+    </menu>
+
+    <!-- ─── Sales Sub-Menu ─────────────────────────────────────────────── -->
+    <menu name="cloudphone11_sales_ivr"
+          greet-long="ivr/cloudphone11_sales.wav"
+          greet-short="ivr/cloudphone11_sales_short.wav"
+          invalid-sound="ivr/ivr-that_was_an_invalid_entry.wav"
+          exit-sound="voicemail/vm-goodbye.wav"
+          inter-digit-timeout="2000"
+          digit-len="4"
+          timeout="10000"
+          max-failures="3">
+
+      <!-- Press 1 for New Accounts -->
+      <entry action="menu-exec-app" digits="1" param="transfer 1001 XML cloudphone11"/>
+      <!-- Press 2 for Existing Accounts -->
+      <entry action="menu-exec-app" digits="2" param="transfer 1002 XML cloudphone11"/>
+      <!-- Press 0 to go back to main menu -->
+      <entry action="menu-sub" digits="0" param="cloudphone11_main_ivr"/>
+    </menu>
+
+    <!-- ─── Support Sub-Menu ───────────────────────────────────────────── -->
+    <menu name="cloudphone11_support_ivr"
+          greet-long="ivr/cloudphone11_support.wav"
+          greet-short="ivr/cloudphone11_support_short.wav"
+          invalid-sound="ivr/ivr-that_was_an_invalid_entry.wav"
+          exit-sound="voicemail/vm-goodbye.wav"
+          inter-digit-timeout="2000"
+          digit-len="4"
+          timeout="10000"
+          max-failures="3">
+
+      <!-- Press 1 for Technical Support -->
+      <entry action="menu-exec-app" digits="1" param="transfer 2001 XML cloudphone11"/>
+      <!-- Press 2 for Billing Support -->
+      <entry action="menu-exec-app" digits="2" param="transfer 2002 XML cloudphone11"/>
+      <!-- Press 0 to go back to main menu -->
+      <entry action="menu-sub" digits="0" param="cloudphone11_main_ivr"/>
+    </menu>
+  </menus>
+</include>

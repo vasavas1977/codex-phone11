@@ -1,0 +1,36 @@
+# =============================================================================
+# CloudPhone11 — Environment Variables Template
+# =============================================================================
+# Copy to .env and fill in values before running docker compose.
+# =============================================================================
+
+# ---- Network ----
+SIP_DOMAIN=sip.cloudphone11.io
+EXTERNAL_IP=203.0.113.10
+
+# ---- Database ----
+DB_NAME=cloudphone11
+DB_USER=cloudphone11
+DB_PASSWORD=CHANGE_ME_STRONG_PASSWORD
+
+# ---- Redis ----
+REDIS_PASSWORD=CHANGE_ME_REDIS_PASSWORD
+
+# ---- FreeSWITCH ----
+FS_ESL_PASSWORD=CHANGE_ME_ESL_PASSWORD
+
+# ---- Push Notifications ----
+FCM_API_KEY=your-firebase-cloud-messaging-server-key
+
+# ---- Backend API ----
+JWT_SECRET=CHANGE_ME_JWT_SECRET_MIN_32_CHARS
+STORAGE_BUCKET=cloudphone11-recordings
+
+# ---- TLS (place cert files in ./tls/) ----
+# fullchain.pem  — Full certificate chain
+# privkey.pem    — Private key
+# ca.pem         — CA certificate (optional)
+
+# ---- APNs (place cert in ./apns/) ----
+# apns-cert.pem  — Apple Push Notification certificate
+# firebase-service-account.json — FCM v1 API service account

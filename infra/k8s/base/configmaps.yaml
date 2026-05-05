@@ -1,0 +1,45 @@
+---
+# CloudPhone11 — Global ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudphone11-config
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: cloudphone11
+data:
+  SIP_DOMAIN: "sip.cloudphone11.io"
+  FREESWITCH_ESL_PORT: "8021"
+  REDIS_PORT: "6379"
+  DB_PORT: "5432"
+  DB_NAME: "cloudphone11"
+---
+# Secrets template (values must be base64-encoded in production)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudphone11-secrets
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: cloudphone11
+type: Opaque
+stringData:
+  DB_USER: "cloudphone11"
+  DB_PASSWORD: "CHANGE_ME"
+  REDIS_PASSWORD: "CHANGE_ME"
+  FS_ESL_PASSWORD: "CHANGE_ME"
+  JWT_SECRET: "CHANGE_ME"
+  FCM_API_KEY: "CHANGE_ME"
+---
+# TLS Secret for SIP/WSS (replace with cert-manager in production)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cloudphone11-tls
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: cloudphone11
+type: kubernetes.io/tls
+data:
+  tls.crt: ""   # base64-encoded fullchain.pem
+  tls.key: ""   # base64-encoded privkey.pem

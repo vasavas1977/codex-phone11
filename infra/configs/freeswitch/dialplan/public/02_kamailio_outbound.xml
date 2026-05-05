@@ -1,0 +1,45 @@
+<include>
+  <!-- Outbound PSTN calls from Kamailio proxy -->
+  <!-- Kamailio sends calls to FreeSWITCH external profile (port 5080, public context) -->
+  <!-- We transfer them to the default context where outbound dialplan rules exist -->
+
+  <!-- Thailand local calls: 0X-XXXX-XXXX -->
+  <extension name="kamailio_outbound_thailand_local">
+    <condition field="destination_number" expression="^0(\d{8,9})$">
+      <action application="set" data="domain_name=$${domain}"/>
+      <action application="set" data="call_direction=outbound"/>
+      <action application="log" data="INFO [kamailio-outbound] Thailand local call to 0$1, transferring to default context"/>
+      <action application="transfer" data="0$1 XML default"/>
+    </condition>
+  </extension>
+
+  <!-- Thailand E.164: 66XXXXXXXXX -->
+  <extension name="kamailio_outbound_thailand_e164">
+    <condition field="destination_number" expression="^(66\d{8,9})$">
+      <action application="set" data="domain_name=$${domain}"/>
+      <action application="set" data="call_direction=outbound"/>
+      <action application="log" data="INFO [kamailio-outbound] Thailand E.164 call to $1, transferring to default context"/>
+      <action application="transfer" data="$1 XML default"/>
+    </condition>
+  </extension>
+
+  <!-- International calls with + prefix -->
+  <extension name="kamailio_outbound_plus_prefix">
+    <condition field="destination_number" expression="^\+(\d{7,15})$">
+      <action application="set" data="domain_name=$${domain}"/>
+      <action application="set" data="call_direction=outbound"/>
+      <action application="log" data="INFO [kamailio-outbound] Plus-prefix call to +$1, transferring to default context"/>
+      <action application="transfer" data="+$1 XML default"/>
+    </condition>
+  </extension>
+
+  <!-- General international/PSTN calls (7-15 digits, but NOT 4-digit extensions) -->
+  <extension name="kamailio_outbound_general">
+    <condition field="destination_number" expression="^(\d{7,15})$">
+      <action application="set" data="domain_name=$${domain}"/>
+      <action application="set" data="call_direction=outbound"/>
+      <action application="log" data="INFO [kamailio-outbound] General outbound call to $1, transferring to default context"/>
+      <action application="transfer" data="$1 XML default"/>
+    </condition>
+  </extension>
+</include>

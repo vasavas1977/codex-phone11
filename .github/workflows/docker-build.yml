@@ -1,0 +1,180 @@
+name: Build & Push Docker Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/docker/**'
+      - 'server/**'
+      - 'app/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Comma-separated services to build (freeswitch,kamailio,flexisip,backend)'
+        required: false
+        default: 'all'
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      freeswitch: ${{ steps.changes.outputs.freeswitch }}
+      kamailio: ${{ steps.changes.outputs.kamailio }}
+      flexisip: ${{ steps.changes.outputs.flexisip }}
+      backend: ${{ steps.changes.outputs.backend }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: changes
+        if: github.event_name == 'push'
+        with:
+          filters: |
+            freeswitch:
+              - 'infra/docker/freeswitch/**'
+              - 'infra/configs/freeswitch/**'
+            kamailio:
+              - 'infra/docker/kamailio/**'
+              - 'infra/configs/kamailio/**'
+            flexisip:
+              - 'infra/docker/flexisip/**'
+              - 'infra/configs/flexisip/**'
+            backend:
+              - 'server/**'
+              - 'app/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'infra/docker/backend/**'
+
+  build-freeswitch:
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.freeswitch == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.services == 'all' || contains(github.event.inputs.services, 'freeswitch'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push FreeSWITCH
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/docker/freeswitch
+          file: infra/docker/freeswitch/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/freeswitch:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/freeswitch:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-kamailio:
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.kamailio == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.services == 'all' || contains(github.event.inputs.services, 'kamailio'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Kamailio
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/docker/kamailio
+          file: infra/docker/kamailio/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/kamailio:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/kamailio:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-flexisip:
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.flexisip == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.services == 'all' || contains(github.event.inputs.services, 'flexisip'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Flexisip
+        uses: docker/build-push-action@v6
+        with:
+          context: infra/docker/flexisip
+          file: infra/docker/flexisip/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/flexisip:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/flexisip:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-backend:
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.backend == 'true' ||
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.services == 'all' || contains(github.event.inputs.services, 'backend'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/backend:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

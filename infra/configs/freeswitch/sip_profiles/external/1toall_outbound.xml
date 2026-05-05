@@ -1,0 +1,20 @@
+<include>
+  <gateway name="1toall-outbound">
+    <!-- 1-to-All Telecom Outbound SIP Trunk (IP-based peering) -->
+    <param name="proxy" value="58.64.15.45"/>
+    <param name="realm" value="58.64.15.45"/>
+    <param name="register" value="false"/>
+    <!-- Set From header to the authorized caller ID -->
+    <param name="username" value="6620303001"/>
+    <param name="from-user" value="6620303001"/>
+    <param name="from-domain" value="58.64.15.45"/>
+    <param name="password" value="unused"/>
+    <!-- Use caller-id-in-from=false so gateway From header is used -->
+    <param name="caller-id-in-from" value="false"/>
+    <!-- Keepalive pings -->
+    <param name="ping" value="30"/>
+    <param name="ping-max" value="3"/>
+    <param name="ping-min" value="1"/>
+    <param name="retry-seconds" value="30"/>
+  </gateway>
+</include>

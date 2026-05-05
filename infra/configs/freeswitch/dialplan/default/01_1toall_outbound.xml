@@ -1,0 +1,62 @@
+<include>
+  <!-- 1-to-All Telecom Outbound PSTN Calls -->
+  <!-- Authorized Caller ID: 6620303001 (DID assigned by 1toall) -->
+  <!-- Dialing format: E.164 without '+' for both caller and callee -->
+
+  <!-- Thailand local calls: 0X-XXXX-XXXX (strip leading 0, add 66) -->
+  <extension name="1toall_outbound_thailand_local">
+    <condition field="destination_number" expression="^0(\d{8,9})$">
+      <action application="set" data="call_direction=outbound"/>
+      <action application="set" data="pstn_gateway=1toall"/>
+      <!-- Force caller ID to authorized DID -->
+      <action application="set" data="effective_caller_id_number=6620303001"/>
+      <action application="set" data="effective_caller_id_name=Phone11"/>
+      <action application="set" data="sip_h_P-Asserted-Identity=&lt;sip:6620303001@58.64.15.45&gt;"/>
+      <action application="set" data="sip_h_Remote-Party-ID=&lt;sip:6620303001@58.64.15.45&gt;;party=calling;screen=yes;privacy=off"/>
+      <action application="log" data="INFO [1toall-outbound] Thailand local call to 66$1 from 6620303001"/>
+      <action application="bridge" data="sofia/gateway/1toall-outbound/66$1"/>
+    </condition>
+  </extension>
+
+  <!-- Thailand calls with country code: 66XXXXXXXXX -->
+  <extension name="1toall_outbound_thailand_e164">
+    <condition field="destination_number" expression="^(66\d{8,9})$">
+      <action application="set" data="call_direction=outbound"/>
+      <action application="set" data="pstn_gateway=1toall"/>
+      <action application="set" data="effective_caller_id_number=6620303001"/>
+      <action application="set" data="effective_caller_id_name=Phone11"/>
+      <action application="set" data="sip_h_P-Asserted-Identity=&lt;sip:6620303001@58.64.15.45&gt;"/>
+      <action application="set" data="sip_h_Remote-Party-ID=&lt;sip:6620303001@58.64.15.45&gt;;party=calling;screen=yes;privacy=off"/>
+      <action application="log" data="INFO [1toall-outbound] Thailand E.164 call to $1 from 6620303001"/>
+      <action application="bridge" data="sofia/gateway/1toall-outbound/$1"/>
+    </condition>
+  </extension>
+
+  <!-- International calls: 7-15 digit number -->
+  <extension name="1toall_outbound_international">
+    <condition field="destination_number" expression="^(\d{7,15})$">
+      <action application="set" data="call_direction=outbound"/>
+      <action application="set" data="pstn_gateway=1toall"/>
+      <action application="set" data="effective_caller_id_number=6620303001"/>
+      <action application="set" data="effective_caller_id_name=Phone11"/>
+      <action application="set" data="sip_h_P-Asserted-Identity=&lt;sip:6620303001@58.64.15.45&gt;"/>
+      <action application="set" data="sip_h_Remote-Party-ID=&lt;sip:6620303001@58.64.15.45&gt;;party=calling;screen=yes;privacy=off"/>
+      <action application="log" data="INFO [1toall-outbound] International call to $1 from 6620303001"/>
+      <action application="bridge" data="sofia/gateway/1toall-outbound/$1"/>
+    </condition>
+  </extension>
+
+  <!-- Calls with + prefix: strip + and route -->
+  <extension name="1toall_outbound_plus_prefix">
+    <condition field="destination_number" expression="^\+(\d{7,15})$">
+      <action application="set" data="call_direction=outbound"/>
+      <action application="set" data="pstn_gateway=1toall"/>
+      <action application="set" data="effective_caller_id_number=6620303001"/>
+      <action application="set" data="effective_caller_id_name=Phone11"/>
+      <action application="set" data="sip_h_P-Asserted-Identity=&lt;sip:6620303001@58.64.15.45&gt;"/>
+      <action application="set" data="sip_h_Remote-Party-ID=&lt;sip:6620303001@58.64.15.45&gt;;party=calling;screen=yes;privacy=off"/>
+      <action application="log" data="INFO [1toall-outbound] Plus-prefix call to $1 from 6620303001"/>
+      <action application="bridge" data="sofia/gateway/1toall-outbound/$1"/>
+    </condition>
+  </extension>
+</include>

@@ -1,0 +1,272 @@
+{
+  "annotations": { "list": [] },
+  "description": "CloudPhone11 — SIP Registrations, Call Volume, and Response Codes",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Active SIP Registrations",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "kamailio_registrar_registered_users",
+        "legendFormat": "Registrations"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 50 }
+            ]
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "title": "Concurrent Calls",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{
+        "expr": "kamailio_dialog_active_dialogs",
+        "legendFormat": "Active Calls"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 200 },
+              { "color": "red", "value": 500 }
+            ]
+          },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "title": "Calls Per Second",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "rate(kamailio_sl_sent_replies_total{code=\"200\"}[5m])",
+        "legendFormat": "CPS"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "title": "SIP Error Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{
+        "expr": "rate(kamailio_sl_sent_replies_total{code=~\"5..\"}[5m]) / rate(kamailio_sl_sent_replies_total[5m])",
+        "legendFormat": "5xx Rate"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 0.02 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "SIP Registrations Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "kamailio_registrar_registered_users",
+          "legendFormat": "Active Registrations"
+        },
+        {
+          "expr": "rate(kamailio_registrar_accepted_regs_total[5m]) * 60",
+          "legendFormat": "New Registrations/min"
+        },
+        {
+          "expr": "rate(kamailio_registrar_rejected_regs_total[5m]) * 60",
+          "legendFormat": "Rejected Registrations/min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 15,
+            "pointSize": 5,
+            "showPoints": "auto"
+          }
+        }
+      }
+    },
+    {
+      "title": "Call Volume Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "kamailio_dialog_active_dialogs",
+          "legendFormat": "Concurrent Calls"
+        },
+        {
+          "expr": "rate(freeswitch_calls_total[5m]) * 60",
+          "legendFormat": "New Calls/min"
+        },
+        {
+          "expr": "rate(freeswitch_calls_failed_total[5m]) * 60",
+          "legendFormat": "Failed Calls/min"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 15
+          }
+        }
+      }
+    },
+    {
+      "title": "SIP Response Code Distribution",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "targets": [{
+        "expr": "sum by (code) (increase(kamailio_sl_sent_replies_total[1h]))",
+        "legendFormat": "{{ code }}"
+      }],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right" },
+        "pieType": "donut"
+      }
+    },
+    {
+      "title": "SIP Response Codes Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 8, "y": 12 },
+      "targets": [
+        {
+          "expr": "rate(kamailio_sl_sent_replies_total{code=\"200\"}[5m])",
+          "legendFormat": "200 OK"
+        },
+        {
+          "expr": "rate(kamailio_sl_sent_replies_total{code=\"401\"}[5m])",
+          "legendFormat": "401 Unauthorized"
+        },
+        {
+          "expr": "rate(kamailio_sl_sent_replies_total{code=\"403\"}[5m])",
+          "legendFormat": "403 Forbidden"
+        },
+        {
+          "expr": "rate(kamailio_sl_sent_replies_total{code=\"404\"}[5m])",
+          "legendFormat": "404 Not Found"
+        },
+        {
+          "expr": "rate(kamailio_sl_sent_replies_total{code=\"486\"}[5m])",
+          "legendFormat": "486 Busy"
+        },
+        {
+          "expr": "rate(kamailio_sl_sent_replies_total{code=\"503\"}[5m])",
+          "legendFormat": "503 Unavailable"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "stacking": { "mode": "normal" }
+          }
+        }
+      }
+    },
+    {
+      "title": "Trunk Health",
+      "type": "table",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 20 },
+      "targets": [{
+        "expr": "kamailio_dispatcher_target_status",
+        "legendFormat": "{{ target }}",
+        "format": "table",
+        "instant": true
+      }],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "target": "Trunk",
+              "set": "Set",
+              "Value": "Status"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "overrides": [{
+          "matcher": { "id": "byName", "options": "Status" },
+          "properties": [{
+            "id": "mappings",
+            "value": [
+              { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
+              { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
+            ]
+          }]
+        }]
+      }
+    },
+    {
+      "title": "SIP Request Latency (P50 / P95 / P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(kamailio_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(kamailio_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(kamailio_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "fillOpacity": 10 }
+        }
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["cloudphone11", "sip", "voip"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "CloudPhone11 — SIP Overview",
+  "uid": "cloudphone11-sip-overview",
+  "version": 1
+}

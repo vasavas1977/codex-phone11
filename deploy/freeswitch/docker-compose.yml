@@ -1,0 +1,58 @@
+# ============================================================================
+# FreeSWITCH PBX — Docker Compose Deployment
+# CloudPhone11 Telecom Operator Platform
+# ============================================================================
+#
+# Provides:
+#   - IVR (Interactive Voice Response)
+#   - Voicemail with transcription
+#   - Conference bridges
+#   - Call recording
+#   - CDR generation → BillRun
+#   - Music on hold
+#   - Ring groups and hunt groups
+#
+# Usage:
+#   cd deploy/freeswitch
+#   cp env-template.txt .env
+#   docker-compose up -d
+#
+# After startup:
+#   SIP:  YOUR_SERVER:5080 (internal profile)
+#   ESL:  YOUR_SERVER:8021 (Event Socket)
+# ============================================================================
+
+version: "3.8"
+
+services:
+  freeswitch:
+    image: signalwire/freeswitch:latest
+    container_name: cloudphone11-freeswitch
+    restart: unless-stopped
+    ports:
+      - "5080:5080/udp"    # Internal SIP profile
+      - "5080:5080/tcp"
+      - "8021:8021/tcp"    # Event Socket Layer
+      - "16384-16484:16384-16484/udp"  # RTP media ports
+    environment:
+      SIP_DOMAIN: ${SIP_DOMAIN:-sip.yourcompany.com}
+      ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
+      BILLRUN_CDR_URL: ${BILLRUN_CDR_URL:-http://billrun-cdr:8082/cdr}
+    volumes:
+      - ./conf:/etc/freeswitch/conf:ro
+      - ./dialplan:/etc/freeswitch/dialplan:ro
+      - ./scripts:/etc/freeswitch/scripts:ro
+      - freeswitch_recordings:/var/lib/freeswitch/recordings
+      - freeswitch_voicemail:/var/lib/freeswitch/storage/voicemail
+      - freeswitch_logs:/var/log/freeswitch
+    networks:
+      - freeswitch_net
+
+volumes:
+  freeswitch_recordings:
+  freeswitch_voicemail:
+  freeswitch_logs:
+
+networks:
+  freeswitch_net:
+    driver: bridge

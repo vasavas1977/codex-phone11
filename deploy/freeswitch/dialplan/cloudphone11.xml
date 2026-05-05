@@ -1,0 +1,165 @@
+<!--
+  ============================================================================
+  FreeSWITCH Dial Plan — CloudPhone11
+  ============================================================================
+
+  This dial plan handles:
+    - Internal extension-to-extension calls
+    - IVR auto-attendant
+    - Voicemail
+    - Call recording
+    - Conference bridges
+    - Ring groups
+    - CDR generation to BillRun
+    - PSTN breakout via Kamailio → Dinstar SBC
+
+  Place in: /etc/freeswitch/dialplan/cloudphone11.xml
+  ============================================================================
+-->
+
+<include>
+  <context name="cloudphone11">
+
+    <!-- ─── IVR Auto-Attendant (Main Menu) ──────────────────────────────── -->
+    <extension name="main-ivr">
+      <condition field="destination_number" expression="^(0|auto-attendant)$">
+        <action application="answer"/>
+        <action application="sleep" data="500"/>
+        <action application="set" data="hangup_after_bridge=true"/>
+        <action application="ivr" data="cloudphone11_main_ivr"/>
+      </condition>
+    </extension>
+
+    <!-- ─── IVR Sub-Menu: Sales ─────────────────────────────────────────── -->
+    <extension name="sales-ivr">
+      <condition field="destination_number" expression="^sales-ivr$">
+        <action application="ivr" data="cloudphone11_sales_ivr"/>
+      </condition>
+    </extension>
+
+    <!-- ─── IVR Sub-Menu: Support ───────────────────────────────────────── -->
+    <extension name="support-ivr">
+      <condition field="destination_number" expression="^support-ivr$">
+        <action application="ivr" data="cloudphone11_support_ivr"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Internal Extension Calls (1000-9999) ────────────────────────── -->
+    <extension name="internal-extensions">
+      <condition field="destination_number" expression="^([1-9]\d{3})$">
+        <!-- Start call recording -->
+        <action application="set" data="RECORD_STEREO=true"/>
+        <action application="set" data="recording_follow_transfer=true"/>
+        <action application="set" data="record_file_name=/var/lib/freeswitch/recordings/${strftime(%Y/%m/%d)}/${uuid}.wav"/>
+        <action application="record_session" data="${record_file_name}"/>
+
+        <!-- CDR variables for BillRun -->
+        <action application="set" data="billrun_type=voice"/>
+        <action application="set" data="billrun_direction=internal"/>
+        <action application="export" data="execute_on_answer=record_session ${record_file_name}"/>
+
+        <!-- Bridge to extension with 30s timeout, then voicemail -->
+        <action application="set" data="call_timeout=30"/>
+        <action application="set" data="continue_on_fail=true"/>
+        <action application="bridge" data="user/$1@${domain_name}"/>
+
+        <!-- If no answer, go to voicemail -->
+        <action application="answer"/>
+        <action application="voicemail" data="default ${domain_name} $1"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Voicemail Access ────────────────────────────────────────────── -->
+    <extension name="voicemail">
+      <condition field="destination_number" expression="^(\*98|voicemail-.*)$">
+        <action application="answer"/>
+        <action application="sleep" data="500"/>
+        <action application="voicemail" data="check default ${domain_name} ${caller_id_number}"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Conference Bridge (8000-8099) ───────────────────────────────── -->
+    <extension name="conference">
+      <condition field="destination_number" expression="^(8\d{3})$">
+        <action application="answer"/>
+        <action application="set" data="conference_auto_record=/var/lib/freeswitch/recordings/conference/${strftime(%Y%m%d)}_$1.wav"/>
+        <action application="conference" data="$1@cloudphone11"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Ring Group: Sales Team (7001) ───────────────────────────────── -->
+    <extension name="ring-group-sales">
+      <condition field="destination_number" expression="^7001$">
+        <action application="set" data="call_timeout=20"/>
+        <action application="set" data="continue_on_fail=true"/>
+        <!-- Ring all sales extensions simultaneously -->
+        <action application="bridge" data="user/1001@${domain_name},user/1002@${domain_name},user/1003@${domain_name}"/>
+        <!-- Fallback to sales voicemail -->
+        <action application="voicemail" data="default ${domain_name} 7001"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Ring Group: Support Team (7002) ─────────────────────────────── -->
+    <extension name="ring-group-support">
+      <condition field="destination_number" expression="^7002$">
+        <action application="set" data="call_timeout=20"/>
+        <action application="set" data="continue_on_fail=true"/>
+        <action application="bridge" data="user/2001@${domain_name},user/2002@${domain_name},user/2003@${domain_name}"/>
+        <action application="voicemail" data="default ${domain_name} 7002"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Call Parking (7000) ─────────────────────────────────────────── -->
+    <extension name="park">
+      <condition field="destination_number" expression="^7000$">
+        <action application="set" data="fifo_music=/var/lib/freeswitch/sounds/music/hold.wav"/>
+        <action application="fifo" data="park@${domain_name} in"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Call Park Retrieve ──────────────────────────────────────────── -->
+    <extension name="park-retrieve">
+      <condition field="destination_number" expression="^7099$">
+        <action application="fifo" data="park@${domain_name} out nowait"/>
+      </condition>
+    </extension>
+
+    <!-- ─── Echo Test (9196) ────────────────────────────────────────────── -->
+    <extension name="echo">
+      <condition field="destination_number" expression="^9196$">
+        <action application="answer"/>
+        <action application="echo"/>
+      </condition>
+    </extension>
+
+    <!-- ─── PSTN Outbound via Kamailio → Dinstar SBC ────────────────────── -->
+    <!-- Matches E.164 numbers: +1XXXXXXXXXX or 011XXXXXXXXXXX -->
+    <extension name="pstn-outbound">
+      <condition field="destination_number" expression="^(\+?[0-9]{7,15})$">
+        <!-- CDR variables for BillRun billing -->
+        <action application="set" data="billrun_type=voice"/>
+        <action application="set" data="billrun_direction=outbound"/>
+        <action application="set" data="billrun_destination=$1"/>
+
+        <!-- Start recording -->
+        <action application="set" data="record_file_name=/var/lib/freeswitch/recordings/${strftime(%Y/%m/%d)}/${uuid}.wav"/>
+        <action application="record_session" data="${record_file_name}"/>
+
+        <!-- Route via Kamailio (which routes to Dinstar SBC for PSTN) -->
+        <action application="bridge" data="sofia/external/$1@KAMAILIO_IP:5060"/>
+      </condition>
+    </extension>
+
+    <!-- ─── DID Inbound (from Kamailio/Dinstar) ─────────────────────────── -->
+    <!-- Kamailio routes inbound PSTN calls here -->
+    <extension name="did-inbound">
+      <condition field="destination_number" expression="^did-(\d+)$">
+        <action application="set" data="billrun_type=voice"/>
+        <action application="set" data="billrun_direction=inbound"/>
+        <!-- Lookup DID routing table -->
+        <action application="lua" data="did_routing.lua"/>
+      </condition>
+    </extension>
+
+  </context>
+</include>

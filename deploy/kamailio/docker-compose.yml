@@ -1,0 +1,99 @@
+# ============================================================================
+# Kamailio SIP Proxy — Docker Compose Deployment
+# CloudPhone11 Telecom Operator Platform
+# ============================================================================
+#
+# Deploys Kamailio with MySQL (subscriber DB) and RTPEngine (media relay).
+#
+# Usage:
+#   cd deploy/kamailio
+#   cp env-template.txt .env   # Edit with your values
+#   docker-compose up -d
+#
+# After startup:
+#   SIP UDP/TCP:  YOUR_SERVER:5060
+#   SIP TLS:      YOUR_SERVER:5061
+#   WebSocket:    YOUR_SERVER:8080 (ws) / 8443 (wss)
+# ============================================================================
+
+version: "3.8"
+
+services:
+  # ─── MySQL (Kamailio subscriber database) ─────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: cloudphone11-kamailio-mysql
+    restart: unless-stopped
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-kamailio_root_change_me}
+      MYSQL_DATABASE: kamailio
+      MYSQL_USER: kamailio
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-kamailio_pass_change_me}
+    volumes:
+      - kamailio_mysql_data:/var/lib/mysql
+    networks:
+      - kamailio_net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ─── Kamailio SIP Proxy ───────────────────────────────────────────────────
+  kamailio:
+    image: kamailio/kamailio:5.7
+    container_name: cloudphone11-kamailio
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "5061:5061/tcp"     # TLS
+      - "8080:8080/tcp"     # WebSocket
+      - "8443:8443/tcp"     # Secure WebSocket
+    environment:
+      SIP_DOMAIN: ${SIP_DOMAIN:-sip.yourcompany.com}
+      PUBLIC_IP: ${PUBLIC_IP:-YOUR_SERVER_PUBLIC_IP}
+      FREESWITCH_IP: ${FREESWITCH_IP:-127.0.0.1}
+      DINSTAR_IP: ${DINSTAR_IP:-YOUR_DINSTAR_SBC_IP}
+    volumes:
+      - ./kamailio.cfg:/etc/kamailio/kamailio.cfg:ro
+      - ./tls.cfg:/etc/kamailio/tls.cfg:ro
+      - kamailio_tls_certs:/etc/kamailio/tls:ro
+    networks:
+      - kamailio_net
+    cap_add:
+      - NET_ADMIN
+
+  # ─── RTPEngine (media relay for NAT traversal) ────────────────────────────
+  rtpengine:
+    image: drachtio/rtpengine:latest
+    container_name: cloudphone11-rtpengine
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    environment:
+      PUBLIC_IP: ${PUBLIC_IP:-YOUR_SERVER_PUBLIC_IP}
+      PORT_MIN: 20000
+      PORT_MAX: 30000
+    command: >
+      rtpengine
+      --interface=${PUBLIC_IP:-0.0.0.0}
+      --listen-ng=22222
+      --port-min=20000
+      --port-max=30000
+      --log-level=5
+      --delete-delay=0
+      --timeout=60
+
+volumes:
+  kamailio_mysql_data:
+  kamailio_tls_certs:
+
+networks:
+  kamailio_net:
+    driver: bridge

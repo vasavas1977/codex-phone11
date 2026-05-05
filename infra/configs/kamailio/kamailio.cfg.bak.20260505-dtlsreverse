@@ -1,0 +1,459 @@
+#!KAMAILIO
+# =============================================================================
+# CloudPhone11 — Kamailio SIP Proxy Configuration (with WebSocket + WebRTC)
+# =============================================================================
+# Role: SIP registrar, proxy, load balancer, NAT traversal, WebRTC bridge
+# Routes calls between mobile clients, FreeSWITCH, PSTN trunks
+# WebSocket on port 8088 for JsSIP/SIP.js clients (TLS terminated by nginx)
+# RTPEngine handles DTLS-SRTP ↔ RTP transcoding for WebRTC
+# =============================================================================
+#!substdef "!MY_DOMAIN!sip.phone11.ai!g"
+#!substdef "!MY_IP!10.0.1.69!g"
+#!substdef "!FS_IP!10.0.1.69!g"
+#!substdef "!FS_PORT!5080!g"
+#!substdef "!FLEXISIP_IP!127.0.0.1!g"
+#!substdef "!FLEXISIP_PORT!5065!g"
+#!substdef "!DB_URL!postgres://phone11ai:Xk9mPv2wRtN7qYhL4bJc@phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com:5432/phone11ai?sslmode=require!g"
+#!substdef "!BACKEND_URL!http://127.0.0.1:3001!g"
+#!substdef "!KAM_SECRET!phone11-kam-secret-change-me!g"
+
+# ---- Global Parameters ----
+tcp_accept_no_cl=yes
+log_stderror=yes
+debug=2
+
+# ---- Module Loading ----
+loadmodule "tm.so"
+loadmodule "tmx.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "pv.so"
+loadmodule "maxfwd.so"
+loadmodule "usrloc.so"
+loadmodule "registrar.so"
+loadmodule "textops.so"
+loadmodule "siputils.so"
+loadmodule "xlog.so"
+loadmodule "sanity.so"
+loadmodule "nathelper.so"
+loadmodule "rtpengine.so"
+loadmodule "auth.so"
+loadmodule "auth_db.so"
+loadmodule "db_postgres.so"
+loadmodule "dispatcher.so"
+loadmodule "htable.so"
+loadmodule "pike.so"
+loadmodule "dialog.so"
+loadmodule "presence.so"
+loadmodule "presence_xml.so"
+loadmodule "jsonrpcs.so"
+# REST API modules for DID routing
+loadmodule "http_client.so"
+loadmodule "jansson.so"
+
+modparam("jsonrpcs", "fifo_name", "/var/run/kamailio/kamailio_rpc.fifo")
+
+# WebSocket modules
+loadmodule "xhttp.so"
+loadmodule "websocket.so"
+loadmodule "sdpops.so"
+
+# ---- Module Parameters ----
+# User Location (registration database)
+modparam("usrloc", "db_url", "DB_URL")
+modparam("usrloc", "db_mode", 2)
+modparam("usrloc", "nat_bflag", 6)
+modparam("usrloc", "use_domain", 1)
+
+# Registrar
+modparam("registrar", "method_filtering", 1)
+modparam("registrar", "received_avp", "$avp(RECEIVED)")
+modparam("nathelper", "received_avp", "$avp(RECEIVED)")
+modparam("registrar", "max_expires", 3600)
+modparam("registrar", "min_expires", 60)
+modparam("registrar", "default_expires", 600)
+modparam("registrar", "gruu_enabled", 1)
+
+# Authentication (uses subscriber table with pre-computed HA1)
+modparam("auth_db", "db_url", "DB_URL")
+modparam("auth_db", "calculate_ha1", 0)
+modparam("auth_db", "password_column", "ha1")
+modparam("auth_db", "load_credentials", "")
+modparam("auth_db", "use_domain", 1)
+
+# NAT Traversal
+modparam("nathelper", "natping_interval", 30)
+modparam("nathelper", "ping_nated_only", 1)
+modparam("nathelper", "sipping_bflag", 7)
+modparam("nathelper", "sipping_from", "sip:keepalive@MY_DOMAIN")
+
+# RTPEngine (media relay for NAT and WebRTC bridging)
+modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:22222")
+
+# Dispatcher (load balance to FreeSWITCH instances)
+modparam("dispatcher", "db_url", "DB_URL")
+modparam("dispatcher", "ds_ping_method", "OPTIONS")
+modparam("dispatcher", "ds_ping_interval", 10)
+modparam("dispatcher", "ds_probing_mode", 1)
+
+# Dialog tracking
+modparam("dialog", "db_url", "DB_URL")
+modparam("dialog", "db_mode", 1)
+
+# Anti-flood (exclude local IPs from rate limiting)
+modparam("pike", "sampling_time_unit", 2)
+modparam("pike", "reqs_density_per_unit", 30)
+modparam("pike", "remove_latency", 4)
+
+# Presence (BLF)
+modparam("presence", "db_url", "DB_URL")
+modparam("presence_xml", "db_url", "DB_URL")
+modparam("presence_xml", "force_active", 1)
+modparam("presence", "subs_db_mode", 2)
+
+# WebSocket parameters
+modparam("websocket", "keepalive_mechanism", 1)
+modparam("websocket", "keepalive_timeout", 30)
+
+# HTTP Client for REST API calls to backend
+modparam("http_client", "httpcon", "backend=>BACKEND_URL")
+modparam("http_client", "connection_timeout", 3000)
+
+# Hash table for DID routing cache (256 slots, 300s TTL)
+modparam("htable", "htable", "did_cache=>size=8;autoexpire=300;")
+
+# ---- Listen Addresses ----
+listen=udp:MY_IP:5060 advertise 43.210.122.111:5060
+listen=tcp:MY_IP:5060 advertise 43.210.122.111:5060
+listen=tcp:MY_IP:8088 advertise 43.210.122.111:8088
+
+# ---- Main Request Routing ----
+request_route {
+    # Per-request sanity checks
+    if (!mf_process_maxfwd_header("10")) {
+        sl_send_reply("483", "Too Many Hops");
+        exit;
+    }
+    if (!sanity_check("17895", "7")) {
+        xlog("L_WARN", "Malformed SIP from $si:$sp\n");
+        exit;
+    }
+
+    # Anti-flood protection (exclude local/self IPs)
+    if ($si != "10.0.1.69" && $si != "127.0.0.1" && $si != "43.210.122.111" && !pike_check_req()) {
+        xlog("L_WARN", "PIKE: rate limit exceeded from $si\n");
+        sl_send_reply("503", "Service Unavailable");
+        exit;
+    }
+
+    # WebSocket keepalive handling
+    if (is_method("OPTIONS") && $ru =~ "keepalive") {
+        sl_send_reply("200", "OK");
+        exit;
+    }
+
+    # NAT detection and fix
+    if (nat_uac_test("19")) {
+        if (is_method("REGISTER")) {
+            fix_nated_register();
+        } else {
+            fix_nated_contact();
+            force_rport();
+        }
+    }
+
+    # Record-Route for mid-dialog requests
+    if (is_method("INVITE|SUBSCRIBE")) {
+        record_route();
+    }
+
+    # Handle mid-dialog requests (re-INVITE, BYE, ACK, etc.)
+    if (has_totag()) {
+        if (loose_route()) {
+            if (is_method("INVITE")) {
+                route(RTPENGINE_MANAGE);
+            }
+            if (is_method("ACK") && has_body("application/sdp")) {
+                route(RTPENGINE_MANAGE);
+            }
+            route(RELAY);
+            exit;
+        }
+    }
+
+    # CANCEL processing
+    if (is_method("CANCEL")) {
+        if (t_check_trans()) {
+            route(RELAY);
+        }
+        exit;
+    }
+
+    # Handle REGISTER
+    if (is_method("REGISTER")) {
+        route(AUTH);
+        if (!save("location")) {
+            sl_send_reply("503", "Service Unavailable");
+        }
+        exit;
+    }
+
+    # Handle SUBSCRIBE/PUBLISH (presence/BLF)
+    if (is_method("SUBSCRIBE")) {
+        route(AUTH);
+        route(PRESENCE);
+        exit;
+    }
+    if (is_method("PUBLISH")) {
+        route(AUTH);
+        route(PRESENCE);
+        exit;
+    }
+
+    # Handle INVITE
+    if (is_method("INVITE")) {
+        route(AUTH);
+        route(INVITE);
+        exit;
+    }
+
+    # Handle MESSAGE (quick messages between extensions)
+    if (is_method("MESSAGE")) {
+        route(AUTH);
+        route(MESSAGE);
+        exit;
+    }
+
+    # Default: relay
+    route(RELAY);
+}
+
+# ---- HTTP Request Route (WebSocket Upgrade) ----
+event_route[xhttp:request] {
+    set_reply_close();
+    set_reply_no_connect();
+
+    if ($Rp != 8088) {
+        xhttp_reply("403", "Forbidden", "", "");
+        exit;
+    }
+
+    xlog("L_INFO", "HTTP request: $hdr(Upgrade) from $si:$sp\n");
+
+    if ($hdr(Upgrade) =~ "websocket" && $hdr(Connection) =~ "Upgrade") {
+        if (ws_handle_handshake()) {
+            exit;
+        }
+    }
+
+    xhttp_reply("200", "OK", "text/plain", "Kamailio WebSocket Server");
+    exit;
+}
+
+# ---- Authentication Route ----
+route[AUTH] {
+    if (is_method("REGISTER") || from_uri == myself) {
+        if (!auth_check("MY_DOMAIN", "subscriber", "1")) {
+            auth_challenge("MY_DOMAIN", "1");
+            exit;
+        }
+    }
+}
+
+# ---- RTPEngine Media Management (WebRTC-aware) ----
+route[RTPENGINE_MANAGE] {
+    if ($proto == "ws" || $proto == "wss") {
+        # Caller is WebRTC — offer DTLS-SRTP, ICE
+        rtpengine_manage("replace-origin replace-session-connection ICE=force DTLS=passive SDES=off RTP/AVP");
+    } else {
+        # Non-WebRTC caller — standard RTP relay
+        rtpengine_manage("replace-origin replace-session-connection ICE=remove RTP/AVP");
+    }
+}
+
+# ---- INVITE Routing ----
+route[INVITE] {
+    dlg_manage();
+
+    # Emergency numbers (191, 199, 1669) — route directly to PSTN via FreeSWITCH
+    if ($rU =~ "^(191|199|1669)$") {
+        xlog("L_ALERT", "EMERGENCY CALL to $rU from $fU\n");
+        route(TO_FREESWITCH);
+        exit;
+    }
+
+    # Local extension (4-digit)
+    if ($rU =~ "^[1-9][0-9]{3}$") {
+        if (!lookup("location")) {
+            xlog("L_INFO", "Extension $rU not registered, sending push via Flexisip\n");
+            $du = "sip:FLEXISIP_IP:FLEXISIP_PORT";
+            route(RELAY);
+            exit;
+        }
+        route(RTPENGINE_MANAGE);
+        route(RELAY);
+        exit;
+    }
+
+    # Ring groups (*7xxx)
+    if ($rU =~ "^\*7[0-9]+$") {
+        route(TO_FREESWITCH);
+        exit;
+    }
+
+    # Call queues (*8xxx)
+    if ($rU =~ "^\*8[0-9]+$") {
+        route(TO_FREESWITCH);
+        exit;
+    }
+
+    # IVR auto-attendant (*9xxx)
+    if ($rU =~ "^\*9[0-9]+$") {
+        route(TO_FREESWITCH);
+        exit;
+    }
+
+    # Conference bridge (*85xxx)
+    if ($rU =~ "^\*85") {
+        route(TO_FREESWITCH);
+        exit;
+    }
+
+    # Voicemail (*97)
+    if ($rU =~ "^\*97$") {
+        route(TO_FREESWITCH);
+        exit;
+    }
+
+    # Inbound DID or PSTN outbound — check DID routing via REST API
+    if ($rU =~ "^\+?[0-9]{9,15}$") {
+        route(DID_ROUTE);
+        exit;
+    }
+
+    # Unknown destination
+    sl_send_reply("404", "Not Found");
+    exit;
+}
+
+# ---- DID Routing via REST API ----
+route[DID_ROUTE] {
+    # Check htable cache first
+    if ($sht(did_cache=>$rU) != $null) {
+        $var(did_target) = $sht(did_cache=>$rU);
+        xlog("L_INFO", "DID $rU cached -> target: $var(did_target)\n");
+    } else {
+        # Call backend REST API for DID routing
+        $var(api_url) = "/api/kamailio/route?secret=KAM_SECRET&number=" + $rU;
+        http_client_query("backend", "$var(api_url)", "", "$var(api_result)");
+
+        if ($rc == 200) {
+            jansson_get("target", $var(api_result), "$var(did_target)");
+            $sht(did_cache=>$rU) = $var(did_target);
+            xlog("L_INFO", "DID $rU API -> target: $var(did_target)\n");
+        } else {
+            xlog("L_WARN", "DID lookup failed for $rU (rc=$rc), routing to FS\n");
+            route(TO_FREESWITCH);
+            exit;
+        }
+    }
+
+    # Route based on target type
+    if ($var(did_target) =~ "^[1-9][0-9]{3}$") {
+        # Target is a local extension
+        $rU = $var(did_target);
+        if (!lookup("location")) {
+            xlog("L_INFO", "DID target $rU not registered, push via Flexisip\n");
+            $du = "sip:FLEXISIP_IP:FLEXISIP_PORT";
+            route(RELAY);
+            exit;
+        }
+        route(RTPENGINE_MANAGE);
+        route(RELAY);
+        exit;
+    }
+
+    # Target is a feature code or PSTN — send to FreeSWITCH
+    $rU = $var(did_target);
+    route(TO_FREESWITCH);
+    exit;
+}
+
+# ---- Route to FreeSWITCH (via dispatcher for load balancing) ----
+route[TO_FREESWITCH] {
+    if (!ds_select_dst("1", "4")) {
+        $du = "sip:FS_IP:FS_PORT";
+    }
+    # A-leg = WebRTC (public), B-leg = FreeSWITCH (private/plain RTP)
+    $var(rtpe_rc) = rtpengine_offer("replace-origin ICE=remove rtcp-mux-demux transport-protocol=RTP/AVP DTLS=off SDES=off direction=pub direction=priv");
+    xlog("L_ALERT", "RTPENGINE_OFFER rc=$var(rtpe_rc) for call $ci\n");
+    t_on_reply("FREESWITCH_REPLY");
+    route(RELAY);
+}
+
+
+
+
+
+
+
+
+# ---- Presence Route (BLF/SUBSCRIBE) ----
+route[PRESENCE] {
+    if (!t_newtran()) {
+        sl_reply_error();
+        exit;
+    }
+    handle_subscribe();
+    exit;
+}
+
+# ---- MESSAGE Route ----
+route[MESSAGE] {
+    if (!lookup("location")) {
+        sl_send_reply("404", "User Not Found");
+        exit;
+    }
+    route(RELAY);
+}
+
+# ---- Relay Route ----
+route[RELAY] {
+    if (!t_relay()) {
+        sl_reply_error();
+    }
+    exit;
+}
+
+# ---- Reply Route ----
+onreply_route {
+    if (nat_uac_test("1")) {
+        fix_nated_contact();
+    }
+}
+
+# Named reply route for FreeSWITCH responses going back to WebRTC app
+onreply_route[FREESWITCH_REPLY] {
+    if (nat_uac_test("1")) {
+        fix_nated_contact();
+    }
+    if (t_check_status("(1[0-9][0-9])|(2[0-9][0-9])") && has_body("application/sdp")) {
+        xlog("L_ALERT", "BEFORE_ANSWER SDP=$rb\n");
+        $var(rtpe_rc) = rtpengine_answer("replace-origin ICE=force ice-lite=backward rtcp-mux-require transport-protocol=UDP/TLS/RTP/SAVPF DTLS=passive SDES=off generate-mid direction=priv direction=pub");
+        xlog("L_ALERT", "RTPENGINE_ANSWER rc=$var(rtpe_rc) for call $ci\n");
+        xlog("L_ALERT", "AFTER_ANSWER SDP=$rb\n");
+    }
+}
+
+# ---- Failure Route ----
+failure_route[INVITE_FAILURE] {
+    if (t_is_canceled()) {
+        exit;
+    }
+    if (t_check_status("486|408|480")) {
+        xlog("L_INFO", "Call failed ($T_reply_code), routing to voicemail\n");
+        $rU = "*97" + $rU;
+        route(TO_FREESWITCH);
+        exit;
+    }
+}

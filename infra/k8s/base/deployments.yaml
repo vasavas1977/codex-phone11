@@ -1,0 +1,488 @@
+---
+# =============================================================================
+# PostgreSQL StatefulSet
+# =============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: cloudphone11
+    spec:
+      serviceAccountName: cloudphone11-sa
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudphone11-config
+                  key: DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: DB_PASSWORD
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "cloudphone11"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "cloudphone11"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+      volumes:
+        - name: pg-data
+          persistentVolumeClaim:
+            claimName: postgres-pvc
+---
+# =============================================================================
+# Redis Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/part-of: cloudphone11
+    spec:
+      serviceAccountName: cloudphone11-sa
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --appendonly
+            - "yes"
+            - --maxmemory
+            - 512mb
+            - --maxmemory-policy
+            - allkeys-lru
+          ports:
+            - containerPort: 6379
+              name: redis
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: REDIS_PASSWORD
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+---
+# =============================================================================
+# FreeSWITCH Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: freeswitch
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: freeswitch
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate    # SIP state is not easily shared; use Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: freeswitch
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: freeswitch
+        app.kubernetes.io/part-of: cloudphone11
+    spec:
+      serviceAccountName: cloudphone11-sa
+      hostNetwork: true    # Required for RTP media (UDP port range)
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: freeswitch
+          image: cloudphone11/freeswitch:latest
+          ports:
+            - containerPort: 5060
+              protocol: UDP
+              name: sip-udp
+            - containerPort: 5060
+              protocol: TCP
+              name: sip-tcp
+            - containerPort: 5061
+              protocol: TCP
+              name: sip-tls
+            - containerPort: 8021
+              protocol: TCP
+              name: esl
+          env:
+            - name: FREESWITCH_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudphone11-config
+                  key: SIP_DOMAIN
+          volumeMounts:
+            - name: fs-config
+              mountPath: /etc/freeswitch
+              readOnly: true
+            - name: recordings
+              mountPath: /var/lib/freeswitch/recordings
+            - name: voicemail
+              mountPath: /var/lib/freeswitch/voicemail
+            - name: tls-certs
+              mountPath: /etc/freeswitch/tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+          livenessProbe:
+            exec:
+              command: ["fs_cli", "-x", "status"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+      volumes:
+        - name: fs-config
+          configMap:
+            name: freeswitch-config
+        - name: recordings
+          persistentVolumeClaim:
+            claimName: recordings-pvc
+        - name: voicemail
+          persistentVolumeClaim:
+            claimName: voicemail-pvc
+        - name: tls-certs
+          secret:
+            secretName: cloudphone11-tls
+---
+# =============================================================================
+# Kamailio Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kamailio
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: kamailio
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kamailio
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kamailio
+        app.kubernetes.io/part-of: cloudphone11
+    spec:
+      serviceAccountName: cloudphone11-sa
+      containers:
+        - name: kamailio
+          image: cloudphone11/kamailio:latest
+          ports:
+            - containerPort: 5060
+              protocol: UDP
+              name: sip-udp
+            - containerPort: 5060
+              protocol: TCP
+              name: sip-tcp
+            - containerPort: 5061
+              protocol: TCP
+              name: sip-tls
+            - containerPort: 7443
+              protocol: TCP
+              name: wss
+          env:
+            - name: SIP_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudphone11-config
+                  key: SIP_DOMAIN
+            - name: DB_HOST
+              value: postgres
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: DB_USER
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: DB_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudphone11-config
+                  key: DB_NAME
+            - name: FREESWITCH_IP
+              value: freeswitch
+            - name: FLEXISIP_IP
+              value: flexisip
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/kamailio/tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            exec:
+              command: ["kamcmd", "core.psx"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: cloudphone11-tls
+---
+# =============================================================================
+# Flexisip Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flexisip
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: flexisip
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flexisip
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: flexisip
+        app.kubernetes.io/part-of: cloudphone11
+    spec:
+      serviceAccountName: cloudphone11-sa
+      containers:
+        - name: flexisip
+          image: cloudphone11/flexisip:latest
+          ports:
+            - containerPort: 5065
+              protocol: UDP
+              name: sip-udp
+            - containerPort: 5065
+              protocol: TCP
+              name: sip-tcp
+            - containerPort: 8888
+              protocol: TCP
+              name: admin
+          env:
+            - name: FLEXISIP_SIP_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudphone11-config
+                  key: SIP_DOMAIN
+            - name: FLEXISIP_FCM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: FCM_API_KEY
+            - name: KAMAILIO_HOST
+              value: kamailio
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: REDIS_PASSWORD
+          volumeMounts:
+            - name: apns-certs
+              mountPath: /etc/flexisip/apns
+              readOnly: true
+            - name: tls-certs
+              mountPath: /etc/flexisip/tls
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            exec:
+              command: ["pgrep", "flexisip"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: apns-certs
+          secret:
+            secretName: apns-certs
+        - name: tls-certs
+          secret:
+            secretName: cloudphone11-tls
+---
+# =============================================================================
+# Backend API Deployment
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/part-of: cloudphone11
+    spec:
+      serviceAccountName: cloudphone11-sa
+      containers:
+        - name: backend
+          image: cloudphone11/backend:latest
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_URL
+              value: "postgres://$(DB_USER):$(DB_PASSWORD)@postgres:5432/$(DB_NAME)?sslmode=disable"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: DB_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudphone11-config
+                  key: DB_NAME
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@redis:6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: REDIS_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: JWT_SECRET
+            - name: SIP_DOMAIN
+              valueFrom:
+                configMapKeyRef:
+                  name: cloudphone11-config
+                  key: SIP_DOMAIN
+            - name: FREESWITCH_ESL_HOST
+              value: freeswitch
+            - name: FREESWITCH_ESL_PORT
+              value: "8021"
+            - name: FREESWITCH_ESL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cloudphone11-secrets
+                  key: FS_ESL_PASSWORD
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 20

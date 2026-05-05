@@ -1,0 +1,122 @@
+# ============================================================================
+# BillRun Open Source BSS — Docker Compose Deployment
+# CloudPhone11 Telecom Operator Platform
+# ============================================================================
+#
+# This deploys BillRun with MongoDB, providing:
+#   - Real-time OCS (Online Charging System)
+#   - CDR mediation and rating
+#   - Invoice generation
+#   - REST API for CloudPhone11 integration
+#   - Customer self-care portal
+#
+# Usage:
+#   cd deploy/billrun
+#   cp .env.example .env   # Edit with your values
+#   docker-compose up -d
+#
+# After startup:
+#   Admin UI:  http://YOUR_SERVER:8080
+#   REST API:  http://YOUR_SERVER:8080/billapi/
+#   Portal:    http://YOUR_SERVER:8080/portal/
+# ============================================================================
+
+version: "3.8"
+
+services:
+  # ─── MongoDB (BillRun data store) ──────────────────────────────────────────
+  mongodb:
+    image: mongo:6.0
+    container_name: cloudphone11-billrun-mongo
+    restart: unless-stopped
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-billrun}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-billrun_secret_change_me}
+      MONGO_INITDB_DATABASE: billrun
+    volumes:
+      - billrun_mongo_data:/data/db
+      - billrun_mongo_config:/data/configdb
+      - ./init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - billrun_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ─── BillRun Application ──────────────────────────────────────────────────
+  billrun:
+    image: billrun/billrun:latest
+    container_name: cloudphone11-billrun-app
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - "${BILLRUN_PORT:-8080}:80"
+      - "${BILLRUN_API_PORT:-8081}:8081"
+    environment:
+      # MongoDB connection
+      BILLRUN_MONGO_HOST: mongodb
+      BILLRUN_MONGO_PORT: 27017
+      BILLRUN_MONGO_USER: ${MONGO_USER:-billrun}
+      BILLRUN_MONGO_PASS: ${MONGO_PASSWORD:-billrun_secret_change_me}
+      BILLRUN_MONGO_DB: billrun
+
+      # BillRun configuration
+      BILLRUN_NAME: cloudphone11
+      BILLRUN_CURRENCY: ${CURRENCY:-USD}
+      BILLRUN_TIMEZONE: ${TIMEZONE:-UTC}
+
+      # API configuration
+      BILLRUN_API_ENABLED: "true"
+      BILLRUN_API_KEY: ${BILLRUN_API_KEY:-cloudphone11_api_key_change_me}
+
+      # Email (for invoice delivery)
+      BILLRUN_SMTP_HOST: ${SMTP_HOST:-}
+      BILLRUN_SMTP_PORT: ${SMTP_PORT:-587}
+      BILLRUN_SMTP_USER: ${SMTP_USER:-}
+      BILLRUN_SMTP_PASS: ${SMTP_PASS:-}
+    volumes:
+      - billrun_app_data:/var/lib/billrun
+      - billrun_logs:/var/log/billrun
+      - ./billrun.conf:/etc/billrun/billrun.conf:ro
+      - ./rating-rules.json:/etc/billrun/rating-rules.json:ro
+    networks:
+      - billrun_net
+
+  # ─── BillRun CDR Receiver (for FreeSWITCH CDR ingestion) ──────────────────
+  cdr-receiver:
+    image: billrun/billrun:latest
+    container_name: cloudphone11-billrun-cdr
+    restart: unless-stopped
+    depends_on:
+      - billrun
+    ports:
+      - "${CDR_RECEIVER_PORT:-8082}:8082"
+    environment:
+      BILLRUN_MONGO_HOST: mongodb
+      BILLRUN_MONGO_PORT: 27017
+      BILLRUN_MONGO_USER: ${MONGO_USER:-billrun}
+      BILLRUN_MONGO_PASS: ${MONGO_PASSWORD:-billrun_secret_change_me}
+      BILLRUN_MONGO_DB: billrun
+      BILLRUN_CDR_RECEIVER: "true"
+      BILLRUN_CDR_PORT: 8082
+    volumes:
+      - billrun_cdr_data:/var/lib/billrun/cdr
+    networks:
+      - billrun_net
+
+volumes:
+  billrun_mongo_data:
+  billrun_mongo_config:
+  billrun_app_data:
+  billrun_logs:
+  billrun_cdr_data:
+
+networks:
+  billrun_net:
+    driver: bridge

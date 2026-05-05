@@ -1,0 +1,26 @@
+<!--
+  ============================================================================
+  FreeSWITCH CDR Push to BillRun — CloudPhone11
+  ============================================================================
+  Sends Call Detail Records (CDRs) to BillRun via HTTP POST after each call.
+  BillRun uses these CDRs for real-time rating and billing.
+  ============================================================================
+-->
+
+<configuration name="json_cdr.conf" description="JSON CDR to BillRun">
+  <settings>
+    <!-- Push CDRs to BillRun CDR receiver -->
+    <param name="url" value="http://BILLRUN_HOST:8082/cdr"/>
+    <param name="encode" value="true"/>
+    <param name="retries" value="3"/>
+    <param name="delay" value="5000"/>
+    <param name="log-b-leg" value="true"/>
+    <param name="prefix-a-leg" value="true"/>
+    <param name="log-dir" value="/var/log/freeswitch/cdr-json"/>
+    <param name="err-log-dir" value="/var/log/freeswitch/cdr-json/errors"/>
+    <param name="log-http-and-disk" value="true"/>
+
+    <!-- CDR fields to include -->
+    <param name="cdr-fields" value="caller_id_number,caller_id_name,destination_number,context,start_stamp,answer_stamp,end_stamp,duration,billsec,hangup_cause,uuid,direction,billrun_type,billrun_direction,billrun_destination,record_file_name,sip_from_user,sip_to_user"/>
+  </settings>
+</configuration>

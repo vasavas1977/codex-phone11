@@ -1,0 +1,20 @@
+<configuration name="xml_cdr.conf" description="XML CDR CURL logger">
+  <settings>
+    <!-- CDR endpoint on our backend -->
+    <param name="url" value="http://127.0.0.1:3001/api/freeswitch/cdr"/>
+    <param name="retries" value="3"/>
+    <param name="delay" value="5"/>
+    <param name="log-http-and-disk" value="false"/>
+    <param name="log-b-leg" value="true"/>
+    <param name="prefix-a-leg" value="true"/>
+    <param name="encode" value="true"/>
+    <param name="err-log-dir" value="/var/log/freeswitch/xml_cdr"/>
+    <!-- Auth header for our backend -->
+    <param name="cred" value=""/>
+    <param name="auth-scheme" value="basic"/>
+    <!-- Custom header for FS secret auth -->
+    <param name="http-header" value="X-FS-Secret: phone11-fs-secret-change-me"/>
+    <!-- Include channel variables in CDR -->
+    <param name="encode-values" value="true"/>
+  </settings>
+</configuration>

@@ -1,0 +1,60 @@
+# =============================================================================
+# CloudPhone11 — Terraform Variables (Example)
+# Copy this file to terraform.tfvars and fill in your values
+# =============================================================================
+
+# General
+project_name = "cloudphone11"
+environment  = "production"
+aws_region   = "us-east-1"
+domain_name  = "example.com"  # CHANGE THIS to your domain
+
+# VPC
+vpc_cidr             = "10.0.0.0/16"
+availability_zones   = ["us-east-1a", "us-east-1b"]
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.10.0/24", "10.0.11.0/24"]
+
+# EKS
+eks_cluster_version     = "1.29"
+eks_node_instance_types = ["m5.xlarge"]
+eks_node_desired_size   = 3
+eks_node_min_size       = 2
+eks_node_max_size       = 6
+eks_node_disk_size      = 100
+
+# RDS (PostgreSQL)
+rds_instance_class        = "db.t3.medium"
+rds_allocated_storage     = 50
+rds_max_allocated_storage = 200
+rds_multi_az              = true
+rds_db_name               = "cloudphone11"
+rds_username              = "cloudphone11"
+rds_password              = "CHANGE_ME_min_16_chars"  # CHANGE THIS
+
+# ElastiCache (Redis)
+redis_node_type       = "cache.t3.small"
+redis_num_cache_nodes = 1
+
+# S3 Lifecycle (recordings)
+recordings_retention_days = 30   # Move to IA after 30 days
+recordings_glacier_days   = 180  # Move to Glacier after 180 days
+recordings_expiry_days    = 365  # Delete after 1 year (0 to keep forever)
+
+# SIP / VoIP
+rtp_port_min = 20000
+rtp_port_max = 30000
+
+# Push Notifications (optional, can add later)
+# fcm_server_key = "your-firebase-server-key"
+# apns_cert_path = "/path/to/apns-cert.pem"
+# apns_use_sandbox = false
+
+# TLS — ACM certificate ARN (create in AWS Console or via CLI first)
+# tls_cert_arn = "arn:aws:acm:us-east-1:123456789:certificate/abc-123"
+
+# Additional tags
+tags = {
+  Team    = "voip"
+  CostCenter = "engineering"
+}

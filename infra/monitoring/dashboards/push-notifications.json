@@ -1,0 +1,108 @@
+{
+  "annotations": { "list": [] },
+  "description": "CloudPhone11 — Push Notification Delivery: FCM/APNs rates, latency, failures",
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "title": "Push Delivery Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "1 - (rate(flexisip_push_notifications_failed_total[5m]) / rate(flexisip_push_notifications_total[5m]))",
+        "legendFormat": "Success Rate"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "steps": [{ "color": "red", "value": 0 }, { "color": "yellow", "value": 0.9 }, { "color": "green", "value": 0.95 }] } } }
+    },
+    {
+      "title": "Push Sent (5m)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{
+        "expr": "increase(flexisip_push_notifications_total[5m])",
+        "legendFormat": "Sent"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "title": "Push Failed (5m)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [{
+        "expr": "increase(flexisip_push_notifications_failed_total[5m])",
+        "legendFormat": "Failed"
+      }],
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 5 }, { "color": "red", "value": 20 }] } } }
+    },
+    {
+      "title": "Avg Delivery Latency",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{
+        "expr": "histogram_quantile(0.50, rate(flexisip_push_notification_duration_seconds_bucket[5m]))",
+        "legendFormat": "P50 Latency"
+      }],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 3, "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 2 }] } } }
+    },
+    {
+      "title": "Push Notifications Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "rate(flexisip_push_notifications_total[5m]) * 60", "legendFormat": "Total/min" },
+        { "expr": "rate(flexisip_push_notifications_total{platform=\"fcm\"}[5m]) * 60", "legendFormat": "FCM/min" },
+        { "expr": "rate(flexisip_push_notifications_total{platform=\"apns\"}[5m]) * 60", "legendFormat": "APNs/min" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "lineInterpolation": "smooth" } } }
+    },
+    {
+      "title": "Push Delivery Latency (P50/P95/P99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(flexisip_push_notification_duration_seconds_bucket[5m]))", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, rate(flexisip_push_notification_duration_seconds_bucket[5m]))", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, rate(flexisip_push_notification_duration_seconds_bucket[5m]))", "legendFormat": "P99" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineInterpolation": "smooth" } } }
+    },
+    {
+      "title": "Failure Rate by Platform",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "rate(flexisip_push_notifications_failed_total{platform=\"fcm\"}[5m]) / rate(flexisip_push_notifications_total{platform=\"fcm\"}[5m])", "legendFormat": "FCM Failure Rate" },
+        { "expr": "rate(flexisip_push_notifications_failed_total{platform=\"apns\"}[5m]) / rate(flexisip_push_notifications_total{platform=\"apns\"}[5m])", "legendFormat": "APNs Failure Rate" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "fillOpacity": 15 }, "thresholds": { "steps": [{ "color": "green", "value": 0 }, { "color": "red", "value": 0.05 }] } } }
+    },
+    {
+      "title": "Failure Reasons",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [{
+        "expr": "sum by (reason) (increase(flexisip_push_notifications_failed_total[1h]))",
+        "legendFormat": "{{ reason }}"
+      }],
+      "options": { "legend": { "displayMode": "table", "placement": "right" }, "pieType": "donut" }
+    },
+    {
+      "title": "Registered Push Tokens",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "targets": [
+        { "expr": "flexisip_push_registered_tokens{platform=\"fcm\"}", "legendFormat": "FCM Tokens" },
+        { "expr": "flexisip_push_registered_tokens{platform=\"apns\"}", "legendFormat": "APNs Tokens" },
+        { "expr": "flexisip_push_registered_tokens", "legendFormat": "Total Tokens" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15, "lineInterpolation": "smooth" } } }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["cloudphone11", "push", "flexisip", "notifications"],
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "CloudPhone11 — Push Notifications",
+  "uid": "cloudphone11-push-notifications",
+  "version": 1
+}

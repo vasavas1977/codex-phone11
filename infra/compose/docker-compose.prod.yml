@@ -1,0 +1,287 @@
+# =============================================================================
+# CloudPhone11 — Docker Compose (Staging / Production)
+# =============================================================================
+# Usage: docker compose -f docker-compose.prod.yml up -d
+# Production-ready with resource limits, logging, and restart policies.
+# Requires .env file with all secrets populated.
+# =============================================================================
+
+name: cloudphone11-prod
+
+services:
+  # ---------- PostgreSQL (Primary) ----------
+  postgres:
+    image: postgres:16-alpine
+    container_name: cp11-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./pg-backup:/backup
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - cp11-net
+
+  # ---------- Redis (with persistence) ----------
+  redis:
+    image: redis:7-alpine
+    container_name: cp11-redis
+    restart: always
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    networks:
+      - cp11-net
+
+  # ---------- FreeSWITCH ----------
+  freeswitch:
+    build:
+      context: ../docker/freeswitch
+      dockerfile: Dockerfile
+    container_name: cp11-freeswitch
+    restart: always
+    environment:
+      FREESWITCH_DOMAIN: ${SIP_DOMAIN}
+      EXTERNAL_RTP_IP: ${EXTERNAL_IP}
+      EXTERNAL_SIP_IP: ${EXTERNAL_IP}
+    ports:
+      - "${EXTERNAL_IP}:5060:5060/udp"
+      - "${EXTERNAL_IP}:5060:5060/tcp"
+      - "${EXTERNAL_IP}:5061:5061/tcp"
+      - "127.0.0.1:8021:8021/tcp"
+      - "${EXTERNAL_IP}:16384-32768:16384-32768/udp"
+    volumes:
+      - ../configs/freeswitch:/etc/freeswitch:ro
+      - fs_recordings:/var/lib/freeswitch/recordings
+      - fs_voicemail:/var/lib/freeswitch/voicemail
+      - ./tls:/etc/freeswitch/tls:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
+    networks:
+      - cp11-net
+
+  # ---------- Kamailio ----------
+  kamailio:
+    build:
+      context: ../docker/kamailio
+      dockerfile: Dockerfile
+    container_name: cp11-kamailio
+    restart: always
+    environment:
+      SIP_DOMAIN: ${SIP_DOMAIN}
+      KAMAILIO_IP: 0.0.0.0
+      FREESWITCH_IP: freeswitch
+      FLEXISIP_IP: flexisip
+      DB_HOST: postgres
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME}
+    ports:
+      - "${EXTERNAL_IP}:5070:5060/udp"
+      - "${EXTERNAL_IP}:5070:5060/tcp"
+      - "${EXTERNAL_IP}:5071:5061/tcp"
+      - "${EXTERNAL_IP}:7443:7443/tcp"
+    volumes:
+      - ../configs/kamailio:/etc/kamailio:ro
+      - ./tls:/etc/kamailio/tls:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      freeswitch:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - cp11-net
+
+  # ---------- Flexisip ----------
+  flexisip:
+    build:
+      context: ../docker/flexisip
+      dockerfile: Dockerfile
+    container_name: cp11-flexisip
+    restart: always
+    environment:
+      FLEXISIP_SIP_DOMAIN: ${SIP_DOMAIN}
+      FLEXISIP_FCM_API_KEY: ${FCM_API_KEY}
+      FLEXISIP_APNS_CERT_PATH: /etc/flexisip/apns/apns-cert.pem
+      KAMAILIO_HOST: kamailio
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:5065:5065/udp"
+      - "127.0.0.1:5065:5065/tcp"
+      - "127.0.0.1:8888:8888/tcp"
+    volumes:
+      - ../configs/flexisip:/etc/flexisip:ro
+      - ./apns:/etc/flexisip/apns:ro
+      - ./tls:/etc/flexisip/tls:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      kamailio:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    networks:
+      - cp11-net
+
+  # ---------- Backend API ----------
+  backend:
+    build:
+      context: ../../
+      dockerfile: infra/docker/backend/Dockerfile
+    container_name: cp11-backend
+    restart: always
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      SIP_DOMAIN: ${SIP_DOMAIN}
+      FREESWITCH_ESL_HOST: freeswitch
+      FREESWITCH_ESL_PORT: 8021
+      FREESWITCH_ESL_PASSWORD: ${FS_ESL_PASSWORD}
+      FCM_API_KEY: ${FCM_API_KEY}
+      JWT_SECRET: ${JWT_SECRET}
+      STORAGE_BUCKET: ${STORAGE_BUCKET}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    networks:
+      - cp11-net
+
+  # ---------- RTPEngine ----------
+  rtpengine:
+    image: drachtio/rtpengine:latest
+    container_name: cp11-rtpengine
+    restart: always
+    network_mode: host
+    command: >
+      rtpengine
+      --interface=${EXTERNAL_IP}
+      --listen-ng=127.0.0.1:22222
+      --port-min=20000
+      --port-max=30000
+      --log-level=4
+      --foreground
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  pg_data:
+    driver: local
+  redis_data:
+    driver: local
+  fs_recordings:
+    driver: local
+  fs_voicemail:
+    driver: local
+
+networks:
+  cp11-net:
+    driver: bridge

@@ -1,0 +1,43 @@
+<configuration name="xml_curl.conf" description="cURL XML Gateway">
+  <bindings>
+    <!-- Directory binding: SIP authentication and user lookup -->
+    <binding name="directory">
+      <param name="gateway-url" value="http://127.0.0.1:3001/api/freeswitch/directory?secret=phone11-fs-secret-change-me" bindings="directory"/>
+      <param name="method" value="POST"/>
+      <param name="timeout" value="5"/>
+      <param name="disable-100-continue" value="true"/>
+      <param name="enable-post-var" value="section"/>
+      <param name="enable-post-var" value="tag_name"/>
+      <param name="enable-post-var" value="key_name"/>
+      <param name="enable-post-var" value="key_value"/>
+      <param name="enable-post-var" value="action"/>
+      <param name="enable-post-var" value="user"/>
+      <param name="enable-post-var" value="domain"/>
+      <param name="enable-post-var" value="sip_auth_username"/>
+      <param name="enable-post-var" value="sip_auth_realm"/>
+      <param name="enable-post-var" value="sip_auth_method"/>
+      <param name="enable-post-var" value="ip"/>
+      <param name="enable-post-var" value="Event-Name"/>
+      <param name="enable-post-var" value="Event-Calling-Function"/>
+    </binding>
+    <!-- Dialplan binding DISABLED: backend is not on this server (127.0.0.1:3001 unreachable)
+         Using local XML dialplan files instead (dialplan/public.xml, dialplan/default.xml)
+    <binding name="dialplan">
+      <param name="gateway-url" value="http://127.0.0.1:3001/api/freeswitch/dialplan?secret=phone11-fs-secret-change-me" bindings="dialplan"/>
+      <param name="method" value="POST"/>
+      <param name="timeout" value="5"/>
+      <param name="disable-100-continue" value="true"/>
+      <param name="enable-post-var" value="section"/>
+      <param name="enable-post-var" value="Caller-Caller-ID-Number"/>
+      <param name="enable-post-var" value="Caller-Destination-Number"/>
+      <param name="enable-post-var" value="Caller-Context"/>
+      <param name="enable-post-var" value="Caller-Channel-Name"/>
+      <param name="enable-post-var" value="Caller-Unique-ID"/>
+      <param name="enable-post-var" value="variable_sip_from_user"/>
+      <param name="enable-post-var" value="variable_sip_to_user"/>
+      <param name="enable-post-var" value="variable_sip_req_uri"/>
+      <param name="enable-post-var" value="Hunt-Destination-Number"/>
+    </binding>
+    -->
+  </bindings>
+</configuration>

@@ -1,0 +1,160 @@
+---
+# =============================================================================
+# PostgreSQL Service (ClusterIP — internal only)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+# =============================================================================
+# Redis Service (ClusterIP — internal only)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+---
+# =============================================================================
+# FreeSWITCH Service (NodePort — needs external SIP/RTP access)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: freeswitch
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: freeswitch
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: freeswitch
+  ports:
+    - name: sip-udp
+      port: 5060
+      targetPort: 5060
+      protocol: UDP
+    - name: sip-tcp
+      port: 5060
+      targetPort: 5060
+      protocol: TCP
+    - name: sip-tls
+      port: 5061
+      targetPort: 5061
+      protocol: TCP
+    - name: esl
+      port: 8021
+      targetPort: 8021
+      protocol: TCP
+---
+# =============================================================================
+# Kamailio Service (LoadBalancer — public SIP entry point)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: kamailio
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: kamailio
+    app.kubernetes.io/part-of: cloudphone11
+  annotations:
+    # AWS NLB for UDP support
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: kamailio
+  ports:
+    - name: sip-udp
+      port: 5060
+      targetPort: 5060
+      protocol: UDP
+    - name: sip-tcp
+      port: 5060
+      targetPort: 5060
+      protocol: TCP
+    - name: sip-tls
+      port: 5061
+      targetPort: 5061
+      protocol: TCP
+    - name: wss
+      port: 7443
+      targetPort: 7443
+      protocol: TCP
+---
+# =============================================================================
+# Flexisip Service (ClusterIP — internal, reached by Kamailio)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: flexisip
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: flexisip
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: flexisip
+  ports:
+    - name: sip-udp
+      port: 5065
+      targetPort: 5065
+      protocol: UDP
+    - name: sip-tcp
+      port: 5065
+      targetPort: 5065
+      protocol: TCP
+    - name: admin
+      port: 8888
+      targetPort: 8888
+      protocol: TCP
+---
+# =============================================================================
+# Backend API Service (ClusterIP — exposed via Ingress)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: cloudphone11
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000

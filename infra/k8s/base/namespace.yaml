@@ -1,0 +1,47 @@
+---
+# CloudPhone11 — Kubernetes Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudphone11
+  labels:
+    app.kubernetes.io/name: cloudphone11
+    app.kubernetes.io/part-of: cloudphone11
+---
+# Service Account for CloudPhone11 workloads
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloudphone11-sa
+  namespace: cloudphone11
+  labels:
+    app.kubernetes.io/name: cloudphone11
+---
+# Role for pod-level operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cloudphone11-role
+  namespace: cloudphone11
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+# Bind role to service account
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cloudphone11-rolebinding
+  namespace: cloudphone11
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cloudphone11-role
+subjects:
+  - kind: ServiceAccount
+    name: cloudphone11-sa
+    namespace: cloudphone11

@@ -1,0 +1,27 @@
+<configuration name="acl.conf" description="Network Lists">
+  <network-lists>
+    <list name="lan" default="allow">
+      <node type="deny" cidr="192.168.42.0/24"/>
+      <node type="allow" cidr="192.168.42.42/32"/>
+    </list>
+
+    <!-- 1-to-All Telecom SIP Peering - Allow inbound and outbound -->
+    <list name="1toall-trunk" default="deny">
+      <node type="allow" cidr="103.35.99.1/32"/>
+      <node type="allow" cidr="58.64.15.45/32"/>
+    </list>
+
+    <!-- Kamailio proxy -->
+    <list name="kamailio" default="deny">
+      <node type="allow" cidr="127.0.0.1/32"/>
+      <node type="allow" cidr="172.16.0.0/12"/>
+      <node type="allow" cidr="43.210.122.111/32"/>
+    </list>
+
+    <list name="domains" default="deny">
+      <node type="allow" domain="$${domain}"/>
+      <node type="allow" cidr="103.35.99.1/32"/>
+      <node type="allow" cidr="58.64.15.45/32"/>
+    </list>
+  </network-lists>
+</configuration>

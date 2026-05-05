@@ -1,0 +1,43 @@
+{
+  "voice_rates": {
+    "domestic": {
+      "US": { "prefix": "1", "rate_per_second": 0.01, "connection_fee": 0, "min_duration": 0 },
+      "CA": { "prefix": "1", "rate_per_second": 0.012, "connection_fee": 0, "min_duration": 0 }
+    },
+    "international": {
+      "GB": { "prefix": "44", "rate_per_second": 0.025, "connection_fee": 0.05 },
+      "DE": { "prefix": "49", "rate_per_second": 0.028, "connection_fee": 0.05 },
+      "FR": { "prefix": "33", "rate_per_second": 0.026, "connection_fee": 0.05 },
+      "AU": { "prefix": "61", "rate_per_second": 0.035, "connection_fee": 0.05 },
+      "SG": { "prefix": "65", "rate_per_second": 0.022, "connection_fee": 0.05 },
+      "TH": { "prefix": "66", "rate_per_second": 0.030, "connection_fee": 0.05 },
+      "JP": { "prefix": "81", "rate_per_second": 0.032, "connection_fee": 0.05 },
+      "IN": { "prefix": "91", "rate_per_second": 0.018, "connection_fee": 0.05 },
+      "default": { "rate_per_second": 0.04, "connection_fee": 0.10 }
+    }
+  },
+  "sms_rates": {
+    "domestic": { "rate_per_message": 0.008 },
+    "international": { "rate_per_message": 0.015 }
+  },
+  "did_rates": {
+    "US_local": { "monthly": 4.99, "setup": 0 },
+    "US_toll_free": { "monthly": 9.99, "setup": 0 },
+    "US_national": { "monthly": 6.99, "setup": 0 },
+    "GB_local": { "monthly": 5.99, "setup": 1.00 },
+    "DE_local": { "monthly": 5.99, "setup": 1.00 },
+    "AU_local": { "monthly": 7.99, "setup": 2.00 },
+    "SG_local": { "monthly": 8.99, "setup": 2.00 },
+    "FR_local": { "monthly": 5.99, "setup": 1.00 }
+  },
+  "data_rates": {
+    "domestic": { "rate_per_mb": 0.005 },
+    "roaming": { "rate_per_mb": 0.05 }
+  },
+  "pbx_rates": {
+    "extension": { "monthly": 2.99 },
+    "ivr_menu": { "monthly": 4.99 },
+    "call_recording": { "monthly": 1.99, "rate_per_minute": 0.002 },
+    "conference_bridge": { "monthly": 9.99 }
+  }
+}

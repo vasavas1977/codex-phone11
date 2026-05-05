@@ -1,0 +1,197 @@
+# =============================================================================
+# CloudPhone11 — Docker Compose (Local Development)
+# =============================================================================
+# Usage: docker compose -f docker-compose.dev.yml up -d
+# All services run locally with hot-reload where possible.
+# =============================================================================
+
+name: cloudphone11-dev
+
+services:
+  # ---------- PostgreSQL ----------
+  postgres:
+    image: postgres:16-alpine
+    container_name: cp11-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cloudphone11
+      POSTGRES_USER: cloudphone11
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-cp11_dev_secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloudphone11"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cp11-net
+
+  # ---------- Redis ----------
+  redis:
+    image: redis:7-alpine
+    container_name: cp11-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-cp11_redis_dev}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-cp11_redis_dev}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cp11-net
+
+  # ---------- FreeSWITCH ----------
+  freeswitch:
+    build:
+      context: ../docker/freeswitch
+      dockerfile: Dockerfile
+    container_name: cp11-freeswitch
+    restart: unless-stopped
+    environment:
+      FREESWITCH_DOMAIN: ${SIP_DOMAIN:-sip.cloudphone11.local}
+      EXTERNAL_RTP_IP: ${EXTERNAL_IP:-127.0.0.1}
+      EXTERNAL_SIP_IP: ${EXTERNAL_IP:-127.0.0.1}
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "5061:5061/tcp"
+      - "8021:8021/tcp"
+      - "16384-16484:16384-16484/udp"   # RTP range (limited for dev)
+    volumes:
+      - ../configs/freeswitch:/etc/freeswitch:ro
+      - fs_recordings:/var/lib/freeswitch/recordings
+      - fs_voicemail:/var/lib/freeswitch/voicemail
+      - ./tls:/etc/freeswitch/tls:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - cp11-net
+
+  # ---------- Kamailio ----------
+  kamailio:
+    build:
+      context: ../docker/kamailio
+      dockerfile: Dockerfile
+    container_name: cp11-kamailio
+    restart: unless-stopped
+    environment:
+      SIP_DOMAIN: ${SIP_DOMAIN:-sip.cloudphone11.local}
+      KAMAILIO_IP: 0.0.0.0
+      FREESWITCH_IP: freeswitch
+      FLEXISIP_IP: flexisip
+      DB_HOST: postgres
+      DB_USER: cloudphone11
+      DB_PASS: ${DB_PASSWORD:-cp11_dev_secret}
+      DB_NAME: cloudphone11
+    ports:
+      - "5070:5060/udp"       # SIP (offset to avoid conflict with FS)
+      - "5070:5060/tcp"
+      - "5071:5061/tcp"       # SIP-TLS
+      - "7443:7443/tcp"       # WSS for WebRTC
+    volumes:
+      - ../configs/kamailio:/etc/kamailio:ro
+      - ./tls:/etc/kamailio/tls:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      freeswitch:
+        condition: service_started
+    networks:
+      - cp11-net
+
+  # ---------- Flexisip Push Gateway ----------
+  flexisip:
+    build:
+      context: ../docker/flexisip
+      dockerfile: Dockerfile
+    container_name: cp11-flexisip
+    restart: unless-stopped
+    environment:
+      FLEXISIP_SIP_DOMAIN: ${SIP_DOMAIN:-sip.cloudphone11.local}
+      FLEXISIP_FCM_API_KEY: ${FCM_API_KEY:-}
+      FLEXISIP_APNS_CERT_PATH: /etc/flexisip/apns/apns-cert.pem
+      KAMAILIO_HOST: kamailio
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-cp11_redis_dev}
+    ports:
+      - "5065:5065/udp"
+      - "5065:5065/tcp"
+      - "8888:8888/tcp"       # Admin API
+    volumes:
+      - ../configs/flexisip:/etc/flexisip:ro
+      - ./apns:/etc/flexisip/apns:ro
+      - ./tls:/etc/flexisip/tls:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      kamailio:
+        condition: service_started
+    networks:
+      - cp11-net
+
+  # ---------- Backend API ----------
+  backend:
+    build:
+      context: ../../
+      dockerfile: infra/docker/backend/Dockerfile
+    container_name: cp11-backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DATABASE_URL: postgres://cloudphone11:${DB_PASSWORD:-cp11_dev_secret}@postgres:5432/cloudphone11
+      REDIS_URL: redis://:${REDIS_PASSWORD:-cp11_redis_dev}@redis:6379
+      SIP_DOMAIN: ${SIP_DOMAIN:-sip.cloudphone11.local}
+      FREESWITCH_ESL_HOST: freeswitch
+      FREESWITCH_ESL_PORT: 8021
+      FREESWITCH_ESL_PASSWORD: ${FS_ESL_PASSWORD:-ClueCon}
+      FCM_API_KEY: ${FCM_API_KEY:-}
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - cp11-net
+
+  # ---------- RTPEngine (media relay for NAT traversal) ----------
+  rtpengine:
+    image: drachtio/rtpengine:latest
+    container_name: cp11-rtpengine
+    restart: unless-stopped
+    network_mode: host
+    command: >
+      rtpengine
+      --interface=${EXTERNAL_IP:-127.0.0.1}
+      --listen-ng=127.0.0.1:22222
+      --port-min=20000
+      --port-max=30000
+      --log-level=5
+      --foreground
+
+volumes:
+  pg_data:
+    driver: local
+  redis_data:
+    driver: local
+  fs_recordings:
+    driver: local
+  fs_voicemail:
+    driver: local
+
+networks:
+  cp11-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

@@ -1,0 +1,26 @@
+# ============================================================================
+# BillRun Environment Variables — CloudPhone11
+# Copy this file to .env and update with your values:
+#   cp env-template.txt .env
+# ============================================================================
+
+# MongoDB
+MONGO_PORT=27017
+MONGO_USER=billrun
+MONGO_PASSWORD=billrun_secret_change_me
+
+# BillRun Application
+BILLRUN_PORT=8080
+BILLRUN_API_PORT=8081
+BILLRUN_API_KEY=cloudphone11_api_key_change_me
+CURRENCY=USD
+TIMEZONE=UTC
+
+# CDR Receiver (receives call records from FreeSWITCH)
+CDR_RECEIVER_PORT=8082
+
+# SMTP (for invoice emails) — optional
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASS=

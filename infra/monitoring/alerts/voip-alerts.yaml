@@ -1,0 +1,301 @@
+# =============================================================================
+# CloudPhone11 — VoIP Alerting Rules for Prometheus
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cloudphone11-voip-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+    app: kube-prometheus-stack
+spec:
+  groups:
+    # =========================================================================
+    # SIP Proxy (Kamailio) Alerts
+    # =========================================================================
+    - name: kamailio.rules
+      rules:
+        - alert: KamailioDown
+          expr: up{job="kamailio"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: kamailio
+          annotations:
+            summary: "Kamailio SIP proxy is down"
+            description: "Kamailio instance {{ $labels.instance }} has been unreachable for more than 1 minute."
+
+        - alert: HighSIPFailureRate
+          expr: |
+            rate(kamailio_sl_sent_replies_total{code=~"5.."}[5m])
+            / rate(kamailio_sl_sent_replies_total[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            service: kamailio
+          annotations:
+            summary: "SIP 5xx failure rate above 5%"
+            description: "SIP server error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+        - alert: SIPRegistrationsDrop
+          expr: |
+            kamailio_registrar_registered_users
+            < kamailio_registrar_registered_users offset 10m * 0.7
+          for: 5m
+          labels:
+            severity: warning
+            service: kamailio
+          annotations:
+            summary: "SIP registrations dropped by 30%+"
+            description: "Active SIP registrations dropped from {{ $value }} — possible network issue or server problem."
+
+        - alert: HighSIPLatency
+          expr: |
+            histogram_quantile(0.95,
+              rate(kamailio_request_duration_seconds_bucket[5m])
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            service: kamailio
+          annotations:
+            summary: "SIP request latency P95 above 500ms"
+            description: "95th percentile SIP request latency is {{ $value }}s."
+
+        - alert: TrunkDown
+          expr: kamailio_dispatcher_target_status == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: kamailio
+          annotations:
+            summary: "SIP trunk is down"
+            description: "Trunk {{ $labels.target }} in set {{ $labels.set }} has been down for 2+ minutes."
+
+        - alert: HighConcurrentCalls
+          expr: kamailio_dialog_active_dialogs > 500
+          for: 5m
+          labels:
+            severity: warning
+            service: kamailio
+          annotations:
+            summary: "High concurrent call count"
+            description: "{{ $value }} concurrent calls — approaching capacity limits."
+
+    # =========================================================================
+    # Media Server (FreeSWITCH) Alerts
+    # =========================================================================
+    - name: freeswitch.rules
+      rules:
+        - alert: FreeSWITCHDown
+          expr: up{job="freeswitch"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: freeswitch
+          annotations:
+            summary: "FreeSWITCH media server is down"
+            description: "FreeSWITCH instance {{ $labels.instance }} has been unreachable for more than 1 minute."
+
+        - alert: HighCallFailureRate
+          expr: |
+            rate(freeswitch_calls_failed_total[5m])
+            / rate(freeswitch_calls_total[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            service: freeswitch
+          annotations:
+            summary: "Call failure rate above 10%"
+            description: "{{ $value | humanizePercentage }} of calls are failing over the last 5 minutes."
+
+        - alert: HighSessionCount
+          expr: freeswitch_sessions_active > 200
+          for: 5m
+          labels:
+            severity: warning
+            service: freeswitch
+          annotations:
+            summary: "High active session count on FreeSWITCH"
+            description: "{{ $value }} active sessions — monitor for resource exhaustion."
+
+        - alert: RecordingStorageHigh
+          expr: |
+            (node_filesystem_size_bytes{mountpoint="/var/lib/freeswitch/recordings"}
+            - node_filesystem_avail_bytes{mountpoint="/var/lib/freeswitch/recordings"})
+            / node_filesystem_size_bytes{mountpoint="/var/lib/freeswitch/recordings"} > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            service: freeswitch
+          annotations:
+            summary: "Recording storage above 85%"
+            description: "Recording volume is {{ $value | humanizePercentage }} full."
+
+        - alert: LowMOSScore
+          expr: avg(freeswitch_rtp_quality_mos) < 3.5
+          for: 10m
+          labels:
+            severity: warning
+            service: freeswitch
+          annotations:
+            summary: "Average MOS score below 3.5"
+            description: "Average call quality MOS is {{ $value }} — users may experience poor audio."
+
+        - alert: HighPacketLoss
+          expr: avg(freeswitch_rtp_packet_loss_percent) > 3
+          for: 5m
+          labels:
+            severity: warning
+            service: freeswitch
+          annotations:
+            summary: "RTP packet loss above 3%"
+            description: "Average packet loss is {{ $value }}% — degraded call quality expected."
+
+        - alert: HighJitter
+          expr: avg(freeswitch_rtp_jitter_ms) > 30
+          for: 5m
+          labels:
+            severity: warning
+            service: freeswitch
+          annotations:
+            summary: "RTP jitter above 30ms"
+            description: "Average jitter is {{ $value }}ms — may cause audio artifacts."
+
+    # =========================================================================
+    # Push Gateway (Flexisip) Alerts
+    # =========================================================================
+    - name: flexisip.rules
+      rules:
+        - alert: FlexisipDown
+          expr: up{job="flexisip"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: flexisip
+          annotations:
+            summary: "Flexisip push gateway is down"
+            description: "Flexisip instance {{ $labels.instance }} has been unreachable for more than 2 minutes. Push notifications will not be delivered."
+
+        - alert: HighPushFailureRate
+          expr: |
+            rate(flexisip_push_notifications_failed_total[5m])
+            / rate(flexisip_push_notifications_total[5m]) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            service: flexisip
+          annotations:
+            summary: "Push notification failure rate above 10%"
+            description: "{{ $value | humanizePercentage }} of push notifications are failing."
+
+        - alert: PushLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              rate(flexisip_push_notification_duration_seconds_bucket[5m])
+            ) > 2
+          for: 5m
+          labels:
+            severity: warning
+            service: flexisip
+          annotations:
+            summary: "Push notification latency P95 above 2s"
+            description: "95th percentile push delivery latency is {{ $value }}s — calls may ring late."
+
+    # =========================================================================
+    # Backend API Alerts
+    # =========================================================================
+    - name: backend.rules
+      rules:
+        - alert: BackendDown
+          expr: up{job="backend-api"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: backend
+          annotations:
+            summary: "Backend API is down"
+            description: "Backend API instance {{ $labels.instance }} has been unreachable for more than 1 minute."
+
+        - alert: HighAPILatency
+          expr: |
+            histogram_quantile(0.95,
+              rate(http_request_duration_seconds_bucket{job="backend-api"}[5m])
+            ) > 1
+          for: 5m
+          labels:
+            severity: warning
+            service: backend
+          annotations:
+            summary: "API latency P95 above 1s"
+            description: "95th percentile API response time is {{ $value }}s."
+
+        - alert: HighAPIErrorRate
+          expr: |
+            rate(http_requests_total{job="backend-api",status=~"5.."}[5m])
+            / rate(http_requests_total{job="backend-api"}[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            service: backend
+          annotations:
+            summary: "API 5xx error rate above 5%"
+            description: "{{ $value | humanizePercentage }} of API requests are returning server errors."
+
+    # =========================================================================
+    # Infrastructure Alerts
+    # =========================================================================
+    - name: infrastructure.rules
+      rules:
+        - alert: PodCrashLooping
+          expr: rate(kube_pod_container_status_restarts_total{namespace="cloudphone11"}[15m]) > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} is crash-looping"
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been restarting repeatedly."
+
+        - alert: HighCPUUsage
+          expr: |
+            sum(rate(container_cpu_usage_seconds_total{namespace="cloudphone11"}[5m])) by (pod)
+            / sum(kube_pod_container_resource_limits{namespace="cloudphone11",resource="cpu"}) by (pod) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High CPU usage for pod {{ $labels.pod }}"
+            description: "Pod {{ $labels.pod }} CPU usage is at {{ $value | humanizePercentage }}."
+
+        - alert: HighMemoryUsage
+          expr: |
+            sum(container_memory_working_set_bytes{namespace="cloudphone11"}) by (pod)
+            / sum(kube_pod_container_resource_limits{namespace="cloudphone11",resource="memory"}) by (pod) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High memory usage for pod {{ $labels.pod }}"
+            description: "Pod {{ $labels.pod }} memory usage is at {{ $value | humanizePercentage }}."
+
+        - alert: PVCAlmostFull
+          expr: |
+            kubelet_volume_stats_used_bytes{namespace="cloudphone11"}
+            / kubelet_volume_stats_capacity_bytes{namespace="cloudphone11"} > 0.85
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "PVC {{ $labels.persistentvolumeclaim }} is almost full"
+            description: "PVC is {{ $value | humanizePercentage }} full — expand or clean up."
+
+        - alert: DatabaseConnectionPoolExhausted
+          expr: pg_stat_activity_count > pg_settings_max_connections * 0.85
+          for: 5m
+          labels:
+            severity: warning
+            service: postgresql
+          annotations:
+            summary: "PostgreSQL connection pool near exhaustion"
+            description: "{{ $value }} active connections out of max — risk of connection refusal."

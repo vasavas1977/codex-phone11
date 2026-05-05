@@ -1,0 +1,30 @@
+<include>
+  <!-- 1-to-All Telecom Inbound PSTN Calls -->
+
+  <!-- Thailand inbound: 66XXXXXXXXX -->
+  <extension name="1toall_inbound_thailand">
+    <condition field="network_addr" expression="^103\.35\.99\.1$"/>
+    <condition field="destination_number" expression="^(66\d{8,9})$">
+      <action application="set" data="domain_name=$${domain}"/>
+      <action application="set" data="call_direction=inbound"/>
+      <action application="set" data="pstn_gateway=1toall"/>
+      <action application="set" data="effective_caller_id_number=${caller_id_number}"/>
+      <action application="log" data="INFO [1toall-inbound] Thailand call from ${caller_id_number} to $1"/>
+      <!-- Route to the DID lookup or default extension -->
+      <action application="transfer" data="$1 XML default"/>
+    </condition>
+  </extension>
+
+  <!-- International inbound: any E.164 without + -->
+  <extension name="1toall_inbound_international">
+    <condition field="network_addr" expression="^103\.35\.99\.1$"/>
+    <condition field="destination_number" expression="^(\d{7,15})$">
+      <action application="set" data="domain_name=$${domain}"/>
+      <action application="set" data="call_direction=inbound"/>
+      <action application="set" data="pstn_gateway=1toall"/>
+      <action application="set" data="effective_caller_id_number=${caller_id_number}"/>
+      <action application="log" data="INFO [1toall-inbound] International call from ${caller_id_number} to $1"/>
+      <action application="transfer" data="$1 XML default"/>
+    </condition>
+  </extension>
+</include>
