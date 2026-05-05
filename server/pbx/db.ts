@@ -1,18 +1,26 @@
 /**
  * PBX Database Connection
- * 
+ *
  * Shared PostgreSQL connection pool for all PBX operations.
- * Uses the same RDS instance as Kamailio.
+ * Uses the same database connection details as Kamailio.
  */
 import pg from "pg";
 
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} is required for the PBX database connection`);
+  }
+  return value;
+}
+
 const PG_CONFIG: pg.PoolConfig = {
-  host: process.env.PG_HOST || "phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com",
-  port: parseInt(process.env.PG_PORT || "5432"),
-  user: process.env.PG_USER || "phone11ai",
-  password: process.env.PG_PASSWORD || "Xk9mPv2wRtN7qYhL4bJc",
-  database: process.env.PG_DATABASE || "phone11ai",
-  ssl: { rejectUnauthorized: false },
+  host: requiredEnv("PG_HOST"),
+  port: parseInt(process.env.PG_PORT || "5432", 10),
+  user: requiredEnv("PG_USER"),
+  password: requiredEnv("PG_PASSWORD"),
+  database: requiredEnv("PG_DATABASE"),
+  ssl: process.env.PG_SSL === "false" ? false : { rejectUnauthorized: false },
   max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
@@ -31,7 +39,7 @@ export function getPool(): pg.Pool {
 }
 
 /**
- * Execute a query with automatic pool management
+ * Execute a query with automatic pool management.
  */
 export async function query<T extends pg.QueryResultRow = any>(text: string, params?: any[]): Promise<pg.QueryResult<T>> {
   const pool = getPool();
@@ -50,7 +58,7 @@ export async function query<T extends pg.QueryResultRow = any>(text: string, par
 }
 
 /**
- * Execute within a transaction
+ * Execute within a transaction.
  */
 export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const pool = getPool();
