@@ -1,43 +1,17 @@
 /**
  * Phone Provisioning Module
- *
+ * 
  * Handles SIP auto-provisioning for users after login.
  * Connects directly to the PostgreSQL database (same as Kamailio).
- *
+ * 
  * Flow:
- * 1. User logs in -> app calls phone.getConfig
+ * 1. User logs in → app calls phone.getConfig
  * 2. Server looks up user's assigned extension
  * 3. If no extension assigned, auto-assigns the first available one (for owner/admin)
  * 4. Returns SIP credentials to the app
  */
 
-import pg from "pg";
-
-function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`${name} is required for phone provisioning database access`);
-  }
-  return value;
-}
-
-const PG_CONFIG = {
-  host: requiredEnv("PG_HOST"),
-  port: parseInt(process.env.PG_PORT || "5432", 10),
-  user: requiredEnv("PG_USER"),
-  password: requiredEnv("PG_PASSWORD"),
-  database: requiredEnv("PG_DATABASE"),
-  ssl: process.env.PG_SSL === "false" ? false : { rejectUnauthorized: false },
-};
-
-let pool: pg.Pool | null = null;
-
-function getPool(): pg.Pool {
-  if (!pool) {
-    pool = new pg.Pool(PG_CONFIG);
-  }
-  return pool;
-}
+import { getPool } from "./pbx/db";
 
 export interface PhoneConfig {
   configured: boolean;
@@ -86,7 +60,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
 
     if (userExtResult.rows.length > 0) {
       const ext = userExtResult.rows[0];
-
+      
       // Get DIDs assigned to this extension
       const didsResult = await db.query(`
         SELECT number, description FROM did_numbers
@@ -131,7 +105,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
 
     if (directExtResult.rows.length > 0) {
       const ext = directExtResult.rows[0];
-
+      
       // Auto-create user_extensions mapping
       await db.query(`
         INSERT INTO user_extensions (user_id, extension_id, is_primary)
@@ -166,7 +140,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
     // 3. For the owner/first user: auto-assign extension 1020
     // Check if this is the owner (first user or admin)
     const isOwner = process.env.OWNER_OPEN_ID && openId === process.env.OWNER_OPEN_ID;
-
+    
     if (isOwner) {
       // Assign extension 1020 (the owner extension) to this user
       const ownerExt = await db.query(`
@@ -179,7 +153,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
 
       if (ownerExt.rows.length > 0) {
         const ext = ownerExt.rows[0];
-
+        
         // Assign to user
         await db.query(`UPDATE extensions SET user_id = $1 WHERE id = $2`, [userId, ext.id]);
         await db.query(`
@@ -213,7 +187,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       }
     }
 
-    // 4. No extension assigned; user needs admin to assign one
+    // 4. No extension assigned — user needs admin to assign one
     return {
       configured: false,
     };
@@ -272,11 +246,11 @@ export async function createExtension(input: {
 }) {
   const db = getPool();
   const { orgId, extensionNumber, displayName, password } = input;
-
+  
   // Generate password if not provided
   const sipPassword = password || `Ph0ne11_${extensionNumber}_${Date.now().toString(36)}`;
   const sipDomain = "sip.phone11.ai";
-
+  
   // Calculate HA1 for Kamailio: MD5(username:realm:password)
   const crypto = await import("crypto");
   const ha1 = crypto.createHash("md5").update(`${extensionNumber}:${sipDomain}:${sipPassword}`).digest("hex");
