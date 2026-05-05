@@ -53,6 +53,8 @@ android/app/build/
 /android
 .kotlin/
 *.orig.*
+*.bak
+*.bak.*
 app-example
 
 # === Logs ===
