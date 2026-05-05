@@ -92,11 +92,11 @@ services:
       EXTERNAL_RTP_IP: ${EXTERNAL_IP}
       EXTERNAL_SIP_IP: ${EXTERNAL_IP}
     ports:
-      - "${EXTERNAL_IP}:5060:5060/udp"
-      - "${EXTERNAL_IP}:5060:5060/tcp"
-      - "${EXTERNAL_IP}:5061:5061/tcp"
+      - "${BIND_IP:-0.0.0.0}:5060:5060/udp"
+      - "${BIND_IP:-0.0.0.0}:5060:5060/tcp"
+      - "${BIND_IP:-0.0.0.0}:5061:5061/tcp"
       - "127.0.0.1:8021:8021/tcp"
-      - "${EXTERNAL_IP}:16384-32768:16384-32768/udp"
+      - "${BIND_IP:-0.0.0.0}:16384-32768:16384-32768/udp"
     volumes:
       - ../configs/freeswitch:/etc/freeswitch:ro
       - fs_recordings:/var/lib/freeswitch/recordings
@@ -138,10 +138,10 @@ services:
       DB_PASS: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
     ports:
-      - "${EXTERNAL_IP}:5070:5060/udp"
-      - "${EXTERNAL_IP}:5070:5060/tcp"
-      - "${EXTERNAL_IP}:5071:5061/tcp"
-      - "${EXTERNAL_IP}:7443:7443/tcp"
+      - "${BIND_IP:-0.0.0.0}:5070:5060/udp"
+      - "${BIND_IP:-0.0.0.0}:5070:5060/tcp"
+      - "${BIND_IP:-0.0.0.0}:5071:5061/tcp"
+      - "${BIND_IP:-0.0.0.0}:7443:7443/tcp"
     volumes:
       - ../configs/kamailio:/etc/kamailio:ro
       - ./tls:/etc/kamailio/tls:ro
@@ -255,7 +255,8 @@ services:
     network_mode: host
     command: >
       rtpengine
-      --interface=${EXTERNAL_IP}
+      --interface=pub/${PRIVATE_IP:?set PRIVATE_IP}!${EXTERNAL_IP:?set EXTERNAL_IP}
+      --interface=priv/${PRIVATE_IP:?set PRIVATE_IP}
       --listen-ng=127.0.0.1:22222
       --port-min=20000
       --port-max=30000
