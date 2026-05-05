@@ -1,36 +1,58 @@
 /**
  * PBX Database Connection
- *
+ * 
  * Shared PostgreSQL connection pool for all PBX operations.
- * Uses the same database connection details as Kamailio.
+ * Uses the same RDS instance as Kamailio.
  */
 import pg from "pg";
 
-function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`${name} is required for the PBX database connection`);
+let _pool: pg.Pool | null = null;
+
+function getSslConfig(connectionString?: string): pg.PoolConfig["ssl"] {
+  if (process.env.PG_SSL === "false" || connectionString?.includes("sslmode=disable")) {
+    return false;
   }
-  return value;
+
+  return {
+    rejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED === "true",
+  };
 }
 
-const PG_CONFIG: pg.PoolConfig = {
-  host: requiredEnv("PG_HOST"),
-  port: parseInt(process.env.PG_PORT || "5432", 10),
-  user: requiredEnv("PG_USER"),
-  password: requiredEnv("PG_PASSWORD"),
-  database: requiredEnv("PG_DATABASE"),
-  ssl: process.env.PG_SSL === "false" ? false : { rejectUnauthorized: false },
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-};
+function buildPgConfig(): pg.PoolConfig {
+  const connectionString = process.env.PG_CONNECTION_STRING ?? process.env.DATABASE_URL;
+  const common: pg.PoolConfig = {
+    ssl: getSslConfig(connectionString),
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+  };
 
-let _pool: pg.Pool | null = null;
+  if (connectionString) {
+    return {
+      ...common,
+      connectionString,
+    };
+  }
+
+  const requiredEnv = ["PG_HOST", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const;
+  const missing = requiredEnv.filter((key) => !process.env[key]);
+  if (missing.length > 0) {
+    throw new Error(`[PBX DB] Missing required environment variables: ${missing.join(", ")}`);
+  }
+
+  return {
+    ...common,
+    host: process.env.PG_HOST,
+    port: parseInt(process.env.PG_PORT ?? "5432", 10),
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+    database: process.env.PG_DATABASE,
+  };
+}
 
 export function getPool(): pg.Pool {
   if (!_pool) {
-    _pool = new pg.Pool(PG_CONFIG);
+    _pool = new pg.Pool(buildPgConfig());
     _pool.on("error", (err) => {
       console.error("[PBX DB] Unexpected pool error:", err.message);
     });
@@ -39,7 +61,7 @@ export function getPool(): pg.Pool {
 }
 
 /**
- * Execute a query with automatic pool management.
+ * Execute a query with automatic pool management
  */
 export async function query<T extends pg.QueryResultRow = any>(text: string, params?: any[]): Promise<pg.QueryResult<T>> {
   const pool = getPool();
@@ -58,7 +80,7 @@ export async function query<T extends pg.QueryResultRow = any>(text: string, par
 }
 
 /**
- * Execute within a transaction.
+ * Execute within a transaction
  */
 export async function withTransaction<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const pool = getPool();
