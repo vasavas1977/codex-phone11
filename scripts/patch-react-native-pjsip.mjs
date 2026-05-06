@@ -1,9 +1,10 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const moduleRoot = path.join(process.cwd(), "node_modules", "react-native-pjsip", "android");
 const gradlePath = path.join(moduleRoot, "build.gradle");
 const manifestPath = path.join(moduleRoot, "src", "main", "AndroidManifest.xml");
+const sourceRoot = path.join(moduleRoot, "src", "main", "java");
 const fallbackNamespace = "com.carusto.ReactNativePjSip";
 
 async function readIfExists(filePath) {
@@ -33,6 +34,39 @@ async function patchFile(filePath, patcher) {
   return true;
 }
 
+async function patchSourceTree(rootPath) {
+  let entries;
+  try {
+    entries = await readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      console.warn(`[phone11-pjsip-patch] Skipping missing source tree: ${rootPath}`);
+      return false;
+    }
+    throw error;
+  }
+
+  let changed = false;
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+    if (entry.isDirectory()) {
+      changed = (await patchSourceTree(entryPath)) || changed;
+      continue;
+    }
+
+    if (!/\.(java|kt)$/.test(entry.name)) {
+      continue;
+    }
+
+    changed =
+      (await patchFile(entryPath, (source) =>
+        source.replace(/\bandroid\.support\.annotation\./g, "androidx.annotation.")
+      )) || changed;
+  }
+
+  return changed;
+}
+
 const manifestSource = await readIfExists(manifestPath);
 const manifestPackage = manifestSource?.match(/<manifest\b[^>]*\s+package=["']([^"']+)["']/)?.[1];
 const namespace = manifestPackage || fallbackNamespace;
@@ -53,15 +87,23 @@ const gradleChanged = await patchFile(gradlePath, (source) => {
     next = next.replace(/android\s*\{\s*/, (match) => `${match}\n    namespace "${namespace}"\n`);
   }
 
+  if (/dependencies\s*\{/.test(next) && !/androidx\.annotation:annotation/.test(next)) {
+    next = next.replace(
+      /dependencies\s*\{\s*/,
+      (match) => `${match}\n    implementation "androidx.annotation:annotation:1.9.1"\n`
+    );
+  }
+
   return next;
 });
 
 const manifestChanged = await patchFile(manifestPath, (source) =>
   source.replace(/(<manifest\b[^>]*?)\s+package=["'][^"']+["']([^>]*>)/, "$1$2")
 );
+const sourceChanged = await patchSourceTree(sourceRoot);
 
-if (gradleChanged || manifestChanged) {
-  console.log("[phone11-pjsip-patch] Patched react-native-pjsip Android Gradle config.");
+if (gradleChanged || manifestChanged || sourceChanged) {
+  console.log("[phone11-pjsip-patch] Patched react-native-pjsip Android Gradle/source config.");
 } else {
-  console.log("[phone11-pjsip-patch] react-native-pjsip Android Gradle config already patched.");
+  console.log("[phone11-pjsip-patch] react-native-pjsip Android Gradle/source config already patched.");
 }
