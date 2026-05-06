@@ -5,10 +5,18 @@ import { router, useLocalSearchParams } from "expo-router";
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useSip } from "@/lib/sip/sip-provider";
+import { useSipCallStore } from "@/lib/sip/call-store";
 
 export default function IncomingCallScreen() {
   const colors = useColors();
-  const { number, name } = useLocalSearchParams<{ number: string; name: string }>();
+  const { number, name, callId } = useLocalSearchParams<{ number?: string; name?: string; callId?: string }>();
+  const { answerCall, hangupCall } = useSip();
+  const incomingCall = useSipCallStore((state) =>
+    callId ? (state.incomingCall?.id === callId ? state.incomingCall : null) : state.incomingCall
+  );
+  const callerNumber = incomingCall?.remoteNumber ?? number ?? "SIP Call";
+  const callerName = incomingCall?.remoteName ?? name ?? callerNumber;
 
   useEffect(() => {
     // Simulate ringtone vibration pattern
@@ -17,15 +25,23 @@ export default function IncomingCallScreen() {
     return () => Vibration.cancel();
   }, []);
 
-  const handleAccept = () => {
+  const handleAccept = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Vibration.cancel();
-    router.replace({ pathname: "/call/active", params: { number: number || name || "Unknown", type: "voice" } });
+    if (callId) {
+      await answerCall(callId);
+    }
+    const params: Record<string, string> = { number: callerNumber, type: "voice" };
+    if (callId) params.callId = callId;
+    router.replace({ pathname: "/call/active", params });
   };
 
-  const handleDecline = () => {
+  const handleDecline = async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     Vibration.cancel();
+    if (callId) {
+      await hangupCall(callId);
+    }
     router.back();
   };
 
@@ -38,12 +54,12 @@ export default function IncomingCallScreen() {
       {/* Caller Info */}
       <View style={styles.callerSection}>
         <Text style={styles.incomingLabel}>Incoming Call</Text>
-        <View style={[styles.avatar, { backgroundColor: colors.primary + "30" }]}>
-          <Text style={styles.avatarText}>{(name || number || "?").charAt(0).toUpperCase()}</Text>
+        <View style={[styles.avatar, { backgroundColor: colors.primary + "30" }]}> 
+          <Text style={styles.avatarText}>{callerName.charAt(0).toUpperCase()}</Text>
         </View>
-        <Text style={styles.callerName}>{name || number || "Unknown"}</Text>
-        <Text style={[styles.callerNumber, { color: "#ffffff80" }]}>{number || "SIP Call"}</Text>
-        <View style={[styles.sipBadge, { backgroundColor: colors.primary + "30", borderColor: colors.primary + "60" }]}>
+        <Text style={styles.callerName}>{callerName}</Text>
+        <Text style={[styles.callerNumber, { color: "#ffffff80" }]}>{callerNumber}</Text>
+        <View style={[styles.sipBadge, { backgroundColor: colors.primary + "30", borderColor: colors.primary + "60" }]}> 
           <IconSymbol name="antenna.radiowaves.left.and.right" size={12} color={colors.primary} />
           <Text style={[styles.sipBadgeText, { color: colors.primary }]}>SIP / VoIP</Text>
         </View>

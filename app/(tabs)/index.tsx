@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { Alert, View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
@@ -7,6 +7,8 @@ import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useNotificationStore } from "@/lib/notifications/store";
+import { useSip } from "@/lib/sip/sip-provider";
+import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
 
 const DIAL_KEYS = [
   { digit: "1", sub: "" },
@@ -29,10 +31,36 @@ const RECENT_NUMBERS = [
   { number: "1001", name: "Ext. 1001" },
 ];
 
+function registrationLabel(state: RegistrationState): string {
+  switch (state) {
+    case "registered":
+      return "SIP Registered";
+    case "registering":
+      return "Registering";
+    case "failed":
+      return "SIP Failed";
+    case "network_error":
+      return "Network Error";
+    default:
+      return "Not Registered";
+  }
+}
+
+function registrationColor(state: RegistrationState, colors: ReturnType<typeof useColors>): string {
+  if (state === "registered") return colors.success;
+  if (state === "registering") return colors.warning;
+  if (state === "failed" || state === "network_error") return colors.error;
+  return colors.muted;
+}
+
 export default function DialpadScreen() {
   const colors = useColors();
   const [input, setInput] = useState("");
   const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const { makeCall } = useSip();
+  const account = useSipAccountStore((s) => s.account);
+  const registrationState = useSipAccountStore((s) => s.registrationState);
+  const statusColor = registrationColor(registrationState, colors);
 
   const handleKey = useCallback((digit: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -44,18 +72,48 @@ export default function DialpadScreen() {
     setInput((prev) => prev.slice(0, -1));
   }, []);
 
-  const handleCall = useCallback((number?: string) => {
-    const target = number || input;
+  const handleCall = useCallback(async (number?: string) => {
+    const target = (number || input).trim();
     if (!target) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.push({ pathname: "/call/active", params: { number: target, type: "voice" } });
-  }, [input]);
 
-  const handleVideoCall = useCallback(() => {
-    if (!input) return;
+    if (!account?.enabled) {
+      Alert.alert("SIP account needed", "Add the Phone11 SIP account before placing calls.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Open SIP Settings", onPress: () => router.push("/settings/sip" as any) },
+      ]);
+      return;
+    }
+
+    const callId = await makeCall(target, false);
+    if (!callId) {
+      Alert.alert("Call could not start", "Check SIP registration and server connectivity, then try again.");
+      return;
+    }
+
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.push({ pathname: "/call/video", params: { number: input, type: "video" } });
-  }, [input]);
+    router.push({ pathname: "/call/active", params: { callId, number: target, type: "voice" } });
+  }, [account?.enabled, input, makeCall]);
+
+  const handleVideoCall = useCallback(async () => {
+    const target = input.trim();
+    if (!target) return;
+    if (!account?.enabled) {
+      Alert.alert("SIP account needed", "Add the Phone11 SIP account before starting video calls.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Open SIP Settings", onPress: () => router.push("/settings/sip" as any) },
+      ]);
+      return;
+    }
+
+    const callId = await makeCall(target, true);
+    if (!callId) {
+      Alert.alert("Video call could not start", "Check SIP registration and server connectivity, then try again.");
+      return;
+    }
+
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    router.push({ pathname: "/call/video", params: { callId, number: target, type: "video" } });
+  }, [account?.enabled, input, makeCall]);
 
   return (
     <ScreenContainer>
@@ -63,10 +121,10 @@ export default function DialpadScreen() {
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <View style={styles.headerLeft}>
-            <Text style={[styles.headerTitle, { color: colors.foreground }]}>CloudPhone11</Text>
+            <Text style={[styles.headerTitle, { color: colors.foreground }]}>Phone11</Text>
             <View style={styles.sipStatus}>
-              <View style={[styles.sipDot, { backgroundColor: colors.success }]} />
-              <Text style={[styles.sipText, { color: colors.muted }]}>SIP Registered</Text>
+              <View style={[styles.sipDot, { backgroundColor: statusColor }]} />
+              <Text style={[styles.sipText, { color: colors.muted }]}>{registrationLabel(registrationState)}</Text>
             </View>
           </View>
           <TouchableOpacity
@@ -174,8 +232,8 @@ export default function DialpadScreen() {
               onPress={() => handleCall(item.number)}
               activeOpacity={0.7}
             >
-              <View style={[styles.recentAvatar, { backgroundColor: colors.primary + "20" }]}>
-                <Text style={[styles.recentAvatarText, { color: colors.primary }]}>
+              <View style={[styles.recentAvatar, { backgroundColor: colors.primary + "20" }]}> 
+                <Text style={[styles.recentAvatarText, { color: colors.primary }]}> 
                   {item.name.charAt(0)}
                 </Text>
               </View>

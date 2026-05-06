@@ -1,5 +1,5 @@
 /**
- * SIP Engine — CloudPhone11
+ * SIP Engine — Phone11
  *
  * Wraps react-native-pjsip to provide:
  *  - SIP account registration against Kamailio proxy
@@ -8,7 +8,7 @@
  *  - Call controls: mute, hold, speaker, transfer, DTMF
  *
  * Architecture:
- *   CloudPhone11 App
+ *   Phone11 App
  *       ↕ PJSIP (SIP/TLS + SRTP)
  *   Kamailio SIP Proxy (your server)
  *       ↕ SIP
@@ -20,6 +20,7 @@
 import { Platform } from "react-native";
 import { useSipAccountStore, type RegistrationState } from "./account-store";
 import { useSipCallStore } from "./call-store";
+import { formatSipError, useSipDiagnosticsStore } from "./diagnostics-store";
 
 // react-native-pjsip types
 let Endpoint: any = null;
@@ -42,7 +43,7 @@ function getPjsip() {
 
 class SipEngine {
   private endpoint: any = null;
-  private accountId: number | null = null;
+  private pjsipAccount: any = null;
   private initialized = false;
 
   /**
@@ -50,20 +51,28 @@ class SipEngine {
    * Call this once on app start after loading account config.
    */
   async initialize(): Promise<void> {
+    if (this.initialized) return;
+
     const pjsip = getPjsip();
     if (!pjsip) {
       console.log("[SIP Engine] Running on web — SIP disabled");
+      this._diag("warning", "engine", "PJSIP unavailable on this platform");
       return;
     }
 
     const { account, setRegistrationState } = useSipAccountStore.getState();
     if (!account || !account.enabled) {
       console.log("[SIP Engine] No SIP account configured");
+      this._diag("warning", "registration", "No enabled SIP account configured");
       return;
     }
 
     try {
       setRegistrationState("registering");
+      this._diag("info", "registration", "Starting SIP registration", {
+        destination: account.domain,
+        detail: `${account.transport}/${account.port}`,
+      });
 
       // Create PJSIP endpoint
       this.endpoint = new pjsip.Endpoint();
@@ -71,7 +80,7 @@ class SipEngine {
       // Configure endpoint
       await this.endpoint.start({
         service: {
-          ua: `CloudPhone11/1.0 (${Platform.OS})`,
+          ua: `Phone11/1.0 (${Platform.OS})`,
         },
         network: {
           useWifi: true,
@@ -88,7 +97,7 @@ class SipEngine {
       });
 
       // Register SIP account
-      this.accountId = await this.endpoint.createAccount({
+      this.pjsipAccount = await this.endpoint.createAccount({
         name: account.displayName || account.username,
         username: account.username,
         domain: account.domain,
@@ -109,29 +118,52 @@ class SipEngine {
       // Listen for registration state changes
       this.endpoint.on("registration_changed", (data: any) => {
         const state = this._mapRegState(data.state);
-        setRegistrationState(state, data.lastError?.reason);
+        const detail = data.lastError?.reason;
+        setRegistrationState(state, detail);
+        this._diag(
+          state === "failed" ? "error" : "info",
+          "registration",
+          `SIP registration ${state}`,
+          { destination: account.domain, detail }
+        );
       });
 
       // Listen for incoming calls
       this.endpoint.on("call_received", (call: any) => {
+        const callId = call.getId().toString();
+        this._diag("info", "call", "Incoming SIP call received", {
+          callId,
+          detail: this._safeCallDetail(call),
+        });
         useSipCallStore.getState().setIncomingCall(call);
       });
 
       // Listen for call state changes
       this.endpoint.on("call_changed", (call: any) => {
+        const callId = call.getId().toString();
+        const detail = this._safeCallDetail(call);
+        this._diag("info", "call", "SIP call state changed", { callId, detail });
         useSipCallStore.getState().updateCallState(call);
       });
 
       // Listen for call terminated
       this.endpoint.on("call_terminated", (call: any) => {
-        useSipCallStore.getState().terminateCall(call.getId());
+        const callId = call.getId().toString();
+        this._diag("info", "call", "SIP call terminated", {
+          callId,
+          detail: this._safeCallDetail(call),
+        });
+        useSipCallStore.getState().terminateCall(callId);
       });
 
       this.initialized = true;
-      console.log("[SIP Engine] Initialized, account ID:", this.accountId);
+      console.log("[SIP Engine] Initialized, account:", this.pjsipAccount?.getId?.() ?? account.username);
+      this._diag("info", "engine", "SIP engine initialized", { destination: account.domain });
     } catch (error: any) {
       console.error("[SIP Engine] Initialization failed:", error);
-      useSipAccountStore.getState().setRegistrationState("failed", error?.message);
+      const detail = formatSipError(error);
+      this._diag("error", "engine", "SIP engine initialization failed", { detail });
+      useSipAccountStore.getState().setRegistrationState("failed", detail);
     }
   }
 
@@ -141,8 +173,9 @@ class SipEngine {
    */
   async makeCall(destination: string, video = false): Promise<string | null> {
     const pjsip = getPjsip();
-    if (!pjsip || !this.endpoint || this.accountId === null) {
+    if (!pjsip || !this.endpoint || !this.pjsipAccount) {
       console.warn("[SIP Engine] Cannot make call — not initialized");
+      this._diag("error", "call", "Cannot make call because SIP is not initialized", { destination });
       return null;
     }
 
@@ -155,16 +188,22 @@ class SipEngine {
       : `sip:${destination}@${account.domain}`;
 
     try {
-      const call = await this.endpoint.makeCall(this.accountId, uri, {
+      this._diag("info", "call", "Starting outbound SIP call", { destination: uri });
+      const call = await this.endpoint.makeCall(this.pjsipAccount, uri, {
         mediaVideo: video,
         mediaAudio: true,
       });
 
       const callId = call.getId().toString();
       useSipCallStore.getState().addOutgoingCall(call, destination);
+      this._diag("info", "call", "Outbound SIP call created", { callId, destination: uri });
       return callId;
     } catch (error: any) {
       console.error("[SIP Engine] makeCall failed:", error);
+      this._diag("error", "call", "Outbound SIP call failed", {
+        destination: uri,
+        detail: formatSipError(error),
+      });
       return null;
     }
   }
@@ -175,8 +214,10 @@ class SipEngine {
     if (!call) return;
     try {
       await call.answer({ mediaVideo: video, mediaAudio: true });
+      this._diag("info", "call", "Answered SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] answerCall failed:", e);
+      this._diag("error", "call", "Answer SIP call failed", { callId, detail: formatSipError(e) });
     }
   }
 
@@ -186,8 +227,10 @@ class SipEngine {
     if (!call) return;
     try {
       await call.hangup();
+      this._diag("info", "call", "Hung up SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] hangupCall failed:", e);
+      this._diag("error", "call", "Hangup SIP call failed", { callId, detail: formatSipError(e) });
     }
   }
 
@@ -198,8 +241,10 @@ class SipEngine {
     try {
       if (muted) await call.mute();
       else await call.unmute();
+      this._diag("info", "media", muted ? "Muted SIP call" : "Unmuted SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] setMute failed:", e);
+      this._diag("error", "media", "Mute control failed", { callId, detail: formatSipError(e) });
     }
   }
 
@@ -210,8 +255,10 @@ class SipEngine {
     try {
       if (held) await call.hold();
       else await call.unhold();
+      this._diag("info", "call", held ? "Held SIP call" : "Resumed SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] setHold failed:", e);
+      this._diag("error", "call", "Hold control failed", { callId, detail: formatSipError(e) });
     }
   }
 
@@ -221,8 +268,10 @@ class SipEngine {
     if (!call) return;
     try {
       await call.dtmf(digit);
+      this._diag("info", "media", "Sent SIP DTMF", { callId, detail: digit });
     } catch (e) {
       console.error("[SIP Engine] sendDtmf failed:", e);
+      this._diag("error", "media", "DTMF failed", { callId, detail: formatSipError(e) });
     }
   }
 
@@ -238,8 +287,10 @@ class SipEngine {
 
     try {
       await call.xfer(uri);
+      this._diag("info", "call", "Transferred SIP call", { callId, destination: uri });
     } catch (e) {
       console.error("[SIP Engine] transferCall failed:", e);
+      this._diag("error", "call", "Transfer SIP call failed", { callId, destination: uri, detail: formatSipError(e) });
     }
   }
 
@@ -250,11 +301,17 @@ class SipEngine {
         await this.endpoint.stop();
       } catch (e) {
         console.error("[SIP Engine] destroy failed:", e);
+        this._diag("error", "engine", "SIP engine destroy failed", { detail: formatSipError(e) });
       }
       this.endpoint = null;
-      this.accountId = null;
+      this.pjsipAccount = null;
       this.initialized = false;
     }
+  }
+
+  async restart(): Promise<void> {
+    await this.destroy();
+    await this.initialize();
   }
 
   private _mapRegState(pjsipState: string): RegistrationState {
@@ -265,6 +322,32 @@ class SipEngine {
       case "unregistering": return "unregistered";
       default: return "failed";
     }
+  }
+
+  private _safeCallDetail(call: any): string {
+    const info = call.getInfo?.() ?? {};
+    const parts = [
+      info.state ? `state=${info.state}` : null,
+      info.lastStatusCode ? `sip=${info.lastStatusCode}` : null,
+      info.lastReason ? `reason=${info.lastReason}` : null,
+      info.remoteUri ? `remote=${info.remoteUri}` : null,
+    ].filter(Boolean);
+
+    return parts.join(" | ");
+  }
+
+  private _diag(
+    level: "info" | "warning" | "error",
+    category: "engine" | "registration" | "call" | "media",
+    message: string,
+    extra: { callId?: string; destination?: string; detail?: string } = {}
+  ): void {
+    useSipDiagnosticsStore.getState().addEvent({
+      level,
+      category,
+      message,
+      ...extra,
+    });
   }
 }
 

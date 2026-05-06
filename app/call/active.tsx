@@ -5,20 +5,41 @@ import { router, useLocalSearchParams } from "expo-router";
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useSip } from "@/lib/sip/sip-provider";
+import { useSipCallStore } from "@/lib/sip/call-store";
 
 export default function ActiveCallScreen() {
   const colors = useColors();
-  const { number, type } = useLocalSearchParams<{ number: string; type: string }>();
+  const { number, type, callId } = useLocalSearchParams<{ number?: string; type?: string; callId?: string }>();
+  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf } = useSip();
+  const call = useSipCallStore((state) =>
+    callId
+      ? state.activeCalls[callId] ?? (state.incomingCall?.id === callId ? state.incomingCall : null)
+      : null
+  );
   const [elapsed, setElapsed] = useState(0);
-  const [muted, setMuted] = useState(false);
-  const [held, setHeld] = useState(false);
-  const [speaker, setSpeaker] = useState(false);
+  const [fallbackMuted, setFallbackMuted] = useState(false);
+  const [fallbackHeld, setFallbackHeld] = useState(false);
+  const [fallbackSpeaker, setFallbackSpeaker] = useState(false);
   const [showKeypad, setShowKeypad] = useState(false);
 
+  const muted = call?.isMuted ?? fallbackMuted;
+  const held = call?.isHeld ?? fallbackHeld;
+  const speaker = call?.isSpeaker ?? fallbackSpeaker;
+  const remoteNumber = call?.remoteNumber ?? number ?? "Unknown";
+  const callMissing = Boolean(callId && !call);
+
   useEffect(() => {
-    const timer = setInterval(() => setElapsed((s) => s + 1), 1000);
+    const timer = setInterval(() => {
+      const startedAt = call?.connectTime ?? call?.startTime;
+      if (!startedAt) {
+        setElapsed((s) => s + 1);
+        return;
+      }
+      setElapsed(Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000)));
+    }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [call?.connectTime, call?.startTime]);
 
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60).toString().padStart(2, "0");
@@ -26,10 +47,67 @@ export default function ActiveCallScreen() {
     return `${m}:${sec}`;
   };
 
-  const handleEndCall = useCallback(() => {
+  const callStatusLabel = () => {
+    if (callMissing) return "Call ended";
+    if (held) return "On Hold";
+    if (!call) return formatTime(elapsed);
+    if (call.status === "calling") return "Calling";
+    if (call.status === "connecting") return "Connecting";
+    if (call.status === "incoming") return "Incoming";
+    if (call.status === "disconnected") return "Call ended";
+    return formatTime(elapsed);
+  };
+
+  const handleEndCall = useCallback(async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    if (callId && call) {
+      await hangupCall(callId);
+    }
     router.back();
-  }, []);
+  }, [call, callId, hangupCall]);
+
+  const handleMute = useCallback(async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (callId && call) {
+      await setMute(callId, !muted);
+      return;
+    }
+    setFallbackMuted((value) => !value);
+  }, [call, callId, muted, setMute]);
+
+  const handleHold = useCallback(async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (callId && call) {
+      await setHold(callId, !held);
+      return;
+    }
+    setFallbackHeld((value) => !value);
+  }, [call, callId, held, setHold]);
+
+  const handleSpeaker = useCallback(async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    if (callId && call) {
+      await setSpeaker(callId, !speaker);
+      return;
+    }
+    setFallbackSpeaker((value) => !value);
+  }, [call, callId, setSpeaker, speaker]);
+
+  const handleDtmf = useCallback(async (digit: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (callId && call) {
+      await sendDtmf(callId, digit);
+    }
+  }, [call, callId, sendDtmf]);
+
+  const openVideo = useCallback(() => {
+    const params: Record<string, string> = {
+      number: remoteNumber,
+      type: type ?? "voice",
+    };
+    if (callId) params.callId = callId;
+    router.push({ pathname: "/call/video", params });
+  }, [callId, remoteNumber, type]);
 
   const KEYPAD = ["1","2","3","4","5","6","7","8","9","*","0","#"];
 
@@ -39,12 +117,12 @@ export default function ActiveCallScreen() {
       <View style={styles.callerSection}>
         <View style={[styles.callerAvatar, { backgroundColor: colors.primary + "30" }]}>
           <Text style={styles.callerInitial}>
-            {(number || "?").charAt(0).toUpperCase()}
+            {remoteNumber.charAt(0).toUpperCase()}
           </Text>
         </View>
-        <Text style={styles.callerName}>{number || "Unknown"}</Text>
+        <Text style={styles.callerName}>{remoteNumber}</Text>
         <Text style={[styles.callStatus, { color: held ? colors.warning : colors.success }]}>
-          {held ? "On Hold" : formatTime(elapsed)}
+          {callStatusLabel()}
         </Text>
       </View>
 
@@ -56,7 +134,7 @@ export default function ActiveCallScreen() {
               <TouchableOpacity
                 key={k}
                 style={[styles.keypadKey, { backgroundColor: "#ffffff15" }]}
-                onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}
+                onPress={() => handleDtmf(k)}
               >
                 <Text style={styles.keypadDigit}>{k}</Text>
               </TouchableOpacity>
@@ -70,7 +148,7 @@ export default function ActiveCallScreen() {
         <View style={styles.controlRow}>
           <TouchableOpacity
             style={[styles.controlBtn, muted && { backgroundColor: colors.primary + "40" }]}
-            onPress={() => { setMuted(!muted); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+            onPress={handleMute}
           >
             <IconSymbol name={muted ? "mic.slash.fill" : "mic.fill"} size={24} color={muted ? colors.primary : "#fff"} />
             <Text style={styles.controlLabel}>{muted ? "Unmute" : "Mute"}</Text>
@@ -78,7 +156,7 @@ export default function ActiveCallScreen() {
 
           <TouchableOpacity
             style={[styles.controlBtn, held && { backgroundColor: colors.warning + "40" }]}
-            onPress={() => { setHeld(!held); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+            onPress={handleHold}
           >
             <IconSymbol name="pause.fill" size={24} color={held ? colors.warning : "#fff"} />
             <Text style={styles.controlLabel}>{held ? "Resume" : "Hold"}</Text>
@@ -86,7 +164,7 @@ export default function ActiveCallScreen() {
 
           <TouchableOpacity
             style={[styles.controlBtn, speaker && { backgroundColor: colors.primary + "40" }]}
-            onPress={() => { setSpeaker(!speaker); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); }}
+            onPress={handleSpeaker}
           >
             <IconSymbol name={speaker ? "speaker.wave.3.fill" : "speaker.slash.fill"} size={24} color={speaker ? colors.primary : "#fff"} />
             <Text style={styles.controlLabel}>Speaker</Text>
@@ -106,7 +184,7 @@ export default function ActiveCallScreen() {
             style={styles.controlBtn}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push({ pathname: "/call/transfer", params: { callId: `call_${Date.now()}` } });
+              router.push({ pathname: "/call/transfer", params: { callId: callId ?? `preview_${Date.now()}` } });
             }}
           >
             <IconSymbol name="arrow.triangle.2.circlepath" size={24} color="#fff" />
@@ -115,7 +193,7 @@ export default function ActiveCallScreen() {
 
           <TouchableOpacity
             style={styles.controlBtn}
-            onPress={() => router.push("/call/video")}
+            onPress={openVideo}
           >
             <IconSymbol name="video.fill" size={24} color="#fff" />
             <Text style={styles.controlLabel}>Video</Text>

@@ -5,6 +5,7 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useSipAccountStore } from "@/lib/sip/account-store";
 
 interface SettingRow {
   icon: string;
@@ -18,6 +19,26 @@ interface SettingRow {
 
 export default function SettingsScreen() {
   const colors = useColors();
+  const account = useSipAccountStore((s) => s.account);
+  const registrationState = useSipAccountStore((s) => s.registrationState);
+  const registrationColor =
+    registrationState === "registered"
+      ? "#00E5A8"
+      : registrationState === "registering"
+      ? "#FFB340"
+      : registrationState === "failed" || registrationState === "network_error"
+      ? "#FF453A"
+      : "#ffffff90";
+  const registrationText =
+    registrationState === "registered"
+      ? "Registered"
+      : registrationState === "registering"
+      ? "Registering"
+      : registrationState === "failed"
+      ? "Failed"
+      : registrationState === "network_error"
+      ? "Network Error"
+      : "Not Registered";
 
   const SettingItem = ({ icon, iconColor, label, sublabel, value, toggle, onPress }: SettingRow) => (
     <TouchableOpacity
@@ -28,7 +49,7 @@ export default function SettingsScreen() {
       }}
       activeOpacity={0.7}
     >
-      <View style={[styles.settingIcon, { backgroundColor: iconColor + "20" }]}>
+      <View style={[styles.settingIcon, { backgroundColor: iconColor + "20" }]}> 
         <IconSymbol name={icon as any} size={18} color={iconColor} />
       </View>
       <View style={styles.settingText}>
@@ -58,36 +79,45 @@ export default function SettingsScreen() {
     <ScreenContainer>
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* Header */}
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <View style={[styles.header, { borderBottomColor: colors.border }]}> 
           <Text style={[styles.title, { color: colors.foreground }]}>Settings</Text>
         </View>
 
         {/* SIP Account Status */}
-        <View style={[styles.accountCard, { backgroundColor: colors.primary, marginHorizontal: 16, marginTop: 16, borderRadius: 16 }]}>
+        <View style={[styles.accountCard, { backgroundColor: colors.primary, marginHorizontal: 16, marginTop: 16, borderRadius: 16 }]}> 
           <View style={styles.accountInfo}>
-            <View style={[styles.accountAvatar, { backgroundColor: "#ffffff30" }]}>
+            <View style={[styles.accountAvatar, { backgroundColor: "#ffffff30" }]}> 
               <IconSymbol name="phone.fill" size={22} color="#fff" />
             </View>
             <View>
-              <Text style={styles.accountName}>SIP Account</Text>
-              <Text style={styles.accountDetail}>sip:user@yourserver.com</Text>
+              <Text style={styles.accountName}>Phone11 SIP Account</Text>
+              <Text style={styles.accountDetail}>
+                {account ? `sip:${account.username}@${account.domain}` : "Add SIP account"}
+              </Text>
             </View>
           </View>
           <View style={styles.accountStatus}>
-            <View style={styles.statusDot} />
-            <Text style={styles.statusText}>Registered</Text>
+            <View style={[styles.statusDot, { backgroundColor: registrationColor }]} />
+            <Text style={[styles.statusText, { color: registrationColor }]}>{registrationText}</Text>
           </View>
         </View>
 
         {/* SIP Configuration */}
         <SectionHeader title="SIP CONFIGURATION" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="server.rack"
             iconColor="#0057FF"
             label="SIP Account"
             sublabel="Server, credentials, transport"
             onPress={() => router.push("/settings/sip")}
+          />
+          <SettingItem
+            icon="checklist"
+            iconColor="#00C896"
+            label="SIP Diagnostics"
+            sublabel="Registration, call id, and media events"
+            onPress={() => router.push("/settings/sip-diagnostics" as any)}
           />
           <SettingItem
             icon="waveform"
@@ -114,7 +144,7 @@ export default function SettingsScreen() {
 
         {/* Call Settings */}
         <SectionHeader title="CALL SETTINGS" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="bell.fill"
             iconColor="#FF3B30"
@@ -145,7 +175,7 @@ export default function SettingsScreen() {
 
         {/* Notifications */}
         <SectionHeader title="NOTIFICATIONS" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="bell.fill"
             iconColor="#FF9500"
@@ -171,7 +201,7 @@ export default function SettingsScreen() {
 
         {/* Network */}
         <SectionHeader title="NETWORK" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="network"
             iconColor="#06B6D4"
@@ -197,7 +227,7 @@ export default function SettingsScreen() {
 
         {/* Billing & Numbers */}
         <SectionHeader title="BILLING & NUMBERS" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="number"
             iconColor="#0057FF"
@@ -230,7 +260,7 @@ export default function SettingsScreen() {
 
         {/* Self-Service Portal */}
         <SectionHeader title="MY ACCOUNT" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="person.crop.circle.fill"
             iconColor="#0057FF"
@@ -291,7 +321,7 @@ export default function SettingsScreen() {
 
         {/* Admin Portal */}
         <SectionHeader title="ADMIN PORTAL" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="rectangle.grid.3x2.fill"
             iconColor="#FF3B30"
@@ -317,7 +347,7 @@ export default function SettingsScreen() {
 
         {/* About */}
         <SectionHeader title="ABOUT" />
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem
             icon="server.rack"
             iconColor="#06B6D4"
@@ -329,7 +359,7 @@ export default function SettingsScreen() {
             icon="doc.text.fill"
             iconColor="#6B7280"
             label="Architecture & Docs"
-            sublabel="FreeSWITCH, Kamailio, liblinphone"
+            sublabel="PJSIP, Kamailio, FreeSWITCH, LiveKit"
             onPress={() => router.push("/settings/about")}
           />
           <SettingItem

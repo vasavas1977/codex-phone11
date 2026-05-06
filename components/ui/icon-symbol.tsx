@@ -48,6 +48,8 @@ const MAPPING = {
   "exclamationmark.triangle.fill": "warning",
   "bell.fill": "notifications",
   "lock.fill": "lock",
+  "eye": "visibility",
+  "eye.slash": "visibility-off",
   "network": "wifi",
   "server.rack": "dns",
   "waveform": "graphic-eq",
