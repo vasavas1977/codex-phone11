@@ -20,7 +20,7 @@ const bundleId =
 const env = {
   // App branding - update these values directly (do not use env vars)
   appName: "Phone11",
-  appSlug: "phone11",
+  appSlug: "phone11ai",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png
   logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/107568382/ToqVlgyTUoXePKRa.png",
@@ -118,6 +118,12 @@ const config: ExpoConfig = {
   experiments: {
     typedRoutes: true,
     reactCompiler: true,
+  },
+  extra: {
+    eas: {
+      projectId: "e354ffd3-485c-49f1-9e6f-aebe571d8dfb",
+    },
+    router: {},
   },
 };
 
