@@ -17,7 +17,6 @@ const bundleId =
       return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
     })
     .join(".") || "space.manus.app";
-
 const env = {
   // App branding - update these values directly (do not use env vars)
   appName: "Phone11",
@@ -38,13 +37,16 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
-  newArchEnabled: true,
+  // PJSIP and native call modules must be proven under the new architecture before enabling it.
+  newArchEnabled: false,
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
-    "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      }
+    infoPlist: {
+      ITSAppUsesNonExemptEncryption: false,
+      NSMicrophoneUsageDescription: "Allow Phone11 to access your microphone for voice and video calls.",
+      UIBackgroundModes: ["audio", "voip", "remote-notification"],
+    },
   },
   android: {
     adaptiveIcon: {
@@ -56,7 +58,7 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS"],
+    permissions: ["POST_NOTIFICATIONS", "RECORD_AUDIO", "READ_PHONE_STATE"],
     intentFilters: [
       {
         action: "VIEW",
