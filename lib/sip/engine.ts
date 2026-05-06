@@ -1,5 +1,5 @@
 /**
- * SIP Engine — CloudPhone11
+ * SIP Engine — Phone11
  *
  * Wraps react-native-pjsip to provide:
  *  - SIP account registration against Kamailio proxy
@@ -8,7 +8,7 @@
  *  - Call controls: mute, hold, speaker, transfer, DTMF
  *
  * Architecture:
- *   CloudPhone11 App
+ *   Phone11 App
  *       ↕ PJSIP (SIP/TLS + SRTP)
  *   Kamailio SIP Proxy (your server)
  *       ↕ SIP
@@ -42,7 +42,7 @@ function getPjsip() {
 
 class SipEngine {
   private endpoint: any = null;
-  private accountId: number | null = null;
+  private pjsipAccount: any = null;
   private initialized = false;
 
   /**
@@ -50,6 +50,8 @@ class SipEngine {
    * Call this once on app start after loading account config.
    */
   async initialize(): Promise<void> {
+    if (this.initialized) return;
+
     const pjsip = getPjsip();
     if (!pjsip) {
       console.log("[SIP Engine] Running on web — SIP disabled");
@@ -71,7 +73,7 @@ class SipEngine {
       // Configure endpoint
       await this.endpoint.start({
         service: {
-          ua: `CloudPhone11/1.0 (${Platform.OS})`,
+          ua: `Phone11/1.0 (${Platform.OS})`,
         },
         network: {
           useWifi: true,
@@ -88,7 +90,7 @@ class SipEngine {
       });
 
       // Register SIP account
-      this.accountId = await this.endpoint.createAccount({
+      this.pjsipAccount = await this.endpoint.createAccount({
         name: account.displayName || account.username,
         username: account.username,
         domain: account.domain,
@@ -124,11 +126,11 @@ class SipEngine {
 
       // Listen for call terminated
       this.endpoint.on("call_terminated", (call: any) => {
-        useSipCallStore.getState().terminateCall(call.getId());
+        useSipCallStore.getState().terminateCall(call.getId().toString());
       });
 
       this.initialized = true;
-      console.log("[SIP Engine] Initialized, account ID:", this.accountId);
+      console.log("[SIP Engine] Initialized, account:", this.pjsipAccount?.getId?.() ?? account.username);
     } catch (error: any) {
       console.error("[SIP Engine] Initialization failed:", error);
       useSipAccountStore.getState().setRegistrationState("failed", error?.message);
@@ -141,7 +143,7 @@ class SipEngine {
    */
   async makeCall(destination: string, video = false): Promise<string | null> {
     const pjsip = getPjsip();
-    if (!pjsip || !this.endpoint || this.accountId === null) {
+    if (!pjsip || !this.endpoint || !this.pjsipAccount) {
       console.warn("[SIP Engine] Cannot make call — not initialized");
       return null;
     }
@@ -155,7 +157,7 @@ class SipEngine {
       : `sip:${destination}@${account.domain}`;
 
     try {
-      const call = await this.endpoint.makeCall(this.accountId, uri, {
+      const call = await this.endpoint.makeCall(this.pjsipAccount, uri, {
         mediaVideo: video,
         mediaAudio: true,
       });
@@ -252,9 +254,14 @@ class SipEngine {
         console.error("[SIP Engine] destroy failed:", e);
       }
       this.endpoint = null;
-      this.accountId = null;
+      this.pjsipAccount = null;
       this.initialized = false;
     }
+  }
+
+  async restart(): Promise<void> {
+    await this.destroy();
+    await this.initialize();
   }
 
   private _mapRegState(pjsipState: string): RegistrationState {
