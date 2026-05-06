@@ -43,9 +43,13 @@ const gradleChanged = await patchFile(gradlePath, (source) => {
     .replace(/\bcompile\s+(["'])com\.facebook\.react:react-native:\+\1/g, 'implementation "com.facebook.react:react-android"')
     .replace(/\bcompile\s+project\(/g, "implementation project(")
     .replace(/\bcompile\s+fileTree\(/g, "implementation fileTree(")
-    .replace(/\bcompile\s+/g, "implementation ");
+    .replace(/\bcompile\s+/g, "implementation ")
+    .replace(/\bcompileSdkVersion\s+\d+/g, "compileSdkVersion rootProject.ext.compileSdkVersion")
+    .replace(/\btargetSdkVersion\s+\d+/g, "targetSdkVersion rootProject.ext.targetSdkVersion")
+    .replace(/\bcompileSdk\s+\d+/g, "compileSdk rootProject.ext.compileSdkVersion")
+    .replace(/\btargetSdk\s+\d+/g, "targetSdk rootProject.ext.targetSdkVersion");
 
-  if (/android\s*\{/.test(next) && !new RegExp(`\\bnamespace\\s+["']${escapedNamespace}["']`).test(next)) {
+  if (/android\s*\{/.test(next) && !new RegExp(`\bnamespace\s+["']${escapedNamespace}["']`).test(next)) {
     next = next.replace(/android\s*\{\s*/, (match) => `${match}\n    namespace "${namespace}"\n`);
   }
 
