@@ -12,29 +12,27 @@ Phone11 Cloud Phone cannot be tested in Expo Go. The mobile app uses native SIP 
 
 ## First Native Build Checklist
 
-1. Install dependencies with the package manager from `packageManager`.
-2. Regenerate native projects with `pnpm prebuild:ios` and `pnpm prebuild:android`.
-3. Build on real iOS and Android devices, not simulators, for call UI and audio routing.
-4. Enter a Phone11 SIP account in Settings.
-5. Confirm SIP registration over TLS.
-6. Place extension-to-extension, outbound PSTN, inbound DID, and failed-call tests.
-7. Capture call id, SIP response code, RTPEngine result, and audio direction for every failed call.
+1. Run `pnpm setup:dev-client` in a network-enabled build environment.
+2. Run `npx eas-cli@latest login` and `npx eas-cli@latest init`.
+3. Build installable dev clients with `pnpm eas:dev:android` and `pnpm eas:dev:ios`.
+4. Start Metro with `pnpm dev:client`.
+5. Build on real iOS and Android devices, not simulators, for call UI and audio routing.
+6. Enter a Phone11 SIP account in Settings.
+7. Confirm SIP registration over TLS.
+8. Place extension-to-extension, outbound PSTN, inbound DID, and failed-call tests.
+9. Capture call id, SIP response code, RTPEngine result, and audio direction for every failed call.
 
 ## Native Calling Dependencies
 
-`lib/sip/native-call.ts` is already written to use `react-native-callkeep` when it is installed. Add it in the real native build environment and regenerate the lockfile there:
+`lib/sip/native-call.ts` is already written to use `react-native-callkeep` when it is installed. The setup script installs the native dev-client dependencies and regenerates the lockfile:
 
 ```sh
-pnpm add react-native-callkeep@4.3.16
-```
-
-If Phone11 keeps managed Expo prebuild rather than committing native `ios/` and `android/` directories, add the matching Expo config plugin in the same environment and regenerate the lockfile:
-
-```sh
-pnpm add @config-plugins/react-native-callkeep
+pnpm setup:dev-client
 ```
 
 Do not commit manually edited lockfile package metadata. Let `pnpm` write the resolved package metadata from npm.
+
+See `docs/EAS_DEV_CLIENT_SETUP.md` for the full EAS build flow.
 
 ## Acceptance Gate
 
