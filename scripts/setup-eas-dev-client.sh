@@ -8,8 +8,14 @@ if ! command -v pnpm >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "Node: $(node -v 2>/dev/null || echo missing)"
+echo "pnpm: $(pnpm -v 2>/dev/null || echo missing)"
+echo "pnpm registry: $(pnpm config get registry 2>/dev/null || echo unknown)"
+echo "npm registry: $(npm config get registry 2>/dev/null || echo unknown)"
+
 echo "Installing Phone11 native development build dependencies..."
-pnpm add expo-dev-client@~6.0.15 react-native-callkeep@4.3.16
+pnpm exec expo install expo-dev-client --non-interactive
+pnpm add react-native-callkeep@4.3.16
 pnpm add -D @config-plugins/react-native-callkeep@12.0.0
 
 cat <<'EOF'
