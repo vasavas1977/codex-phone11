@@ -1,7 +1,7 @@
 /**
  * SIP Account Store
  * Persists SIP account configuration using AsyncStorage.
- * Connects to Kamailio SIP proxy → Dinstar SBC → PSTN.
+ * Connects Phone11 to Kamailio SIP proxy -> SBC -> PSTN.
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -40,15 +40,15 @@ interface SipAccountState {
   setRegistrationState: (state: RegistrationState, error?: string) => void;
 }
 
-const STORAGE_KEY = "cloudphone11_sip_account";
+const STORAGE_KEY = "phone11_sip_account";
 
 const DEFAULT_ACCOUNT: Omit<SipAccount, "username" | "password" | "domain"> = {
   id: "default",
   displayName: "",
   proxy: "",
   port: 5060,
-  transport: "UDP",
-  srtp: false,
+  transport: "TLS",
+  srtp: true,
   stun: "stun.l.google.com:19302",
   enabled: true,
 };
