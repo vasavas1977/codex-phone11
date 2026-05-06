@@ -16,6 +16,7 @@ on:
       - "eas.json"
       - ".github/workflows/phone11-mobile-cloud-check.yml"
       - ".github/workflows/phone11-eas-android-dev-client.yml"
+      - ".github/workflows/phone11-eas-ios-dev-client.yml"
 
 permissions:
   contents: read
