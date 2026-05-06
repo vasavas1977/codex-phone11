@@ -1,5 +1,5 @@
 /**
- * SIP Call Store — CloudPhone11
+ * SIP Call Store — Phone11
  * Manages active calls, incoming calls, and call state using Zustand.
  */
 
@@ -111,6 +111,15 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
 
     set((state) => {
       const existing = state.activeCalls[id];
+      const incoming = state.incomingCall?.id === id ? state.incomingCall : null;
+      if (!existing && !incoming) return state;
+
+      if (incoming && newStatus !== "active") {
+        return {
+          incomingCall: { ...incoming, status: newStatus, _nativeCall: nativeCall },
+        };
+      }
+
       if (!existing) return state;
 
       const updated: SipCall = {
@@ -177,7 +186,10 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
   clearIncomingCall: () => set({ incomingCall: null }),
 
   getCall: (callId: string) => {
-    const call = get().activeCalls[callId] ?? get().incomingCall;
+    const state = get();
+    const call =
+      state.activeCalls[callId] ??
+      (state.incomingCall?.id === callId ? state.incomingCall : null);
     return call?._nativeCall ?? null;
   },
 }));
