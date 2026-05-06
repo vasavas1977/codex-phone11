@@ -1,5 +1,5 @@
 /**
- * SIP Provider — CloudPhone11
+ * SIP Provider — Phone11
  * Initializes the PJSIP engine + CallKit/ConnectionService on app start.
  * Wrap the app root with <SipProvider> to enable real SIP calling.
  */
@@ -17,6 +17,7 @@ interface SipContextValue {
   answerCall: (callId: string, video?: boolean) => Promise<void>;
   setMute: (callId: string, muted: boolean) => Promise<void>;
   setHold: (callId: string, held: boolean) => Promise<void>;
+  setSpeaker: (callId: string, speaker: boolean) => Promise<void>;
   sendDtmf: (callId: string, digit: string) => Promise<void>;
   transferCall: (callId: string, destination: string) => Promise<void>;
 }
@@ -27,6 +28,7 @@ const SipContext = createContext<SipContextValue>({
   answerCall: async () => {},
   setMute: async () => {},
   setHold: async () => {},
+  setSpeaker: async () => {},
   sendDtmf: async () => {},
   transferCall: async () => {},
 });
@@ -112,6 +114,9 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       await sipEngine.setHold(id, held);
       useSipCallStore.getState().setHeld(id, held);
       nativeCallManager.setOnHold(id, held);
+    },
+    setSpeaker: async (id, speaker) => {
+      useSipCallStore.getState().setSpeaker(id, speaker);
     },
     sendDtmf: async (id, digit) => {
       await sipEngine.sendDtmf(id, digit);
