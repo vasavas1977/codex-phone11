@@ -13,7 +13,7 @@ export default function IncomingCallScreen() {
   const { number, name, callId } = useLocalSearchParams<{ number?: string; name?: string; callId?: string }>();
   const { answerCall, hangupCall } = useSip();
   const incomingCall = useSipCallStore((state) =>
-    callId && state.incomingCall?.id === callId ? state.incomingCall : state.incomingCall
+    callId ? (state.incomingCall?.id === callId ? state.incomingCall : null) : state.incomingCall
   );
   const callerNumber = incomingCall?.remoteNumber ?? number ?? "SIP Call";
   const callerName = incomingCall?.remoteName ?? name ?? callerNumber;
