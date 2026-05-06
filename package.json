@@ -14,6 +14,7 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
+    "postinstall": "node scripts/patch-react-native-pjsip.mjs",
     "setup:dev-client": "sh scripts/setup-eas-dev-client.sh",
     "dev:client": "cross-env EXPO_USE_METRO_WORKSPACE_ROOT=1 npx expo start --dev-client --lan",
     "prebuild": "expo prebuild",
