@@ -14,7 +14,7 @@ echo "pnpm registry: $(pnpm config get registry 2>/dev/null || echo unknown)"
 echo "npm registry: $(npm config get registry 2>/dev/null || echo unknown)"
 
 echo "Installing Phone11 native development build dependencies..."
-pnpm exec expo install expo-dev-client --non-interactive
+pnpm add expo-dev-client@~6.0.20
 pnpm add react-native-callkeep@4.3.16
 pnpm add -D @config-plugins/react-native-callkeep@12.0.0
 
