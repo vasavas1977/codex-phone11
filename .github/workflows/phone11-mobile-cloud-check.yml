@@ -15,9 +15,10 @@ on:
       - "pnpm-lock.yaml"
       - "eas.json"
       - ".github/workflows/phone11-mobile-cloud-check.yml"
+      - ".github/workflows/phone11-eas-android-dev-client.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   install-test-config:
@@ -28,7 +29,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: $${{ github.head_ref || github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -50,15 +51,15 @@ jobs:
       - name: Validate Expo config
         run: pnpm exec expo config --type public
 
-  native-dev-client-setup:
-    name: Install native dev-client dependencies and prebuild
+  native-dev-client-prebuild:
+    name: Validate native dev-client prebuild
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: $${{ github.head_ref || github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -74,26 +75,10 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run Phone11 dev-client setup
-        run: pnpm setup:dev-client
+      - name: Confirm native dev-client dependencies
+        run: pnpm list expo-dev-client react-native-callkeep @config-plugins/react-native-callkeep --depth 0
 
-      - name: Show dependency changes
-        run: git status --short -- package.json pnpm-lock.yaml
-
-      - name: Commit dependency changes
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if git diff --quiet -- package.json pnpm-lock.yaml; then
-            echo "No dependency changes to commit."
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add package.json pnpm-lock.yaml
-            git commit -m "Install Phone11 native dev-client dependencies"
-            git push
-          fi
-
-      - name: Validate Expo config after dev-client setup
+      - name: Validate Expo config
         run: pnpm exec expo config --type public
 
       - name: Prebuild native projects without installing pods/gradle deps
