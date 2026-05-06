@@ -81,17 +81,29 @@ const gradleChanged = await patchFile(gradlePath, (source) => {
     .replace(/\bcompileSdkVersion\s+\d+/g, "compileSdkVersion rootProject.ext.compileSdkVersion")
     .replace(/\btargetSdkVersion\s+\d+/g, "targetSdkVersion rootProject.ext.targetSdkVersion")
     .replace(/\bcompileSdk\s+\d+/g, "compileSdk rootProject.ext.compileSdkVersion")
-    .replace(/\btargetSdk\s+\d+/g, "targetSdk rootProject.ext.targetSdkVersion");
+    .replace(/\btargetSdk\s+\d+/g, "targetSdk rootProject.ext.targetSdkVersion")
+    .replace(/\n\s*implementation\s+["']androidx\.annotation:annotation:[^"']+["']\s*/g, "\n");
 
   if (/android\s*\{/.test(next) && !new RegExp(`\bnamespace\s+["']${escapedNamespace}["']`).test(next)) {
     next = next.replace(/android\s*\{\s*/, (match) => `${match}\n    namespace "${namespace}"\n`);
   }
 
-  if (/dependencies\s*\{/.test(next) && !/androidx\.annotation:annotation/.test(next)) {
-    next = next.replace(
-      /dependencies\s*\{\s*/,
-      (match) => `${match}\n    implementation "androidx.annotation:annotation:1.9.1"\n`
-    );
+  if (!/androidx\.annotation:annotation/.test(next)) {
+    const dependencyBlockMatches = [...next.matchAll(/dependencies\s*\{/g)];
+    const projectDependencyBlock =
+      dependencyBlockMatches.length > 1
+        ? dependencyBlockMatches[dependencyBlockMatches.length - 1]
+        : null;
+
+    if (projectDependencyBlock?.index !== undefined) {
+      const insertAt = projectDependencyBlock.index + projectDependencyBlock[0].length;
+      next =
+        next.slice(0, insertAt) +
+        '\n    implementation "androidx.annotation:annotation:1.9.1"' +
+        next.slice(insertAt);
+    } else {
+      next += '\n\ndependencies {\n    implementation "androidx.annotation:annotation:1.9.1"\n}\n';
+    }
   }
 
   return next;
