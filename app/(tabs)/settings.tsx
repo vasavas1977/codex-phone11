@@ -113,6 +113,13 @@ export default function SettingsScreen() {
             onPress={() => router.push("/settings/sip")}
           />
           <SettingItem
+            icon="checklist"
+            iconColor="#00C896"
+            label="SIP Diagnostics"
+            sublabel="Registration, call id, and media events"
+            onPress={() => router.push("/settings/sip-diagnostics" as any)}
+          />
+          <SettingItem
             icon="waveform"
             iconColor="#8B5CF6"
             label="Audio Settings"
