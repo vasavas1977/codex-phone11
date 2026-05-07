@@ -37,8 +37,8 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
-  // Expo SDK 54's Reanimated 4 stack requires the new architecture.
-  newArchEnabled: true,
+  // Keep the iPhone pilot on the old architecture until react-native-pjsip is proven with the new architecture.
+  newArchEnabled: false,
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
@@ -117,7 +117,7 @@ const config: ExpoConfig = {
   ],
   experiments: {
     typedRoutes: true,
-    reactCompiler: true,
+    reactCompiler: false,
   },
   extra: {
     eas: {

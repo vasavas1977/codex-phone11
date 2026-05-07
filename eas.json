@@ -35,6 +35,16 @@
       "distribution": "internal",
       "channel": "preview"
     },
+    "preview-ios-existing-credentials": {
+      "distribution": "internal",
+      "channel": "preview",
+      "env": {
+        "PHONE11_BUNDLE_ID": "space.manus.phone11ai.t20260425073427"
+      },
+      "ios": {
+        "image": "latest"
+      }
+    },
     "production": {
       "channel": "production",
       "autoIncrement": true

@@ -1,4 +1,4 @@
-name: Phone11 EAS Dev Client
+name: Phone11 EAS Build
 
 on:
   workflow_dispatch:
@@ -21,6 +21,7 @@ on:
           - development-ios-existing-credentials
           - development-simulator
           - preview
+          - preview-ios-existing-credentials
       wait_for_build:
         description: Keep GitHub Actions running until the EAS build finishes
         required: true
@@ -31,8 +32,8 @@ permissions:
   contents: read
 
 jobs:
-  dev-client:
-    name: Queue ${{ inputs.eas_platform }} development client build
+  eas-build:
+    name: Queue ${{ inputs.eas_platform }} EAS build
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -75,7 +76,7 @@ jobs:
       - name: Confirm EAS account
         run: eas whoami
 
-      - name: Build development client
+      - name: Build app
         env:
           EAS_PLATFORM: ${{ inputs.eas_platform }}
           EAS_PROFILE: ${{ inputs.eas_profile }}
