@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Alert, Switch, View, Text, TouchableOpacity, ScrollView, TextInput, StyleSheet } from "react-native";
+import { useEffect, type ReactNode } from "react";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
@@ -7,11 +7,9 @@ import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
-import { DEFAULT_ACCOUNT, useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
+import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
 import { sipEngine } from "@/lib/sip/engine";
 import { sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
-
-type Transport = "UDP" | "TCP" | "TLS";
 
 function registrationLabel(state: RegistrationState): string {
   switch (state) {
@@ -36,35 +34,10 @@ export default function SIPAccountScreen() {
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const registrationError = useSipAccountStore((s) => s.registrationError);
   const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
-  const [server, setServer] = useState("");
-  const [port, setPort] = useState("5061");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [domain, setDomain] = useState("");
-  const [transport, setTransport] = useState<Transport>("TLS");
-  const [enabled, setEnabled] = useState(true);
-  const [srtp, setSrtp] = useState(true);
-  const [stun, setStun] = useState(DEFAULT_ACCOUNT.stun ?? "");
-  const [showPassword, setShowPassword] = useState(false);
-
-  const TRANSPORTS: Transport[] = ["UDP", "TCP", "TLS"];
 
   useEffect(() => {
     loadAccount().catch(console.error);
   }, [loadAccount]);
-
-  useEffect(() => {
-    if (!account) return;
-    setServer(account.proxy || account.domain);
-    setPort(String(account.port || (account.transport === "TLS" ? 5061 : 5060)));
-    setUsername(account.username);
-    setPassword(account.password);
-    setDomain(account.domain);
-    setTransport(account.transport);
-    setEnabled(account.enabled);
-    setSrtp(account.srtp);
-    setStun(account.stun ?? "");
-  }, [account]);
 
   const statusColor =
     registrationState === "registered"
@@ -75,42 +48,6 @@ export default function SIPAccountScreen() {
       ? colors.error
       : colors.muted;
 
-  const handleSave = async () => {
-    const cleanUsername = username.trim();
-    const cleanPassword = password.trim();
-    const cleanDomain = domain.trim();
-    const cleanServer = server.trim();
-    const cleanPort = Number.parseInt(port, 10);
-
-    if (!cleanUsername || !cleanPassword || !cleanDomain) {
-      Alert.alert("Missing SIP details", "Enter username, password, and SIP domain before saving.");
-      return;
-    }
-
-    if (!Number.isFinite(cleanPort) || cleanPort <= 0) {
-      Alert.alert("Invalid port", "Enter a valid SIP port.");
-      return;
-    }
-
-    await setAccount({
-      id: account?.id ?? DEFAULT_ACCOUNT.id,
-      displayName: account?.displayName || cleanUsername,
-      username: cleanUsername,
-      password: cleanPassword,
-      domain: cleanDomain,
-      proxy: cleanServer || undefined,
-      port: cleanPort,
-      transport,
-      srtp,
-      stun: stun.trim() || undefined,
-      enabled,
-    });
-
-    await sipEngine.restart();
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.back();
-  };
-
   const handleSyncFromAdmin = async () => {
     const result = await phoneConfigQuery.refetch();
 
@@ -120,7 +57,7 @@ export default function SIPAccountScreen() {
     }
 
     if (!result.data?.configured || !result.data.sip) {
-      Alert.alert("No extension assigned", "Ask an admin to assign a Phone11 extension to this user.");
+      Alert.alert("No extension assigned", "Assign an extension to this user in the Phone11 admin portal, then sync again.");
       return;
     }
 
@@ -128,28 +65,29 @@ export default function SIPAccountScreen() {
     await setAccount(provisionedAccount);
     await sipEngine.restart();
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("SIP account synced", `Extension ${provisionedAccount.username} is ready on ${provisionedAccount.domain}.`);
+    Alert.alert("Provisioning synced", `Extension ${provisionedAccount.username} is ready on ${provisionedAccount.domain}.`);
   };
 
-  const InputField = ({
-    label, value, onChangeText, placeholder, secureTextEntry, keyboardType, rightElement
+  const ReadOnlyField = ({
+    label,
+    value,
+    secureTextEntry,
+    rightElement,
   }: {
-    label: string; value: string; onChangeText: (v: string) => void;
-    placeholder?: string; secureTextEntry?: boolean; keyboardType?: any; rightElement?: ReactNode;
+    label: string;
+    value?: string | number | null;
+    secureTextEntry?: boolean;
+    rightElement?: ReactNode;
   }) => (
     <View style={styles.inputGroup}>
       <Text style={[styles.inputLabel, { color: colors.muted }]}>{label}</Text>
       <View style={[styles.inputWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}>
         <TextInput
           style={[styles.input, { color: colors.foreground }]}
-          value={value}
-          onChangeText={onChangeText}
-          placeholder={placeholder}
-          placeholderTextColor={colors.muted}
-          secureTextEntry={secureTextEntry && !showPassword}
-          keyboardType={keyboardType}
-          autoCapitalize="none"
-          autoCorrect={false}
+          value={value === undefined || value === null || value === "" ? "Not provisioned" : String(value)}
+          editable={false}
+          secureTextEntry={secureTextEntry}
+          selectTextOnFocus={false}
         />
         {rightElement}
       </View>
@@ -159,25 +97,20 @@ export default function SIPAccountScreen() {
   return (
     <ScreenContainer>
       <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={[styles.header, { borderBottomColor: colors.border }]}> 
+        <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <IconSymbol name="chevron.left" size={20} color={colors.primary} />
             <Text style={[styles.backText, { color: colors.primary }]}>Settings</Text>
           </TouchableOpacity>
-          <Text style={[styles.title, { color: colors.foreground }]}>SIP Account</Text>
-          <TouchableOpacity
-            style={[styles.saveBtn, { backgroundColor: colors.primary }]}
-            onPress={handleSave}
-          >
-            <Text style={styles.saveBtnText}>Save</Text>
-          </TouchableOpacity>
+          <Text style={[styles.title, { color: colors.foreground }]}>Phone Provisioning</Text>
+          <View style={styles.headerSpacer} />
         </View>
 
-        <View style={[styles.statusBanner, { backgroundColor: statusColor + "15", borderColor: statusColor + "40" }]}> 
+        <View style={[styles.statusBanner, { backgroundColor: statusColor + "15", borderColor: statusColor + "40" }]}>
           <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
           <Text style={[styles.statusText, { color: statusColor }]}> 
             {registrationLabel(registrationState)}
-            {registrationError ? ` - ${registrationError}` : server ? ` - ${server}` : ""}
+            {registrationError ? ` - ${registrationError}` : account ? ` - ${account.domain}` : ""}
           </Text>
         </View>
 
@@ -188,7 +121,9 @@ export default function SIPAccountScreen() {
         >
           <View style={styles.syncText}>
             <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync from Admin</Text>
-            <Text style={[styles.syncSub, { color: colors.muted }]}>Use the extension and SIP server assigned in Phone11 management.</Text>
+            <Text style={[styles.syncSub, { color: colors.muted }]}> 
+              Device SIP settings are read-only and controlled by Phone11 admin management.
+            </Text>
           </View>
           {phoneConfigQuery.isFetching ? (
             <ActivityIndicator size="small" color={colors.primary} />
@@ -198,118 +133,35 @@ export default function SIPAccountScreen() {
         </TouchableOpacity>
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
-          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server Configuration</Text>
-
-          <InputField
-            label="SIP Server / Proxy"
-            value={server}
-            onChangeText={setServer}
-            placeholder="sip.yourserver.com"
-            keyboardType="url"
-          />
-          <InputField
-            label="SIP Domain"
-            value={domain}
-            onChangeText={setDomain}
-            placeholder="yourserver.com"
-            keyboardType="url"
-          />
-          <InputField
-            label="Port"
-            value={port}
-            onChangeText={setPort}
-            placeholder="5060"
-            keyboardType="numeric"
-          />
-
-          <View style={styles.inputGroup}>
-            <Text style={[styles.inputLabel, { color: colors.muted }]}>Transport Protocol</Text>
-            <View style={styles.transportRow}>
-              {TRANSPORTS.map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  style={[
-                    styles.transportBtn,
-                    { borderColor: transport === t ? colors.primary : colors.border },
-                    transport === t && { backgroundColor: colors.primary + "15" }
-                  ]}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setTransport(t);
-                    setPort(t === "TLS" ? "5061" : "5060");
-                  }}
-                >
-                  <Text style={[styles.transportText, { color: transport === t ? colors.primary : colors.muted }]}>{t}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server</Text>
+          <ReadOnlyField label="SIP Domain" value={account?.domain} />
+          <ReadOnlyField label="SIP Proxy" value={account?.proxy || account?.domain} />
+          <ReadOnlyField label="Port" value={account?.port} />
+          <ReadOnlyField label="Transport" value={account?.transport} />
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
-          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Credentials</Text>
-
-          <InputField
-            label="Username / Extension"
-            value={username}
-            onChangeText={setUsername}
-            placeholder="1001"
-            keyboardType="default"
-          />
-          <InputField
-            label="Password"
-            value={password}
-            onChangeText={setPassword}
-            placeholder="SIP password"
-            secureTextEntry
-            rightElement={
-              <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={{ padding: 8 }}>
-                <IconSymbol name={showPassword ? "eye.slash" : "eye"} size={16} color={colors.muted} />
-              </TouchableOpacity>
-            }
-          />
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Assigned Extension</Text>
+          <ReadOnlyField label="Display Name" value={account?.displayName} />
+          <ReadOnlyField label="Username / Extension" value={account?.username} />
+          <ReadOnlyField label="Password" value={account?.password ? "Stored securely" : ""} rightElement={<IconSymbol name="lock.fill" size={15} color={colors.muted} />} />
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
-          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Calling</Text>
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text style={[styles.switchTitle, { color: colors.foreground }]}>Enable SIP account</Text>
-              <Text style={[styles.switchSub, { color: colors.muted }]}>Register this device for inbound and outbound calls.</Text>
-            </View>
-            <Switch value={enabled} onValueChange={setEnabled} trackColor={{ true: colors.primary }} />
-          </View>
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text style={[styles.switchTitle, { color: colors.foreground }]}>Secure media</Text>
-              <Text style={[styles.switchSub, { color: colors.muted }]}>Use SRTP where supported by the SIP platform.</Text>
-            </View>
-            <Switch value={srtp} onValueChange={setSrtp} trackColor={{ true: colors.primary }} />
-          </View>
-          <InputField
-            label="STUN Server"
-            value={stun}
-            onChangeText={setStun}
-            placeholder="stun.l.google.com:19302"
-            keyboardType="url"
-          />
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Calling Policy</Text>
+          <ReadOnlyField label="SIP Account Enabled" value={account?.enabled ? "Enabled" : "Not provisioned"} />
+          <ReadOnlyField label="Secure Media" value={account?.srtp ? "SRTP enabled" : "Not provisioned"} />
+          <ReadOnlyField label="STUN Server" value={account?.stun} />
         </View>
 
         <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}> 
           <View style={styles.infoHeader}>
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
-            <Text style={[styles.infoTitle, { color: colors.primary }]}>Open Source Backend Stack</Text>
+            <Text style={[styles.infoTitle, { color: colors.primary }]}>Admin-managed configuration</Text>
           </View>
           <Text style={[styles.infoBody, { color: colors.muted }]}> 
-            Phone11 uses PJSIP in the native app for cloud phone calling, with Kamailio, RTPEngine, FreeSWITCH, and your SBCs on the network side.
+            Create or assign the user's extension in Admin Portal &gt; Phone Provisioning. The app then receives SIP username, encrypted password, TLS port, SRTP, and network settings from the server.
           </Text>
-          <TouchableOpacity
-            style={[styles.docsBtn, { borderColor: colors.primary + "40" }]}
-            onPress={() => router.push("/settings/about")}
-          >
-            <IconSymbol name="doc.text.fill" size={14} color={colors.primary} />
-            <Text style={[styles.docsBtnText, { color: colors.primary }]}>View Architecture Docs</Text>
-          </TouchableOpacity>
         </View>
 
         <View style={{ height: 32 }} />
@@ -327,11 +179,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 0.5,
   },
-  backBtn: { flexDirection: "row", alignItems: "center", gap: 4, width: 80 },
+  backBtn: { flexDirection: "row", alignItems: "center", gap: 4, width: 92 },
   backText: { fontSize: 16, fontWeight: "500" },
   title: { fontSize: 17, fontWeight: "700" },
-  saveBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
-  saveBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  headerSpacer: { width: 92 },
   statusBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -366,7 +217,7 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: 15, fontWeight: "700", marginBottom: 4 },
   inputGroup: { gap: 6 },
-  inputLabel: { fontSize: 12, fontWeight: "600", letterSpacing: 0.3 },
+  inputLabel: { fontSize: 12, fontWeight: "600" },
   inputWrapper: {
     flexDirection: "row",
     alignItems: "center",
@@ -375,25 +226,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   input: { flex: 1, fontSize: 15, paddingVertical: 12 },
-  transportRow: { flexDirection: "row", gap: 8 },
-  transportBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    alignItems: "center",
-  },
-  transportText: { fontSize: 14, fontWeight: "700" },
-  switchRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 16,
-    paddingVertical: 4,
-  },
-  switchText: { flex: 1, gap: 3 },
-  switchTitle: { fontSize: 14, fontWeight: "700" },
-  switchSub: { fontSize: 12, lineHeight: 17 },
   infoCard: {
     marginHorizontal: 16,
     marginBottom: 16,
@@ -405,15 +237,4 @@ const styles = StyleSheet.create({
   infoHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
   infoTitle: { fontSize: 14, fontWeight: "700" },
   infoBody: { fontSize: 13, lineHeight: 19 },
-  docsBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    alignSelf: "flex-start",
-  },
-  docsBtnText: { fontSize: 13, fontWeight: "600" },
 });
