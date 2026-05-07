@@ -1,116 +1,176 @@
 /**
- * Extensions Management — Admin Portal
- * Manage PBX extensions, assign DIDs, configure voicemail and call forwarding.
+ * Extensions Management - Admin Portal
+ * Admin-controlled phone provisioning for Phone11 mobile clients.
  */
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  ScrollView, Text, View, TouchableOpacity, TextInput, StyleSheet, FlatList,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { router } from "expo-router";
+
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { trpc } from "@/lib/trpc";
 
-interface Extension {
-  id: string;
-  number: string;
-  name: string;
-  type: "user" | "ring_group" | "conference" | "ivr" | "parking";
-  did: string;
-  status: "online" | "busy" | "offline" | "dnd";
-  voicemail: boolean;
-  forwarding: string | null;
+type ExtensionRow = {
+  id: number;
+  extension_number?: string;
+  sip_username?: string;
+  sip_domain?: string;
+  display_name?: string;
+  status?: string;
+  assigned_user_id?: number | null;
+  user_id?: number | null;
+};
+
+function extensionNumber(row: ExtensionRow) {
+  return row.extension_number || row.sip_username || String(row.id);
 }
-
-const MOCK_EXTENSIONS: Extension[] = [
-  { id: "1", number: "1001", name: "John Smith", type: "user", did: "+1 (415) 555-0101", status: "online", voicemail: true, forwarding: null },
-  { id: "2", number: "1002", name: "Sarah Johnson", type: "user", did: "+1 (415) 555-0102", status: "busy", voicemail: true, forwarding: null },
-  { id: "3", number: "1003", name: "Mike Chen", type: "user", did: "+1 (415) 555-0103", status: "offline", voicemail: true, forwarding: "+1 (555) 999-0000" },
-  { id: "4", number: "1004", name: "Emily Davis", type: "user", did: "+44 20 7946 0104", status: "online", voicemail: true, forwarding: null },
-  { id: "5", number: "2001", name: "Sales Team", type: "ring_group", did: "+1 (415) 555-2001", status: "online", voicemail: false, forwarding: null },
-  { id: "6", number: "2002", name: "Support Team", type: "ring_group", did: "+1 (415) 555-2002", status: "online", voicemail: true, forwarding: null },
-  { id: "7", number: "3001", name: "Main Conference", type: "conference", did: "", status: "online", voicemail: false, forwarding: null },
-  { id: "8", number: "0", name: "Main Auto-Attendant", type: "ivr", did: "+1 (415) 555-0000", status: "online", voicemail: false, forwarding: null },
-  { id: "9", number: "7001", name: "Call Parking Lot", type: "parking", did: "", status: "online", voicemail: false, forwarding: null },
-  { id: "10", number: "1005", name: "Alex Wilson", type: "user", did: "+1 (212) 555-0105", status: "dnd", voicemail: true, forwarding: null },
-];
 
 export default function AdminExtensions() {
   const colors = useColors();
+  const utils = trpc.useUtils();
+  const extensionsQuery = trpc.phone.listExtensions.useQuery({ orgId: 1 });
+  const createExtension = trpc.phone.createExtension.useMutation({
+    onSuccess: () => {
+      utils.phone.listExtensions.invalidate();
+    },
+  });
+  const assignExtension = trpc.phone.assignExtension.useMutation({
+    onSuccess: () => {
+      utils.phone.listExtensions.invalidate();
+    },
+  });
+
   const [search, setSearch] = useState("");
+  const [extension, setExtension] = useState("1020");
+  const [displayName, setDisplayName] = useState("Phone11 Test User");
+  const [userId, setUserId] = useState("");
 
-  const filtered = MOCK_EXTENSIONS.filter(
-    (e) => e.name.toLowerCase().includes(search.toLowerCase()) || e.number.includes(search)
-  );
+  const rows = (extensionsQuery.data || []) as ExtensionRow[];
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((row) => {
+      const number = extensionNumber(row).toLowerCase();
+      const name = (row.display_name || "").toLowerCase();
+      const user = String(row.assigned_user_id || row.user_id || "");
+      return number.includes(needle) || name.includes(needle) || user.includes(needle);
+    });
+  }, [rows, search]);
 
-  const statusColor = (s: string) =>
-    s === "online" ? "#00C896" : s === "busy" ? "#FF9500" : s === "dnd" ? "#FF3B30" : "#9BA1A6";
+  const busy = createExtension.isPending || assignExtension.isPending;
 
-  const typeIcon = (t: string) => {
-    switch (t) {
-      case "user": return "person.fill";
-      case "ring_group": return "person.2.fill";
-      case "conference": return "phone.fill";
-      case "ivr": return "rectangle.grid.3x2.fill";
-      case "parking": return "pause.fill";
-      default: return "phone.fill";
+  const handleCreate = async () => {
+    const extensionNumberValue = extension.trim();
+    const parsedUserId = userId.trim() ? Number.parseInt(userId.trim(), 10) : undefined;
+
+    if (!extensionNumberValue) {
+      Alert.alert("Extension required", "Enter an extension number before creating it.");
+      return;
+    }
+
+    if (userId.trim() && (!Number.isFinite(parsedUserId) || !parsedUserId || parsedUserId <= 0)) {
+      Alert.alert("Invalid user ID", "Enter the numeric Phone11 user ID from the admin user record.");
+      return;
+    }
+
+    try {
+      const created = await createExtension.mutateAsync({
+        orgId: 1,
+        extensionNumber: extensionNumberValue,
+        displayName: displayName.trim() || `Extension ${extensionNumberValue}`,
+      });
+
+      if (parsedUserId && created.id) {
+        await assignExtension.mutateAsync({
+          userId: parsedUserId,
+          extensionId: created.id,
+          isPrimary: true,
+        });
+      }
+
+      Alert.alert(
+        "Extension provisioned",
+        parsedUserId
+          ? `Extension ${extensionNumber(created)} was created and assigned to user ${parsedUserId}. The mobile app can now sync from admin.`
+          : `Extension ${extensionNumber(created)} was created. Assign it to a user before testing on iPhone.`,
+      );
+    } catch (error) {
+      Alert.alert("Provisioning failed", error instanceof Error ? error.message : "Could not create the extension.");
     }
   };
 
-  const typeLabel = (t: string) => {
-    switch (t) {
-      case "user": return "User";
-      case "ring_group": return "Ring Group";
-      case "conference": return "Conference";
-      case "ivr": return "IVR";
-      case "parking": return "Parking";
-      default: return t;
+  const handleAssign = async (row: ExtensionRow) => {
+    const parsedUserId = userId.trim() ? Number.parseInt(userId.trim(), 10) : undefined;
+
+    if (!parsedUserId || parsedUserId <= 0) {
+      Alert.alert("User ID required", "Enter the numeric Phone11 user ID, then assign the extension.");
+      return;
+    }
+
+    try {
+      await assignExtension.mutateAsync({
+        userId: parsedUserId,
+        extensionId: row.id,
+        isPrimary: true,
+      });
+      Alert.alert("Extension assigned", `Extension ${extensionNumber(row)} is now assigned to user ${parsedUserId}.`);
+    } catch (error) {
+      Alert.alert("Assignment failed", error instanceof Error ? error.message : "Could not assign the extension.");
     }
   };
 
-  const renderExtension = ({ item }: { item: Extension }) => (
-    <TouchableOpacity
-      style={[styles.extCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-      activeOpacity={0.7}
-    >
-      <View style={styles.extLeft}>
-        <View style={[styles.extIcon, { backgroundColor: colors.primary + "15" }]}>
-          <IconSymbol name={typeIcon(item.type) as any} size={18} color={colors.primary} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <View style={styles.extNameRow}>
-            <Text style={[styles.extNumber, { color: colors.primary }]}>{item.number}</Text>
-            <View style={[styles.statusDot, { backgroundColor: statusColor(item.status) }]} />
+  const renderExtension = ({ item }: { item: ExtensionRow }) => {
+    const assignedUser = item.assigned_user_id || item.user_id || null;
+    const status = item.status || "active";
+
+    return (
+      <View style={[styles.extCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={styles.extLeft}>
+          <View style={[styles.extIcon, { backgroundColor: colors.primary + "15" }]}>
+            <IconSymbol name="phone.fill" size={18} color={colors.primary} />
           </View>
-          <Text style={[styles.extName, { color: colors.foreground }]}>{item.name}</Text>
-          <View style={styles.extTags}>
-            <View style={[styles.tag, { backgroundColor: colors.primary + "15" }]}>
-              <Text style={[styles.tagText, { color: colors.primary }]}>{typeLabel(item.type)}</Text>
-            </View>
-            {item.voicemail && (
-              <View style={[styles.tag, { backgroundColor: "#8B5CF615" }]}>
-                <Text style={[styles.tagText, { color: "#8B5CF6" }]}>VM</Text>
-              </View>
-            )}
-            {item.forwarding && (
-              <View style={[styles.tag, { backgroundColor: "#FF950015" }]}>
-                <Text style={[styles.tagText, { color: "#FF9500" }]}>FWD</Text>
-              </View>
-            )}
+          <View style={styles.extText}>
+            <Text style={[styles.extNumber, { color: colors.primary }]}>{extensionNumber(item)}</Text>
+            <Text style={[styles.extName, { color: colors.foreground }]}>
+              {item.display_name || "Unnamed extension"}
+            </Text>
+            <Text style={[styles.extMeta, { color: colors.muted }]}>
+              {item.sip_domain || "sip.phone11.ai"} - {assignedUser ? `User ${assignedUser}` : "Unassigned"}
+            </Text>
           </View>
         </View>
+        <View style={styles.extRight}>
+          <View style={[styles.statusBadge, { backgroundColor: assignedUser ? "#00C89620" : "#FF950020" }]}>
+            <Text style={[styles.statusText, { color: assignedUser ? "#00A876" : "#D97706" }]}>
+              {assignedUser ? "ASSIGNED" : "OPEN"}
+            </Text>
+          </View>
+          <Text style={[styles.extMeta, { color: colors.muted }]}>{status}</Text>
+          {!assignedUser && (
+            <TouchableOpacity
+              style={[styles.assignBtn, { borderColor: colors.primary + "60" }]}
+              onPress={() => handleAssign(item)}
+              disabled={busy}
+            >
+              <Text style={[styles.assignText, { color: colors.primary }]}>Assign</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
-      <View style={styles.extRight}>
-        {item.did ? (
-          <Text style={[styles.extDid, { color: colors.muted }]}>{item.did}</Text>
-        ) : (
-          <Text style={[styles.extDid, { color: colors.muted, fontStyle: "italic" }]}>No DID</Text>
-        )}
-        <IconSymbol name="chevron.right" size={16} color={colors.muted} />
-      </View>
-    </TouchableOpacity>
-  );
+    );
+  };
 
   return (
     <ScreenContainer>
@@ -118,45 +178,107 @@ export default function AdminExtensions() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <IconSymbol name="chevron.left" size={22} color={colors.primary} />
         </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.foreground }]}>Extensions</Text>
-        <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]}>
-          <IconSymbol name="plus" size={18} color="#fff" />
+        <Text style={[styles.title, { color: colors.foreground }]}>Phone Provisioning</Text>
+        <TouchableOpacity onPress={() => extensionsQuery.refetch()} style={styles.refreshBtn}>
+          {extensionsQuery.isFetching ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
+          )}
         </TouchableOpacity>
-      </View>
-
-      {/* Summary */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.summary} contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}>
-        {[
-          { label: "Total", count: MOCK_EXTENSIONS.length, color: colors.primary },
-          { label: "Online", count: MOCK_EXTENSIONS.filter((e) => e.status === "online").length, color: "#00C896" },
-          { label: "Busy", count: MOCK_EXTENSIONS.filter((e) => e.status === "busy").length, color: "#FF9500" },
-          { label: "Offline", count: MOCK_EXTENSIONS.filter((e) => e.status === "offline").length, color: "#9BA1A6" },
-          { label: "DND", count: MOCK_EXTENSIONS.filter((e) => e.status === "dnd").length, color: "#FF3B30" },
-        ].map((s, i) => (
-          <View key={i} style={[styles.summaryChip, { borderColor: s.color + "40" }]}>
-            <View style={[styles.summaryDot, { backgroundColor: s.color }]} />
-            <Text style={[styles.summaryText, { color: colors.foreground }]}>{s.count} {s.label}</Text>
-          </View>
-        ))}
-      </ScrollView>
-
-      {/* Search */}
-      <View style={[styles.searchBar, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <IconSymbol name="magnifyingglass" size={18} color={colors.muted} />
-        <TextInput
-          style={[styles.searchInput, { color: colors.foreground }]}
-          placeholder="Search by name or extension number..."
-          placeholderTextColor={colors.muted}
-          value={search}
-          onChangeText={setSearch}
-        />
       </View>
 
       <FlatList
         data={filtered}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => String(item.id)}
         renderItem={renderExtension}
-        contentContainerStyle={{ padding: 16, gap: 8 }}
+        ListHeaderComponent={
+          <View>
+            <View style={[styles.provisionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.cardTitle, { color: colors.foreground }]}>Create test extension</Text>
+              <Text style={[styles.cardSub, { color: colors.muted }]}> 
+                The iPhone app will receive SIP server, username, password, TLS, SRTP, and STUN from admin provisioning.
+              </Text>
+
+              <View style={styles.inputRow}>
+                <View style={styles.inputCol}>
+                  <Text style={[styles.inputLabel, { color: colors.muted }]}>Extension</Text>
+                  <TextInput
+                    style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
+                    value={extension}
+                    onChangeText={setExtension}
+                    keyboardType="number-pad"
+                    placeholder="1020"
+                    placeholderTextColor={colors.muted}
+                  />
+                </View>
+                <View style={styles.inputCol}>
+                  <Text style={[styles.inputLabel, { color: colors.muted }]}>User ID</Text>
+                  <TextInput
+                    style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
+                    value={userId}
+                    onChangeText={setUserId}
+                    keyboardType="number-pad"
+                    placeholder="Phone11 user ID"
+                    placeholderTextColor={colors.muted}
+                  />
+                </View>
+              </View>
+
+              <Text style={[styles.inputLabel, { color: colors.muted }]}>Display name</Text>
+              <TextInput
+                style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
+                value={displayName}
+                onChangeText={setDisplayName}
+                placeholder="Phone11 Test User"
+                placeholderTextColor={colors.muted}
+              />
+
+              <TouchableOpacity
+                style={[styles.createBtn, { backgroundColor: colors.primary, opacity: busy ? 0.7 : 1 }]}
+                onPress={handleCreate}
+                disabled={busy}
+              >
+                {busy ? <ActivityIndicator size="small" color="#fff" /> : <IconSymbol name="plus" size={18} color="#fff" />}
+                <Text style={styles.createText}>Create and provision</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.summary} contentContainerStyle={{ paddingHorizontal: 16, gap: 8 }}>
+              {[
+                { label: "Total", count: rows.length, color: colors.primary },
+                { label: "Assigned", count: rows.filter((row) => row.assigned_user_id || row.user_id).length, color: "#00C896" },
+                { label: "Open", count: rows.filter((row) => !row.assigned_user_id && !row.user_id).length, color: "#FF9500" },
+              ].map((item) => (
+                <View key={item.label} style={[styles.summaryChip, { borderColor: item.color + "40" }]}>
+                  <View style={[styles.summaryDot, { backgroundColor: item.color }]} />
+                  <Text style={[styles.summaryText, { color: colors.foreground }]}>{item.count} {item.label}</Text>
+                </View>
+              ))}
+            </ScrollView>
+
+            <View style={[styles.searchBar, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+              <IconSymbol name="magnifyingglass" size={18} color={colors.muted} />
+              <TextInput
+                style={[styles.searchInput, { color: colors.foreground }]}
+                placeholder="Search extension, name, or user ID"
+                placeholderTextColor={colors.muted}
+                value={search}
+                onChangeText={setSearch}
+              />
+            </View>
+          </View>
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            {extensionsQuery.isLoading ? (
+              <ActivityIndicator color={colors.primary} />
+            ) : (
+              <Text style={[styles.emptyText, { color: colors.muted }]}>No extensions found.</Text>
+            )}
+          </View>
+        }
+        contentContainerStyle={{ paddingBottom: 24 }}
         showsVerticalScrollIndicator={false}
       />
     </ScreenContainer>
@@ -167,23 +289,34 @@ const styles = StyleSheet.create({
   header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 0.5, gap: 12 },
   backBtn: { padding: 4 },
   title: { fontSize: 20, fontWeight: "700", flex: 1 },
-  addBtn: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
-  summary: { marginTop: 12, maxHeight: 40 },
+  refreshBtn: { width: 34, height: 34, alignItems: "center", justifyContent: "center" },
+  provisionCard: { margin: 16, padding: 16, borderRadius: 14, borderWidth: 1, gap: 10 },
+  cardTitle: { fontSize: 16, fontWeight: "700" },
+  cardSub: { fontSize: 12, lineHeight: 18 },
+  inputRow: { flexDirection: "row", gap: 10 },
+  inputCol: { flex: 1, gap: 6 },
+  inputLabel: { fontSize: 12, fontWeight: "700" },
+  input: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
+  createBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, paddingVertical: 12, marginTop: 4 },
+  createText: { color: "#fff", fontSize: 14, fontWeight: "700" },
+  summary: { maxHeight: 40 },
   summaryChip: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, borderWidth: 1, gap: 6 },
   summaryDot: { width: 6, height: 6, borderRadius: 3 },
   summaryText: { fontSize: 12, fontWeight: "600" },
-  searchBar: { flexDirection: "row", alignItems: "center", marginHorizontal: 16, marginTop: 12, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, borderWidth: 0.5, gap: 8 },
+  searchBar: { flexDirection: "row", alignItems: "center", marginHorizontal: 16, marginTop: 12, marginBottom: 8, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, borderWidth: 0.5, gap: 8 },
   searchInput: { flex: 1, fontSize: 15 },
-  extCard: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 14, borderRadius: 14, borderWidth: 0.5 },
+  extCard: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginHorizontal: 16, marginTop: 8, padding: 14, borderRadius: 14, borderWidth: 0.5, gap: 12 },
   extLeft: { flexDirection: "row", alignItems: "center", flex: 1, gap: 12 },
   extIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  extNameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  extNumber: { fontSize: 15, fontWeight: "700" },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  extName: { fontSize: 13, marginTop: 1 },
-  extTags: { flexDirection: "row", marginTop: 4, gap: 4 },
-  tag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  tagText: { fontSize: 10, fontWeight: "600" },
-  extRight: { alignItems: "flex-end", gap: 4 },
-  extDid: { fontSize: 11 },
+  extText: { flex: 1, gap: 2 },
+  extNumber: { fontSize: 16, fontWeight: "800" },
+  extName: { fontSize: 14, fontWeight: "600" },
+  extMeta: { fontSize: 11 },
+  extRight: { alignItems: "flex-end", gap: 6 },
+  statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  statusText: { fontSize: 10, fontWeight: "800" },
+  assignBtn: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5 },
+  assignText: { fontSize: 12, fontWeight: "700" },
+  emptyState: { padding: 28, alignItems: "center" },
+  emptyText: { fontSize: 14 },
 });
