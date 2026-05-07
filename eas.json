@@ -16,6 +16,15 @@
         "image": "latest"
       }
     },
+    "development-ios-existing-credentials": {
+      "extends": "development",
+      "env": {
+        "PHONE11_BUNDLE_ID": "space.manus.phone11ai.t20260425073427"
+      },
+      "ios": {
+        "image": "latest"
+      }
+    },
     "development-simulator": {
       "extends": "development",
       "ios": {
