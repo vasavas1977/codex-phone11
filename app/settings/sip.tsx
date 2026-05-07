@@ -1,13 +1,15 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Alert, Switch, View, Text, TouchableOpacity, ScrollView, TextInput, StyleSheet } from "react-native";
+import { ActivityIndicator, Alert, Switch, View, Text, TouchableOpacity, ScrollView, TextInput, StyleSheet } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { trpc } from "@/lib/trpc";
 import { DEFAULT_ACCOUNT, useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
 import { sipEngine } from "@/lib/sip/engine";
+import { sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
 
 type Transport = "UDP" | "TCP" | "TLS";
 
@@ -33,6 +35,7 @@ export default function SIPAccountScreen() {
   const setAccount = useSipAccountStore((s) => s.setAccount);
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const registrationError = useSipAccountStore((s) => s.registrationError);
+  const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
   const [server, setServer] = useState("");
   const [port, setPort] = useState("5061");
   const [username, setUsername] = useState("");
@@ -108,6 +111,26 @@ export default function SIPAccountScreen() {
     router.back();
   };
 
+  const handleSyncFromAdmin = async () => {
+    const result = await phoneConfigQuery.refetch();
+
+    if (result.error) {
+      Alert.alert("Admin sync failed", result.error.message);
+      return;
+    }
+
+    if (!result.data?.configured || !result.data.sip) {
+      Alert.alert("No extension assigned", "Ask an admin to assign a Phone11 extension to this user.");
+      return;
+    }
+
+    const provisionedAccount = sipAccountFromPhoneConfig(result.data, account?.id);
+    await setAccount(provisionedAccount);
+    await sipEngine.restart();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert("SIP account synced", `Extension ${provisionedAccount.username} is ready on ${provisionedAccount.domain}.`);
+  };
+
   const InputField = ({
     label, value, onChangeText, placeholder, secureTextEntry, keyboardType, rightElement
   }: {
@@ -116,7 +139,7 @@ export default function SIPAccountScreen() {
   }) => (
     <View style={styles.inputGroup}>
       <Text style={[styles.inputLabel, { color: colors.muted }]}>{label}</Text>
-      <View style={[styles.inputWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}> 
+      <View style={[styles.inputWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}>
         <TextInput
           style={[styles.input, { color: colors.foreground }]}
           value={value}
@@ -136,7 +159,6 @@ export default function SIPAccountScreen() {
   return (
     <ScreenContainer>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}> 
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <IconSymbol name="chevron.left" size={20} color={colors.primary} />
@@ -151,7 +173,6 @@ export default function SIPAccountScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Status Banner */}
         <View style={[styles.statusBanner, { backgroundColor: statusColor + "15", borderColor: statusColor + "40" }]}> 
           <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
           <Text style={[styles.statusText, { color: statusColor }]}> 
@@ -160,7 +181,22 @@ export default function SIPAccountScreen() {
           </Text>
         </View>
 
-        {/* Server Section */}
+        <TouchableOpacity
+          style={[styles.syncCard, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}
+          onPress={handleSyncFromAdmin}
+          disabled={phoneConfigQuery.isFetching}
+        >
+          <View style={styles.syncText}>
+            <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync from Admin</Text>
+            <Text style={[styles.syncSub, { color: colors.muted }]}>Use the extension and SIP server assigned in Phone11 management.</Text>
+          </View>
+          {phoneConfigQuery.isFetching ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
+          )}
+        </TouchableOpacity>
+
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server Configuration</Text>
 
@@ -186,7 +222,6 @@ export default function SIPAccountScreen() {
             keyboardType="numeric"
           />
 
-          {/* Transport */}
           <View style={styles.inputGroup}>
             <Text style={[styles.inputLabel, { color: colors.muted }]}>Transport Protocol</Text>
             <View style={styles.transportRow}>
@@ -211,7 +246,6 @@ export default function SIPAccountScreen() {
           </View>
         </View>
 
-        {/* Credentials */}
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Credentials</Text>
 
@@ -261,7 +295,6 @@ export default function SIPAccountScreen() {
           />
         </View>
 
-        {/* Open Source Stack Info */}
         <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}> 
           <View style={styles.infoHeader}>
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
@@ -310,6 +343,19 @@ const styles = StyleSheet.create({
   },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusText: { fontSize: 13, fontWeight: "600", flex: 1 },
+  syncCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  syncText: { flex: 1, gap: 3 },
+  syncTitle: { fontSize: 14, fontWeight: "700" },
+  syncSub: { fontSize: 12, lineHeight: 17 },
   card: {
     marginHorizontal: 16,
     marginBottom: 16,
