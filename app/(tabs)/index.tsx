@@ -84,9 +84,17 @@ export default function DialpadScreen() {
     if (!target) return;
 
     if (!account?.enabled) {
-      Alert.alert("SIP account needed", "Add the Phone11 SIP account before placing calls.", [
+      Alert.alert("Phone provisioning needed", "Sync this phone from admin management before placing PSTN calls.", [
         { text: "Cancel", style: "cancel" },
-        { text: "Open SIP Settings", onPress: () => router.push("/settings/sip" as any) },
+        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
+      ]);
+      return;
+    }
+
+    if (registrationState !== "registered") {
+      Alert.alert("Phone is not registered", "Open Phone Provisioning, sync from admin, and wait for SIP Registered before placing PSTN calls.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
       ]);
       return;
     }
@@ -99,15 +107,23 @@ export default function DialpadScreen() {
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     router.push({ pathname: "/call/active", params: { callId, number: target, type: "voice" } });
-  }, [account?.enabled, input, makeCall]);
+  }, [account?.enabled, input, makeCall, registrationState]);
 
   const handleVideoCall = useCallback(async () => {
     const target = input.trim();
     if (!target) return;
     if (!account?.enabled) {
-      Alert.alert("SIP account needed", "Add the Phone11 SIP account before starting video calls.", [
+      Alert.alert("Phone provisioning needed", "Sync this phone from admin management before starting video calls.", [
         { text: "Cancel", style: "cancel" },
-        { text: "Open SIP Settings", onPress: () => router.push("/settings/sip" as any) },
+        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
+      ]);
+      return;
+    }
+
+    if (registrationState !== "registered") {
+      Alert.alert("Phone is not registered", "Open Phone Provisioning, sync from admin, and wait for SIP Registered before starting calls.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
       ]);
       return;
     }
@@ -120,7 +136,7 @@ export default function DialpadScreen() {
 
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     router.push({ pathname: "/call/video", params: { callId, number: target, type: "video" } });
-  }, [account?.enabled, input, makeCall]);
+  }, [account?.enabled, input, makeCall, registrationState]);
 
   return (
     <ScreenContainer>
