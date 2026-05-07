@@ -37,8 +37,8 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "automatic",
-  // PJSIP and native call modules must be proven under the new architecture before enabling it.
-  newArchEnabled: false,
+  // Expo SDK 54's Reanimated 4 stack requires the new architecture.
+  newArchEnabled: true,
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
