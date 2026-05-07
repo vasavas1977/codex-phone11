@@ -90,9 +90,9 @@ export default function SettingsScreen() {
               <IconSymbol name="phone.fill" size={22} color="#fff" />
             </View>
             <View>
-              <Text style={styles.accountName}>Phone11 SIP Account</Text>
+              <Text style={styles.accountName}>Phone11 Account</Text>
               <Text style={styles.accountDetail}>
-                {account ? `sip:${account.username}@${account.domain}` : "Add SIP account"}
+                {account ? `sip:${account.username}@${account.domain}` : "Sync from admin"}
               </Text>
             </View>
           </View>
@@ -108,8 +108,8 @@ export default function SettingsScreen() {
           <SettingItem
             icon="server.rack"
             iconColor="#0057FF"
-            label="SIP Account"
-            sublabel="Server, credentials, transport"
+            label="Phone Provisioning"
+            sublabel="Sign in, sync extension, register SIP"
             onPress={() => router.push("/settings/sip")}
           />
           <SettingItem
