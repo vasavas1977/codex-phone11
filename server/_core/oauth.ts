@@ -62,6 +62,14 @@ function buildUserResponse(
 }
 
 export function registerOAuthRoutes(app: Express) {
+  app.get("/api/mobile/config", (_req: Request, res: Response) => {
+    res.json({
+      oauthPortalUrl: process.env.VITE_OAUTH_PORTAL_URL || "https://manus.im",
+      appId: process.env.VITE_APP_ID || "",
+      deepLinkScheme: process.env.EXPO_PUBLIC_DEEP_LINK_SCHEME || "phone11",
+    });
+  });
+
   app.get("/api/oauth/callback", async (req: Request, res: Response) => {
     const code = getQueryParam(req, "code");
     const state = getQueryParam(req, "state");
@@ -147,7 +155,7 @@ export function registerOAuthRoutes(app: Express) {
 
   // Establish session cookie from Bearer token
   // Used by iframe preview: frontend receives token via postMessage, then calls this endpoint
-  // to get a proper Set-Cookie response from the backend (3000-xxx domain)
+  // to get a proper Set-Cookie from the backend (3000-xxx domain)
   app.post("/api/auth/session", async (req: Request, res: Response) => {
     try {
       // Authenticate using Bearer token from Authorization header
