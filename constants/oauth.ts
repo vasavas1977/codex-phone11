@@ -6,6 +6,7 @@ import * as ReactNative from "react-native";
 const bundleId = "space.manus.cloudphone11.t20260425073427";
 const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
 const schemeFromBundleId = `manus${timestamp}`;
+const DEFAULT_NATIVE_API_BASE_URL = "https://api.phone11.ai";
 
 const env = {
   portal: process.env.EXPO_PUBLIC_OAUTH_PORTAL_URL ?? "",
@@ -35,8 +36,14 @@ export function getApiBaseUrl(): string {
     return API_BASE_URL.replace(/\/$/, "");
   }
 
+  // Native builds cannot use a relative URL. Use the public Phone11 API by default
+  // so admin provisioning can reach phone.getConfig and register the SIP account.
+  if (ReactNative.Platform.OS !== "web") {
+    return DEFAULT_NATIVE_API_BASE_URL;
+  }
+
   // On web, derive from current hostname by replacing port 8081 with 3000
-  if (ReactNative.Platform.OS === "web" && typeof window !== "undefined" && window.location) {
+  if (typeof window !== "undefined" && window.location) {
     const { protocol, hostname } = window.location;
     // Pattern: 8081-sandboxid.region.domain -> 3000-sandboxid.region.domain
     const apiHostname = hostname.replace(/^8081-/, "3000-");
