@@ -18,6 +18,7 @@ on:
         type: choice
         options:
           - development
+          - development-ios-existing-credentials
           - development-simulator
           - preview
       wait_for_build:
