@@ -145,7 +145,7 @@ export default function SIPAccountScreen() {
 
         <View style={[styles.statusBanner, { backgroundColor: statusColor + "15", borderColor: statusColor + "40" }]}>
           <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-          <Text style={[styles.statusText, { color: statusColor }]}>
+          <Text style={[styles.statusText, { color: statusColor }]}> 
             {registrationLabel(registrationState)}
             {registrationError ? ` - ${registrationError}` : account ? ` - ${account.domain}` : ""}
           </Text>
@@ -155,7 +155,7 @@ export default function SIPAccountScreen() {
           <View style={styles.accountHeader}>
             <View>
               <Text style={[styles.cardTitle, { color: colors.foreground }]}>Phone11 Account</Text>
-              <Text style={[styles.accountSub, { color: colors.muted }]}> 
+              <Text style={[styles.accountSub, { color: colors.muted }]}>
                 {authLoading
                   ? "Checking sign-in..."
                   : isAuthenticated
@@ -166,7 +166,7 @@ export default function SIPAccountScreen() {
             {authLoading ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : isAuthenticated ? (
-              <View style={[styles.statusPill, { backgroundColor: colors.success + "18" }]}> 
+              <View style={[styles.statusPill, { backgroundColor: colors.success + "18" }]}>
                 <Text style={[styles.statusPillText, { color: colors.success }]}>Signed In</Text>
               </View>
             ) : (
@@ -183,9 +183,7 @@ export default function SIPAccountScreen() {
               </TouchableOpacity>
             )}
           </View>
-          <Text style={[styles.infoBody, { color: colors.muted }]}> 
-            Registration only starts after the phone is signed in and an extension is assigned in admin management.
-          </Text>
+          <Text style={[styles.infoBody, { color: colors.muted }]}>Registration only starts after the phone is signed in and an extension is assigned in admin management.</Text>
         </View>
 
         <TouchableOpacity
@@ -195,9 +193,7 @@ export default function SIPAccountScreen() {
         >
           <View style={styles.syncText}>
             <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync from Admin</Text>
-            <Text style={[styles.syncSub, { color: colors.muted }]}> 
-              Device SIP settings are read-only and controlled by Phone11 admin management.
-            </Text>
+            <Text style={[styles.syncSub, { color: colors.muted }]}>Device SIP settings are read-only and controlled by Phone11 admin management.</Text>
           </View>
           {phoneConfigQuery.isFetching ? (
             <ActivityIndicator size="small" color={colors.primary} />
@@ -206,7 +202,7 @@ export default function SIPAccountScreen() {
           )}
         </TouchableOpacity>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server</Text>
           <ReadOnlyField label="SIP Domain" value={account?.domain} />
           <ReadOnlyField label="SIP Proxy" value={account?.proxy || account?.domain} />
@@ -214,28 +210,26 @@ export default function SIPAccountScreen() {
           <ReadOnlyField label="Transport" value={account?.transport} />
         </View>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Assigned Extension</Text>
           <ReadOnlyField label="Display Name" value={account?.displayName} />
           <ReadOnlyField label="Username / Extension" value={account?.username} />
           <ReadOnlyField label="Password" value={account?.password ? "Stored securely" : ""} rightElement={<IconSymbol name="lock.fill" size={15} color={colors.muted} />} />
         </View>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Calling Policy</Text>
           <ReadOnlyField label="SIP Account Enabled" value={account?.enabled ? "Enabled" : "Not provisioned"} />
           <ReadOnlyField label="Secure Media" value={account?.srtp ? "SRTP enabled" : "Not provisioned"} />
           <ReadOnlyField label="STUN Server" value={account?.stun} />
         </View>
 
-        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}> 
+        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}>
           <View style={styles.infoHeader}>
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
             <Text style={[styles.infoTitle, { color: colors.primary }]}>Admin-managed configuration</Text>
           </View>
-          <Text style={[styles.infoBody, { color: colors.muted }]}> 
-            Create or assign the user's extension in Admin Portal &gt; Phone Provisioning. The app then receives SIP username, encrypted password, TLS port, SRTP, and network settings from the server.
-          </Text>
+          <Text style={[styles.infoBody, { color: colors.muted }]}>Create or assign the user's extension in Admin Portal &gt; Phone Provisioning. The app then receives SIP username, encrypted password, TLS port, SRTP, and network settings from the server.</Text>
         </View>
 
         <View style={{ height: 32 }} />
