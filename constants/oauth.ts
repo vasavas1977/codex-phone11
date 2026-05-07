@@ -10,6 +10,12 @@ const DEFAULT_NATIVE_API_BASE_URL = "https://api.phone11.ai";
 const DEFAULT_DEEP_LINK_SCHEME = "phone11";
 const DEFAULT_OAUTH_PORTAL_URL = "https://manus.im";
 
+type RuntimeOAuthConfig = {
+  oauthPortalUrl?: string | null;
+  appId?: string | null;
+  deepLinkScheme?: string | null;
+};
+
 const env = {
   portal: process.env.EXPO_PUBLIC_OAUTH_PORTAL_URL ?? DEFAULT_OAUTH_PORTAL_URL,
   server: process.env.EXPO_PUBLIC_OAUTH_SERVER_URL ?? "",
@@ -20,6 +26,8 @@ const env = {
   deepLinkScheme:
     process.env.EXPO_PUBLIC_DEEP_LINK_SCHEME || DEFAULT_DEEP_LINK_SCHEME || schemeFromBundleId,
 };
+
+let runtimeOAuthConfigPromise: Promise<RuntimeOAuthConfig | null> | null = null;
 
 export const OAUTH_PORTAL_URL = env.portal;
 export const OAUTH_SERVER_URL = env.server;
@@ -63,18 +71,11 @@ export const SESSION_TOKEN_KEY = "app_session_token";
 export const USER_INFO_KEY = "manus-runtime-user-info";
 
 export function isOAuthConfigured(): boolean {
-  return Boolean(OAUTH_PORTAL_URL && APP_ID);
+  return Boolean(OAUTH_PORTAL_URL || getApiBaseUrl());
 }
 
 export function getOAuthConfigMessage(): string {
-  const missing = [
-    OAUTH_PORTAL_URL ? null : "EXPO_PUBLIC_OAUTH_PORTAL_URL",
-    APP_ID ? null : "EXPO_PUBLIC_APP_ID",
-  ].filter(Boolean);
-
-  return missing.length
-    ? `Missing ${missing.join(" and ")} in this build.`
-    : "OAuth is configured.";
+  return "Phone11 login could not load an OAuth app ID from the build or Phone11 API.";
 }
 
 const encodeState = (value: string) => {
@@ -88,31 +89,61 @@ const encodeState = (value: string) => {
   return value;
 };
 
+async function loadRuntimeOAuthConfig(): Promise<RuntimeOAuthConfig | null> {
+  if (!runtimeOAuthConfigPromise) {
+    runtimeOAuthConfigPromise = (async () => {
+      const baseUrl = getApiBaseUrl();
+      if (!baseUrl) return null;
+
+      try {
+        const response = await fetch(`${baseUrl}/api/mobile/config`);
+        if (!response.ok) return null;
+        return (await response.json()) as RuntimeOAuthConfig;
+      } catch (error) {
+        console.warn("[OAuth] Failed to load runtime OAuth config:", error);
+        return null;
+      }
+    })();
+  }
+
+  return runtimeOAuthConfigPromise;
+}
+
+async function resolveOAuthConfig() {
+  const runtime = await loadRuntimeOAuthConfig();
+  const portal = runtime?.oauthPortalUrl || OAUTH_PORTAL_URL || DEFAULT_OAUTH_PORTAL_URL;
+  const appId = runtime?.appId || APP_ID;
+  const deepLinkScheme = runtime?.deepLinkScheme || env.deepLinkScheme;
+
+  return { portal, appId, deepLinkScheme };
+}
+
 /**
  * Get the redirect URI for OAuth callback.
  * - Web: uses API server callback endpoint
  * - Native: uses deep link scheme
  */
-export const getRedirectUri = () => {
+export const getRedirectUri = (deepLinkScheme = env.deepLinkScheme) => {
   if (ReactNative.Platform.OS === "web") {
     return `${getApiBaseUrl()}/api/oauth/callback`;
   } else {
     return Linking.createURL("/oauth/callback", {
-      scheme: env.deepLinkScheme,
+      scheme: deepLinkScheme,
     });
   }
 };
 
-export const getLoginUrl = () => {
-  if (!isOAuthConfigured()) {
+export const getLoginUrl = async () => {
+  const config = await resolveOAuthConfig();
+  if (!config.appId) {
     throw new Error(getOAuthConfigMessage());
   }
 
-  const redirectUri = getRedirectUri();
+  const redirectUri = getRedirectUri(config.deepLinkScheme);
   const state = encodeState(redirectUri);
 
-  const url = new URL(`${OAUTH_PORTAL_URL}/app-auth`);
-  url.searchParams.set("appId", APP_ID);
+  const url = new URL(`${config.portal}/app-auth`);
+  url.searchParams.set("appId", config.appId);
   url.searchParams.set("redirectUri", redirectUri);
   url.searchParams.set("state", state);
   url.searchParams.set("type", "signIn");
@@ -131,7 +162,7 @@ export const getLoginUrl = () => {
  * @returns Always null, the callback is handled via deep link.
  */
 export async function startOAuthLogin(): Promise<string | null> {
-  const loginUrl = getLoginUrl();
+  const loginUrl = await getLoginUrl();
 
   if (ReactNative.Platform.OS === "web") {
     // On web, just redirect
