@@ -12,6 +12,7 @@
  */
 
 import { getPool } from "./pbx/db";
+import { decryptSecret } from "./pbx/sip-secrets";
 
 export interface PhoneConfig {
   configured: boolean;
@@ -26,7 +27,10 @@ export interface PhoneConfig {
     password: string;
     domain: string;
     port: number;
-    transport: string;
+    transport: "UDP" | "TCP" | "TLS";
+    proxy?: string;
+    srtp: boolean;
+    stun?: string;
   };
   organization?: {
     id: number;
@@ -39,6 +43,79 @@ export interface PhoneConfig {
   }>;
 }
 
+const DEFAULT_SIP_DOMAIN = process.env.SIP_DOMAIN || "sip.phone11.ai";
+const DEFAULT_SIP_TRANSPORT: "UDP" | "TCP" | "TLS" = "TLS";
+const DEFAULT_SIP_STUN = process.env.SIP_STUN_SERVER || "stun.l.google.com:19302";
+
+function normalizeSipTransport(value?: string | null): "UDP" | "TCP" | "TLS" {
+  const normalized = value?.toUpperCase();
+  if (normalized === "UDP" || normalized === "TCP" || normalized === "TLS") {
+    return normalized;
+  }
+  return DEFAULT_SIP_TRANSPORT;
+}
+
+function getSipPort(transport: "UDP" | "TCP" | "TLS"): number {
+  const explicit = Number.parseInt(process.env.SIP_PORT || "", 10);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return transport === "TLS" ? 5061 : 5060;
+}
+
+function toBuffer(value: unknown): Buffer | null {
+  if (!value) return null;
+  if (Buffer.isBuffer(value)) return value;
+  if (typeof value !== "string") return null;
+  if (value.startsWith("\\x")) return Buffer.from(value.slice(2), "hex");
+  return Buffer.from(value, "base64");
+}
+
+function getSipPassword(row: any): string {
+  const ciphertext = toBuffer(row.secret_ciphertext);
+  const iv = toBuffer(row.secret_iv);
+  const tag = toBuffer(row.secret_tag);
+
+  if (ciphertext && iv && tag) {
+    try {
+      return decryptSecret(ciphertext, iv, tag);
+    } catch (error) {
+      console.warn("[PhoneProvisioning] Could not decrypt SIP secret, falling back to extension password");
+    }
+  }
+
+  return row.sip_password || "";
+}
+
+function buildConfig(ext: any, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
+  const transport = normalizeSipTransport(ext.transport_preference || ext.transport);
+  const sipDomain = ext.account_sip_domain || ext.sip_domain || DEFAULT_SIP_DOMAIN;
+  const sipUsername = ext.account_sip_username || ext.sip_username || ext.extension_number;
+
+  return {
+    configured: true,
+    extension: {
+      number: ext.extension_number,
+      displayName: ext.display_name || `Extension ${ext.extension_number}`,
+      callerIdName: ext.caller_id_name,
+      callerIdNumber: ext.caller_id_number,
+    },
+    sip: {
+      username: sipUsername,
+      password: getSipPassword(ext),
+      domain: sipDomain,
+      port: getSipPort(transport),
+      transport,
+      srtp: true,
+      stun: DEFAULT_SIP_STUN,
+    },
+    organization: {
+      id: ext.org_id || ext.tenant_id || 1,
+      name: ext.org_name || ext.tenant_name || "Phone11",
+      plan: ext.org_plan || ext.tenant_plan || "business",
+    },
+    dids,
+  };
+}
+
 /**
  * Get phone configuration for a logged-in user.
  * Auto-assigns extension if user is owner and has no extension.
@@ -49,10 +126,13 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
   try {
     // 1. Check if user has an assigned extension via user_extensions table
     const userExtResult = await db.query(`
-      SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan, o.id as org_id
+      SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan, o.id as org_id,
+             sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
+             sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference
       FROM user_extensions ue
       JOIN extensions e ON ue.extension_id = e.id
       JOIN organizations o ON e.org_id = o.id
+      LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
       WHERE ue.user_id = $1 AND e.status = 'active'
       ORDER BY ue.is_primary DESC
       LIMIT 1
@@ -67,38 +147,23 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
         WHERE org_id = $1 AND destination_type = 'extension' AND destination_value = $2 AND status = 'active'
       `, [ext.org_id, ext.extension_number]);
 
-      return {
-        configured: true,
-        extension: {
-          number: ext.extension_number,
-          displayName: ext.display_name || `Extension ${ext.extension_number}`,
-          callerIdName: ext.caller_id_name,
-          callerIdNumber: ext.caller_id_number,
-        },
-        sip: {
-          username: ext.sip_username,
-          password: ext.sip_password,
-          domain: ext.sip_domain,
-          port: 5060,
-          transport: ext.transport || "UDP",
-        },
-        organization: {
-          id: ext.org_id,
-          name: ext.org_name,
-          plan: ext.org_plan,
-        },
-        dids: didsResult.rows.map((d: any) => ({
+      return buildConfig(
+        ext,
+        didsResult.rows.map((d: any) => ({
           number: d.number,
           description: d.description || "",
         })),
-      };
+      );
     }
 
     // 2. Check if user has extension assigned directly via extensions.user_id
     const directExtResult = await db.query(`
-      SELECT e.*, o.name as org_name, o.plan as org_plan, o.id as org_id
+      SELECT e.*, o.name as org_name, o.plan as org_plan, o.id as org_id,
+             sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
+             sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference
       FROM extensions e
       JOIN organizations o ON e.org_id = o.id
+      LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
       WHERE e.user_id = $1 AND e.status = 'active'
       LIMIT 1
     `, [userId]);
@@ -113,28 +178,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
         ON CONFLICT DO NOTHING
       `, [userId, ext.id]);
 
-      return {
-        configured: true,
-        extension: {
-          number: ext.extension_number,
-          displayName: ext.display_name || `Extension ${ext.extension_number}`,
-          callerIdName: ext.caller_id_name,
-          callerIdNumber: ext.caller_id_number,
-        },
-        sip: {
-          username: ext.sip_username,
-          password: ext.sip_password,
-          domain: ext.sip_domain,
-          port: 5060,
-          transport: ext.transport || "UDP",
-        },
-        organization: {
-          id: ext.org_id,
-          name: ext.org_name,
-          plan: ext.org_plan,
-        },
-        dids: [],
-      };
+      return buildConfig(ext);
     }
 
     // 3. For the owner/first user: auto-assign extension 1020
@@ -144,9 +188,12 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
     if (isOwner) {
       // Assign extension 1020 (the owner extension) to this user
       const ownerExt = await db.query(`
-        SELECT e.*, o.name as org_name, o.plan as org_plan, o.id as org_id
+        SELECT e.*, o.name as org_name, o.plan as org_plan, o.id as org_id,
+               sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
+               sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference
         FROM extensions e
         JOIN organizations o ON e.org_id = o.id
+        LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
         WHERE e.sip_username = '1020' AND e.status = 'active'
         LIMIT 1
       `);
@@ -162,28 +209,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
           ON CONFLICT DO NOTHING
         `, [userId, ext.id]);
 
-        return {
-          configured: true,
-          extension: {
-            number: ext.extension_number,
-            displayName: ext.display_name || "Owner",
-            callerIdName: ext.caller_id_name,
-            callerIdNumber: ext.caller_id_number,
-          },
-          sip: {
-            username: ext.sip_username,
-            password: ext.sip_password,
-            domain: ext.sip_domain,
-            port: 5060,
-            transport: ext.transport || "UDP",
-          },
-          organization: {
-            id: ext.org_id,
-            name: ext.org_name,
-            plan: ext.org_plan,
-          },
-          dids: [],
-        };
+        return buildConfig({ ...ext, display_name: ext.display_name || "Owner" });
       }
     }
 
@@ -249,7 +275,7 @@ export async function createExtension(input: {
   
   // Generate password if not provided
   const sipPassword = password || `Ph0ne11_${extensionNumber}_${Date.now().toString(36)}`;
-  const sipDomain = "sip.phone11.ai";
+  const sipDomain = DEFAULT_SIP_DOMAIN;
   
   // Calculate HA1 for Kamailio: MD5(username:realm:password)
   const crypto = await import("crypto");
