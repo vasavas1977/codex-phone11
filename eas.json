@@ -19,7 +19,8 @@
     "development-ios-existing-credentials": {
       "extends": "development",
       "env": {
-        "PHONE11_BUNDLE_ID": "space.manus.phone11ai.t20260425073427"
+        "PHONE11_BUNDLE_ID": "space.manus.phone11ai.t20260425073427",
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.phone11.ai"
       },
       "ios": {
         "image": "latest"
@@ -39,7 +40,8 @@
       "distribution": "internal",
       "channel": "preview",
       "env": {
-        "PHONE11_BUNDLE_ID": "space.manus.phone11ai.t20260425073427"
+        "PHONE11_BUNDLE_ID": "space.manus.phone11ai.t20260425073427",
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.phone11.ai"
       },
       "ios": {
         "image": "latest"
