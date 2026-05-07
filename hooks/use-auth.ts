@@ -98,29 +98,40 @@ export function useAuth(options?: UseAuthOptions) {
 
   useEffect(() => {
     console.log("[useAuth] useEffect triggered, autoFetch:", autoFetch, "platform:", Platform.OS);
-    if (autoFetch) {
-      if (Platform.OS === "web") {
-        // Web: fetch user from API directly (user will login manually if needed)
-        console.log("[useAuth] Web: fetching user from API...");
-        fetchUser();
-      } else {
-        // Native: check for cached user info first for faster initial load
-        Auth.getUserInfo().then((cachedUser) => {
-          console.log("[useAuth] Native cached user check:", cachedUser);
-          if (cachedUser) {
-            console.log("[useAuth] Native: setting cached user immediately");
-            setUser(cachedUser);
-            setLoading(false);
-          } else {
-            // No cached user, check session token
-            fetchUser();
-          }
-        });
-      }
-    } else {
+    if (!autoFetch) {
       console.log("[useAuth] autoFetch disabled, setting loading to false");
       setLoading(false);
+      return;
     }
+
+    const unsubscribe =
+      Platform.OS === "web"
+        ? undefined
+        : Auth.addAuthChangeListener(() => {
+            console.log("[useAuth] Auth storage changed, refreshing user...");
+            fetchUser();
+          });
+
+    if (Platform.OS === "web") {
+      // Web: fetch user from API directly (user will login manually if needed)
+      console.log("[useAuth] Web: fetching user from API...");
+      fetchUser();
+    } else {
+      // Native: check for cached user info first for faster initial load
+      Auth.getUserInfo().then((cachedUser) => {
+        console.log("[useAuth] Native cached user check:", cachedUser);
+        if (cachedUser) {
+          console.log("[useAuth] Native: setting cached user immediately");
+          setUser(cachedUser);
+          setLoading(false);
+        } else {
+          // No cached user, check session token
+          fetchUser();
+        }
+      });
+    }
+
+    return unsubscribe;
   }, [autoFetch, fetchUser]);
 
   useEffect(() => {
