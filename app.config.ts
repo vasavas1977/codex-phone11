@@ -2,7 +2,7 @@
 import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
-const rawBundleId = "ai.phone11.mobile";
+const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
 const bundleId =
   rawBundleId
     .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
