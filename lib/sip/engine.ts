@@ -26,6 +26,17 @@ import { formatSipError, useSipDiagnosticsStore } from "./diagnostics-store";
 let Endpoint: any = null;
 let Call: any = null;
 
+function hostWithPort(host: string, port?: number | null): string {
+  if (!port || host.includes(":")) return host;
+  return `${host}:${port}`;
+}
+
+function sipServerUri(host: string, port: number | null | undefined, transport: string): string {
+  const normalizedTransport = transport.toLowerCase();
+  const server = hostWithPort(host, port);
+  return `sip:${server};transport=${normalizedTransport}`;
+}
+
 // Lazy-load PJSIP only on native platforms (not web)
 function getPjsip() {
   if (Platform.OS === "web") return null;
@@ -68,9 +79,14 @@ class SipEngine {
     }
 
     try {
+      const registrationServer = sipServerUri(account.domain, account.port, account.transport);
+      const outboundProxy = account.proxy
+        ? account.proxy
+        : registrationServer;
+
       setRegistrationState("registering");
       this._diag("info", "registration", "Starting SIP registration", {
-        destination: account.domain,
+        destination: registrationServer,
         detail: `${account.transport}/${account.port}`,
       });
 
@@ -102,9 +118,9 @@ class SipEngine {
         username: account.username,
         domain: account.domain,
         password: account.password,
-        proxy: account.proxy || null,
+        proxy: outboundProxy,
         transport: account.transport.toLowerCase(),
-        regServer: account.domain,
+        regServer: registrationServer,
         regTimeout: 300,
         contactParams: null,
         contactUriParams: null,
@@ -124,7 +140,7 @@ class SipEngine {
           state === "failed" ? "error" : "info",
           "registration",
           `SIP registration ${state}`,
-          { destination: account.domain, detail }
+          { destination: registrationServer, detail }
         );
       });
 
@@ -158,7 +174,7 @@ class SipEngine {
 
       this.initialized = true;
       console.log("[SIP Engine] Initialized, account:", this.pjsipAccount?.getId?.() ?? account.username);
-      this._diag("info", "engine", "SIP engine initialized", { destination: account.domain });
+      this._diag("info", "engine", "SIP engine initialized", { destination: registrationServer });
     } catch (error: any) {
       console.error("[SIP Engine] Initialization failed:", error);
       const detail = formatSipError(error);
