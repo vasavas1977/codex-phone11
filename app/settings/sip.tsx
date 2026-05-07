@@ -1,10 +1,12 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { getOAuthConfigMessage, isOAuthConfigured, startOAuthLogin } from "@/constants/oauth";
+import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
@@ -28,6 +30,8 @@ function registrationLabel(state: RegistrationState): string {
 
 export default function SIPAccountScreen() {
   const colors = useColors();
+  const { user, loading: authLoading, isAuthenticated, refresh: refreshAuth } = useAuth();
+  const [loginBusy, setLoginBusy] = useState(false);
   const account = useSipAccountStore((s) => s.account);
   const loadAccount = useSipAccountStore((s) => s.loadAccount);
   const setAccount = useSipAccountStore((s) => s.setAccount);
@@ -48,7 +52,40 @@ export default function SIPAccountScreen() {
       ? colors.error
       : colors.muted;
 
+  const handleSignIn = async () => {
+    if (!isOAuthConfigured()) {
+      Alert.alert("Sign in is not configured", getOAuthConfigMessage());
+      return;
+    }
+
+    try {
+      setLoginBusy(true);
+      await startOAuthLogin();
+    } catch (error) {
+      Alert.alert(
+        "Sign in could not start",
+        error instanceof Error ? error.message : "Check the Phone11 login configuration.",
+      );
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+
   const handleSyncFromAdmin = async () => {
+    if (authLoading) {
+      Alert.alert("Account is still loading", "Please wait a moment, then sync again.");
+      return;
+    }
+
+    if (!isAuthenticated) {
+      Alert.alert("Sign in required", "Sign in first so Phone11 can load the extension assigned to this user.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Sign In", onPress: handleSignIn },
+      ]);
+      return;
+    }
+
+    await refreshAuth();
     const result = await phoneConfigQuery.refetch();
 
     if (result.error) {
@@ -114,6 +151,43 @@ export default function SIPAccountScreen() {
           </Text>
         </View>
 
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <View style={styles.accountHeader}>
+            <View>
+              <Text style={[styles.cardTitle, { color: colors.foreground }]}>Phone11 Account</Text>
+              <Text style={[styles.accountSub, { color: colors.muted }]}> 
+                {authLoading
+                  ? "Checking sign-in..."
+                  : isAuthenticated
+                  ? user?.email || user?.name || `User ID ${user?.id}`
+                  : "Not signed in"}
+              </Text>
+            </View>
+            {authLoading ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : isAuthenticated ? (
+              <View style={[styles.statusPill, { backgroundColor: colors.success + "18" }]}> 
+                <Text style={[styles.statusPillText, { color: colors.success }]}>Signed In</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.signInButton, { backgroundColor: colors.primary }]}
+                onPress={handleSignIn}
+                disabled={loginBusy}
+              >
+                {loginBusy ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.signInText}>Sign In</Text>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
+          <Text style={[styles.infoBody, { color: colors.muted }]}> 
+            Registration only starts after the phone is signed in and an extension is assigned in admin management.
+          </Text>
+        </View>
+
         <TouchableOpacity
           style={[styles.syncCard, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}
           onPress={handleSyncFromAdmin}
@@ -121,7 +195,7 @@ export default function SIPAccountScreen() {
         >
           <View style={styles.syncText}>
             <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync from Admin</Text>
-            <Text style={[styles.syncSub, { color: colors.muted }]}>
+            <Text style={[styles.syncSub, { color: colors.muted }]}> 
               Device SIP settings are read-only and controlled by Phone11 admin management.
             </Text>
           </View>
@@ -132,7 +206,7 @@ export default function SIPAccountScreen() {
           )}
         </TouchableOpacity>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server</Text>
           <ReadOnlyField label="SIP Domain" value={account?.domain} />
           <ReadOnlyField label="SIP Proxy" value={account?.proxy || account?.domain} />
@@ -140,27 +214,27 @@ export default function SIPAccountScreen() {
           <ReadOnlyField label="Transport" value={account?.transport} />
         </View>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Assigned Extension</Text>
           <ReadOnlyField label="Display Name" value={account?.displayName} />
           <ReadOnlyField label="Username / Extension" value={account?.username} />
           <ReadOnlyField label="Password" value={account?.password ? "Stored securely" : ""} rightElement={<IconSymbol name="lock.fill" size={15} color={colors.muted} />} />
         </View>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Calling Policy</Text>
           <ReadOnlyField label="SIP Account Enabled" value={account?.enabled ? "Enabled" : "Not provisioned"} />
           <ReadOnlyField label="Secure Media" value={account?.srtp ? "SRTP enabled" : "Not provisioned"} />
           <ReadOnlyField label="STUN Server" value={account?.stun} />
         </View>
 
-        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}>
+        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}> 
           <View style={styles.infoHeader}>
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
             <Text style={[styles.infoTitle, { color: colors.primary }]}>Admin-managed configuration</Text>
           </View>
-          <Text style={[styles.infoBody, { color: colors.muted }]}>
-            Create or assign the user's extension in Admin Portal > Phone Provisioning. The app then receives SIP username, encrypted password, TLS port, SRTP, and network settings from the server.
+          <Text style={[styles.infoBody, { color: colors.muted }]}> 
+            Create or assign the user's extension in Admin Portal &gt; Phone Provisioning. The app then receives SIP username, encrypted password, TLS port, SRTP, and network settings from the server.
           </Text>
         </View>
 
@@ -216,6 +290,24 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   cardTitle: { fontSize: 15, fontWeight: "700", marginBottom: 4 },
+  accountHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  accountSub: { fontSize: 13, marginTop: 2 },
+  statusPill: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
+  statusPillText: { fontSize: 12, fontWeight: "700" },
+  signInButton: {
+    minWidth: 84,
+    minHeight: 38,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  signInText: { color: "#fff", fontSize: 13, fontWeight: "700" },
   inputGroup: { gap: 6 },
   inputLabel: { fontSize: 12, fontWeight: "600" },
   inputWrapper: {
