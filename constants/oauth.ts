@@ -7,15 +7,18 @@ const bundleId = "space.manus.cloudphone11.t20260425073427";
 const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
 const schemeFromBundleId = `manus${timestamp}`;
 const DEFAULT_NATIVE_API_BASE_URL = "https://api.phone11.ai";
+const DEFAULT_DEEP_LINK_SCHEME = "phone11";
+const DEFAULT_OAUTH_PORTAL_URL = "https://manus.im";
 
 const env = {
-  portal: process.env.EXPO_PUBLIC_OAUTH_PORTAL_URL ?? "",
+  portal: process.env.EXPO_PUBLIC_OAUTH_PORTAL_URL ?? DEFAULT_OAUTH_PORTAL_URL,
   server: process.env.EXPO_PUBLIC_OAUTH_SERVER_URL ?? "",
   appId: process.env.EXPO_PUBLIC_APP_ID ?? "",
   ownerId: process.env.EXPO_PUBLIC_OWNER_OPEN_ID ?? "",
   ownerName: process.env.EXPO_PUBLIC_OWNER_NAME ?? "",
   apiBaseUrl: process.env.EXPO_PUBLIC_API_BASE_URL ?? "",
-  deepLinkScheme: schemeFromBundleId,
+  deepLinkScheme:
+    process.env.EXPO_PUBLIC_DEEP_LINK_SCHEME || DEFAULT_DEEP_LINK_SCHEME || schemeFromBundleId,
 };
 
 export const OAUTH_PORTAL_URL = env.portal;
@@ -59,6 +62,21 @@ export function getApiBaseUrl(): string {
 export const SESSION_TOKEN_KEY = "app_session_token";
 export const USER_INFO_KEY = "manus-runtime-user-info";
 
+export function isOAuthConfigured(): boolean {
+  return Boolean(OAUTH_PORTAL_URL && APP_ID);
+}
+
+export function getOAuthConfigMessage(): string {
+  const missing = [
+    OAUTH_PORTAL_URL ? null : "EXPO_PUBLIC_OAUTH_PORTAL_URL",
+    APP_ID ? null : "EXPO_PUBLIC_APP_ID",
+  ].filter(Boolean);
+
+  return missing.length
+    ? `Missing ${missing.join(" and ")} in this build.`
+    : "OAuth is configured.";
+}
+
 const encodeState = (value: string) => {
   if (typeof globalThis.btoa === "function") {
     return globalThis.btoa(value);
@@ -86,6 +104,10 @@ export const getRedirectUri = () => {
 };
 
 export const getLoginUrl = () => {
+  if (!isOAuthConfigured()) {
+    throw new Error(getOAuthConfigMessage());
+  }
+
   const redirectUri = getRedirectUri();
   const state = encodeState(redirectUri);
 
@@ -122,7 +144,6 @@ export async function startOAuthLogin(): Promise<string | null> {
   const supported = await Linking.canOpenURL(loginUrl);
   if (!supported) {
     console.warn("[OAuth] Cannot open login URL: URL scheme not supported");
-    // 可考虑抛出错误或返回错误状态，让调用方处理
     return null;
   }
 
@@ -130,7 +151,6 @@ export async function startOAuthLogin(): Promise<string | null> {
     await Linking.openURL(loginUrl);
   } catch (error) {
     console.error("[OAuth] Failed to open login URL:", error);
-    // 可考虑抛出错误让调用方处理
   }
 
   // The OAuth callback will reopen the app via deep link.
