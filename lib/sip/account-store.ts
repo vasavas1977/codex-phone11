@@ -46,7 +46,7 @@ const DEFAULT_ACCOUNT: Omit<SipAccount, "username" | "password" | "domain"> = {
   id: "default",
   displayName: "",
   proxy: "",
-  port: 5060,
+  port: 5061,
   transport: "TLS",
   srtp: true,
   stun: "stun.l.google.com:19302",
