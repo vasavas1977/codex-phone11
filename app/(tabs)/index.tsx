@@ -25,6 +25,13 @@ const DIAL_KEYS = [
   { digit: "#", sub: "" },
 ];
 
+const DIAL_KEY_ROWS = [
+  DIAL_KEYS.slice(0, 3),
+  DIAL_KEYS.slice(3, 6),
+  DIAL_KEYS.slice(6, 9),
+  DIAL_KEYS.slice(9, 12),
+];
+
 const RECENT_NUMBERS = [
   { number: "+1 (555) 234-5678", name: "John Smith" },
   { number: "+1 (555) 987-6543", name: "Acme Corp" },
@@ -119,7 +126,7 @@ export default function DialpadScreen() {
     <ScreenContainer>
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
         {/* Header */}
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <View style={[styles.header, { borderBottomColor: colors.border }]}> 
           <View style={styles.headerLeft}>
             <Text style={[styles.headerTitle, { color: colors.foreground }]}>Phone11</Text>
             <View style={styles.sipStatus}>
@@ -133,7 +140,7 @@ export default function DialpadScreen() {
           >
             <IconSymbol name="bell.fill" size={22} color={colors.foreground} />
             {unreadCount > 0 && (
-              <View style={[styles.bellBadge, { backgroundColor: colors.error }]}>
+              <View style={[styles.bellBadge, { backgroundColor: colors.error }]}> 
                 <Text style={styles.bellBadgeText}>
                   {unreadCount > 9 ? "9+" : unreadCount}
                 </Text>
@@ -160,16 +167,20 @@ export default function DialpadScreen() {
 
         {/* Dial Pad */}
         <View style={styles.dialpad}>
-          {DIAL_KEYS.map(({ digit, sub }) => (
-            <TouchableOpacity
-              key={digit}
-              style={[styles.dialKey, { backgroundColor: colors.surface }]}
-              onPress={() => handleKey(digit)}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.dialDigit, { color: colors.foreground }]}>{digit}</Text>
-              {sub ? <Text style={[styles.dialSub, { color: colors.muted }]}>{sub}</Text> : null}
-            </TouchableOpacity>
+          {DIAL_KEY_ROWS.map((row) => (
+            <View key={row.map((key) => key.digit).join("")} style={styles.dialRow}>
+              {row.map(({ digit, sub }) => (
+                <TouchableOpacity
+                  key={digit}
+                  style={[styles.dialKey, { backgroundColor: colors.surface }]}
+                  onPress={() => handleKey(digit)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.dialDigit, { color: colors.foreground }]}>{digit}</Text>
+                  {sub ? <Text style={[styles.dialSub, { color: colors.muted }]}>{sub}</Text> : null}
+                </TouchableOpacity>
+              ))}
+            </View>
           ))}
         </View>
 
@@ -212,7 +223,7 @@ export default function DialpadScreen() {
           }}
           activeOpacity={0.7}
         >
-          <View style={[styles.meetNowIconBg, { backgroundColor: colors.primary + "20" }]}>
+          <View style={[styles.meetNowIconBg, { backgroundColor: colors.primary + "20" }]}> 
             <IconSymbol name="video.fill" size={18} color={colors.primary} />
           </View>
           <View style={styles.meetNowInfo}>
@@ -223,7 +234,7 @@ export default function DialpadScreen() {
         </TouchableOpacity>
 
         {/* Recent Quick Dial */}
-        <View style={[styles.recentSection, { borderTopColor: colors.border }]}>
+        <View style={[styles.recentSection, { borderTopColor: colors.border }]}> 
           <Text style={[styles.recentTitle, { color: colors.muted }]}>RECENT</Text>
           {RECENT_NUMBERS.map((item) => (
             <TouchableOpacity
@@ -319,10 +330,14 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   dialpad: {
-    flexDirection: "row",
-    flexWrap: "wrap",
     paddingHorizontal: 24,
-    gap: 12,
+    gap: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dialRow: {
+    flexDirection: "row",
+    gap: 18,
     justifyContent: "center",
   },
   dialKey: {
