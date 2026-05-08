@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
@@ -5,7 +6,9 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useSipAccountStore } from "@/lib/sip/account-store";
 import { type SipDiagnosticEvent, useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
+import { sipEngine } from "@/lib/sip/engine";
 
 function levelColor(event: SipDiagnosticEvent, colors: ReturnType<typeof useColors>): string {
   if (event.level === "error") return colors.error;
@@ -23,8 +26,47 @@ function eventTime(event: SipDiagnosticEvent): string {
 
 export default function SipDiagnosticsScreen() {
   const colors = useColors();
+  const didRequestInit = useRef(false);
   const events = useSipDiagnosticsStore((s) => s.events);
+  const addEvent = useSipDiagnosticsStore((s) => s.addEvent);
   const clearEvents = useSipDiagnosticsStore((s) => s.clearEvents);
+  const loadAccount = useSipAccountStore((s) => s.loadAccount);
+
+  useEffect(() => {
+    if (didRequestInit.current) return;
+    didRequestInit.current = true;
+
+    loadAccount()
+      .then(() => {
+        const { account } = useSipAccountStore.getState();
+        if (account?.enabled) {
+          sipEngine.initialize().catch((error) => {
+            addEvent({
+              level: "error",
+              category: "engine",
+              message: "SIP diagnostics could not start registration",
+              detail: error instanceof Error ? error.message : String(error),
+            });
+          });
+          return;
+        }
+
+        addEvent({
+          level: "warning",
+          category: "registration",
+          message: "No admin-provisioned phone account loaded",
+          detail: "Open Phone Provisioning, sign in, then sync from admin management.",
+        });
+      })
+      .catch((error) => {
+        addEvent({
+          level: "error",
+          category: "engine",
+          message: "SIP diagnostics could not load phone account",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [addEvent, loadAccount]);
 
   return (
     <ScreenContainer>
@@ -62,9 +104,9 @@ export default function SipDiagnosticsScreen() {
           {events.length === 0 ? (
             <View style={[styles.emptyCard, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
               <IconSymbol name="info.circle" size={24} color={colors.muted} />
-              <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No SIP events yet</Text>
+              <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Checking phone registration</Text>
               <Text style={[styles.emptyText, { color: colors.muted }]}> 
-                Save a SIP account, register, or place a call to populate diagnostics.
+                Diagnostics will show whether the app found an admin-provisioned account and started SIP registration.
               </Text>
             </View>
           ) : (
