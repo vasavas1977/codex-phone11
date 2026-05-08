@@ -6,7 +6,16 @@ import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_
 import { pbxRouter } from "./pbx/pbx-router";
 import { ivrRouter } from "./pbx/ivr-router";
 import { invokeLLM } from "./_core/llm";
-import { getPhoneConfig, assignExtensionToUser, listExtensions, createExtension, listOrganizations, listDidNumbers, createDidNumber } from "./phone-provisioning";
+import {
+  getPhoneConfig,
+  ensurePilotExtensionForUser,
+  assignExtensionToUser,
+  listExtensions,
+  createExtension,
+  listOrganizations,
+  listDidNumbers,
+  createDidNumber,
+} from "./phone-provisioning";
 import {
   registerPushToken,
   unregisterPushToken,
@@ -35,6 +44,11 @@ export const appRouter = router({
     /** Get SIP config for the logged-in user (auto-provisioning) */
     getConfig: protectedProcedure.query(async ({ ctx }) => {
       return getPhoneConfig(ctx.user.id, ctx.user.openId);
+    }),
+
+    /** Pilot: create or assign a first-device test extension for the logged-in user */
+    ensurePilotConfig: protectedProcedure.mutation(async ({ ctx }) => {
+      return ensurePilotExtensionForUser(ctx.user.id, ctx.user.openId);
     }),
 
     /** Admin: list all extensions */
