@@ -95,7 +95,31 @@ jobs:
             git reset --hard "origin/$DEPLOY_BRANCH"
 
             mkdir -p infra/compose
-            for path in infra/compose/.env infra/compose/tls infra/compose/apns; do
+            ENV_SOURCE=""
+            for candidate in \
+              "$LIVE_PROJECT_PATH/infra/compose/.env" \
+              "$LIVE_PROJECT_PATH/.env" \
+              "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
+              "$LIVE_PROJECT_PATH/.env.production" \
+              "/opt/phone11ai/.env" \
+              "/opt/phone11ai/cloudphone11/.env"; do
+              if [ -f "$candidate" ]; then
+                ENV_SOURCE="$candidate"
+                break
+              fi
+            done
+
+            if [ -z "$ENV_SOURCE" ]; then
+              ENV_SOURCE=$(find "$LIVE_PROJECT_PATH" /opt/phone11ai -maxdepth 5 -type f \( -name ".env" -o -name ".env.production" -o -name "prod.env" -o -name "production.env" \) 2>/dev/null | head -n 1 || true)
+            fi
+
+            if [ -n "$ENV_SOURCE" ]; then
+              cp -a "$ENV_SOURCE" "$WORK_PATH/.env"
+              cp -a "$ENV_SOURCE" "$WORK_PATH/infra/compose/.env"
+              echo "Copied runtime env file from $(dirname "$ENV_SOURCE")/$(basename "$ENV_SOURCE")"
+            fi
+
+            for path in infra/compose/tls infra/compose/apns; do
               if [ -e "$LIVE_PROJECT_PATH/$path" ]; then
                 rm -rf "$WORK_PATH/$path"
                 mkdir -p "$WORK_PATH/$(dirname "$path")"
@@ -132,19 +156,28 @@ jobs:
             exit 23
           fi
 
-          if [ ! -f infra/compose/.env ]; then
-            echo "ERROR: infra/compose/.env not found. Copy the live backend .env into $WORK_PATH/infra/compose/.env."
+          ENV_FILE=""
+          for candidate in "$WORK_PATH/.env" "$WORK_PATH/infra/compose/.env"; do
+            if [ -f "$candidate" ]; then
+              ENV_FILE="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$ENV_FILE" ]; then
+            echo "ERROR: no runtime env file found under $WORK_PATH or $LIVE_PROJECT_PATH."
+            echo "Checked common .env locations without printing secret values."
             exit 26
           fi
 
           echo "Building backend container..."
-          $COMPOSE -f "$COMPOSE_FILE" build backend
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build backend
 
           echo "Restarting backend container..."
-          $COMPOSE -f "$COMPOSE_FILE" up -d backend
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d backend
 
           echo "Backend container status:"
-          $COMPOSE -f "$COMPOSE_FILE" ps backend
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps backend
 
           echo "Health check:"
           for i in $(seq 1 20); do
@@ -157,7 +190,7 @@ jobs:
           done
 
           echo "ERROR: backend health check failed after restart. Recent logs:"
-          $COMPOSE -f "$COMPOSE_FILE" logs --tail=120 backend || true
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=120 backend || true
           exit 24
           SCRIPT
           chmod +x /tmp/phone11-ec2-deploy.sh
