@@ -120,6 +120,20 @@ function buildConfig(ext: any, dids: Array<{ number: string; description: string
 
 async function applyPhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
   await db.query(`
+    CREATE TABLE IF NOT EXISTS subscriber (
+      id SERIAL PRIMARY KEY,
+      username VARCHAR(64) NOT NULL DEFAULT '',
+      domain VARCHAR(64) NOT NULL DEFAULT '',
+      password VARCHAR(128) NOT NULL DEFAULT '',
+      ha1 VARCHAR(128) NOT NULL DEFAULT '',
+      ha1b VARCHAR(128) NOT NULL DEFAULT '',
+      email_address VARCHAR(128) NOT NULL DEFAULT '',
+      rpid VARCHAR(128) DEFAULT NULL,
+      UNIQUE (username, domain)
+    )
+  `);
+
+  await db.query(`
     CREATE TABLE IF NOT EXISTS organizations (
       id SERIAL PRIMARY KEY,
       name VARCHAR(128) NOT NULL DEFAULT 'Phone11',
@@ -190,6 +204,8 @@ async function applyPhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
     "ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'active'",
     "ADD COLUMN IF NOT EXISTS voicemail_enabled BOOLEAN NOT NULL DEFAULT false",
     "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+    "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+    "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
   ];
 
   for (const column of extensionColumns) {
@@ -238,7 +254,7 @@ async function applyPhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
     "ADD COLUMN IF NOT EXISTS extension_id INTEGER",
     "ADD COLUMN IF NOT EXISTS user_id INTEGER",
     "ADD COLUMN IF NOT EXISTS sip_username VARCHAR(64)",
-    "ADD COLUMN IF NOT EXISTS sip_domain VARCHAR(128) DEFAULT '${DEFAULT_SIP_DOMAIN}'",
+    `ADD COLUMN IF NOT EXISTS sip_domain VARCHAR(128) DEFAULT '${DEFAULT_SIP_DOMAIN}'`,
     "ADD COLUMN IF NOT EXISTS ha1 VARCHAR(128)",
     "ADD COLUMN IF NOT EXISTS ha1b VARCHAR(128)",
     "ADD COLUMN IF NOT EXISTS secret_ciphertext BYTEA",
@@ -250,6 +266,8 @@ async function applyPhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
     "ADD COLUMN IF NOT EXISTS last_registered_at TIMESTAMPTZ",
     "ADD COLUMN IF NOT EXISTS last_registered_contact TEXT",
     "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+    "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+    "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
   ];
 
   for (const column of sipAccountColumns) {
@@ -278,6 +296,8 @@ async function applyPhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
     "ADD COLUMN IF NOT EXISTS destination_type VARCHAR(32) NOT NULL DEFAULT 'extension'",
     "ADD COLUMN IF NOT EXISTS destination_value VARCHAR(64)",
     "ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'active'",
+    "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()",
+    "ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
   ];
 
   for (const column of didColumns) {
