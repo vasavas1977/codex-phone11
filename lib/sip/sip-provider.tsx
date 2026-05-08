@@ -1,8 +1,8 @@
 /**
  * SIP Provider — Phone11
- * Loads SIP account data at app start, then initializes native SIP/CallKit only
- * when calling is used. This keeps the app shell stable while native calling is
- * being proven on real devices.
+ * Loads SIP account data at app start, registers SIP automatically when an
+ * admin-provisioned account exists, and initializes native call UI when calling
+ * is used.
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
@@ -10,6 +10,7 @@ import { AppState, type AppStateStatus } from "react-native";
 import { sipEngine } from "./engine";
 import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
+import { useSipDiagnosticsStore } from "./diagnostics-store";
 import { nativeCallManager, registerVoipPush } from "./native-call";
 
 interface SipContextValue {
@@ -59,20 +60,35 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     await accountLoadPromise.current;
   }, [loadAccount]);
 
+  const ensureSipRegistered = useCallback(async (): Promise<boolean> => {
+    await ensureAccountLoaded();
+
+    const { account } = useSipAccountStore.getState();
+    if (!account || !account.enabled) {
+      useSipDiagnosticsStore.getState().addEvent({
+        level: "warning",
+        category: "registration",
+        message: "No admin-provisioned phone account loaded",
+        detail: "Open Phone Provisioning, sign in, then sync from admin management.",
+      });
+      return false;
+    }
+
+    await sipEngine.initialize();
+    return true;
+  }, [ensureAccountLoaded]);
+
   const ensureNativeStackInitialized = useCallback(async () => {
     if (nativeStackInitialized.current) return;
 
     if (!nativeStackInitPromise.current) {
       nativeStackInitPromise.current = (async () => {
-        await ensureAccountLoaded();
-
-        const { account } = useSipAccountStore.getState();
-        if (!account || !account.enabled) {
+        const hasAccount = await ensureSipRegistered();
+        if (!hasAccount) {
           nativeStackInitPromise.current = null;
           return;
         }
 
-        await sipEngine.initialize();
         await nativeCallManager.initialize();
         await registerVoipPush();
         nativeStackInitialized.current = true;
@@ -85,12 +101,11 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     }
 
     await nativeStackInitPromise.current;
-  }, [ensureAccountLoaded]);
+  }, [ensureSipRegistered]);
 
   useEffect(() => {
-    ensureAccountLoaded().catch(() => {});
+    ensureSipRegistered().catch(() => {});
 
-    // Subscribe to incoming call events — display on native UI once calling is initialized.
     let prevIncomingId: string | null = null;
     const unsubIncoming = useSipCallStore.subscribe((state) => {
       const incomingCall = state.incomingCall;
@@ -107,10 +122,9 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       }
     });
 
-    // Re-register when app comes to foreground, but only after the native stack has been used.
     const appStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (state === "active" && nativeStackInitialized.current) {
-        sipEngine.initialize().catch(console.error);
+      if (state === "active") {
+        ensureSipRegistered().catch(console.error);
       }
     });
 
@@ -122,14 +136,13 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       nativeStackInitialized.current = false;
       nativeStackInitPromise.current = null;
     };
-  }, [ensureAccountLoaded]);
+  }, [ensureSipRegistered]);
 
   const value: SipContextValue = {
     makeCall: async (dest, video) => {
       await ensureNativeStackInitialized();
       const callId = await sipEngine.makeCall(dest, video);
       if (callId) {
-        // Report outgoing call to native UI
         nativeCallManager.reportOutgoingCall(callId, dest, undefined, video);
       }
       return callId;
