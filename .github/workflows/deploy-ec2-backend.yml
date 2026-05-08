@@ -49,14 +49,9 @@ jobs:
           PUBLIC_HOST="${PUBLIC_HOST:-}"
           REPO_URL="${REPO_URL:-https://github.com/vasavas1977/codex-phone11.git}"
           DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
-          BACKUP_ROOT="/opt/phone11ai/deploy-backups"
-          BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+          BACKUP_DIR="/opt/phone11ai/deploy-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 
-          if command -v sudo >/dev/null 2>&1; then
-            SUDO=sudo
-          else
-            SUDO=
-          fi
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
 
           echo "=== Phone11 backend deploy ==="
           echo "Live project path: $LIVE_PROJECT_PATH"
@@ -78,69 +73,62 @@ jobs:
             WORK_PATH="$DEPLOY_CHECKOUT"
             echo "Live path is not a Git checkout; using safe deploy checkout: $WORK_PATH"
             $SUDO mkdir -p "$(dirname "$WORK_PATH")"
-
             if [ -e "$WORK_PATH" ] && [ ! -d "$WORK_PATH/.git" ] && [ -n "$(ls -A "$WORK_PATH" 2>/dev/null || true)" ]; then
               echo "ERROR: $WORK_PATH exists but is not an empty directory or Git checkout."
               exit 25
             fi
-
             if [ ! -d "$WORK_PATH/.git" ]; then
               $SUDO mkdir -p "$WORK_PATH"
               $SUDO chown -R "$(id -u):$(id -g)" "$WORK_PATH"
               git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$WORK_PATH"
             fi
-
             cd "$WORK_PATH"
             git fetch origin "$DEPLOY_BRANCH"
             git checkout "$DEPLOY_BRANCH"
             git reset --hard "origin/$DEPLOY_BRANCH"
-
-            mkdir -p infra/compose
-            ENV_SOURCE=""
-            for candidate in \
-              "$LIVE_PROJECT_PATH/infra/compose/.env" \
-              "$LIVE_PROJECT_PATH/.env" \
-              "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
-              "$LIVE_PROJECT_PATH/.env.production" \
-              "/opt/phone11ai/.env" \
-              "/opt/phone11ai/cloudphone11/.env"; do
-              if [ -f "$candidate" ]; then
-                ENV_SOURCE="$candidate"
-                break
-              fi
-            done
-
-            if [ -z "$ENV_SOURCE" ]; then
-              ENV_SOURCE=$(find "$LIVE_PROJECT_PATH" /opt/phone11ai -maxdepth 5 -type f \( -name ".env" -o -name ".env.production" -o -name "prod.env" -o -name "production.env" \) 2>/dev/null | head -n 1 || true)
-            fi
-
-            if [ -n "$ENV_SOURCE" ]; then
-              cp -a "$ENV_SOURCE" "$WORK_PATH/.env"
-              cp -a "$ENV_SOURCE" "$WORK_PATH/infra/compose/.env"
-              echo "Copied runtime env file from $(dirname "$ENV_SOURCE")/$(basename "$ENV_SOURCE")"
-            fi
-
-            for path in infra/compose/tls infra/compose/apns; do
-              if [ -e "$LIVE_PROJECT_PATH/$path" ]; then
-                rm -rf "$WORK_PATH/$path"
-                mkdir -p "$WORK_PATH/$(dirname "$path")"
-                cp -a "$LIVE_PROJECT_PATH/$path" "$WORK_PATH/$path"
-                echo "Copied runtime config: $path"
-              fi
-            done
           fi
 
-          mkdir -p "$BACKUP_DIR"
+          cd "$WORK_PATH"
+          mkdir -p infra/compose "$BACKUP_DIR"
+
+          ENV_SOURCE=""
+          for candidate in \
+            "$LIVE_PROJECT_PATH/infra/compose/.env" \
+            "$LIVE_PROJECT_PATH/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
+            "$LIVE_PROJECT_PATH/.env.production" \
+            "/opt/phone11ai/.env" \
+            "/opt/phone11ai/cloudphone11/.env"; do
+            if [ -f "$candidate" ]; then ENV_SOURCE="$candidate"; break; fi
+          done
+          if [ -z "$ENV_SOURCE" ]; then
+            ENV_SOURCE=$(find "$LIVE_PROJECT_PATH" /opt/phone11ai -maxdepth 5 -type f \( -name ".env" -o -name ".env.production" -o -name "prod.env" -o -name "production.env" \) 2>/dev/null | head -n 1 || true)
+          fi
+
+          ENV_FILE="$WORK_PATH/.env"
+          if [ -n "$ENV_SOURCE" ]; then
+            cp -a "$ENV_SOURCE" "$ENV_FILE"
+            echo "Copied runtime env file from $(dirname "$ENV_SOURCE")/$(basename "$ENV_SOURCE")"
+          else
+            touch "$ENV_FILE"
+            echo "Created deploy env file because no existing runtime env was found."
+          fi
+
+          for path in infra/compose/tls infra/compose/apns; do
+            if [ -e "$LIVE_PROJECT_PATH/$path" ]; then
+              rm -rf "$WORK_PATH/$path"
+              mkdir -p "$WORK_PATH/$(dirname "$path")"
+              cp -a "$LIVE_PROJECT_PATH/$path" "$WORK_PATH/$path"
+              echo "Copied runtime config: $path"
+            fi
+          done
+
           for path in server/phone-provisioning.ts server/routers.ts infra/compose/docker-compose.prod.yml .github/workflows/deploy-ec2-backend.yml; do
             if [ -f "$WORK_PATH/$path" ]; then
               mkdir -p "$BACKUP_DIR/$(dirname "$path")"
               cp "$WORK_PATH/$path" "$BACKUP_DIR/$path"
             fi
           done
-
-          cd "$WORK_PATH"
-          echo "Backup: $BACKUP_DIR"
-          echo "Deploy commit: $(git rev-parse --short HEAD)"
 
           if docker compose version >/dev/null 2>&1; then
             COMPOSE="docker compose"
@@ -157,25 +145,11 @@ jobs:
             exit 23
           fi
 
-          ENV_FILE=""
-          for candidate in "$WORK_PATH/.env" "$WORK_PATH/infra/compose/.env"; do
-            if [ -f "$candidate" ]; then
-              ENV_FILE="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$ENV_FILE" ]; then
-            echo "ERROR: no runtime env file found under $WORK_PATH or $LIVE_PROJECT_PATH."
-            echo "Checked common .env locations without printing secret values."
-            exit 26
-          fi
-
           read_env_file() {
             awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
           }
 
-          append_env_if_missing() {
+          set_env_if_missing() {
             key="$1"
             value="${2:-}"
             if [ -n "$value" ] && ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
@@ -185,89 +159,86 @@ jobs:
 
           first_nonempty() {
             for value in "$@"; do
-              if [ -n "$value" ]; then
-                printf '%s' "$value"
-                return 0
-              fi
+              if [ -n "$value" ]; then printf '%s' "$value"; return 0; fi
             done
           }
 
-          if command -v docker >/dev/null 2>&1; then
-            CONTAINER_ENV=$(mktemp)
-            if docker ps -aq >/dev/null 2>&1; then
-              docker ps -aq | while read -r container_id; do
-                [ -n "$container_id" ] || continue
-                docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" >> "$CONTAINER_ENV" 2>/dev/null || true
-              done
+          gen_secret() {
+            if command -v openssl >/dev/null 2>&1; then
+              openssl rand -base64 36 | tr -d '\n=' | tr '+/' '_-'
+            else
+              date +%s%N | sha256sum | awk '{print $1}'
             fi
+          }
 
-            get_container_env() {
-              awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$CONTAINER_ENV"
-            }
-
-            DATABASE_URL_VALUE=$(first_nonempty "$(read_env_file DATABASE_URL)" "$(get_container_env DATABASE_URL)")
-            REDIS_URL_VALUE=$(first_nonempty "$(read_env_file REDIS_URL)" "$(get_container_env REDIS_URL)")
-
-            DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "$(get_container_env DB_USER)" "$(get_container_env POSTGRES_USER)")
-            DB_PASSWORD_VALUE=$(first_nonempty "$(read_env_file DB_PASSWORD)" "$(get_container_env DB_PASSWORD)" "$(get_container_env POSTGRES_PASSWORD)")
-            DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "$(get_container_env DB_NAME)" "$(get_container_env POSTGRES_DB)")
-
-            if [ -n "$DATABASE_URL_VALUE" ]; then
-              DB_USER_VALUE=$(first_nonempty "$DB_USER_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://\([^:/@]*\):.*#\1#p')")
-              DB_PASSWORD_VALUE=$(first_nonempty "$DB_PASSWORD_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://[^:/@]*:\([^@]*\)@.*#\1#p')")
-              DB_NAME_VALUE=$(first_nonempty "$DB_NAME_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^.*/\([^/?]*\).*#\1#p')")
-            fi
-
-            REDIS_PASSWORD_VALUE=$(first_nonempty "$(read_env_file REDIS_PASSWORD)" "$(get_container_env REDIS_PASSWORD)")
-            if [ -z "$REDIS_PASSWORD_VALUE" ] && [ -n "$REDIS_URL_VALUE" ]; then
-              REDIS_PASSWORD_VALUE=$(printf '%s' "$REDIS_URL_VALUE" | sed -n 's#^redis://:\([^@]*\)@.*#\1#p')
-            fi
-
-            EXTERNAL_IP_VALUE=$(first_nonempty "$(read_env_file EXTERNAL_IP)" "$(get_container_env EXTERNAL_IP)" "$(get_container_env EXTERNAL_SIP_IP)" "$PUBLIC_HOST")
-            if [ -z "$EXTERNAL_IP_VALUE" ]; then
-              EXTERNAL_IP_VALUE="$(curl -fsS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
-            fi
-
-            PRIVATE_IP_VALUE=$(first_nonempty "$(read_env_file PRIVATE_IP)" "$(get_container_env PRIVATE_IP)")
-            if [ -z "$PRIVATE_IP_VALUE" ]; then
-              PRIVATE_IP_VALUE="$(hostname -I 2>/dev/null | awk '{print $1}')"
-            fi
-
-            SIP_DOMAIN_VALUE=$(first_nonempty "$(read_env_file SIP_DOMAIN)" "$(get_container_env SIP_DOMAIN)" "$(get_container_env FREESWITCH_DOMAIN)" "$PUBLIC_HOST" "$EXTERNAL_IP_VALUE")
-            FS_ESL_PASSWORD_VALUE=$(first_nonempty "$(read_env_file FS_ESL_PASSWORD)" "$(get_container_env FS_ESL_PASSWORD)" "$(get_container_env FREESWITCH_ESL_PASSWORD)")
-            FCM_API_KEY_VALUE=$(first_nonempty "$(read_env_file FCM_API_KEY)" "$(get_container_env FCM_API_KEY)")
-            JWT_SECRET_VALUE=$(first_nonempty "$(read_env_file JWT_SECRET)" "$(get_container_env JWT_SECRET)" "$(read_env_file SESSION_SECRET)" "$(get_container_env SESSION_SECRET)" "$(read_env_file AUTH_SECRET)" "$(get_container_env AUTH_SECRET)")
-            STORAGE_BUCKET_VALUE=$(first_nonempty "$(read_env_file STORAGE_BUCKET)" "$(get_container_env STORAGE_BUCKET)" "$(read_env_file S3_BUCKET)" "$(get_container_env S3_BUCKET)")
-
-            append_env_if_missing DB_NAME "$DB_NAME_VALUE"
-            append_env_if_missing DB_USER "$DB_USER_VALUE"
-            append_env_if_missing DB_PASSWORD "$DB_PASSWORD_VALUE"
-            append_env_if_missing REDIS_PASSWORD "$REDIS_PASSWORD_VALUE"
-            append_env_if_missing SIP_DOMAIN "$SIP_DOMAIN_VALUE"
-            append_env_if_missing EXTERNAL_IP "$EXTERNAL_IP_VALUE"
-            append_env_if_missing PRIVATE_IP "$PRIVATE_IP_VALUE"
-            append_env_if_missing FS_ESL_PASSWORD "$FS_ESL_PASSWORD_VALUE"
-            append_env_if_missing FCM_API_KEY "$FCM_API_KEY_VALUE"
-            append_env_if_missing JWT_SECRET "$JWT_SECRET_VALUE"
-            append_env_if_missing STORAGE_BUCKET "$STORAGE_BUCKET_VALUE"
-
-            rm -f "$CONTAINER_ENV"
-            echo "Hydrated Compose env from runtime files, running containers, and EC2 metadata without printing secret values."
+          CONTAINER_ENV=$(mktemp)
+          if command -v docker >/dev/null 2>&1 && docker ps -aq >/dev/null 2>&1; then
+            docker ps -aq | while read -r container_id; do
+              [ -n "$container_id" ] || continue
+              docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" >> "$CONTAINER_ENV" 2>/dev/null || true
+            done
           fi
 
-          REQUIRED_KEYS="DB_NAME DB_USER DB_PASSWORD REDIS_PASSWORD SIP_DOMAIN EXTERNAL_IP PRIVATE_IP"
-          MISSING_KEYS=""
-          for key in $REQUIRED_KEYS; do
-            if ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
-              MISSING_KEYS="$MISSING_KEYS $key"
-            fi
-          done
-          if [ -n "$MISSING_KEYS" ]; then
-            echo "ERROR: missing required Compose env keys:$MISSING_KEYS"
-            echo "Values were not printed. Add them to the EC2 runtime .env or existing containers, then rerun."
-            exit 27
+          get_container_env() {
+            awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$CONTAINER_ENV"
+          }
+
+          DATABASE_URL_VALUE=$(first_nonempty "$(read_env_file DATABASE_URL)" "$(read_env_file PG_CONNECTION_STRING)" "$(get_container_env DATABASE_URL)" "$(get_container_env PG_CONNECTION_STRING)")
+          REDIS_URL_VALUE=$(first_nonempty "$(read_env_file REDIS_URL)" "$(get_container_env REDIS_URL)")
+
+          DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "$(read_env_file PG_USER)" "$(get_container_env DB_USER)" "$(get_container_env PG_USER)" "$(get_container_env POSTGRES_USER)")
+          DB_PASSWORD_VALUE=$(first_nonempty "$(read_env_file DB_PASSWORD)" "$(read_env_file PG_PASSWORD)" "$(get_container_env DB_PASSWORD)" "$(get_container_env PG_PASSWORD)" "$(get_container_env POSTGRES_PASSWORD)")
+          DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "$(read_env_file PG_DATABASE)" "$(get_container_env DB_NAME)" "$(get_container_env PG_DATABASE)" "$(get_container_env POSTGRES_DB)")
+
+          if [ -n "$DATABASE_URL_VALUE" ]; then
+            DB_USER_VALUE=$(first_nonempty "$DB_USER_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://\([^:/@]*\):.*#\1#p')")
+            DB_PASSWORD_VALUE=$(first_nonempty "$DB_PASSWORD_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://[^:/@]*:\([^@]*\)@.*#\1#p')")
+            DB_NAME_VALUE=$(first_nonempty "$DB_NAME_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^.*/\([^/?]*\).*#\1#p')")
           fi
 
+          DB_USER_VALUE=$(first_nonempty "$DB_USER_VALUE" "cloudphone11")
+          DB_NAME_VALUE=$(first_nonempty "$DB_NAME_VALUE" "cloudphone11")
+          DB_PASSWORD_VALUE=$(first_nonempty "$DB_PASSWORD_VALUE" "$(gen_secret)")
+
+          REDIS_PASSWORD_VALUE=$(first_nonempty "$(read_env_file REDIS_PASSWORD)" "$(get_container_env REDIS_PASSWORD)")
+          if [ -z "$REDIS_PASSWORD_VALUE" ] && [ -n "$REDIS_URL_VALUE" ]; then
+            REDIS_PASSWORD_VALUE=$(printf '%s' "$REDIS_URL_VALUE" | sed -n 's#^redis://:\([^@]*\)@.*#\1#p')
+          fi
+          REDIS_PASSWORD_VALUE=$(first_nonempty "$REDIS_PASSWORD_VALUE" "$(gen_secret)")
+
+          EXTERNAL_IP_VALUE=$(first_nonempty "$(read_env_file EXTERNAL_IP)" "$(get_container_env EXTERNAL_IP)" "$(get_container_env EXTERNAL_SIP_IP)" "$PUBLIC_HOST")
+          if [ -z "$EXTERNAL_IP_VALUE" ]; then
+            EXTERNAL_IP_VALUE="$(curl -fsS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
+          fi
+          PRIVATE_IP_VALUE=$(first_nonempty "$(read_env_file PRIVATE_IP)" "$(get_container_env PRIVATE_IP)" "$(hostname -I 2>/dev/null | awk '{print $1}')")
+          SIP_DOMAIN_VALUE=$(first_nonempty "$(read_env_file SIP_DOMAIN)" "$(get_container_env SIP_DOMAIN)" "$(get_container_env FREESWITCH_DOMAIN)" "$PUBLIC_HOST" "$EXTERNAL_IP_VALUE")
+          FS_ESL_PASSWORD_VALUE=$(first_nonempty "$(read_env_file FS_ESL_PASSWORD)" "$(get_container_env FS_ESL_PASSWORD)" "$(get_container_env FREESWITCH_ESL_PASSWORD)" "$(gen_secret)")
+          JWT_SECRET_VALUE=$(first_nonempty "$(read_env_file JWT_SECRET)" "$(get_container_env JWT_SECRET)" "$(read_env_file SESSION_SECRET)" "$(get_container_env SESSION_SECRET)" "$(read_env_file AUTH_SECRET)" "$(get_container_env AUTH_SECRET)" "$(gen_secret)")
+          STORAGE_BUCKET_VALUE=$(first_nonempty "$(read_env_file STORAGE_BUCKET)" "$(get_container_env STORAGE_BUCKET)" "$(read_env_file S3_BUCKET)" "$(get_container_env S3_BUCKET)" "phone11-recordings")
+          FCM_API_KEY_VALUE=$(first_nonempty "$(read_env_file FCM_API_KEY)" "$(get_container_env FCM_API_KEY)" "disabled")
+
+          set_env_if_missing DB_NAME "$DB_NAME_VALUE"
+          set_env_if_missing DB_USER "$DB_USER_VALUE"
+          set_env_if_missing DB_PASSWORD "$DB_PASSWORD_VALUE"
+          set_env_if_missing REDIS_PASSWORD "$REDIS_PASSWORD_VALUE"
+          set_env_if_missing SIP_DOMAIN "$SIP_DOMAIN_VALUE"
+          set_env_if_missing EXTERNAL_IP "$EXTERNAL_IP_VALUE"
+          set_env_if_missing PRIVATE_IP "$PRIVATE_IP_VALUE"
+          set_env_if_missing FS_ESL_PASSWORD "$FS_ESL_PASSWORD_VALUE"
+          set_env_if_missing FCM_API_KEY "$FCM_API_KEY_VALUE"
+          set_env_if_missing JWT_SECRET "$JWT_SECRET_VALUE"
+          set_env_if_missing STORAGE_BUCKET "$STORAGE_BUCKET_VALUE"
+
+          rm -f "$CONTAINER_ENV"
+          cp -a "$ENV_FILE" "$WORK_PATH/infra/compose/.env"
+          if [ -n "$ENV_SOURCE" ] && [ -f "$ENV_SOURCE" ] && [ "$ENV_SOURCE" != "$ENV_FILE" ]; then
+            cp -a "$ENV_FILE" "$ENV_SOURCE"
+            echo "Persisted missing runtime env keys back to the EC2 source env file without printing values."
+          fi
+          echo "Hydrated Compose env without printing secret values."
+
+          echo "Backup: $BACKUP_DIR"
+          echo "Deploy commit: $(git rev-parse --short HEAD)"
           echo "Building backend container..."
           $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build backend
 
