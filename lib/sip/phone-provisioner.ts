@@ -9,6 +9,7 @@ import { sipAccountFromPhoneConfig } from "./provisioning";
 export function PhoneProvisioner() {
   const { isAuthenticated, loading } = useAuth();
   const account = useSipAccountStore((s) => s.account);
+  const registrationState = useSipAccountStore((s) => s.registrationState);
   const setAccount = useSipAccountStore((s) => s.setAccount);
 
   const configQuery = trpc.phone.getConfig.useQuery(undefined, {
@@ -28,12 +29,17 @@ export function PhoneProvisioner() {
       account?.transport === nextAccount.transport &&
       account?.password === nextAccount.password;
 
-    if (unchanged) return;
+    if (unchanged) {
+      if (registrationState !== "registered" && registrationState !== "registering") {
+        sipEngine.restart().catch((error) => console.error("[PhoneProvisioner] Failed to restart SIP:", error));
+      }
+      return;
+    }
 
     setAccount(nextAccount)
       .then(() => sipEngine.restart())
       .catch((error) => console.error("[PhoneProvisioner] Failed to apply SIP config:", error));
-  }, [account, configQuery.data, setAccount]);
+  }, [account, configQuery.data, registrationState, setAccount]);
 
   return null;
 }
