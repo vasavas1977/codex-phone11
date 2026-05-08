@@ -1,4 +1,4 @@
-name: Deploy to EKS
+name: Deploy Backend to EKS
 
 on:
   workflow_run:
@@ -15,10 +15,10 @@ on:
         options:
           - staging
           - production
-      services:
-        description: 'Comma-separated services to deploy (freeswitch,kamailio,flexisip,backend or all)'
+      image_tag:
+        description: 'Backend image tag to deploy. Defaults to this commit SHA.'
         required: false
-        default: 'all'
+        default: ''
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
@@ -30,7 +30,7 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  deploy-backend:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     environment: ${{ github.event.inputs.environment || 'staging' }}
@@ -41,7 +41,10 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to ECR
@@ -49,131 +52,75 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Update kubeconfig
-        run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
 
       - name: Set image tag
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
           else
             echo "tag=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Deploy FreeSWITCH
-        if: |
-          github.event.inputs.services == 'all' ||
-          contains(github.event.inputs.services, 'freeswitch') ||
-          github.event_name == 'workflow_run'
-        run: |
-          kubectl set image deployment/freeswitch \
-            freeswitch=${{ steps.ecr.outputs.registry }}/cloudphone11/freeswitch:${{ steps.tag.outputs.tag }} \
-            -n ${{ env.NAMESPACE }}
-          kubectl rollout status deployment/freeswitch -n ${{ env.NAMESPACE }} --timeout=300s
-
-      - name: Deploy Kamailio
-        if: |
-          github.event.inputs.services == 'all' ||
-          contains(github.event.inputs.services, 'kamailio') ||
-          github.event_name == 'workflow_run'
-        run: |
-          kubectl set image deployment/kamailio \
-            kamailio=${{ steps.ecr.outputs.registry }}/cloudphone11/kamailio:${{ steps.tag.outputs.tag }} \
-            -n ${{ env.NAMESPACE }}
-          kubectl rollout status deployment/kamailio -n ${{ env.NAMESPACE }} --timeout=300s
-
-      - name: Deploy Flexisip
-        if: |
-          github.event.inputs.services == 'all' ||
-          contains(github.event.inputs.services, 'flexisip') ||
-          github.event_name == 'workflow_run'
-        run: |
-          kubectl set image deployment/flexisip \
-            flexisip=${{ steps.ecr.outputs.registry }}/cloudphone11/flexisip:${{ steps.tag.outputs.tag }} \
-            -n ${{ env.NAMESPACE }}
-          kubectl rollout status deployment/flexisip -n ${{ env.NAMESPACE }} --timeout=300s
-
       - name: Deploy Backend
-        if: |
-          github.event.inputs.services == 'all' ||
-          contains(github.event.inputs.services, 'backend') ||
-          github.event_name == 'workflow_run'
         run: |
           kubectl set image deployment/backend \
             backend=${{ steps.ecr.outputs.registry }}/cloudphone11/backend:${{ steps.tag.outputs.tag }} \
             -n ${{ env.NAMESPACE }}
           kubectl rollout status deployment/backend -n ${{ env.NAMESPACE }} --timeout=300s
 
-      - name: Verify deployment
+      - name: Verify backend deployment
         run: |
-          echo "=== Pod Status ==="
-          kubectl get pods -n ${{ env.NAMESPACE }} -o wide
-
-          echo ""
-          echo "=== Service Endpoints ==="
-          kubectl get svc -n ${{ env.NAMESPACE }}
-
-          echo ""
-          echo "=== Recent Events ==="
-          kubectl get events -n ${{ env.NAMESPACE }} --sort-by='.lastTimestamp' | tail -20
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=backend -o wide || kubectl get pods -n ${{ env.NAMESPACE }} -l app=backend -o wide
+          kubectl get svc backend -n ${{ env.NAMESPACE }}
 
       - name: Health check
         run: |
-          BACKEND_SVC=$(kubectl get svc backend -n ${{ env.NAMESPACE }} -o jsonpath='{.spec.clusterIP}')
-          echo "Backend ClusterIP: $BACKEND_SVC"
-
           kubectl port-forward svc/backend 3000:3000 -n ${{ env.NAMESPACE }} &
           PF_PID=$!
           sleep 5
-
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "000")
           kill $PF_PID 2>/dev/null || true
-
           if [ "$HTTP_CODE" = "200" ]; then
             echo "Backend health check passed"
           else
-            echo "Backend health check returned $HTTP_CODE (may need ingress for full check)"
+            echo "Backend health check returned $HTTP_CODE"
+            exit 1
           fi
 
       - name: Post-deploy summary
         run: |
-          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Backend Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Service | Image Tag |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-----------|" >> $GITHUB_STEP_SUMMARY
-          echo "| FreeSWITCH | \`${{ steps.tag.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Kamailio | \`${{ steps.tag.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Flexisip | \`${{ steps.tag.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Backend | \`${{ steps.tag.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Environment:** ${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
           echo "**Cluster:** ${{ env.EKS_CLUSTER }}" >> $GITHUB_STEP_SUMMARY
           echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
 
-  rollback:
+  rollback-backend:
     runs-on: ubuntu-latest
     if: failure()
-    needs: deploy
+    needs: deploy-backend
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
 
-      - name: Rollback failed deployments
+      - name: Rollback backend
         run: |
-          echo "Deployment failed; rolling back..."
-          for svc in freeswitch kamailio flexisip backend; do
-            ROLLOUT_STATUS=$(kubectl rollout status deployment/$svc -n ${{ env.NAMESPACE }} --timeout=10s 2>&1 || true)
-            if echo "$ROLLOUT_STATUS" | grep -q "error\|timed out"; then
-              echo "Rolling back $svc..."
-              kubectl rollout undo deployment/$svc -n ${{ env.NAMESPACE }}
-              kubectl rollout status deployment/$svc -n ${{ env.NAMESPACE }} --timeout=120s
-              echo "$svc rolled back"
-            fi
-          done
+          kubectl rollout undo deployment/backend -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/backend -n ${{ env.NAMESPACE }} --timeout=120s
