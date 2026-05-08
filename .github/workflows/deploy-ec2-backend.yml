@@ -46,6 +46,7 @@ jobs:
 
           LIVE_PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
           DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+          PUBLIC_HOST="${PUBLIC_HOST:-}"
           REPO_URL="${REPO_URL:-https://github.com/vasavas1977/codex-phone11.git}"
           DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
           BACKUP_ROOT="/opt/phone11ai/deploy-backups"
@@ -170,57 +171,101 @@ jobs:
             exit 26
           fi
 
+          read_env_file() {
+            awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+          }
+
+          append_env_if_missing() {
+            key="$1"
+            value="${2:-}"
+            if [ -n "$value" ] && ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
+              printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+            fi
+          }
+
+          first_nonempty() {
+            for value in "$@"; do
+              if [ -n "$value" ]; then
+                printf '%s' "$value"
+                return 0
+              fi
+            done
+          }
+
           if command -v docker >/dev/null 2>&1; then
             CONTAINER_ENV=$(mktemp)
-            for container in cp11-backend cp11-postgres cp11-redis cp11-freeswitch cp11-kamailio cp11-flexisip cp11-rtpengine; do
-              docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" >> "$CONTAINER_ENV" 2>/dev/null || true
-            done
+            if docker ps -aq >/dev/null 2>&1; then
+              docker ps -aq | while read -r container_id; do
+                [ -n "$container_id" ] || continue
+                docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" >> "$CONTAINER_ENV" 2>/dev/null || true
+              done
+            fi
 
             get_container_env() {
               awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$CONTAINER_ENV"
             }
 
-            ensure_env() {
-              key="$1"
-              value="${2:-}"
-              if [ -n "$value" ] && ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
-                printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
-              fi
-            }
+            DATABASE_URL_VALUE=$(first_nonempty "$(read_env_file DATABASE_URL)" "$(get_container_env DATABASE_URL)")
+            REDIS_URL_VALUE=$(first_nonempty "$(read_env_file REDIS_URL)" "$(get_container_env REDIS_URL)")
 
-            ensure_env DB_NAME "$(get_container_env POSTGRES_DB)"
-            ensure_env DB_USER "$(get_container_env POSTGRES_USER)"
-            ensure_env DB_PASSWORD "$(get_container_env POSTGRES_PASSWORD)"
-            ensure_env SIP_DOMAIN "$(get_container_env SIP_DOMAIN)"
-            ensure_env FS_ESL_PASSWORD "$(get_container_env FS_ESL_PASSWORD)"
-            ensure_env FS_ESL_PASSWORD "$(get_container_env FREESWITCH_ESL_PASSWORD)"
-            ensure_env FCM_API_KEY "$(get_container_env FCM_API_KEY)"
-            ensure_env JWT_SECRET "$(get_container_env JWT_SECRET)"
-            ensure_env STORAGE_BUCKET "$(get_container_env STORAGE_BUCKET)"
+            DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "$(get_container_env DB_USER)" "$(get_container_env POSTGRES_USER)")
+            DB_PASSWORD_VALUE=$(first_nonempty "$(read_env_file DB_PASSWORD)" "$(get_container_env DB_PASSWORD)" "$(get_container_env POSTGRES_PASSWORD)")
+            DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "$(get_container_env DB_NAME)" "$(get_container_env POSTGRES_DB)")
 
-            REDIS_PASSWORD_VALUE="$(get_container_env REDIS_PASSWORD)"
-            if [ -z "$REDIS_PASSWORD_VALUE" ]; then
-              REDIS_PASSWORD_VALUE=$(get_container_env REDIS_URL | sed -n 's#^redis://:\([^@]*\)@.*#\1#p')
+            if [ -n "$DATABASE_URL_VALUE" ]; then
+              DB_USER_VALUE=$(first_nonempty "$DB_USER_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://\([^:/@]*\):.*#\1#p')")
+              DB_PASSWORD_VALUE=$(first_nonempty "$DB_PASSWORD_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://[^:/@]*:\([^@]*\)@.*#\1#p')")
+              DB_NAME_VALUE=$(first_nonempty "$DB_NAME_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^.*/\([^/?]*\).*#\1#p')")
             fi
-            ensure_env REDIS_PASSWORD "$REDIS_PASSWORD_VALUE"
 
-            EXTERNAL_IP_VALUE="$(get_container_env EXTERNAL_IP)"
-            if [ -z "$EXTERNAL_IP_VALUE" ]; then
-              EXTERNAL_IP_VALUE="$(get_container_env EXTERNAL_SIP_IP)"
+            REDIS_PASSWORD_VALUE=$(first_nonempty "$(read_env_file REDIS_PASSWORD)" "$(get_container_env REDIS_PASSWORD)")
+            if [ -z "$REDIS_PASSWORD_VALUE" ] && [ -n "$REDIS_URL_VALUE" ]; then
+              REDIS_PASSWORD_VALUE=$(printf '%s' "$REDIS_URL_VALUE" | sed -n 's#^redis://:\([^@]*\)@.*#\1#p')
             fi
+
+            EXTERNAL_IP_VALUE=$(first_nonempty "$(read_env_file EXTERNAL_IP)" "$(get_container_env EXTERNAL_IP)" "$(get_container_env EXTERNAL_SIP_IP)" "$PUBLIC_HOST")
             if [ -z "$EXTERNAL_IP_VALUE" ]; then
               EXTERNAL_IP_VALUE="$(curl -fsS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
             fi
-            ensure_env EXTERNAL_IP "$EXTERNAL_IP_VALUE"
 
-            PRIVATE_IP_VALUE="$(get_container_env PRIVATE_IP)"
+            PRIVATE_IP_VALUE=$(first_nonempty "$(read_env_file PRIVATE_IP)" "$(get_container_env PRIVATE_IP)")
             if [ -z "$PRIVATE_IP_VALUE" ]; then
               PRIVATE_IP_VALUE="$(hostname -I 2>/dev/null | awk '{print $1}')"
             fi
-            ensure_env PRIVATE_IP "$PRIVATE_IP_VALUE"
+
+            SIP_DOMAIN_VALUE=$(first_nonempty "$(read_env_file SIP_DOMAIN)" "$(get_container_env SIP_DOMAIN)" "$(get_container_env FREESWITCH_DOMAIN)" "$PUBLIC_HOST" "$EXTERNAL_IP_VALUE")
+            FS_ESL_PASSWORD_VALUE=$(first_nonempty "$(read_env_file FS_ESL_PASSWORD)" "$(get_container_env FS_ESL_PASSWORD)" "$(get_container_env FREESWITCH_ESL_PASSWORD)")
+            FCM_API_KEY_VALUE=$(first_nonempty "$(read_env_file FCM_API_KEY)" "$(get_container_env FCM_API_KEY)")
+            JWT_SECRET_VALUE=$(first_nonempty "$(read_env_file JWT_SECRET)" "$(get_container_env JWT_SECRET)" "$(read_env_file SESSION_SECRET)" "$(get_container_env SESSION_SECRET)" "$(read_env_file AUTH_SECRET)" "$(get_container_env AUTH_SECRET)")
+            STORAGE_BUCKET_VALUE=$(first_nonempty "$(read_env_file STORAGE_BUCKET)" "$(get_container_env STORAGE_BUCKET)" "$(read_env_file S3_BUCKET)" "$(get_container_env S3_BUCKET)")
+
+            append_env_if_missing DB_NAME "$DB_NAME_VALUE"
+            append_env_if_missing DB_USER "$DB_USER_VALUE"
+            append_env_if_missing DB_PASSWORD "$DB_PASSWORD_VALUE"
+            append_env_if_missing REDIS_PASSWORD "$REDIS_PASSWORD_VALUE"
+            append_env_if_missing SIP_DOMAIN "$SIP_DOMAIN_VALUE"
+            append_env_if_missing EXTERNAL_IP "$EXTERNAL_IP_VALUE"
+            append_env_if_missing PRIVATE_IP "$PRIVATE_IP_VALUE"
+            append_env_if_missing FS_ESL_PASSWORD "$FS_ESL_PASSWORD_VALUE"
+            append_env_if_missing FCM_API_KEY "$FCM_API_KEY_VALUE"
+            append_env_if_missing JWT_SECRET "$JWT_SECRET_VALUE"
+            append_env_if_missing STORAGE_BUCKET "$STORAGE_BUCKET_VALUE"
 
             rm -f "$CONTAINER_ENV"
-            echo "Hydrated missing Compose env keys from running containers when available."
+            echo "Hydrated Compose env from runtime files, running containers, and EC2 metadata without printing secret values."
+          fi
+
+          REQUIRED_KEYS="DB_NAME DB_USER DB_PASSWORD REDIS_PASSWORD SIP_DOMAIN EXTERNAL_IP PRIVATE_IP"
+          MISSING_KEYS=""
+          for key in $REQUIRED_KEYS; do
+            if ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
+              MISSING_KEYS="$MISSING_KEYS $key"
+            fi
+          done
+          if [ -n "$MISSING_KEYS" ]; then
+            echo "ERROR: missing required Compose env keys:$MISSING_KEYS"
+            echo "Values were not printed. Add them to the EC2 runtime .env or existing containers, then rerun."
+            exit 27
           fi
 
           echo "Building backend container..."
@@ -265,7 +310,7 @@ jobs:
 
           scp -i ~/.ssh/phone11_ec2_key -o StrictHostKeyChecking=no /tmp/phone11-ec2-deploy.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-ec2-deploy.sh"
           ssh -i ~/.ssh/phone11_ec2_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
-            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-ec2-deploy.sh"
+            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' PUBLIC_HOST='$EC2_HOST' bash /tmp/phone11-ec2-deploy.sh"
 
           echo "used=true" >> "$GITHUB_OUTPUT"
 
@@ -317,7 +362,7 @@ jobs:
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Phone11 backend deploy from GitHub Actions" \
-            --parameters "commands=echo $DEPLOY_B64 | base64 -d >/tmp/phone11-ec2-deploy.sh && chmod +x /tmp/phone11-ec2-deploy.sh && PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-ec2-deploy.sh" \
+            --parameters "commands=echo $DEPLOY_B64 | base64 -d >/tmp/phone11-ec2-deploy.sh && chmod +x /tmp/phone11-ec2-deploy.sh && PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' PUBLIC_HOST='$EC2_HOST' bash /tmp/phone11-ec2-deploy.sh" \
             --query 'Command.CommandId' \
             --output text)
 
@@ -366,4 +411,4 @@ jobs:
 
           scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-ec2-deploy.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-ec2-deploy.sh"
           ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
-            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-ec2-deploy.sh"
+            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' PUBLIC_HOST='$EC2_HOST' bash /tmp/phone11-ec2-deploy.sh"
