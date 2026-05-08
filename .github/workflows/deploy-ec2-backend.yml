@@ -1,0 +1,244 @@
+name: Deploy Backend to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: 'EC2 public IP or DNS'
+        required: true
+        default: '43.210.122.111'
+      ec2_user:
+        description: 'SSH/Linux user'
+        required: true
+        default: 'ubuntu'
+      project_path:
+        description: 'Path to the phone11 repo on EC2'
+        required: true
+        default: '/opt/phone11ai/cloudphone11'
+      branch:
+        description: 'Git branch to deploy'
+        required: true
+        default: 'main'
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: ${{ github.event.inputs.ec2_host }}
+  EC2_USER: ${{ github.event.inputs.ec2_user }}
+  PROJECT_PATH: ${{ github.event.inputs.project_path }}
+  DEPLOY_BRANCH: ${{ github.event.inputs.branch }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare deploy script
+        run: |
+          cat > /tmp/phone11-ec2-deploy.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
+          DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+          BACKUP_ROOT="/opt/phone11ai/deploy-backups"
+          BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+
+          echo "=== Phone11 backend deploy ==="
+          echo "Project path: $PROJECT_PATH"
+          echo "Branch: $DEPLOY_BRANCH"
+
+          cd "$PROJECT_PATH"
+
+          if [ ! -d .git ]; then
+            echo "ERROR: $PROJECT_PATH is not a Git checkout. Refusing to overwrite live files."
+            exit 20
+          fi
+
+          mkdir -p "$BACKUP_DIR"
+          for path in server/phone-provisioning.ts server/routers.ts .github/workflows/deploy-ec2-backend.yml; do
+            if [ -f "$path" ]; then
+              mkdir -p "$BACKUP_DIR/$(dirname "$path")"
+              cp "$path" "$BACKUP_DIR/$path"
+            fi
+          done
+
+          echo "Backup: $BACKUP_DIR"
+          echo "Current commit: $(git rev-parse --short HEAD)"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "ERROR: live checkout has uncommitted changes. Refusing to deploy until reviewed."
+            git status --short
+            exit 21
+          fi
+
+          git fetch origin "$DEPLOY_BRANCH"
+          git checkout "$DEPLOY_BRANCH"
+          git merge --ff-only "origin/$DEPLOY_BRANCH"
+
+          echo "Deploy commit: $(git rev-parse --short HEAD)"
+
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE="docker-compose"
+          else
+            echo "ERROR: docker compose is not available on EC2."
+            exit 22
+          fi
+
+          COMPOSE_FILE="infra/compose/docker-compose.prod.yml"
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "ERROR: $COMPOSE_FILE not found."
+            exit 23
+          fi
+
+          echo "Building backend container..."
+          $COMPOSE -f "$COMPOSE_FILE" build backend
+
+          echo "Restarting backend container..."
+          $COMPOSE -f "$COMPOSE_FILE" up -d backend
+
+          echo "Backend container status:"
+          $COMPOSE -f "$COMPOSE_FILE" ps backend
+
+          echo "Health check:"
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:3000/health; then
+              echo ""
+              echo "Backend health check passed"
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "ERROR: backend health check failed after restart. Recent logs:"
+          $COMPOSE -f "$COMPOSE_FILE" logs --tail=120 backend || true
+          exit 24
+          SCRIPT
+          chmod +x /tmp/phone11-ec2-deploy.sh
+
+      - name: Deploy via SSH key if available
+        id: ssh_deploy
+        continue-on-error: true
+        run: |
+          if [ -z "${EC2_SSH_KEY:-}" ]; then
+            echo "No EC2_SSH_KEY secret configured; skipping direct SSH path."
+            echo "used=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/phone11_ec2_key
+          chmod 600 ~/.ssh/phone11_ec2_key
+
+          scp -i ~/.ssh/phone11_ec2_key -o StrictHostKeyChecking=no /tmp/phone11-ec2-deploy.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-ec2-deploy.sh"
+          ssh -i ~/.ssh/phone11_ec2_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-ec2-deploy.sh"
+
+          echo "used=true" >> "$GITHUB_OUTPUT"
+
+      - name: Locate EC2 instance through AWS
+        id: ec2
+        if: steps.ssh_deploy.outputs.used != 'true'
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: Either EC2_SSH_KEY or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY must be configured."
+            exit 30
+          fi
+
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find a running EC2 instance with public IP $EC2_HOST"
+            exit 31
+          fi
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Try deploy through AWS Systems Manager
+        id: ssm_deploy
+        if: steps.ssh_deploy.outputs.used != 'true'
+        continue-on-error: true
+        run: |
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+
+          MANAGED=$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+            --query 'InstanceInformationList[0].InstanceId' \
+            --output text 2>/dev/null || true)
+
+          if [ "$MANAGED" != "$INSTANCE_ID" ]; then
+            echo "Instance is not managed by SSM; skipping SSM path."
+            echo "used=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          DEPLOY_B64=$(base64 -w0 /tmp/phone11-ec2-deploy.sh)
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Phone11 backend deploy from GitHub Actions" \
+            --parameters "commands=echo $DEPLOY_B64 | base64 -d >/tmp/phone11-ec2-deploy.sh && chmod +x /tmp/phone11-ec2-deploy.sh && PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-ec2-deploy.sh" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM command: $COMMAND_ID"
+
+          for i in $(seq 1 120); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'Status' \
+              --output text 2>/dev/null || true)
+            echo "SSM status: $STATUS"
+            case "$STATUS" in
+              Success|Cancelled|TimedOut|Failed|Cancelling) break ;;
+            esac
+            sleep 5
+          done
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
+            --output json
+
+          if [ "$STATUS" != "Success" ]; then
+            exit 40
+          fi
+
+          echo "used=true" >> "$GITHUB_OUTPUT"
+
+      - name: Try deploy through EC2 Instance Connect
+        if: steps.ssh_deploy.outputs.used != 'true' && steps.ssm_deploy.outputs.used != 'true'
+        run: |
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+          AZ='${{ steps.ec2.outputs.az }}'
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
+
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-ec2-deploy.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-ec2-deploy.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-ec2-deploy.sh"
