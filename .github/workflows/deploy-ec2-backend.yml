@@ -170,6 +170,59 @@ jobs:
             exit 26
           fi
 
+          if command -v docker >/dev/null 2>&1; then
+            CONTAINER_ENV=$(mktemp)
+            for container in cp11-backend cp11-postgres cp11-redis cp11-freeswitch cp11-kamailio cp11-flexisip cp11-rtpengine; do
+              docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container" >> "$CONTAINER_ENV" 2>/dev/null || true
+            done
+
+            get_container_env() {
+              awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$CONTAINER_ENV"
+            }
+
+            ensure_env() {
+              key="$1"
+              value="${2:-}"
+              if [ -n "$value" ] && ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
+                printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+              fi
+            }
+
+            ensure_env DB_NAME "$(get_container_env POSTGRES_DB)"
+            ensure_env DB_USER "$(get_container_env POSTGRES_USER)"
+            ensure_env DB_PASSWORD "$(get_container_env POSTGRES_PASSWORD)"
+            ensure_env SIP_DOMAIN "$(get_container_env SIP_DOMAIN)"
+            ensure_env FS_ESL_PASSWORD "$(get_container_env FS_ESL_PASSWORD)"
+            ensure_env FS_ESL_PASSWORD "$(get_container_env FREESWITCH_ESL_PASSWORD)"
+            ensure_env FCM_API_KEY "$(get_container_env FCM_API_KEY)"
+            ensure_env JWT_SECRET "$(get_container_env JWT_SECRET)"
+            ensure_env STORAGE_BUCKET "$(get_container_env STORAGE_BUCKET)"
+
+            REDIS_PASSWORD_VALUE="$(get_container_env REDIS_PASSWORD)"
+            if [ -z "$REDIS_PASSWORD_VALUE" ]; then
+              REDIS_PASSWORD_VALUE=$(get_container_env REDIS_URL | sed -n 's#^redis://:\([^@]*\)@.*#\1#p')
+            fi
+            ensure_env REDIS_PASSWORD "$REDIS_PASSWORD_VALUE"
+
+            EXTERNAL_IP_VALUE="$(get_container_env EXTERNAL_IP)"
+            if [ -z "$EXTERNAL_IP_VALUE" ]; then
+              EXTERNAL_IP_VALUE="$(get_container_env EXTERNAL_SIP_IP)"
+            fi
+            if [ -z "$EXTERNAL_IP_VALUE" ]; then
+              EXTERNAL_IP_VALUE="$(curl -fsS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
+            fi
+            ensure_env EXTERNAL_IP "$EXTERNAL_IP_VALUE"
+
+            PRIVATE_IP_VALUE="$(get_container_env PRIVATE_IP)"
+            if [ -z "$PRIVATE_IP_VALUE" ]; then
+              PRIVATE_IP_VALUE="$(hostname -I 2>/dev/null | awk '{print $1}')"
+            fi
+            ensure_env PRIVATE_IP "$PRIVATE_IP_VALUE"
+
+            rm -f "$CONTAINER_ENV"
+            echo "Hydrated missing Compose env keys from running containers when available."
+          fi
+
           echo "Building backend container..."
           $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build backend
 
