@@ -12,7 +12,7 @@ on:
         required: true
         default: 'ubuntu'
       project_path:
-        description: 'Path to the phone11 repo on EC2'
+        description: 'Current live Phone11 path on EC2'
         required: true
         default: '/opt/phone11ai/cloudphone11'
       branch:
@@ -44,43 +44,77 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
 
-          PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
+          LIVE_PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
           DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+          REPO_URL="${REPO_URL:-https://github.com/vasavas1977/codex-phone11.git}"
+          DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
           BACKUP_ROOT="/opt/phone11ai/deploy-backups"
           BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
 
+          if command -v sudo >/dev/null 2>&1; then
+            SUDO=sudo
+          else
+            SUDO=
+          fi
+
           echo "=== Phone11 backend deploy ==="
-          echo "Project path: $PROJECT_PATH"
-          echo "Branch: $DEPLOY_BRANCH"
+          echo "Live project path: $LIVE_PROJECT_PATH"
+          echo "Deploy branch: $DEPLOY_BRANCH"
 
-          cd "$PROJECT_PATH"
+          if [ -d "$LIVE_PROJECT_PATH/.git" ]; then
+            WORK_PATH="$LIVE_PROJECT_PATH"
+            echo "Live path is a Git checkout; deploying in place."
+            cd "$WORK_PATH"
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "ERROR: live checkout has uncommitted changes. Refusing to deploy until reviewed."
+              git status --short
+              exit 21
+            fi
+            git fetch origin "$DEPLOY_BRANCH"
+            git checkout "$DEPLOY_BRANCH"
+            git merge --ff-only "origin/$DEPLOY_BRANCH"
+          else
+            WORK_PATH="$DEPLOY_CHECKOUT"
+            echo "Live path is not a Git checkout; using safe deploy checkout: $WORK_PATH"
+            $SUDO mkdir -p "$(dirname "$WORK_PATH")"
 
-          if [ ! -d .git ]; then
-            echo "ERROR: $PROJECT_PATH is not a Git checkout. Refusing to overwrite live files."
-            exit 20
+            if [ -e "$WORK_PATH" ] && [ ! -d "$WORK_PATH/.git" ] && [ -n "$(ls -A "$WORK_PATH" 2>/dev/null || true)" ]; then
+              echo "ERROR: $WORK_PATH exists but is not an empty directory or Git checkout."
+              exit 25
+            fi
+
+            if [ ! -d "$WORK_PATH/.git" ]; then
+              $SUDO mkdir -p "$WORK_PATH"
+              $SUDO chown -R "$(id -u):$(id -g)" "$WORK_PATH"
+              git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$WORK_PATH"
+            fi
+
+            cd "$WORK_PATH"
+            git fetch origin "$DEPLOY_BRANCH"
+            git checkout "$DEPLOY_BRANCH"
+            git reset --hard "origin/$DEPLOY_BRANCH"
+
+            mkdir -p infra/compose
+            for path in infra/compose/.env infra/compose/tls infra/compose/apns; do
+              if [ -e "$LIVE_PROJECT_PATH/$path" ]; then
+                rm -rf "$WORK_PATH/$path"
+                mkdir -p "$WORK_PATH/$(dirname "$path")"
+                cp -a "$LIVE_PROJECT_PATH/$path" "$WORK_PATH/$path"
+                echo "Copied runtime config: $path"
+              fi
+            done
           fi
 
           mkdir -p "$BACKUP_DIR"
-          for path in server/phone-provisioning.ts server/routers.ts .github/workflows/deploy-ec2-backend.yml; do
-            if [ -f "$path" ]; then
+          for path in server/phone-provisioning.ts server/routers.ts infra/compose/docker-compose.prod.yml .github/workflows/deploy-ec2-backend.yml; do
+            if [ -f "$WORK_PATH/$path" ]; then
               mkdir -p "$BACKUP_DIR/$(dirname "$path")"
-              cp "$path" "$BACKUP_DIR/$path"
+              cp "$WORK_PATH/$path" "$BACKUP_DIR/$path"
             fi
           done
 
+          cd "$WORK_PATH"
           echo "Backup: $BACKUP_DIR"
-          echo "Current commit: $(git rev-parse --short HEAD)"
-
-          if [ -n "$(git status --porcelain)" ]; then
-            echo "ERROR: live checkout has uncommitted changes. Refusing to deploy until reviewed."
-            git status --short
-            exit 21
-          fi
-
-          git fetch origin "$DEPLOY_BRANCH"
-          git checkout "$DEPLOY_BRANCH"
-          git merge --ff-only "origin/$DEPLOY_BRANCH"
-
           echo "Deploy commit: $(git rev-parse --short HEAD)"
 
           if docker compose version >/dev/null 2>&1; then
@@ -96,6 +130,11 @@ jobs:
           if [ ! -f "$COMPOSE_FILE" ]; then
             echo "ERROR: $COMPOSE_FILE not found."
             exit 23
+          fi
+
+          if [ ! -f infra/compose/.env ]; then
+            echo "ERROR: infra/compose/.env not found. Copy the live backend .env into $WORK_PATH/infra/compose/.env."
+            exit 26
           fi
 
           echo "Building backend container..."
