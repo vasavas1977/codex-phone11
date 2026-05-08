@@ -11,7 +11,7 @@ import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
 import { sipEngine } from "@/lib/sip/engine";
-import { sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
+import { type PhoneProvisioningConfig, sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
 
 function registrationLabel(state: RegistrationState): string {
   switch (state) {
@@ -38,6 +38,7 @@ export default function SIPAccountScreen() {
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const registrationError = useSipAccountStore((s) => s.registrationError);
   const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
+  const ensurePilotConfig = trpc.phone.ensurePilotConfig.useMutation();
 
   useEffect(() => {
     loadAccount().catch(console.error);
@@ -71,6 +72,18 @@ export default function SIPAccountScreen() {
     }
   };
 
+  const applyProvisioningConfig = async (config: PhoneProvisioningConfig, title: string) => {
+    if (!config.configured || !config.sip) {
+      throw new Error("No SIP extension was returned by admin management.");
+    }
+
+    const provisionedAccount = sipAccountFromPhoneConfig(config, account?.id);
+    await setAccount(provisionedAccount);
+    await sipEngine.restart();
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert(title, `Extension ${provisionedAccount.username} is ready on ${provisionedAccount.domain}.`);
+  };
+
   const handleSyncFromAdmin = async () => {
     if (authLoading) {
       Alert.alert("Account is still loading", "Please wait a moment, then sync again.");
@@ -93,16 +106,32 @@ export default function SIPAccountScreen() {
       return;
     }
 
-    if (!result.data?.configured || !result.data.sip) {
-      Alert.alert("No extension assigned", "Assign an extension to this user in the Phone11 admin portal, then sync again.");
+    if (result.data?.configured && result.data.sip) {
+      await applyProvisioningConfig(result.data, "Provisioning synced");
       return;
     }
 
-    const provisionedAccount = sipAccountFromPhoneConfig(result.data, account?.id);
-    await setAccount(provisionedAccount);
-    await sipEngine.restart();
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert("Provisioning synced", `Extension ${provisionedAccount.username} is ready on ${provisionedAccount.domain}.`);
+    Alert.alert(
+      "No extension assigned",
+      "This signed-in phone user does not have an extension yet. Create or assign a pilot extension now?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Create Pilot Extension",
+          onPress: async () => {
+            try {
+              const pilotConfig = await ensurePilotConfig.mutateAsync();
+              await applyProvisioningConfig(pilotConfig, "Pilot extension created");
+            } catch (error) {
+              Alert.alert(
+                "Pilot provisioning failed",
+                error instanceof Error ? error.message : "Could not create or assign a pilot extension.",
+              );
+            }
+          },
+        },
+      ],
+    );
   };
 
   const ReadOnlyField = ({
@@ -131,10 +160,17 @@ export default function SIPAccountScreen() {
     </View>
   );
 
+  const syncing = phoneConfigQuery.isFetching || ensurePilotConfig.isPending;
+  const userLabel = authLoading
+    ? "Checking sign-in..."
+    : isAuthenticated
+    ? `${user?.email || user?.name || "Signed-in user"} - User ID ${user?.id}`
+    : "Not signed in";
+
   return (
     <ScreenContainer>
       <ScrollView showsVerticalScrollIndicator={false}>
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <View style={[styles.header, { borderBottomColor: colors.border }]}> 
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <IconSymbol name="chevron.left" size={20} color={colors.primary} />
             <Text style={[styles.backText, { color: colors.primary }]}>Settings</Text>
@@ -143,7 +179,7 @@ export default function SIPAccountScreen() {
           <View style={styles.headerSpacer} />
         </View>
 
-        <View style={[styles.statusBanner, { backgroundColor: statusColor + "15", borderColor: statusColor + "40" }]}>
+        <View style={[styles.statusBanner, { backgroundColor: statusColor + "15", borderColor: statusColor + "40" }]}> 
           <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
           <Text style={[styles.statusText, { color: statusColor }]}> 
             {registrationLabel(registrationState)}
@@ -151,22 +187,16 @@ export default function SIPAccountScreen() {
           </Text>
         </View>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <View style={styles.accountHeader}>
-            <View>
+            <View style={styles.accountIdentity}>
               <Text style={[styles.cardTitle, { color: colors.foreground }]}>Phone11 Account</Text>
-              <Text style={[styles.accountSub, { color: colors.muted }]}>
-                {authLoading
-                  ? "Checking sign-in..."
-                  : isAuthenticated
-                  ? user?.email || user?.name || `User ID ${user?.id}`
-                  : "Not signed in"}
-              </Text>
+              <Text style={[styles.accountSub, { color: colors.muted }]}>{userLabel}</Text>
             </View>
             {authLoading ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : isAuthenticated ? (
-              <View style={[styles.statusPill, { backgroundColor: colors.success + "18" }]}>
+              <View style={[styles.statusPill, { backgroundColor: colors.success + "18" }]}> 
                 <Text style={[styles.statusPillText, { color: colors.success }]}>Signed In</Text>
               </View>
             ) : (
@@ -189,20 +219,20 @@ export default function SIPAccountScreen() {
         <TouchableOpacity
           style={[styles.syncCard, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}
           onPress={handleSyncFromAdmin}
-          disabled={phoneConfigQuery.isFetching}
+          disabled={syncing}
         >
           <View style={styles.syncText}>
-            <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync from Admin</Text>
-            <Text style={[styles.syncSub, { color: colors.muted }]}>Device SIP settings are read-only and controlled by Phone11 admin management.</Text>
+            <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync or Create Pilot Extension</Text>
+            <Text style={[styles.syncSub, { color: colors.muted }]}>Loads admin settings, or creates a first-device pilot extension for this signed-in user.</Text>
           </View>
-          {phoneConfigQuery.isFetching ? (
+          {syncing ? (
             <ActivityIndicator size="small" color={colors.primary} />
           ) : (
             <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
           )}
         </TouchableOpacity>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server</Text>
           <ReadOnlyField label="SIP Domain" value={account?.domain} />
           <ReadOnlyField label="SIP Proxy" value={account?.proxy || account?.domain} />
@@ -210,26 +240,26 @@ export default function SIPAccountScreen() {
           <ReadOnlyField label="Transport" value={account?.transport} />
         </View>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Assigned Extension</Text>
           <ReadOnlyField label="Display Name" value={account?.displayName} />
           <ReadOnlyField label="Username / Extension" value={account?.username} />
           <ReadOnlyField label="Password" value={account?.password ? "Stored securely" : ""} rightElement={<IconSymbol name="lock.fill" size={15} color={colors.muted} />} />
         </View>
 
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Calling Policy</Text>
           <ReadOnlyField label="SIP Account Enabled" value={account?.enabled ? "Enabled" : "Not provisioned"} />
           <ReadOnlyField label="Secure Media" value={account?.srtp ? "SRTP enabled" : "Not provisioned"} />
           <ReadOnlyField label="STUN Server" value={account?.stun} />
         </View>
 
-        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}>
+        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}> 
           <View style={styles.infoHeader}>
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
             <Text style={[styles.infoTitle, { color: colors.primary }]}>Admin-managed configuration</Text>
           </View>
-          <Text style={[styles.infoBody, { color: colors.muted }]}>Create or assign the user's extension in Admin Portal &gt; Phone Provisioning. The app then receives SIP username, encrypted password, TLS port, SRTP, and network settings from the server.</Text>
+          <Text style={[styles.infoBody, { color: colors.muted }]}>Create or assign the user's extension in Admin Portal &gt; Phone Provisioning. For pilot testing, this screen can request a server-created pilot extension for the signed-in user.</Text>
         </View>
 
         <View style={{ height: 32 }} />
@@ -290,6 +320,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
   },
+  accountIdentity: { flex: 1 },
   accountSub: { fontSize: 13, marginTop: 2 },
   statusPill: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
   statusPillText: { fontSize: 12, fontWeight: "700" },
