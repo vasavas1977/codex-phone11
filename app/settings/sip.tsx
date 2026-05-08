@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
@@ -42,6 +42,8 @@ export default function SIPAccountScreen() {
   const colors = useColors();
   const { user, loading: authLoading, isAuthenticated, refresh: refreshAuth } = useAuth();
   const [loginBusy, setLoginBusy] = useState(false);
+  const [accountLoaded, setAccountLoaded] = useState(false);
+  const autoProvisionAttempted = useRef(false);
   const account = useSipAccountStore((s) => s.account);
   const loadAccount = useSipAccountStore((s) => s.loadAccount);
   const setAccount = useSipAccountStore((s) => s.setAccount);
@@ -53,7 +55,16 @@ export default function SIPAccountScreen() {
   const assignExtension = trpc.phone.assignExtension.useMutation();
 
   useEffect(() => {
-    loadAccount().catch(console.error);
+    let cancelled = false;
+    loadAccount()
+      .catch(console.error)
+      .finally(() => {
+        if (!cancelled) setAccountLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [loadAccount]);
 
   const statusColor =
@@ -182,6 +193,34 @@ export default function SIPAccountScreen() {
       );
     }
   };
+
+  useEffect(() => {
+    if (!accountLoaded || authLoading || !isAuthenticated || !user?.id || account) return;
+    if (autoProvisionAttempted.current) return;
+    if (
+      phoneConfigQuery.isFetching ||
+      ensurePilotConfig.isPending ||
+      createExtension.isPending ||
+      assignExtension.isPending
+    ) {
+      return;
+    }
+
+    autoProvisionAttempted.current = true;
+    handleSyncFromAdmin().catch((error) => {
+      console.warn("[Phone Provisioning] automatic provisioning failed:", error);
+    });
+  }, [
+    account,
+    accountLoaded,
+    authLoading,
+    isAuthenticated,
+    user?.id,
+    phoneConfigQuery.isFetching,
+    ensurePilotConfig.isPending,
+    createExtension.isPending,
+    assignExtension.isPending,
+  ]);
 
   const ReadOnlyField = ({
     label,
