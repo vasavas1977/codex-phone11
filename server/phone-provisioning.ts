@@ -5,7 +5,7 @@
  * Connects directly to the PostgreSQL database (same as Kamailio).
  * 
  * Flow:
- * 1. User logs in → app calls phone.getConfig
+ * 1. User logs in -> app calls phone.getConfig
  * 2. Server looks up user's assigned extension
  * 3. If no extension assigned, auto-assigns the first available one (for owner/admin)
  * 4. Returns SIP credentials to the app
@@ -116,6 +116,17 @@ function buildConfig(ext: any, dids: Array<{ number: string; description: string
   };
 }
 
+async function getNextPilotExtensionNumber(db: ReturnType<typeof getPool>): Promise<string> {
+  const seed = Number.parseInt(process.env.PILOT_EXTENSION_START || "1020", 10);
+  const result = await db.query(`
+    SELECT MAX(extension_number::integer) AS max_extension
+    FROM extensions
+    WHERE extension_number ~ '^[0-9]+$'
+  `);
+  const currentMax = Number.parseInt(result.rows[0]?.max_extension || "", 10);
+  return String(Math.max(Number.isFinite(currentMax) ? currentMax + 1 : seed, seed));
+}
+
 /**
  * Get phone configuration for a logged-in user.
  * Auto-assigns extension if user is owner and has no extension.
@@ -213,7 +224,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       }
     }
 
-    // 4. No extension assigned — user needs admin to assign one
+    // 4. No extension assigned - user needs admin to assign one
     return {
       configured: false,
     };
@@ -221,6 +232,45 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
     console.error("[PhoneProvisioning] getPhoneConfig error:", error);
     throw error;
   }
+}
+
+/**
+ * Pilot bootstrap for first-device tests. This still provisions on the server side
+ * and returns the same admin-controlled SIP config as getPhoneConfig.
+ */
+export async function ensurePilotExtensionForUser(userId: number, openId: string): Promise<PhoneConfig> {
+  const existing = await getPhoneConfig(userId, openId);
+  if (existing.configured) return existing;
+
+  const db = getPool();
+
+  const openExtension = await db.query(`
+    SELECT e.*
+    FROM extensions e
+    LEFT JOIN user_extensions ue ON ue.extension_id = e.id
+    WHERE e.org_id = 1
+      AND e.status = 'active'
+      AND e.user_id IS NULL
+      AND ue.user_id IS NULL
+    ORDER BY e.extension_number
+    LIMIT 1
+  `);
+
+  if (openExtension.rows.length > 0) {
+    const ext = openExtension.rows[0];
+    await assignExtensionToUser(userId, ext.id, true);
+    return getPhoneConfig(userId, openId);
+  }
+
+  const extensionNumber = await getNextPilotExtensionNumber(db);
+  const created = await createExtension({
+    orgId: 1,
+    extensionNumber,
+    displayName: `Phone11 Pilot ${extensionNumber}`,
+  });
+  await assignExtensionToUser(userId, created.id, true);
+
+  return getPhoneConfig(userId, openId);
 }
 
 /**
