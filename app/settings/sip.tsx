@@ -28,6 +28,16 @@ function registrationLabel(state: RegistrationState): string {
   }
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function pilotExtensionCandidates(userId: number): string[] {
+  const userBased = 1000 + userId;
+  const timeBased = 3000 + (Date.now() % 6000);
+  return Array.from(new Set([userBased, 2000 + userId, timeBased, timeBased + 1].map(String)));
+}
+
 export default function SIPAccountScreen() {
   const colors = useColors();
   const { user, loading: authLoading, isAuthenticated, refresh: refreshAuth } = useAuth();
@@ -39,6 +49,8 @@ export default function SIPAccountScreen() {
   const registrationError = useSipAccountStore((s) => s.registrationError);
   const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
   const ensurePilotConfig = trpc.phone.ensurePilotConfig.useMutation();
+  const createExtension = trpc.phone.createExtension.useMutation();
+  const assignExtension = trpc.phone.assignExtension.useMutation();
 
   useEffect(() => {
     loadAccount().catch(console.error);
@@ -84,6 +96,58 @@ export default function SIPAccountScreen() {
     Alert.alert(title, `Extension ${provisionedAccount.username} is ready on ${provisionedAccount.domain}.`);
   };
 
+  const refetchAssignedConfig = async (): Promise<PhoneProvisioningConfig> => {
+    const refreshed = await phoneConfigQuery.refetch();
+    if (refreshed.error) throw refreshed.error;
+    if (!refreshed.data?.configured || !refreshed.data.sip) {
+      throw new Error("Extension was created, but the server still did not return SIP settings for this user.");
+    }
+    return refreshed.data;
+  };
+
+  const createPilotWithExistingAdminApi = async (): Promise<PhoneProvisioningConfig> => {
+    if (!user?.id) {
+      throw new Error("The signed-in user ID is missing. Sign out and sign in again, then retry.");
+    }
+
+    let lastError: unknown;
+    for (const extensionNumber of pilotExtensionCandidates(user.id)) {
+      try {
+        const created = await createExtension.mutateAsync({
+          orgId: 1,
+          extensionNumber,
+          displayName: `Phone11 Pilot ${extensionNumber}`,
+        });
+
+        if (!created?.id) {
+          throw new Error("Admin API created an extension without returning an extension ID.");
+        }
+
+        await assignExtension.mutateAsync({ userId: user.id, extensionId: created.id, isPrimary: true });
+        return refetchAssignedConfig();
+      } catch (error) {
+        lastError = error;
+        const message = errorMessage(error).toLowerCase();
+        if (message.includes("forbidden") || message.includes("not_admin") || message.includes("not admin")) {
+          break;
+        }
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Could not create a pilot extension with the deployed admin API.");
+  };
+
+  const createOrSyncPilotConfig = async (): Promise<PhoneProvisioningConfig> => {
+    try {
+      return await ensurePilotConfig.mutateAsync();
+    } catch (newEndpointError) {
+      console.warn("[Phone Provisioning] ensurePilotConfig failed, falling back to admin APIs:", newEndpointError);
+      return createPilotWithExistingAdminApi();
+    }
+  };
+
   const handleSyncFromAdmin = async () => {
     if (authLoading) {
       Alert.alert("Account is still loading", "Please wait a moment, then sync again.");
@@ -98,40 +162,25 @@ export default function SIPAccountScreen() {
       return;
     }
 
-    await refreshAuth();
-    const result = await phoneConfigQuery.refetch();
+    try {
+      await refreshAuth();
+      const result = await phoneConfigQuery.refetch();
 
-    if (result.error) {
-      Alert.alert("Admin sync failed", result.error.message);
-      return;
+      if (result.error) throw result.error;
+
+      if (result.data?.configured && result.data.sip) {
+        await applyProvisioningConfig(result.data, "Provisioning synced");
+        return;
+      }
+
+      const pilotConfig = await createOrSyncPilotConfig();
+      await applyProvisioningConfig(pilotConfig, "Pilot extension created");
+    } catch (error) {
+      Alert.alert(
+        "Pilot provisioning failed",
+        `The phone is signed in as User ID ${user?.id ?? "unknown"}, but the backend did not return a SIP account. ${errorMessage(error)}`,
+      );
     }
-
-    if (result.data?.configured && result.data.sip) {
-      await applyProvisioningConfig(result.data, "Provisioning synced");
-      return;
-    }
-
-    Alert.alert(
-      "No extension assigned",
-      "This signed-in phone user does not have an extension yet. Create or assign a pilot extension now?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Create Pilot Extension",
-          onPress: async () => {
-            try {
-              const pilotConfig = await ensurePilotConfig.mutateAsync();
-              await applyProvisioningConfig(pilotConfig, "Pilot extension created");
-            } catch (error) {
-              Alert.alert(
-                "Pilot provisioning failed",
-                error instanceof Error ? error.message : "Could not create or assign a pilot extension.",
-              );
-            }
-          },
-        },
-      ],
-    );
   };
 
   const ReadOnlyField = ({
@@ -147,7 +196,7 @@ export default function SIPAccountScreen() {
   }) => (
     <View style={styles.inputGroup}>
       <Text style={[styles.inputLabel, { color: colors.muted }]}>{label}</Text>
-      <View style={[styles.inputWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}>
+      <View style={[styles.inputWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}> 
         <TextInput
           style={[styles.input, { color: colors.foreground }]}
           value={value === undefined || value === null || value === "" ? "Not provisioned" : String(value)}
@@ -160,7 +209,11 @@ export default function SIPAccountScreen() {
     </View>
   );
 
-  const syncing = phoneConfigQuery.isFetching || ensurePilotConfig.isPending;
+  const syncing =
+    phoneConfigQuery.isFetching ||
+    ensurePilotConfig.isPending ||
+    createExtension.isPending ||
+    assignExtension.isPending;
   const userLabel = authLoading
     ? "Checking sign-in..."
     : isAuthenticated
