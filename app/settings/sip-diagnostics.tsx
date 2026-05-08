@@ -55,7 +55,7 @@ export default function SipDiagnosticsScreen() {
           level: "warning",
           category: "registration",
           message: "No admin-provisioned phone account loaded",
-          detail: "Open Phone Provisioning, sign in, then sync from admin management.",
+          detail: "Open Phone Provisioning, sign in, then tap Sync or Create Pilot Extension.",
         });
       })
       .catch((error) => {
@@ -99,6 +99,14 @@ export default function SipDiagnosticsScreen() {
             </Text>
           </View>
         </View>
+
+        <TouchableOpacity
+          style={[styles.provisionButton, { backgroundColor: colors.primary }]}
+          onPress={() => router.push("/settings/sip")}
+        >
+          <IconSymbol name="server.rack" size={18} color="#fff" />
+          <Text style={styles.provisionButtonText}>Open Phone Provisioning</Text>
+        </TouchableOpacity>
 
         <View style={styles.events}>
           {events.length === 0 ? (
@@ -173,6 +181,17 @@ const styles = StyleSheet.create({
   summaryText: { flex: 1, gap: 4 },
   summaryTitle: { fontSize: 15, fontWeight: "700" },
   summaryBody: { fontSize: 13, lineHeight: 19 },
+  provisionButton: {
+    marginHorizontal: 16,
+    marginBottom: 16,
+    borderRadius: 14,
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  provisionButtonText: { color: "#fff", fontSize: 14, fontWeight: "700" },
   events: {
     gap: 10,
     paddingHorizontal: 16,
