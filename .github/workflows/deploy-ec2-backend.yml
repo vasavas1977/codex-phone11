@@ -59,7 +59,6 @@ jobs:
 
           if [ -d "$LIVE_PROJECT_PATH/.git" ]; then
             WORK_PATH="$LIVE_PROJECT_PATH"
-            echo "Live path is a Git checkout; deploying in place."
             cd "$WORK_PATH"
             if [ -n "$(git status --porcelain)" ]; then
               echo "ERROR: live checkout has uncommitted changes. Refusing to deploy until reviewed."
@@ -71,13 +70,9 @@ jobs:
             git merge --ff-only "origin/$DEPLOY_BRANCH"
           else
             WORK_PATH="$DEPLOY_CHECKOUT"
-            echo "Live path is not a Git checkout; using safe deploy checkout: $WORK_PATH"
             $SUDO mkdir -p "$(dirname "$WORK_PATH")"
-            if [ -e "$WORK_PATH" ] && [ ! -d "$WORK_PATH/.git" ] && [ -n "$(ls -A "$WORK_PATH" 2>/dev/null || true)" ]; then
-              echo "ERROR: $WORK_PATH exists but is not an empty directory or Git checkout."
-              exit 25
-            fi
             if [ ! -d "$WORK_PATH/.git" ]; then
+              $SUDO rm -rf "$WORK_PATH"
               $SUDO mkdir -p "$WORK_PATH"
               $SUDO chown -R "$(id -u):$(id -g)" "$WORK_PATH"
               git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$WORK_PATH"
@@ -114,38 +109,6 @@ jobs:
           else
             touch "$ENV_FILE"
             echo "Created deploy env file because no existing runtime env was found."
-          fi
-
-          for path in infra/compose/tls infra/compose/apns; do
-            if [ -e "$LIVE_PROJECT_PATH/$path" ]; then
-              rm -rf "$WORK_PATH/$path"
-              mkdir -p "$WORK_PATH/$(dirname "$path")"
-              $SUDO cp -a "$LIVE_PROJECT_PATH/$path" "$WORK_PATH/$path"
-              $SUDO chown -R "$(id -u):$(id -g)" "$WORK_PATH/$path"
-              echo "Copied runtime config: $path"
-            fi
-          done
-
-          for path in server/phone-provisioning.ts server/routers.ts infra/compose/docker-compose.prod.yml .github/workflows/deploy-ec2-backend.yml; do
-            if [ -f "$WORK_PATH/$path" ]; then
-              $SUDO mkdir -p "$BACKUP_DIR/$(dirname "$path")"
-              $SUDO cp "$WORK_PATH/$path" "$BACKUP_DIR/$path"
-            fi
-          done
-
-          if docker compose version >/dev/null 2>&1; then
-            COMPOSE="docker compose"
-          elif command -v docker-compose >/dev/null 2>&1; then
-            COMPOSE="docker-compose"
-          else
-            echo "ERROR: docker compose is not available on EC2."
-            exit 22
-          fi
-
-          COMPOSE_FILE="infra/compose/docker-compose.prod.yml"
-          if [ ! -f "$COMPOSE_FILE" ]; then
-            echo "ERROR: $COMPOSE_FILE not found."
-            exit 23
           fi
 
           read_env_file() {
@@ -189,9 +152,9 @@ jobs:
           DATABASE_URL_VALUE=$(first_nonempty "$(read_env_file DATABASE_URL)" "$(read_env_file PG_CONNECTION_STRING)" "$(get_container_env DATABASE_URL)" "$(get_container_env PG_CONNECTION_STRING)")
           REDIS_URL_VALUE=$(first_nonempty "$(read_env_file REDIS_URL)" "$(get_container_env REDIS_URL)")
 
-          DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "$(read_env_file PG_USER)" "$(get_container_env DB_USER)" "$(get_container_env PG_USER)" "$(get_container_env POSTGRES_USER)")
+          DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "$(read_env_file PG_USER)" "$(get_container_env DB_USER)" "$(get_container_env PG_USER)" "$(get_container_env POSTGRES_USER)" "cloudphone11")
           DB_PASSWORD_VALUE=$(first_nonempty "$(read_env_file DB_PASSWORD)" "$(read_env_file PG_PASSWORD)" "$(get_container_env DB_PASSWORD)" "$(get_container_env PG_PASSWORD)" "$(get_container_env POSTGRES_PASSWORD)")
-          DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "$(read_env_file PG_DATABASE)" "$(get_container_env DB_NAME)" "$(get_container_env PG_DATABASE)" "$(get_container_env POSTGRES_DB)")
+          DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "$(read_env_file PG_DATABASE)" "$(get_container_env DB_NAME)" "$(get_container_env PG_DATABASE)" "$(get_container_env POSTGRES_DB)" "cloudphone11")
 
           if [ -n "$DATABASE_URL_VALUE" ]; then
             DB_USER_VALUE=$(first_nonempty "$DB_USER_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://\([^:/@]*\):.*#\1#p')")
@@ -199,10 +162,7 @@ jobs:
             DB_NAME_VALUE=$(first_nonempty "$DB_NAME_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^.*/\([^/?]*\).*#\1#p')")
           fi
 
-          DB_USER_VALUE=$(first_nonempty "$DB_USER_VALUE" "cloudphone11")
-          DB_NAME_VALUE=$(first_nonempty "$DB_NAME_VALUE" "cloudphone11")
           DB_PASSWORD_VALUE=$(first_nonempty "$DB_PASSWORD_VALUE" "$(gen_secret)")
-
           REDIS_PASSWORD_VALUE=$(first_nonempty "$(read_env_file REDIS_PASSWORD)" "$(get_container_env REDIS_PASSWORD)")
           if [ -z "$REDIS_PASSWORD_VALUE" ] && [ -n "$REDIS_URL_VALUE" ]; then
             REDIS_PASSWORD_VALUE=$(printf '%s' "$REDIS_URL_VALUE" | sed -n 's#^redis://:\([^@]*\)@.*#\1#p')
@@ -239,6 +199,42 @@ jobs:
             echo "Persisted missing runtime env keys back to the EC2 source env file without printing values."
           fi
           echo "Hydrated Compose env without printing secret values."
+
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE="docker-compose"
+          else
+            echo "ERROR: docker compose is not available on EC2."
+            exit 22
+          fi
+
+          COMPOSE_FILE="infra/compose/docker-compose.prod.yml"
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "ERROR: $COMPOSE_FILE not found."
+            exit 23
+          fi
+
+          free_phone11_docker_port() {
+            port="$1"
+            docker ps --format '{{.ID}} {{.Names}} {{.Ports}}' | awk -v pattern=":${port}->" '$0 ~ pattern {print $1}' | while read -r container_id; do
+              [ -n "$container_id" ] || continue
+              name=$(docker inspect --format '{{.Name}}' "$container_id" 2>/dev/null | sed 's#^/##')
+              case "$name" in
+                cp11-*|cloudphone11*|phone11*)
+                  echo "Removing stale Phone11 container $name using host port $port"
+                  docker rm -f "$container_id"
+                  ;;
+                *)
+                  echo "ERROR: host port $port is used by non-Phone11 Docker container $name. Refusing to stop it automatically."
+                  exit 32
+                  ;;
+              esac
+            done
+          }
+
+          free_phone11_docker_port 3000
+          free_phone11_docker_port 6379
 
           echo "Backup: $BACKUP_DIR"
           echo "Deploy commit: $(git rev-parse --short HEAD)"
