@@ -11,8 +11,8 @@ FROM node:22-alpine AS deps
 
 WORKDIR /app
 
-# Some shared mobile/native packages run bash-based postinstall scripts.
-RUN apk add --no-cache bash
+# Some shared mobile/native packages run bash/curl-based postinstall scripts.
+RUN apk add --no-cache bash curl
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
@@ -28,8 +28,8 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Some shared mobile/native packages run bash-based postinstall scripts.
-RUN apk add --no-cache bash
+# Some shared mobile/native packages run bash/curl-based postinstall scripts.
+RUN apk add --no-cache bash curl
 
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
