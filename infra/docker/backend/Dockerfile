@@ -38,6 +38,7 @@ RUN pnpm install --frozen-lockfile
 
 # Copy source
 COPY server/ ./server/
+COPY shared/ ./shared/
 COPY drizzle/ ./drizzle/
 COPY drizzle.config.ts ./
 COPY tsconfig.json ./
