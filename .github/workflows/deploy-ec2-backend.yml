@@ -89,7 +89,8 @@ jobs:
           fi
 
           cd "$WORK_PATH"
-          mkdir -p infra/compose "$BACKUP_DIR"
+          mkdir -p infra/compose
+          $SUDO mkdir -p "$BACKUP_DIR"
 
           ENV_SOURCE=""
           for candidate in \
@@ -107,7 +108,8 @@ jobs:
 
           ENV_FILE="$WORK_PATH/.env"
           if [ -n "$ENV_SOURCE" ]; then
-            cp -a "$ENV_SOURCE" "$ENV_FILE"
+            $SUDO cp -a "$ENV_SOURCE" "$ENV_FILE"
+            $SUDO chown "$(id -u):$(id -g)" "$ENV_FILE"
             echo "Copied runtime env file from $(dirname "$ENV_SOURCE")/$(basename "$ENV_SOURCE")"
           else
             touch "$ENV_FILE"
@@ -118,15 +120,16 @@ jobs:
             if [ -e "$LIVE_PROJECT_PATH/$path" ]; then
               rm -rf "$WORK_PATH/$path"
               mkdir -p "$WORK_PATH/$(dirname "$path")"
-              cp -a "$LIVE_PROJECT_PATH/$path" "$WORK_PATH/$path"
+              $SUDO cp -a "$LIVE_PROJECT_PATH/$path" "$WORK_PATH/$path"
+              $SUDO chown -R "$(id -u):$(id -g)" "$WORK_PATH/$path"
               echo "Copied runtime config: $path"
             fi
           done
 
           for path in server/phone-provisioning.ts server/routers.ts infra/compose/docker-compose.prod.yml .github/workflows/deploy-ec2-backend.yml; do
             if [ -f "$WORK_PATH/$path" ]; then
-              mkdir -p "$BACKUP_DIR/$(dirname "$path")"
-              cp "$WORK_PATH/$path" "$BACKUP_DIR/$path"
+              $SUDO mkdir -p "$BACKUP_DIR/$(dirname "$path")"
+              $SUDO cp "$WORK_PATH/$path" "$BACKUP_DIR/$path"
             fi
           done
 
@@ -232,7 +235,7 @@ jobs:
           rm -f "$CONTAINER_ENV"
           cp -a "$ENV_FILE" "$WORK_PATH/infra/compose/.env"
           if [ -n "$ENV_SOURCE" ] && [ -f "$ENV_SOURCE" ] && [ "$ENV_SOURCE" != "$ENV_FILE" ]; then
-            cp -a "$ENV_FILE" "$ENV_SOURCE"
+            $SUDO cp -a "$ENV_FILE" "$ENV_SOURCE"
             echo "Persisted missing runtime env keys back to the EC2 source env file without printing values."
           fi
           echo "Hydrated Compose env without printing secret values."
