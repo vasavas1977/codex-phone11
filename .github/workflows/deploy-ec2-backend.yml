@@ -29,7 +29,6 @@ env:
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-  EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
 
 permissions:
   contents: read
@@ -49,7 +48,6 @@ jobs:
           PUBLIC_HOST="${PUBLIC_HOST:-}"
           REPO_URL="${REPO_URL:-https://github.com/vasavas1977/codex-phone11.git}"
           DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
-          BACKUP_DIR="/opt/phone11ai/deploy-backups/$(date -u +%Y%m%dT%H%M%SZ)"
 
           if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
 
@@ -57,36 +55,21 @@ jobs:
           echo "Live project path: $LIVE_PROJECT_PATH"
           echo "Deploy branch: $DEPLOY_BRANCH"
 
-          if [ -d "$LIVE_PROJECT_PATH/.git" ]; then
-            WORK_PATH="$LIVE_PROJECT_PATH"
-            cd "$WORK_PATH"
-            if [ -n "$(git status --porcelain)" ]; then
-              echo "ERROR: live checkout has uncommitted changes. Refusing to deploy until reviewed."
-              git status --short
-              exit 21
-            fi
-            git fetch origin "$DEPLOY_BRANCH"
-            git checkout "$DEPLOY_BRANCH"
-            git merge --ff-only "origin/$DEPLOY_BRANCH"
-          else
-            WORK_PATH="$DEPLOY_CHECKOUT"
-            $SUDO mkdir -p "$(dirname "$WORK_PATH")"
-            if [ ! -d "$WORK_PATH/.git" ]; then
-              $SUDO rm -rf "$WORK_PATH"
-              $SUDO mkdir -p "$WORK_PATH"
-              $SUDO chown -R "$(id -u):$(id -g)" "$WORK_PATH"
-              git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$WORK_PATH"
-            fi
-            cd "$WORK_PATH"
-            git fetch origin "$DEPLOY_BRANCH"
-            git checkout "$DEPLOY_BRANCH"
-            git reset --hard "origin/$DEPLOY_BRANCH"
+          $SUDO mkdir -p "$(dirname "$DEPLOY_CHECKOUT")"
+          if [ ! -d "$DEPLOY_CHECKOUT/.git" ]; then
+            $SUDO rm -rf "$DEPLOY_CHECKOUT"
+            $SUDO mkdir -p "$DEPLOY_CHECKOUT"
+            $SUDO chown -R "$(id -u):$(id -g)" "$DEPLOY_CHECKOUT"
+            git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$DEPLOY_CHECKOUT"
           fi
 
-          cd "$WORK_PATH"
-          mkdir -p infra/compose
-          $SUDO mkdir -p "$BACKUP_DIR"
+          cd "$DEPLOY_CHECKOUT"
+          git fetch origin "$DEPLOY_BRANCH"
+          git checkout "$DEPLOY_BRANCH"
+          git reset --hard "origin/$DEPLOY_BRANCH"
 
+          mkdir -p infra/compose
+          ENV_FILE="$DEPLOY_CHECKOUT/.env"
           ENV_SOURCE=""
           for candidate in \
             "$LIVE_PROJECT_PATH/infra/compose/.env" \
@@ -97,11 +80,7 @@ jobs:
             "/opt/phone11ai/cloudphone11/.env"; do
             if [ -f "$candidate" ]; then ENV_SOURCE="$candidate"; break; fi
           done
-          if [ -z "$ENV_SOURCE" ]; then
-            ENV_SOURCE=$(find "$LIVE_PROJECT_PATH" /opt/phone11ai -maxdepth 5 -type f \( -name ".env" -o -name ".env.production" -o -name "prod.env" -o -name "production.env" \) 2>/dev/null | head -n 1 || true)
-          fi
 
-          ENV_FILE="$WORK_PATH/.env"
           if [ -n "$ENV_SOURCE" ]; then
             $SUDO cp -a "$ENV_SOURCE" "$ENV_FILE"
             $SUDO chown "$(id -u):$(id -g)" "$ENV_FILE"
@@ -123,12 +102,6 @@ jobs:
             fi
           }
 
-          first_nonempty() {
-            for value in "$@"; do
-              if [ -n "$value" ]; then printf '%s' "$value"; return 0; fi
-            done
-          }
-
           gen_secret() {
             if command -v openssl >/dev/null 2>&1; then
               openssl rand -base64 36 | tr -d '\n=' | tr '+/' '_-'
@@ -137,48 +110,26 @@ jobs:
             fi
           }
 
-          CONTAINER_ENV=$(mktemp)
-          if command -v docker >/dev/null 2>&1 && docker ps -aq >/dev/null 2>&1; then
-            docker ps -aq | while read -r container_id; do
-              [ -n "$container_id" ] || continue
-              docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" >> "$CONTAINER_ENV" 2>/dev/null || true
+          first_nonempty() {
+            for value in "$@"; do
+              if [ -n "$value" ]; then printf '%s' "$value"; return 0; fi
             done
-          fi
-
-          get_container_env() {
-            awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$CONTAINER_ENV"
           }
 
-          DATABASE_URL_VALUE=$(first_nonempty "$(read_env_file DATABASE_URL)" "$(read_env_file PG_CONNECTION_STRING)" "$(get_container_env DATABASE_URL)" "$(get_container_env PG_CONNECTION_STRING)")
-          REDIS_URL_VALUE=$(first_nonempty "$(read_env_file REDIS_URL)" "$(get_container_env REDIS_URL)")
-
-          DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "$(read_env_file PG_USER)" "$(get_container_env DB_USER)" "$(get_container_env PG_USER)" "$(get_container_env POSTGRES_USER)" "cloudphone11")
-          DB_PASSWORD_VALUE=$(first_nonempty "$(read_env_file DB_PASSWORD)" "$(read_env_file PG_PASSWORD)" "$(get_container_env DB_PASSWORD)" "$(get_container_env PG_PASSWORD)" "$(get_container_env POSTGRES_PASSWORD)")
-          DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "$(read_env_file PG_DATABASE)" "$(get_container_env DB_NAME)" "$(get_container_env PG_DATABASE)" "$(get_container_env POSTGRES_DB)" "cloudphone11")
-
-          if [ -n "$DATABASE_URL_VALUE" ]; then
-            DB_USER_VALUE=$(first_nonempty "$DB_USER_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://\([^:/@]*\):.*#\1#p')")
-            DB_PASSWORD_VALUE=$(first_nonempty "$DB_PASSWORD_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^[^:]*://[^:/@]*:\([^@]*\)@.*#\1#p')")
-            DB_NAME_VALUE=$(first_nonempty "$DB_NAME_VALUE" "$(printf '%s' "$DATABASE_URL_VALUE" | sed -n 's#^.*/\([^/?]*\).*#\1#p')")
-          fi
-
-          DB_PASSWORD_VALUE=$(first_nonempty "$DB_PASSWORD_VALUE" "$(gen_secret)")
-          REDIS_PASSWORD_VALUE=$(first_nonempty "$(read_env_file REDIS_PASSWORD)" "$(get_container_env REDIS_PASSWORD)")
-          if [ -z "$REDIS_PASSWORD_VALUE" ] && [ -n "$REDIS_URL_VALUE" ]; then
-            REDIS_PASSWORD_VALUE=$(printf '%s' "$REDIS_URL_VALUE" | sed -n 's#^redis://:\([^@]*\)@.*#\1#p')
-          fi
-          REDIS_PASSWORD_VALUE=$(first_nonempty "$REDIS_PASSWORD_VALUE" "$(gen_secret)")
-
-          EXTERNAL_IP_VALUE=$(first_nonempty "$(read_env_file EXTERNAL_IP)" "$(get_container_env EXTERNAL_IP)" "$(get_container_env EXTERNAL_SIP_IP)" "$PUBLIC_HOST")
+          EXTERNAL_IP_VALUE=$(first_nonempty "$(read_env_file EXTERNAL_IP)" "$PUBLIC_HOST")
           if [ -z "$EXTERNAL_IP_VALUE" ]; then
             EXTERNAL_IP_VALUE="$(curl -fsS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
           fi
-          PRIVATE_IP_VALUE=$(first_nonempty "$(read_env_file PRIVATE_IP)" "$(get_container_env PRIVATE_IP)" "$(hostname -I 2>/dev/null | awk '{print $1}')")
-          SIP_DOMAIN_VALUE=$(first_nonempty "$(read_env_file SIP_DOMAIN)" "$(get_container_env SIP_DOMAIN)" "$(get_container_env FREESWITCH_DOMAIN)" "$PUBLIC_HOST" "$EXTERNAL_IP_VALUE")
-          FS_ESL_PASSWORD_VALUE=$(first_nonempty "$(read_env_file FS_ESL_PASSWORD)" "$(get_container_env FS_ESL_PASSWORD)" "$(get_container_env FREESWITCH_ESL_PASSWORD)" "$(gen_secret)")
-          JWT_SECRET_VALUE=$(first_nonempty "$(read_env_file JWT_SECRET)" "$(get_container_env JWT_SECRET)" "$(read_env_file SESSION_SECRET)" "$(get_container_env SESSION_SECRET)" "$(read_env_file AUTH_SECRET)" "$(get_container_env AUTH_SECRET)" "$(gen_secret)")
-          STORAGE_BUCKET_VALUE=$(first_nonempty "$(read_env_file STORAGE_BUCKET)" "$(get_container_env STORAGE_BUCKET)" "$(read_env_file S3_BUCKET)" "$(get_container_env S3_BUCKET)" "phone11-recordings")
-          FCM_API_KEY_VALUE=$(first_nonempty "$(read_env_file FCM_API_KEY)" "$(get_container_env FCM_API_KEY)" "disabled")
+          PRIVATE_IP_VALUE=$(first_nonempty "$(read_env_file PRIVATE_IP)" "$(hostname -I 2>/dev/null | awk '{print $1}')")
+          DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "cloudphone11")
+          DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "cloudphone11")
+          DB_PASSWORD_VALUE=$(first_nonempty "$(read_env_file DB_PASSWORD)" "$(gen_secret)")
+          REDIS_PASSWORD_VALUE=$(first_nonempty "$(read_env_file REDIS_PASSWORD)" "$(gen_secret)")
+          SIP_DOMAIN_VALUE=$(first_nonempty "$(read_env_file SIP_DOMAIN)" "$PUBLIC_HOST" "$EXTERNAL_IP_VALUE")
+          FS_ESL_PASSWORD_VALUE=$(first_nonempty "$(read_env_file FS_ESL_PASSWORD)" "$(read_env_file FREESWITCH_ESL_PASSWORD)" "$(gen_secret)")
+          JWT_SECRET_VALUE=$(first_nonempty "$(read_env_file JWT_SECRET)" "$(gen_secret)")
+          STORAGE_BUCKET_VALUE=$(first_nonempty "$(read_env_file STORAGE_BUCKET)" "phone11-recordings")
+          FCM_API_KEY_VALUE=$(first_nonempty "$(read_env_file FCM_API_KEY)" "disabled")
 
           set_env_if_missing DB_NAME "$DB_NAME_VALUE"
           set_env_if_missing DB_USER "$DB_USER_VALUE"
@@ -192,8 +143,7 @@ jobs:
           set_env_if_missing JWT_SECRET "$JWT_SECRET_VALUE"
           set_env_if_missing STORAGE_BUCKET "$STORAGE_BUCKET_VALUE"
 
-          rm -f "$CONTAINER_ENV"
-          cp -a "$ENV_FILE" "$WORK_PATH/infra/compose/.env"
+          cp -a "$ENV_FILE" "$DEPLOY_CHECKOUT/infra/compose/.env"
           if [ -n "$ENV_SOURCE" ] && [ -f "$ENV_SOURCE" ] && [ "$ENV_SOURCE" != "$ENV_FILE" ]; then
             $SUDO cp -a "$ENV_FILE" "$ENV_SOURCE"
             echo "Persisted missing runtime env keys back to the EC2 source env file without printing values."
@@ -215,10 +165,10 @@ jobs:
             exit 23
           fi
 
-          free_phone11_docker_port() {
+          remove_phone11_docker_listener() {
             port="$1"
-            docker ps --format '{{.ID}} {{.Names}} {{.Ports}}' | awk -v pattern=":${port}->" '$0 ~ pattern {print $1}' | while read -r container_id; do
-              [ -n "$container_id" ] || continue
+            ids=$(docker ps --format '{{.ID}} {{.Names}} {{.Ports}}' | awk -v pattern=":${port}->" '$0 ~ pattern {print $1}')
+            for container_id in $ids; do
               name=$(docker inspect --format '{{.Name}}' "$container_id" 2>/dev/null | sed 's#^/##')
               case "$name" in
                 cp11-*|cloudphone11*|phone11*)
@@ -233,22 +183,45 @@ jobs:
             done
           }
 
-          free_phone11_docker_port 3000
-          free_phone11_docker_port 6379
+          stop_host_listener_port() {
+            port="$1"
+            listeners=$($SUDO ss -ltnp 2>/dev/null | grep -E "127\.0\.0\.1:${port}|0\.0\.0\.0:${port}|\[::\]:${port}|:${port}[[:space:]]" || true)
+            if [ -z "$listeners" ]; then return 0; fi
+            echo "Host port $port is still occupied after Docker cleanup. Stopping the existing listener so the managed Phone11 backend can replace it."
+            echo "$listeners"
+            pids=$(printf '%s\n' "$listeners" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u)
+            if [ -z "$pids" ]; then
+              echo "ERROR: port $port is occupied, but no process id was visible to stop."
+              exit 33
+            fi
+            for pid in $pids; do
+              $SUDO kill "$pid" || true
+            done
+            sleep 3
+            if $SUDO ss -ltnp 2>/dev/null | grep -E "127\.0\.0\.1:${port}|0\.0\.0\.0:${port}|\[::\]:${port}|:${port}[[:space:]]" >/dev/null; then
+              echo "Port $port still occupied after normal stop; forcing old listener down."
+              for pid in $pids; do $SUDO kill -9 "$pid" || true; done
+              sleep 2
+            fi
+          }
 
-          echo "Backup: $BACKUP_DIR"
+          remove_phone11_docker_listener 3000
+          remove_phone11_docker_listener 6379
+          docker rm -f cp11-backend >/dev/null 2>&1 || true
+          stop_host_listener_port 3000
+
           echo "Deploy commit: $(git rev-parse --short HEAD)"
           echo "Building backend container..."
           $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build backend
 
-          echo "Restarting backend container..."
+          echo "Starting backend container and dependencies..."
           $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d backend
 
           echo "Backend container status:"
           $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps backend
 
           echo "Health check:"
-          for i in $(seq 1 20); do
+          for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3000/health; then
               echo ""
               echo "Backend health check passed"
@@ -258,38 +231,16 @@ jobs:
           done
 
           echo "ERROR: backend health check failed after restart. Recent logs:"
-          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=120 backend || true
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=160 backend || true
           exit 24
           SCRIPT
           chmod +x /tmp/phone11-ec2-deploy.sh
 
-      - name: Deploy via SSH key if available
-        id: ssh_deploy
-        continue-on-error: true
-        run: |
-          if [ -z "${EC2_SSH_KEY:-}" ]; then
-            echo "No EC2_SSH_KEY secret configured; skipping direct SSH path."
-            echo "used=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/phone11_ec2_key
-          chmod 600 ~/.ssh/phone11_ec2_key
-
-          scp -i ~/.ssh/phone11_ec2_key -o StrictHostKeyChecking=no /tmp/phone11-ec2-deploy.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-ec2-deploy.sh"
-          ssh -i ~/.ssh/phone11_ec2_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
-            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' PUBLIC_HOST='$EC2_HOST' bash /tmp/phone11-ec2-deploy.sh"
-
-          echo "used=true" >> "$GITHUB_OUTPUT"
-
       - name: Locate EC2 instance through AWS
         id: ec2
-        if: steps.ssh_deploy.outputs.used != 'true'
         run: |
           if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
-            echo "ERROR: Either EC2_SSH_KEY or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY must be configured."
+            echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured."
             exit 30
           fi
 
@@ -309,62 +260,7 @@ jobs:
           echo "az=$AZ" >> "$GITHUB_OUTPUT"
           echo "Found EC2 instance $INSTANCE_ID in $AZ"
 
-      - name: Try deploy through AWS Systems Manager
-        id: ssm_deploy
-        if: steps.ssh_deploy.outputs.used != 'true'
-        continue-on-error: true
-        run: |
-          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
-
-          MANAGED=$(aws ssm describe-instance-information \
-            --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
-            --query 'InstanceInformationList[0].InstanceId' \
-            --output text 2>/dev/null || true)
-
-          if [ "$MANAGED" != "$INSTANCE_ID" ]; then
-            echo "Instance is not managed by SSM; skipping SSM path."
-            echo "used=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          DEPLOY_B64=$(base64 -w0 /tmp/phone11-ec2-deploy.sh)
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --comment "Phone11 backend deploy from GitHub Actions" \
-            --parameters "commands=echo $DEPLOY_B64 | base64 -d >/tmp/phone11-ec2-deploy.sh && chmod +x /tmp/phone11-ec2-deploy.sh && PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' PUBLIC_HOST='$EC2_HOST' bash /tmp/phone11-ec2-deploy.sh" \
-            --query 'Command.CommandId' \
-            --output text)
-
-          echo "SSM command: $COMMAND_ID"
-
-          for i in $(seq 1 120); do
-            STATUS=$(aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --query 'Status' \
-              --output text 2>/dev/null || true)
-            echo "SSM status: $STATUS"
-            case "$STATUS" in
-              Success|Cancelled|TimedOut|Failed|Cancelling) break ;;
-            esac
-            sleep 5
-          done
-
-          aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
-            --output json
-
-          if [ "$STATUS" != "Success" ]; then
-            exit 40
-          fi
-
-          echo "used=true" >> "$GITHUB_OUTPUT"
-
-      - name: Try deploy through EC2 Instance Connect
-        if: steps.ssh_deploy.outputs.used != 'true' && steps.ssm_deploy.outputs.used != 'true'
+      - name: Deploy through EC2 Instance Connect
         run: |
           INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
           AZ='${{ steps.ec2.outputs.az }}'
