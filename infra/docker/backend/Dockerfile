@@ -36,6 +36,11 @@ RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
+# The server imports ws directly, but the current monorepo lockfile does not
+# list it as a top-level backend dependency yet. Install it inside the image so
+# the production backend can boot while we keep mobile dependencies untouched.
+RUN pnpm add ws@8.18.3 --prod --ignore-scripts
+
 # Copy source
 COPY server/ ./server/
 COPY shared/ ./shared/
