@@ -63,8 +63,14 @@ async function startServer() {
   registerStorageProxy(app);
   registerOAuthRoutes(app);
 
+  const healthPayload = () => ({ ok: true, timestamp: Date.now() });
+
+  app.get("/health", (_req, res) => {
+    res.json(healthPayload());
+  });
+
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, timestamp: Date.now() });
+    res.json(healthPayload());
   });
 
   // FreeSWITCH REST callbacks (mod_xml_curl)
