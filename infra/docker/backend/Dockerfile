@@ -62,7 +62,9 @@ WORKDIR /app
 
 # Security: run as non-root
 RUN addgroup -g 1001 -S cloudphone && \
-    adduser -S cloudphone -u 1001 -G cloudphone
+    adduser -S cloudphone -u 1001 -G cloudphone && \
+    mkdir -p /opt/phone11ai/recordings /opt/phone11ai/voicemail && \
+    chown -R cloudphone:cloudphone /opt/phone11ai
 
 # The server bundle keeps external Node packages, including ws, at runtime.
 # Copy the builder install so runtime-only packages that are reached through
