@@ -59,8 +59,11 @@ WORKDIR /app
 RUN addgroup -g 1001 -S cloudphone && \
     adduser -S cloudphone -u 1001 -G cloudphone
 
-# Copy production dependencies from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+# The server bundle keeps external Node packages, including ws, at runtime.
+# Copy the builder install so runtime-only packages that are reached through
+# development tooling transitive deps are still present until dependencies are
+# split into a backend-only package.
+COPY --from=builder /app/node_modules ./node_modules
 
 # Copy built server from builder stage
 COPY --from=builder /app/dist ./dist
