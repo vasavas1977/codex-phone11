@@ -67,7 +67,9 @@ WORKDIR /app
 
 # Security: run as non-root
 RUN addgroup -g 1001 -S cloudphone && \
-    adduser -S cloudphone -u 1001 -G cloudphone
+    adduser -S cloudphone -u 1001 -G cloudphone && \
+    mkdir -p /var/lib/phone11/recordings /var/lib/phone11/voicemail && \
+    chown -R cloudphone:cloudphone /var/lib/phone11
 
 # Copy production dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
@@ -85,6 +87,8 @@ COPY package.json ./
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOST=0.0.0.0
+ENV RECORDINGS_PATH=/var/lib/phone11/recordings
+ENV VOICEMAIL_PATH=/var/lib/phone11/voicemail
 
 # Health check
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=10s \
