@@ -11,6 +11,10 @@ FROM node:22-alpine AS deps
 
 WORKDIR /app
 
+# Some shared mobile packages run bash-based postinstall scripts even when the
+# backend only needs their JS dependencies.
+RUN apk add --no-cache bash
+
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
@@ -25,6 +29,7 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
+RUN apk add --no-cache bash
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
 COPY package.json pnpm-lock.yaml ./
