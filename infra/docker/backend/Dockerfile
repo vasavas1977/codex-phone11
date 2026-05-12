@@ -18,8 +18,9 @@ RUN apk add --no-cache bash curl ca-certificates
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
-# Copy package manifests
+# Copy package manifests and postinstall helpers
 COPY package.json pnpm-lock.yaml ./
+COPY scripts/ ./scripts/
 
 # Install production dependencies only
 RUN pnpm install --frozen-lockfile --prod
@@ -33,6 +34,7 @@ RUN apk add --no-cache bash curl ca-certificates
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
 COPY package.json pnpm-lock.yaml ./
+COPY scripts/ ./scripts/
 RUN pnpm install --frozen-lockfile
 
 # Copy source
@@ -40,7 +42,6 @@ COPY server/ ./server/
 COPY drizzle/ ./drizzle/
 COPY drizzle.config.ts ./
 COPY tsconfig.json ./
-COPY scripts/ ./scripts/
 
 # Build server bundle with esbuild
 RUN pnpm build
