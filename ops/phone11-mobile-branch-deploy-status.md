@@ -1,7 +1,7 @@
 # Phone11 Mobile Branch Deploy Status
 
-- Time UTC: 2026-05-12T17:54:02+00:00
-- Workflow commit: da833c07fb08187f196131362efcb3be77eb264e
+- Time UTC: 2026-05-12T17:58:12+00:00
+- Workflow commit: 1ceff0ce9c5a4e204cfbfd2e17d05ea1d41d1095
 - Branch: codex/phone11-mobile-pjsip-20260506
 - EC2 host: 43.209.112.208
 - Pilot user id: 1
@@ -12,8 +12,8 @@
 ```text
 === Phone11 mobile branch backend redeploy ===
 Host: ip-10-0-2-252
-Time: 2026-05-12T17:54:01+00:00
-GitHub SHA: da833c07fb08187f196131362efcb3be77eb264e
+Time: 2026-05-12T17:58:12+00:00
+GitHub SHA: 1ceff0ce9c5a4e204cfbfd2e17d05ea1d41d1095
 Deploy checkout: /opt/phone11ai/codex-phone11-deploy
 ERROR: no runtime .env file found on EC2.
 --- Runtime layout diagnostics ---
