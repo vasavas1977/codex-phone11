@@ -1,6 +1,6 @@
 name: Phone11 EC2 Redeploy Mobile Branch V3
 
-# keep this workflow push-triggered for branch-only backend redeploy checks; trigger public standalone redeploy
+# keep this workflow push-triggered for branch-only backend redeploy checks; trigger public standalone redeploy with SSL verification
 on:
   workflow_dispatch:
   push:
