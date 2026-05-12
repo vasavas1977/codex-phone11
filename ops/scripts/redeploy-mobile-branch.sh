@@ -38,6 +38,23 @@ cp /tmp/phone11-runtime.env .env
 read_env_file() {
   awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' .env
 }
+
+wait_for_backend_running() {
+  echo "--- Waiting for backend container to stay running ---"
+  local state=""
+  for _ in $(seq 1 30); do
+    state="$(docker inspect -f '{{.State.Status}} restarting={{.State.Restarting}} exit={{.State.ExitCode}}' cp11-backend 2>/dev/null || true)"
+    echo "Backend state: ${state:-not-found}"
+    if [[ "$state" == running\ restarting=false* ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: backend container did not stay running. Recent backend logs:"
+  docker logs --tail=120 cp11-backend || true
+  return 1
+}
+
 DB_NAME_VALUE="$(read_env_file DB_NAME)"
 DB_USER_VALUE="$(read_env_file DB_USER)"
 DB_PASSWORD_VALUE="$(read_env_file DB_PASSWORD)"
@@ -55,7 +72,7 @@ SQL
 
 echo "--- Rebuilding backend with patched Dockerfile and DB config ---"
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --build --force-recreate backend
-sleep 8
+wait_for_backend_running
 
 echo "--- Verifying backend DB env and pilot extension ---"
 docker exec -i -e PILOT_USER_ID="${PILOT_USER_ID:-1}" cp11-backend node --input-type=module - <<'NODE'
@@ -96,7 +113,7 @@ try {
 NODE
 
 docker restart cp11-backend >/dev/null
-sleep 6
-curl -fsS http://127.0.0.1:3000/health
+wait_for_backend_running
+curl -fsS http://127.0.0.1:3000/api/health
 echo ""
 echo "Redeploy finished."
