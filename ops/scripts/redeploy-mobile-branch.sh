@@ -131,8 +131,10 @@ const cfg = {
 };
 const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
 if (missing.length) throw new Error(`Missing backend DB env: ${missing.join(', ')}`);
-console.log(`Backend DB env present: host=${cfg.host}, user=${cfg.user}, database=${cfg.database}, password=<set>`);
-const pool = new pg.Pool({ ...cfg, ssl: false, connectionTimeoutMillis: 5000 });
+const sslMode = firstEnv('PG_SSL', 'DB_SSL', 'POSTGRES_SSL', 'DATABASE_SSL')?.toLowerCase();
+const ssl = sslMode === 'false' || sslMode === '0' || sslMode === 'disable' ? false : { rejectUnauthorized: false };
+console.log(`Backend DB env present: host=${cfg.host}, user=${cfg.user}, database=${cfg.database}, ssl=${ssl ? 'enabled' : 'disabled'}, password=<set>`);
+const pool = new pg.Pool({ ...cfg, ssl, connectionTimeoutMillis: 5000 });
 try {
   const auth = await pool.query('select current_user, current_database()');
   console.log(`Backend PG auth OK as ${auth.rows[0].current_user} on ${auth.rows[0].current_database}`);
@@ -214,7 +216,7 @@ free_backend_port() {
 
 deploy_standalone_backend() {
   echo "--- Deploying standalone public API backend container ---"
-  docker build -f infra/docker/backend/Dockerfile -t "phone11-backend-public:$GITHUB_SHA" .
+  docker build --no-cache -f infra/docker/backend/Dockerfile -t "phone11-backend-public:$GITHUB_SHA" .
   free_backend_port
   docker run -d \
     --name cp11-backend \
