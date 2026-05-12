@@ -7,6 +7,10 @@ on:
       - codex/phone11-mobile-pjsip-20260506
     paths:
       - '.github/workflows/phone11-ec2-redeploy-mobile-branch-v3.yml'
+      - 'infra/docker/backend/Dockerfile'
+      - 'infra/compose/docker-compose.prod.yml'
+      - 'server/pbx/db.ts'
+      - 'ops/scripts/redeploy-mobile-branch.sh'
 
 env:
   AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
