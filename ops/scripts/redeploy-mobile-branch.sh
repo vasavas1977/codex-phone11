@@ -55,6 +55,22 @@ wait_for_backend_running() {
   return 1
 }
 
+wait_for_backend_health() {
+  echo "--- Waiting for backend health endpoint ---"
+  local body=""
+  for _ in $(seq 1 30); do
+    if body="$(curl -fsS http://127.0.0.1:3000/api/health 2>/tmp/phone11-health-error.log)"; then
+      echo "$body"
+      return 0
+    fi
+    echo "Health not ready: $(cat /tmp/phone11-health-error.log 2>/dev/null || true)"
+    sleep 2
+  done
+  echo "ERROR: backend health endpoint did not become ready. Recent backend logs:"
+  docker logs --tail=120 cp11-backend || true
+  return 1
+}
+
 DB_NAME_VALUE="$(read_env_file DB_NAME)"
 DB_USER_VALUE="$(read_env_file DB_USER)"
 DB_PASSWORD_VALUE="$(read_env_file DB_PASSWORD)"
@@ -114,6 +130,5 @@ NODE
 
 docker restart cp11-backend >/dev/null
 wait_for_backend_running
-curl -fsS http://127.0.0.1:3000/api/health
-echo ""
+wait_for_backend_health
 echo "Redeploy finished."
