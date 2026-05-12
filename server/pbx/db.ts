@@ -19,7 +19,13 @@ function getSslConfig(connectionString?: string): pg.PoolConfig["ssl"] {
 }
 
 function buildPgConfig(): pg.PoolConfig {
-  const connectionString = process.env.PG_CONNECTION_STRING ?? process.env.DATABASE_URL;
+  const requiredEnv = ["PG_HOST", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const;
+  const missing = requiredEnv.filter((key) => !process.env[key]);
+  const hasDiscretePgConfig = missing.length === 0;
+
+  // Prefer discrete PG_* settings when present. They avoid URL parsing bugs when
+  // database passwords contain URL-sensitive characters such as @, /, :, or #.
+  const connectionString = process.env.PG_CONNECTION_STRING ?? (hasDiscretePgConfig ? undefined : process.env.DATABASE_URL);
   const common: pg.PoolConfig = {
     ssl: getSslConfig(connectionString),
     max: 20,
@@ -34,14 +40,13 @@ function buildPgConfig(): pg.PoolConfig {
     };
   }
 
-  const requiredEnv = ["PG_HOST", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const;
-  const missing = requiredEnv.filter((key) => !process.env[key]);
   if (missing.length > 0) {
     throw new Error(`[PBX DB] Missing required environment variables: ${missing.join(", ")}`);
   }
 
   return {
     ...common,
+    ssl: getSslConfig(),
     host: process.env.PG_HOST,
     port: parseInt(process.env.PG_PORT ?? "5432", 10),
     user: process.env.PG_USER,
