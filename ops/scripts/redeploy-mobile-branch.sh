@@ -9,16 +9,44 @@ echo "Deploy checkout: ${DEPLOY_CHECKOUT:?missing DEPLOY_CHECKOUT}"
 
 mkdir -p "$DEPLOY_CHECKOUT"
 
+diagnose_runtime_layout() {
+  echo "--- Runtime layout diagnostics ---"
+  echo "Top-level deployment directories:"
+  ls -la /opt 2>/dev/null || true
+  ls -la /opt/phone11ai 2>/dev/null || true
+  ls -la /home/ubuntu 2>/dev/null | sed -E 's/(\.env[^ ]*)/<env-file>/g' || true
+  echo "Potential deploy/config files (paths only):"
+  sudo find /opt /home/ubuntu -maxdepth 6 \
+    \( -name '.env' -o -name 'docker-compose*.yml' -o -name 'compose*.yml' -o -name 'ecosystem*.config.*' -o -name 'package.json' \) \
+    -printf '%p\n' 2>/dev/null | sort | sed -E 's#/\.env$#/<env-file>#g' || true
+  echo "Docker containers:"
+  docker ps --format '{{.Names}} {{.Image}} {{.Ports}}' 2>/dev/null || true
+  echo "Node and proxy listeners:"
+  sudo ss -ltnp 2>/dev/null | grep -E ':(80|443|3000|3001|8088)\b' || true
+  echo "PM2 process list:"
+  if command -v pm2 >/dev/null 2>&1; then pm2 list || true; else echo "pm2 command not found"; fi
+  echo "Nginx proxy snippets:"
+  if command -v nginx >/dev/null 2>&1; then
+    sudo nginx -T 2>/dev/null | grep -E -C 4 'api\.phone11\.ai|proxy_pass|127\.0\.0\.1:3000|localhost:3000|3001|8088' || true
+  else
+    echo "nginx command not found"
+  fi
+}
+
 ENV_FILE=""
 for candidate in \
   "$DEPLOY_CHECKOUT/.env" \
   "/opt/phone11ai/cloudphone11/infra/compose/.env" \
   "/opt/phone11ai/cloudphone11/.env" \
-  "/opt/phone11ai/.env"; do
+  "/opt/phone11ai/.env" \
+  "/home/ubuntu/phone11ai/.env" \
+  "/home/ubuntu/cloudphone11/.env" \
+  "/home/ubuntu/codex-phone11/.env"; do
   if [ -f "$candidate" ]; then ENV_FILE="$candidate"; break; fi
 done
 if [ -z "$ENV_FILE" ]; then
   echo "ERROR: no runtime .env file found on EC2."
+  diagnose_runtime_layout
   exit 51
 fi
 cp "$ENV_FILE" /tmp/phone11-runtime.env
