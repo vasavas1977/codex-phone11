@@ -39,12 +39,14 @@ RUN pnpm install --frozen-lockfile
 
 # Copy source
 COPY server/ ./server/
+COPY shared/ ./shared/
 COPY drizzle/ ./drizzle/
 COPY drizzle.config.ts ./
 COPY tsconfig.json ./
 
-# Build server bundle with esbuild
-RUN pnpm build
+# Build only the backend bundle. Avoid pnpm build here because npm lifecycle
+# scripts would run the Expo mobile prebuild inside the backend image.
+RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist
 
 # --- Stage 3: Production ---
 FROM node:22-alpine AS production
