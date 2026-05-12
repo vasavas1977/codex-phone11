@@ -25,6 +25,15 @@ COPY scripts/ ./scripts/
 # Install production dependencies only
 RUN pnpm install --frozen-lockfile --prod
 
+# ws is used directly by the backend WebSocket server, but in the current lock it
+# is only present transitively. Expose it at the runtime root without changing the
+# mobile dependency graph.
+RUN if [ ! -e node_modules/ws ]; then \
+      WS_DIR="$(find node_modules/.pnpm -path '*/node_modules/ws' -type d | sort | tail -n 1)"; \
+      test -n "$WS_DIR"; \
+      ln -s "/app/$WS_DIR" node_modules/ws; \
+    fi
+
 # --- Stage 2: Build ---
 FROM node:22-alpine AS builder
 
