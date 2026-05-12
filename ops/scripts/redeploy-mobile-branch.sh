@@ -118,46 +118,55 @@ wait_for_backend_health() {
 
 try_repair_backend_db_password_from_rds_secret() {
   echo "--- Checking RDS managed secret for DB password repair ---"
-  if ! command -v aws >/dev/null 2>&1; then
-    echo "AWS CLI is not available on EC2; skipping DB password repair."
-    return 0
-  fi
-
-  local db_host db_port db_user db_password db_name secret_arn secret_json
+  local db_host db_port db_user db_password db_name secret_arn secret_json secret_file
   db_host="$(read_first_env PG_HOST DB_HOST POSTGRES_HOST)"
   db_port="$(read_first_env PG_PORT DB_PORT POSTGRES_PORT)"
   db_user="$(read_first_env PG_USER DB_USER POSTGRES_USER)"
   db_password="$(read_first_env PG_PASSWORD DB_PASSWORD POSTGRES_PASSWORD)"
   db_name="$(read_first_env PG_DATABASE DB_NAME DB_DATABASE POSTGRES_DB)"
   db_port="${db_port:-5432}"
+  secret_json=""
 
   if [ -z "$db_host" ] || [ -z "$db_user" ] || [ -z "$db_password" ] || [ -z "$db_name" ]; then
     echo "DB env is incomplete; skipping DB password repair."
     return 0
   fi
 
-  secret_arn="$(aws rds describe-db-instances \
-    --query "DBInstances[?Endpoint.Address=='$db_host'].MasterUserSecret.SecretArn | [0]" \
-    --output text 2>/tmp/phone11-rds-secret-error.log || true)"
-
-  if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
-    secret_arn="$(aws secretsmanager list-secrets \
-      --query "SecretList[?contains(Name, 'phone11') && (contains(Name, 'postgres') || contains(Name, 'rds') || contains(Name, 'database'))].ARN | [0]" \
+  secret_file="${RDS_MASTER_SECRET_FILE:-}"
+  if [ -n "$secret_file" ] && [ -s "$secret_file" ]; then
+    secret_json="$(cat "$secret_file")"
+    rm -f "$secret_file" || true
+    echo "Using workflow-supplied RDS master secret for DB password repair."
+  elif [ -n "${RDS_MASTER_SECRET_JSON:-}" ]; then
+    secret_json="$RDS_MASTER_SECRET_JSON"
+    echo "Using environment-supplied RDS master secret for DB password repair."
+  elif command -v aws >/dev/null 2>&1; then
+    secret_arn="$(aws rds describe-db-instances \
+      --query "DBInstances[?Endpoint.Address=='$db_host'].MasterUserSecret.SecretArn | [0]" \
       --output text 2>/tmp/phone11-rds-secret-error.log || true)"
-  fi
 
-  if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
-    echo "No RDS managed master secret was discoverable with the current AWS credentials; continuing with normal verification."
-    if [ -s /tmp/phone11-rds-secret-error.log ]; then
-      sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
+    if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
+      secret_arn="$(aws secretsmanager list-secrets \
+        --query "SecretList[?contains(Name, 'phone11') && (contains(Name, 'postgres') || contains(Name, 'rds') || contains(Name, 'database'))].ARN | [0]" \
+        --output text 2>/tmp/phone11-rds-secret-error.log || true)"
     fi
+
+    if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
+      echo "No RDS managed master secret was discoverable with the current AWS credentials; continuing with normal verification."
+      if [ -s /tmp/phone11-rds-secret-error.log ]; then
+        sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
+      fi
+      return 0
+    fi
+
+    secret_json="$(aws secretsmanager get-secret-value \
+      --secret-id "$secret_arn" \
+      --query SecretString \
+      --output text 2>/tmp/phone11-rds-secret-error.log || true)"
+  else
+    echo "AWS CLI is not available on EC2 and no workflow-supplied RDS master secret was provided; skipping DB password repair."
     return 0
   fi
-
-  secret_json="$(aws secretsmanager get-secret-value \
-    --secret-id "$secret_arn" \
-    --query SecretString \
-    --output text 2>/tmp/phone11-rds-secret-error.log || true)"
 
   if [ -z "$secret_json" ] || [ "$secret_json" = "None" ]; then
     echo "RDS master secret exists but could not be read; continuing with normal verification."
@@ -167,17 +176,28 @@ try_repair_backend_db_password_from_rds_secret() {
     return 0
   fi
 
+  local host_secret_tmp container_secret_path repair_status
+  host_secret_tmp="/tmp/phone11-rds-master-secret.for-container.json"
+  container_secret_path="/tmp/phone11-rds-master-secret.json"
+  printf '%s' "$secret_json" > "$host_secret_tmp"
+  chmod 600 "$host_secret_tmp"
+  docker cp "$host_secret_tmp" cp11-backend:"$container_secret_path"
+  rm -f "$host_secret_tmp"
+
+  set +e
   docker exec -i \
     -e APP_DB_HOST="$db_host" \
     -e APP_DB_PORT="$db_port" \
     -e APP_DB_USER="$db_user" \
     -e APP_DB_PASSWORD="$db_password" \
     -e APP_DB_NAME="$db_name" \
-    -e RDS_MASTER_SECRET="$secret_json" \
+    -e RDS_MASTER_SECRET_FILE="$container_secret_path" \
     cp11-backend node --input-type=module - <<'NODE'
+import fs from 'node:fs';
 import pg from 'pg';
 
-const secret = JSON.parse(process.env.RDS_MASTER_SECRET || '{}');
+const secretPath = process.env.RDS_MASTER_SECRET_FILE;
+const secret = JSON.parse(fs.readFileSync(secretPath, 'utf8'));
 const app = {
   host: process.env.APP_DB_HOST,
   port: Number(process.env.APP_DB_PORT || secret.port || 5432),
@@ -262,6 +282,10 @@ try {
   await verifyPool.end();
 }
 NODE
+  repair_status=$?
+  set -e
+  docker exec cp11-backend rm -f "$container_secret_path" >/dev/null 2>&1 || true
+  return "$repair_status"
 }
 
 verify_backend_db_and_pilot() {
