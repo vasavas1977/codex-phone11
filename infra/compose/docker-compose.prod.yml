@@ -2,8 +2,7 @@
 # CloudPhone11 — Docker Compose (Staging / Production)
 # =============================================================================
 # Usage: docker compose -f docker-compose.prod.yml up -d
-# Production-ready with resource limits, logging, and restart policies.
-# Requires .env file with all secrets populated.
+# Production-ready with resource limits, logging, and restart policies. Requires .env file with all secrets populated.
 # =============================================================================
 
 name: cloudphone11-prod
@@ -214,6 +213,12 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_USER: ${DB_USER}
+      PG_PASSWORD: ${DB_PASSWORD}
+      PG_DATABASE: ${DB_NAME}
+      PG_SSL: "false"
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       SIP_DOMAIN: ${SIP_DOMAIN}
       FREESWITCH_ESL_HOST: freeswitch
