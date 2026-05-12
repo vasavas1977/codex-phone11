@@ -14,6 +14,10 @@ on:
       - 'server/pbx/db.ts'
       - 'ops/scripts/redeploy-mobile-branch.sh'
 
+concurrency:
+  group: phone11-ec2-redeploy-mobile-branch-v3-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
   EC2_HOST: '43.209.112.208'
@@ -21,6 +25,8 @@ env:
   DEPLOY_CHECKOUT: '/opt/phone11ai/codex-phone11-deploy'
   PILOT_USER_ID: '1'
   RDS_SECRET_FILE: '/tmp/phone11-rds-master-secret.json'
+  PHONE11_RDS_MASTER_SECRET_ARN: ${{ secrets.PHONE11_RDS_MASTER_SECRET_ARN }}
+  PHONE11_RDS_MASTER_SECRET_JSON: ${{ secrets.PHONE11_RDS_MASTER_SECRET_JSON }}
   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
@@ -59,25 +65,35 @@ jobs:
           set +e
           rm -f "$RDS_SECRET_FILE"
 
-          DB_HOST=$(aws rds describe-db-instances \
-            --query "DBInstances[?contains(Endpoint.Address, 'phone11') || contains(DBInstanceIdentifier, 'phone11')].Endpoint.Address | [0]" \
-            --output text 2>/tmp/phone11-rds-discovery-error.log || true)
-          if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
-            DB_HOST=$(aws rds describe-db-instances \
-              --query "DBInstances[?contains(Endpoint.Address, 'postgres')].Endpoint.Address | [0]" \
-              --output text 2>/tmp/phone11-rds-discovery-error.log || true)
+          if [ -n "${PHONE11_RDS_MASTER_SECRET_JSON:-}" ]; then
+            printf '%s' "$PHONE11_RDS_MASTER_SECRET_JSON" > "$RDS_SECRET_FILE"
+            echo "::add-mask::$PHONE11_RDS_MASTER_SECRET_JSON"
+            chmod 600 "$RDS_SECRET_FILE"
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Prepared RDS master secret from GitHub secret JSON."
+            exit 0
           fi
 
-          SECRET_ARN=""
-          if [ -n "$DB_HOST" ] && [ "$DB_HOST" != "None" ]; then
-            SECRET_ARN=$(aws rds describe-db-instances \
-              --query "DBInstances[?Endpoint.Address=='$DB_HOST'].MasterUserSecret.SecretArn | [0]" \
-              --output text 2>/tmp/phone11-rds-secret-error.log || true)
-          fi
-          if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
-            SECRET_ARN=$(aws secretsmanager list-secrets \
-              --query "SecretList[?contains(Name, 'phone11') && (contains(Name, 'postgres') || contains(Name, 'rds') || contains(Name, 'database'))].ARN | [0]" \
-              --output text 2>/tmp/phone11-rds-secret-error.log || true)
+          SECRET_ARN="${PHONE11_RDS_MASTER_SECRET_ARN:-}"
+          if [ -z "$SECRET_ARN" ]; then
+            DB_HOST=$(aws rds describe-db-instances \
+              --query "DBInstances[?contains(Endpoint.Address, 'phone11') || contains(DBInstanceIdentifier, 'phone11')].Endpoint.Address | [0]" \
+              --output text 2>/tmp/phone11-rds-discovery-error.log || true)
+            if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
+              DB_HOST=$(aws rds describe-db-instances \
+                --query "DBInstances[?contains(Endpoint.Address, 'postgres')].Endpoint.Address | [0]" \
+                --output text 2>/tmp/phone11-rds-discovery-error.log || true)
+            fi
+            if [ -n "$DB_HOST" ] && [ "$DB_HOST" != "None" ]; then
+              SECRET_ARN=$(aws rds describe-db-instances \
+                --query "DBInstances[?Endpoint.Address=='$DB_HOST'].MasterUserSecret.SecretArn | [0]" \
+                --output text 2>/tmp/phone11-rds-secret-error.log || true)
+            fi
+            if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+              SECRET_ARN=$(aws secretsmanager list-secrets \
+                --query "SecretList[?contains(Name, 'phone11') && (contains(Name, 'postgres') || contains(Name, 'rds') || contains(Name, 'database'))].ARN | [0]" \
+                --output text 2>/tmp/phone11-rds-secret-error.log || true)
+            fi
           fi
 
           if [ -n "$SECRET_ARN" ] && [ "$SECRET_ARN" != "None" ]; then
@@ -94,7 +110,8 @@ jobs:
 
           rm -f "$RDS_SECRET_FILE"
           echo "available=false" >> "$GITHUB_OUTPUT"
-          echo "RDS master secret was not available to this workflow; deploy will continue with normal DB verification."
+          echo "RDS master secret was not available to this workflow."
+          echo "Required fix: grant phone11-github-deploy secretsmanager:GetSecretValue and secretsmanager:ListSecrets, or add PHONE11_RDS_MASTER_SECRET_ARN / PHONE11_RDS_MASTER_SECRET_JSON as GitHub Actions secrets."
           if [ -s /tmp/phone11-rds-secret-error.log ]; then
             sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
           fi
@@ -105,6 +122,17 @@ jobs:
         continue-on-error: true
         run: |
           set +e
+          if [ '${{ steps.rds_secret.outputs.available }}' != 'true' ]; then
+            {
+              echo "ERROR: RDS master secret is not available; skipping deploy to avoid the known phone11ai DB password failure."
+              echo "Grant phone11-github-deploy Secrets Manager read access, then rerun this workflow."
+              if [ -s /tmp/phone11-rds-secret-error.log ]; then
+                sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
+              fi
+            } | tee /tmp/phone11-redeploy-output.log
+            echo "status=41" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
           AZ='${{ steps.ec2.outputs.az }}'
           REMOTE_RDS_SECRET_FILE=''
@@ -126,6 +154,8 @@ jobs:
       - name: Commit sanitized redeploy status
         if: always()
         run: |
+          git fetch origin "$GITHUB_REF_NAME"
+          git pull --rebase origin "$GITHUB_REF_NAME"
           mkdir -p ops
           status='${{ steps.deploy.outputs.status }}'
           if [ -z "$status" ]; then status=99; fi
