@@ -116,6 +116,154 @@ wait_for_backend_health() {
   return 1
 }
 
+try_repair_backend_db_password_from_rds_secret() {
+  echo "--- Checking RDS managed secret for DB password repair ---"
+  if ! command -v aws >/dev/null 2>&1; then
+    echo "AWS CLI is not available on EC2; skipping DB password repair."
+    return 0
+  fi
+
+  local db_host db_port db_user db_password db_name secret_arn secret_json
+  db_host="$(read_first_env PG_HOST DB_HOST POSTGRES_HOST)"
+  db_port="$(read_first_env PG_PORT DB_PORT POSTGRES_PORT)"
+  db_user="$(read_first_env PG_USER DB_USER POSTGRES_USER)"
+  db_password="$(read_first_env PG_PASSWORD DB_PASSWORD POSTGRES_PASSWORD)"
+  db_name="$(read_first_env PG_DATABASE DB_NAME DB_DATABASE POSTGRES_DB)"
+  db_port="${db_port:-5432}"
+
+  if [ -z "$db_host" ] || [ -z "$db_user" ] || [ -z "$db_password" ] || [ -z "$db_name" ]; then
+    echo "DB env is incomplete; skipping DB password repair."
+    return 0
+  fi
+
+  secret_arn="$(aws rds describe-db-instances \
+    --query "DBInstances[?Endpoint.Address=='$db_host'].MasterUserSecret.SecretArn | [0]" \
+    --output text 2>/tmp/phone11-rds-secret-error.log || true)"
+
+  if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
+    secret_arn="$(aws secretsmanager list-secrets \
+      --query "SecretList[?contains(Name, 'phone11') && (contains(Name, 'postgres') || contains(Name, 'rds') || contains(Name, 'database'))].ARN | [0]" \
+      --output text 2>/tmp/phone11-rds-secret-error.log || true)"
+  fi
+
+  if [ -z "$secret_arn" ] || [ "$secret_arn" = "None" ]; then
+    echo "No RDS managed master secret was discoverable with the current AWS credentials; continuing with normal verification."
+    if [ -s /tmp/phone11-rds-secret-error.log ]; then
+      sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
+    fi
+    return 0
+  fi
+
+  secret_json="$(aws secretsmanager get-secret-value \
+    --secret-id "$secret_arn" \
+    --query SecretString \
+    --output text 2>/tmp/phone11-rds-secret-error.log || true)"
+
+  if [ -z "$secret_json" ] || [ "$secret_json" = "None" ]; then
+    echo "RDS master secret exists but could not be read; continuing with normal verification."
+    if [ -s /tmp/phone11-rds-secret-error.log ]; then
+      sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
+    fi
+    return 0
+  fi
+
+  docker exec -i \
+    -e APP_DB_HOST="$db_host" \
+    -e APP_DB_PORT="$db_port" \
+    -e APP_DB_USER="$db_user" \
+    -e APP_DB_PASSWORD="$db_password" \
+    -e APP_DB_NAME="$db_name" \
+    -e RDS_MASTER_SECRET="$secret_json" \
+    cp11-backend node --input-type=module - <<'NODE'
+import pg from 'pg';
+
+const secret = JSON.parse(process.env.RDS_MASTER_SECRET || '{}');
+const app = {
+  host: process.env.APP_DB_HOST,
+  port: Number(process.env.APP_DB_PORT || secret.port || 5432),
+  user: process.env.APP_DB_USER,
+  password: process.env.APP_DB_PASSWORD,
+  database: process.env.APP_DB_NAME,
+};
+const admin = {
+  host: secret.host || app.host,
+  port: Number(secret.port || app.port || 5432),
+  user: secret.username || secret.user,
+  password: secret.password,
+};
+
+function quoteIdent(value) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value || '')) {
+    throw new Error('Unsafe database role name in DB_USER');
+  }
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function quoteLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+if (!admin.user || !admin.password) {
+  throw new Error('RDS master secret is missing username/password fields');
+}
+if (!app.user || !app.password || !app.database || !app.host) {
+  throw new Error('Application DB env is incomplete');
+}
+
+const ssl = { rejectUnauthorized: false };
+const databases = [...new Set([app.database, secret.dbname, 'postgres'].filter(Boolean))];
+let adminPool;
+let lastError;
+for (const database of databases) {
+  adminPool = new pg.Pool({
+    host: admin.host,
+    port: admin.port,
+    user: admin.user,
+    password: admin.password,
+    database,
+    ssl,
+    max: 1,
+    connectionTimeoutMillis: 5000,
+  });
+  try {
+    await adminPool.query('select 1');
+    break;
+  } catch (error) {
+    lastError = error;
+    await adminPool.end().catch(() => undefined);
+    adminPool = undefined;
+  }
+}
+if (!adminPool) {
+  throw lastError ?? new Error('Could not connect with RDS master secret');
+}
+
+try {
+  await adminPool.query(`ALTER ROLE ${quoteIdent(app.user)} WITH PASSWORD ${quoteLiteral(app.password)}`);
+  console.log(`Database role password aligned for ${app.user} using RDS managed credentials.`);
+} finally {
+  await adminPool.end();
+}
+
+const verifyPool = new pg.Pool({
+  host: app.host,
+  port: app.port,
+  user: app.user,
+  password: app.password,
+  database: app.database,
+  ssl,
+  max: 1,
+  connectionTimeoutMillis: 5000,
+});
+try {
+  await verifyPool.query('select 1');
+  console.log(`Application DB login verified for ${app.user} after password alignment.`);
+} finally {
+  await verifyPool.end();
+}
+NODE
+}
+
 verify_backend_db_and_pilot() {
   echo "--- Verifying backend DB env and pilot extension ---"
   docker exec -i -e PILOT_USER_ID="${PILOT_USER_ID:-1}" cp11-backend node --input-type=module - <<'NODE'
@@ -227,6 +375,7 @@ deploy_standalone_backend() {
     -e PORT=3000 \
     "phone11-backend-public:$GITHUB_SHA"
   wait_for_backend_running
+  try_repair_backend_db_password_from_rds_secret
   verify_backend_db_and_pilot
   docker restart cp11-backend >/dev/null
   wait_for_backend_running
@@ -258,6 +407,7 @@ SQL
 echo "--- Rebuilding backend with patched Dockerfile and DB config ---"
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --build --force-recreate backend
 wait_for_backend_running
+try_repair_backend_db_password_from_rds_secret
 verify_backend_db_and_pilot
 
 docker restart cp11-backend >/dev/null
