@@ -1,6 +1,6 @@
 name: Phone11 EC2 Redeploy Mobile Branch V3
 
-# keep this workflow push-triggered for branch-only backend redeploy checks; trigger public standalone redeploy with RDS password repair
+# keep this workflow push-triggered for branch-only backend redeploy checks; install AWS CLI before RDS password repair
 on:
   workflow_dispatch:
   push:
@@ -64,7 +64,7 @@ jobs:
           ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
           aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
           scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no ops/scripts/redeploy-mobile-branch.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-redeploy-mobile-branch.sh"
-          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION' AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID' AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY' AWS_SESSION_TOKEN='${AWS_SESSION_TOKEN:-}' GITHUB_SHA='$GITHUB_SHA' DEPLOY_CHECKOUT='$DEPLOY_CHECKOUT' PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-redeploy-mobile-branch.sh" 2>&1 | tee /tmp/phone11-redeploy-output.log
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "if ! command -v aws >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y awscli; fi; AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION' AWS_ACCESS_KEY_ID='$AWS_ACCESS_KEY_ID' AWS_SECRET_ACCESS_KEY='$AWS_SECRET_ACCESS_KEY' AWS_SESSION_TOKEN='${AWS_SESSION_TOKEN:-}' GITHUB_SHA='$GITHUB_SHA' DEPLOY_CHECKOUT='$DEPLOY_CHECKOUT' PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-redeploy-mobile-branch.sh" 2>&1 | tee /tmp/phone11-redeploy-output.log
           status=${PIPESTATUS[0]}
           echo "status=$status" >> "$GITHUB_OUTPUT"
           exit 0
