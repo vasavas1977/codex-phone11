@@ -212,6 +212,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      PHONE11_BUILD_SHA: ${PHONE11_BUILD_SHA:-unknown}
       DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable
       PG_HOST: postgres
       PG_PORT: 5432
