@@ -8,6 +8,14 @@ import pg from "pg";
 
 let _pool: pg.Pool | null = null;
 
+function firstEnv(...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value) return value;
+  }
+  return undefined;
+}
+
 function getSslConfig(connectionString?: string): pg.PoolConfig["ssl"] {
   if (process.env.PG_SSL === "false" || connectionString?.includes("sslmode=disable")) {
     return false;
@@ -19,11 +27,24 @@ function getSslConfig(connectionString?: string): pg.PoolConfig["ssl"] {
 }
 
 function buildPgConfig(): pg.PoolConfig {
-  const requiredEnv = ["PG_HOST", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const;
-  const missing = requiredEnv.filter((key) => !process.env[key]);
+  const discrete = {
+    host: firstEnv("PG_HOST", "DB_HOST", "POSTGRES_HOST"),
+    port: firstEnv("PG_PORT", "DB_PORT", "POSTGRES_PORT"),
+    user: firstEnv("PG_USER", "DB_USER", "POSTGRES_USER"),
+    password: firstEnv("PG_PASSWORD", "DB_PASSWORD", "POSTGRES_PASSWORD"),
+    database: firstEnv("PG_DATABASE", "DB_NAME", "DB_DATABASE", "POSTGRES_DB"),
+  };
+  const missing = [
+    ["host", discrete.host],
+    ["user", discrete.user],
+    ["password", discrete.password],
+    ["database", discrete.database],
+  ]
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
   const hasDiscretePgConfig = missing.length === 0;
 
-  // Prefer discrete PG_* settings when present. They avoid URL parsing bugs when
+  // Prefer discrete settings when present. They avoid URL parsing bugs when
   // database passwords contain URL-sensitive characters such as @, /, :, or #.
   const connectionString = process.env.PG_CONNECTION_STRING ?? (hasDiscretePgConfig ? undefined : process.env.DATABASE_URL);
   const common: pg.PoolConfig = {
@@ -41,17 +62,17 @@ function buildPgConfig(): pg.PoolConfig {
   }
 
   if (missing.length > 0) {
-    throw new Error(`[PBX DB] Missing required environment variables: ${missing.join(", ")}`);
+    throw new Error(`[PBX DB] Missing required database settings: ${missing.join(", ")}`);
   }
 
   return {
     ...common,
     ssl: getSslConfig(),
-    host: process.env.PG_HOST,
-    port: parseInt(process.env.PG_PORT ?? "5432", 10),
-    user: process.env.PG_USER,
-    password: process.env.PG_PASSWORD,
-    database: process.env.PG_DATABASE,
+    host: discrete.host,
+    port: parseInt(discrete.port ?? "5432", 10),
+    user: discrete.user,
+    password: discrete.password,
+    database: discrete.database,
   };
 }
 
