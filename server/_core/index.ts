@@ -64,7 +64,12 @@ async function startServer() {
   registerOAuthRoutes(app);
 
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, timestamp: Date.now() });
+    res.json({
+      ok: true,
+      timestamp: Date.now(),
+      build: process.env.PHONE11_BUILD_SHA || "unknown",
+      service: "phone11-backend",
+    });
   });
 
   // FreeSWITCH REST callbacks (mod_xml_curl)
