@@ -72,6 +72,31 @@ wait_for_backend_health() {
   return 1
 }
 
+diagnose_public_api_route() {
+  echo "--- Public API route diagnostics ---"
+  echo "DNS for api.phone11.ai:"
+  getent ahosts api.phone11.ai || true
+  echo "Listening ports 80/443/3000/3001:"
+  sudo ss -ltnp 2>/dev/null | grep -E ':(80|443|3000|3001)\b' || ss -ltnp 2>/dev/null | grep -E ':(80|443|3000|3001)\b' || true
+  echo "Docker containers:"
+  docker ps --format '{{.Names}} {{.Image}} {{.Ports}}' || true
+  echo "Direct backend health:"
+  curl -fsS http://127.0.0.1:3000/api/health || true
+  echo
+  echo "Local HTTP Host-route health:"
+  curl -fsS -H 'Host: api.phone11.ai' http://127.0.0.1/api/health || true
+  echo
+  echo "Local HTTPS Host-route health:"
+  curl -k -fsS --resolve api.phone11.ai:443:127.0.0.1 https://api.phone11.ai/api/health || true
+  echo
+  echo "Nginx proxy snippets:"
+  if command -v nginx >/dev/null 2>&1; then
+    sudo nginx -T 2>/dev/null | grep -E -C 4 'api\.phone11\.ai|proxy_pass|127\.0\.0\.1:3000|localhost:3000' || true
+  else
+    echo "nginx command not found"
+  fi
+}
+
 wait_for_public_api_health() {
   echo "--- Verifying public api.phone11.ai route ---"
   local body=""
@@ -83,12 +108,14 @@ wait_for_public_api_health() {
       fi
       echo "ERROR: public API answered, but it is not serving this deploy commit."
       echo "Expected build marker: $GITHUB_SHA"
+      diagnose_public_api_route
       return 61
     fi
     echo "Public health not ready: $(cat /tmp/phone11-public-health-error.log 2>/dev/null || true)"
     sleep 3
   done
   echo "ERROR: public api.phone11.ai health endpoint did not become ready."
+  diagnose_public_api_route
   return 62
 }
 
