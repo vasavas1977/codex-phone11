@@ -46,7 +46,7 @@ COPY tsconfig.json ./
 
 # Build only the backend bundle. Avoid pnpm build here because npm lifecycle
 # scripts would run the Expo mobile prebuild inside the backend image.
-RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist
+RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs
 
 # --- Stage 3: Production ---
 FROM node:22-alpine AS production
@@ -79,10 +79,10 @@ ENV HOST=0.0.0.0
 
 # Health check
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=10s \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
 
 EXPOSE 3000/tcp
 
 USER cloudphone
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/index.mjs"]
