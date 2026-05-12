@@ -17,12 +17,18 @@ function firstEnv(...keys: string[]): string | undefined {
 }
 
 function getSslConfig(connectionString?: string): pg.PoolConfig["ssl"] {
-  if (process.env.PG_SSL === "false" || connectionString?.includes("sslmode=disable")) {
+  const sslMode = firstEnv("PG_SSL", "DB_SSL", "POSTGRES_SSL", "DATABASE_SSL")?.toLowerCase();
+  if (
+    sslMode === "false" ||
+    sslMode === "0" ||
+    sslMode === "disable" ||
+    connectionString?.includes("sslmode=disable")
+  ) {
     return false;
   }
 
   return {
-    rejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED === "true",
+    rejectUnauthorized: firstEnv("PG_SSL_REJECT_UNAUTHORIZED", "DB_SSL_REJECT_UNAUTHORIZED") === "true",
   };
 }
 
