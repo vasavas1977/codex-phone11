@@ -10,12 +10,13 @@ on:
       - '.github/workflows/phone11-ec2-redeploy-mobile-branch-v3.yml'
       - 'infra/docker/backend/Dockerfile'
       - 'infra/compose/docker-compose.prod.yml'
+      - 'server/_core/**'
       - 'server/pbx/db.ts'
       - 'ops/scripts/redeploy-mobile-branch.sh'
 
 env:
   AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
-  EC2_HOST: '43.210.122.111'
+  EC2_HOST: '43.209.112.208'
   EC2_USER: 'ubuntu'
   DEPLOY_CHECKOUT: '/opt/phone11ai/codex-phone11-deploy'
   PILOT_USER_ID: '1'
