@@ -36,6 +36,7 @@ diagnose_runtime_layout() {
 ENV_FILE=""
 for candidate in \
   "$DEPLOY_CHECKOUT/.env" \
+  "/opt/phone11ai/phone11ai/deploy/backend/.env" \
   "/opt/phone11ai/cloudphone11/infra/compose/.env" \
   "/opt/phone11ai/cloudphone11/.env" \
   "/opt/phone11ai/.env" \
@@ -52,6 +53,9 @@ fi
 cp "$ENV_FILE" /tmp/phone11-runtime.env
 echo "Using runtime env path: $ENV_FILE"
 
+echo "Runtime env keys:"
+awk -F= '/^[A-Za-z_][A-Za-z0-9_]*=/ {print $1}' /tmp/phone11-runtime.env | sort | sed -E 's/(SECRET|PASSWORD|TOKEN|KEY).*/<secret-key-redacted>/g' | uniq
+
 cd "$DEPLOY_CHECKOUT"
 if [ ! -d .git ]; then
   git init
@@ -66,6 +70,18 @@ export PHONE11_BUILD_SHA="$GITHUB_SHA"
 
 read_env_file() {
   awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' .env
+}
+
+read_first_env() {
+  local value=""
+  for key in "$@"; do
+    value="$(read_env_file "$key")"
+    if [ -n "$value" ]; then
+      echo "$value"
+      return 0
+    fi
+  done
+  return 0
 }
 
 wait_for_backend_running() {
@@ -98,6 +114,45 @@ wait_for_backend_health() {
   echo "ERROR: backend health endpoint did not become ready. Recent backend logs:"
   docker logs --tail=120 cp11-backend || true
   return 1
+}
+
+verify_backend_db_and_pilot() {
+  echo "--- Verifying backend DB env and pilot extension ---"
+  docker exec -i -e PILOT_USER_ID="${PILOT_USER_ID:-1}" cp11-backend node --input-type=module - <<'NODE'
+import pg from 'pg';
+const firstEnv = (...keys) => keys.map((key) => process.env[key]).find(Boolean);
+const pilotUserId = Number.parseInt(process.env.PILOT_USER_ID || '1', 10);
+const cfg = {
+  host: firstEnv('PG_HOST', 'DB_HOST', 'POSTGRES_HOST'),
+  port: Number(firstEnv('PG_PORT', 'DB_PORT', 'POSTGRES_PORT') || 5432),
+  user: firstEnv('PG_USER', 'DB_USER', 'POSTGRES_USER'),
+  password: firstEnv('PG_PASSWORD', 'DB_PASSWORD', 'POSTGRES_PASSWORD'),
+  database: firstEnv('PG_DATABASE', 'DB_NAME', 'DB_DATABASE', 'POSTGRES_DB'),
+};
+const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
+if (missing.length) throw new Error(`Missing backend DB env: ${missing.join(', ')}`);
+console.log(`Backend DB env present: host=${cfg.host}, user=${cfg.user}, database=${cfg.database}, password=<set>`);
+const pool = new pg.Pool({ ...cfg, ssl: false, connectionTimeoutMillis: 5000 });
+try {
+  const auth = await pool.query('select current_user, current_database()');
+  console.log(`Backend PG auth OK as ${auth.rows[0].current_user} on ${auth.rows[0].current_database}`);
+  const ext = await pool.query(`
+    SELECT e.extension_number, COALESCE(e.sip_domain, sa.sip_domain) AS sip_domain
+    FROM extensions e
+    LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+    LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+    WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
+      AND COALESCE(e.status, 'active') = 'active'
+      AND e.deleted_at IS NULL
+    ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
+    LIMIT 1
+  `, [pilotUserId]);
+  if (!ext.rows.length) throw new Error(`No pilot extension found for user ${pilotUserId}`);
+  console.log(`Pilot extension ready: ${ext.rows[0].extension_number} on ${ext.rows[0].sip_domain || 'sip.phone11.ai'}`);
+} finally {
+  await pool.end();
+}
+NODE
 }
 
 diagnose_public_api_route() {
@@ -147,9 +202,45 @@ wait_for_public_api_health() {
   return 62
 }
 
-DB_NAME_VALUE="$(read_env_file DB_NAME)"
-DB_USER_VALUE="$(read_env_file DB_USER)"
-DB_PASSWORD_VALUE="$(read_env_file DB_PASSWORD)"
+free_backend_port() {
+  echo "--- Freeing port 3000 for backend container ---"
+  docker rm -f cp11-backend >/dev/null 2>&1 || true
+  if command -v fuser >/dev/null 2>&1; then
+    sudo fuser -k 3000/tcp || true
+  else
+    sudo ss -ltnp 2>/dev/null | awk '/:3000 / {print}' | sed -nE 's/.*pid=([0-9]+).*/\1/p' | sort -u | xargs -r sudo kill || true
+  fi
+}
+
+deploy_standalone_backend() {
+  echo "--- Deploying standalone public API backend container ---"
+  docker build -f infra/docker/backend/Dockerfile -t "phone11-backend-public:$GITHUB_SHA" .
+  free_backend_port
+  docker run -d \
+    --name cp11-backend \
+    --restart always \
+    --network host \
+    --env-file .env \
+    -e PHONE11_BUILD_SHA="$GITHUB_SHA" \
+    -e PORT=3000 \
+    "phone11-backend-public:$GITHUB_SHA"
+  wait_for_backend_running
+  verify_backend_db_and_pilot
+  docker restart cp11-backend >/dev/null
+  wait_for_backend_running
+  wait_for_backend_health
+  wait_for_public_api_health
+  echo "Redeploy finished."
+}
+
+if ! docker inspect cp11-postgres >/dev/null 2>&1; then
+  deploy_standalone_backend
+  exit 0
+fi
+
+DB_NAME_VALUE="$(read_first_env DB_NAME DB_DATABASE POSTGRES_DB)"
+DB_USER_VALUE="$(read_first_env DB_USER POSTGRES_USER)"
+DB_PASSWORD_VALUE="$(read_first_env DB_PASSWORD POSTGRES_PASSWORD)"
 DB_NAME_VALUE="${DB_NAME_VALUE:-cloudphone11}"
 DB_USER_VALUE="${DB_USER_VALUE:-cloudphone11}"
 if [ -z "$DB_PASSWORD_VALUE" ]; then
@@ -165,44 +256,7 @@ SQL
 echo "--- Rebuilding backend with patched Dockerfile and DB config ---"
 docker compose --env-file .env -f infra/compose/docker-compose.prod.yml up -d --build --force-recreate backend
 wait_for_backend_running
-
-echo "--- Verifying backend DB env and pilot extension ---"
-docker exec -i -e PILOT_USER_ID="${PILOT_USER_ID:-1}" cp11-backend node --input-type=module - <<'NODE'
-import pg from 'pg';
-const pilotUserId = Number.parseInt(process.env.PILOT_USER_ID || '1', 10);
-const required = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'];
-const missing = required.filter((key) => !process.env[key]);
-if (missing.length) throw new Error(`Missing backend PG env: ${missing.join(', ')}`);
-console.log(`Backend PG env present: host=${process.env.PG_HOST}, user=${process.env.PG_USER}, database=${process.env.PG_DATABASE}, password=<set>`);
-const pool = new pg.Pool({
-  host: process.env.PG_HOST,
-  port: Number(process.env.PG_PORT || 5432),
-  user: process.env.PG_USER,
-  password: process.env.PG_PASSWORD,
-  database: process.env.PG_DATABASE,
-  ssl: false,
-  connectionTimeoutMillis: 5000,
-});
-try {
-  const auth = await pool.query('select current_user, current_database()');
-  console.log(`Backend PG auth OK as ${auth.rows[0].current_user} on ${auth.rows[0].current_database}`);
-  const ext = await pool.query(`
-    SELECT e.extension_number, COALESCE(e.sip_domain, sa.sip_domain) AS sip_domain
-    FROM extensions e
-    LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
-    LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
-    WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
-      AND COALESCE(e.status, 'active') = 'active'
-      AND e.deleted_at IS NULL
-    ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
-    LIMIT 1
-  `, [pilotUserId]);
-  if (!ext.rows.length) throw new Error(`No pilot extension found for user ${pilotUserId}`);
-  console.log(`Pilot extension ready: ${ext.rows[0].extension_number} on ${ext.rows[0].sip_domain || 'sip.phone11.ai'}`);
-} finally {
-  await pool.end();
-}
-NODE
+verify_backend_db_and_pilot
 
 docker restart cp11-backend >/dev/null
 wait_for_backend_running
