@@ -34,6 +34,7 @@ fi
 git fetch --depth 1 origin "$GITHUB_SHA"
 git checkout --force FETCH_HEAD
 cp /tmp/phone11-runtime.env .env
+export PHONE11_BUILD_SHA="$GITHUB_SHA"
 
 read_env_file() {
   awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' .env
@@ -69,6 +70,26 @@ wait_for_backend_health() {
   echo "ERROR: backend health endpoint did not become ready. Recent backend logs:"
   docker logs --tail=120 cp11-backend || true
   return 1
+}
+
+wait_for_public_api_health() {
+  echo "--- Verifying public api.phone11.ai route ---"
+  local body=""
+  for _ in $(seq 1 20); do
+    if body="$(curl -fsS --connect-timeout 5 --max-time 12 https://api.phone11.ai/api/health 2>/tmp/phone11-public-health-error.log)"; then
+      echo "Public health: $body"
+      if [[ "$body" == *"$GITHUB_SHA"* ]]; then
+        return 0
+      fi
+      echo "ERROR: public API answered, but it is not serving this deploy commit."
+      echo "Expected build marker: $GITHUB_SHA"
+      return 61
+    fi
+    echo "Public health not ready: $(cat /tmp/phone11-public-health-error.log 2>/dev/null || true)"
+    sleep 3
+  done
+  echo "ERROR: public api.phone11.ai health endpoint did not become ready."
+  return 62
 }
 
 DB_NAME_VALUE="$(read_env_file DB_NAME)"
@@ -131,4 +152,5 @@ NODE
 docker restart cp11-backend >/dev/null
 wait_for_backend_running
 wait_for_backend_health
+wait_for_public_api_health
 echo "Redeploy finished."
