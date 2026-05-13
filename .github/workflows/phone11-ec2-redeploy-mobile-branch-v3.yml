@@ -59,41 +59,6 @@ jobs:
           echo "az=$AZ" >> "$GITHUB_OUTPUT"
           echo "Found EC2 instance $INSTANCE_ID in $AZ"
 
-      - name: Grant deploy user RDS secret read policy
-        run: |
-          cat > /tmp/phone11-rds-secret-read-policy.json <<'JSON'
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Action": [
-                  "secretsmanager:GetSecretValue",
-                  "secretsmanager:ListSecrets",
-                  "secretsmanager:DescribeSecret"
-                ],
-                "Resource": "*"
-              },
-              {
-                "Effect": "Allow",
-                "Action": [
-                  "rds:DescribeDBInstances"
-                ],
-                "Resource": "*"
-              }
-            ]
-          }
-          JSON
-          if aws iam put-user-policy \
-            --user-name phone11-github-deploy \
-            --policy-name Phone11RdsSecretRead \
-            --policy-document file:///tmp/phone11-rds-secret-read-policy.json; then
-            echo "Attached Phone11RdsSecretRead inline policy to phone11-github-deploy."
-          else
-            echo "ERROR: Could not attach the inline policy. The AWS credentials need iam:PutUserPolicy, or an AWS admin must add the policy in the console."
-            exit 42
-          fi
-
       - name: Prepare RDS master secret for deploy
         id: rds_secret
         run: |
