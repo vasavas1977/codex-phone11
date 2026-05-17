@@ -1,17 +1,15 @@
 # Phone11 Mobile Branch Deploy Status
 
-- Time UTC: 2026-05-17T14:44:28+00:00
-- Workflow commit: 8cac0c2e4f9ec547dbc8488e99f07cb321f9d9f2
+- Time UTC: 2026-05-17T15:02:46+00:00
+- Workflow commit: 9cb409e85b39e4564623b33f59a485f6014d265c
 - Branch: codex/phone11-mobile-pjsip-20260506
 - EC2 host: 43.209.112.208
 - Pilot user id: 1
-- Runtime DB host: phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com
-- Runtime DB region: ap-southeast-7
 - Result: failure
 - Exit code: 41
 
 ## Sanitized output
 ```text
 ERROR: RDS master secret is not available; skipping deploy to avoid the known phone11ai DB password failure.
-Set PHONE11_RDS_MASTER_SECRET_ARN or PHONE11_RDS_MASTER_SECRET_JSON, then rerun this workflow.
+Grant phone11-github-deploy Secrets Manager read access, then rerun this workflow.
 ```
