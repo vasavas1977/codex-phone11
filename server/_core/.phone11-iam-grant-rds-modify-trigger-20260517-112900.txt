@@ -1,0 +1,3 @@
+Trigger scoped IAM grant for Phone11 RDS password rotation.
+
+Scope: rds:ModifyDBInstance only on arn:aws:rds:ap-southeast-7:326786006484:db:phone11ai-production-postgres for IAM user phone11-github-deploy.
