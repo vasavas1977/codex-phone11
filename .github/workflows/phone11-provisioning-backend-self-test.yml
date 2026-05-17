@@ -1,0 +1,228 @@
+name: Phone11 Provisioning Backend Self-Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-provisioning-backend-self-test.yml'
+      - 'server/_core/.phone11-provisioning-self-test-trigger-*'
+      - 'server/db.ts'
+      - 'server/phone-provisioning.ts'
+      - 'server/_core/context.ts'
+      - 'server/_core/sdk.ts'
+      - 'server/_core/trpc.ts'
+      - 'server/routers.ts'
+
+concurrency:
+  group: phone11-provisioning-backend-self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: '43.209.112.208'
+  EC2_USER: 'ubuntu'
+  PILOT_USER_ID: '1'
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  provisioning-self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test live backend provisioning
+        shell: bash
+        run: |
+          set +e
+          LOG=/tmp/phone11-provisioning-self-test.log
+          STATUS=0
+          INSTANCE_ID=''
+          AZ=''
+          exec > >(tee "$LOG") 2>&1
+
+          sanitize_log() {
+            sed -E \
+              -e 's#(Authorization: Bearer )[A-Za-z0-9._~+/=-]+#\1<redacted>#g' \
+              -e 's#(app_session_id=)[A-Za-z0-9._~+/=-]+#\1<redacted>#g' \
+              -e 's#(PGPASSWORD|DB_PASSWORD|POSTGRES_PASSWORD|JWT_SECRET|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN)=([^[:space:]]+)#\1=<redacted>#g' \
+              -e 's#(password|secret|token)[^[:space:]]*#<redacted>#Ig' \
+              "$LOG" 2>/dev/null || true
+          }
+
+          finish() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 Provisioning Backend Self-Test Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- EC2 host: $EC2_HOST"
+              echo "- EC2 instance: ${INSTANCE_ID:-not-set}"
+              echo "- Pilot user id: $PILOT_USER_ID"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sanitize_log
+              echo '```'
+            } > ops/phone11-provisioning-self-test-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-provisioning-self-test-status.md
+            if git diff --cached --quiet; then
+              echo 'No status file changes to commit.'
+            else
+              git commit -m "Update Phone11 provisioning self-test status"
+              git push
+            fi
+            exit "$STATUS"
+          }
+          trap finish EXIT
+
+          echo '=== Phone11 provisioning backend self-test ==='
+          echo "Time: $(date -u -Iseconds)"
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            STATUS=30
+            exit 30
+          fi
+
+          echo '--- Locate EC2 ---'
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          if [ $? -ne 0 ]; then STATUS=31; exit 31; fi
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            STATUS=32
+            exit 32
+          fi
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '--- Prepare temporary SSH access ---'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+          if [ $? -ne 0 ]; then STATUS=33; exit 33; fi
+
+          echo '--- Prepare remote live-backend test script ---'
+          cat >/tmp/phone11-provisioning-self-test-remote.sh <<'REMOTE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          echo '--- Runtime containers ---'
+          docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -E '^cp11-backend\b|phone11' || true
+
+          echo '--- Public and local health ---'
+          curl -fsS --connect-timeout 5 --max-time 12 https://api.phone11.ai/api/health
+          echo
+          curl -fsS --connect-timeout 5 --max-time 12 http://127.0.0.1:3000/api/health
+          echo
+
+          echo '--- Backend env keys, names only ---'
+          docker exec cp11-backend sh -lc 'env | sort | awk -F= '\''/^(DB_HOST|DB_NAME|DB_USER|DB_PASSWORD|JWT_SECRET|SIP_DOMAIN|VITE_APP_ID)=/ { if ($1 ~ /(PASSWORD|SECRET|TOKEN|KEY)/) print $1"=<set>"; else print $1"=<set>" }'\'''
+
+          echo '--- Authenticated provisioning API self-test ---'
+          docker exec -i -e PILOT_USER_ID="${PILOT_USER_ID:-1}" cp11-backend node --input-type=module - <<'NODE'
+          import pg from 'pg';
+          import { SignJWT } from 'jose';
+          import { createTRPCClient, httpBatchLink } from '@trpc/client';
+          import superjson from 'superjson';
+
+          const firstEnv = (...keys) => keys.map((key) => process.env[key]).find((value) => value && value.length > 0);
+          const pilotUserId = Number.parseInt(process.env.PILOT_USER_ID || '1', 10);
+          const cfg = {
+            host: firstEnv('PG_HOST', 'DB_HOST', 'POSTGRES_HOST'),
+            port: Number(firstEnv('PG_PORT', 'DB_PORT', 'POSTGRES_PORT') || 5432),
+            user: firstEnv('PG_USER', 'DB_USER', 'POSTGRES_USER'),
+            password: firstEnv('PG_PASSWORD', 'DB_PASSWORD', 'POSTGRES_PASSWORD'),
+            database: firstEnv('PG_DATABASE', 'DB_NAME', 'DB_DATABASE', 'POSTGRES_DB'),
+          };
+          const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
+          if (missing.length) throw new Error(`Missing backend DB env: ${missing.join(', ')}`);
+          const jwtSecret = firstEnv('JWT_SECRET');
+          if (!jwtSecret) throw new Error('JWT_SECRET is missing; app auth cannot be tested');
+          const appId = firstEnv('VITE_APP_ID') || '';
+          const sslMode = firstEnv('PG_SSL', 'DB_SSL', 'POSTGRES_SSL', 'DATABASE_SSL')?.toLowerCase();
+          const ssl = sslMode === 'false' || sslMode === '0' || sslMode === 'disable' ? false : { rejectUnauthorized: false };
+
+          console.log(`DB env present: host=${cfg.host}, user=${cfg.user}, database=${cfg.database}, ssl=${ssl ? 'enabled' : 'disabled'}, password=<set>`);
+          const pool = new pg.Pool({ ...cfg, ssl, connectionTimeoutMillis: 5000, max: 2 });
+          let user;
+          try {
+            const auth = await pool.query('select current_user, current_database()');
+            console.log(`DB auth OK: current_user=${auth.rows[0].current_user}, database=${auth.rows[0].current_database}`);
+            const userResult = await pool.query('select id, "openId", name, email, role from users where id = $1 limit 1', [pilotUserId]);
+            if (!userResult.rows.length) throw new Error(`No users row found for id ${pilotUserId}`);
+            user = userResult.rows[0];
+            if (!user.openId) throw new Error(`User ${pilotUserId} has no openId`);
+            console.log(`Pilot user loaded: id=${user.id}, email=${user.email || '<none>'}, role=${user.role || '<none>'}, openId=<set>`);
+          } finally {
+            await pool.end();
+          }
+
+          const token = await new SignJWT({
+            openId: user.openId,
+            appId,
+            name: user.name || user.email || `User ${user.id}`,
+          })
+            .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+            .setExpirationTime(Math.floor((Date.now() + 365 * 24 * 60 * 60 * 1000) / 1000))
+            .sign(new TextEncoder().encode(jwtSecret));
+
+          const client = createTRPCClient({
+            links: [
+              httpBatchLink({
+                url: 'http://127.0.0.1:3000/api/trpc',
+                transformer: superjson,
+                headers() {
+                  return { Authorization: `Bearer ${token}` };
+                },
+              }),
+            ],
+          });
+
+          const me = await client.auth.me.query();
+          if (!me?.id || me.id !== pilotUserId) {
+            throw new Error(`auth.me returned wrong user: ${JSON.stringify({ id: me?.id ?? null })}`);
+          }
+          console.log(`auth.me OK: id=${me.id}, email=${me.email || '<none>'}, openId=<set>`);
+
+          const config = await client.phone.ensurePilotConfig.mutate();
+          if (!config?.configured || !config?.sip?.username || !config?.sip?.password || !config?.sip?.domain) {
+            throw new Error('phone.ensurePilotConfig did not return a complete SIP account');
+          }
+          console.log(`ensurePilotConfig OK: extension=${config.extension?.number || '<missing>'}, username=${config.sip.username}, domain=${config.sip.domain}, port=${config.sip.port}, transport=${config.sip.transport}, password=<set>`);
+
+          const getConfig = await client.phone.getConfig.query();
+          if (!getConfig?.configured || !getConfig?.sip?.username || !getConfig?.sip?.password || !getConfig?.sip?.domain) {
+            throw new Error('phone.getConfig did not return the assigned SIP account after provisioning');
+          }
+          console.log(`getConfig OK: extension=${getConfig.extension?.number || '<missing>'}, username=${getConfig.sip.username}, domain=${getConfig.sip.domain}, port=${getConfig.sip.port}, transport=${getConfig.sip.transport}, password=<set>`);
+          NODE
+REMOTE
+
+          echo '--- Run remote live-backend test ---'
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-provisioning-self-test-remote.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-provisioning-self-test-remote.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-provisioning-self-test-remote.sh"
+          STATUS=$?
+          if [ "$STATUS" = '0' ]; then
+            echo 'Provisioning backend self-test succeeded.'
+          else
+            echo "ERROR: provisioning backend self-test failed with status $STATUS."
+          fi
