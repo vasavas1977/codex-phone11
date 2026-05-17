@@ -1,0 +1,189 @@
+name: Phone11 RDS Align and Backend Redeploy V2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-rds-align-and-redeploy-v2.yml'
+      - 'server/_core/.phone11-rds-align-v2-trigger-*'
+      - 'ops/scripts/redeploy-mobile-branch.sh'
+
+concurrency:
+  group: phone11-rds-align-and-redeploy-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: '43.209.112.208'
+  EC2_USER: 'ubuntu'
+  DEPLOY_CHECKOUT: '/opt/phone11ai/codex-phone11-deploy'
+  PILOT_USER_ID: '1'
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Align RDS password and redeploy backend with full sanitized status
+        id: repair
+        shell: bash
+        run: |
+          set +e
+          LOG=/tmp/phone11-rds-align-v2.log
+          STATUS=0
+          DB_HOST=''
+          DB_REGION=''
+          DB_NAME=''
+          DB_USER='<db-user>'
+          DB_INSTANCE_ID=''
+          ENV_FILE=''
+          exec > >(tee "$LOG") 2>&1
+
+          sanitize_log() {
+            sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(password authentication failed for user )"[^"]+"#\1"<db-user>"#g; s#(PGPASSWORD|DB_PASSWORD|POSTGRES_PASSWORD|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)=([^[:space:]]+)#\1=<redacted>#g; s#(master-user-password )[[:graph:]]+#\1<redacted>#g; s#(password|secret)[^[:space:]]*#<redacted>#Ig' "$LOG" 2>/dev/null || true
+          }
+
+          finish() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 RDS Align and Redeploy V2 Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- EC2 host: $EC2_HOST"
+              echo "- RDS instance: ${DB_INSTANCE_ID:-not-set}"
+              echo "- Runtime DB host: ${DB_HOST:-not-set}"
+              echo "- Runtime DB region: ${DB_REGION:-not-set}"
+              echo "- Runtime DB name: ${DB_NAME:-not-set}"
+              echo "- Runtime DB user: <db-user>"
+              echo "- Runtime env file: ${ENV_FILE:-not-set}"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sanitize_log
+              echo '```'
+            } > ops/phone11-rds-align-redeploy-v2-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-rds-align-redeploy-v2-status.md
+            if git diff --cached --quiet; then
+              echo 'No status file changes to commit.'
+            else
+              git commit -m "Update Phone11 RDS align redeploy v2 status"
+              git push
+            fi
+            exit "$STATUS"
+          }
+          trap finish EXIT
+
+          echo '=== Phone11 RDS align and backend redeploy V2 ==='
+          echo "Time: $(date -u -Iseconds)"
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            STATUS=30
+            exit 30
+          fi
+
+          echo '--- Locating EC2 instance ---'
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          if [ $? -ne 0 ]; then STATUS=31; exit 31; fi
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            STATUS=32
+            exit 32
+          fi
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '--- Preparing temporary SSH access ---'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+          if [ $? -ne 0 ]; then STATUS=33; exit 33; fi
+
+          echo '--- Reading backend DB config from EC2 .env ---'
+          REMOTE_ENV=$(ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'for candidate in "/opt/phone11ai/codex-phone11-deploy/.env" "/opt/phone11ai/phone11ai/deploy/backend/.env" "/opt/phone11ai/cloudphone11/infra/compose/.env" "/opt/phone11ai/cloudphone11/.env" "/opt/phone11ai/.env" "/home/ubuntu/phone11ai/.env" "/home/ubuntu/cloudphone11/.env" "/home/ubuntu/codex-phone11/.env"; do if [ -f "$candidate" ]; then echo "ENV_FILE=$candidate"; awk -F= '\''/^(PG_HOST|DB_HOST|POSTGRES_HOST|PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB|PG_USER|DB_USER|POSTGRES_USER|PG_PASSWORD|DB_PASSWORD|POSTGRES_PASSWORD)=/ {print $1"="$2}'\'' "$candidate"; exit 0; fi; done')
+          if [ $? -ne 0 ]; then STATUS=34; exit 34; fi
+          DB_HOST=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_HOST|DB_HOST|POSTGRES_HOST)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_NAME=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_USER_REAL=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_USER|DB_USER|POSTGRES_USER)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_PASSWORD=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_PASSWORD|DB_PASSWORD|POSTGRES_PASSWORD)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_REGION=$(printf '%s' "$DB_HOST" | sed -nE 's/.*\.([a-z]{2}-[a-z-]+-[0-9]+)\.rds\.amazonaws\.com.*/\1/p')
+          ENV_FILE=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^ENV_FILE=/ {print $2; exit}' | tr -d '\r')
+          if [ -z "$DB_HOST" ] || [ -z "$DB_NAME" ] || [ -z "$DB_USER_REAL" ] || [ -z "$DB_PASSWORD" ] || [ -z "$DB_REGION" ]; then
+            echo 'ERROR: Missing required DB env values from EC2.'
+            printf '%s\n' "$REMOTE_ENV" | sed -E 's/(PG_PASSWORD|DB_PASSWORD|POSTGRES_PASSWORD)=.*/\1=<redacted>/g; s/(PG_USER|DB_USER|POSTGRES_USER)=.*/\1=<db-user>/g'
+            STATUS=35
+            exit 35
+          fi
+          echo "::add-mask::$DB_PASSWORD"
+          echo "Backend DB config loaded from $ENV_FILE"
+          echo "DB host: $DB_HOST"
+          echo "DB region: $DB_REGION"
+          echo "DB name: $DB_NAME"
+          echo 'DB user: <db-user>'
+
+          echo '--- Finding RDS instance ---'
+          DB_INSTANCE_ID=$(aws rds describe-db-instances --region "$DB_REGION" --query "DBInstances[?Endpoint.Address=='$DB_HOST'].DBInstanceIdentifier | [0]" --output text)
+          if [ $? -ne 0 ]; then STATUS=36; exit 36; fi
+          MASTER_USERNAME=$(aws rds describe-db-instances --region "$DB_REGION" --db-instance-identifier "$DB_INSTANCE_ID" --query 'DBInstances[0].MasterUsername' --output text)
+          if [ $? -ne 0 ]; then STATUS=37; exit 37; fi
+          if [ -z "$DB_INSTANCE_ID" ] || [ "$DB_INSTANCE_ID" = 'None' ]; then
+            echo "ERROR: RDS instance not found for $DB_HOST"
+            STATUS=38
+            exit 38
+          fi
+          echo "RDS instance: $DB_INSTANCE_ID"
+          if [ "$MASTER_USERNAME" != "$DB_USER_REAL" ]; then
+            echo 'ERROR: RDS master username does not match backend DB user. Refusing reset.'
+            STATUS=39
+            exit 39
+          fi
+
+          echo '--- Aligning RDS master password to backend env password ---'
+          aws rds modify-db-instance --region "$DB_REGION" --db-instance-identifier "$DB_INSTANCE_ID" --master-user-password "$DB_PASSWORD" --apply-immediately >/tmp/phone11-rds-modify.json
+          modify_status=$?
+          if [ "$modify_status" != '0' ]; then
+            echo "ERROR: RDS password alignment failed with status $modify_status."
+            STATUS=40
+            exit 40
+          fi
+          echo 'Waiting for RDS instance to become available.'
+          aws rds wait db-instance-available --region "$DB_REGION" --db-instance-identifier "$DB_INSTANCE_ID"
+          wait_status=$?
+          if [ "$wait_status" != '0' ]; then
+            echo "ERROR: RDS wait failed with status $wait_status."
+            STATUS=41
+            exit 41
+          fi
+          echo 'RDS password alignment completed.'
+
+          echo '--- Redeploying backend and verifying pilot extension ---'
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no ops/scripts/redeploy-mobile-branch.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-redeploy-mobile-branch.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION' GITHUB_SHA='$GITHUB_SHA' DEPLOY_CHECKOUT='$DEPLOY_CHECKOUT' PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-redeploy-mobile-branch.sh"
+          STATUS=$?
+          if [ "$STATUS" = '0' ]; then
+            echo 'Backend redeploy and pilot verification succeeded.'
+          else
+            echo "ERROR: Backend redeploy failed with status $STATUS."
+          fi
