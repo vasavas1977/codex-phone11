@@ -7,7 +7,7 @@ on:
       - codex/phone11-mobile-pjsip-20260506
     paths:
       - '.github/workflows/phone11-provisioning-backend-self-test.yml'
-      - 'server/_core/.phone11-provisioning-self-test-trigger-*'
+      - 'ops/phone11-provisioning-self-test-trigger-*'
       - 'server/db.ts'
       - 'server/phone-provisioning.ts'
       - 'server/_core/context.ts'
@@ -19,6 +19,9 @@ concurrency:
   group: phone11-provisioning-backend-self-test-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 env:
   AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
   EC2_HOST: '43.209.112.208'
@@ -28,11 +31,9 @@ env:
   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
   AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
 
-permissions:
-  contents: write
-
 jobs:
   provisioning-self-test:
+    name: Test live backend provisioning
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -41,7 +42,7 @@ jobs:
       - name: Test live backend provisioning
         shell: bash
         run: |
-          set +e
+          set -Eeuo pipefail
           LOG=/tmp/phone11-provisioning-self-test.log
           STATUS=0
           INSTANCE_ID=''
@@ -57,7 +58,7 @@ jobs:
               "$LOG" 2>/dev/null || true
           }
 
-          finish() {
+          write_status() {
             local result='success'
             if [ "$STATUS" != '0' ]; then result='failure'; fi
             git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
@@ -86,29 +87,26 @@ jobs:
             if git diff --cached --quiet; then
               echo 'No status file changes to commit.'
             else
-              git commit -m "Update Phone11 provisioning self-test status"
-              git push
+              git commit -m "Update Phone11 provisioning self-test status" || true
+              git push || true
             fi
-            exit "$STATUS"
           }
-          trap finish EXIT
+
+          trap 'STATUS=$?; write_status; exit $STATUS' EXIT
 
           echo '=== Phone11 provisioning backend self-test ==='
           echo "Time: $(date -u -Iseconds)"
           if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
             echo 'ERROR: AWS credentials are not configured.'
-            STATUS=30
             exit 30
           fi
 
           echo '--- Locate EC2 ---'
           INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
-          if [ $? -ne 0 ]; then STATUS=31; exit 31; fi
           INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
           AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
             echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
-            STATUS=32
             exit 32
           fi
           echo "Found EC2 instance $INSTANCE_ID in $AZ"
@@ -118,12 +116,11 @@ jobs:
           chmod 700 ~/.ssh
           ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions >/dev/null 2>&1
           aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
-          if [ $? -ne 0 ]; then STATUS=33; exit 33; fi
 
           echo '--- Prepare remote live-backend test script ---'
           cat >/tmp/phone11-provisioning-self-test-remote.sh <<'REMOTE'
           #!/usr/bin/env bash
-          set -euo pipefail
+          set -Eeuo pipefail
 
           echo '--- Runtime containers ---'
           docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -E '^cp11-backend\b|phone11' || true
@@ -135,7 +132,7 @@ jobs:
           echo
 
           echo '--- Backend env keys, names only ---'
-          docker exec cp11-backend sh -lc 'env | sort | awk -F= '\''/^(DB_HOST|DB_NAME|DB_USER|DB_PASSWORD|JWT_SECRET|SIP_DOMAIN|VITE_APP_ID)=/ { if ($1 ~ /(PASSWORD|SECRET|TOKEN|KEY)/) print $1"=<set>"; else print $1"=<set>" }'\'''
+          docker exec cp11-backend sh -lc 'env | sort | awk -F= '\''/^(DB_HOST|DB_NAME|DB_USER|DB_PASSWORD|JWT_SECRET|SIP_DOMAIN|VITE_APP_ID)=/ { print $1"=<set>" }'\'''
 
           echo '--- Authenticated provisioning API self-test ---'
           docker exec -i -e PILOT_USER_ID="${PILOT_USER_ID:-1}" cp11-backend node --input-type=module - <<'NODE'
@@ -215,14 +212,17 @@ jobs:
           }
           console.log(`getConfig OK: extension=${getConfig.extension?.number || '<missing>'}, username=${getConfig.sip.username}, domain=${getConfig.sip.domain}, port=${getConfig.sip.port}, transport=${getConfig.sip.transport}, password=<set>`);
           NODE
-REMOTE
+          REMOTE
 
           echo '--- Run remote live-backend test ---'
           scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-provisioning-self-test-remote.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-provisioning-self-test-remote.sh"
+          set +e
           ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-provisioning-self-test-remote.sh"
           STATUS=$?
+          set -e
           if [ "$STATUS" = '0' ]; then
             echo 'Provisioning backend self-test succeeded.'
           else
             echo "ERROR: provisioning backend self-test failed with status $STATUS."
           fi
+          exit "$STATUS"
