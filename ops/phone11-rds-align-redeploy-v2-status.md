@@ -20,13 +20,8 @@ Time: 2026-05-17T04:11:31+00:00
 --- Locating EC2 instance ---
 Found EC2 instance i-0cc8f248b08c5f2fb in ap-southeast-7b
 --- Preparing temporary SSH access ---
-{
-    "RequestId": "79d30af1-036f-4aaf-82ef-45508c486a19",
-    "Success": true
-}
+EC2 Instance Connect key accepted.
 --- Reading backend DB config from EC2 .env ---
-Warning: Permanently added '43.209.112.208' (ED25519) to the list of known hosts.
-::add-mask::Xk9mPv2wRtN7qYhL4bJc
 Backend DB config loaded from /opt/phone11ai/codex-phone11-deploy/.env
 DB host: phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com
 DB region: ap-southeast-7
@@ -34,8 +29,7 @@ DB name: phone11ai
 DB user: <db-user>
 --- Finding RDS instance ---
 RDS instance: phone11ai-production-postgres
---- Aligning RDS master <redacted> to backend env <redacted> ---
-
+--- Aligning RDS master password to backend env password ---
 aws: [ERROR]: An error occurred (AccessDenied) when calling the ModifyDBInstance operation: User: arn:aws:iam::326786006484:user/phone11-github-deploy is not authorized to perform: rds:ModifyDBInstance on resource: arn:aws:rds:ap-southeast-7:326786006484:db:phone11ai-production-postgres because no identity-based policy allows the rds:ModifyDBInstance action
-ERROR: RDS <redacted> alignment failed with status 254.
+ERROR: RDS password alignment failed with status 254.
 ```
