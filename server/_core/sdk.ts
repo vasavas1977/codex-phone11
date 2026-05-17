@@ -193,7 +193,7 @@ class SDKServer {
       });
       const { openId, appId, name } = payload as Record<string, unknown>;
 
-      if (!isNonEmptyString(openId) || !isNonEmptyString(appId) || typeof name !== "string") {
+      if (!isNonEmptyString(openId) || typeof appId !== "string" || typeof name !== "string") {
         console.warn("[Auth] Session payload missing required fields");
         return null;
       }
