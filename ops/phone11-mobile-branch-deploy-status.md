@@ -1,12 +1,10 @@
 # Phone11 Mobile Branch Deploy Status
 
-- Time UTC: 2026-05-17T14:26:20+00:00
-- Workflow commit: bf9dcf70dced3498fca7981dc3e8f91016d88c39
+- Time UTC: 2026-05-17T14:26:52+00:00
+- Workflow commit: 6dc6f130565bacbadadcb84f7b52b7be52f1bd3c
 - Branch: codex/phone11-mobile-pjsip-20260506
 - EC2 host: 43.209.112.208
 - Pilot user id: 1
-- Runtime DB host: phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com
-- Runtime DB region: ap-southeast-7
 - Result: failure
 - Exit code: 41
 
