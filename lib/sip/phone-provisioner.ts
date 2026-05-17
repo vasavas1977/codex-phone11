@@ -3,13 +3,11 @@ import { useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
 import { useSipAccountStore } from "./account-store";
-import { sipEngine } from "./engine";
 import { sipAccountFromPhoneConfig } from "./provisioning";
 
 export function PhoneProvisioner() {
   const { isAuthenticated, loading } = useAuth();
   const account = useSipAccountStore((s) => s.account);
-  const registrationState = useSipAccountStore((s) => s.registrationState);
   const setAccount = useSipAccountStore((s) => s.setAccount);
 
   const configQuery = trpc.phone.getConfig.useQuery(undefined, {
@@ -29,17 +27,14 @@ export function PhoneProvisioner() {
       account?.transport === nextAccount.transport &&
       account?.password === nextAccount.password;
 
-    if (unchanged) {
-      if (registrationState !== "registered" && registrationState !== "registering") {
-        sipEngine.restart().catch((error) => console.error("[PhoneProvisioner] Failed to restart SIP:", error));
-      }
-      return;
-    }
+    if (unchanged) return;
 
-    setAccount(nextAccount)
-      .then(() => sipEngine.restart())
-      .catch((error) => console.error("[PhoneProvisioner] Failed to apply SIP config:", error));
-  }, [account, configQuery.data, registrationState, setAccount]);
+    // Keep root startup safe: provisioning may refresh while the app is launching,
+    // but the native SIP stack should only start from an explicit sync/call path.
+    setAccount(nextAccount).catch((error) =>
+      console.error("[PhoneProvisioner] Failed to store SIP config:", error),
+    );
+  }, [account, configQuery.data, setAccount]);
 
   return null;
 }
