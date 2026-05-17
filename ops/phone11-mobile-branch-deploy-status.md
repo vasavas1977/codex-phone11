@@ -1,6 +1,6 @@
 # Phone11 Mobile Branch Deploy Status
 
-- Time UTC: 2026-05-17T04:11:30+00:00
+- Time UTC: 2026-05-17T04:11:33+00:00
 - Workflow commit: 96716de36523dc7ffd13a6418a6cc152957f5f81
 - Branch: codex/phone11-mobile-pjsip-20260506
 - EC2 host: 43.209.112.208
@@ -11,5 +11,5 @@
 ## Sanitized output
 ```text
 ERROR: RDS master secret is not available; skipping deploy to avoid the known phone11ai DB password failure.
-Grant phone11-github-deploy Secrets Manager read access, then rerun this workflow.
+Set PHONE11_RDS_MASTER_SECRET_ARN or PHONE11_RDS_MASTER_SECRET_JSON, then rerun this workflow.
 ```
