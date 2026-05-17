@@ -1,0 +1,131 @@
+name: Phone11 DB Read-only Inventory
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-db-readonly-inventory.yml'
+      - 'server/_core/.phone11-db-inventory-trigger-*'
+
+concurrency:
+  group: phone11-db-readonly-inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: '43.209.112.208'
+  EC2_USER: 'ubuntu'
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect non-secret DB inventory
+        shell: bash
+        run: |
+          set +e
+          mkdir -p ops
+          OUT=/tmp/phone11-db-readonly-inventory.md
+          {
+            echo '# Phone11 DB Read-only Inventory'
+            echo ''
+            echo "- Time UTC: $(date -u -Iseconds)"
+            echo "- Branch: $GITHUB_REF_NAME"
+            echo "- Workflow commit: $GITHUB_SHA"
+            echo "- EC2 host: $EC2_HOST"
+            echo ''
+          } > "$OUT"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.' >> "$OUT"
+            cp "$OUT" ops/phone11-db-readonly-inventory.md
+            exit 0
+          fi
+
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json 2>/tmp/phone11-inventory-aws-error.log)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          echo "## EC2" >> "$OUT"
+          echo "- Instance id: ${INSTANCE_ID:-not-found}" >> "$OUT"
+          echo "- Availability zone: ${AZ:-not-found}" >> "$OUT"
+          echo '' >> "$OUT"
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions >/dev/null 2>&1
+          if [ -n "$INSTANCE_ID" ] && [ -n "$AZ" ]; then
+            aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub" >/tmp/phone11-eic.log 2>&1
+            REMOTE_ENV=$(ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'for candidate in "/opt/phone11ai/codex-phone11-deploy/.env" "/opt/phone11ai/phone11ai/deploy/backend/.env" "/opt/phone11ai/cloudphone11/infra/compose/.env" "/opt/phone11ai/cloudphone11/.env" "/opt/phone11ai/.env" "/home/ubuntu/phone11ai/.env" "/home/ubuntu/cloudphone11/.env" "/home/ubuntu/codex-phone11/.env"; do if [ -f "$candidate" ]; then echo "ENV_FILE=$candidate"; awk -F= '\''/^(PG_HOST|DB_HOST|POSTGRES_HOST|PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB|PG_USER|DB_USER|POSTGRES_USER)=/ {print $1"="$2}'\'' "$candidate"; exit 0; fi; done' 2>/tmp/phone11-remote-env-error.log || true)
+            REMOTE_KEYS=$(ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'for candidate in /opt/phone11ai/codex-phone11-deploy/.env /opt/phone11ai/phone11ai/deploy/backend/.env /opt/phone11ai/cloudphone11/infra/compose/.env /opt/phone11ai/cloudphone11/.env /opt/phone11ai/.env /home/ubuntu/phone11ai/.env /home/ubuntu/cloudphone11/.env /home/ubuntu/codex-phone11/.env; do if [ -f "$candidate" ]; then awk -F= '\''/^(RDS|PG|POSTGRES|DB|DATABASE|MASTER|ADMIN).*=/ {print FILENAME":"$1}'\'' "$candidate"; fi; done' 2>/tmp/phone11-remote-key-error.log || true)
+          else
+            REMOTE_ENV=''
+            REMOTE_KEYS=''
+          fi
+
+          DB_HOST=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_HOST|DB_HOST|POSTGRES_HOST)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_REGION=$(printf '%s' "$DB_HOST" | sed -nE 's/.*\.([a-z]{2}-[a-z-]+-[0-9]+)\.rds\.amazonaws\.com.*/\1/p')
+
+          echo '## Runtime backend env, sanitized' >> "$OUT"
+          printf '%s\n' "$REMOTE_ENV" | sed -E 's/(PG_USER|DB_USER|POSTGRES_USER)=.*/\1=<db-user>/g; s/(PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB)=.*/\1=<db-name>/g' >> "$OUT"
+          echo '' >> "$OUT"
+          echo '## Candidate DB-related env keys, names only' >> "$OUT"
+          printf '%s\n' "$REMOTE_KEYS" | sed -E 's#(/[^:]+):#\1:#g' | head -80 >> "$OUT"
+          echo '' >> "$OUT"
+
+          REGIONS=""
+          add_region() {
+            local region="$1"
+            if [ -n "$region" ] && ! printf '%s\n' "$REGIONS" | tr ' ' '\n' | grep -qx "$region"; then
+              REGIONS="${REGIONS:+$REGIONS }$region"
+            fi
+          }
+          for region in "$DB_REGION" "$AWS_DEFAULT_REGION" ap-southeast-7 ap-southeast-1 ap-northeast-1 us-east-1; do add_region "$region"; done
+
+          echo '## RDS instances, sanitized' >> "$OUT"
+          for region in $REGIONS; do
+            echo "### Region $region" >> "$OUT"
+            aws rds describe-db-instances --region "$region" --query "DBInstances[?Endpoint.Address=='$DB_HOST' || contains(DBInstanceIdentifier, 'phone11')].[DBInstanceIdentifier,Engine,DBName,MasterUsername,Endpoint.Address,MasterUserSecret.SecretArn]" --output table 2>/tmp/phone11-rds-inventory-error.log >> "$OUT" || true
+          done
+          echo '' >> "$OUT"
+
+          echo '## Secrets Manager candidates, names only' >> "$OUT"
+          for region in $REGIONS; do
+            echo "### Region $region" >> "$OUT"
+            aws secretsmanager list-secrets --region "$region" --query "SecretList[?contains(Name, 'phone11') || contains(Name, 'rds') || contains(Name, 'postgres') || contains(Name, 'database')].[Name,ARN]" --output table 2>/tmp/phone11-secret-inventory-error.log >> "$OUT" || true
+          done
+          echo '' >> "$OUT"
+
+          echo '## Read-only errors, sanitized' >> "$OUT"
+          for f in /tmp/phone11-inventory-aws-error.log /tmp/phone11-remote-env-error.log /tmp/phone11-remote-key-error.log /tmp/phone11-rds-inventory-error.log /tmp/phone11-secret-inventory-error.log; do
+            if [ -s "$f" ]; then
+              echo "### $(basename "$f")" >> "$OUT"
+              sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' "$f" >> "$OUT" || true
+            fi
+          done
+          cp "$OUT" ops/phone11-db-readonly-inventory.md
+
+      - name: Commit inventory
+        shell: bash
+        run: |
+          git fetch origin "$GITHUB_REF_NAME"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ops/phone11-db-readonly-inventory.md
+          if git diff --cached --quiet; then
+            echo 'No inventory changes to commit.'
+          else
+            git commit -m "Update Phone11 DB read-only inventory"
+            git push
+          fi
