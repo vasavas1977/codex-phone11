@@ -1,12 +1,11 @@
 /**
  * SIP Provider — Phone11
- * Loads SIP account data at app start, registers SIP automatically when an
- * admin-provisioned account exists, and initializes native call UI when calling
- * is used.
+ * Loads SIP account data at app start, registers SIP only when an
+ * admin-provisioned account is explicitly synced or a call flow needs it,
+ * and initializes native call UI when calling is used.
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
-import { AppState, type AppStateStatus } from "react-native";
 import { sipEngine } from "./engine";
 import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
@@ -104,7 +103,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
   }, [ensureSipRegistered]);
 
   useEffect(() => {
-    ensureSipRegistered().catch(() => {});
+    ensureAccountLoaded().catch(() => {});
 
     let prevIncomingId: string | null = null;
     const unsubIncoming = useSipCallStore.subscribe((state) => {
@@ -115,28 +114,21 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
           incomingCall.id,
           incomingCall.remoteNumber,
           incomingCall.remoteName,
-          incomingCall.isVideo
+          incomingCall.isVideo,
         );
       } else if (!incomingCall) {
         prevIncomingId = null;
       }
     });
 
-    const appStateSub = AppState.addEventListener("change", (state: AppStateStatus) => {
-      if (state === "active") {
-        ensureSipRegistered().catch(console.error);
-      }
-    });
-
     return () => {
-      appStateSub.remove();
       unsubIncoming();
       nativeCallManager.destroy();
       sipEngine.destroy().catch(console.error);
       nativeStackInitialized.current = false;
       nativeStackInitPromise.current = null;
     };
-  }, [ensureSipRegistered]);
+  }, [ensureAccountLoaded]);
 
   const value: SipContextValue = {
     makeCall: async (dest, video) => {
