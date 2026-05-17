@@ -7,6 +7,24 @@ type UseAuthOptions = {
   autoFetch?: boolean;
 };
 
+function userFromApi(apiUser: {
+  id: number;
+  openId: string;
+  name: string | null;
+  email: string | null;
+  loginMethod: string | null;
+  lastSignedIn: string;
+}): Auth.User {
+  return {
+    id: apiUser.id,
+    openId: apiUser.openId,
+    name: apiUser.name,
+    email: apiUser.email,
+    loginMethod: apiUser.loginMethod,
+    lastSignedIn: new Date(apiUser.lastSignedIn),
+  };
+}
+
 export function useAuth(options?: UseAuthOptions) {
   const { autoFetch = true } = options ?? {};
   const [user, setUser] = useState<Auth.User | null>(null);
@@ -26,14 +44,7 @@ export function useAuth(options?: UseAuthOptions) {
         console.log("[useAuth] API user response:", apiUser);
 
         if (apiUser) {
-          const userInfo: Auth.User = {
-            id: apiUser.id,
-            openId: apiUser.openId,
-            name: apiUser.name,
-            email: apiUser.email,
-            loginMethod: apiUser.loginMethod,
-            lastSignedIn: new Date(apiUser.lastSignedIn),
-          };
+          const userInfo = userFromApi(apiUser);
           setUser(userInfo);
           // Cache user info in localStorage for faster subsequent loads
           await Auth.setUserInfo(userInfo);
@@ -46,7 +57,8 @@ export function useAuth(options?: UseAuthOptions) {
         return;
       }
 
-      // Native platform: use token-based auth
+      // Native platform: session token is the source of truth. Cached user info
+      // alone is not enough, because tRPC provisioning calls require the Bearer token.
       console.log("[useAuth] Native platform: checking for session token...");
       const sessionToken = await Auth.getSessionToken();
       console.log(
@@ -54,21 +66,27 @@ export function useAuth(options?: UseAuthOptions) {
         sessionToken ? `present (${sessionToken.substring(0, 20)}...)` : "missing",
       );
       if (!sessionToken) {
-        console.log("[useAuth] No session token, setting user to null");
+        console.log("[useAuth] No session token, clearing cached user and setting user to null");
         setUser(null);
+        await Auth.clearUserInfo();
         return;
       }
 
-      // Use cached user info for native (token validates the session)
-      const cachedUser = await Auth.getUserInfo();
-      console.log("[useAuth] Cached user:", cachedUser);
-      if (cachedUser) {
-        console.log("[useAuth] Using cached user info");
-        setUser(cachedUser);
-      } else {
-        console.log("[useAuth] No cached user, setting user to null");
-        setUser(null);
+      // Validate the token against the backend and refresh cached user info.
+      const apiUser = await Api.getMe();
+      console.log("[useAuth] Native /api/auth/me response:", apiUser);
+      if (apiUser) {
+        const userInfo = userFromApi(apiUser);
+        setUser(userInfo);
+        await Auth.setUserInfo(userInfo);
+        console.log("[useAuth] Native user set from validated backend session");
+        return;
       }
+
+      console.log("[useAuth] Session token was present but backend rejected it; clearing auth state");
+      setUser(null);
+      await Auth.removeSessionToken();
+      await Auth.clearUserInfo();
     } catch (err) {
       const error = err instanceof Error ? err : new Error("Failed to fetch user");
       console.error("[useAuth] fetchUser error:", error);
@@ -117,17 +135,23 @@ export function useAuth(options?: UseAuthOptions) {
       console.log("[useAuth] Web: fetching user from API...");
       fetchUser();
     } else {
-      // Native: check for cached user info first for faster initial load
-      Auth.getUserInfo().then((cachedUser) => {
-        console.log("[useAuth] Native cached user check:", cachedUser);
-        if (cachedUser) {
-          console.log("[useAuth] Native: setting cached user immediately");
+      // Native: never trust cached profile alone. A stale cached profile can make
+      // the UI say Signed In while tRPC requests have no Authorization header.
+      Promise.all([Auth.getSessionToken(), Auth.getUserInfo()]).then(([sessionToken, cachedUser]) => {
+        console.log("[useAuth] Native cached user/token check:", {
+          hasSessionToken: !!sessionToken,
+          hasCachedUser: !!cachedUser,
+        });
+
+        if (sessionToken && cachedUser) {
+          console.log("[useAuth] Native: showing cached user while backend session validates");
           setUser(cachedUser);
-          setLoading(false);
-        } else {
-          // No cached user, check session token
-          fetchUser();
+        } else if (!sessionToken && cachedUser) {
+          console.log("[useAuth] Native: cached user exists without token, clearing cached user");
+          Auth.clearUserInfo().catch(console.error);
         }
+
+        fetchUser();
       });
     }
 
