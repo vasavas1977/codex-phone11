@@ -1,0 +1,2 @@
+Trigger Phone11 provisioning backend self-test after mobile session auth fix was deployed.
+Time Asia/Bangkok: 2026-05-17 21:22:20
