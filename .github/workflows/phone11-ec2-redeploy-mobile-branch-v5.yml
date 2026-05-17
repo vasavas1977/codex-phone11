@@ -76,8 +76,8 @@ jobs:
           INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
           AZ='${{ steps.ec2.outputs.az }}'
           aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
-          REMOTE_ENV=$(ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'for candidate in "$DEPLOY_CHECKOUT/.env" "/opt/phone11ai/phone11ai/deploy/backend/.env" "/opt/phone11ai/cloudphone11/infra/compose/.env" "/opt/phone11ai/cloudphone11/.env" "/opt/phone11ai/.env" "/home/ubuntu/phone11ai/.env" "/home/ubuntu/cloudphone11/.env" "/home/ubuntu/codex-phone11/.env"; do if [ -f "$candidate" ]; then awk -F= '\''/^(PG_HOST|DB_HOST|POSTGRES_HOST|PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB|PG_USER|DB_USER|POSTGRES_USER)=/ {print $1"="$2}'\'' "$candidate"; exit 0; fi; done' 2>/tmp/phone11-remote-env-error.log || true)
-          DB_HOST=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_HOST|DB_HOST|POSTGRES_HOST)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^['"'"'"'"']//; s/['"'"'"'"']$//')
+          REMOTE_ENV=$(ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'for candidate in "/opt/phone11ai/codex-phone11-deploy/.env" "/opt/phone11ai/phone11ai/deploy/backend/.env" "/opt/phone11ai/cloudphone11/infra/compose/.env" "/opt/phone11ai/cloudphone11/.env" "/opt/phone11ai/.env" "/home/ubuntu/phone11ai/.env" "/home/ubuntu/cloudphone11/.env" "/home/ubuntu/codex-phone11/.env"; do if [ -f "$candidate" ]; then awk -F= '\''/^(PG_HOST|DB_HOST|POSTGRES_HOST|PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB|PG_USER|DB_USER|POSTGRES_USER)=/ {print $1"="$2}'\'' "$candidate"; exit 0; fi; done' 2>/tmp/phone11-remote-env-error.log || true)
+          DB_HOST=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_HOST|DB_HOST|POSTGRES_HOST)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
           DB_REGION=$(printf '%s' "$DB_HOST" | sed -nE 's/.*\.([a-z]{2}-[a-z-]+-[0-9]+)\.rds\.amazonaws\.com.*/\1/p')
           echo "db_host=$DB_HOST" >> "$GITHUB_OUTPUT"
           echo "db_region=$DB_REGION" >> "$GITHUB_OUTPUT"
@@ -112,13 +112,16 @@ jobs:
           fi
 
           REGIONS=""
-          for region in "$DB_REGION" "$AWS_DEFAULT_REGION" ap-southeast-7 ap-southeast-1 ap-northeast-1 us-east-1; do
-            if [ -n "$region" ] && ! printf '%s\n' "$REGIONS" | grep -qx "$region"; then
-              REGIONS="$REGIONS
-$region"
+          add_region() {
+            local region="$1"
+            if [ -n "$region" ] && ! printf '%s\n' "$REGIONS" | tr ' ' '\n' | grep -qx "$region"; then
+              REGIONS="${REGIONS:+$REGIONS }$region"
             fi
+          }
+          for region in "$DB_REGION" "$AWS_DEFAULT_REGION" ap-southeast-7 ap-southeast-1 ap-northeast-1 us-east-1; do
+            add_region "$region"
           done
-          echo "RDS secret search regions: $(printf '%s ' $REGIONS)"
+          echo "RDS secret search regions: $REGIONS"
 
           if [ -z "$SECRET_ARN" ] && [ -n "$DB_HOST" ]; then
             for region in $REGIONS; do
