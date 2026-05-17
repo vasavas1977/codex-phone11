@@ -1,8 +1,8 @@
 # Phone11 DB Password Rotate and Redeploy Status
 
-- Time UTC: 2026-05-17T15:32:25+00:00
+- Time UTC: 2026-05-17T15:44:22+00:00
 - Branch: codex/phone11-mobile-pjsip-20260506
-- Workflow commit: e1d606f438b5a6264034e5be7ae175de7a734119
+- Workflow commit: 7b0c678eeff3893ce53c964f17a88d76327299ab
 - EC2 host: 43.209.112.208
 - RDS instance: phone11ai-production-postgres
 - Runtime DB host: phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com
@@ -16,12 +16,12 @@
 ## Sanitized output
 ```text
 === Phone11 DB <redacted> rotation and backend redeploy ===
-Time: 2026-05-17T15:22:30+00:00
+Time: 2026-05-17T15:32:38+00:00
 --- Locating EC2 instance ---
 Found EC2 instance i-0cc8f248b08c5f2fb in ap-southeast-7b
 --- Preparing temporary SSH access ---
 {
-    "RequestId": "0d9b7811-5d10-432b-b5b3-83e26d5edcca",
+    "RequestId": "8d6b549d-efae-49f6-8a93-f262f56388ad",
     "Success": true
 }
 --- Reading backend DB config from EC2 .env ---
@@ -46,7 +46,7 @@ Filesystem      Size  Used Avail Use% Mounted on
 /dev/root        48G   12G   36G  26% /
 /dev/root        48G   12G   36G  26% /
 TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE
-Images          5         1         4.689GB   893.5MB (19%)
+Images          5         1         4.69GB    893.5MB (19%)
 Containers      1         1         4.096kB   0B (0%)
 Local Volumes   0         0         0B        0B
 Build Cache     0         0         0B        0B
@@ -57,72 +57,82 @@ DEPRECATED: The legacy builder is deprecated and will be removed in a future rel
 Total reclaimed space: 0B
 Total reclaimed space: 0B
 Deleted Images:
-untagged: sha256:4c39c49ee297aae00ed62d519989b3e2aa423d5fcde478cdc8f7c7797a8093ad
-deleted: sha256:4c39c49ee297aae00ed62d519989b3e2aa423d5fcde478cdc8f7c7797a8093ad
-untagged: sha256:61e46e11b51045c588b1c3b2ae3fd3f63f96b7f183fafc5497d0252786031302
-deleted: sha256:61e46e11b51045c588b1c3b2ae3fd3f63f96b7f183fafc5497d0252786031302
-untagged: sha256:8f93fc0f622e93c0505bf32c4ff5ee081f7e93168021b4d587fd56437cc5e212
-deleted: sha256:8f93fc0f622e93c0505bf32c4ff5ee081f7e93168021b4d587fd56437cc5e212
-untagged: sha256:50f1032aa8a30d36fe9ed35c3b2dffaafbb51cb8507984acf10d02565c951f81
-deleted: sha256:50f1032aa8a30d36fe9ed35c3b2dffaafbb51cb8507984acf10d02565c951f81
-untagged: sha256:db2530530703d647027997a52623c3526a902e993a1f9e6d5a85556c146638eb
-deleted: sha256:db2530530703d647027997a52623c3526a902e993a1f9e6d5a85556c146638eb
-untagged: sha256:18355912fc09c03dcf853f98c8bfba04a7c7dc71f13dc22958e5fb99e00b7bcc
-deleted: sha256:18355912fc09c03dcf853f98c8bfba04a7c7dc71f13dc22958e5fb99e00b7bcc
-untagged: sha256:3301a187b933f18af38f9a0a1d634d30d3f459396c3ce4e74dbd7f6abed7b925
-deleted: sha256:3301a187b933f18af38f9a0a1d634d30d3f459396c3ce4e74dbd7f6abed7b925
-untagged: sha256:76d4bd09180a0ccac01ab38ac274616d5869c5151afdef7e22b52f4ff6a33b49
-deleted: sha256:76d4bd09180a0ccac01ab38ac274616d5869c5151afdef7e22b52f4ff6a33b49
-untagged: sha256:9da51d93141d8af41cb65399657ab75df415b313ac38188fe85882f50977dcbb
-deleted: sha256:9da51d93141d8af41cb65399657ab75df415b313ac38188fe85882f50977dcbb
-untagged: sha256:fd4de88aa167c07d6eff95ccd970b42545d035b1163721eae10f2f7a88d6f148
-deleted: sha256:fd4de88aa167c07d6eff95ccd970b42545d035b1163721eae10f2f7a88d6f148
-untagged: sha256:4693a29ac499921d201f8d79fce3da4a1054b92f23347c38fa413badcf71c5a5
-deleted: sha256:4693a29ac499921d201f8d79fce3da4a1054b92f23347c38fa413badcf71c5a5
-untagged: sha256:76ab073183ae9bf61361f5a326231b8540fc5333fedb49c59a52ec9ca258891b
-deleted: sha256:76ab073183ae9bf61361f5a326231b8540fc5333fedb49c59a52ec9ca258891b
-untagged: sha256:122c5cae1e45a5494408a87d0ff90a23fd3b6facc7445fb32bd8ed07eeb1e9d0
-deleted: sha256:122c5cae1e45a5494408a87d0ff90a23fd3b6facc7445fb32bd8ed07eeb1e9d0
-untagged: sha256:3d7a51c9ed198e74f3dc061ccb46a2fdc29f0c07a82a2295ee8fc9b1ddb89ddc
-deleted: sha256:3d7a51c9ed198e74f3dc061ccb46a2fdc29f0c07a82a2295ee8fc9b1ddb89ddc
-untagged: sha256:aaed7485311738dcbfaa0bfef9e3604358c490938ead7d37e3f72b6c3eb0d33a
-deleted: sha256:aaed7485311738dcbfaa0bfef9e3604358c490938ead7d37e3f72b6c3eb0d33a
-untagged: sha256:1da5de4a92115dcf29a99130fcbb104849339da4029457593b2d326d69e05be6
-deleted: sha256:1da5de4a92115dcf29a99130fcbb104849339da4029457593b2d326d69e05be6
-untagged: sha256:7d7e162e997565ec2b8337d4f0604c4bbbd87d16954c8072e0fe567ca187bc96
-deleted: sha256:7d7e162e997565ec2b8337d4f0604c4bbbd87d16954c8072e0fe567ca187bc96
-untagged: sha256:9cda04b0b6a55f0ee969e6fc3a32196107f2c508e743a8b068edbabf285edc17
-deleted: sha256:9cda04b0b6a55f0ee969e6fc3a32196107f2c508e743a8b068edbabf285edc17
-untagged: sha256:c14f27a1675fbdb1ec0ac2c66cfade0cf0f95737c5a15bc73d834ac2a56bf265
-deleted: sha256:c14f27a1675fbdb1ec0ac2c66cfade0cf0f95737c5a15bc73d834ac2a56bf265
-untagged: sha256:17a2fbe10e44853984859a7120ae7171f1147241b9f509e12137cf39e2a7df6a
-deleted: sha256:17a2fbe10e44853984859a7120ae7171f1147241b9f509e12137cf39e2a7df6a
-untagged: sha256:265f54a4cc3d79e0ce3286c80af5fcc871c0159fac75d2dfa8860bd5c728bd2d
-deleted: sha256:265f54a4cc3d79e0ce3286c80af5fcc871c0159fac75d2dfa8860bd5c728bd2d
-untagged: sha256:3c20de5ab1862740972a2076ae0aa662d6eae998d544ff42f103d95f88fbc24c
-deleted: sha256:3c20de5ab1862740972a2076ae0aa662d6eae998d544ff42f103d95f88fbc24c
-untagged: sha256:93f2c8a8d101a3273122afa81457419be9e6a548cf45b4637ccc72fd274acdbf
-deleted: sha256:93f2c8a8d101a3273122afa81457419be9e6a548cf45b4637ccc72fd274acdbf
+untagged: sha256:3cddd08a055d135543dc47a6b9aea255487ef0b35b157f54fdcd7a456fb0b6d6
+deleted: sha256:3cddd08a055d135543dc47a6b9aea255487ef0b35b157f54fdcd7a456fb0b6d6
+untagged: sha256:84212804f54326f7ae42550dff54a6393135d6c9729d16ff1db045ee5c8379d4
+deleted: sha256:84212804f54326f7ae42550dff54a6393135d6c9729d16ff1db045ee5c8379d4
+untagged: sha256:8e9934ea7f8f2a5e32232663312161abc9e3c0ed894f0cb41c7cf82b61934404
+deleted: sha256:8e9934ea7f8f2a5e32232663312161abc9e3c0ed894f0cb41c7cf82b61934404
+untagged: sha256:9cd6a52f52d302c85397704c0a517d59c70c90f306e661fd57704db55954d1d1
+deleted: sha256:9cd6a52f52d302c85397704c0a517d59c70c90f306e661fd57704db55954d1d1
+untagged: sha256:9f4d1fdb165e7bee72bae7c3747e21de61b8480d3f9688361f5e8813e3351b14
+deleted: sha256:9f4d1fdb165e7bee72bae7c3747e21de61b8480d3f9688361f5e8813e3351b14
+untagged: sha256:c21b4f409896975e3bcdf9a3371fa0bb3cb63eea6c394a4c0cc77ba9c5229bf3
+deleted: sha256:c21b4f409896975e3bcdf9a3371fa0bb3cb63eea6c394a4c0cc77ba9c5229bf3
 untagged: node:22-alpine
 deleted: sha256:968df39aedcea65eeb078fb336ed7191baf48f972b4479711397108be0966920
 deleted: sha256:757ec364de4d37cedf30871be2988927660834e656e9aa52aad9ac194814c30c
 deleted: sha256:bfaaa13062d14b2f966de80d367e30367abd5c155d443653fc4cfb8d8d01e31a
-untagged: sha256:212f67c565932057d81ae22b20bff953ef46ddece9a4b98830a479de92eb4684
-deleted: sha256:212f67c565932057d81ae22b20bff953ef46ddece9a4b98830a479de92eb4684
-untagged: sha256:2e31e0472e4e72a94473f5786cc88b434bd91d34a2b9437dde71822a58ee28b5
-deleted: sha256:2e31e0472e4e72a94473f5786cc88b434bd91d34a2b9437dde71822a58ee28b5
-untagged: sha256:2f02d520af7311459e855f538fa62848ad49230da301f07d4600986f442eaa86
-deleted: sha256:2f02d520af7311459e855f538fa62848ad49230da301f07d4600986f442eaa86
-untagged: sha256:5862215878906fccdd9d7e34607a162dc23b8659ab9f9ded46856b4a22344ded
-deleted: sha256:5862215878906fccdd9d7e34607a162dc23b8659ab9f9ded46856b4a22344ded
-untagged: sha256:601871574bb11a7e6ee8549f865550a1bbc0813843b8b1d1ea9dcb31724b889d
-deleted: sha256:601871574bb11a7e6ee8549f865550a1bbc0813843b8b1d1ea9dcb31724b889d
+untagged: sha256:35ac586549c98792d6f66df91644bd02c83300fddc9424833b03a4c8ba60ae0a
+deleted: sha256:35ac586549c98792d6f66df91644bd02c83300fddc9424833b03a4c8ba60ae0a
+untagged: sha256:3feb5e5ac8f7610d09d38c858d9af95185b5e67704c0700fb57ffd50feaedda7
+deleted: sha256:3feb5e5ac8f7610d09d38c858d9af95185b5e67704c0700fb57ffd50feaedda7
+untagged: sha256:64d1b1e60cdee5609de6e3c8745f525b5c2d4ad41eb40bd45ddc108360661330
+deleted: sha256:64d1b1e60cdee5609de6e3c8745f525b5c2d4ad41eb40bd45ddc108360661330
+untagged: sha256:6bdf93434dace4d494c3ad23f48cb6be735d956b3cd23307c9a8a8cd02a54d19
+deleted: sha256:6bdf93434dace4d494c3ad23f48cb6be735d956b3cd23307c9a8a8cd02a54d19
+untagged: sha256:c4fc26748e08a03cc4f9e34f03a5d45a459addf95bf8786c45a667824e730b51
+deleted: sha256:c4fc26748e08a03cc4f9e34f03a5d45a459addf95bf8786c45a667824e730b51
+untagged: sha256:04016bb41cab1b46caa14d07aa4e97d05369c12f5f28d3a0fb4a9fb720f47bf8
+deleted: sha256:04016bb41cab1b46caa14d07aa4e97d05369c12f5f28d3a0fb4a9fb720f47bf8
+untagged: sha256:3e7ff5c95e9ecfca8addda6f9bf34ee57c2c6499ba85d407aa2927f95c923a2d
+deleted: sha256:3e7ff5c95e9ecfca8addda6f9bf34ee57c2c6499ba85d407aa2927f95c923a2d
+untagged: sha256:9445c4caa672f17abb0138312439f7c520743ef72c9c34be99695bf6c556b0a2
+deleted: sha256:9445c4caa672f17abb0138312439f7c520743ef72c9c34be99695bf6c556b0a2
+untagged: sha256:fd20a819cfd0ca68c9dfde17664d504605578be272d0e0239240a7cd55fec9b0
+deleted: sha256:fd20a819cfd0ca68c9dfde17664d504605578be272d0e0239240a7cd55fec9b0
+untagged: sha256:345ea7a62203d1010d1359e3562b8d283e1ebb3392337ef0a1f2ae5f86a793fb
+deleted: sha256:345ea7a62203d1010d1359e3562b8d283e1ebb3392337ef0a1f2ae5f86a793fb
+untagged: sha256:469630c35bd9f660a9d496eface9ff6e9687f012af5ecf21eace969593a5b726
+deleted: sha256:469630c35bd9f660a9d496eface9ff6e9687f012af5ecf21eace969593a5b726
+untagged: sha256:f11e5b20025fa953d95b9926773f4cfce6a62b7553de42a9eda0d4cc9ef600a4
+deleted: sha256:f11e5b20025fa953d95b9926773f4cfce6a62b7553de42a9eda0d4cc9ef600a4
+untagged: sha256:08863f384f26b878e96e422ef0c04dabbd94325ecfb93a55b625f78f0ae0b90a
+deleted: sha256:08863f384f26b878e96e422ef0c04dabbd94325ecfb93a55b625f78f0ae0b90a
+untagged: sha256:53770a25eb9a0b72475c36263c3c1591a08e9f6be4a496578c604584ef860a6d
+deleted: sha256:53770a25eb9a0b72475c36263c3c1591a08e9f6be4a496578c604584ef860a6d
+untagged: sha256:81483419c7e4b5ad52e066b807e1a45ee7aec9c633abee6bc592acf31ed4136c
+deleted: sha256:81483419c7e4b5ad52e066b807e1a45ee7aec9c633abee6bc592acf31ed4136c
+untagged: sha256:ddf7d6cfff54cd420cc55d3d3df66cdb3ae78310d98a62cfe93cf56f05ddfdf2
+deleted: sha256:ddf7d6cfff54cd420cc55d3d3df66cdb3ae78310d98a62cfe93cf56f05ddfdf2
+untagged: sha256:4b1ad4639234f4a742a324db2b5131a9c4fa6ddd0960990715826e7bb1242d20
+deleted: sha256:4b1ad4639234f4a742a324db2b5131a9c4fa6ddd0960990715826e7bb1242d20
+untagged: sha256:62a2076da863895793b55a074e8177ee06ba028e4bcff19ef6d014d1aae972dd
+deleted: sha256:62a2076da863895793b55a074e8177ee06ba028e4bcff19ef6d014d1aae972dd
+untagged: sha256:dd88fc635513d2d8503bd79c9572418600ac3d3577e0697dac2dd88b42125e9a
+deleted: sha256:dd88fc635513d2d8503bd79c9572418600ac3d3577e0697dac2dd88b42125e9a
+untagged: sha256:0a879848931aeb3d04719fd88e277899e3ad9d426d0cf8201577e15b764136eb
+deleted: sha256:0a879848931aeb3d04719fd88e277899e3ad9d426d0cf8201577e15b764136eb
+untagged: sha256:4414dc6ae811ba758bd3547630255b43adba10e5018f8ec08d6eeec608accbbe
+deleted: sha256:4414dc6ae811ba758bd3547630255b43adba10e5018f8ec08d6eeec608accbbe
+untagged: sha256:89ee746e785e4bc2a7ae0bb970333fa89df91dd8768714c9c7cc33b7f39a86f2
+deleted: sha256:89ee746e785e4bc2a7ae0bb970333fa89df91dd8768714c9c7cc33b7f39a86f2
+untagged: sha256:963751c7cdc9e86c1b77bc28612a1cf504f57be2485230fc2d030a99da87a550
+deleted: sha256:963751c7cdc9e86c1b77bc28612a1cf504f57be2485230fc2d030a99da87a550
+untagged: sha256:bea738b03c175d3ff4a0961f6c844e611fe8b997fc8169ffda721583fb0d371e
+deleted: sha256:bea738b03c175d3ff4a0961f6c844e611fe8b997fc8169ffda721583fb0d371e
+untagged: sha256:1f1c337b523664f9cf828dfd06c8ada2824de878b6d003bc939061c1771720c6
+deleted: sha256:1f1c337b523664f9cf828dfd06c8ada2824de878b6d003bc939061c1771720c6
+untagged: sha256:376d4efd9c973674c2c4dcc634584875b27ed70344e50806066281fb14f54af7
+deleted: sha256:376d4efd9c973674c2c4dcc634584875b27ed70344e50806066281fb14f54af7
+untagged: sha256:780445b1dddce6216d37babe2c642849c2130005e0e039b2228d4d5f26ffb00f
+deleted: sha256:780445b1dddce6216d37babe2c642849c2130005e0e039b2228d4d5f26ffb00f
 
-Total reclaimed space: 776.9MB
+Total reclaimed space: 777MB
 Total reclaimed space: 0B
-Vacuuming done, freed 0B of archived journals from /var/log/journal/ec20fbfc8f0cc8e2e1ccfe9e56334634.
 Vacuuming done, freed 0B of archived journals from /var/log/journal.
 Vacuuming done, freed 0B of archived journals from /run/log/journal.
+Vacuuming done, freed 0B of archived journals from /var/log/journal/ec20fbfc8f0cc8e2e1ccfe9e56334634.
 Disk after cleanup:
 Filesystem      Size  Used Avail Use% Mounted on
 /dev/root        48G  8.7G   39G  19% /
@@ -135,8 +145,8 @@ Build Cache     0         0         0B        0B
 --- Redeploying backend and verifying pilot extension ---
 === Phone11 mobile branch backend redeploy ===
 Host: ip-10-0-2-252
-Time: 2026-05-17T15:24:50+00:00
-GitHub SHA: e1d606f438b5a6264034e5be7ae175de7a734119
+Time: 2026-05-17T15:34:51+00:00
+GitHub SHA: 7b0c678eeff3893ce53c964f17a88d76327299ab
 Deploy checkout: /opt/phone11ai/codex-phone11-deploy
 Using runtime env path: /opt/phone11ai/codex-phone11-deploy/.env
 Runtime env keys:
@@ -152,24 +162,24 @@ SIP_DOMAIN
 STORAGE_BUCKET
 VOIP_SERVER_IP
 From https://github.com/vasavas1977/codex-phone11
- * branch            e1d606f438b5a6264034e5be7ae175de7a734119 -> FETCH_HEAD
+ * branch            7b0c678eeff3893ce53c964f17a88d76327299ab -> FETCH_HEAD
 Warning: you are leaving 1 commit behind, not connected to
 any of your branches:
 
-  eab63ad Clean Docker before Phone11 backend redeploy
+  e1d606f Trigger Phone11 backend redeploy after Docker cleanup patch
 
 If you want to keep it by creating a new branch, this may be a good time
 to do so with:
 
- git branch <new-branch-name> eab63ad
+ git branch <new-branch-name> e1d606f
 
-HEAD is now at e1d606f Trigger Phone11 backend redeploy after Docker cleanup patch
+HEAD is now at 7b0c678 Force Phone11 backend redeploy after stale clean deploy
 --- Deploying standalone public API backend container ---
 DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
             Install the buildx component to build images with BuildKit:
             https://docs.docker.com/go/buildx/
 
-Sending build context to Docker daemon  24.95MB
+Sending build context to Docker daemon  26.09MB
 Step 1/39 : FROM node:22-alpine AS deps
 22-alpine: Pulling from library/node
 3e7ca773cb61: Download complete
@@ -178,11 +188,11 @@ Digest: sha256:968df39aedcea65eeb078fb336ed7191baf48f972b4479711397108be0966920
 Status: Downloaded newer image for node:22-alpine
  ---> 968df39aedce
 Step 2/39 : WORKDIR /app
- ---> Running in 83bd846a181a
- ---> Removed intermediate container 83bd846a181a
- ---> 6bdf93434dac
+ ---> Running in 9e7e4c75c1cb
+ ---> Removed intermediate container 9e7e4c75c1cb
+ ---> bb1767f997c9
 Step 3/39 : RUN apk add --no-cache bash curl ca-certificates
- ---> Running in fe2cad793196
+ ---> Running in b862cf32b173
 ( 1/14) Installing ncurses-terminfo-base (6.5_p20251123-r0)
 ( 2/14) Installing libncursesw (6.5_p20251123-r0)
 ( 3/14) Installing readline (8.3.1-r0)
@@ -201,19 +211,19 @@ Step 3/39 : RUN apk add --no-cache bash curl ca-certificates
 Executing busybox-1.37.0-r30.trigger
 Executing ca-certificates-20260413-r0.trigger
 OK: 18.2 MiB in 32 packages
- ---> Removed intermediate container fe2cad793196
- ---> 9f4d1fdb165e
+ ---> Removed intermediate container b862cf32b173
+ ---> e042a545f37c
 Step 4/39 : RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
- ---> Running in 1567f77815b7
+ ---> Running in 3437535d570c
 Preparing pnpm@9.12.0 for immediate activation...
- ---> Removed intermediate container 1567f77815b7
- ---> ddf7d6cfff54
+ ---> Removed intermediate container 3437535d570c
+ ---> 55872eb532ca
 Step 5/39 : COPY package.json pnpm-lock.yaml ./
- ---> 1f1c337b5236
+ ---> 5012b31fd6e5
 Step 6/39 : COPY scripts/ ./scripts/
- ---> 64d1b1e60cde
+ ---> 507fd01c96eb
 Step 7/39 : RUN pnpm install --frozen-lockfile --prod
- ---> Running in 9c9abe5023e4
+ ---> Running in 5c158dc7b72d
 Lockfile is up to date, resolution step is skipped
 Progress: resolved 1, reused 0, downloaded 0, added 0
 Packages: +899
@@ -229,18 +239,18 @@ Packages: +899
    │                                                                  │
    ╰──────────────────────────────────────────────────────────────────╯
 
-Progress: resolved 899, reused 0, downloaded 20, added 8
-Progress: resolved 899, reused 0, downloaded 103, added 100
-Progress: resolved 899, reused 0, downloaded 239, added 229
-Progress: resolved 899, reused 0, downloaded 366, added 359
-Progress: resolved 899, reused 0, downloaded 367, added 360
-Progress: resolved 899, reused 0, downloaded 448, added 447
-Progress: resolved 899, reused 0, downloaded 515, added 512
-Progress: resolved 899, reused 0, downloaded 592, added 592
-Progress: resolved 899, reused 0, downloaded 653, added 643
-Progress: resolved 899, reused 0, downloaded 701, added 688
-Progress: resolved 899, reused 0, downloaded 780, added 770
-Progress: resolved 899, reused 0, downloaded 842, added 830
+Progress: resolved 899, reused 0, downloaded 19, added 7
+Progress: resolved 899, reused 0, downloaded 105, added 101
+Progress: resolved 899, reused 0, downloaded 237, added 232
+Progress: resolved 899, reused 0, downloaded 351, added 342
+Progress: resolved 899, reused 0, downloaded 362, added 351
+Progress: resolved 899, reused 0, downloaded 447, added 443
+Progress: resolved 899, reused 0, downloaded 515, added 510
+Progress: resolved 899, reused 0, downloaded 591, added 591
+Progress: resolved 899, reused 0, downloaded 660, added 651
+Progress: resolved 899, reused 0, downloaded 705, added 692
+Progress: resolved 899, reused 0, downloaded 783, added 770
+Progress: resolved 899, reused 0, downloaded 856, added 841
 Progress: resolved 899, reused 0, downloaded 899, added 899, done
 .../esbuild@0.27.2/node_modules/esbuild postinstall$ node install.js
 .../node_modules/react-native-pjsip postinstall$ bash libs.sh
@@ -251,9 +261,9 @@ Progress: resolved 899, reused 0, downloaded 899, added 899, done
 .../node_modules/react-native-pjsip postinstall:   0      0   0      0   0      0      0      0                              0
 .../node_modules/react-native-pjsip postinstall:   0      0   0      0   0      0      0      0                              0
 .../node_modules/react-native-pjsip postinstall:   0      0   0      0   0      0      0      0                              0
-.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 112.2M      0                              0
-.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 112.1M      0                              0
-.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 112.1M      0                              0
+.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 102.1M      0                              0
+.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 102.0M      0                              0
+.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 102.0M      0                              0
 .../node_modules/react-native-pjsip postinstall: ./
 .../node_modules/react-native-pjsip postinstall: ./ios/
 .../node_modules/react-native-pjsip postinstall: ./android/
@@ -1045,21 +1055,21 @@ devDependencies: skipped
 > node scripts/patch-react-native-pjsip.mjs
 
 [phone11-pjsip-patch] Patched react-native-pjsip Android Gradle/source config.
-Done in 18.5s
- ---> Removed intermediate container 9c9abe5023e4
- ---> 35ac586549c9
+Done in 18.3s
+ ---> Removed intermediate container 5c158dc7b72d
+ ---> fc8b3e3b0dc3
 Step 8/39 : RUN if [ ! -e node_modules/ws ]; then       WS_DIR="$(find node_modules/.pnpm -path '*/node_modules/ws' -type d | sort | tail -n 1)";       test -n "$WS_DIR";       ln -s "/app/$WS_DIR" node_modules/ws;     fi
- ---> Running in 38e1f30ef307
- ---> Removed intermediate container 38e1f30ef307
- ---> 3cddd08a055d
+ ---> Running in 55823f200a8d
+ ---> Removed intermediate container 55823f200a8d
+ ---> a9adbc750f72
 Step 9/39 : FROM node:22-alpine AS builder
  ---> 968df39aedce
 Step 10/39 : WORKDIR /app
- ---> Running in 213fb9ea3995
- ---> Removed intermediate container 213fb9ea3995
- ---> 376d4efd9c97
+ ---> Running in 20066da1fc3d
+ ---> Removed intermediate container 20066da1fc3d
+ ---> 22f08fd64e2e
 Step 11/39 : RUN apk add --no-cache bash curl ca-certificates
- ---> Running in 855c94cf6f36
+ ---> Running in 8c3c4815ad6f
 ( 1/14) Installing ncurses-terminfo-base (6.5_p20251123-r0)
 ( 2/14) Installing libncursesw (6.5_p20251123-r0)
 ( 3/14) Installing readline (8.3.1-r0)
@@ -1078,19 +1088,19 @@ Step 11/39 : RUN apk add --no-cache bash curl ca-certificates
 Executing busybox-1.37.0-r30.trigger
 Executing ca-certificates-20260413-r0.trigger
 OK: 18.2 MiB in 32 packages
- ---> Removed intermediate container 855c94cf6f36
- ---> 963751c7cdc9
+ ---> Removed intermediate container 8c3c4815ad6f
+ ---> 8f9998e857ea
 Step 12/39 : RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
- ---> Running in dddd6b23671e
+ ---> Running in 7ac30f57b8db
 Preparing pnpm@9.12.0 for immediate activation...
- ---> Removed intermediate container dddd6b23671e
- ---> 81483419c7e4
+ ---> Removed intermediate container 7ac30f57b8db
+ ---> a0f8921cd8bb
 Step 13/39 : COPY package.json pnpm-lock.yaml ./
- ---> 89ee746e785e
+ ---> 83c9b748c5df
 Step 14/39 : COPY scripts/ ./scripts/
- ---> 469630c35bd9
+ ---> f904b4d4f947
 Step 15/39 : RUN pnpm install --frozen-lockfile
- ---> Running in 72fee3d09974
+ ---> Running in 01235fb82d7c
 Lockfile is up to date, resolution step is skipped
 Progress: resolved 1, reused 0, downloaded 0, added 0
 Packages: +1158
@@ -1106,42 +1116,41 @@ Packages: +1158
    │                                                                  │
    ╰──────────────────────────────────────────────────────────────────╯
 
-Progress: resolved 1158, reused 0, downloaded 8, added 0
-Progress: resolved 1158, reused 0, downloaded 86, added 85
-Progress: resolved 1158, reused 0, downloaded 217, added 207
-Progress: resolved 1158, reused 0, downloaded 359, added 354
-Progress: resolved 1158, reused 0, downloaded 366, added 359
-Progress: resolved 1158, reused 0, downloaded 445, added 445
-Progress: resolved 1158, reused 0, downloaded 518, added 509
-Progress: resolved 1158, reused 0, downloaded 602, added 601
-Progress: resolved 1158, reused 0, downloaded 667, added 653
-Progress: resolved 1158, reused 0, downloaded 723, added 713
-Progress: resolved 1158, reused 0, downloaded 818, added 804
-Progress: resolved 1158, reused 0, downloaded 876, added 875
-Progress: resolved 1158, reused 0, downloaded 914, added 900
-Progress: resolved 1158, reused 0, downloaded 1027, added 1022
-Progress: resolved 1158, reused 0, downloaded 1120, added 1107
+Progress: resolved 1158, reused 0, downloaded 9, added 0
+Progress: resolved 1158, reused 0, downloaded 89, added 86
+Progress: resolved 1158, reused 0, downloaded 228, added 222
+Progress: resolved 1158, reused 0, downloaded 364, added 356
+Progress: resolved 1158, reused 0, downloaded 368, added 359
+Progress: resolved 1158, reused 0, downloaded 450, added 447
+Progress: resolved 1158, reused 0, downloaded 517, added 512
+Progress: resolved 1158, reused 0, downloaded 625, added 615
+Progress: resolved 1158, reused 0, downloaded 684, added 668
+Progress: resolved 1158, reused 0, downloaded 768, added 759
+Progress: resolved 1158, reused 0, downloaded 835, added 820
+Progress: resolved 1158, reused 0, downloaded 893, added 878
+Progress: resolved 1158, reused 0, downloaded 952, added 951
+Progress: resolved 1158, reused 0, downloaded 1064, added 1056
 Progress: resolved 1158, reused 0, downloaded 1158, added 1158, done
-.../node_modules/unrs-resolver postinstall$ napi-postinstall unrs-resolver 1.11.1 check
 .../esbuild@0.25.12/node_modules/esbuild postinstall$ node install.js
+.../node_modules/unrs-resolver postinstall$ napi-postinstall unrs-resolver 1.11.1 check
 .../esbuild@0.18.20/node_modules/esbuild postinstall$ node install.js
 .../esbuild@0.27.2/node_modules/esbuild postinstall$ node install.js
 .../esbuild@0.21.5/node_modules/esbuild postinstall$ node install.js
-.../node_modules/unrs-resolver postinstall: Done
-.../esbuild@0.21.5/node_modules/esbuild postinstall: Done
 .../esbuild@0.25.12/node_modules/esbuild postinstall: Done
-.../node_modules/react-native-pjsip postinstall$ bash libs.sh
-.../esbuild@0.27.2/node_modules/esbuild postinstall: Done
+.../node_modules/unrs-resolver postinstall: Done
 .../esbuild@0.18.20/node_modules/esbuild postinstall: Done
+.../esbuild@0.27.2/node_modules/esbuild postinstall: Done
+.../esbuild@0.21.5/node_modules/esbuild postinstall: Done
+.../node_modules/react-native-pjsip postinstall$ bash libs.sh
 .../node_modules/react-native-pjsip postinstall:   % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
 .../node_modules/react-native-pjsip postinstall:                                  Dload  Upload  Total   Spent   Left   Speed
 .../node_modules/react-native-pjsip postinstall:   0      0   0      0   0      0      0      0                              0
 .../node_modules/react-native-pjsip postinstall:   0      0   0      0   0      0      0      0                              0
 .../node_modules/react-native-pjsip postinstall:   0      0   0      0   0      0      0      0                              0
 .../node_modules/react-native-pjsip postinstall:   0      0   0      0   0      0      0      0                              0
-.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 171.7M      0                              0
-.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 171.6M      0                              0
-.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 171.5M      0                              0
+.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 213.5M      0                              0
+.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 213.4M      0                              0
+.../node_modules/react-native-pjsip postinstall: 100 72.40M 100 72.40M   0      0 213.3M      0                              0
 .../node_modules/react-native-pjsip postinstall: ./
 .../node_modules/react-native-pjsip postinstall: ./ios/
 .../node_modules/react-native-pjsip postinstall: ./android/
@@ -1952,69 +1961,108 @@ devDependencies:
 > node scripts/patch-react-native-pjsip.mjs
 
 [phone11-pjsip-patch] Patched react-native-pjsip Android Gradle/source config.
-Done in 21.8s
- ---> Removed intermediate container 72fee3d09974
- ---> c4fc26748e08
+Done in 21.4s
+ ---> Removed intermediate container 01235fb82d7c
+ ---> 26c17a5c45b3
 Step 16/39 : COPY server/ ./server/
- ---> 84212804f543
+ ---> bbfd39965ace
 Step 17/39 : COPY shared/ ./shared/
- ---> 3e7ff5c95e9e
+ ---> 6d19f20faa1e
 Step 18/39 : COPY drizzle/ ./drizzle/
- ---> f11e5b20025f
+ ---> 8d59713ce66c
 Step 19/39 : COPY drizzle.config.ts ./
- ---> 4414dc6ae811
+ ---> 8442e684f892
 Step 20/39 : COPY tsconfig.json ./
- ---> c21b4f409896
+ ---> 5836fa00809f
 Step 21/39 : RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs
- ---> Running in 1efc29f0a0cb
+ ---> Running in 263f20bc96ec
 [91m
   dist/index.mjs  192.3kb
 
 ⚡ Done in 27ms
-[0m ---> Removed intermediate container 1efc29f0a0cb
- ---> 62a2076da863
+[0m ---> Removed intermediate container 263f20bc96ec
+ ---> 4d8ee504f1e6
 Step 22/39 : FROM node:22-alpine AS production
  ---> 968df39aedce
 Step 23/39 : LABEL maintainer="CloudPhone11 <ops@cloudphone11.io>"
- ---> Running in b2eec27c0ca5
- ---> Removed intermediate container b2eec27c0ca5
- ---> dd88fc635513
+ ---> Running in 2c858ed52e2b
+ ---> Removed intermediate container 2c858ed52e2b
+ ---> 01df27546c8a
 Step 24/39 : LABEL description="CloudPhone11 backend API server"
- ---> Running in be92ce926523
- ---> Removed intermediate container be92ce926523
- ---> bea738b03c17
+ ---> Running in 561373dff800
+ ---> Removed intermediate container 561373dff800
+ ---> 6b26d111685e
 Step 25/39 : WORKDIR /app
- ---> Running in 5c1224d5f9a7
- ---> Removed intermediate container 5c1224d5f9a7
- ---> 8e9934ea7f8f
+ ---> Running in 12ec3c835ffe
+ ---> Removed intermediate container 12ec3c835ffe
+ ---> 9a5b1906fc9e
 Step 26/39 : RUN addgroup -g 1001 -S cloudphone &&     adduser -S cloudphone -u 1001 -G cloudphone &&     mkdir -p /var/lib/phone11/recordings /var/lib/phone11/voicemail &&     chown -R cloudphone:cloudphone /var/lib/phone11
- ---> Running in b710782bdc74
- ---> Removed intermediate container b710782bdc74
- ---> 0a879848931a
+ ---> Running in 7fd85c4aa389
+ ---> Removed intermediate container 7fd85c4aa389
+ ---> 24276583449f
 Step 27/39 : COPY --from=deps /app/node_modules ./node_modules
- ---> 3feb5e5ac8f7
+ ---> 55462d77ea8b
 Step 28/39 : COPY --from=builder /app/dist ./dist
- ---> fd20a819cfd0
+ ---> 3661142929c2
 Step 29/39 : COPY --from=builder /app/drizzle ./drizzle
- ---> 4b1ad4639234
+ ---> 96efa2403201
 Step 30/39 : COPY package.json ./
- ---> 9445c4caa672
+ ---> db3ee50d7874
 Step 31/39 : ENV NODE_ENV=production
- ---> Running in 57fb1f30d1f0
- ---> Removed intermediate container 57fb1f30d1f0
- ---> 53770a25eb9a
+ ---> Running in de81e7c53aec
+ ---> Removed intermediate container de81e7c53aec
+ ---> b8c10f1093e5
 Step 32/39 : ENV PORT=3000
- ---> Running in c6a194074405
- ---> Removed intermediate container c6a194074405
- ---> 9cd6a52f52d3
+ ---> Running in 60d8fcf3e56f
+ ---> Removed intermediate container 60d8fcf3e56f
+ ---> 2e97a551aac5
 Step 33/39 : ENV HOST=0.0.0.0
- ---> Running in 63f1757b0fc6
- ---> Removed intermediate container 63f1757b0fc6
- ---> 04016bb41cab
+ ---> Running in 7fa1c92808a7
+ ---> Removed intermediate container 7fa1c92808a7
+ ---> 0b79513e74f9
 Step 34/39 : ENV RECORDINGS_PATH=/var/lib/phone11/recordings
- ---> Running in 2f5ef5775ffb
- ---> Removed intermediate container 2f5ef5775ffb
- ---> 08863f384f26
+ ---> Running in be35151ac7c1
+ ---> Removed intermediate container be35151ac7c1
+ ---> 61460d1c7ba2
 Step 35/39 : ENV VOICEMAIL_PATH=/var/lib/phone11/voicemail
- ---> Running in fedd96eeaa46
+ ---> Running in 17cecd62b75a
+ ---> Removed intermediate container 17cecd62b75a
+ ---> ec8abfa20e30
+Step 36/39 : HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=10s     CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+ ---> Running in 6846b97eeb4f
+ ---> Removed intermediate container 6846b97eeb4f
+ ---> 6ec5074aa6f4
+Step 37/39 : EXPOSE 3000/tcp
+ ---> Running in 026e5f327fb6
+ ---> Removed intermediate container 026e5f327fb6
+ ---> c701534eb282
+Step 38/39 : USER cloudphone
+ ---> Running in 6936cede2d19
+ ---> Removed intermediate container 6936cede2d19
+ ---> 73dcb8345f5e
+Step 39/39 : CMD ["node", "dist/index.mjs"]
+ ---> Running in d2414ea2f44e
+ ---> Removed intermediate container d2414ea2f44e
+ ---> 0273c8971946
+Successfully built 0273c8971946
+Successfully tagged phone11-backend-public:7b0c678eeff3893ce53c964f17a88d76327299ab
+--- Freeing port 3000 for backend container ---
+48e3634eed7bcf078750d72a8d39d2fae2e3cf1c05216744519cbc7450045448
+--- Waiting for backend container to stay running ---
+Backend state: running restarting=false exit=0
+--- Checking RDS managed <redacted> for DB <redacted> repair ---
+AWS CLI is not available on EC2 and no workflow-supplied RDS master <redacted> was provided; skipping DB <redacted> repair.
+--- Verifying backend DB env and pilot extension ---
+Backend DB env present: host=phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com, user=phone11ai, database=phone11ai, ssl=enabled, <redacted>
+Backend PG auth OK as phone11ai on phone11ai
+Pilot extension ready: 1001 on sip.phone11.ai
+--- Waiting for backend container to stay running ---
+Backend state: running restarting=false exit=0
+--- Waiting for backend health endpoint ---
+Health not ready: curl: (7) Failed to connect to 127.0.0.1 port 3000 after 0 ms: Couldn't connect to server
+{"ok":true,"timestamp":1779032661523,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
+--- Verifying public api.phone11.ai route ---
+Public health: {"ok":true,"timestamp":1779032661613,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
+Redeploy finished.
+Backend redeploy and pilot verification succeeded.
 ```
