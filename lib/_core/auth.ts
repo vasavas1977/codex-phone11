@@ -116,14 +116,14 @@ export async function setUserInfo(user: User): Promise<void> {
       // Use localStorage for web
       window.localStorage.setItem(USER_INFO_KEY, JSON.stringify(user));
       console.log("[Auth] User info stored in localStorage successfully");
-      notifyAuthChanged();
       return;
     }
 
-    // Use SecureStore for native
+    // Use SecureStore for native. This is only a profile cache, not the auth
+    // source of truth, so it must not notify auth listeners or it will
+    // re-trigger useAuth.fetchUser after every successful validation.
     await SecureStore.setItemAsync(USER_INFO_KEY, JSON.stringify(user));
     console.log("[Auth] User info stored in SecureStore successfully");
-    notifyAuthChanged();
   } catch (error) {
     console.error("[Auth] Failed to set user info:", error);
   }
@@ -134,13 +134,12 @@ export async function clearUserInfo(): Promise<void> {
     if (Platform.OS === "web") {
       // Use localStorage for web
       window.localStorage.removeItem(USER_INFO_KEY);
-      notifyAuthChanged();
       return;
     }
 
-    // Use SecureStore for native
+    // Use SecureStore for native. Session token changes are the only auth
+    // events listeners need; clearing cached profile data should stay quiet.
     await SecureStore.deleteItemAsync(USER_INFO_KEY);
-    notifyAuthChanged();
   } catch (error) {
     console.error("[Auth] Failed to clear user info:", error);
   }
