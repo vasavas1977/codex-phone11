@@ -37,8 +37,8 @@ const config: ExpoConfig = {
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "dark",
-  // Expo SDK 54's Reanimated 4 stack requires the new architecture during iOS pod setup.
-  newArchEnabled: true,
+  // react-native-pjsip exposes its iOS module through the legacy NativeModules bridge.
+  newArchEnabled: false,
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
@@ -113,8 +113,7 @@ const config: ExpoConfig = {
           minSdkVersion: 24,
         },
         ios: {
-          // react-native-pjsip is a legacy bridge module. Building RN from
-          // source avoids SDK 54's precompiled iOS Core edge cases during linking.
+          // Keep building RN from source while validating the legacy PJSIP bridge.
           buildReactNativeFromSource: true,
         },
       },
