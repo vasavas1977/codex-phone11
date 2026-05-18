@@ -73,7 +73,7 @@ export function useAuth(options?: UseAuthOptions) {
       }
 
       // Validate the token against the backend and refresh cached user info.
-      const apiUser = await Api.getMe();
+      const apiUser = await Api.getMe({ swallowErrors: false });
       console.log("[useAuth] Native /api/auth/me response:", apiUser);
       if (apiUser) {
         const userInfo = userFromApi(apiUser);
@@ -83,7 +83,7 @@ export function useAuth(options?: UseAuthOptions) {
         return;
       }
 
-      console.log("[useAuth] Session token was present but backend rejected it; clearing auth state");
+      console.log("[useAuth] Session token was present but backend returned no user; clearing auth state");
       setUser(null);
       await Auth.removeSessionToken();
       await Auth.clearUserInfo();
@@ -91,7 +91,17 @@ export function useAuth(options?: UseAuthOptions) {
       const error = err instanceof Error ? err : new Error("Failed to fetch user");
       console.error("[useAuth] fetchUser error:", error);
       setError(error);
-      setUser(null);
+
+      if (err instanceof Api.ApiError && err.status === 401) {
+        console.log("[useAuth] Backend rejected session token with 401; clearing auth state");
+        setUser(null);
+        await Auth.removeSessionToken();
+        await Auth.clearUserInfo();
+      } else if (showLoading) {
+        // First startup without a cached user should end in a usable sign-in state.
+        // Background validation of an already cached user should not blank the UI.
+        setUser(null);
+      }
     } finally {
       setLoading(false);
       console.log("[useAuth] fetchUser completed, loading:", false);
