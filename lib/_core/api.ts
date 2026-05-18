@@ -7,6 +7,22 @@ type ApiResponse<T> = {
   error?: string;
 };
 
+type GetMeOptions = {
+  swallowErrors?: boolean;
+};
+
+const DEFAULT_API_TIMEOUT_MS = 15000;
+
+export class ApiError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function apiCall<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -39,12 +55,19 @@ export async function apiCall<T>(endpoint: string, options: RequestInit = {}): P
   const url = baseUrl ? `${cleanBaseUrl}${cleanEndpoint}` : endpoint;
   console.log("[API] Full URL:", url);
 
+  const timeoutController =
+    typeof AbortController !== "undefined" && !options.signal ? new AbortController() : null;
+  const timeoutId = timeoutController
+    ? setTimeout(() => timeoutController.abort(), DEFAULT_API_TIMEOUT_MS)
+    : undefined;
+
   try {
     console.log("[API] Making request...");
     const response = await fetch(url, {
       ...options,
       headers,
       credentials: "include",
+      ...(timeoutController ? { signal: timeoutController.signal } : {}),
     });
 
     console.log("[API] Response status:", response.status, response.statusText);
@@ -67,7 +90,7 @@ export async function apiCall<T>(endpoint: string, options: RequestInit = {}): P
       } catch {
         // Not JSON, use text as is
       }
-      throw new Error(errorMessage || `API call failed: ${response.statusText}`);
+      throw new ApiError(errorMessage || `API call failed: ${response.statusText}`, response.status);
     }
 
     const contentType = response.headers.get("content-type");
@@ -82,10 +105,15 @@ export async function apiCall<T>(endpoint: string, options: RequestInit = {}): P
     return (text ? JSON.parse(text) : {}) as T;
   } catch (error) {
     console.error("[API] Request failed:", error);
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new ApiError(`API request timed out after ${DEFAULT_API_TIMEOUT_MS / 1000}s: ${endpoint}`);
+    }
     if (error instanceof Error) {
       throw error;
     }
     throw new Error("Unknown error occurred");
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 
@@ -124,7 +152,7 @@ export async function logout(): Promise<void> {
 }
 
 // Get current authenticated user (web uses cookie-based auth)
-export async function getMe(): Promise<{
+export async function getMe(options: GetMeOptions = {}): Promise<{
   id: number;
   openId: string;
   name: string | null;
@@ -132,11 +160,14 @@ export async function getMe(): Promise<{
   loginMethod: string | null;
   lastSignedIn: string;
 } | null> {
+  const { swallowErrors = true } = options;
+
   try {
     const result = await apiCall<{ user: any }>("/api/auth/me");
     return result.user || null;
   } catch (error) {
     console.error("[API] getMe failed:", error);
+    if (!swallowErrors) throw error;
     return null;
   }
 }
