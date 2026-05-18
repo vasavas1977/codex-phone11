@@ -1,13 +1,18 @@
 import { useEffect, useRef } from "react";
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
+import { Platform, Share, StyleSheet, Text, TouchableOpacity, ScrollView, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { useSipAccountStore } from "@/lib/sip/account-store";
-import { type SipDiagnosticEvent, useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
+import { type RegistrationState, type SipAccount, useSipAccountStore } from "@/lib/sip/account-store";
+import {
+  formatDiagnosticContext,
+  formatDiagnosticEvent,
+  type SipDiagnosticEvent,
+  useSipDiagnosticsStore,
+} from "@/lib/sip/diagnostics-store";
 import { sipEngine } from "@/lib/sip/engine";
 
 function levelColor(event: SipDiagnosticEvent, colors: ReturnType<typeof useColors>): string {
@@ -24,12 +29,50 @@ function eventTime(event: SipDiagnosticEvent): string {
   });
 }
 
+function buildDiagnosticReport(
+  events: SipDiagnosticEvent[],
+  account: SipAccount | null,
+  registrationState: RegistrationState,
+  registrationError: string | null
+): string {
+  const accountLines = account
+    ? [
+        `enabled=${account.enabled}`,
+        `username=${account.username}`,
+        `domain=${account.domain}`,
+        `proxy=${account.proxy || account.domain}`,
+        `port=${account.port}`,
+        `transport=${account.transport}`,
+        `srtp=${account.srtp}`,
+        `stun=${account.stun || "none"}`,
+      ]
+    : ["No SIP account loaded"];
+
+  return [
+    "Phone11 SIP Diagnostics",
+    `createdAt=${new Date().toISOString()}`,
+    `platform=${Platform.OS}`,
+    `platformVersion=${String(Platform.Version ?? "unknown")}`,
+    `registrationState=${registrationState}`,
+    `registrationError=${registrationError || "none"}`,
+    "",
+    "Account",
+    ...accountLines,
+    "",
+    "Events",
+    ...(events.length ? events.map(formatDiagnosticEvent) : ["No diagnostic events recorded"]),
+  ].join("\n");
+}
+
 export default function SipDiagnosticsScreen() {
   const colors = useColors();
   const didRequestInit = useRef(false);
   const events = useSipDiagnosticsStore((s) => s.events);
   const addEvent = useSipDiagnosticsStore((s) => s.addEvent);
   const clearEvents = useSipDiagnosticsStore((s) => s.clearEvents);
+  const account = useSipAccountStore((s) => s.account);
+  const registrationState = useSipAccountStore((s) => s.registrationState);
+  const registrationError = useSipAccountStore((s) => s.registrationError);
   const loadAccount = useSipAccountStore((s) => s.loadAccount);
 
   useEffect(() => {
@@ -38,8 +81,8 @@ export default function SipDiagnosticsScreen() {
 
     loadAccount()
       .then(() => {
-        const { account } = useSipAccountStore.getState();
-        if (account?.enabled) {
+        const { account: loadedAccount } = useSipAccountStore.getState();
+        if (loadedAccount?.enabled) {
           sipEngine.initialize().catch((error) => {
             addEvent({
               level: "error",
@@ -68,6 +111,23 @@ export default function SipDiagnosticsScreen() {
       });
   }, [addEvent, loadAccount]);
 
+  async function shareLogs(): Promise<void> {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      await Share.share({
+        title: "Phone11 SIP Diagnostics",
+        message: buildDiagnosticReport(events, account, registrationState, registrationError),
+      });
+    } catch (error) {
+      addEvent({
+        level: "error",
+        category: "engine",
+        message: "Could not open diagnostic share sheet",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   return (
     <ScreenContainer>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -95,18 +155,28 @@ export default function SipDiagnosticsScreen() {
               First-device call trail
             </Text>
             <Text style={[styles.summaryBody, { color: colors.muted }]}> 
-              Latest registration, call, media, and engine events. Use this together with Kamailio and RTPEngine logs during pilot tests.
+              Latest native module, registration, call, media, and engine events. Share this report after each failed test so we can diagnose from logs.
             </Text>
           </View>
         </View>
 
-        <TouchableOpacity
-          style={[styles.provisionButton, { backgroundColor: colors.primary }]}
-          onPress={() => router.push("/settings/sip")}
-        >
-          <IconSymbol name="server.rack" size={18} color="#fff" />
-          <Text style={styles.provisionButtonText}>Open Phone Provisioning</Text>
-        </TouchableOpacity>
+        <View style={styles.actions}>
+          <TouchableOpacity
+            style={[styles.provisionButton, { backgroundColor: colors.primary }]}
+            onPress={() => router.push("/settings/sip")}
+          >
+            <IconSymbol name="server.rack" size={18} color="#fff" />
+            <Text style={styles.provisionButtonText}>Open Phone Provisioning</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.shareButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={shareLogs}
+          >
+            <IconSymbol name="square.and.arrow.up" size={18} color={colors.primary} />
+            <Text style={[styles.shareButtonText, { color: colors.foreground }]}>Share Diagnostic Logs</Text>
+          </TouchableOpacity>
+        </View>
 
         <View style={styles.events}>
           {events.length === 0 ? (
@@ -120,6 +190,7 @@ export default function SipDiagnosticsScreen() {
           ) : (
             events.map((event) => {
               const color = levelColor(event, colors);
+              const context = formatDiagnosticContext(event.context);
               return (
                 <View
                   key={event.id}
@@ -139,6 +210,9 @@ export default function SipDiagnosticsScreen() {
                   ) : null}
                   {event.detail ? (
                     <Text style={[styles.eventDetail, { color: colors.muted }]}>{event.detail}</Text>
+                  ) : null}
+                  {context ? (
+                    <Text style={[styles.eventDetail, { color: colors.muted }]}>{context}</Text>
                   ) : null}
                 </View>
               );
@@ -181,9 +255,12 @@ const styles = StyleSheet.create({
   summaryText: { flex: 1, gap: 4 },
   summaryTitle: { fontSize: 15, fontWeight: "700" },
   summaryBody: { fontSize: 13, lineHeight: 19 },
-  provisionButton: {
-    marginHorizontal: 16,
+  actions: {
+    gap: 10,
+    paddingHorizontal: 16,
     marginBottom: 16,
+  },
+  provisionButton: {
     borderRadius: 14,
     minHeight: 48,
     flexDirection: "row",
@@ -192,6 +269,16 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   provisionButtonText: { color: "#fff", fontSize: 14, fontWeight: "700" },
+  shareButton: {
+    borderRadius: 14,
+    borderWidth: 1,
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  shareButtonText: { fontSize: 14, fontWeight: "700" },
   events: {
     gap: 10,
     paddingHorizontal: 16,
