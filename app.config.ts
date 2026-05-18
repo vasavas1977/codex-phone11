@@ -112,6 +112,11 @@ const config: ExpoConfig = {
           buildArchs: ["armeabi-v7a", "arm64-v8a"],
           minSdkVersion: 24,
         },
+        ios: {
+          // react-native-pjsip is a legacy bridge module. Building RN from
+          // source avoids SDK 54's precompiled iOS Core edge cases during linking.
+          buildReactNativeFromSource: true,
+        },
       },
     ],
   ],
