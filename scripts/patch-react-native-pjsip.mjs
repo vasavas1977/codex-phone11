@@ -1,10 +1,12 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const moduleRoot = path.join(process.cwd(), "node_modules", "react-native-pjsip", "android");
-const gradlePath = path.join(moduleRoot, "build.gradle");
-const manifestPath = path.join(moduleRoot, "src", "main", "AndroidManifest.xml");
-const sourceRoot = path.join(moduleRoot, "src", "main", "java");
+const packageRoot = path.join(process.cwd(), "node_modules", "react-native-pjsip");
+const podspecPath = path.join(packageRoot, "react-native-pjsip.podspec");
+const androidRoot = path.join(packageRoot, "android");
+const gradlePath = path.join(androidRoot, "build.gradle");
+const manifestPath = path.join(androidRoot, "src", "main", "AndroidManifest.xml");
+const sourceRoot = path.join(androidRoot, "src", "main", "java");
 const fallbackNamespace = "com.carusto.ReactNativePjSip";
 
 async function readIfExists(filePath) {
@@ -67,6 +69,10 @@ async function patchSourceTree(rootPath) {
   return changed;
 }
 
+const podspecChanged = await patchFile(podspecPath, (source) =>
+  source.replace(/s\.dependency\s+["']React["']/g, "s.dependency 'React-Core'")
+);
+
 const manifestSource = await readIfExists(manifestPath);
 const manifestPackage = manifestSource?.match(/<manifest\b[^>]*\s+package=["']([^"']+)["']/)?.[1];
 const namespace = manifestPackage || fallbackNamespace;
@@ -114,8 +120,8 @@ const manifestChanged = await patchFile(manifestPath, (source) =>
 );
 const sourceChanged = await patchSourceTree(sourceRoot);
 
-if (gradleChanged || manifestChanged || sourceChanged) {
-  console.log("[phone11-pjsip-patch] Patched react-native-pjsip Android Gradle/source config.");
+if (podspecChanged || gradleChanged || manifestChanged || sourceChanged) {
+  console.log("[phone11-pjsip-patch] Patched react-native-pjsip iOS/Android native config.");
 } else {
-  console.log("[phone11-pjsip-patch] react-native-pjsip Android Gradle/source config already patched.");
+  console.log("[phone11-pjsip-patch] react-native-pjsip native config already patched.");
 }
