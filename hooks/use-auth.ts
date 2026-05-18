@@ -31,10 +31,10 @@ export function useAuth(options?: UseAuthOptions) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
-  const fetchUser = useCallback(async () => {
+  const fetchUser = useCallback(async (showLoading = true) => {
     console.log("[useAuth] fetchUser called");
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
       setError(null);
 
       // Web platform: use cookie-based auth, fetch user from API
@@ -146,11 +146,18 @@ export function useAuth(options?: UseAuthOptions) {
         if (sessionToken && cachedUser) {
           console.log("[useAuth] Native: showing cached user while backend session validates");
           setUser(cachedUser);
-        } else if (!sessionToken && cachedUser) {
-          console.log("[useAuth] Native: cached user exists without token, clearing cached user");
-          Auth.clearUserInfo().catch(console.error);
-        }
+          setLoading(false);
+          fetchUser(false);
+        } else {
+          if (!sessionToken && cachedUser) {
+            console.log("[useAuth] Native: cached user exists without token, clearing cached user");
+            Auth.clearUserInfo().catch(console.error);
+          }
 
+          fetchUser();
+        }
+      }).catch((error) => {
+        console.error("[useAuth] Native cached auth check failed:", error);
         fetchUser();
       });
     }
