@@ -17,10 +17,16 @@
  *   AudioCodes → Zoom Provider Exchange → PSTN
  */
 
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 import { useSipAccountStore, type RegistrationState } from "./account-store";
 import { useSipCallStore } from "./call-store";
-import { formatSipError, useSipDiagnosticsStore } from "./diagnostics-store";
+import {
+  formatSipError,
+  type SipDiagnosticCategory,
+  type SipDiagnosticContext,
+  type SipDiagnosticLevel,
+  useSipDiagnosticsStore,
+} from "./diagnostics-store";
 
 // react-native-pjsip types
 let Endpoint: any = null;
@@ -37,16 +43,83 @@ function sipServerUri(host: string, port: number | null | undefined, transport: 
   return `sip:${server};transport=${normalizedTransport}`;
 }
 
+function safeKeys(value: any): string {
+  try {
+    const keys = Object.keys(value ?? {}).slice(0, 30);
+    return keys.length ? keys.join(",") : "none";
+  } catch {
+    return "unreadable";
+  }
+}
+
+function describeNativeValue(value: any): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  const type = typeof value;
+  const constructorName = value?.constructor?.name;
+  return constructorName ? `${type}:${constructorName}` : type;
+}
+
+function nativeSipModuleKeys(): string {
+  try {
+    const keys = Object.keys(NativeModules)
+      .filter((key) => /pjsip|sip/i.test(key))
+      .sort()
+      .slice(0, 30);
+    return keys.length ? keys.join(",") : "none";
+  } catch {
+    return "unreadable";
+  }
+}
+
+function addNativeDiagnostic(
+  level: SipDiagnosticLevel,
+  message: string,
+  extra: { detail?: string; context?: SipDiagnosticContext } = {}
+): void {
+  useSipDiagnosticsStore.getState().addEvent({
+    level,
+    category: "native",
+    message,
+    ...extra,
+  });
+}
+
 // Lazy-load PJSIP only on native platforms (not web)
 function getPjsip() {
   if (Platform.OS === "web") return null;
   if (!Endpoint) {
     try {
       const pjsip = require("react-native-pjsip");
-      Endpoint = pjsip.Endpoint;
-      Call = pjsip.Call;
+      const endpointExport = pjsip.Endpoint ?? pjsip.default?.Endpoint ?? null;
+      const callExport = pjsip.Call ?? pjsip.default?.Call ?? null;
+      const context = {
+        platform: Platform.OS,
+        moduleType: describeNativeValue(pjsip),
+        moduleKeys: safeKeys(pjsip),
+        defaultKeys: safeKeys(pjsip.default),
+        endpointExportType: describeNativeValue(endpointExport),
+        callExportType: describeNativeValue(callExport),
+        nativeSipModules: nativeSipModuleKeys(),
+      };
+
+      Endpoint = endpointExport;
+      Call = callExport;
+
+      addNativeDiagnostic(
+        Endpoint ? "info" : "error",
+        Endpoint ? "Loaded react-native-pjsip module" : "react-native-pjsip Endpoint export missing",
+        { context }
+      );
     } catch (e) {
       console.warn("[SIP Engine] react-native-pjsip not available:", e);
+      addNativeDiagnostic("error", "react-native-pjsip require failed", {
+        detail: formatSipError(e),
+        context: {
+          platform: Platform.OS,
+          nativeSipModules: nativeSipModuleKeys(),
+        },
+      });
     }
   }
   return Endpoint ? { Endpoint, Call } : null;
@@ -88,12 +161,53 @@ class SipEngine {
       this._diag("info", "registration", "Starting SIP registration", {
         destination: registrationServer,
         detail: `${account.transport}/${account.port}`,
+        context: {
+          username: account.username,
+          domain: account.domain,
+          proxy: account.proxy || registrationServer,
+          srtp: account.srtp,
+          stun: account.stun || "none",
+        },
       });
 
       // Create PJSIP endpoint
-      this.endpoint = new pjsip.Endpoint();
+      this._diag("info", "native", "Creating PJSIP endpoint", {
+        context: {
+          platform: Platform.OS,
+          endpointExportType: describeNativeValue(pjsip.Endpoint),
+          nativeSipModules: nativeSipModuleKeys(),
+        },
+      });
+
+      const endpoint = new pjsip.Endpoint();
+      const endpointContext = {
+        endpointInstanceType: describeNativeValue(endpoint),
+        endpointKeys: safeKeys(endpoint),
+        startType: typeof endpoint?.start,
+        createAccountType: typeof endpoint?.createAccount,
+        onType: typeof endpoint?.on,
+      };
+
+      if (!endpoint || typeof endpoint.start !== "function") {
+        const detail = `react-native-pjsip Endpoint constructor returned ${describeNativeValue(endpoint)}; startType=${typeof endpoint?.start}`;
+        this._diag("error", "native", "PJSIP endpoint is not usable", {
+          detail,
+          context: endpointContext,
+        });
+        setRegistrationState("failed", detail);
+        return;
+      }
+
+      this.endpoint = endpoint;
+      this._diag("info", "native", "PJSIP endpoint created", { context: endpointContext });
 
       // Configure endpoint
+      this._diag("info", "native", "Starting PJSIP endpoint", {
+        context: {
+          platform: Platform.OS,
+          userAgent: `Phone11/1.0 (${Platform.OS})`,
+        },
+      });
       await this.endpoint.start({
         service: {
           ua: `Phone11/1.0 (${Platform.OS})`,
@@ -111,8 +225,20 @@ class SipEngine {
           level: 3,
         },
       });
+      this._diag("info", "native", "PJSIP endpoint started");
 
       // Register SIP account
+      this._diag("info", "registration", "Creating SIP account in PJSIP", {
+        destination: registrationServer,
+        context: {
+          username: account.username,
+          domain: account.domain,
+          proxy: outboundProxy,
+          transport: account.transport.toLowerCase(),
+          srtp: account.srtp,
+          stun: account.stun || "none",
+        },
+      });
       this.pjsipAccount = await this.endpoint.createAccount({
         name: account.displayName || account.username,
         username: account.username,
@@ -130,6 +256,13 @@ class SipEngine {
         mediaStunEnabled: !!account.stun,
         mediaStunServer: account.stun || null,
       });
+      this._diag("info", "registration", "SIP account created in PJSIP", {
+        destination: registrationServer,
+        context: {
+          pjsipAccountType: describeNativeValue(this.pjsipAccount),
+          pjsipAccountKeys: safeKeys(this.pjsipAccount),
+        },
+      });
 
       // Listen for registration state changes
       this.endpoint.on("registration_changed", (data: any) => {
@@ -140,7 +273,15 @@ class SipEngine {
           state === "failed" ? "error" : "info",
           "registration",
           `SIP registration ${state}`,
-          { destination: registrationServer, detail }
+          {
+            destination: registrationServer,
+            detail,
+            context: {
+              rawState: data.state,
+              lastStatus: data.lastStatus ?? data.lastError?.status ?? "none",
+              lastReason: data.lastError?.reason ?? "none",
+            },
+          }
         );
       });
 
@@ -354,9 +495,9 @@ class SipEngine {
 
   private _diag(
     level: "info" | "warning" | "error",
-    category: "engine" | "registration" | "call" | "media",
+    category: SipDiagnosticCategory,
     message: string,
-    extra: { callId?: string; destination?: string; detail?: string } = {}
+    extra: { callId?: string; destination?: string; detail?: string; context?: SipDiagnosticContext } = {}
   ): void {
     useSipDiagnosticsStore.getState().addEvent({
       level,
