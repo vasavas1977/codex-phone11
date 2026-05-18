@@ -72,6 +72,16 @@ function nativeSipModuleKeys(): string {
   }
 }
 
+function pjsipNativeBridgeContext(): SipDiagnosticContext {
+  const bridge = NativeModules.PjSipModule;
+  return {
+    nativeSipModules: nativeSipModuleKeys(),
+    pjsipBridgeType: describeNativeValue(bridge),
+    pjsipBridgeKeys: safeKeys(bridge),
+    pjsipBridgeStartType: typeof bridge?.start,
+  };
+}
+
 function addNativeDiagnostic(
   level: SipDiagnosticLevel,
   message: string,
@@ -175,9 +185,20 @@ class SipEngine {
         context: {
           platform: Platform.OS,
           endpointExportType: describeNativeValue(pjsip.Endpoint),
-          nativeSipModules: nativeSipModuleKeys(),
+          ...pjsipNativeBridgeContext(),
         },
       });
+
+      if (!NativeModules.PjSipModule || typeof NativeModules.PjSipModule.start !== "function") {
+        const detail =
+          "react-native-pjsip native bridge NativeModules.PjSipModule is missing; rebuild iOS with the legacy React Native bridge enabled and confirm the PjSipModule pod is linked.";
+        this._diag("error", "native", "PJSIP native bridge missing", {
+          detail,
+          context: pjsipNativeBridgeContext(),
+        });
+        setRegistrationState("failed", detail);
+        return;
+      }
 
       const endpoint = new pjsip.Endpoint();
       const endpointContext = {
@@ -455,7 +476,16 @@ class SipEngine {
   async destroy(): Promise<void> {
     if (this.endpoint) {
       try {
-        await this.endpoint.stop();
+        if (typeof this.endpoint.stop === "function") {
+          await this.endpoint.stop();
+        } else {
+          this._diag("warning", "engine", "PJSIP endpoint stop is not supported by this native module", {
+            context: {
+              endpointType: describeNativeValue(this.endpoint),
+              endpointKeys: safeKeys(this.endpoint),
+            },
+          });
+        }
       } catch (e) {
         console.error("[SIP Engine] destroy failed:", e);
         this._diag("error", "engine", "SIP engine destroy failed", { detail: formatSipError(e) });
