@@ -160,7 +160,7 @@ export default function SIPAccountScreen() {
   };
 
   const handleSyncFromAdmin = async () => {
-    if (authLoading) {
+    if (authLoading && !user) {
       Alert.alert("Account is still loading", "Please wait a moment, then sync again.");
       return;
     }
@@ -174,7 +174,7 @@ export default function SIPAccountScreen() {
     }
 
     try {
-      await refreshAuth();
+      await refreshAuth(false);
       const result = await phoneConfigQuery.refetch();
 
       if (result.error) throw result.error;
@@ -195,7 +195,7 @@ export default function SIPAccountScreen() {
   };
 
   useEffect(() => {
-    if (!accountLoaded || authLoading || !isAuthenticated || !user?.id || account) return;
+    if (!accountLoaded || !isAuthenticated || !user?.id || account) return;
     if (autoProvisionAttempted.current) return;
     if (
       phoneConfigQuery.isFetching ||
@@ -213,7 +213,6 @@ export default function SIPAccountScreen() {
   }, [
     account,
     accountLoaded,
-    authLoading,
     isAuthenticated,
     user?.id,
     phoneConfigQuery.isFetching,
@@ -253,10 +252,10 @@ export default function SIPAccountScreen() {
     ensurePilotConfig.isPending ||
     createExtension.isPending ||
     assignExtension.isPending;
-  const userLabel = authLoading
-    ? "Checking sign-in..."
-    : isAuthenticated
+  const userLabel = isAuthenticated
     ? `${user?.email || user?.name || "Signed-in user"} - User ID ${user?.id}`
+    : authLoading
+    ? "Checking sign-in..."
     : "Not signed in";
 
   return (
@@ -285,7 +284,7 @@ export default function SIPAccountScreen() {
               <Text style={[styles.cardTitle, { color: colors.foreground }]}>Phone11 Account</Text>
               <Text style={[styles.accountSub, { color: colors.muted }]}>{userLabel}</Text>
             </View>
-            {authLoading ? (
+            {authLoading && !isAuthenticated ? (
               <ActivityIndicator size="small" color={colors.primary} />
             ) : isAuthenticated ? (
               <View style={[styles.statusPill, { backgroundColor: colors.success + "18" }]}> 
