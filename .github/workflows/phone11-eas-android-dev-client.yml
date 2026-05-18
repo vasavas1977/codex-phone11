@@ -6,7 +6,7 @@ on:
       eas_platform:
         description: EAS build platform to use
         required: true
-        default: android
+        default: ios
         type: choice
         options:
           - android
@@ -14,7 +14,7 @@ on:
       eas_profile:
         description: EAS build profile to use
         required: true
-        default: development
+        default: preview-ios-existing-credentials
         type: choice
         options:
           - development
@@ -25,7 +25,7 @@ on:
       wait_for_build:
         description: Keep GitHub Actions running until the EAS build finishes
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
