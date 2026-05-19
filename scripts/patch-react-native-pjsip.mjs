@@ -10,6 +10,7 @@ const gradlePath = path.join(androidRoot, "build.gradle");
 const manifestPath = path.join(androidRoot, "src", "main", "AndroidManifest.xml");
 const sourceRoot = path.join(androidRoot, "src", "main", "java");
 const fallbackNamespace = "com.carusto.ReactNativePjSip";
+const iosBridgeHeaderImport = "#import <React/RCTBridgeModule.h>";
 
 async function readIfExists(filePath) {
   try {
@@ -148,8 +149,8 @@ ${vendoredFrameworks}  s.frameworks = "AVFoundation", "AudioToolbox", "CallKit",
   s.libraries = "c++", "z"
   s.pod_target_xcconfig = {
     "GCC_PREPROCESSOR_DEFINITIONS" => "$(inherited) PJ_AUTOCONF=1",
-    "FRAMEWORK_SEARCH_PATHS" => "$(inherited) \"\${PODS_TARGET_SRCROOT}/ios\"",
-    "HEADER_SEARCH_PATHS" => "$(inherited) \"\${PODS_TARGET_SRCROOT}/ios/VialerPJSIP.framework/Headers\"",
+    "FRAMEWORK_SEARCH_PATHS" => '$(inherited) "${PODS_TARGET_SRCROOT}/ios"',
+    "HEADER_SEARCH_PATHS" => '$(inherited) "${PODS_TARGET_SRCROOT}/ios/VialerPJSIP.framework/Headers"',
     "OTHER_LDFLAGS" => "$(inherited) -ObjC"
   }
   s.requires_arc = true
@@ -170,22 +171,47 @@ end
   return true;
 }
 
+async function ensurePjSipBridgeExport() {
+  const source = await readIfExists(iosModulePath);
+  if (source === null) {
+    console.warn(`[phone11-pjsip-patch] Skipping iOS bridge export; missing ${iosModulePath}`);
+    return false;
+  }
+
+  let next = source;
+
+  if (!next.includes(iosBridgeHeaderImport)) {
+    next = next.replace(/(#import\s+<React\/RCTBridge\.h>\s*)/, `$1${iosBridgeHeaderImport}\n`);
+  }
+
+  if (!/RCT_EXPORT_MODULE\s*\(/.test(next)) {
+    if (!/@implementation\s+PjSipModule\b/.test(next)) {
+      throw new Error(
+        `[phone11-pjsip-patch] Cannot add RCT_EXPORT_MODULE because @implementation PjSipModule was not found in ${iosModulePath}`
+      );
+    }
+
+    next = next.replace(
+      /(@implementation\s+PjSipModule(?:\s*\([^)]*\))?\s*)/,
+      "$1\nRCT_EXPORT_MODULE(PjSipModule);\n"
+    );
+  }
+
+  if (!/RCT_EXPORT_MODULE\s*\(/.test(next)) {
+    throw new Error(`[phone11-pjsip-patch] PjSipModule legacy bridge export is still missing in ${iosModulePath}`);
+  }
+
+  if (next !== source) {
+    await writeFile(iosModulePath, next);
+    console.log(`[phone11-pjsip-patch] Wrote iOS PjSipModule legacy bridge export: ${iosModulePath}`);
+  }
+
+  console.log(`[phone11-pjsip-patch] Verified iOS PjSipModule legacy bridge export: ${iosModulePath}`);
+  return next !== source;
+}
+
 const podspecChanged = await ensurePjSipPodspec();
-
-const iosModuleChanged = await patchFile(iosModulePath, (source) => {
-  if (/RCT_EXPORT_MODULE\s*\(/.test(source)) {
-    return source;
-  }
-
-  if (!/@implementation\s+PjSipModule\b/.test(source)) {
-    return source;
-  }
-
-  return source.replace(
-    /(@implementation\s+PjSipModule\s*)/,
-    "$1\nRCT_EXPORT_MODULE(PjSipModule);\n"
-  );
-});
+const iosModuleChanged = await ensurePjSipBridgeExport();
 
 const manifestSource = await readIfExists(manifestPath);
 const manifestPackage = manifestSource?.match(/<manifest\b[^>]*\s+package=["']([^"']+)["']/)?.[1];
