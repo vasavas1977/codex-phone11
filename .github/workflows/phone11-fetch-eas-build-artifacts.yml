@@ -126,7 +126,7 @@ jobs:
           }
           fs.writeFileSync(
             'eas-artifacts/log-downloads.tsv',
-            entries.map(([name, url]) => `${name}\t${url}`).join('\n')
+            entries.map(([name, url]) => `${name}\t${url}`).join('\n') + (entries.length ? '\n' : '')
           );
           console.log(`Prepared ${entries.length} EAS log file downloads.`);
           NODE
@@ -138,7 +138,7 @@ jobs:
 
           download_count=0
           failed_count=0
-          while IFS=$'\t' read -r name url; do
+          while IFS=$'\t' read -r name url || [ -n "$name" ]; do
             [ -z "$name" ] && continue
             echo "Downloading EAS log file: $name"
             if curl --fail --location --silent --show-error --max-time 120 "$url" -o "eas-artifacts/eas-logs/$name"; then
