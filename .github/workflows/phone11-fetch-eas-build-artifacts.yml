@@ -6,7 +6,7 @@ on:
       eas_build_id:
         description: EAS build ID to inspect
         required: true
-        default: add42a2c-5061-4620-ace6-fb5f719dbf4f
+        default: 3065c367-cf9d-4ab6-870c-b7fea7900a50
   push:
     branches:
       - codex/phone11-mobile-pjsip-20260506
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 30
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      DEFAULT_EAS_BUILD_ID: add42a2c-5061-4620-ace6-fb5f719dbf4f
+      DEFAULT_EAS_BUILD_ID: 3065c367-cf9d-4ab6-870c-b7fea7900a50
     steps:
       - name: Require EXPO_TOKEN secret
         run: |
