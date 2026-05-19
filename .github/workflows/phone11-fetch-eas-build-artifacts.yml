@@ -6,7 +6,7 @@ on:
       eas_build_id:
         description: EAS build ID to inspect
         required: true
-        default: b06e4dfb-daec-47de-a906-95c0112b0f6f
+        default: 65edd8a9-7e9f-4e30-8eed-5512ee09538a
   push:
     branches:
       - codex/phone11-mobile-pjsip-20260506
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 30
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      DEFAULT_EAS_BUILD_ID: b06e4dfb-daec-47de-a906-95c0112b0f6f
+      DEFAULT_EAS_BUILD_ID: 65edd8a9-7e9f-4e30-8eed-5512ee09538a
     steps:
       - name: Require EXPO_TOKEN secret
         run: |
@@ -38,31 +38,10 @@ jobs:
           echo "EAS_BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
           echo "Inspecting EAS build $BUILD_ID"
 
-      - name: Checkout project
-        uses: actions/checkout@v4
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      - name: Enable pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.12.0 --activate
-          pnpm --version
-
-      - name: Install project dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Inspect local PJSIP native package after postinstall
-        run: |
-          echo "--- react-native-pjsip package inventory ---"
-          find node_modules/react-native-pjsip -maxdepth 5 -type f \( -name '*.podspec' -o -name 'PjSipModule.*' -o -name 'react-native.config.*' \) -print | sort || true
-          echo "--- PjSipModule export markers ---"
-          find node_modules/react-native-pjsip -path '*/ios/*' -name 'PjSipModule.m' -print -exec grep -nE "RCT_EXPORT_MODULE|@implementation PjSipModule|@interface PjSipModule" {} \; || true
-          echo "--- podspec and iOS source markers ---"
-          grep -RInE "React-Core|source_files|PjSipModule|RTCPjSip|VialerPJSIP|RCT_EXPORT_MODULE" node_modules/react-native-pjsip/*.podspec node_modules/react-native-pjsip/ios 2>/dev/null | head -300 || true
 
       - name: Install EAS CLI
         run: npm install --global eas-cli@18.13.1
@@ -72,50 +51,38 @@ jobs:
 
       - name: Fetch build metadata
         run: |
-          mkdir -p eas-artifacts
-          eas build:view --help > eas-artifacts/build-view-help.txt 2>&1 || true
-
+          mkdir -p eas-artifacts/eas-logs
           set +e
           eas build:view "$EAS_BUILD_ID" --json > eas-artifacts/build-view.json 2> eas-artifacts/build-view.stderr
           status=$?
           set -e
-
           echo "build_view_exit_status=$status"
           echo "--- build:view stderr ---"
           cat eas-artifacts/build-view.stderr || true
           echo "--- build:view summary ---"
-
           node - <<'NODE'
           const fs = require('fs');
-          const raw = fs.existsSync('eas-artifacts/build-view.json')
-            ? fs.readFileSync('eas-artifacts/build-view.json', 'utf8').trim()
-            : '';
+          const path = 'eas-artifacts/build-view.json';
+          const raw = fs.existsSync(path) ? fs.readFileSync(path, 'utf8').trim() : '';
           if (!raw || !/^[{[]/.test(raw)) {
-            console.log('build:view did not return JSON; continuing to artifact download.');
+            console.log('No JSON build metadata returned.');
             process.exit(0);
           }
-          try {
-            const build = JSON.parse(raw);
-            const summary = {
-              id: build.id,
-              status: build.status,
-              platform: build.platform,
-              error: build.error,
-              profile: build.buildProfile,
-              appVersion: build.appVersion,
-              appBuildVersion: build.appBuildVersion,
-              gitCommitHash: build.gitCommitHash,
-              gitCommitMessage: build.gitCommitMessage,
-              hasXcodeBuildLogsUrl: Boolean(build.artifacts?.xcodeBuildLogsUrl),
-              logFileCount: Array.isArray(build.logFiles) ? build.logFiles.length : 0,
-            };
-            console.log(JSON.stringify(summary, null, 2));
-          } catch (error) {
-            console.log(`build:view output was not parseable JSON: ${error.message}`);
-          }
+          const build = JSON.parse(raw);
+          const summary = {
+            id: build.id,
+            status: build.status,
+            platform: build.platform,
+            error: build.error,
+            buildProfile: build.buildProfile,
+            gitCommitHash: build.gitCommitHash,
+            hasXcodeBuildLogsUrl: Boolean(build.artifacts?.xcodeBuildLogsUrl),
+            logFileCount: Array.isArray(build.logFiles) ? build.logFiles.length : 0,
+          };
+          console.log(JSON.stringify(summary, null, 2));
           NODE
 
-      - name: Download EAS signed log files before expiry
+      - name: Download signed EAS log files
         run: |
           mkdir -p eas-artifacts/eas-logs
           node - <<'NODE'
@@ -126,18 +93,13 @@ jobs:
           const entries = [];
           if (raw && /^[{[]/.test(raw)) {
             const build = JSON.parse(raw);
-            if (build.artifacts?.xcodeBuildLogsUrl) {
-              entries.push(['xcode-build.log', build.artifacts.xcodeBuildLogsUrl]);
-            }
-            for (const [index, url] of (build.logFiles ?? []).entries()) {
+            if (build.artifacts?.xcodeBuildLogsUrl) entries.push(['xcode-build.log', build.artifacts.xcodeBuildLogsUrl]);
+            for (const [index, url] of (build.logFiles || []).entries()) {
               entries.push([`eas-log-${String(index + 1).padStart(2, '0')}.txt`, url]);
             }
           }
-          fs.writeFileSync(
-            'eas-artifacts/log-downloads.tsv',
-            entries.map(([name, url]) => `${name}\t${url}`).join('\n') + (entries.length ? '\n' : '')
-          );
-          console.log(`Prepared ${entries.length} EAS log file downloads.`);
+          fs.writeFileSync('eas-artifacts/log-downloads.tsv', entries.map(([name, url]) => `${name}\t${url}`).join('\n') + (entries.length ? '\n' : ''));
+          console.log(`Prepared ${entries.length} log downloads.`);
           NODE
 
           if [ ! -s eas-artifacts/log-downloads.tsv ]; then
@@ -145,74 +107,28 @@ jobs:
             exit 0
           fi
 
-          download_count=0
-          failed_count=0
           while IFS=$'\t' read -r name url || [ -n "$name" ]; do
             [ -z "$name" ] && continue
-            echo "Downloading EAS log file: $name"
-            if curl --fail --location --silent --show-error --max-time 120 "$url" -o "eas-artifacts/eas-logs/$name"; then
-              bytes=$(wc -c < "eas-artifacts/eas-logs/$name" | tr -d ' ')
-              echo "Downloaded $name ($bytes bytes)"
-              download_count=$((download_count + 1))
-            else
-              echo "Failed to download $name"
-              failed_count=$((failed_count + 1))
+            echo "Downloading $name"
+            curl --fail --location --silent --show-error --max-time 120 "$url" -o "eas-artifacts/eas-logs/$name" || true
+            if [ -f "eas-artifacts/eas-logs/$name" ]; then
+              wc -c "eas-artifacts/eas-logs/$name"
             fi
           done < eas-artifacts/log-downloads.tsv
 
-          echo "downloaded_eas_log_files=$download_count"
-          echo "failed_eas_log_files=$failed_count"
-
-      - name: Download all available EAS artifacts
-        run: |
-          mkdir -p eas-artifacts
-          set +e
-          eas build:download --build-id "$EAS_BUILD_ID" --all-artifacts --json --non-interactive > eas-artifacts/download.json 2> eas-artifacts/download.stderr
-          status=$?
-          set -e
-          echo "download_exit_status=$status"
-          echo "--- download stdout ---"
-          cat eas-artifacts/download.json || true
-          echo "--- download stderr ---"
-          cat eas-artifacts/download.stderr || true
-          if [ "$status" -ne 0 ]; then
-            echo "Download command failed; continuing so available metadata and logs are uploaded."
-          fi
-
-      - name: Extract downloaded archives
+      - name: Print iOS pod/native error evidence
+        if: always()
         run: |
           cd eas-artifacts
-          echo "--- artifact file inventory before extraction ---"
-          find . -maxdepth 3 -type f -print | sort
-          while IFS= read -r file; do
-            case "$file" in
-              *.zip)
-                dir="${file%.zip}-unzipped"
-                mkdir -p "$dir"
-                unzip -q "$file" -d "$dir" || true
-                ;;
-              *.tar.gz|*.tgz)
-                dir="${file%.tar.gz}-untarred"
-                mkdir -p "$dir"
-                tar -xzf "$file" -C "$dir" || true
-                ;;
-            esac
-          done < <(find . -type f \( -name '*.zip' -o -name '*.tar.gz' -o -name '*.tgz' \) -print)
-          echo "--- artifact file inventory after extraction ---"
-          find . -maxdepth 5 -type f -print | sort | head -500
-
-      - name: Print pod/install error context
-        run: |
-          cd eas-artifacts
-          echo "--- files likely to contain pod/build logs ---"
-          find . -type f \( -iname '*pod*' -o -iname '*install*' -o -iname '*xcode*' -o -iname '*.log' -o -iname '*.txt' \) -print | sort | head -200
-          echo "--- first matching error contexts ---"
-          grep -RInE "(phone11-pjsip-patch|RCT_EXPORT_MODULE|PjSipModule\.m|PjSipModule|react-native-pjsip|RTCPjSip|PJSIP|VialerPJSIP|Podfile\.lock|Manifest\.lock|autolink|autolinking|NativeModules|pod install|Install pods|ERROR|Error|error:|fatal|failed|Failed|FAILURE|Undefined symbols|No such module|requires new architecture|new architecture|use_frameworks|React-Codegen|Hermes|Reanimated|Worklets)" . 2>/dev/null | head -500 || true
-          echo "--- tail of large log-like files ---"
+          echo "--- artifact files ---"
+          find . -maxdepth 4 -type f -print | sort
+          echo "--- relevant pod/native contexts ---"
+          grep -RInE "(Install pods|pod install|Podfile|podspec|react-native-pjsip|PjSipModule|RTCPjSip|VialerPJSIP|PJ_AUTOCONF|PJ_HAS_PENTIUM|PJ_IS_LITTLE_ENDIAN|PJ_IS_BIG_ENDIAN|Please specify target machine|HEADER_SEARCH_PATHS|FRAMEWORK_SEARCH_PATHS|OTHER_LDFLAGS|Undefined symbols|No such module|fatal error|error:|failed|Failed|FAILURE)" . 2>/dev/null | head -800 || true
+          echo "--- log tails ---"
           while IFS= read -r file; do
             echo "===== $file ====="
-            tail -120 "$file" || true
-          done < <(find . -type f \( -iname '*.log' -o -iname '*.txt' \) -size -5M -print | sort | head -25)
+            tail -160 "$file" || true
+          done < <(find . -type f \( -iname '*.log' -o -iname '*.txt' -o -iname '*.stderr' \) -size -10M -print | sort | head -30)
 
       - name: Upload fetched artifacts
         if: always()
