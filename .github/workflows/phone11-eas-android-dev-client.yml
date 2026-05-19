@@ -27,13 +27,19 @@ on:
         required: true
         default: true
         type: boolean
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-eas-android-dev-client.yml
+      - .github/phone11-build-triggers/ios-eas-build.txt
 
 permissions:
   contents: read
 
 jobs:
   eas-build:
-    name: Queue ${{ inputs.eas_platform }} EAS build
+    name: Queue ${{ github.event_name == 'push' && 'ios' || inputs.eas_platform }} EAS build
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -78,9 +84,9 @@ jobs:
 
       - name: Build app
         env:
-          EAS_PLATFORM: ${{ inputs.eas_platform }}
-          EAS_PROFILE: ${{ inputs.eas_profile }}
-          WAIT_FOR_BUILD: ${{ inputs.wait_for_build }}
+          EAS_PLATFORM: ${{ github.event_name == 'push' && 'ios' || inputs.eas_platform }}
+          EAS_PROFILE: ${{ github.event_name == 'push' && 'preview-ios-existing-credentials' || inputs.eas_profile }}
+          WAIT_FOR_BUILD: ${{ github.event_name == 'push' && 'true' || inputs.wait_for_build }}
         run: |
           if [ "$WAIT_FOR_BUILD" = "true" ]; then
             eas build --platform "$EAS_PLATFORM" --profile "$EAS_PROFILE" --non-interactive
