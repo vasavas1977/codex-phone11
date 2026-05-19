@@ -6,7 +6,7 @@ on:
       eas_build_id:
         description: EAS build ID to inspect
         required: true
-        default: f32f8ad9-2c9a-4105-8787-9cce36ec4dc2
+        default: b06e4dfb-daec-47de-a906-95c0112b0f6f
   push:
     branches:
       - codex/phone11-mobile-pjsip-20260506
@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 30
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      DEFAULT_EAS_BUILD_ID: f32f8ad9-2c9a-4105-8787-9cce36ec4dc2
+      DEFAULT_EAS_BUILD_ID: b06e4dfb-daec-47de-a906-95c0112b0f6f
     steps:
       - name: Require EXPO_TOKEN secret
         run: |
@@ -54,6 +54,15 @@ jobs:
 
       - name: Install project dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Inspect local PJSIP native package after postinstall
+        run: |
+          echo "--- react-native-pjsip package inventory ---"
+          find node_modules/react-native-pjsip -maxdepth 5 -type f \( -name '*.podspec' -o -name 'PjSipModule.*' -o -name 'react-native.config.*' \) -print | sort || true
+          echo "--- PjSipModule export markers ---"
+          find node_modules/react-native-pjsip -path '*/ios/*' -name 'PjSipModule.m' -print -exec grep -nE "RCT_EXPORT_MODULE|@implementation PjSipModule|@interface PjSipModule" {} \; || true
+          echo "--- podspec and iOS source markers ---"
+          grep -RInE "React-Core|source_files|PjSipModule|RTCPjSip|VialerPJSIP|RCT_EXPORT_MODULE" node_modules/react-native-pjsip/*.podspec node_modules/react-native-pjsip/ios 2>/dev/null | head -300 || true
 
       - name: Install EAS CLI
         run: npm install --global eas-cli@18.13.1
@@ -198,7 +207,7 @@ jobs:
           echo "--- files likely to contain pod/build logs ---"
           find . -type f \( -iname '*pod*' -o -iname '*install*' -o -iname '*xcode*' -o -iname '*.log' -o -iname '*.txt' \) -print | sort | head -200
           echo "--- first matching error contexts ---"
-          grep -RInE "(pod install|Install pods|ERROR|Error|error:|fatal|failed|Failed|FAILURE|Undefined symbols|No such module|requires new architecture|new architecture|use_frameworks|React-Codegen|PjSipModule|PJSIP|VialerPJSIP|NativeModules|Hermes|Reanimated|Worklets)" . 2>/dev/null | head -300 || true
+          grep -RInE "(phone11-pjsip-patch|RCT_EXPORT_MODULE|PjSipModule\.m|PjSipModule|react-native-pjsip|RTCPjSip|PJSIP|VialerPJSIP|Podfile\.lock|Manifest\.lock|autolink|autolinking|NativeModules|pod install|Install pods|ERROR|Error|error:|fatal|failed|Failed|FAILURE|Undefined symbols|No such module|requires new architecture|new architecture|use_frameworks|React-Codegen|Hermes|Reanimated|Worklets)" . 2>/dev/null | head -500 || true
           echo "--- tail of large log-like files ---"
           while IFS= read -r file; do
             echo "===== $file ====="
