@@ -149,8 +149,8 @@ ${vendoredFrameworks}  s.frameworks = "AVFoundation", "AudioToolbox", "CallKit",
   s.libraries = "c++", "z"
   s.pod_target_xcconfig = {
     "GCC_PREPROCESSOR_DEFINITIONS" => "$(inherited) PJ_AUTOCONF=1",
-    "FRAMEWORK_SEARCH_PATHS" => '$(inherited) "${PODS_TARGET_SRCROOT}/ios"',
-    "HEADER_SEARCH_PATHS" => '$(inherited) "${PODS_TARGET_SRCROOT}/ios/VialerPJSIP.framework/Headers"',
+    "FRAMEWORK_SEARCH_PATHS" => '$(inherited) "\${PODS_TARGET_SRCROOT}/ios"',
+    "HEADER_SEARCH_PATHS" => '$(inherited) "\${PODS_TARGET_SRCROOT}/ios/VialerPJSIP.framework/Headers"',
     "OTHER_LDFLAGS" => "$(inherited) -ObjC"
   }
   s.requires_arc = true

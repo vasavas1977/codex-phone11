@@ -58,11 +58,22 @@ jobs:
       - name: Inspect local PJSIP native package after postinstall
         run: |
           echo "--- react-native-pjsip package inventory ---"
-          find node_modules/react-native-pjsip -maxdepth 5 -type f \( -name '*.podspec' -o -name 'PjSipModule.*' -o -name 'react-native.config.*' \) -print | sort || true
+          find -L node_modules/react-native-pjsip -maxdepth 5 -type f \( -name '*.podspec' -o -name 'PjSipModule.*' -o -name 'react-native.config.*' \) -print | sort || true
           echo "--- generated podspec ---"
           sed -n '1,220p' node_modules/react-native-pjsip/react-native-pjsip.podspec || true
           echo "--- PjSipModule export markers ---"
-          find node_modules/react-native-pjsip -path '*/ios/*' -name 'PjSipModule.m' -print -exec grep -nE "RCT_EXPORT_MODULE|@implementation PjSipModule|@interface PjSipModule" {} \; || true
+          find -L node_modules/react-native-pjsip -path '*/ios/*' -name 'PjSipModule.m' -print -exec grep -nE "RCT_EXPORT_MODULE|@implementation PjSipModule|@interface PjSipModule" {} \;
+          node - <<'NODE'
+          const fs = require('fs');
+          const source = fs.readFileSync('node_modules/react-native-pjsip/ios/RTCPjSip/PjSipModule.m', 'utf8');
+          const exportMatch = source.match(/RCT_EXPORT_MODULE[^\n]*/);
+          const implementationMatch = source.match(/@implementation PjSipModule[^\n]*/);
+          console.log(`legacy_bridge_export=${exportMatch?.[0] || 'MISSING'}`);
+          console.log(`module_implementation=${implementationMatch?.[0] || 'MISSING'}`);
+          if (!exportMatch || !implementationMatch) {
+            throw new Error('react-native-pjsip iOS legacy bridge export is missing after postinstall');
+          }
+          NODE
 
       - name: Install EAS CLI
         run: npm install --global eas-cli@18.13.1
