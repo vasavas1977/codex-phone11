@@ -52,34 +52,46 @@ jobs:
       - name: Fetch build metadata
         run: |
           mkdir -p eas-artifacts
+          eas build:view --help > eas-artifacts/build-view-help.txt 2>&1 || true
+
           set +e
-          eas build:view --build-id "$EAS_BUILD_ID" --json > eas-artifacts/build-view.json 2> eas-artifacts/build-view.stderr
+          eas build:view "$EAS_BUILD_ID" --json > eas-artifacts/build-view.json 2> eas-artifacts/build-view.stderr
           status=$?
           set -e
+
           echo "build_view_exit_status=$status"
           echo "--- build:view stderr ---"
           cat eas-artifacts/build-view.stderr || true
-          echo "--- build:view json ---"
+          echo "--- build:view json/stdout ---"
           cat eas-artifacts/build-view.json || true
-          if [ -s eas-artifacts/build-view.json ]; then
-            node - <<'NODE'
+
+          node - <<'NODE'
           const fs = require('fs');
-          const raw = fs.readFileSync('eas-artifacts/build-view.json', 'utf8');
-          const build = JSON.parse(raw);
-          const summary = {
-            id: build.id,
-            status: build.status,
-            platform: build.platform,
-            profile: build.buildProfile,
-            appVersion: build.appVersion,
-            appBuildVersion: build.appBuildVersion,
-            gitCommitHash: build.gitCommitHash,
-            logsUrl: build.logsUrl,
-            artifacts: build.artifacts,
-          };
-          console.log(JSON.stringify(summary, null, 2));
+          const raw = fs.existsSync('eas-artifacts/build-view.json')
+            ? fs.readFileSync('eas-artifacts/build-view.json', 'utf8').trim()
+            : '';
+          if (!raw || !/^[{[]/.test(raw)) {
+            console.log('build:view did not return JSON; continuing to artifact download.');
+            process.exit(0);
+          }
+          try {
+            const build = JSON.parse(raw);
+            const summary = {
+              id: build.id,
+              status: build.status,
+              platform: build.platform,
+              profile: build.buildProfile,
+              appVersion: build.appVersion,
+              appBuildVersion: build.appBuildVersion,
+              gitCommitHash: build.gitCommitHash,
+              logsUrl: build.logsUrl,
+              artifacts: build.artifacts,
+            };
+            console.log(JSON.stringify(summary, null, 2));
+          } catch (error) {
+            console.log(`build:view output was not parseable JSON: ${error.message}`);
+          }
           NODE
-          fi
 
       - name: Download all available EAS artifacts
         run: |
