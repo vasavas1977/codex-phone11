@@ -127,6 +127,12 @@ const config: ExpoConfig = {
     eas: {
       projectId: "e354ffd3-485c-49f1-9e6f-aebe571d8dfb",
     },
+    buildInfo: {
+      easBuildId: process.env.EAS_BUILD_ID ?? "local",
+      easBuildProfile: process.env.EAS_BUILD_PROFILE ?? "unknown",
+      gitCommitHash: process.env.EAS_BUILD_GIT_COMMIT_HASH ?? process.env.GITHUB_SHA ?? "unknown",
+      builtAt: new Date().toISOString(),
+    },
     router: {},
   },
 };
