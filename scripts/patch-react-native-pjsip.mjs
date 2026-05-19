@@ -3,6 +3,7 @@ import path from "node:path";
 
 const packageRoot = path.join(process.cwd(), "node_modules", "react-native-pjsip");
 const podspecPath = path.join(packageRoot, "react-native-pjsip.podspec");
+const iosModulePath = path.join(packageRoot, "ios", "RTCPjSip", "PjSipModule.m");
 const androidRoot = path.join(packageRoot, "android");
 const gradlePath = path.join(androidRoot, "build.gradle");
 const manifestPath = path.join(androidRoot, "src", "main", "AndroidManifest.xml");
@@ -73,6 +74,21 @@ const podspecChanged = await patchFile(podspecPath, (source) =>
   source.replace(/s\.dependency\s+["']React["']/g, "s.dependency 'React-Core'")
 );
 
+const iosModuleChanged = await patchFile(iosModulePath, (source) => {
+  if (/RCT_EXPORT_MODULE\s*\(/.test(source)) {
+    return source;
+  }
+
+  if (!/@implementation\s+PjSipModule\b/.test(source)) {
+    return source;
+  }
+
+  return source.replace(
+    /(@implementation\s+PjSipModule\s*)/,
+    "$1\nRCT_EXPORT_MODULE(PjSipModule);\n"
+  );
+});
+
 const manifestSource = await readIfExists(manifestPath);
 const manifestPackage = manifestSource?.match(/<manifest\b[^>]*\s+package=["']([^"']+)["']/)?.[1];
 const namespace = manifestPackage || fallbackNamespace;
@@ -120,7 +136,7 @@ const manifestChanged = await patchFile(manifestPath, (source) =>
 );
 const sourceChanged = await patchSourceTree(sourceRoot);
 
-if (podspecChanged || gradleChanged || manifestChanged || sourceChanged) {
+if (podspecChanged || iosModuleChanged || gradleChanged || manifestChanged || sourceChanged) {
   console.log("[phone11-pjsip-patch] Patched react-native-pjsip iOS/Android native config.");
 } else {
   console.log("[phone11-pjsip-patch] react-native-pjsip native config already patched.");
