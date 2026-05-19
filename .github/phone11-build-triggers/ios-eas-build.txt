@@ -1,5 +1,5 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-19T23:05:38+07:00
-reason=validate react-native-pjsip CocoaPods podspec generation and PjSipModule native linking
-base_fix_commit=4c850e162de9b192f0d4f9762c4618da84fb135a
+requested_at=2026-05-19T23:19:34+07:00
+reason=validate react-native-pjsip generated podspec with PJ_AUTOCONF compiler flags
+base_fix_commit=993dc3b010d915e9e66b87bc7b4e334433c8b45e
 workflow_trigger_commit=pending
