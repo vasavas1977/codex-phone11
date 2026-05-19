@@ -38,10 +38,31 @@ jobs:
           echo "EAS_BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
           echo "Inspecting EAS build $BUILD_ID"
 
+      - name: Checkout project
+        uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Inspect local PJSIP native package after postinstall
+        run: |
+          echo "--- react-native-pjsip package inventory ---"
+          find node_modules/react-native-pjsip -maxdepth 5 -type f \( -name '*.podspec' -o -name 'PjSipModule.*' -o -name 'react-native.config.*' \) -print | sort || true
+          echo "--- generated podspec ---"
+          sed -n '1,220p' node_modules/react-native-pjsip/react-native-pjsip.podspec || true
+          echo "--- PjSipModule export markers ---"
+          find node_modules/react-native-pjsip -path '*/ios/*' -name 'PjSipModule.m' -print -exec grep -nE "RCT_EXPORT_MODULE|@implementation PjSipModule|@interface PjSipModule" {} \; || true
 
       - name: Install EAS CLI
         run: npm install --global eas-cli@18.13.1
@@ -123,12 +144,12 @@ jobs:
           echo "--- artifact files ---"
           find . -maxdepth 4 -type f -print | sort
           echo "--- relevant pod/native contexts ---"
-          grep -RInE "(Install pods|pod install|Podfile|podspec|react-native-pjsip|PjSipModule|RTCPjSip|VialerPJSIP|PJ_AUTOCONF|PJ_HAS_PENTIUM|PJ_IS_LITTLE_ENDIAN|PJ_IS_BIG_ENDIAN|Please specify target machine|HEADER_SEARCH_PATHS|FRAMEWORK_SEARCH_PATHS|OTHER_LDFLAGS|Undefined symbols|No such module|fatal error|error:|failed|Failed|FAILURE)" . 2>/dev/null | head -800 || true
+          grep -RInE "(Install pods|pod install|Podfile|podspec|react-native-pjsip|PjSipModule|RTCPjSip|VialerPJSIP|PJ_AUTOCONF|PJ_HAS_PENTIUM|PJ_IS_LITTLE_ENDIAN|PJ_IS_BIG_ENDIAN|Please specify target machine|HEADER_SEARCH_PATHS|FRAMEWORK_SEARCH_PATHS|OTHER_LDFLAGS|Undefined symbols|No such module|fatal error|error:|failed|Failed|FAILURE)" . 2>/dev/null | head -1000 || true
           echo "--- log tails ---"
           while IFS= read -r file; do
             echo "===== $file ====="
-            tail -160 "$file" || true
-          done < <(find . -type f \( -iname '*.log' -o -iname '*.txt' -o -iname '*.stderr' \) -size -10M -print | sort | head -30)
+            tail -180 "$file" || true
+          done < <(find . -type f \( -iname '*.log' -o -iname '*.txt' -o -iname '*.stderr' \) -size -20M -print | sort | head -40)
 
       - name: Upload fetched artifacts
         if: always()
