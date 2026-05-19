@@ -17,7 +17,7 @@ jobs:
   fetch:
     name: Fetch EAS build artifacts
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       DEFAULT_EAS_BUILD_ID: f32f8ad9-2c9a-4105-8787-9cce36ec4dc2
@@ -45,6 +45,15 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Install project dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Install EAS CLI
         run: npm install --global eas-cli@18.13.1
