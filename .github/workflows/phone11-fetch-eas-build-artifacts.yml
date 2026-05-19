@@ -52,8 +52,17 @@ jobs:
       - name: Fetch build metadata
         run: |
           mkdir -p eas-artifacts
-          eas build:view "$EAS_BUILD_ID" --json > eas-artifacts/build-view.json
-          node - <<'NODE'
+          set +e
+          eas build:view --build-id "$EAS_BUILD_ID" --json > eas-artifacts/build-view.json 2> eas-artifacts/build-view.stderr
+          status=$?
+          set -e
+          echo "build_view_exit_status=$status"
+          echo "--- build:view stderr ---"
+          cat eas-artifacts/build-view.stderr || true
+          echo "--- build:view json ---"
+          cat eas-artifacts/build-view.json || true
+          if [ -s eas-artifacts/build-view.json ]; then
+            node - <<'NODE'
           const fs = require('fs');
           const raw = fs.readFileSync('eas-artifacts/build-view.json', 'utf8');
           const build = JSON.parse(raw);
@@ -70,19 +79,23 @@ jobs:
           };
           console.log(JSON.stringify(summary, null, 2));
           NODE
+          fi
 
       - name: Download all available EAS artifacts
-        continue-on-error: true
         run: |
           cd eas-artifacts
-          eas build:download --build-id "$EAS_BUILD_ID" --all-artifacts --json > download.json 2> download.stderr
+          set +e
+          eas build:download --build-id "$EAS_BUILD_ID" --all-artifacts --json --non-interactive > download.json 2> download.stderr
           status=$?
+          set -e
           echo "download_exit_status=$status"
           echo "--- download stdout ---"
           cat download.json || true
           echo "--- download stderr ---"
           cat download.stderr || true
-          exit 0
+          if [ "$status" -ne 0 ]; then
+            echo "Download command failed; continuing so available metadata is uploaded."
+          fi
 
       - name: Extract downloaded archives
         run: |
