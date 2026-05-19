@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Platform, Share, StyleSheet, Text, TouchableOpacity, ScrollView, View } from "react-native";
+import Constants from "expo-constants";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
@@ -29,6 +30,19 @@ function eventTime(event: SipDiagnosticEvent): string {
   });
 }
 
+function buildInfoLines(): string[] {
+  const expoConfig = Constants.expoConfig as any;
+  const buildInfo = expoConfig?.extra?.buildInfo ?? {};
+
+  return [
+    `appVersion=${expoConfig?.version ?? "unknown"}`,
+    `easBuildId=${buildInfo.easBuildId ?? "unknown"}`,
+    `easBuildProfile=${buildInfo.easBuildProfile ?? "unknown"}`,
+    `gitCommitHash=${buildInfo.gitCommitHash ?? "unknown"}`,
+    `builtAt=${buildInfo.builtAt ?? "unknown"}`,
+  ];
+}
+
 function buildDiagnosticReport(
   events: SipDiagnosticEvent[],
   account: SipAccount | null,
@@ -55,6 +69,9 @@ function buildDiagnosticReport(
     `platformVersion=${String(Platform.Version ?? "unknown")}`,
     `registrationState=${registrationState}`,
     `registrationError=${registrationError || "none"}`,
+    "",
+    "Build",
+    ...buildInfoLines(),
     "",
     "Account",
     ...accountLines,
