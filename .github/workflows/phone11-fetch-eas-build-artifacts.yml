@@ -38,6 +38,9 @@ jobs:
           echo "EAS_BUILD_ID=$BUILD_ID" >> "$GITHUB_ENV"
           echo "Inspecting EAS build $BUILD_ID"
 
+      - name: Checkout project
+        uses: actions/checkout@v4
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -95,16 +98,16 @@ jobs:
 
       - name: Download all available EAS artifacts
         run: |
-          cd eas-artifacts
+          mkdir -p eas-artifacts
           set +e
-          eas build:download --build-id "$EAS_BUILD_ID" --all-artifacts --json --non-interactive > download.json 2> download.stderr
+          eas build:download --build-id "$EAS_BUILD_ID" --all-artifacts --json --non-interactive > eas-artifacts/download.json 2> eas-artifacts/download.stderr
           status=$?
           set -e
           echo "download_exit_status=$status"
           echo "--- download stdout ---"
-          cat download.json || true
+          cat eas-artifacts/download.json || true
           echo "--- download stderr ---"
-          cat download.stderr || true
+          cat eas-artifacts/download.stderr || true
           if [ "$status" -ne 0 ]; then
             echo "Download command failed; continuing so available metadata is uploaded."
           fi
