@@ -3,7 +3,8 @@ import path from "node:path";
 
 const packageRoot = path.join(process.cwd(), "node_modules", "react-native-pjsip");
 const podspecPath = path.join(packageRoot, "react-native-pjsip.podspec");
-const iosModulePath = path.join(packageRoot, "ios", "RTCPjSip", "PjSipModule.m");
+const iosRoot = path.join(packageRoot, "ios");
+const iosModulePath = path.join(iosRoot, "RTCPjSip", "PjSipModule.m");
 const androidRoot = path.join(packageRoot, "android");
 const gradlePath = path.join(androidRoot, "build.gradle");
 const manifestPath = path.join(androidRoot, "src", "main", "AndroidManifest.xml");
@@ -35,6 +36,32 @@ async function patchFile(filePath, patcher) {
 
   await writeFile(filePath, next);
   return true;
+}
+
+async function findEntries(rootPath, predicate) {
+  let entries;
+  try {
+    entries = await readdir(rootPath, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  const matches = [];
+  for (const entry of entries) {
+    const entryPath = path.join(rootPath, entry.name);
+    if (predicate(entry, entryPath)) {
+      matches.push(entryPath);
+    }
+
+    if (entry.isDirectory() && !entry.name.endsWith(".framework") && !entry.name.endsWith(".xcodeproj")) {
+      matches.push(...(await findEntries(entryPath, predicate)));
+    }
+  }
+
+  return matches;
 }
 
 async function patchSourceTree(rootPath) {
@@ -70,9 +97,74 @@ async function patchSourceTree(rootPath) {
   return changed;
 }
 
-const podspecChanged = await patchFile(podspecPath, (source) =>
-  source.replace(/s\.dependency\s+["']React["']/g, "s.dependency 'React-Core'")
-);
+function toPosixRelative(filePath) {
+  return path.relative(packageRoot, filePath).split(path.sep).join("/");
+}
+
+function toRubyArray(values) {
+  return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`;
+}
+
+async function ensurePjSipPodspec() {
+  const packageJsonPath = path.join(packageRoot, "package.json");
+  const packageJson = await readIfExists(packageJsonPath);
+  if (packageJson === null) {
+    console.warn(`[phone11-pjsip-patch] Skipping podspec creation; missing package.json: ${packageJsonPath}`);
+    return false;
+  }
+
+  const frameworkPaths = (
+    await findEntries(iosRoot, (entry) => entry.isDirectory() && entry.name.endsWith(".framework"))
+  )
+    .map(toPosixRelative)
+    .sort();
+
+  const vendoredFrameworks =
+    frameworkPaths.length > 0
+      ? `  s.vendored_frameworks = ${toRubyArray(frameworkPaths)}\n`
+      : "";
+
+  if (frameworkPaths.length === 0) {
+    console.warn("[phone11-pjsip-patch] No iOS vendored frameworks found under react-native-pjsip/ios.");
+  }
+
+  const source = `require "json"
+
+package = JSON.parse(File.read(File.join(__dir__, "package.json")))
+
+Pod::Spec.new do |s|
+  s.name         = "react-native-pjsip"
+  s.version      = package["version"]
+  s.summary      = package["description"] || "PJSIP module for React Native"
+  s.homepage     = package["homepage"] || "https://github.com/datso/react-native-pjsip"
+  s.license      = { :type => package["license"] || "MIT" }
+  s.authors      = { "react-native-pjsip" => "support@phone11.ai" }
+  s.platforms    = { :ios => "13.0" }
+  s.source       = { :git => "https://github.com/datso/react-native-pjsip.git", :tag => "v#{s.version}" }
+  s.source_files = "ios/RTCPjSip/*.{h,m,mm}"
+  s.public_header_files = "ios/RTCPjSip/*.h"
+  s.header_mappings_dir = "ios/RTCPjSip"
+${vendoredFrameworks}  s.frameworks = "AVFoundation", "AudioToolbox", "CallKit", "CoreMedia", "CoreVideo", "VideoToolbox"
+  s.libraries = "c++", "z"
+  s.requires_arc = true
+  s.dependency "React-Core"
+end
+`;
+
+  const existing = await readIfExists(podspecPath);
+  if (existing === source) {
+    console.log(`[phone11-pjsip-patch] iOS podspec already present: ${podspecPath}`);
+    return false;
+  }
+
+  await writeFile(podspecPath, source);
+  console.log(
+    `[phone11-pjsip-patch] Wrote iOS podspec: ${podspecPath}; vendored_frameworks=${frameworkPaths.join(", ") || "none"}`
+  );
+  return true;
+}
+
+const podspecChanged = await ensurePjSipPodspec();
 
 const iosModuleChanged = await patchFile(iosModulePath, (source) => {
   if (/RCT_EXPORT_MODULE\s*\(/.test(source)) {
@@ -106,7 +198,7 @@ const gradleChanged = await patchFile(gradlePath, (source) => {
     .replace(/\btargetSdk\s+\d+/g, "targetSdk rootProject.ext.targetSdkVersion")
     .replace(/\n\s*implementation\s+["']androidx\.annotation:annotation:[^"']+["']\s*/g, "\n");
 
-  if (/android\s*\{/.test(next) && !new RegExp(`\bnamespace\s+["']${escapedNamespace}["']`).test(next)) {
+  if (/android\s*\{/.test(next) && !new RegExp(`\\bnamespace\\s+["']${escapedNamespace}["']`).test(next)) {
     next = next.replace(/android\s*\{\s*/, (match) => `${match}\n    namespace "${namespace}"\n`);
   }
 
