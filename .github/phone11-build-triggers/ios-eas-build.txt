@@ -1,0 +1,5 @@
+Phone11 iOS EAS build trigger
+requested_at=2026-05-19T00:00:00+07:00
+reason=PJSIP legacy NativeModules bridge validation
+base_fix_commit=f62978891217c524681bb0a3f3f2ad1d45911c9e
+workflow_trigger_commit=dae3bcca94870ff1a5d041e6e9b843e00f65dd5b
