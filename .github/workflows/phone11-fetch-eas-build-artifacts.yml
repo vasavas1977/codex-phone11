@@ -74,8 +74,7 @@ jobs:
           echo "build_view_exit_status=$status"
           echo "--- build:view stderr ---"
           cat eas-artifacts/build-view.stderr || true
-          echo "--- build:view json/stdout ---"
-          cat eas-artifacts/build-view.json || true
+          echo "--- build:view summary ---"
 
           node - <<'NODE'
           const fs = require('fs');
@@ -92,18 +91,68 @@ jobs:
               id: build.id,
               status: build.status,
               platform: build.platform,
+              error: build.error,
               profile: build.buildProfile,
               appVersion: build.appVersion,
               appBuildVersion: build.appBuildVersion,
               gitCommitHash: build.gitCommitHash,
-              logsUrl: build.logsUrl,
-              artifacts: build.artifacts,
+              gitCommitMessage: build.gitCommitMessage,
+              hasXcodeBuildLogsUrl: Boolean(build.artifacts?.xcodeBuildLogsUrl),
+              logFileCount: Array.isArray(build.logFiles) ? build.logFiles.length : 0,
             };
             console.log(JSON.stringify(summary, null, 2));
           } catch (error) {
             console.log(`build:view output was not parseable JSON: ${error.message}`);
           }
           NODE
+
+      - name: Download EAS signed log files before expiry
+        run: |
+          mkdir -p eas-artifacts/eas-logs
+          node - <<'NODE'
+          const fs = require('fs');
+          const raw = fs.existsSync('eas-artifacts/build-view.json')
+            ? fs.readFileSync('eas-artifacts/build-view.json', 'utf8').trim()
+            : '';
+          const entries = [];
+          if (raw && /^[{[]/.test(raw)) {
+            const build = JSON.parse(raw);
+            if (build.artifacts?.xcodeBuildLogsUrl) {
+              entries.push(['xcode-build.log', build.artifacts.xcodeBuildLogsUrl]);
+            }
+            for (const [index, url] of (build.logFiles ?? []).entries()) {
+              entries.push([`eas-log-${String(index + 1).padStart(2, '0')}.txt`, url]);
+            }
+          }
+          fs.writeFileSync(
+            'eas-artifacts/log-downloads.tsv',
+            entries.map(([name, url]) => `${name}\t${url}`).join('\n')
+          );
+          console.log(`Prepared ${entries.length} EAS log file downloads.`);
+          NODE
+
+          if [ ! -s eas-artifacts/log-downloads.tsv ]; then
+            echo "No EAS signed log URLs were present in build metadata."
+            exit 0
+          fi
+
+          download_count=0
+          failed_count=0
+          while IFS=$'\t' read -r name url; do
+            [ -z "$name" ] && continue
+            echo "Downloading EAS log file: $name"
+            if curl --fail --location --silent --show-error --max-time 120 "$url" -o "eas-artifacts/eas-logs/$name"; then
+              bytes=$(wc -c < "eas-artifacts/eas-logs/$name" | tr -d ' ')
+              echo "Downloaded $name ($bytes bytes)"
+              download_count=$((download_count + 1))
+            else
+              echo "Failed to download $name"
+              failed_count=$((failed_count + 1))
+            fi
+          done < eas-artifacts/log-downloads.tsv
+
+          echo "downloaded_eas_log_files=$download_count"
+          echo "failed_eas_log_files=$failed_count"
 
       - name: Download all available EAS artifacts
         run: |
@@ -118,7 +167,7 @@ jobs:
           echo "--- download stderr ---"
           cat eas-artifacts/download.stderr || true
           if [ "$status" -ne 0 ]; then
-            echo "Download command failed; continuing so available metadata is uploaded."
+            echo "Download command failed; continuing so available metadata and logs are uploaded."
           fi
 
       - name: Extract downloaded archives
@@ -149,7 +198,7 @@ jobs:
           echo "--- files likely to contain pod/build logs ---"
           find . -type f \( -iname '*pod*' -o -iname '*install*' -o -iname '*xcode*' -o -iname '*.log' -o -iname '*.txt' \) -print | sort | head -200
           echo "--- first matching error contexts ---"
-          grep -RInE "(pod install|Install pods|ERROR|Error|error:|fatal|failed|Failed|FAILURE|Undefined symbols|No such module|requires new architecture|new architecture|use_frameworks|React-Codegen|PjSipModule|PJSIP|VialerPJSIP|NativeModules)" . 2>/dev/null | head -300 || true
+          grep -RInE "(pod install|Install pods|ERROR|Error|error:|fatal|failed|Failed|FAILURE|Undefined symbols|No such module|requires new architecture|new architecture|use_frameworks|React-Codegen|PjSipModule|PJSIP|VialerPJSIP|NativeModules|Hermes|Reanimated|Worklets)" . 2>/dev/null | head -300 || true
           echo "--- tail of large log-like files ---"
           while IFS= read -r file; do
             echo "===== $file ====="
