@@ -1,5 +1,5 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-19T19:54:18+07:00
-reason=validate PJSIP NativeModules.PjSipModule export after adding RCT_EXPORT_MODULE patch
-base_fix_commit=a6759dee8ed10bfe03038afe550befddf0df1230
+requested_at=2026-05-19T23:05:38+07:00
+reason=validate react-native-pjsip CocoaPods podspec generation and PjSipModule native linking
+base_fix_commit=4c850e162de9b192f0d4f9762c4618da84fb135a
 workflow_trigger_commit=pending
