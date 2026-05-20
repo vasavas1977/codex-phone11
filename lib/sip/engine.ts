@@ -22,6 +22,7 @@ import { useSipAccountStore, type RegistrationState } from "./account-store";
 import { useSipCallStore } from "./call-store";
 import {
   formatSipError,
+  recordPersistentSipDiagnosticEvent,
   type SipDiagnosticCategory,
   type SipDiagnosticContext,
   type SipDiagnosticLevel,
@@ -188,6 +189,17 @@ class SipEngine {
           ...pjsipNativeBridgeContext(),
         },
       });
+      await recordPersistentSipDiagnosticEvent({
+        level: "info",
+        category: "native",
+        message: "Native PJSIP endpoint constructor attempt",
+        context: {
+          stage: "endpoint.constructor",
+          platform: Platform.OS,
+          endpointExportType: describeNativeValue(pjsip.Endpoint),
+          ...pjsipNativeBridgeContext(),
+        },
+      });
 
       if (!NativeModules.PjSipModule || typeof NativeModules.PjSipModule.start !== "function") {
         const detail =
@@ -229,6 +241,17 @@ class SipEngine {
           userAgent: `Phone11/1.0 (${Platform.OS})`,
         },
       });
+      await recordPersistentSipDiagnosticEvent({
+        level: "info",
+        category: "native",
+        message: "Native PJSIP endpoint start attempt",
+        context: {
+          stage: "endpoint.start",
+          platform: Platform.OS,
+          userAgent: `Phone11/1.0 (${Platform.OS})`,
+          ...pjsipNativeBridgeContext(),
+        },
+      });
       await this.endpoint.start({
         service: {
           ua: `Phone11/1.0 (${Platform.OS})`,
@@ -247,11 +270,35 @@ class SipEngine {
         },
       });
       this._diag("info", "native", "PJSIP endpoint started");
+      await recordPersistentSipDiagnosticEvent({
+        level: "info",
+        category: "native",
+        message: "Native PJSIP endpoint start completed",
+        context: {
+          stage: "endpoint.start.completed",
+          platform: Platform.OS,
+        },
+      });
 
       // Register SIP account
       this._diag("info", "registration", "Creating SIP account in PJSIP", {
         destination: registrationServer,
         context: {
+          username: account.username,
+          domain: account.domain,
+          proxy: outboundProxy,
+          transport: account.transport.toLowerCase(),
+          srtp: account.srtp,
+          stun: account.stun || "none",
+        },
+      });
+      await recordPersistentSipDiagnosticEvent({
+        level: "info",
+        category: "registration",
+        message: "Native PJSIP SIP account create attempt",
+        destination: registrationServer,
+        context: {
+          stage: "endpoint.createAccount",
           username: account.username,
           domain: account.domain,
           proxy: outboundProxy,
@@ -337,10 +384,27 @@ class SipEngine {
       this.initialized = true;
       console.log("[SIP Engine] Initialized, account:", this.pjsipAccount?.getId?.() ?? account.username);
       this._diag("info", "engine", "SIP engine initialized", { destination: registrationServer });
+      await recordPersistentSipDiagnosticEvent({
+        level: "info",
+        category: "engine",
+        message: "SIP engine initialized",
+        destination: registrationServer,
+        context: {
+          stage: "engine.initialized",
+          username: account.username,
+          domain: account.domain,
+        },
+      });
     } catch (error: any) {
       console.error("[SIP Engine] Initialization failed:", error);
       const detail = formatSipError(error);
       this._diag("error", "engine", "SIP engine initialization failed", { detail });
+      await recordPersistentSipDiagnosticEvent({
+        level: "error",
+        category: "engine",
+        message: "SIP engine initialization failed",
+        detail,
+      });
       useSipAccountStore.getState().setRegistrationState("failed", detail);
     }
   }
