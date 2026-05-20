@@ -39,9 +39,19 @@ function hostWithPort(host: string, port?: number | null): string {
 }
 
 function sipServerUri(host: string, port: number | null | undefined, transport: string): string {
-  const normalizedTransport = transport.toLowerCase();
+  const normalizedTransport = transport.toUpperCase();
   const server = hostWithPort(host, port);
   return `sip:${server};transport=${normalizedTransport}`;
+}
+
+function sipProxyUri(host: string, port: number | null | undefined, transport: string): string {
+  const normalizedTransport = transport.toUpperCase();
+  const base = host.startsWith("sip:") ? host : `sip:${hostWithPort(host, port)}`;
+  const separator = base.includes(";") ? ";" : ";";
+  const withTransport = /;transport=/i.test(base)
+    ? base
+    : `${base}${separator}transport=${normalizedTransport}`;
+  return /;lr(?:;|$)/i.test(withTransport) ? withTransport : `${withTransport};lr`;
 }
 
 function safeKeys(value: any): string {
@@ -165,8 +175,8 @@ class SipEngine {
     try {
       const registrationServer = sipServerUri(account.domain, account.port, account.transport);
       const outboundProxy = account.proxy
-        ? account.proxy
-        : registrationServer;
+        ? sipProxyUri(account.proxy, account.port, account.transport)
+        : sipProxyUri(account.domain, account.port, account.transport);
 
       setRegistrationState("registering");
       this._diag("info", "registration", "Starting SIP registration", {
@@ -280,6 +290,21 @@ class SipEngine {
         },
       });
 
+      this.endpoint.on("registration_changed", (nativeAccount: any) => {
+        const snapshot = this._registrationSnapshot(nativeAccount, "event");
+        setRegistrationState(snapshot.state, snapshot.detail);
+        this._diag(
+          snapshot.level,
+          "registration",
+          `SIP registration ${snapshot.state}`,
+          {
+            destination: registrationServer,
+            detail: snapshot.detail,
+            context: snapshot.context,
+          }
+        );
+      });
+
       // Register SIP account
       this._diag("info", "registration", "Creating SIP account in PJSIP", {
         destination: registrationServer,
@@ -287,7 +312,7 @@ class SipEngine {
           username: account.username,
           domain: account.domain,
           proxy: outboundProxy,
-          transport: account.transport.toLowerCase(),
+          transport: account.transport,
           srtp: account.srtp,
           stun: account.stun || "none",
         },
@@ -302,7 +327,7 @@ class SipEngine {
           username: account.username,
           domain: account.domain,
           proxy: outboundProxy,
-          transport: account.transport.toLowerCase(),
+          transport: account.transport,
           srtp: account.srtp,
           stun: account.stun || "none",
         },
@@ -313,8 +338,9 @@ class SipEngine {
         domain: account.domain,
         password: account.password,
         proxy: outboundProxy,
-        transport: account.transport.toLowerCase(),
-        regServer: registrationServer,
+        transport: account.transport,
+        regOnAdd: false,
+        regServer: null,
         regTimeout: 300,
         contactParams: null,
         contactUriParams: null,
@@ -332,25 +358,56 @@ class SipEngine {
         },
       });
 
-      // Listen for registration state changes
-      this.endpoint.on("registration_changed", (data: any) => {
-        const state = this._mapRegState(data.state);
-        const detail = data.lastError?.reason;
-        setRegistrationState(state, detail);
-        this._diag(
-          state === "failed" ? "error" : "info",
-          "registration",
-          `SIP registration ${state}`,
-          {
-            destination: registrationServer,
-            detail,
-            context: {
-              rawState: data.state,
-              lastStatus: data.lastStatus ?? data.lastError?.status ?? "none",
-              lastReason: data.lastError?.reason ?? "none",
-            },
-          }
-        );
+      const initialSnapshot = this._registrationSnapshot(this.pjsipAccount, "createAccount");
+      this._diag("info", "registration", "SIP account initial registration snapshot", {
+        destination: registrationServer,
+        detail: initialSnapshot.detail,
+        context: initialSnapshot.context,
+      });
+
+      if (typeof this.endpoint.registerAccount !== "function") {
+        const detail = "react-native-pjsip Endpoint.registerAccount is missing.";
+        this._diag("error", "registration", "SIP account cannot be explicitly registered", {
+          destination: registrationServer,
+          detail,
+          context: {
+            endpointKeys: safeKeys(this.endpoint),
+          },
+        });
+        setRegistrationState("failed", detail);
+        return;
+      }
+
+      this._diag("info", "registration", "Native PJSIP registerAccount attempt", {
+        destination: registrationServer,
+        context: {
+          stage: "endpoint.registerAccount",
+          username: account.username,
+          domain: account.domain,
+          proxy: outboundProxy,
+          transport: account.transport,
+        },
+      });
+      await recordPersistentSipDiagnosticEvent({
+        level: "info",
+        category: "registration",
+        message: "Native PJSIP registerAccount attempt",
+        destination: registrationServer,
+        context: {
+          stage: "endpoint.registerAccount",
+          username: account.username,
+          domain: account.domain,
+          proxy: outboundProxy,
+          transport: account.transport,
+        },
+      });
+      await this.endpoint.registerAccount(this.pjsipAccount, true);
+      this._diag("info", "registration", "Native PJSIP registerAccount accepted", {
+        destination: registrationServer,
+        context: {
+          username: account.username,
+          domain: account.domain,
+        },
       });
 
       // Listen for incoming calls
@@ -573,6 +630,64 @@ class SipEngine {
       case "unregistering": return "unregistered";
       default: return "failed";
     }
+  }
+
+  private _registrationSnapshot(
+    nativeAccount: any,
+    source: string
+  ): {
+    state: RegistrationState;
+    level: SipDiagnosticLevel;
+    detail?: string;
+    context: SipDiagnosticContext;
+  } {
+    const registration = nativeAccount?.getRegistration?.();
+    const active = registration?.isActive?.();
+    const status = registration?.getStatus?.() ?? nativeAccount?.lastStatus ?? nativeAccount?.lastError?.status;
+    const statusText = registration?.getStatusText?.() ?? nativeAccount?.lastStatusText;
+    const reason = registration?.getReason?.() ?? nativeAccount?.lastError?.reason;
+    const rawState = nativeAccount?.state;
+    const numericStatus = Number(status);
+
+    let state: RegistrationState;
+    if (rawState) {
+      state = this._mapRegState(String(rawState));
+    } else if (active === true) {
+      state = "registered";
+    } else if (Number.isFinite(numericStatus) && numericStatus >= 500) {
+      state = "network_error";
+    } else if (
+      Number.isFinite(numericStatus) &&
+      numericStatus >= 400 &&
+      numericStatus !== 401 &&
+      numericStatus !== 407
+    ) {
+      state = "failed";
+    } else {
+      state = "registering";
+    }
+
+    const detailParts = [
+      status ? `status=${status}` : null,
+      statusText ? `statusText=${statusText}` : null,
+      reason ? `reason=${reason}` : null,
+    ].filter(Boolean);
+
+    return {
+      state,
+      level: state === "failed" || state === "network_error" ? "error" : "info",
+      detail: detailParts.length ? detailParts.join(" | ") : undefined,
+      context: {
+        source,
+        accountId: nativeAccount?.getId?.() ?? nativeAccount?._data?.id ?? "unknown",
+        uri: nativeAccount?.getURI?.() ?? nativeAccount?._data?.uri ?? "unknown",
+        active: active === undefined ? "unknown" : Boolean(active),
+        status: status ?? "none",
+        statusText: statusText ?? "none",
+        reason: reason ?? "none",
+        rawState: rawState ?? "none",
+      },
+    };
   }
 
   private _safeCallDetail(call: any): string {
