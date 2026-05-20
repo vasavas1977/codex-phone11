@@ -10,7 +10,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
-import { sipEngine } from "@/lib/sip/engine";
+import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 import { type PhoneProvisioningConfig, sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
 
 function registrationLabel(state: RegistrationState): string {
@@ -47,8 +47,10 @@ export default function SIPAccountScreen() {
   const account = useSipAccountStore((s) => s.account);
   const loadAccount = useSipAccountStore((s) => s.loadAccount);
   const setAccount = useSipAccountStore((s) => s.setAccount);
+  const setRegistrationState = useSipAccountStore((s) => s.setRegistrationState);
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const registrationError = useSipAccountStore((s) => s.registrationError);
+  const addDiagnosticEvent = useSipDiagnosticsStore((s) => s.addEvent);
   const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
   const ensurePilotConfig = trpc.phone.ensurePilotConfig.useMutation();
   const createExtension = trpc.phone.createExtension.useMutation();
@@ -102,9 +104,27 @@ export default function SIPAccountScreen() {
 
     const provisionedAccount = sipAccountFromPhoneConfig(config, account?.id);
     await setAccount(provisionedAccount);
-    await sipEngine.restart();
+    setRegistrationState("unregistered");
+    addDiagnosticEvent({
+      level: "info",
+      category: "registration",
+      message: "Phone account provisioned from admin",
+      detail:
+        "Native SIP registration was not started automatically. Open SIP Diagnostics and run an explicit registration test if needed.",
+      context: {
+        username: provisionedAccount.username,
+        domain: provisionedAccount.domain,
+        proxy: provisionedAccount.proxy || provisionedAccount.domain,
+        port: provisionedAccount.port,
+        transport: provisionedAccount.transport,
+        srtp: provisionedAccount.srtp,
+      },
+    });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert(title, `Extension ${provisionedAccount.username} is ready on ${provisionedAccount.domain}.`);
+    Alert.alert(
+      title,
+      `Extension ${provisionedAccount.username} is saved on ${provisionedAccount.domain}. SIP registration will only start from a call or an explicit diagnostics test.`
+    );
   };
 
   const refetchAssignedConfig = async (): Promise<PhoneProvisioningConfig> => {
