@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Platform, Share, StyleSheet, Text, TouchableOpacity, ScrollView, View } from "react-native";
 import Constants from "expo-constants";
 import * as Haptics from "expo-haptics";
@@ -11,6 +11,7 @@ import { type RegistrationState, type SipAccount, useSipAccountStore } from "@/l
 import {
   formatDiagnosticContext,
   formatDiagnosticEvent,
+  recordPersistentSipDiagnosticEvent,
   type SipDiagnosticEvent,
   useSipDiagnosticsStore,
 } from "@/lib/sip/diagnostics-store";
@@ -84,9 +85,11 @@ function buildDiagnosticReport(
 export default function SipDiagnosticsScreen() {
   const colors = useColors();
   const didRequestInit = useRef(false);
+  const [registrationTestBusy, setRegistrationTestBusy] = useState(false);
   const events = useSipDiagnosticsStore((s) => s.events);
   const addEvent = useSipDiagnosticsStore((s) => s.addEvent);
   const clearEvents = useSipDiagnosticsStore((s) => s.clearEvents);
+  const hydrateEvents = useSipDiagnosticsStore((s) => s.hydrateEvents);
   const account = useSipAccountStore((s) => s.account);
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const registrationError = useSipAccountStore((s) => s.registrationError);
@@ -96,17 +99,25 @@ export default function SipDiagnosticsScreen() {
     if (didRequestInit.current) return;
     didRequestInit.current = true;
 
-    loadAccount()
+    hydrateEvents()
+      .then(loadAccount)
       .then(() => {
         const { account: loadedAccount } = useSipAccountStore.getState();
         if (loadedAccount?.enabled) {
-          sipEngine.initialize().catch((error) => {
-            addEvent({
-              level: "error",
-              category: "engine",
-              message: "SIP diagnostics could not start registration",
-              detail: error instanceof Error ? error.message : String(error),
-            });
+          addEvent({
+            level: "info",
+            category: "registration",
+            message: "SIP diagnostics opened without starting native registration",
+            detail:
+              "This screen no longer starts PJSIP automatically. Use Start SIP Registration Test when you want an explicit native SIP attempt.",
+            context: {
+              username: loadedAccount.username,
+              domain: loadedAccount.domain,
+              proxy: loadedAccount.proxy || loadedAccount.domain,
+              port: loadedAccount.port,
+              transport: loadedAccount.transport,
+              srtp: loadedAccount.srtp,
+            },
           });
           return;
         }
@@ -126,7 +137,54 @@ export default function SipDiagnosticsScreen() {
           detail: error instanceof Error ? error.message : String(error),
         });
       });
-  }, [addEvent, loadAccount]);
+  }, [addEvent, hydrateEvents, loadAccount]);
+
+  async function startRegistrationTest(): Promise<void> {
+    if (registrationTestBusy) return;
+
+    try {
+      setRegistrationTestBusy(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      await loadAccount();
+      const { account: loadedAccount } = useSipAccountStore.getState();
+
+      if (!loadedAccount?.enabled) {
+        addEvent({
+          level: "warning",
+          category: "registration",
+          message: "Registration test blocked because no SIP account is loaded",
+          detail: "Open Phone Provisioning, sign in, then sync the extension from admin management.",
+        });
+        return;
+      }
+
+      await recordPersistentSipDiagnosticEvent({
+        level: "info",
+        category: "registration",
+        message: "Manual SIP registration test requested",
+        detail: "If the app restarts after this line, the native PJSIP startup path crashed before JavaScript could catch it.",
+        context: {
+          username: loadedAccount.username,
+          domain: loadedAccount.domain,
+          proxy: loadedAccount.proxy || loadedAccount.domain,
+          port: loadedAccount.port,
+          transport: loadedAccount.transport,
+          srtp: loadedAccount.srtp,
+        },
+      });
+
+      await sipEngine.initialize();
+    } catch (error) {
+      addEvent({
+        level: "error",
+        category: "engine",
+        message: "Manual SIP registration test failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setRegistrationTestBusy(false);
+    }
+  }
 
   async function shareLogs(): Promise<void> {
     try {
@@ -187,6 +245,24 @@ export default function SipDiagnosticsScreen() {
           </TouchableOpacity>
 
           <TouchableOpacity
+            style={[
+              styles.shareButton,
+              {
+                backgroundColor: colors.surface,
+                borderColor: colors.primary,
+                opacity: registrationTestBusy ? 0.55 : 1,
+              },
+            ]}
+            onPress={startRegistrationTest}
+            disabled={registrationTestBusy}
+          >
+            <IconSymbol name="antenna.radiowaves.left.and.right" size={18} color={colors.primary} />
+            <Text style={[styles.shareButtonText, { color: colors.foreground }]}>
+              {registrationTestBusy ? "Starting Registration..." : "Start SIP Registration Test"}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             style={[styles.shareButton, { backgroundColor: colors.surface, borderColor: colors.border }]}
             onPress={shareLogs}
           >
@@ -201,7 +277,7 @@ export default function SipDiagnosticsScreen() {
               <IconSymbol name="info.circle" size={24} color={colors.muted} />
               <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Checking phone registration</Text>
               <Text style={[styles.emptyText, { color: colors.muted }]}> 
-                Diagnostics will show whether the app found an admin-provisioned account and started SIP registration.
+                Diagnostics will show the saved admin account and any explicit SIP registration test events.
               </Text>
             </View>
           ) : (
