@@ -4,6 +4,7 @@
  */
 
 import { create } from "zustand";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type SipDiagnosticLevel = "info" | "warning" | "error";
 export type SipDiagnosticCategory = "engine" | "registration" | "call" | "media" | "native";
@@ -23,11 +24,14 @@ export interface SipDiagnosticEvent {
 
 interface SipDiagnosticsState {
   events: SipDiagnosticEvent[];
+  hydrated: boolean;
   addEvent: (event: Omit<SipDiagnosticEvent, "id" | "timestamp">) => void;
   clearEvents: () => void;
+  hydrateEvents: () => Promise<void>;
 }
 
 const MAX_EVENTS = 100;
+const STORAGE_KEY = "phone11_sip_diagnostic_events";
 
 function eventId(): string {
   return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -42,6 +46,53 @@ function cleanValue(value: string | number | boolean | null | undefined): string
   if (value === undefined) return "undefined";
   const text = String(value);
   return text.length > 260 ? `${text.slice(0, 260)}...` : text;
+}
+
+function createDiagnosticEvent(event: Omit<SipDiagnosticEvent, "id" | "timestamp">): SipDiagnosticEvent {
+  return {
+    ...event,
+    id: eventId(),
+    timestamp: new Date(),
+  };
+}
+
+function normalizeDiagnosticEvents(rawEvents: any): SipDiagnosticEvent[] {
+  if (!Array.isArray(rawEvents)) return [];
+
+  return rawEvents
+    .map((event) => ({
+      ...event,
+      timestamp: event?.timestamp ? new Date(event.timestamp) : new Date(),
+    }))
+    .filter((event) => event?.id && event?.level && event?.category && event?.message)
+    .slice(0, MAX_EVENTS);
+}
+
+function mergeDiagnosticEvents(current: SipDiagnosticEvent[], existing: SipDiagnosticEvent[]): SipDiagnosticEvent[] {
+  const seen = new Set<string>();
+  return [...current, ...existing]
+    .filter((event) => {
+      if (seen.has(event.id)) return false;
+      seen.add(event.id);
+      return true;
+    })
+    .slice(0, MAX_EVENTS);
+}
+
+async function persistDiagnosticEvents(events: SipDiagnosticEvent[], mergeExisting = false): Promise<void> {
+  try {
+    let eventsToPersist = events;
+
+    if (mergeExisting) {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      const existingEvents = normalizeDiagnosticEvents(raw ? JSON.parse(raw) : []);
+      eventsToPersist = mergeDiagnosticEvents(events, existingEvents);
+    }
+
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(eventsToPersist));
+  } catch (error) {
+    console.warn("[SIP Diagnostics] Could not persist diagnostic events:", error);
+  }
 }
 
 export function formatDiagnosticContext(context?: SipDiagnosticContext): string {
@@ -89,21 +140,49 @@ export function formatSipError(error: any): string {
   return parts.join(" | ") || "Unknown error";
 }
 
-export const useSipDiagnosticsStore = create<SipDiagnosticsState>((set) => ({
+export const useSipDiagnosticsStore = create<SipDiagnosticsState>((set, get) => ({
   events: [],
+  hydrated: false,
 
   addEvent: (event) => {
+    const entry = createDiagnosticEvent(event);
+    let nextEvents: SipDiagnosticEvent[] = [];
+
     set((state) => ({
-      events: [
-        {
-          ...event,
-          id: eventId(),
-          timestamp: new Date(),
-        },
-        ...state.events,
-      ].slice(0, MAX_EVENTS),
+      events: (nextEvents = [entry, ...state.events].slice(0, MAX_EVENTS)),
     }));
+
+    persistDiagnosticEvents(nextEvents, !get().hydrated).catch(() => {});
   },
 
-  clearEvents: () => set({ events: [] }),
+  clearEvents: () => {
+    set({ events: [] });
+    AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+  },
+
+  hydrateEvents: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      const events = normalizeDiagnosticEvents(raw ? JSON.parse(raw) : []);
+      set({ events, hydrated: true });
+    } catch (error) {
+      console.warn("[SIP Diagnostics] Could not load diagnostic events:", error);
+      set({ hydrated: true });
+    }
+  },
 }));
+
+export async function recordPersistentSipDiagnosticEvent(
+  event: Omit<SipDiagnosticEvent, "id" | "timestamp">
+): Promise<void> {
+  const entry = createDiagnosticEvent(event);
+  let nextEvents: SipDiagnosticEvent[] = [];
+  const shouldMergeExisting = !useSipDiagnosticsStore.getState().hydrated;
+
+  useSipDiagnosticsStore.setState((state) => {
+    nextEvents = [entry, ...state.events].slice(0, MAX_EVENTS);
+    return { events: nextEvents };
+  });
+
+  await persistDiagnosticEvents(nextEvents, shouldMergeExisting);
+}
