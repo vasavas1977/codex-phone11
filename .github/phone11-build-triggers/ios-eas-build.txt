@@ -1,6 +1,7 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-20T02:35:16+07:00
-reason=include installed build fingerprint in diagnostics and verify PJSIP bridge on device
+requested_at=2026-05-20T15:50:00+07:00
+reason=stop automatic native SIP startup and persist SIP crash breadcrumbs for iOS testing
 base_fix_commit=2799de4e4ccc66ab7b46c308a58b91eb1024cd03
 diagnostics_commit=080980472aaaa7b0994a560ee00fe6740cb47d8c
+native_start_guard_commit=0752b6df7bd2ffb9fb9ca10375832d237891de00
 workflow_trigger_commit=pending
