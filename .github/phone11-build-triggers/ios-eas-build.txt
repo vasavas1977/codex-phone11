@@ -1,7 +1,6 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-20T15:50:00+07:00
-reason=stop automatic native SIP startup and persist SIP crash breadcrumbs for iOS testing
-base_fix_commit=2799de4e4ccc66ab7b46c308a58b91eb1024cd03
-diagnostics_commit=080980472aaaa7b0994a560ee00fe6740cb47d8c
-native_start_guard_commit=0752b6df7bd2ffb9fb9ca10375832d237891de00
+requested_at=2026-05-20T16:55:40+07:00
+reason=fix iOS PJSIP registration event parsing, transport casing, and explicit registerAccount flow
+sip_registration_fix_commit=d797670541cb8299f5236fafa77a91dc47e4557e
+previous_diagnostics_build=c2ef8aa0-079d-499f-ab13-847bab390213
 workflow_trigger_commit=pending
