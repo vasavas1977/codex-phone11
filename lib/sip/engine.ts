@@ -71,6 +71,31 @@ function describeNativeValue(value: any): string {
   return constructorName ? `${type}:${constructorName}` : type;
 }
 
+function trimDiagnosticValue(value: any, maxLength = 180): string {
+  const text = String(value ?? "");
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function stringifyMedia(media: any): string {
+  if (!Array.isArray(media) || media.length === 0) return "none";
+
+  return media
+    .slice(0, 3)
+    .map((item, index) => {
+      const audioStream = item?.audioStream ?? {};
+      return [
+        `#${index}`,
+        item?.type ? `type=${item.type}` : null,
+        item?.status ? `status=${item.status}` : null,
+        item?.dir ? `dir=${item.dir}` : null,
+        audioStream?.confSlot !== undefined ? `confSlot=${audioStream.confSlot}` : null,
+      ]
+        .filter(Boolean)
+        .join("/");
+    })
+    .join(", ");
+}
+
 function nativeSipModuleKeys(): string {
   try {
     const keys = Object.keys(NativeModules)
@@ -412,30 +437,95 @@ class SipEngine {
 
       // Listen for incoming calls
       this.endpoint.on("call_received", (call: any) => {
-        const callId = call.getId().toString();
+        const callId = this._safeCallId(call);
         this._diag("info", "call", "Incoming SIP call received", {
           callId,
           detail: this._safeCallDetail(call),
         });
-        useSipCallStore.getState().setIncomingCall(call);
+        try {
+          useSipCallStore.getState().setIncomingCall(call);
+        } catch (error) {
+          this._diag("error", "call", "Incoming SIP call store update failed", {
+            callId,
+            detail: formatSipError(error),
+          });
+        }
       });
 
       // Listen for call state changes
       this.endpoint.on("call_changed", (call: any) => {
-        const callId = call.getId().toString();
-        const detail = this._safeCallDetail(call);
-        this._diag("info", "call", "SIP call state changed", { callId, detail });
-        useSipCallStore.getState().updateCallState(call);
+        const callId = this._safeCallId(call);
+
+        try {
+          const detail = this._safeCallDetail(call);
+          const context = this._safeCallContext(call);
+          this._diag("info", "call", "SIP call state changed", { callId, detail, context });
+          void recordPersistentSipDiagnosticEvent({
+            level: "info",
+            category: "call",
+            message: "SIP call state event received",
+            callId,
+            detail,
+            context: {
+              ...context,
+              stage: "call_changed.received",
+            },
+          });
+
+          if (
+            context.state === "PJSIP_INV_STATE_CONFIRMED" ||
+            String(context.media).includes("PJSUA_CALL_MEDIA_ACTIVE")
+          ) {
+            void this._activateAudioSession(callId, "call_changed");
+          }
+
+          try {
+            useSipCallStore.getState().updateCallState(call);
+            this._diag("info", "call", "SIP call store updated", {
+              callId,
+              context: {
+                stage: "call_changed.store_updated",
+                state: context.state,
+                media: context.media,
+              },
+            });
+          } catch (error) {
+            this._diag("error", "call", "SIP call store update failed", {
+              callId,
+              detail: formatSipError(error),
+              context: {
+                stage: "call_changed.store_update_failed",
+                state: context.state,
+                media: context.media,
+              },
+            });
+          }
+        } catch (error) {
+          this._diag("error", "call", "SIP call state event handling failed", {
+            callId,
+            detail: formatSipError(error),
+            context: {
+              stage: "call_changed.handler_failed",
+            },
+          });
+        }
       });
 
       // Listen for call terminated
       this.endpoint.on("call_terminated", (call: any) => {
-        const callId = call.getId().toString();
+        const callId = this._safeCallId(call);
         this._diag("info", "call", "SIP call terminated", {
           callId,
           detail: this._safeCallDetail(call),
         });
-        useSipCallStore.getState().terminateCall(callId);
+        try {
+          useSipCallStore.getState().terminateCall(callId);
+        } catch (error) {
+          this._diag("error", "call", "SIP call termination store update failed", {
+            callId,
+            detail: formatSipError(error),
+          });
+        }
       });
 
       this.initialized = true;
@@ -489,13 +579,19 @@ class SipEngine {
     try {
       this._diag("info", "call", "Starting outbound SIP call", { destination: uri });
       const call = await this.endpoint.makeCall(this.pjsipAccount, uri, {
-        mediaVideo: video,
-        mediaAudio: true,
+        audioCount: 1,
+        videoCount: video ? 1 : 0,
       });
 
       const callId = call.getId().toString();
       useSipCallStore.getState().addOutgoingCall(call, destination);
-      this._diag("info", "call", "Outbound SIP call created", { callId, destination: uri });
+      this._diag("info", "call", "Outbound SIP call created", {
+        callId,
+        destination: uri,
+        detail: this._safeCallDetail(call),
+        context: this._safeCallContext(call),
+      });
+      void this._activateAudioSession(callId, "outbound_call_created");
       return callId;
     } catch (error: any) {
       console.error("[SIP Engine] makeCall failed:", error);
@@ -512,7 +608,11 @@ class SipEngine {
     const call = useSipCallStore.getState().getCall(callId);
     if (!call) return;
     try {
-      await call.answer({ mediaVideo: video, mediaAudio: true });
+      await this.endpoint.answerCall(call, {
+        audioCount: 1,
+        videoCount: video ? 1 : 0,
+      });
+      void this._activateAudioSession(callId, "answer_call");
       this._diag("info", "call", "Answered SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] answerCall failed:", e);
@@ -525,7 +625,7 @@ class SipEngine {
     const call = useSipCallStore.getState().getCall(callId);
     if (!call) return;
     try {
-      await call.hangup();
+      await this.endpoint.hangupCall(call);
       this._diag("info", "call", "Hung up SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] hangupCall failed:", e);
@@ -538,8 +638,8 @@ class SipEngine {
     const call = useSipCallStore.getState().getCall(callId);
     if (!call) return;
     try {
-      if (muted) await call.mute();
-      else await call.unmute();
+      if (muted) await this.endpoint.muteCall(call);
+      else await this.endpoint.unMuteCall(call);
       this._diag("info", "media", muted ? "Muted SIP call" : "Unmuted SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] setMute failed:", e);
@@ -552,12 +652,28 @@ class SipEngine {
     const call = useSipCallStore.getState().getCall(callId);
     if (!call) return;
     try {
-      if (held) await call.hold();
-      else await call.unhold();
+      if (held) await this.endpoint.holdCall(call);
+      else await this.endpoint.unholdCall(call);
       this._diag("info", "call", held ? "Held SIP call" : "Resumed SIP call", { callId });
     } catch (e) {
       console.error("[SIP Engine] setHold failed:", e);
       this._diag("error", "call", "Hold control failed", { callId, detail: formatSipError(e) });
+    }
+  }
+
+  /** Toggle speaker route on active call */
+  async setSpeaker(callId: string, speaker: boolean): Promise<void> {
+    const call = useSipCallStore.getState().getCall(callId);
+    if (!call) return;
+    try {
+      if (speaker) await this.endpoint.useSpeaker(call);
+      else await this.endpoint.useEarpiece(call);
+      this._diag("info", "media", speaker ? "Set SIP call audio route to speaker" : "Set SIP call audio route to earpiece", {
+        callId,
+      });
+    } catch (e) {
+      console.error("[SIP Engine] setSpeaker failed:", e);
+      this._diag("error", "media", "Speaker control failed", { callId, detail: formatSipError(e) });
     }
   }
 
@@ -566,7 +682,7 @@ class SipEngine {
     const call = useSipCallStore.getState().getCall(callId);
     if (!call) return;
     try {
-      await call.dtmf(digit);
+      await this.endpoint.dtmfCall(call, digit);
       this._diag("info", "media", "Sent SIP DTMF", { callId, detail: digit });
     } catch (e) {
       console.error("[SIP Engine] sendDtmf failed:", e);
@@ -585,7 +701,7 @@ class SipEngine {
       : `sip:${destination}@${account.domain}`;
 
     try {
-      await call.xfer(uri);
+      await this.endpoint.xferCall(this.pjsipAccount, call, uri);
       this._diag("info", "call", "Transferred SIP call", { callId, destination: uri });
     } catch (e) {
       console.error("[SIP Engine] transferCall failed:", e);
@@ -642,17 +758,25 @@ class SipEngine {
     context: SipDiagnosticContext;
   } {
     const registration = nativeAccount?.getRegistration?.();
-    const active = registration?.isActive?.();
-    const status = registration?.getStatus?.() ?? nativeAccount?.lastStatus ?? nativeAccount?.lastError?.status;
+    const rawRegistration = nativeAccount?._data?.registration ?? {};
+    const activeRaw = registration?.isActive?.() ?? rawRegistration.active;
+    const active = activeRaw === true || activeRaw === "true" || activeRaw === 1 || activeRaw === "1";
+    const status = registration?.getStatus?.() ?? rawRegistration.status ?? nativeAccount?.lastStatus ?? nativeAccount?.lastError?.status;
     const statusText = registration?.getStatusText?.() ?? nativeAccount?.lastStatusText;
     const reason = registration?.getReason?.() ?? nativeAccount?.lastError?.reason;
     const rawState = nativeAccount?.state;
     const numericStatus = Number(status);
+    const statusLabel = String(status ?? "").trim().toUpperCase();
+    const statusTextLabel = String(statusText ?? "").trim().toUpperCase();
+    const okStatus = numericStatus === 200 || statusLabel === "OK" || statusTextLabel === "OK";
+    const expires = rawRegistration.expires;
+    const hasRegistration = rawRegistration.hasRegistration;
+    const lastError = rawRegistration.lastError;
 
     let state: RegistrationState;
     if (rawState) {
       state = this._mapRegState(String(rawState));
-    } else if (active === true) {
+    } else if (active || okStatus) {
       state = "registered";
     } else if (Number.isFinite(numericStatus) && numericStatus >= 500) {
       state = "network_error";
@@ -671,6 +795,7 @@ class SipEngine {
       status ? `status=${status}` : null,
       statusText ? `statusText=${statusText}` : null,
       reason ? `reason=${reason}` : null,
+      expires !== undefined ? `expires=${expires}` : null,
     ].filter(Boolean);
 
     return {
@@ -681,25 +806,118 @@ class SipEngine {
         source,
         accountId: nativeAccount?.getId?.() ?? nativeAccount?._data?.id ?? "unknown",
         uri: nativeAccount?.getURI?.() ?? nativeAccount?._data?.uri ?? "unknown",
-        active: active === undefined ? "unknown" : Boolean(active),
+        active,
+        activeRaw: activeRaw === undefined ? "unknown" : String(activeRaw),
         status: status ?? "none",
         statusText: statusText ?? "none",
         reason: reason ?? "none",
+        expires: expires ?? "unknown",
+        hasRegistration: hasRegistration ?? "unknown",
+        lastError: lastError ?? "unknown",
         rawState: rawState ?? "none",
       },
     };
   }
 
   private _safeCallDetail(call: any): string {
-    const info = call.getInfo?.() ?? {};
-    const parts = [
-      info.state ? `state=${info.state}` : null,
-      info.lastStatusCode ? `sip=${info.lastStatusCode}` : null,
-      info.lastReason ? `reason=${info.lastReason}` : null,
-      info.remoteUri ? `remote=${info.remoteUri}` : null,
-    ].filter(Boolean);
+    try {
+      const info = call.getInfo?.() ?? {};
+      const state = call.getState?.() ?? info.state;
+      const stateText = call.getStateText?.() ?? info.stateText;
+      const lastStatusCode = call.getLastStatusCode?.() ?? info.lastStatusCode;
+      const lastReason = call.getLastReason?.() ?? info.lastReason;
+      const remoteUri = call.getRemoteUri?.() ?? info.remoteUri;
+      const connectDuration = call.getConnectDuration?.() ?? info.connectDuration;
+      const audioCount = call.getAudioCount?.() ?? info.audioCount;
+      const remoteAudioCount = call.getRemoteAudioCount?.() ?? info.remoteAudioCount;
+      const media = call.getMedia?.() ?? info.media;
+      const parts = [
+        state ? `state=${state}` : null,
+        stateText ? `stateText=${stateText}` : null,
+        lastStatusCode ? `sip=${lastStatusCode}` : null,
+        lastReason ? `reason=${lastReason}` : null,
+        remoteUri ? `remote=${trimDiagnosticValue(remoteUri)}` : null,
+        connectDuration !== undefined ? `connectDuration=${connectDuration}` : null,
+        audioCount !== undefined ? `audioCount=${audioCount}` : null,
+        remoteAudioCount !== undefined ? `remoteAudioCount=${remoteAudioCount}` : null,
+        media ? `media=${stringifyMedia(media)}` : null,
+      ].filter(Boolean);
 
-    return parts.join(" | ");
+      return parts.join(" | ");
+    } catch (error) {
+      return `call detail unavailable: ${formatSipError(error)}`;
+    }
+  }
+
+  private _safeCallContext(call: any): SipDiagnosticContext {
+    try {
+      const info = call.getInfo?.() ?? {};
+      const media = call.getMedia?.() ?? info.media;
+      const provisionalMedia = call.getProvisionalMedia?.() ?? info.provisionalMedia;
+
+      return {
+        state: call.getState?.() ?? info.state ?? "unknown",
+        stateText: call.getStateText?.() ?? info.stateText ?? "unknown",
+        lastStatusCode: call.getLastStatusCode?.() ?? info.lastStatusCode ?? "unknown",
+        lastReason: call.getLastReason?.() ?? info.lastReason ?? "unknown",
+        remoteUri: trimDiagnosticValue(call.getRemoteUri?.() ?? info.remoteUri ?? "unknown"),
+        remoteContact: trimDiagnosticValue(call.getRemoteContact?.() ?? info.remoteContact ?? "unknown"),
+        connectDuration: call.getConnectDuration?.() ?? info.connectDuration ?? "unknown",
+        totalDuration: call.getTotalDuration?.() ?? info.totalDuration ?? "unknown",
+        audioCount: call.getAudioCount?.() ?? info.audioCount ?? "unknown",
+        remoteAudioCount: call.getRemoteAudioCount?.() ?? info.remoteAudioCount ?? "unknown",
+        videoCount: call.getVideoCount?.() ?? info.videoCount ?? "unknown",
+        remoteVideoCount: call.getRemoteVideoCount?.() ?? info.remoteVideoCount ?? "unknown",
+        media: stringifyMedia(media),
+        provisionalMedia: stringifyMedia(provisionalMedia),
+      };
+    } catch (error) {
+      return {
+        state: "unknown",
+        detailError: formatSipError(error),
+      };
+    }
+  }
+
+  private _safeCallId(call: any): string {
+    try {
+      const id = call?.getId?.() ?? call?._id ?? call?.id;
+      return id === undefined || id === null ? "unknown" : String(id);
+    } catch {
+      return "unknown";
+    }
+  }
+
+  private async _activateAudioSession(callId: string, reason: string): Promise<void> {
+    if (!this.endpoint || typeof this.endpoint.activateAudioSession !== "function") {
+      this._diag("warning", "media", "PJSIP audio session activation is not available", {
+        callId,
+        context: {
+          reason,
+          endpointKeys: safeKeys(this.endpoint),
+        },
+      });
+      return;
+    }
+
+    try {
+      await Promise.race([
+        this.endpoint.activateAudioSession(),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("activateAudioSession timed out")), 1500);
+        }),
+      ]);
+      this._diag("info", "media", "PJSIP audio session activated", {
+        callId,
+        context: { reason },
+      });
+    } catch (error) {
+      this._diag("warning", "media", "PJSIP audio session activation did not confirm", {
+        callId,
+        detail: formatSipError(error),
+        context: { reason },
+      });
+    }
   }
 
   private _diag(
