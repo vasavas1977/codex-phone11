@@ -66,6 +66,24 @@ run "docker containers" docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Sta
 run "listening SIP and RTP sockets" sh -lc "ss -lunpt 2>/dev/null | grep -E '(:5060|:5080|:5061|:8088|:20000|:30000|:40000|:50000)' || true"
 
 mapfile -t CONTAINERS < <(container_names)
+KAMAILIO_CONTAINER="$(container_for 'kamailio')"
+FREESWITCH_CONTAINER="$(container_for 'freeswitch')"
+RTPENGINE_CONTAINER="$(container_for 'rtpengine|rtp-engine|rtp_engine')"
+
+section "live media config snapshot"
+if [ -n "$KAMAILIO_CONTAINER" ]; then
+  exec_in_container "$KAMAILIO_CONTAINER" "Kamailio live RTPEngine config snippets" \
+    'grep -nE "rtpengine_sock|route\\[TO_FREESWITCH\\]|onreply_route\\[FREESWITCH_REPLY\\]|rtpengine_offer|rtpengine_answer|direction=|ICE=|DTLS|SDES|transport-protocol" /etc/kamailio/kamailio.cfg | sed -E "s#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(secret=)[^&[:space:]]+#\1<redacted>#Ig"'
+fi
+if [ -n "$RTPENGINE_CONTAINER" ]; then
+  run "RTPEngine docker runtime config" \
+    sh -lc "docker inspect --format 'name={{.Name}} image={{.Config.Image}} network={{.HostConfig.NetworkMode}} cmd={{json .Config.Cmd}}' '$RTPENGINE_CONTAINER'"
+  exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine process command" \
+    'ps -eo pid,args | grep -E "[r]tpengine" || true'
+  exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine UDP socket sample" \
+    'if command -v ss >/dev/null 2>&1; then ss -lunp | head -n 80; else cat /proc/net/udp | head -n 40; fi'
+fi
+
 if [ "${#CONTAINERS[@]}" -eq 0 ]; then
   section "no matching containers"
   echo "No Phone11 SIP/media containers matched on this host."
@@ -75,13 +93,9 @@ else
   done
 fi
 
-KAMAILIO_CONTAINER="$(container_for 'kamailio')"
-FREESWITCH_CONTAINER="$(container_for 'freeswitch')"
-RTPENGINE_CONTAINER="$(container_for 'rtpengine|rtp-engine|rtp_engine')"
-
 if [ -n "$KAMAILIO_CONTAINER" ]; then
   exec_in_container "$KAMAILIO_CONTAINER" "Kamailio live RTPEngine config snippets" \
-    'grep -nE "rtpengine_sock|route\[TO_FREESWITCH\]|onreply_route\[FREESWITCH_REPLY\]|rtpengine_offer|rtpengine_answer|direction=|ICE=|DTLS|SDES|transport-protocol" /etc/kamailio/kamailio.cfg | sed -E "s#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(secret=)[^&[:space:]]+#\1<redacted>#Ig"'
+    'grep -nE "rtpengine_sock|route\\[TO_FREESWITCH\\]|onreply_route\\[FREESWITCH_REPLY\\]|rtpengine_offer|rtpengine_answer|direction=|ICE=|DTLS|SDES|transport-protocol" /etc/kamailio/kamailio.cfg | sed -E "s#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(secret=)[^&[:space:]]+#\1<redacted>#Ig"'
   exec_in_container "$KAMAILIO_CONTAINER" "Kamailio user location" \
     'if command -v kamcmd >/dev/null 2>&1; then kamcmd ul.dump; else echo "kamcmd not found"; fi'
   exec_in_container "$KAMAILIO_CONTAINER" "Kamailio dialogs" \
