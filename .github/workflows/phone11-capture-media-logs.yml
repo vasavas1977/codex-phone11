@@ -1,0 +1,110 @@
+name: Phone11 Capture SIP Media Logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+      since_minutes:
+        description: Minutes of logs to collect
+        required: true
+        default: "90"
+      extension:
+        description: SIP extension used by the test phone
+        required: true
+        default: "1001"
+      destination:
+        description: PSTN number or SIP destination dialed during the test
+        required: false
+        default: "020303988"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  capture-media-logs:
+    name: Capture Kamailio, FreeSWITCH, and RTPEngine evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture live SIP/media logs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          EC2_HOST="${{ inputs.ec2_host }}"
+          SINCE_MINUTES="${{ inputs.since_minutes }}"
+          EXTENSION="${{ inputs.extension }}"
+          DESTINATION="${{ inputs.destination }}"
+          LOG_DIR="$RUNNER_TEMP/phone11-media-logs"
+          LOG_FILE="$LOG_DIR/phone11-media-logs.txt"
+          mkdir -p "$LOG_DIR"
+
+          if ! [[ "$SINCE_MINUTES" =~ ^[0-9]{1,4}$ ]]; then
+            echo 'ERROR: since_minutes must be numeric.'
+            exit 31
+          fi
+          if ! [[ "$EXTENSION" =~ ^[0-9A-Za-z_.:+@-]+$ ]]; then
+            echo 'ERROR: extension contains unsupported characters.'
+            exit 31
+          fi
+          if [ -n "$DESTINATION" ] && ! [[ "$DESTINATION" =~ ^[0-9A-Za-z_.:+@-]+$ ]]; then
+            echo 'ERROR: destination contains unsupported characters.'
+            exit 31
+          fi
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '=== Locate EC2 instance ==='
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 32
+          fi
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '=== Prepare temporary SSH access ==='
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_media_logs_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_media_logs_key.pub"
+
+          echo '=== Upload and run capture script ==='
+          scp -i ~/.ssh/phone11_media_logs_key -o StrictHostKeyChecking=no \
+            ops/scripts/capture-media-logs.sh \
+            "$EC2_USER@$EC2_HOST:/tmp/phone11-capture-media-logs.sh"
+
+          ssh -i ~/.ssh/phone11_media_logs_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "SINCE_MINUTES='$SINCE_MINUTES' EXTENSION='$EXTENSION' DESTINATION='$DESTINATION' bash /tmp/phone11-capture-media-logs.sh" \
+            | tee "$LOG_FILE"
+
+      - name: Upload media log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-media-logs
+          path: ${{ runner.temp }}/phone11-media-logs/phone11-media-logs.txt
+          if-no-files-found: warn
