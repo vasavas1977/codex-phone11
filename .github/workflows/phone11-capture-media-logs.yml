@@ -50,10 +50,10 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          EC2_HOST="${{ inputs.ec2_host }}"
-          SINCE_MINUTES="${{ inputs.since_minutes }}"
-          EXTENSION="${{ inputs.extension }}"
-          DESTINATION="${{ inputs.destination }}"
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          SINCE_MINUTES="${{ github.event.inputs.since_minutes || '90' }}"
+          EXTENSION="${{ github.event.inputs.extension || '1001' }}"
+          DESTINATION="${{ github.event.inputs.destination || '020303988' }}"
           LOG_DIR="$RUNNER_TEMP/phone11-media-logs"
           LOG_FILE="$LOG_DIR/phone11-media-logs.txt"
           mkdir -p "$LOG_DIR"
