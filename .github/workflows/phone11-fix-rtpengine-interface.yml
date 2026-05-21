@@ -1,0 +1,98 @@
+name: Phone11 Fix RTPEngine Interface
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-fix-rtpengine-interface.yml"
+      - "ops/scripts/fix-rtpengine-interface.sh"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+      public_ip:
+        description: Public SIP/media IP advertised to phones
+        required: true
+        default: 43.210.122.111
+      private_ip:
+        description: Private EC2 IP; leave blank to auto-detect
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  fix-rtpengine-interface:
+    name: Recreate RTPEngine with pub/priv media interfaces
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply RTPEngine interface fix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          PUBLIC_IP="${{ github.event.inputs.public_ip || '43.210.122.111' }}"
+          PRIVATE_IP="${{ github.event.inputs.private_ip || '' }}"
+          LOG_DIR="$RUNNER_TEMP/phone11-rtpengine-fix"
+          LOG_FILE="$LOG_DIR/phone11-rtpengine-fix.txt"
+          mkdir -p "$LOG_DIR"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '=== Locate EC2 instance ==='
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 32
+          fi
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '=== Prepare temporary SSH access ==='
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_rtpengine_fix_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_rtpengine_fix_key.pub"
+
+          echo '=== Upload and run fix script ==='
+          scp -i ~/.ssh/phone11_rtpengine_fix_key -o StrictHostKeyChecking=no \
+            ops/scripts/fix-rtpengine-interface.sh \
+            "$EC2_USER@$EC2_HOST:/tmp/phone11-fix-rtpengine-interface.sh"
+
+          ssh -i ~/.ssh/phone11_rtpengine_fix_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PUBLIC_IP='$PUBLIC_IP' PRIVATE_IP='$PRIVATE_IP' bash /tmp/phone11-fix-rtpengine-interface.sh" \
+            | tee "$LOG_FILE"
+
+      - name: Upload RTPEngine fix log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-rtpengine-fix-log
+          path: ${{ runner.temp }}/phone11-rtpengine-fix/phone11-rtpengine-fix.txt
+          if-no-files-found: warn
