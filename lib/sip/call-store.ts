@@ -30,6 +30,28 @@ export interface SipCall {
   _nativeCall?: any;
 }
 
+function callIdFromNative(nativeCall: any): string {
+  const id = nativeCall?.getId?.() ?? nativeCall?._id ?? nativeCall?.id;
+  return id === undefined || id === null ? "unknown" : String(id);
+}
+
+function callInfoFromNative(nativeCall: any): Record<string, any> {
+  try {
+    return nativeCall?.getInfo?.() ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function callValue<T>(reader: () => T, fallback: T): T {
+  try {
+    const value = reader();
+    return value === undefined || value === null ? fallback : value;
+  } catch {
+    return fallback;
+  }
+}
+
 interface SipCallState {
   activeCalls: Record<string, SipCall>;
   incomingCall: SipCall | null;
@@ -51,7 +73,7 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
   incomingCall: null,
 
   addOutgoingCall: (nativeCall: any, destination: string) => {
-    const id = nativeCall.getId().toString();
+    const id = callIdFromNative(nativeCall);
     const call: SipCall = {
       id,
       direction: "outbound",
@@ -70,9 +92,12 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
   },
 
   setIncomingCall: (nativeCall: any) => {
-    const id = nativeCall.getId().toString();
-    const info = nativeCall.getInfo?.() ?? {};
-    const remoteUri: string = info.remoteUri ?? info.remoteContact ?? "Unknown";
+    const id = callIdFromNative(nativeCall);
+    const info = callInfoFromNative(nativeCall);
+    const remoteUri: string = callValue(
+      () => nativeCall?.getRemoteUri?.() ?? info.remoteUri ?? info.remoteContact,
+      "Unknown",
+    );
     // Extract number from SIP URI: sip:+66812345678@domain.com → +66812345678
     const match = remoteUri.match(/sip:([^@]+)@/);
     const remoteNumber = match ? match[1] : remoteUri;
@@ -94,9 +119,9 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
   },
 
   updateCallState: (nativeCall: any) => {
-    const id = nativeCall.getId().toString();
-    const info = nativeCall.getInfo?.() ?? {};
-    const pjState: string = info.state ?? "";
+    const id = callIdFromNative(nativeCall);
+    const info = callInfoFromNative(nativeCall);
+    const pjState: string = callValue(() => nativeCall?.getState?.() ?? info.state, "");
 
     const statusMap: Record<string, CallStatus> = {
       PJSIP_INV_STATE_CALLING: "calling",
