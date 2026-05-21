@@ -80,6 +80,8 @@ FREESWITCH_CONTAINER="$(container_for 'freeswitch')"
 RTPENGINE_CONTAINER="$(container_for 'rtpengine|rtp-engine|rtp_engine')"
 
 if [ -n "$KAMAILIO_CONTAINER" ]; then
+  exec_in_container "$KAMAILIO_CONTAINER" "Kamailio live RTPEngine config snippets" \
+    'grep -nE "rtpengine_sock|route\[TO_FREESWITCH\]|onreply_route\[FREESWITCH_REPLY\]|rtpengine_offer|rtpengine_answer|direction=|ICE=|DTLS|SDES|transport-protocol" /etc/kamailio/kamailio.cfg | sed -E "s#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(secret=)[^&[:space:]]+#\1<redacted>#Ig"'
   exec_in_container "$KAMAILIO_CONTAINER" "Kamailio user location" \
     'if command -v kamcmd >/dev/null 2>&1; then kamcmd ul.dump; else echo "kamcmd not found"; fi'
   exec_in_container "$KAMAILIO_CONTAINER" "Kamailio dialogs" \
@@ -96,6 +98,12 @@ if [ -n "$FREESWITCH_CONTAINER" ]; then
 fi
 
 if [ -n "$RTPENGINE_CONTAINER" ]; then
+  run "RTPEngine docker runtime config" \
+    sh -lc "docker inspect --format 'name={{.Name}} image={{.Config.Image}} network={{.HostConfig.NetworkMode}} cmd={{json .Config.Cmd}}' '$RTPENGINE_CONTAINER'"
+  exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine process command" \
+    'ps -eo pid,args | grep -E "[r]tpengine" || true'
+  exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine UDP socket sample" \
+    'if command -v ss >/dev/null 2>&1; then ss -lunp | head -n 80; else cat /proc/net/udp | head -n 40; fi'
   exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine session list" \
     'for cmd in "rtpengine-ctl list active" "rtpengine-ctl list sessions" "ngcp-rtpengine-ctl list active" "ngcp-rtpengine-ctl list all"; do echo "$ $cmd"; sh -lc "$cmd" || true; done'
 fi
