@@ -9,6 +9,7 @@ KAMAILIO_CONTAINER="${KAMAILIO_CONTAINER:-p11-kamailio}"
 PORT_MIN="${PORT_MIN:-20000}"
 PORT_MAX="${PORT_MAX:-30000}"
 LISTEN_NG="${LISTEN_NG:-127.0.0.1:22222}"
+LISTEN_HTTP="${LISTEN_HTTP:-127.0.0.1:22223}"
 
 redact() {
   sed -E \
@@ -54,7 +55,24 @@ fi
 BACKUP_SUFFIX="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="/tmp/phone11-rtpengine-fix-${BACKUP_SUFFIX}"
 BACKUP_CONTAINER="${RTPENGINE_CONTAINER}-before-${BACKUP_SUFFIX}"
+PRIOR_BACKUP_CONTAINER="$(docker ps -a --format '{{.Names}}' | grep -E "^${RTPENGINE_CONTAINER}-before-" | sort | tail -n 1 || true)"
 mkdir -p "$BACKUP_DIR"
+
+rollback_rtpengine() {
+  local reason="$1"
+  echo "ERROR: $reason. Rolling back."
+  docker logs --tail 120 "$RTPENGINE_CONTAINER" 2>&1 | redact || true
+  docker rm -f "$RTPENGINE_CONTAINER" >/dev/null 2>&1 || true
+  if [ -n "$PRIOR_BACKUP_CONTAINER" ] && docker ps -a --format '{{.Names}}' | grep -qx "$PRIOR_BACKUP_CONTAINER"; then
+    docker rename "$PRIOR_BACKUP_CONTAINER" "$RTPENGINE_CONTAINER"
+    docker start "$RTPENGINE_CONTAINER"
+    echo "Rolled back to prior backup container: $PRIOR_BACKUP_CONTAINER"
+  else
+    docker rename "$BACKUP_CONTAINER" "$RTPENGINE_CONTAINER"
+    docker start "$RTPENGINE_CONTAINER"
+    echo "Rolled back to current-run backup container: $BACKUP_CONTAINER"
+  fi
+}
 
 section "Phone11 RTPEngine interface fix"
 echo "time_utc=$(date -u -Iseconds)"
@@ -64,6 +82,9 @@ echo "rtpengine_container=$RTPENGINE_CONTAINER"
 echo "backup_container=$BACKUP_CONTAINER"
 echo "rtpengine_image=$RTPENGINE_IMAGE"
 echo "rtp_port_range=${PORT_MIN}-${PORT_MAX}"
+echo "listen_ng=$LISTEN_NG"
+echo "listen_http=$LISTEN_HTTP"
+echo "prior_backup_container=${PRIOR_BACKUP_CONTAINER:-none}"
 
 run "current RTPEngine container" docker inspect \
   --format 'name={{.Name}} image={{.Config.Image}} network={{.HostConfig.NetworkMode}} cmd={{json .Config.Cmd}} restart={{.HostConfig.RestartPolicy.Name}}' \
@@ -90,6 +111,7 @@ docker run -d \
   "--interface=pub/${PRIVATE_IP}!${PUBLIC_IP}" \
   "--interface=priv/${PRIVATE_IP}" \
   "--listen-ng=${LISTEN_NG}" \
+  "--listen-http=${LISTEN_HTTP}" \
   "--port-min=${PORT_MIN}" \
   "--port-max=${PORT_MAX}" \
   --log-level=4 \
@@ -98,22 +120,21 @@ START_RC=$?
 set -e
 
 if [ "$START_RC" -ne 0 ]; then
-  echo "ERROR: New RTPEngine container failed to start. Rolling back."
-  docker rm -f "$RTPENGINE_CONTAINER" >/dev/null 2>&1 || true
-  docker rename "$BACKUP_CONTAINER" "$RTPENGINE_CONTAINER"
-  docker start "$RTPENGINE_CONTAINER"
+  rollback_rtpengine "New RTPEngine container failed to start"
   exit 44
 fi
 
-sleep 2
+sleep 5
 
-if ! docker ps --format '{{.Names}}' | grep -qx "$RTPENGINE_CONTAINER"; then
-  echo "ERROR: New RTPEngine container is not running. Rolling back."
-  docker logs --tail 120 "$RTPENGINE_CONTAINER" 2>&1 | redact || true
-  docker rm -f "$RTPENGINE_CONTAINER" >/dev/null 2>&1 || true
-  docker rename "$BACKUP_CONTAINER" "$RTPENGINE_CONTAINER"
-  docker start "$RTPENGINE_CONTAINER"
+CONTAINER_STATE="$(docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.RestartCount}} {{.State.ExitCode}}' "$RTPENGINE_CONTAINER" 2>/dev/null || true)"
+echo "container_state=$CONTAINER_STATE"
+if ! echo "$CONTAINER_STATE" | grep -q '^true false '; then
+  rollback_rtpengine "New RTPEngine container is not stable"
   exit 45
+fi
+if ! ss -lunp 2>/dev/null | grep -q '127[.]0[.]0[.]1:22222.*rtpengine'; then
+  rollback_rtpengine "New RTPEngine control socket did not open on 127.0.0.1:22222"
+  exit 46
 fi
 
 run "new RTPEngine container" docker inspect \
@@ -124,6 +145,9 @@ run "host SIP/RTP/control sockets" sh -lc "ss -lunpt 2>/dev/null | grep -E '(:50
 
 section "rollback note"
 echo "Old container kept as: $BACKUP_CONTAINER"
+if [ -n "$PRIOR_BACKUP_CONTAINER" ]; then
+  echo "Prior backup still present as: $PRIOR_BACKUP_CONTAINER"
+fi
 echo "Inspect backup saved under: $BACKUP_DIR"
 echo "Rollback command if needed: docker rm -f $RTPENGINE_CONTAINER && docker rename $BACKUP_CONTAINER $RTPENGINE_CONTAINER && docker start $RTPENGINE_CONTAINER"
 
