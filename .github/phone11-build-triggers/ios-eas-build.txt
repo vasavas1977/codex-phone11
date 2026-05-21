@@ -1,6 +1,6 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-20T16:55:40+07:00
-reason=fix iOS PJSIP registration event parsing, transport casing, and explicit registerAccount flow
-sip_registration_fix_commit=d797670541cb8299f5236fafa77a91dc47e4557e
-previous_diagnostics_build=c2ef8aa0-079d-499f-ab13-847bab390213
+requested_at=2026-05-21T13:27:45+07:00
+reason=fix react-native-pjsip iOS native registration payload active/status fields
+native_registration_payload_fix_commit=d833cc9e0d3ada3f034ea6a2ea96a1b670b57544
+previous_diagnostics_build=8b2d4b11-5bab-42c0-8004-874b11a2e228
 workflow_trigger_commit=pending
