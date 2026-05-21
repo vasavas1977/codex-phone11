@@ -6,6 +6,8 @@ const podspecPath = path.join(packageRoot, "react-native-pjsip.podspec");
 const iosRoot = path.join(packageRoot, "ios");
 const iosModulePath = path.join(iosRoot, "RTCPjSip", "PjSipModule.m");
 const iosAccountPath = path.join(iosRoot, "RTCPjSip", "PjSipAccount.m");
+const iosCallPath = path.join(iosRoot, "RTCPjSip", "PjSipCall.m");
+const iosUtilPath = path.join(iosRoot, "RTCPjSip", "PjSipUtil.m");
 const androidRoot = path.join(packageRoot, "android");
 const gradlePath = path.join(androidRoot, "build.gradle");
 const manifestPath = path.join(androidRoot, "src", "main", "AndroidManifest.xml");
@@ -261,9 +263,215 @@ async function ensurePjSipRegistrationPayload() {
   return true;
 }
 
+async function ensurePjSipAudioCallbacks() {
+  const source = await readIfExists(iosModulePath);
+  if (source === null) {
+    console.warn(`[phone11-pjsip-patch] Skipping iOS audio callback patch; missing ${iosModulePath}`);
+    return false;
+  }
+
+  if (
+    source.includes('callback(@[@TRUE, @"speaker"]);') &&
+    source.includes('callback(@[@TRUE, @"earpiece"]);') &&
+    source.includes('callback(@[@TRUE, @"audioSessionActivated"]);') &&
+    source.includes('callback(@[@TRUE, @"audioSessionDeactivated"]);')
+  ) {
+    console.log(`[phone11-pjsip-patch] Verified iOS audio callback patch: ${iosModulePath}`);
+    return false;
+  }
+
+  const replacements = [
+    [
+      `RCT_EXPORT_METHOD(useSpeaker: (int) callId callback:(RCTResponseSenderBlock) callback) {
+    [[PjSipEndpoint instance] useSpeaker];
+}
+`,
+      `RCT_EXPORT_METHOD(useSpeaker: (int) callId callback:(RCTResponseSenderBlock) callback) {
+    [[PjSipEndpoint instance] useSpeaker];
+    callback(@[@TRUE, @"speaker"]);
+}
+`,
+    ],
+    [
+      `RCT_EXPORT_METHOD(useEarpiece: (int) callId callback:(RCTResponseSenderBlock) callback) {
+    [[PjSipEndpoint instance] useEarpiece];
+}
+`,
+      `RCT_EXPORT_METHOD(useEarpiece: (int) callId callback:(RCTResponseSenderBlock) callback) {
+    [[PjSipEndpoint instance] useEarpiece];
+    callback(@[@TRUE, @"earpiece"]);
+}
+`,
+    ],
+    [
+      `RCT_EXPORT_METHOD(activateAudioSession: (RCTResponseSenderBlock) callback) {
+    pjsua_set_no_snd_dev();
+    pj_status_t status;
+    status = pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV, PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV);
+    if (status != PJ_SUCCESS) {
+        NSLog(@"Failed to active audio session");
+    }
+}
+`,
+      `RCT_EXPORT_METHOD(activateAudioSession: (RCTResponseSenderBlock) callback) {
+    pjsua_set_no_snd_dev();
+    pj_status_t status;
+    status = pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV, PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV);
+    if (status != PJ_SUCCESS) {
+        NSLog(@"Failed to activate audio session (%d)", status);
+        callback(@[@FALSE, [NSString stringWithFormat:@"Failed to activate audio session (%d)", status]]);
+        return;
+    }
+    callback(@[@TRUE, @"audioSessionActivated"]);
+}
+`,
+    ],
+    [
+      `RCT_EXPORT_METHOD(deactivateAudioSession: (RCTResponseSenderBlock) callback) {
+    pjsua_set_no_snd_dev();
+}
+`,
+      `RCT_EXPORT_METHOD(deactivateAudioSession: (RCTResponseSenderBlock) callback) {
+    pjsua_set_no_snd_dev();
+    callback(@[@TRUE, @"audioSessionDeactivated"]);
+}
+`,
+    ],
+  ];
+
+  let next = source;
+  for (const [legacyBlock, patchedBlock] of replacements) {
+    if (!next.includes(legacyBlock)) {
+      throw new Error(
+        `[phone11-pjsip-patch] Could not locate the legacy iOS audio callback block in ${iosModulePath}`
+      );
+    }
+    next = next.replace(legacyBlock, patchedBlock);
+  }
+
+  await writeFile(iosModulePath, next);
+  console.log(`[phone11-pjsip-patch] Wrote iOS audio callback patch: ${iosModulePath}`);
+  return true;
+}
+
+async function ensurePjSipSafeStringConversion() {
+  const source = await readIfExists(iosUtilPath);
+  if (source === null) {
+    console.warn(`[phone11-pjsip-patch] Skipping iOS safe string patch; missing ${iosUtilPath}`);
+    return false;
+  }
+
+  if (source.includes("Phone11 safe pj_str_t conversion")) {
+    console.log(`[phone11-pjsip-patch] Verified iOS safe string patch: ${iosUtilPath}`);
+    return false;
+  }
+
+  const legacyPattern =
+    /\+ \(NSString \*\) toString : \(pj_str_t \*\)pjStr \{\n\s*if \(pjStr->slen < 0\) \{\n\s*return \[NSNull null\];\n\s*\}\n\s*return \[\[NSString alloc\]\n\s*initWithBytes:pjStr->ptr\n\s*length:pjStr->slen\n\s*encoding:NSUTF8StringEncoding\];\n\}\n/;
+
+  const patchedBlock = `+ (NSString *) toString : (pj_str_t *)pjStr {
+    // Phone11 safe pj_str_t conversion: event payloads are emitted from native
+    // PJSIP callbacks, so never allow an invalid string to crash the app.
+    if (pjStr == NULL || pjStr->slen < 0 || pjStr->ptr == NULL) {
+        return [NSNull null];
+    }
+    if (pjStr->slen == 0) {
+        return @"";
+    }
+
+    NSString *value = [[NSString alloc]
+            initWithBytes:pjStr->ptr
+                   length:pjStr->slen
+                 encoding:NSUTF8StringEncoding];
+
+    return value ?: [NSNull null];
+}
+`;
+
+  if (!legacyPattern.test(source)) {
+    throw new Error(
+      `[phone11-pjsip-patch] Could not locate the legacy safe string block in ${iosUtilPath}`
+    );
+  }
+
+  await writeFile(iosUtilPath, source.replace(legacyPattern, patchedBlock));
+  console.log(`[phone11-pjsip-patch] Wrote iOS safe string patch: ${iosUtilPath}`);
+  return true;
+}
+
+async function ensurePjSipMediaBridgeSafety() {
+  const source = await readIfExists(iosCallPath);
+  if (source === null) {
+    console.warn(`[phone11-pjsip-patch] Skipping iOS media bridge patch; missing ${iosCallPath}`);
+    return false;
+  }
+
+  if (source.includes("Phone11 media bridge diagnostics")) {
+    console.log(`[phone11-pjsip-patch] Verified iOS media bridge patch: ${iosCallPath}`);
+    return false;
+  }
+
+  const legacyPattern =
+    /- \(void\)onMediaStateChanged:\(pjsua_call_info\)info \{\n\s*pjsua_call_media_status status = info\.media_status;\n\s*if \(status == PJSUA_CALL_MEDIA_ACTIVE \|\| status == PJSUA_CALL_MEDIA_REMOTE_HOLD\) \{\n\s*pjsua_conf_connect\(info\.conf_slot, 0\);\n\s*pjsua_conf_connect\(0, info\.conf_slot\);\n\s*\}\n\}\n/;
+
+  const patchedBlock = `- (void)onMediaStateChanged:(pjsua_call_info)info {
+    // Phone11 media bridge diagnostics: connect every active audio stream and
+    // log native status codes instead of crashing silently at PSTN answer time.
+    pjsua_call_media_status status = info.media_status;
+    NSLog(@"[Phone11PJSIP] media_state call=%d media_status=%d conf_slot=%d media_cnt=%u",
+          self.id, status, info.conf_slot, info.media_cnt);
+
+    if (status != PJSUA_CALL_MEDIA_ACTIVE && status != PJSUA_CALL_MEDIA_REMOTE_HOLD) {
+        return;
+    }
+
+    BOOL connectedAudio = NO;
+    for (unsigned i = 0; i < info.media_cnt; i++) {
+        pjsua_call_media_info media = info.media[i];
+        if (media.type != PJMEDIA_TYPE_AUDIO ||
+            (media.status != PJSUA_CALL_MEDIA_ACTIVE && media.status != PJSUA_CALL_MEDIA_REMOTE_HOLD)) {
+            continue;
+        }
+
+        pjsua_conf_port_id slot = media.stream.aud.conf_slot;
+        if (slot == PJSUA_INVALID_ID) {
+            NSLog(@"[Phone11PJSIP] skip invalid audio conf slot call=%d media=%u", self.id, i);
+            continue;
+        }
+
+        pj_status_t toDevice = pjsua_conf_connect(slot, 0);
+        pj_status_t fromDevice = pjsua_conf_connect(0, slot);
+        NSLog(@"[Phone11PJSIP] audio_bridge call=%d media=%u slot=%d to_device=%d from_device=%d",
+              self.id, i, slot, toDevice, fromDevice);
+        connectedAudio = YES;
+    }
+
+    if (!connectedAudio && info.conf_slot != PJSUA_INVALID_ID) {
+        pj_status_t toDevice = pjsua_conf_connect(info.conf_slot, 0);
+        pj_status_t fromDevice = pjsua_conf_connect(0, info.conf_slot);
+        NSLog(@"[Phone11PJSIP] fallback_audio_bridge call=%d slot=%d to_device=%d from_device=%d",
+              self.id, info.conf_slot, toDevice, fromDevice);
+    }
+}
+`;
+
+  if (!legacyPattern.test(source)) {
+    throw new Error(
+      `[phone11-pjsip-patch] Could not locate the legacy iOS media bridge block in ${iosCallPath}`
+    );
+  }
+
+  await writeFile(iosCallPath, source.replace(legacyPattern, patchedBlock));
+  console.log(`[phone11-pjsip-patch] Wrote iOS media bridge patch: ${iosCallPath}`);
+  return true;
+}
+
 const podspecChanged = await ensurePjSipPodspec();
 const iosModuleChanged = await ensurePjSipBridgeExport();
 const iosAccountChanged = await ensurePjSipRegistrationPayload();
+const iosAudioChanged = await ensurePjSipAudioCallbacks();
+const iosStringChanged = await ensurePjSipSafeStringConversion();
+const iosMediaChanged = await ensurePjSipMediaBridgeSafety();
 
 const manifestSource = await readIfExists(manifestPath);
 const manifestPackage = manifestSource?.match(/<manifest\b[^>]*\s+package=["']([^"']+)["']/)?.[1];
@@ -312,7 +520,17 @@ const manifestChanged = await patchFile(manifestPath, (source) =>
 );
 const sourceChanged = await patchSourceTree(sourceRoot);
 
-if (podspecChanged || iosModuleChanged || iosAccountChanged || gradleChanged || manifestChanged || sourceChanged) {
+if (
+  podspecChanged ||
+  iosModuleChanged ||
+  iosAccountChanged ||
+  iosAudioChanged ||
+  iosStringChanged ||
+  iosMediaChanged ||
+  gradleChanged ||
+  manifestChanged ||
+  sourceChanged
+) {
   console.log("[phone11-pjsip-patch] Patched react-native-pjsip iOS/Android native config.");
 } else {
   console.log("[phone11-pjsip-patch] react-native-pjsip native config already patched.");
