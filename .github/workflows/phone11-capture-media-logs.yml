@@ -17,7 +17,7 @@ on:
       since_minutes:
         description: Minutes of logs to collect
         required: true
-        default: "90"
+        default: "360"
       extension:
         description: SIP extension used by the test phone
         required: true
@@ -51,7 +51,7 @@ jobs:
           set -Eeuo pipefail
 
           EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
-          SINCE_MINUTES="${{ github.event.inputs.since_minutes || '90' }}"
+          SINCE_MINUTES="${{ github.event.inputs.since_minutes || '360' }}"
           EXTENSION="${{ github.event.inputs.extension || '1001' }}"
           DESTINATION="${{ github.event.inputs.destination || '020303988' }}"
           LOG_DIR="$RUNNER_TEMP/phone11-media-logs"
