@@ -1,6 +1,6 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-21T18:57:58+07:00
-reason=fix duplicate CallKit outbound SIP leg after PSTN no-audio diagnostics
-outbound_callkit_echo_fix_commit=pending
-previous_diagnostics_build=b81461ea-39f3-46f0-8360-1a97826e91b9
+requested_at=2026-05-21T23:18:25+07:00
+reason=fix iOS PSTN answer media crash and add native audio bridge diagnostics
+answer_media_crash_fix_commit=9265c817a305a5cfabd0641013c689fe04922468
+previous_diagnostics_build=2590cfa4-dbd5-4815-8a80-8e774057bb5d
 workflow_trigger_commit=pending
