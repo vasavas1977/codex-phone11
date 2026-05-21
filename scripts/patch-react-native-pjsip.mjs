@@ -5,6 +5,7 @@ const packageRoot = path.join(process.cwd(), "node_modules", "react-native-pjsip
 const podspecPath = path.join(packageRoot, "react-native-pjsip.podspec");
 const iosRoot = path.join(packageRoot, "ios");
 const iosModulePath = path.join(iosRoot, "RTCPjSip", "PjSipModule.m");
+const iosAccountPath = path.join(iosRoot, "RTCPjSip", "PjSipAccount.m");
 const androidRoot = path.join(packageRoot, "android");
 const gradlePath = path.join(androidRoot, "build.gradle");
 const manifestPath = path.join(androidRoot, "src", "main", "AndroidManifest.xml");
@@ -210,8 +211,59 @@ async function ensurePjSipBridgeExport() {
   return next !== source;
 }
 
+async function ensurePjSipRegistrationPayload() {
+  const source = await readIfExists(iosAccountPath);
+  if (source === null) {
+    console.warn(`[phone11-pjsip-patch] Skipping iOS registration payload patch; missing ${iosAccountPath}`);
+    return false;
+  }
+
+  if (source.includes('@"active": @(registrationActive)')) {
+    console.log(`[phone11-pjsip-patch] Verified iOS registration payload patch: ${iosAccountPath}`);
+    return false;
+  }
+
+  const legacyBlock = `    // Format registration status
+    NSDictionary * registration = @{
+        @"status": [PjSipUtil toString:(pj_str_t *) pjsip_get_status_text(info.status)],
+        @"statusText": [PjSipUtil toString:&info.status_text],
+        @"active": @"test",
+        @"reason": @"test"
+    };
+`;
+
+  const patchedBlock = `    NSString *statusText = [PjSipUtil toString:&info.status_text];
+    if (statusText == nil || [statusText length] == 0) {
+        statusText = [PjSipUtil toString:(pj_str_t *) pjsip_get_status_text(info.status)];
+    }
+    NSString *defaultReason = [PjSipUtil toString:(pj_str_t *) pjsip_get_status_text(info.status)];
+    BOOL registrationActive = info.has_registration == PJ_TRUE && info.expires > 0 && info.status == PJSIP_SC_OK;
+
+    NSDictionary * registration = @{
+        @"status": @(info.status),
+        @"statusText": statusText ?: @"",
+        @"active": @(registrationActive),
+        @"reason": statusText ?: defaultReason ?: @"",
+        @"expires": @(info.expires),
+        @"hasRegistration": @(info.has_registration == PJ_TRUE),
+        @"lastError": @(info.reg_last_err)
+    };
+`;
+
+  if (!source.includes(legacyBlock)) {
+    throw new Error(
+      `[phone11-pjsip-patch] Could not locate the legacy iOS registration payload block in ${iosAccountPath}`
+    );
+  }
+
+  await writeFile(iosAccountPath, source.replace(legacyBlock, patchedBlock));
+  console.log(`[phone11-pjsip-patch] Wrote iOS registration payload patch: ${iosAccountPath}`);
+  return true;
+}
+
 const podspecChanged = await ensurePjSipPodspec();
 const iosModuleChanged = await ensurePjSipBridgeExport();
+const iosAccountChanged = await ensurePjSipRegistrationPayload();
 
 const manifestSource = await readIfExists(manifestPath);
 const manifestPackage = manifestSource?.match(/<manifest\b[^>]*\s+package=["']([^"']+)["']/)?.[1];
@@ -260,7 +312,7 @@ const manifestChanged = await patchFile(manifestPath, (source) =>
 );
 const sourceChanged = await patchSourceTree(sourceRoot);
 
-if (podspecChanged || iosModuleChanged || gradleChanged || manifestChanged || sourceChanged) {
+if (podspecChanged || iosModuleChanged || iosAccountChanged || gradleChanged || manifestChanged || sourceChanged) {
   console.log("[phone11-pjsip-patch] Patched react-native-pjsip iOS/Android native config.");
 } else {
   console.log("[phone11-pjsip-patch] react-native-pjsip native config already patched.");
