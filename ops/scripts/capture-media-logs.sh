@@ -54,6 +54,9 @@ exec_in_container() {
 
 section "Phone11 media log capture"
 echo "time_utc=$(date -u -Iseconds)"
+if date -u -d "${SINCE_MINUTES} minutes ago" -Iseconds >/dev/null 2>&1; then
+  echo "window_start_utc=$(date -u -d "${SINCE_MINUTES} minutes ago" -Iseconds)"
+fi
 echo "host=$(hostname)"
 echo "since_minutes=${SINCE_MINUTES}"
 echo "extension=${EXTENSION}"
