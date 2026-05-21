@@ -18,7 +18,7 @@
 import { Platform, AppState, AppStateStatus } from "react-native";
 import { sipEngine } from "./engine";
 import { useSipCallStore, type SipCall } from "./call-store";
-import { useSipDiagnosticsStore } from "./diagnostics-store";
+import { formatSipError, useSipDiagnosticsStore } from "./diagnostics-store";
 
 // CallKeep types
 let RNCallKeep: any = null;
@@ -166,6 +166,9 @@ class NativeCallManager {
       console.log("[NativeCall] Initialized successfully");
     } catch (error) {
       console.error("[NativeCall] Initialization failed:", error);
+      addNativeCallDiagnostic("error", "CallKit initialization failed", {
+        detail: formatSipError(error),
+      });
     }
   }
 
@@ -186,13 +189,23 @@ class NativeCallManager {
     callIdToUuid.set(sipCallId, uuid);
     uuidToCallId.set(uuid, sipCallId);
 
-    callKeep.displayIncomingCall(
-      uuid,
-      callerNumber,
-      callerName || callerNumber,
-      "generic", // handleType: "generic" | "number" | "email"
-      hasVideo
-    );
+    try {
+      callKeep.displayIncomingCall(
+        uuid,
+        callerNumber,
+        callerName || callerNumber,
+        "generic", // handleType: "generic" | "number" | "email"
+        hasVideo
+      );
+    } catch (error) {
+      addNativeCallDiagnostic("error", "CallKit incoming call display failed", {
+        callId: sipCallId,
+        destination: callerNumber,
+        detail: formatSipError(error),
+        context: { callUUID: uuid },
+      });
+      return;
+    }
 
     console.log(
       `[NativeCall] Displaying incoming call: ${callerName || callerNumber} (UUID: ${uuid})`
@@ -226,13 +239,23 @@ class NativeCallManager {
       },
     });
 
-    callKeep.startCall(
-      uuid,
-      callerNumber,
-      callerName || callerNumber,
-      "generic",
-      hasVideo
-    );
+    try {
+      callKeep.startCall(
+        uuid,
+        callerNumber,
+        callerName || callerNumber,
+        "generic",
+        hasVideo
+      );
+    } catch (error) {
+      addNativeCallDiagnostic("error", "CallKit outgoing call report failed", {
+        callId: sipCallId,
+        destination: callerNumber,
+        detail: formatSipError(error),
+        context: { callUUID: uuid },
+      });
+      return;
+    }
 
     console.log(
       `[NativeCall] Reporting outgoing call: ${callerNumber} (UUID: ${uuid})`
@@ -249,11 +272,20 @@ class NativeCallManager {
     const uuid = callIdToUuid.get(sipCallId);
     if (!uuid) return;
 
-    callKeep.setCurrentCallActive(uuid);
-    addNativeCallDiagnostic("info", "CallKit call marked active", {
-      callId: sipCallId,
-      context: { callUUID: uuid },
-    });
+    try {
+      callKeep.setCurrentCallActive(uuid);
+      addNativeCallDiagnostic("info", "CallKit call marked active", {
+        callId: sipCallId,
+        context: { callUUID: uuid },
+      });
+    } catch (error) {
+      addNativeCallDiagnostic("error", "CallKit call active update failed", {
+        callId: sipCallId,
+        detail: formatSipError(error),
+        context: { callUUID: uuid },
+      });
+      return;
+    }
     console.log(`[NativeCall] Call connected: ${uuid}`);
   }
 
@@ -269,15 +301,26 @@ class NativeCallManager {
 
     // Map reason to CallKit end reason
     const endReason = this._mapEndReason(reason);
-    callKeep.reportEndCallWithUUID(uuid, endReason);
-    addNativeCallDiagnostic("info", "CallKit call ended", {
-      callId: sipCallId,
-      detail: reason,
-      context: {
-        callUUID: uuid,
-        endReason,
-      },
-    });
+    try {
+      callKeep.reportEndCallWithUUID(uuid, endReason);
+      addNativeCallDiagnostic("info", "CallKit call ended", {
+        callId: sipCallId,
+        detail: reason,
+        context: {
+          callUUID: uuid,
+          endReason,
+        },
+      });
+    } catch (error) {
+      addNativeCallDiagnostic("error", "CallKit call end report failed", {
+        callId: sipCallId,
+        detail: formatSipError(error),
+        context: {
+          callUUID: uuid,
+          endReason,
+        },
+      });
+    }
 
     // Clean up mappings
     callIdToUuid.delete(sipCallId);
@@ -296,7 +339,15 @@ class NativeCallManager {
     const uuid = callIdToUuid.get(sipCallId);
     if (!uuid) return;
 
-    callKeep.setMutedCall(uuid, muted);
+    try {
+      callKeep.setMutedCall(uuid, muted);
+    } catch (error) {
+      addNativeCallDiagnostic("error", "CallKit mute update failed", {
+        callId: sipCallId,
+        detail: formatSipError(error),
+        context: { callUUID: uuid, muted },
+      });
+    }
   }
 
   /**
@@ -309,7 +360,15 @@ class NativeCallManager {
     const uuid = callIdToUuid.get(sipCallId);
     if (!uuid) return;
 
-    callKeep.setOnHold(uuid, held);
+    try {
+      callKeep.setOnHold(uuid, held);
+    } catch (error) {
+      addNativeCallDiagnostic("error", "CallKit hold update failed", {
+        callId: sipCallId,
+        detail: formatSipError(error),
+        context: { callUUID: uuid, held },
+      });
+    }
   }
 
   /**
@@ -322,7 +381,15 @@ class NativeCallManager {
     const uuid = callIdToUuid.get(sipCallId);
     if (!uuid) return;
 
-    callKeep.sendDTMF(uuid, digit);
+    try {
+      callKeep.sendDTMF(uuid, digit);
+    } catch (error) {
+      addNativeCallDiagnostic("error", "CallKit DTMF update failed", {
+        callId: sipCallId,
+        detail: formatSipError(error),
+        context: { callUUID: uuid, digit },
+      });
+    }
   }
 
   /**
@@ -337,7 +404,13 @@ class NativeCallManager {
     // End all active calls in CallKit
     const callKeep = getCallKeep();
     if (callKeep && this.initialized) {
-      callKeep.endAllCalls();
+      try {
+        callKeep.endAllCalls();
+      } catch (error) {
+        addNativeCallDiagnostic("error", "CallKit end all calls failed", {
+          detail: formatSipError(error),
+        });
+      }
     }
 
     callIdToUuid.clear();
@@ -345,7 +418,7 @@ class NativeCallManager {
     this.initialized = false;
   }
 
-  // ─── Private Methods ───────────────────────────────────────────
+  // ─── Private Methods ──────────────────────────────────────────────
 
   private _registerListeners(callKeep: any): void {
     // User answered call from native UI (lock screen / notification)
@@ -355,7 +428,15 @@ class NativeCallManager {
 
       console.log(`[NativeCall] User answered call from native UI: ${callUUID}`);
       await sipEngine.answerCall(sipCallId);
-      callKeep.setCurrentCallActive(callUUID);
+      try {
+        callKeep.setCurrentCallActive(callUUID);
+      } catch (error) {
+        addNativeCallDiagnostic("error", "CallKit native answer active update failed", {
+          callId: sipCallId,
+          detail: formatSipError(error),
+          context: { callUUID },
+        });
+      }
     });
 
     // User declined call from native UI
@@ -496,7 +577,17 @@ class NativeCallManager {
         const uuid = callIdToUuid.get(call.id);
         if (uuid && call.status === "active") {
           const callKeep = getCallKeep();
-          if (callKeep) callKeep.setCurrentCallActive(uuid);
+          if (callKeep) {
+            try {
+              callKeep.setCurrentCallActive(uuid);
+            } catch (error) {
+              addNativeCallDiagnostic("error", "CallKit foreground active sync failed", {
+                callId: call.id,
+                detail: formatSipError(error),
+                context: { callUUID: uuid },
+              });
+            }
+          }
         }
       });
     }
