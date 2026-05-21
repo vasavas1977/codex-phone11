@@ -1,6 +1,6 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-21T13:27:45+07:00
-reason=fix react-native-pjsip iOS native registration payload active/status fields
-native_registration_payload_fix_commit=d833cc9e0d3ada3f034ea6a2ea96a1b670b57544
-previous_diagnostics_build=8b2d4b11-5bab-42c0-8004-874b11a2e228
+requested_at=2026-05-21T18:57:58+07:00
+reason=fix duplicate CallKit outbound SIP leg after PSTN no-audio diagnostics
+outbound_callkit_echo_fix_commit=pending
+previous_diagnostics_build=b81461ea-39f3-46f0-8360-1a97826e91b9
 workflow_trigger_commit=pending

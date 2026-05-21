@@ -18,6 +18,7 @@
 import { Platform, AppState, AppStateStatus } from "react-native";
 import { sipEngine } from "./engine";
 import { useSipCallStore, type SipCall } from "./call-store";
+import { useSipDiagnosticsStore } from "./diagnostics-store";
 
 // CallKeep types
 let RNCallKeep: any = null;
@@ -46,6 +47,49 @@ function generateUUID(): string {
 // Map between PJSIP call IDs and CallKit UUIDs
 const callIdToUuid: Map<string, string> = new Map();
 const uuidToCallId: Map<string, string> = new Map();
+const outgoingHandleEchoes: Map<string, { sipCallId: string; expiresAt: number }> = new Map();
+
+function normalizeHandle(handle?: string | null): string {
+  return String(handle ?? "").trim().toLowerCase();
+}
+
+function rememberOutgoingHandle(handle: string, sipCallId: string): void {
+  const normalized = normalizeHandle(handle);
+  if (!normalized) return;
+
+  outgoingHandleEchoes.set(normalized, {
+    sipCallId,
+    expiresAt: Date.now() + 10_000,
+  });
+}
+
+function consumeOutgoingHandleEcho(handle?: string | null): string | null {
+  const normalized = normalizeHandle(handle);
+  if (!normalized) return null;
+
+  const echo = outgoingHandleEchoes.get(normalized);
+  if (!echo) return null;
+
+  if (echo.expiresAt < Date.now()) {
+    outgoingHandleEchoes.delete(normalized);
+    return null;
+  }
+
+  return echo.sipCallId;
+}
+
+function addNativeCallDiagnostic(
+  level: "info" | "warning" | "error",
+  message: string,
+  extra: { callId?: string; destination?: string; detail?: string; context?: Record<string, string | number | boolean | null | undefined> } = {}
+): void {
+  useSipDiagnosticsStore.getState().addEvent({
+    level,
+    category: "native",
+    message,
+    ...extra,
+  });
+}
 
 class NativeCallManager {
   private initialized = false;
@@ -171,6 +215,16 @@ class NativeCallManager {
     const uuid = generateUUID();
     callIdToUuid.set(sipCallId, uuid);
     uuidToCallId.set(uuid, sipCallId);
+    rememberOutgoingHandle(callerNumber, sipCallId);
+
+    addNativeCallDiagnostic("info", "CallKit outgoing call reported", {
+      callId: sipCallId,
+      destination: callerNumber,
+      context: {
+        callUUID: uuid,
+        hasVideo,
+      },
+    });
 
     callKeep.startCall(
       uuid,
@@ -196,6 +250,10 @@ class NativeCallManager {
     if (!uuid) return;
 
     callKeep.setCurrentCallActive(uuid);
+    addNativeCallDiagnostic("info", "CallKit call marked active", {
+      callId: sipCallId,
+      context: { callUUID: uuid },
+    });
     console.log(`[NativeCall] Call connected: ${uuid}`);
   }
 
@@ -212,6 +270,14 @@ class NativeCallManager {
     // Map reason to CallKit end reason
     const endReason = this._mapEndReason(reason);
     callKeep.reportEndCallWithUUID(uuid, endReason);
+    addNativeCallDiagnostic("info", "CallKit call ended", {
+      callId: sipCallId,
+      detail: reason,
+      context: {
+        callUUID: uuid,
+        endReason,
+      },
+    });
 
     // Clean up mappings
     callIdToUuid.delete(sipCallId);
@@ -279,7 +345,7 @@ class NativeCallManager {
     this.initialized = false;
   }
 
-  // ─── Private Methods ──────────────────────────────────────────────
+  // ─── Private Methods ───────────────────────────────────────────
 
   private _registerListeners(callKeep: any): void {
     // User answered call from native UI (lock screen / notification)
@@ -358,12 +424,47 @@ class NativeCallManager {
         "didReceiveStartCallAction",
         async ({ callUUID, handle, name }: any) => {
           console.log(`[NativeCall] Start call action: ${handle}`);
-          // This is triggered when user taps "Call Back" from native call history
+
+          const existingSipCallId = callUUID ? uuidToCallId.get(callUUID) : null;
+          const echoSipCallId = consumeOutgoingHandleEcho(handle);
+          if (existingSipCallId || echoSipCallId) {
+            const sipCallId = existingSipCallId ?? echoSipCallId ?? "unknown";
+            if (callUUID && !uuidToCallId.has(callUUID)) {
+              uuidToCallId.set(callUUID, sipCallId);
+              callIdToUuid.set(sipCallId, callUUID);
+            }
+            addNativeCallDiagnostic("info", "Ignored CallKit start-call echo for existing outbound SIP call", {
+              callId: sipCallId,
+              destination: handle,
+              context: {
+                callUUID: callUUID ?? "none",
+                name: name ?? "none",
+              },
+            });
+            return;
+          }
+
+          // This is triggered when user taps "Call Back" from native call history.
           if (handle) {
+            addNativeCallDiagnostic("info", "CallKit callback requested a new SIP call", {
+              destination: handle,
+              context: {
+                callUUID: callUUID ?? "none",
+                name: name ?? "none",
+              },
+            });
+
             const callId = await sipEngine.makeCall(handle);
             if (callId) {
               callIdToUuid.set(callId, callUUID);
               uuidToCallId.set(callUUID, callId);
+              addNativeCallDiagnostic("info", "CallKit callback SIP call created", {
+                callId,
+                destination: handle,
+                context: {
+                  callUUID: callUUID ?? "none",
+                },
+              });
             }
           }
         }
