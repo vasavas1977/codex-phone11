@@ -1,6 +1,13 @@
 name: Phone11 Capture SIP Media Logs
 
 on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-capture-media-logs.yml"
+      - "ops/scripts/capture-media-logs.sh"
+      - "ops/phone11-media-log-capture-trigger-*"
   workflow_dispatch:
     inputs:
       ec2_host:
