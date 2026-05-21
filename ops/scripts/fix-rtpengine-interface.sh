@@ -124,7 +124,7 @@ if [ "$START_RC" -ne 0 ]; then
   exit 44
 fi
 
-sleep 5
+sleep 8
 
 CONTAINER_STATE="$(docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.RestartCount}} {{.State.ExitCode}}' "$RTPENGINE_CONTAINER" 2>/dev/null || true)"
 echo "container_state=$CONTAINER_STATE"
@@ -132,7 +132,11 @@ if ! echo "$CONTAINER_STATE" | grep -q '^true false '; then
   rollback_rtpengine "New RTPEngine container is not stable"
   exit 45
 fi
-if ! ss -lunp 2>/dev/null | grep -q '127[.]0[.]0[.]1:22222.*rtpengine'; then
+run "candidate RTPEngine logs" docker logs --tail 120 "$RTPENGINE_CONTAINER"
+SOCKET_SNAPSHOT="$(ss -lunp 2>/dev/null | grep -E '(:5060|:5080|:22222|:22223|:20000|:30000)' || true)"
+section "candidate host SIP/RTP/control sockets"
+printf '%s\n' "${SOCKET_SNAPSHOT:-<no matching sockets>}"
+if ! printf '%s\n' "$SOCKET_SNAPSHOT" | grep -Eq '127[.]0[.]0[.]1:22222|localhost:22222'; then
   rollback_rtpengine "New RTPEngine control socket did not open on 127.0.0.1:22222"
   exit 46
 fi
