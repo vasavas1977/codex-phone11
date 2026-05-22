@@ -5,7 +5,7 @@ KAMAILIO_CONTAINER="${KAMAILIO_CONTAINER:-p11-kamailio}"
 KAMAILIO_CFG="${KAMAILIO_CFG:-/etc/kamailio/kamailio.cfg}"
 BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:3000}"
 PUBLIC_MEDIA_IP="${PUBLIC_MEDIA_IP:-43.210.122.111}"
-PATCH_VERSION="kamailio-public-media-backend-route-20260523-01"
+PATCH_VERSION="kamailio-public-media-backend-route-20260523-02"
 
 redact() {
   sed -E \
@@ -74,7 +74,7 @@ elif 'http_connect("backend", "$var(api_url)", "$var(api_result)")' not in text:
 text = text.replace('DID lookup failed for $rU (rc=$rc), routing to FS', 'DID lookup failed for $rU (rc=$var(http_rc)), routing to FS')
 
 old_answer = '            $var(rtpe_rc) = rtpengine_answer("replace-origin replace-session-connection ICE=remove rtcp-mux-demux transport-protocol=RTP/AVP DTLS=off SDES=off direction=priv direction=pub");'
-new_answer = f'            $var(rtpe_rc) = rtpengine_answer("replace-origin replace-session-connection ICE=remove rtcp-mux-demux RTP/AVP DTLS=off SDES=off address-family=IP4 media-address={public_media_ip}");'
+new_answer = f'            $var(rtpe_rc) = rtpengine_answer("replace-origin replace-session-connection ICE=remove rtcp-mux-demux transport-protocol=RTP/AVP DTLS=off SDES=off direction=priv direction=pub address-family=IP4 media-address={public_media_ip}");'
 if old_answer in text:
     text = text.replace(old_answer, new_answer, 1)
 elif f'media-address={public_media_ip}' not in text:
