@@ -28,7 +28,7 @@ on:
       call_id:
         description: SIP Call-ID from Kamailio logs
         required: true
-        default: "n0566Kbjl5EtPnPYxk2N31W-.K1p-Kcr"
+        default: "uHdHXhadAcz3AfHPg-31uWab.sAB0e67"
 
 permissions:
   contents: read
@@ -57,7 +57,7 @@ jobs:
           SINCE_MINUTES="${{ github.event.inputs.since_minutes || '90' }}"
           EXTENSION="${{ github.event.inputs.extension || '1001' }}"
           DESTINATION="${{ github.event.inputs.destination || '020303988' }}"
-          CALL_ID="${{ github.event.inputs.call_id || 'n0566Kbjl5EtPnPYxk2N31W-.K1p-Kcr' }}"
+          CALL_ID="${{ github.event.inputs.call_id || 'uHdHXhadAcz3AfHPg-31uWab.sAB0e67' }}"
           LOG_DIR="$RUNNER_TEMP/phone11-exact-call-logs"
           LOG_FILE="$LOG_DIR/phone11-exact-call-logs.txt"
           mkdir -p "$LOG_DIR"
