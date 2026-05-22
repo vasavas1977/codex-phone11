@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SINCE_MINUTES="${SINCE_MINUTES:-90}"
 EXTENSION="${EXTENSION:-1001}"
 DESTINATION="${DESTINATION:-020303988}"
+INCLUDE_RAW_LOGS="${INCLUDE_RAW_LOGS:-0}"
 
 redact() {
   sed -E \
@@ -52,7 +53,8 @@ focused_log_excerpt() {
   section "${label}: ${name}"
   docker logs --since "${SINCE_MINUTES}m" --timestamps "$name" 2>&1 \
     | grep -Eia "$pattern" \
-    | tail -n 220 \
+    | grep -Eiv 'mod_xml_cdr|/api/freeswitch/cdr' \
+    | tail -n 160 \
     | redact || true
 }
 
@@ -73,14 +75,26 @@ echo "host=$(hostname)"
 echo "since_minutes=${SINCE_MINUTES}"
 echo "extension=${EXTENSION}"
 echo "destination=${DESTINATION}"
+echo "include_raw_logs=${INCLUDE_RAW_LOGS}"
 
 run "docker containers" docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
-run "listening SIP and RTP sockets" sh -lc "ss -lunpt 2>/dev/null | grep -E '(:5060|:5080|:5061|:8088|:20000|:30000|:40000|:50000)' || true"
 
 mapfile -t CONTAINERS < <(container_names)
 KAMAILIO_CONTAINER="$(container_for 'kamailio')"
 FREESWITCH_CONTAINER="$(container_for 'freeswitch')"
 RTPENGINE_CONTAINER="$(container_for 'rtpengine|rtp-engine|rtp_engine')"
+
+section "focused latest call trace"
+EXTENSION_PATTERN="$(egrep_escape "$EXTENSION")"
+DESTINATION_PATTERN="$(egrep_escape "${DESTINATION:-__phone11_no_destination_filter__}")"
+CALL_TRACE_PATTERN="${EXTENSION_PATTERN}|${DESTINATION_PATTERN}|INVITE|ACK|BYE|CANCEL|REGISTER|180 Ringing|183 Session Progress|200 OK|SIP/2.0|Call-ID|call-id|branch=|to-tag|from-tag|rtpengine|RTPENGINE|offer|answer|SDP|m=audio|c=IN IP4|ICE|DTLS|SRTP|RTP/AVP|RTP/SAVP|RTP/SAVPF|audio|codec|media|sofia|hangup|answered|CHANNEL_ANSWER|EXECUTE|bridge"
+if [ "${#CONTAINERS[@]}" -gt 0 ]; then
+  for name in "${CONTAINERS[@]}"; do
+    focused_log_excerpt "$name" "$CALL_TRACE_PATTERN" "latest call SIP/media excerpt"
+  done
+fi
+
+run "listening SIP and RTP sockets" sh -lc "ss -lunpt 2>/dev/null | grep -E '(:5060|:5080|:5061|:8088|:20000|:30000|:40000|:50000)' || true"
 
 section "live media config snapshot"
 if [ -n "$KAMAILIO_CONTAINER" ]; then
@@ -93,23 +107,13 @@ if [ -n "$RTPENGINE_CONTAINER" ]; then
   exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine process command" \
     'ps -eo pid,args | grep -E "[r]tpengine" || true'
   exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine UDP socket sample" \
-    'if command -v ss >/dev/null 2>&1; then ss -lunp | head -n 80; else cat /proc/net/udp | head -n 40; fi'
-fi
-
-section "focused latest call trace before raw logs"
-EXTENSION_PATTERN="$(egrep_escape "$EXTENSION")"
-DESTINATION_PATTERN="$(egrep_escape "${DESTINATION:-__phone11_no_destination_filter__}")"
-CALL_TRACE_PATTERN="${EXTENSION_PATTERN}|${DESTINATION_PATTERN}|INVITE|ACK|BYE|CANCEL|180|183|200 OK|4[0-9][0-9]|5[0-9][0-9]|Call-ID|call-id|branch=|to-tag|from-tag|rtpengine|RTPENGINE|offer|answer|SDP|m=audio|c=IN IP4|ICE|DTLS|SRTP|RTP/AVP|RTP/SAVP|RTP/SAVPF|audio|codec|media|sofia|hangup|answered|CHANNEL_ANSWER|EXECUTE|bridge"
-if [ "${#CONTAINERS[@]}" -gt 0 ]; then
-  for name in "${CONTAINERS[@]}"; do
-    focused_log_excerpt "$name" "$CALL_TRACE_PATTERN" "latest call SIP/media excerpt"
-  done
+    'if command -v ss >/dev/null 2>&1; then ss -lunp | head -n 35; else cat /proc/net/udp | head -n 25; fi'
 fi
 
 if [ "${#CONTAINERS[@]}" -eq 0 ]; then
   section "no matching containers"
   echo "No Phone11 SIP/media containers matched on this host."
-else
+elif [ "$INCLUDE_RAW_LOGS" = "1" ]; then
   for name in "${CONTAINERS[@]}"; do
     container_logs "$name"
   done
@@ -139,7 +143,7 @@ if [ -n "$RTPENGINE_CONTAINER" ]; then
   exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine process command" \
     'ps -eo pid,args | grep -E "[r]tpengine" || true'
   exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine UDP socket sample" \
-    'if command -v ss >/dev/null 2>&1; then ss -lunp | head -n 80; else cat /proc/net/udp | head -n 40; fi'
+    'if command -v ss >/dev/null 2>&1; then ss -lunp | head -n 35; else cat /proc/net/udp | head -n 25; fi'
   exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine session list" \
     'for cmd in "rtpengine-ctl list active" "rtpengine-ctl list sessions" "ngcp-rtpengine-ctl list active" "ngcp-rtpengine-ctl list all"; do echo "$ $cmd"; sh -lc "$cmd" || true; done'
 fi
@@ -147,12 +151,14 @@ fi
 section "focused SIP/media timeline"
 EXTENSION_PATTERN="$(egrep_escape "$EXTENSION")"
 DESTINATION_PATTERN="$(egrep_escape "${DESTINATION:-__phone11_no_destination_filter__}")"
-FOCUS_PATTERN="${EXTENSION_PATTERN}|${DESTINATION_PATTERN}|INVITE|ACK|BYE|CANCEL|REGISTER|200 OK|401|403|407|488|rtp|srtp|codec|media|answer|offer|ICE|DTLS|audio|SDP|RTPENGINE"
+FOCUS_PATTERN="${EXTENSION_PATTERN}|${DESTINATION_PATTERN}|INVITE|ACK|BYE|CANCEL|REGISTER|180 Ringing|183 Session Progress|200 OK|SIP/2.0|rtp|srtp|codec|media|answer|offer|ICE|DTLS|audio|SDP|RTPENGINE"
 if [ "${#CONTAINERS[@]}" -gt 0 ]; then
   for name in "${CONTAINERS[@]}"; do
     echo "--- ${name} ---"
     docker logs --since "${SINCE_MINUTES}m" --timestamps "$name" 2>&1 \
       | grep -Ei "$FOCUS_PATTERN" \
+      | grep -Eiv 'mod_xml_cdr|/api/freeswitch/cdr' \
+      | tail -n 160 \
       | redact || true
   done
 fi
