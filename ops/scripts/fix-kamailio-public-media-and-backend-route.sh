@@ -5,7 +5,8 @@ KAMAILIO_CONTAINER="${KAMAILIO_CONTAINER:-p11-kamailio}"
 KAMAILIO_CFG="${KAMAILIO_CFG:-/etc/kamailio/kamailio.cfg}"
 BACKEND_URL="${BACKEND_URL:-http://127.0.0.1:3000}"
 PUBLIC_MEDIA_IP="${PUBLIC_MEDIA_IP:-43.210.122.111}"
-PATCH_VERSION="kamailio-public-media-backend-route-20260523-02"
+PRIVATE_MEDIA_IP="${PRIVATE_MEDIA_IP:-10.0.1.69}"
+PATCH_VERSION="kamailio-public-native-sdp-20260523-03"
 
 redact() {
   sed -E \
@@ -29,6 +30,7 @@ echo "kamailio_container=$KAMAILIO_CONTAINER"
 echo "kamailio_cfg=$KAMAILIO_CFG"
 echo "backend_url=$BACKEND_URL"
 echo "public_media_ip=$PUBLIC_MEDIA_IP"
+echo "private_media_ip=$PRIVATE_MEDIA_IP"
 
 if ! docker ps -a --format '{{.Names}}' | grep -qx "$KAMAILIO_CONTAINER"; then
   echo "ERROR: Kamailio container does not exist: $KAMAILIO_CONTAINER"
@@ -41,7 +43,7 @@ mkdir -p "$BACKUP_DIR"
 docker cp "$KAMAILIO_CONTAINER:$KAMAILIO_CFG" "$BACKUP_DIR/kamailio.cfg.before"
 
 section "before evidence"
-grep -nE 'BACKEND_URL|http_client_query|http_connect|DID lookup failed|rtpengine_answer|media-address|RTPENGINE_ANSWER|transport-protocol|phone11_media_profile' "$BACKUP_DIR/kamailio.cfg.before" | redact || true
+grep -nE 'BACKEND_URL|http_client_query|http_connect|DID lookup failed|rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC|RTPENGINE_ANSWER|AFTER_ANSWER|transport-protocol|phone11_media_profile' "$BACKUP_DIR/kamailio.cfg.before" | redact || true
 
 python3 - "$BACKUP_DIR/kamailio.cfg.before" "$BACKUP_DIR/kamailio.cfg.after" <<'PY'
 import os
@@ -54,6 +56,7 @@ dst = Path(sys.argv[2])
 text = src.read_text()
 backend_url = os.environ.get("BACKEND_URL", "http://127.0.0.1:3000")
 public_media_ip = os.environ.get("PUBLIC_MEDIA_IP", "43.210.122.111")
+private_media_ip = os.environ.get("PRIVATE_MEDIA_IP", "10.0.1.69")
 
 text, backend_subst_count = re.subn(
     r'#!substdef\s+"!BACKEND_URL!.*?!g"',
@@ -71,20 +74,66 @@ if old_http in text:
 elif 'http_connect("backend", "$var(api_url)", "$var(api_result)")' not in text:
     raise SystemExit("Could not find expected backend DID lookup block")
 
-text = text.replace('DID lookup failed for $rU (rc=$rc), routing to FS', 'DID lookup failed for $rU (rc=$var(http_rc)), routing to FS')
+text = text.replace(
+    'DID lookup failed for $rU (rc=$rc), routing to FS',
+    'DID lookup failed for $rU (rc=$var(http_rc)), routing to FS',
+)
 
-old_answer = '            $var(rtpe_rc) = rtpengine_answer("replace-origin replace-session-connection ICE=remove rtcp-mux-demux transport-protocol=RTP/AVP DTLS=off SDES=off direction=priv direction=pub");'
-new_answer = f'            $var(rtpe_rc) = rtpengine_answer("replace-origin replace-session-connection ICE=remove rtcp-mux-demux transport-protocol=RTP/AVP DTLS=off SDES=off direction=priv direction=pub address-family=IP4 media-address={public_media_ip}");'
-if old_answer in text:
-    text = text.replace(old_answer, new_answer, 1)
-elif f'media-address={public_media_ip}' not in text:
-    raise SystemExit("Could not find expected native rtpengine_answer block")
+extras = ["address-family=IP4", f"media-address={public_media_ip}"]
+
+def ensure_flags(flags: str) -> str:
+    updated = flags
+    for extra in extras:
+        if extra not in updated:
+            updated = f"{updated} {extra}"
+    return updated
+
+native_offer_core = "replace-origin replace-session-connection ICE=remove rtcp-mux-demux transport-protocol=RTP/AVP DTLS=off SDES=off direction=pub direction=priv"
+native_answer_core = "replace-origin replace-session-connection ICE=remove rtcp-mux-demux transport-protocol=RTP/AVP DTLS=off SDES=off direction=priv direction=pub"
+
+call_pattern = re.compile(r'(\$var\(rtpe_rc\)\s*=\s*rtpengine_(?:offer|answer)\(")([^"]+)("\);)')
+offer_count = 0
+answer_count = 0
+
+def patch_call(match: re.Match[str]) -> str:
+    global offer_count, answer_count
+    prefix, flags, suffix = match.groups()
+    if native_offer_core in flags:
+        offer_count += 1
+        return prefix + ensure_flags(flags) + suffix
+    if native_answer_core in flags:
+        answer_count += 1
+        return prefix + ensure_flags(flags) + suffix
+    return match.group(0)
+
+text = call_pattern.sub(patch_call, text)
+if offer_count == 0:
+    raise SystemExit("Could not find native rtpengine_offer block to force public media")
+if answer_count == 0:
+    raise SystemExit("Could not find native rtpengine_answer block to force public media")
+
+fallback_marker = "FORCED_PUBLIC_NATIVE_ANSWER_SDP"
+if fallback_marker not in text:
+    fallback = f'''
+            if ($avp(phone11_media_profile) == "native" && $rb =~ "{private_media_ip.replace('.', '\\.')}") {{
+                subst_body('/{private_media_ip.replace('.', '\\.')}/{public_media_ip}/g');
+                xlog("L_ALERT", "FORCED_PUBLIC_NATIVE_ANSWER_SDP public_media_ip={public_media_ip} for call $ci\\n");
+            }}
+'''
+    answer_line_pattern = re.compile(
+        r'(\s*\$var\(rtpe_rc\)\s*=\s*rtpengine_answer\("[^"]*'
+        + re.escape(f"media-address={public_media_ip}")
+        + r'[^"]*"\);\n)'
+    )
+    text, fallback_count = answer_line_pattern.subn(lambda m: m.group(1) + fallback, text, count=1)
+    if fallback_count == 0:
+        raise SystemExit("Could not insert native public SDP fallback after rtpengine_answer")
 
 dst.write_text(text)
 PY
 
 section "after evidence"
-grep -nE 'BACKEND_URL|http_client_query|http_connect|DID lookup failed|rtpengine_answer|media-address|RTPENGINE_ANSWER|transport-protocol|phone11_media_profile' "$BACKUP_DIR/kamailio.cfg.after" | redact || true
+grep -nE 'BACKEND_URL|http_client_query|http_connect|DID lookup failed|rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC|RTPENGINE_ANSWER|AFTER_ANSWER|transport-protocol|phone11_media_profile' "$BACKUP_DIR/kamailio.cfg.after" | redact || true
 
 docker cp "$BACKUP_DIR/kamailio.cfg.after" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG"
 
@@ -108,7 +157,7 @@ if ! echo "$CONTAINER_STATE" | grep -q '^true false '; then
   exit 42
 fi
 
-run "live evidence after restart" docker exec "$KAMAILIO_CONTAINER" sh -lc "grep -nE 'BACKEND_URL|http_client_query|http_connect|DID lookup failed|rtpengine_answer|media-address|RTPENGINE_ANSWER|transport-protocol|phone11_media_profile' '$KAMAILIO_CFG'"
+run "live evidence after restart" docker exec "$KAMAILIO_CONTAINER" sh -lc "grep -nE 'BACKEND_URL|http_client_query|http_connect|DID lookup failed|rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC|RTPENGINE_ANSWER|AFTER_ANSWER|transport-protocol|phone11_media_profile' '$KAMAILIO_CFG'"
 run "Kamailio recent restart logs" docker logs --tail 80 "$KAMAILIO_CONTAINER"
 
 section "fix complete"
