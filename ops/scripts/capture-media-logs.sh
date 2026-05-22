@@ -44,6 +44,18 @@ container_logs() {
   docker logs --since "${SINCE_MINUTES}m" --timestamps "$name" 2>&1 | redact || true
 }
 
+focused_log_excerpt() {
+  local name="$1"
+  local pattern="$2"
+  local label="$3"
+
+  section "${label}: ${name}"
+  docker logs --since "${SINCE_MINUTES}m" --timestamps "$name" 2>&1 \
+    | grep -Eia "$pattern" \
+    | tail -n 220 \
+    | redact || true
+}
+
 exec_in_container() {
   local name="$1"
   local label="$2"
@@ -82,6 +94,16 @@ if [ -n "$RTPENGINE_CONTAINER" ]; then
     'ps -eo pid,args | grep -E "[r]tpengine" || true'
   exec_in_container "$RTPENGINE_CONTAINER" "RTPEngine UDP socket sample" \
     'if command -v ss >/dev/null 2>&1; then ss -lunp | head -n 80; else cat /proc/net/udp | head -n 40; fi'
+fi
+
+section "focused latest call trace before raw logs"
+EXTENSION_PATTERN="$(egrep_escape "$EXTENSION")"
+DESTINATION_PATTERN="$(egrep_escape "${DESTINATION:-__phone11_no_destination_filter__}")"
+CALL_TRACE_PATTERN="${EXTENSION_PATTERN}|${DESTINATION_PATTERN}|INVITE|ACK|BYE|CANCEL|180|183|200 OK|4[0-9][0-9]|5[0-9][0-9]|Call-ID|call-id|branch=|to-tag|from-tag|rtpengine|RTPENGINE|offer|answer|SDP|m=audio|c=IN IP4|ICE|DTLS|SRTP|RTP/AVP|RTP/SAVP|RTP/SAVPF|audio|codec|media|sofia|hangup|answered|CHANNEL_ANSWER|EXECUTE|bridge"
+if [ "${#CONTAINERS[@]}" -gt 0 ]; then
+  for name in "${CONTAINERS[@]}"; do
+    focused_log_excerpt "$name" "$CALL_TRACE_PATTERN" "latest call SIP/media excerpt"
+  done
 fi
 
 if [ "${#CONTAINERS[@]}" -eq 0 ]; then
