@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 KAMAILIO_CONTAINER="${KAMAILIO_CONTAINER:-p11-kamailio}"
 KAMAILIO_CFG="${KAMAILIO_CFG:-/etc/kamailio/kamailio.cfg}"
+PATCH_VERSION="native-pjsip-media-20260522-01"
 
 redact() {
   sed -E \
@@ -23,6 +24,7 @@ run() {
 
 section "Phone11 native PJSIP media fix"
 echo "time_utc=$(date -u -Iseconds)"
+echo "patch_version=$PATCH_VERSION"
 echo "kamailio_container=$KAMAILIO_CONTAINER"
 echo "kamailio_cfg=$KAMAILIO_CFG"
 
