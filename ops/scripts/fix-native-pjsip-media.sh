@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 KAMAILIO_CONTAINER="${KAMAILIO_CONTAINER:-p11-kamailio}"
 KAMAILIO_CFG="${KAMAILIO_CFG:-/etc/kamailio/kamailio.cfg}"
-PATCH_VERSION="native-pjsip-media-20260522-01"
+PATCH_VERSION="native-pjsip-media-20260522-02"
 
 redact() {
   sed -E \
@@ -28,10 +28,45 @@ echo "patch_version=$PATCH_VERSION"
 echo "kamailio_container=$KAMAILIO_CONTAINER"
 echo "kamailio_cfg=$KAMAILIO_CFG"
 
-if ! docker ps --format '{{.Names}}' | grep -qx "$KAMAILIO_CONTAINER"; then
-  echo "ERROR: Kamailio container is not running: $KAMAILIO_CONTAINER"
+if ! docker ps -a --format '{{.Names}}' | grep -qx "$KAMAILIO_CONTAINER"; then
+  echo "ERROR: Kamailio container does not exist: $KAMAILIO_CONTAINER"
   exit 40
 fi
+
+container_state() {
+  docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.RestartCount}} {{.State.ExitCode}}' "$KAMAILIO_CONTAINER" 2>/dev/null || true
+}
+
+ensure_kamailio_running() {
+  local state latest_backup
+  state="$(container_state)"
+  echo "container_state=$state"
+  if echo "$state" | grep -q '^true false '; then
+    return 0
+  fi
+
+  section "recover Kamailio before patch"
+  latest_backup="$(ls -td /tmp/phone11-native-pjsip-media-*/kamailio.cfg.before 2>/dev/null | head -n 1 || true)"
+  if [ -z "$latest_backup" ]; then
+    echo "ERROR: Kamailio is not stable and no prior backup was found."
+    docker logs --tail 160 "$KAMAILIO_CONTAINER" 2>&1 | redact || true
+    exit 41
+  fi
+
+  echo "restoring_backup=$latest_backup"
+  docker cp "$latest_backup" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG"
+  docker restart "$KAMAILIO_CONTAINER" 2>&1 | redact
+  sleep 8
+  state="$(container_state)"
+  echo "post_restore_container_state=$state"
+  if ! echo "$state" | grep -q '^true false '; then
+    echo "ERROR: Kamailio did not recover after restoring the last backup."
+    docker logs --tail 200 "$KAMAILIO_CONTAINER" 2>&1 | redact || true
+    exit 42
+  fi
+}
+
+ensure_kamailio_running
 
 BACKUP_SUFFIX="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="/tmp/phone11-native-pjsip-media-${BACKUP_SUFFIX}"
@@ -43,7 +78,6 @@ grep -nE "route\\[TO_FREESWITCH\\]|onreply_route\\[FREESWITCH_REPLY\\]|rtpengine
   "$BACKUP_DIR/kamailio.cfg.before" | redact || true
 
 python3 - "$BACKUP_DIR/kamailio.cfg.before" "$BACKUP_DIR/kamailio.cfg.after" <<'PY'
-import re
 import sys
 from pathlib import Path
 
@@ -87,15 +121,17 @@ section "patched media route"
 grep -nE "route\\[TO_FREESWITCH\\]|onreply_route\\[FREESWITCH_REPLY\\]|rtpengine_offer|rtpengine_answer|transport-protocol|DTLS|SDES|phone11_media_profile" \
   "$BACKUP_DIR/kamailio.cfg.after" | redact || true
 
-docker cp "$BACKUP_DIR/kamailio.cfg.after" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG"
+docker cp "$BACKUP_DIR/kamailio.cfg.after" "$KAMAILIO_CONTAINER:/tmp/kamailio.cfg.phone11-native-pjsip-candidate"
 
-run "Kamailio config syntax check" docker exec "$KAMAILIO_CONTAINER" kamailio -c -f "$KAMAILIO_CFG"
+run "Kamailio candidate config syntax check" docker exec "$KAMAILIO_CONTAINER" kamailio -c -f /tmp/kamailio.cfg.phone11-native-pjsip-candidate
+
+docker cp "$BACKUP_DIR/kamailio.cfg.after" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG"
 
 section "restart Kamailio"
 docker restart "$KAMAILIO_CONTAINER" 2>&1 | redact
 sleep 5
 
-CONTAINER_STATE="$(docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.RestartCount}} {{.State.ExitCode}}' "$KAMAILIO_CONTAINER" 2>/dev/null || true)"
+CONTAINER_STATE="$(container_state)"
 echo "container_state=$CONTAINER_STATE"
 if ! echo "$CONTAINER_STATE" | grep -q '^true false '; then
   echo "ERROR: Kamailio did not stay running. Rolling back config."
