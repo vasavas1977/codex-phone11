@@ -1,0 +1,175 @@
+name: Phone11 Live SIP RTP Wire Capture
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-sip-rtp-wire-capture.yml"
+      - "ops/phone11-live-wire-capture-trigger-*"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+      prep_seconds:
+        description: Seconds to wait before capture begins
+        required: true
+        default: "45"
+      capture_seconds:
+        description: Seconds to capture SIP/RTP packets
+        required: true
+        default: "180"
+      destination:
+        description: PSTN number being tested
+        required: true
+        default: "020303988"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  wire-capture:
+    name: Capture live SIP and RTP packets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Capture live SIP/RTP wire evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          PREP_SECONDS="${{ github.event.inputs.prep_seconds || '45' }}"
+          CAPTURE_SECONDS="${{ github.event.inputs.capture_seconds || '180' }}"
+          DESTINATION="${{ github.event.inputs.destination || '020303988' }}"
+          LOG_DIR="$RUNNER_TEMP/phone11-live-wire-capture"
+          LOG_FILE="$LOG_DIR/phone11-live-wire-capture.txt"
+          mkdir -p "$LOG_DIR"
+
+          if ! [[ "$PREP_SECONDS" =~ ^[0-9]{1,3}$ ]] || ! [[ "$CAPTURE_SECONDS" =~ ^[0-9]{1,3}$ ]]; then
+            echo 'ERROR: prep_seconds and capture_seconds must be numeric.'
+            exit 31
+          fi
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '=== Locate EC2 instance ==='
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 32
+          fi
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '=== Prepare temporary SSH access ==='
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_wire_capture_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_wire_capture_key.pub" >/dev/null
+
+          echo '=== Capture live wire evidence ==='
+          ssh -i ~/.ssh/phone11_wire_capture_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PREP_SECONDS='$PREP_SECONDS' CAPTURE_SECONDS='$CAPTURE_SECONDS' DESTINATION='$DESTINATION' bash -s" <<'REMOTE' | tee "$LOG_FILE"
+          set -Eeuo pipefail
+
+          redact() {
+            sed -E \
+              -e 's#(Authorization: Bearer )[A-Za-z0-9._~+/=-]+#\1<redacted>#g' \
+              -e 's#(AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|PGPASSWORD|DB_PASSWORD|POSTGRES_PASSWORD|JWT_SECRET|SIP_PASSWORD|PASSWORD|SECRET|TOKEN)=([^[:space:]]+)#\1=<redacted>#Ig' \
+              -e 's#(password|passwd|pwd|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig' \
+              -e 's#(postgres(ql)?://[^:[:space:]]+):[^@[:space:]]+@#\1:<redacted>@#Ig'
+          }
+          section() { printf '\n===== %s =====\n' "$1"; }
+
+          WORK_DIR="/tmp/phone11-live-wire-capture-$(date -u +%Y%m%dT%H%M%SZ)"
+          mkdir -p "$WORK_DIR"
+          section "Phone11 live SIP/RTP wire capture"
+          echo "time_utc=$(date -u -Iseconds)"
+          echo "prep_seconds=${PREP_SECONDS}"
+          echo "capture_seconds=${CAPTURE_SECONDS}"
+          echo "destination=${DESTINATION}"
+          echo "work_dir=${WORK_DIR}"
+
+          section "containers before capture"
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' | redact || true
+
+          section "live Kamailio media config before capture"
+          docker exec p11-kamailio sh -lc "grep -nE 'BACKEND_URL|http_connect|rtpengine_offer|rtpengine_answer|media-address|phone11_media_profile' /etc/kamailio/kamailio.cfg" 2>&1 | redact || true
+
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            section "tcpdump install"
+            sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y tcpdump >/dev/null 2>&1 || true
+          fi
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo "ERROR: tcpdump is not available on the SIP host."
+            exit 43
+          fi
+
+          section "arming window"
+          echo "Call should be placed after this arming wait begins."
+          echo "arming_start_utc=$(date -u -Iseconds)"
+          sleep "$PREP_SECONDS"
+
+          section "capture started"
+          echo "capture_start_utc=$(date -u -Iseconds)"
+          SIP_ASCII="$WORK_DIR/sip-ascii.txt"
+          PACKET_SUMMARY="$WORK_DIR/packet-summary.txt"
+          KAMAILIO_BEFORE="$WORK_DIR/kamailio-before.txt"
+          KAMAILIO_AFTER="$WORK_DIR/kamailio-after.txt"
+          docker logs --since 1m --timestamps p11-kamailio > "$KAMAILIO_BEFORE" 2>&1 || true
+
+          sudo timeout "$CAPTURE_SECONDS" tcpdump -ni any -s 0 -A 'udp port 5060 or tcp port 5060 or udp port 5080 or tcp port 5080' > "$SIP_ASCII" 2>&1 &
+          SIP_PID=$!
+          sudo timeout "$CAPTURE_SECONDS" tcpdump -ni any -tttt -vv 'udp portrange 20000-30000 or udp port 5060 or udp port 5080' > "$PACKET_SUMMARY" 2>&1 &
+          PKT_PID=$!
+          wait "$SIP_PID" || true
+          wait "$PKT_PID" || true
+          docker logs --since "$((CAPTURE_SECONDS + PREP_SECONDS + 30))s" --timestamps p11-kamailio > "$KAMAILIO_AFTER" 2>&1 || true
+          echo "capture_end_utc=$(date -u -Iseconds)"
+
+          section "SIP wire summary"
+          grep -Eia "${DESTINATION}|Call-ID:|CSeq:|INVITE|SIP/2.0 18|SIP/2.0 200|ACK|BYE|c=IN IP4|m=audio|a=rtcp|RTP/AVP|RTP/SAVP|Contact:|Via:" "$SIP_ASCII" | tail -n 260 | redact || true
+
+          section "RTP/SIP packet counts"
+          echo "total_udp_5060_or_5080=$(grep -Ec ' IP .*\.(5060|5080) > | IP .* > .*\.(5060|5080):' "$PACKET_SUMMARY" || true)"
+          echo "total_udp_rtp_range=$(grep -Ec ' IP .*\.([2][0-9]{4}|30000) > | IP .* > .*\.([2][0-9]{4}|30000):' "$PACKET_SUMMARY" || true)"
+          echo "rtp_range_to_public_candidates"
+          grep -E ' IP .*\.([2][0-9]{4}|30000) > [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:' "$PACKET_SUMMARY" | tail -n 80 | redact || true
+
+          section "Kamailio logs during capture"
+          grep -Eia "${DESTINATION}|RTPENGINE|BEFORE_ANSWER|AFTER_ANSWER|c=IN IP4|m=audio|DID lookup|INVITE|ACK|BYE|SIP/2.0|Call-ID" "$KAMAILIO_AFTER" | tail -n 240 | redact || true
+
+          section "capture complete"
+          echo "work_dir=${WORK_DIR}"
+          echo "time_utc=$(date -u -Iseconds)"
+          REMOTE
+
+      - name: Upload live wire capture artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-live-wire-capture
+          path: ${{ runner.temp }}/phone11-live-wire-capture/phone11-live-wire-capture.txt
+          if-no-files-found: warn
