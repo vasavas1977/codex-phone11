@@ -103,11 +103,11 @@ jobs:
           }
           section() { printf '\n===== %s =====\n' "$1"; }
           esc() { printf '%s' "$1" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g'; }
-          run_or_note() { "$@" 2>&1 | redact || true; }
 
           EXT_RE="$(esc "$EXTENSION")"
           DEST_RE="$(esc "$DESTINATION")"
-          TARGET_RE="${EXT_RE}|${DEST_RE}|sip:${EXT_RE}@|from=<sip:${EXT_RE}|From:.*${EXT_RE}|To:.*${DEST_RE}|ruri=.*${DEST_RE}|R-URI.*${DEST_RE}|INVITE sip:${DEST_RE}|/usr/local/freeswitch|CHANNEL_ANSWER|CHANNEL_BRIDGE|hangup|answered|RTPENGINE_ANSWER|FORCED_PUBLIC_NATIVE_ANSWER_SDP|BEFORE_ANSWER|AFTER_ANSWER|ACK|200 OK|m=audio|c=IN IP4"
+          STRICT_TARGET_RE="${EXT_RE}|${DEST_RE}|sip:${EXT_RE}@|from=<sip:${EXT_RE}|From:.*${EXT_RE}|To:.*${DEST_RE}|ruri=.*${DEST_RE}|R-URI.*${DEST_RE}|INVITE sip:${DEST_RE}"
+          MEDIA_RE="RTPENGINE_|FORCED_PUBLIC_NATIVE_ANSWER_SDP|BEFORE_ANSWER|AFTER_ANSWER|c=IN IP4|m=audio|ACK|200 OK|ERROR|failure|t_forward_nonack"
 
           section "target capture metadata"
           echo "time_utc=$(date -u -Iseconds)"
@@ -119,26 +119,28 @@ jobs:
           docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' | redact || true
 
           for name in p11-kamailio p11-freeswitch p11-rtpengine cp11-backend; do
-            section "target-only docker logs: $name"
+            section "strict target docker logs: $name"
             if docker ps --format '{{.Names}}' | grep -qx "$name"; then
-              hits=$(docker logs --since "${SINCE_MINUTES}m" --timestamps "$name" 2>&1 | grep -Eia "$TARGET_RE" | tee /tmp/${name}.target.log | wc -l | tr -d ' ')
-              echo "target_hit_count=$hits"
+              tmp="/tmp/${name}.target.log"
+              docker logs --since "${SINCE_MINUTES}m" --timestamps "$name" 2>&1 | grep -Eia "$STRICT_TARGET_RE" > "$tmp" || true
+              hits=$(wc -l < "$tmp" | tr -d ' ')
+              echo "strict_target_hit_count=$hits"
               if [ "$hits" != "0" ]; then
-                tail -n 260 /tmp/${name}.target.log | redact
+                tail -n 260 "$tmp" | redact
               else
-                echo "NO_TARGET_LINES_FOUND"
+                echo "NO_STRICT_TARGET_LINES_FOUND"
               fi
             else
               echo "MISSING_CONTAINER"
             fi
           done
 
-          section "recent kamailio alerts after restart"
+          section "kamailio media and signaling alerts"
           if docker ps --format '{{.Names}}' | grep -qx p11-kamailio; then
-            docker logs --since "${SINCE_MINUTES}m" --timestamps p11-kamailio 2>&1 \
-              | grep -Eia 'RTPENGINE_|FORCED_PUBLIC_NATIVE_ANSWER_SDP|BEFORE_ANSWER|AFTER_ANSWER|c=IN IP4|m=audio|ACK|200 OK|ERROR|failure' \
-              | tail -n 220 \
-              | redact || true
+            tmp=/tmp/kamailio.media.log
+            docker logs --since "${SINCE_MINUTES}m" --timestamps p11-kamailio 2>&1 | grep -Eia "$MEDIA_RE" > "$tmp" || true
+            echo "media_alert_count=$(wc -l < "$tmp" | tr -d ' ')"
+            tail -n 260 "$tmp" | redact || true
           fi
 
           section "freeswitch current calls and channels"
@@ -164,7 +166,7 @@ jobs:
 
           section "rtpengine sockets snapshot"
           if docker ps --format '{{.Names}}' | grep -qx p11-rtpengine; then
-            docker exec p11-rtpengine sh -lc 'if command -v ss >/dev/null 2>&1; then ss -lunp | grep -E ":(2[0-9]{4}|30000)" | tail -n 80; else cat /proc/net/udp | tail -n 80; fi' 2>&1 | redact || true
+            docker exec p11-rtpengine sh -lc 'if command -v ss >/dev/null 2>&1; then ss -lunp | grep -E ":(2[0-9]{4}|30000)" | tail -n 80 || true; else cat /proc/net/udp | tail -n 80; fi' 2>&1 | redact || true
           fi
 
           section "capture complete"
