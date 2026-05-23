@@ -117,6 +117,7 @@ jobs:
           if docker ps -a --format '{{.Names}}' | grep -qx cp11-postgres; then
             SIP_PASSWORD="$(docker exec -e TEST_EXTENSION="$TEST_EXTENSION" cp11-postgres sh -lc '
               set -eu
+              export PGPASSWORD="${POSTGRES_PASSWORD:-}"
               DB_LIST=$(psql -U "${POSTGRES_USER:-postgres}" -d postgres -tAc "SELECT datname FROM pg_database WHERE datistemplate=false" 2>/dev/null || true)
               for db in $DB_LIST; do
                 value=$(psql -U "${POSTGRES_USER:-postgres}" -d "$db" -tAc "SELECT password FROM subscriber WHERE username='"'"'$TEST_EXTENSION'"'"' AND domain='"'"'sip.phone11.ai'"'"' LIMIT 1" 2>/dev/null | tr -d "[:space:]" || true)
