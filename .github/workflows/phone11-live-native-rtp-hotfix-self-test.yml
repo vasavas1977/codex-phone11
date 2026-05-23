@@ -168,7 +168,11 @@ jobs:
               kind = match.group(2)
               flags = match.group(3)
               suffix = match.group(4)
-              if "transport-protocol=RTP/AVP" in flags and "DTLS=off" in flags:
+              line_start = text.rfind("\n", 0, match.start()) + 1
+              nearby = text[max(0, line_start - 220):match.start()]
+              is_native_offer = kind == "offer" and '$avp(phone11_media_profile) = "native"' in nearby
+              is_native_answer = kind == "answer" and '$avp(phone11_media_profile) == "webrtc"' in nearby and "} else {" in nearby
+              if (is_native_offer or is_native_answer) and "transport-protocol=RTP/AVP" in flags and "DTLS=off" in flags:
                   changed[kind] += 1
                   return prefix + add_flags(flags) + suffix
               return match.group(0)
@@ -179,7 +183,7 @@ jobs:
           if changed["answer"] == 0:
               raise SystemExit("Could not find native RTP/AVP rtpengine_answer block")
 
-          marker = "FORCED_PUBLIC_NATIVE_ANSWER_SDP_V5"
+          marker = "FORCED_PUBLIC_NATIVE_ANSWER_SDP_V6"
           if marker not in text:
               escaped_private = private_ip.replace(".", r"\.")
               block_lines = [
@@ -187,12 +191,9 @@ jobs:
                   f"                subst_body('/{escaped_private}/{public_ip}/g');",
                   f'                xlog("L_ALERT", "{marker} public_media_ip={public_ip} private_media_ip={private_ip} call $ci\\n");',
                   '            }',
-                  '',
               ]
-              block = "\n".join(block_lines)
-              text, count = re.subn(r'(\s*xlog\("L_ALERT",\s*"AFTER_ANSWER SDP[^\n]+\n)', block + r'\1', text, count=1)
-              if count == 0:
-                  text, count = re.subn(r'(\s*\$var\(rtpe_rc\)\s*=\s*rtpengine_answer\("[^"]*"\);\n)', r'\1' + block, text, count=1)
+              block = "\n".join(block_lines) + "\n"
+              text, count = re.subn(r'(^\s*xlog\("L_ALERT",\s*"AFTER_ANSWER SDP[^\n]+$)', block + r'\1', text, count=1, flags=re.M)
               if count == 0:
                   raise SystemExit("Could not insert native public SDP fallback block")
 
@@ -226,92 +227,321 @@ jobs:
             exit 42
           fi
 
-          section "install media test tools"
-          if ! command -v sipp >/dev/null 2>&1 || ! command -v tcpdump >/dev/null 2>&1 || ! command -v psql >/dev/null 2>&1; then
+          section "prepare media self-test runtime"
+          if ! command -v tcpdump >/dev/null 2>&1; then
             sudo apt-get update >/dev/null 2>&1 || true
-            sudo apt-get install -y sipp tcpdump postgresql-client >/dev/null 2>&1 || true
+            sudo apt-get install -y tcpdump >/dev/null 2>&1 || true
           fi
-          command -v sipp || { echo "ERROR: sipp is not available"; exit 50; }
-          command -v tcpdump || { echo "ERROR: tcpdump is not available"; exit 51; }
-          command -v psql || { echo "ERROR: psql is not available"; exit 52; }
+          TCPDUMP_AVAILABLE=0
+          if command -v tcpdump >/dev/null 2>&1; then
+            TCPDUMP_AVAILABLE=1
+          fi
+          echo "tcpdump_available=$TCPDUMP_AVAILABLE"
 
           section "retrieve SIP test credential without printing secret"
-          DB_URL="$(grep -E 'postgres(ql)?://' "$WORK_DIR/kamailio.cfg.after" | sed -nE 's#.*(postgres(ql)?://[^";[:space:]]+).*#\1#p' | head -1 || true)"
-          if [ -z "$DB_URL" ]; then
-            DB_URL="$(docker exec "$KAMAILIO_CONTAINER" sh -lc "grep -E 'postgres(ql)?://' '$KAMAILIO_CFG' | sed -nE 's#.*(postgres(ql)?://[^\";[:space:]]+).*#\\1#p' | head -1" 2>/dev/null || true)"
+          SIP_PASSWORD=""
+          if docker ps -a --format '{{.Names}}' | grep -qx cp11-postgres; then
+            SIP_PASSWORD="$(docker exec -e TEST_EXTENSION="$TEST_EXTENSION" cp11-postgres sh -lc '
+              set -eu
+              DB_LIST=$(psql -U "${POSTGRES_USER:-postgres}" -d postgres -tAc "SELECT datname FROM pg_database WHERE datistemplate=false" 2>/dev/null || true)
+              for db in $DB_LIST; do
+                psql -U "${POSTGRES_USER:-postgres}" -d "$db" -tAc "SELECT password FROM subscriber WHERE username='"'"'$TEST_EXTENSION'"'"' AND domain='"'"'sip.phone11.ai'"'"' LIMIT 1" 2>/dev/null | tr -d "[:space:]" && exit 0
+              done
+            ' 2>/tmp/phone11-docker-psql-error | tr -d '[:space:]' || true)"
           fi
-          if [ -z "$DB_URL" ]; then
-            echo "ERROR: Could not discover Kamailio DB URL for SIP credential lookup."
-            exit 53
-          fi
-          SIP_PASSWORD="$(PGCONNECT_TIMEOUT=8 psql "$DB_URL" -tAc "SELECT password FROM subscriber WHERE username='${TEST_EXTENSION}' AND domain='sip.phone11.ai' LIMIT 1;" 2>/tmp/phone11-psql-error | tr -d '[:space:]' || true)"
           if [ -z "$SIP_PASSWORD" ]; then
             echo "ERROR: Could not read SIP password for extension ${TEST_EXTENSION}."
-            sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' /tmp/phone11-psql-error 2>/dev/null || true
+            cat /tmp/phone11-docker-psql-error 2>/dev/null | redact || true
             exit 54
           fi
           echo "sip_credential_lookup=ok"
 
-          section "run controlled SIP/RTP media self-test"
+          section "run controlled Python SIP/RTP media self-test"
           LOCAL_IP="$(hostname -I | awk '{print $1}')"
-          SIPP_LOG="$WORK_DIR/sipp-media-test.log"
           RTP_CAPTURE="$WORK_DIR/rtp-media-test.txt"
           KAMAILIO_LOG="$WORK_DIR/kamailio-media-test.log"
+          PYTEST_LOG="$WORK_DIR/python-sip-rtp-test.log"
           echo "local_ip=$LOCAL_IP"
           echo "target=sip.phone11.ai:5060"
           echo "test_uri=sip:${TEST_DESTINATION}@sip.phone11.ai"
 
-          sudo timeout 45 tcpdump -ni any -tttt -vv "udp port 5060 or udp portrange 20000-30000 or udp port 6070" > "$RTP_CAPTURE" 2>&1 &
-          TCPDUMP_PID=$!
+          TCPDUMP_PID=""
+          if [ "$TCPDUMP_AVAILABLE" -eq 1 ]; then
+            sudo timeout 45 tcpdump -ni any -tttt -vv "udp port 5060 or udp portrange 20000-30000 or udp port 6070" > "$RTP_CAPTURE" 2>&1 &
+            TCPDUMP_PID=$!
+          fi
+
+          export SIP_PASSWORD LOCAL_IP TEST_EXTENSION TEST_DESTINATION
           set +e
-          timeout 35 sipp sip.phone11.ai:5060 \
-            -sn uac \
-            -s "$TEST_DESTINATION" \
-            -au "$TEST_EXTENSION" \
-            -ap "$SIP_PASSWORD" \
-            -i "$LOCAL_IP" \
-            -p 5070 \
-            -mp 6070 \
-            -m 1 \
-            -l 1 \
-            -r 1 \
-            -d 15000 \
-            -rtp_echo \
-            -trace_msg \
-            -trace_err \
-            -trace_screen > "$SIPP_LOG" 2>&1
-          SIPP_STATUS=$?
+          timeout 40 python3 - <<'PYTEST' > "$PYTEST_LOG" 2>&1
+          import hashlib
+          import os
+          import random
+          import re
+          import secrets
+          import select
+          import socket
+          import struct
+          import sys
+          import time
+
+          domain = "sip.phone11.ai"
+          server = (domain, 5060)
+          username = os.environ["TEST_EXTENSION"]
+          password = os.environ["SIP_PASSWORD"]
+          destination = os.environ["TEST_DESTINATION"]
+          local_ip = os.environ["LOCAL_IP"]
+          sip_port = 5070
+          rtp_port = 6070
+          req_uri = f"sip:{destination}@{domain}"
+          call_id = f"phone11-selftest-{secrets.token_hex(8)}@{local_ip}"
+          from_tag = secrets.token_hex(6)
+          branch_seed = secrets.token_hex(8)
+          contact = f"<sip:{username}@{local_ip}:{sip_port}>"
+
+          sip_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sip_sock.bind((local_ip, sip_port))
+          sip_sock.settimeout(2.0)
+          rtp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          rtp_sock.bind((local_ip, rtp_port))
+          rtp_sock.setblocking(False)
+
+          sdp = "\r\n".join([
+              "v=0",
+              f"o=phone11 1 1 IN IP4 {local_ip}",
+              "s=Phone11 RTP self test",
+              f"c=IN IP4 {local_ip}",
+              "t=0 0",
+              f"m=audio {rtp_port} RTP/AVP 0",
+              "a=rtpmap:0 PCMU/8000",
+              "a=sendrecv",
+              "",
+          ])
+
+          def md5(value: str) -> str:
+              return hashlib.md5(value.encode()).hexdigest()
+
+          def header(text: str, name: str) -> str:
+              match = re.search(rf"^{re.escape(name)}:\s*(.+)$", text, re.I | re.M)
+              return match.group(1).strip() if match else ""
+
+          def parse_auth(value: str) -> dict[str, str]:
+              value = value.replace("Digest", "", 1).strip()
+              result = {}
+              for key, quoted, bare in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', value):
+                  result[key.lower()] = quoted or bare
+              return result
+
+          def auth_value(challenge: str, method: str) -> str:
+              data = parse_auth(challenge)
+              realm = data.get("realm", domain)
+              nonce = data["nonce"]
+              qop_options = data.get("qop", "")
+              qop = "auth" if "auth" in qop_options else ""
+              cnonce = secrets.token_hex(8)
+              nc = "00000001"
+              ha1 = md5(f"{username}:{realm}:{password}")
+              ha2 = md5(f"{method}:{req_uri}")
+              if qop:
+                  response = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+              else:
+                  response = md5(f"{ha1}:{nonce}:{ha2}")
+              parts = [
+                  f'username="{username}"',
+                  f'realm="{realm}"',
+                  f'nonce="{nonce}"',
+                  f'uri="{req_uri}"',
+                  f'response="{response}"',
+                  'algorithm=MD5',
+              ]
+              if data.get("opaque"):
+                  parts.append(f'opaque="{data["opaque"]}"')
+              if qop:
+                  parts.extend([f'qop={qop}', f'nc={nc}', f'cnonce="{cnonce}"'])
+              return "Digest " + ", ".join(parts)
+
+          def build_invite(cseq: int, auth_header: str = "", proxy: bool = False) -> bytes:
+              branch = f"z9hG4bK{branch_seed}{cseq}"
+              lines = [
+                  f"INVITE {req_uri} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch={branch};rport",
+                  "Max-Forwards: 70",
+                  f"From: Phone11 Self Test <sip:{username}@{domain}>;tag={from_tag}",
+                  f"To: <{req_uri}>",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} INVITE",
+                  f"Contact: {contact}",
+                  "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS",
+                  "Supported: replaces, timer",
+                  "User-Agent: Phone11MediaSelfTest/1.0",
+              ]
+              if auth_header:
+                  lines.append(("Proxy-Authorization" if proxy else "Authorization") + f": {auth_header}")
+              lines.extend(["Content-Type: application/sdp", f"Content-Length: {len(sdp.encode())}", "", sdp])
+              return "\r\n".join(lines).encode()
+
+          def send_sip(payload: bytes) -> None:
+              sip_sock.sendto(payload, server)
+
+          def recv_final(timeout: float) -> tuple[int, str]:
+              deadline = time.time() + timeout
+              last = ""
+              while time.time() < deadline:
+                  try:
+                      data, _ = sip_sock.recvfrom(65535)
+                  except socket.timeout:
+                      continue
+                  text = data.decode(errors="replace")
+                  if call_id not in text:
+                      continue
+                  first = text.splitlines()[0] if text.splitlines() else ""
+                  match = re.match(r"SIP/2.0\s+(\d+)", first)
+                  if not match:
+                      continue
+                  status = int(match.group(1))
+                  print(f"sip_response={status}")
+                  last = text
+                  if status >= 200:
+                      return status, text
+              raise TimeoutError("No final SIP response received")
+
+          def send_ack(cseq: int, to_header: str) -> None:
+              branch = f"z9hG4bK{branch_seed}ack{cseq}"
+              lines = [
+                  f"ACK {req_uri} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch={branch};rport",
+                  "Max-Forwards: 70",
+                  f"From: Phone11 Self Test <sip:{username}@{domain}>;tag={from_tag}",
+                  f"To: {to_header}",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} ACK",
+                  f"Contact: {contact}",
+                  "Content-Length: 0",
+                  "",
+                  "",
+              ]
+              send_sip("\r\n".join(lines).encode())
+
+          def send_bye(cseq: int, to_header: str) -> None:
+              branch = f"z9hG4bK{branch_seed}bye{cseq}"
+              lines = [
+                  f"BYE {req_uri} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch={branch};rport",
+                  "Max-Forwards: 70",
+                  f"From: Phone11 Self Test <sip:{username}@{domain}>;tag={from_tag}",
+                  f"To: {to_header}",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} BYE",
+                  f"Contact: {contact}",
+                  "Content-Length: 0",
+                  "",
+                  "",
+              ]
+              send_sip("\r\n".join(lines).encode())
+
+          def parse_sdp_media(response: str) -> tuple[str, int]:
+              body = response.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in response else ""
+              media_ip = ""
+              media_port = 0
+              for line in body.splitlines():
+                  if line.startswith("c=IN IP4 "):
+                      media_ip = line.split()[2]
+                  if line.startswith("m=audio "):
+                      media_port = int(line.split()[1])
+              if not media_ip or not media_port:
+                  raise RuntimeError("No answer media address in 200 OK SDP")
+              return media_ip, media_port
+
+          try:
+              print(f"call_id={call_id}")
+              print(f"sip_target={server[0]}:{server[1]}")
+              print(f"rtp_listen={local_ip}:{rtp_port}")
+              send_sip(build_invite(1))
+              status, response = recv_final(10)
+              cseq = 1
+              if status in (401, 407):
+                  challenge = header(response, "Proxy-Authenticate") or header(response, "WWW-Authenticate")
+                  if not challenge:
+                      raise RuntimeError(f"Auth challenge missing for SIP {status}")
+                  proxy = status == 407 or bool(header(response, "Proxy-Authenticate"))
+                  cseq = 2
+                  send_sip(build_invite(cseq, auth_value(challenge, "INVITE"), proxy=proxy))
+                  status, response = recv_final(15)
+              if status != 200:
+                  print(f"python_sip_status=fail status={status}")
+                  sys.exit(20)
+
+              to_header = header(response, "To") or f"<{req_uri}>"
+              media_ip, media_port = parse_sdp_media(response)
+              print(f"sip_final_status={status}")
+              print(f"answer_media={media_ip}:{media_port}")
+              send_ack(cseq, to_header)
+
+              seq = random.randint(0, 65535)
+              timestamp = random.randint(0, 2**32 - 1)
+              ssrc = random.randint(1, 2**32 - 1)
+              received = 0
+              sent = 0
+              end = time.time() + 8.0
+              while time.time() < end:
+                  packet = struct.pack("!BBHII", 0x80, 0x00, seq & 0xFFFF, timestamp & 0xFFFFFFFF, ssrc) + (b"\xff" * 160)
+                  rtp_sock.sendto(packet, (media_ip, media_port))
+                  sent += 1
+                  seq += 1
+                  timestamp += 160
+                  ready, _, _ = select.select([rtp_sock], [], [], 0.02)
+                  for sock in ready:
+                      data, addr = sock.recvfrom(2048)
+                      if len(data) >= 12:
+                          received += 1
+              drain_end = time.time() + 1.5
+              while time.time() < drain_end:
+                  ready, _, _ = select.select([rtp_sock], [], [], 0.1)
+                  if not ready:
+                      continue
+                  data, addr = rtp_sock.recvfrom(2048)
+                  if len(data) >= 12:
+                      received += 1
+
+              send_bye(cseq + 1, to_header)
+              print(f"rtp_packets_sent={sent}")
+              print(f"rtp_packets_received={received}")
+              if sent > 0 and received > 0:
+                  print("MEDIA_SELF_TEST_RESULT=pass")
+                  print("voice_exchange_objective=rtp_packets_seen_both_directions")
+                  sys.exit(0)
+              print("MEDIA_SELF_TEST_RESULT=fail")
+              print("voice_exchange_objective=not_proven")
+              sys.exit(60)
+          except Exception as exc:
+              print(f"python_sip_status=exception {type(exc).__name__}: {exc}")
+              print("MEDIA_SELF_TEST_RESULT=fail")
+              print("voice_exchange_objective=not_proven")
+              sys.exit(61)
+          PYTEST
+          PY_STATUS=$?
           set -e
           sleep 3
-          sudo kill "$TCPDUMP_PID" >/dev/null 2>&1 || true
-          wait "$TCPDUMP_PID" >/dev/null 2>&1 || true
-          docker logs --since 90s --timestamps "$KAMAILIO_CONTAINER" > "$KAMAILIO_LOG" 2>&1 || true
+          if [ -n "$TCPDUMP_PID" ]; then
+            sudo kill "$TCPDUMP_PID" >/dev/null 2>&1 || true
+            wait "$TCPDUMP_PID" >/dev/null 2>&1 || true
+          fi
+          docker logs --since 120s --timestamps "$KAMAILIO_CONTAINER" > "$KAMAILIO_LOG" 2>&1 || true
 
-          section "SIPp summary"
-          sed -E 's#(-ap )[[:graph:]]+#\1<redacted>#g' "$SIPP_LOG" | tail -n 120 | redact || true
-          if [ -f "${SIPP_LOG%.log}_messages.log" ]; then sed -E 's#Authorization: Digest .*#Authorization: Digest <redacted>#g' "${SIPP_LOG%.log}_messages.log" | tail -n 220 | redact || true; fi
-          if [ -f "${SIPP_LOG%.log}_errors.log" ]; then cat "${SIPP_LOG%.log}_errors.log" | redact || true; fi
+          section "Python SIP/RTP summary"
+          cat "$PYTEST_LOG" | redact || true
 
-          section "RTP packet evidence"
-          INBOUND_TO_SIPP=$(grep -Ec "IP .* > ${LOCAL_IP}\.6070:" "$RTP_CAPTURE" || true)
-          OUTBOUND_FROM_SIPP=$(grep -Ec "IP ${LOCAL_IP}\.6070 > .*:" "$RTP_CAPTURE" || true)
-          RTP_ANY=$(grep -Ec "IP .*\.([2][0-9]{4}|30000|6070) > .*\.([2][0-9]{4}|30000|6070):" "$RTP_CAPTURE" || true)
-          echo "sipp_status=$SIPP_STATUS"
-          echo "rtp_packets_to_sipp_port_6070=$INBOUND_TO_SIPP"
-          echo "rtp_packets_from_sipp_port_6070=$OUTBOUND_FROM_SIPP"
-          echo "rtp_packets_any_candidate=$RTP_ANY"
-          grep -E "IP .*\.([2][0-9]{4}|30000|6070) > .*\.([2][0-9]{4}|30000|6070):" "$RTP_CAPTURE" | tail -n 120 | redact || true
+          section "tcpdump RTP packet evidence"
+          if [ -f "$RTP_CAPTURE" ]; then
+            RTP_ANY=$(grep -Ec "IP .*\.([2][0-9]{4}|30000|6070) > .*\.([2][0-9]{4}|30000|6070):" "$RTP_CAPTURE" || true)
+            echo "tcpdump_rtp_packets_any_candidate=$RTP_ANY"
+            grep -E "IP .*\.([2][0-9]{4}|30000|6070) > .*\.([2][0-9]{4}|30000|6070):" "$RTP_CAPTURE" | tail -n 120 | redact || true
+          else
+            echo "tcpdump_rtp_packets_any_candidate=not_collected"
+          fi
 
           section "Kamailio media logs from self-test"
           grep -Eia "${TEST_EXTENSION}|${TEST_DESTINATION}|RTPENGINE|BEFORE_ANSWER|AFTER_ANSWER|FORCED_PUBLIC_NATIVE_ANSWER_SDP|c=IN IP4|m=audio|INVITE|ACK|BYE|SIP/2.0|Call-ID" "$KAMAILIO_LOG" | tail -n 220 | redact || true
 
-          if [ "$SIPP_STATUS" -eq 0 ] && [ "${INBOUND_TO_SIPP:-0}" -gt 0 ] && [ "${OUTBOUND_FROM_SIPP:-0}" -gt 0 ]; then
-            echo "MEDIA_SELF_TEST_RESULT=pass"
-            echo "voice_exchange_objective=rtp_packets_seen_both_directions"
-            exit 0
-          fi
-
-          echo "MEDIA_SELF_TEST_RESULT=fail"
-          echo "voice_exchange_objective=not_proven"
-          exit 60
+          exit "$PY_STATUS"
           REMOTE
