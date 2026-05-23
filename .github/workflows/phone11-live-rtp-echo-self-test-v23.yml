@@ -1,0 +1,225 @@
+name: Phone11 Live RTP Echo Self Test V23
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-rtp-echo-self-test-v23.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  SIP_DOMAIN: sip.phone11.ai
+  SIP_SERVER: 43.210.122.111
+  TEST_EXTENSION: "1998"
+  TEST_PASSWORD: phone11-v23-external-runner
+  TEST_TARGET: "*9196"
+
+jobs:
+  rtp-echo-self-test:
+    name: Prove external SIP plus RTP echo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_rtp_echo_v23_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_rtp_echo_v23_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare server-side echo target and subscriber
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_rtp_echo_v23_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          TEST_EXTENSION="1998"
+          TEST_PASSWORD="phone11-v23-external-runner"
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+
+          echo "===== Write FreeSWITCH echo test dialplan ====="
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/public/99_phone11_media_self_test.xml' <<'XML'
+          <include>
+            <extension name="phone11_media_echo_star_9196">
+              <condition field="destination_number" expression="^\*9196$">
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+          </include>
+          XML
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/default/99_phone11_media_self_test.xml' <<'XML'
+          <include>
+            <extension name="phone11_media_echo_star_9196">
+              <condition field="destination_number" expression="^\*9196$">
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+          </include>
+          XML
+          docker exec p11-freeswitch fs_cli -x reloadxml
+          docker exec p11-freeswitch sh -lc 'grep -RIn "\*9196\|phone11_media_echo" /etc/freeswitch/dialplan/public/99_phone11_media_self_test.xml /etc/freeswitch/dialplan/default/99_phone11_media_self_test.xml'
+
+          echo "===== Upsert external self-test subscriber ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES ('$TEST_EXTENSION', '$DOMAIN', '$TEST_PASSWORD', md5('$TEST_EXTENSION:$DOMAIN:$TEST_PASSWORD'), md5('$TEST_EXTENSION@$DOMAIN:$DOMAIN:$TEST_PASSWORD'))
+          ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b;
+          SELECT username, domain, length(ha1) AS ha1_len FROM subscriber WHERE username = '$TEST_EXTENSION' AND domain = '$DOMAIN';
+          SQL
+
+          echo "===== Start short server packet capture ====="
+          rm -f /tmp/phone11-v23-media.pcap.txt
+          if command -v tcpdump >/dev/null 2>&1; then
+            sudo sh -lc 'nohup timeout 85 tcpdump -i any -nn -s0 -A "(udp port 5060) or (udp portrange 20000-20150)" > /tmp/phone11-v23-media.pcap.txt 2>&1 &' || true
+            sleep 2
+          else
+            echo "tcpdump_missing=yes" | sudo tee /tmp/phone11-v23-media.pcap.txt >/dev/null
+          fi
+          echo "SERVER_PREP_RESULT=pass"
+          REMOTE
+
+      - name: Run external SIP and RTP echo self-test
+        id: rtp
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' | tee /tmp/phone11-v23-rtp-test.log
+          import hashlib, os, random, re, secrets, select, socket, struct, sys, time
+          DOMAIN=os.environ['SIP_DOMAIN']; SERVER=(os.environ['SIP_SERVER'],5060); USER=os.environ['TEST_EXTENSION']; PASSWORD=os.environ['TEST_PASSWORD']; TARGET=os.environ['TEST_TARGET']
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def header(text,name):
+              m=re.search(rf'^{re.escape(name)}:\s*(.+)$',text,re.I|re.M); return m.group(1).strip() if m else ''
+          def code(text):
+              first=text.splitlines()[0] if text.splitlines() else ''; m=re.match(r'SIP/2.0\s+(\d+)',first); return int(m.group(1)) if m else 0
+          def body(text): return text.split('\r\n\r\n',1)[1] if '\r\n\r\n' in text else ''
+          def authdict(value):
+              value=value.replace('Digest','',1).strip(); return {k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))',value)}
+          def digest(username,password,challenge,method,uri):
+              d=authdict(challenge); realm=d.get('realm',DOMAIN); nonce=d['nonce']; qop='auth' if 'auth' in d.get('qop','') else ''; cnonce=secrets.token_hex(8); nc='00000001'
+              ha1=md5(f'{username}:{realm}:{password}'); ha2=md5(f'{method}:{uri}'); resp=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+              parts=[f'username="{username}"',f'realm="{realm}"',f'nonce="{nonce}"',f'uri="{uri}"',f'response="{resp}"','algorithm=MD5']
+              if d.get('opaque'): parts.append(f'opaque="{d["opaque"]}"')
+              if qop: parts.extend([f'qop={qop}',f'nc={nc}',f'cnonce="{cnonce}"'])
+              return 'Digest '+', '.join(parts)
+          def local_ip():
+              s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.connect(SERVER); ip=s.getsockname()[0]; s.close(); return ip
+          def sdp_media(sdp):
+              ip=''; port=0
+              for line in sdp.splitlines():
+                  if line.startswith('c=IN IP4 '): ip=line.split()[-1].strip()
+                  if line.startswith('m=audio '): port=int(line.split()[1])
+              return ip,port
+          def rtp(seq,ts,ssrc,payload): return struct.pack('!BBHII',0x80,0x00,seq&0xffff,ts&0xffffffff,ssrc)+bytes([payload])*160
+          LIP=local_ip(); sip=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); sip.bind(('0.0.0.0',random.randint(24000,24999))); sip.setblocking(False); sport=sip.getsockname()[1]
+          rsock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); rsock.bind(('0.0.0.0',random.randrange(30000,31998,2))); rsock.setblocking(False); rport=rsock.getsockname()[1]
+          contact=f'<sip:{USER}@{LIP}:{sport};transport=udp>'
+          def send(p): sip.sendto(p.encode(),SERVER)
+          def recv(call_id,timeout):
+              end=time.time()+timeout
+              while time.time()<end:
+                  ready,_,_=select.select([sip],[],[],0.2)
+                  if ready:
+                      data,addr=sip.recvfrom(65535); text=data.decode(errors='replace')
+                      if call_id in text: return text,addr
+              raise TimeoutError(f'no SIP response for {call_id}')
+          def register():
+              uri=f'sip:{DOMAIN}'; cid=f'phone11-v23-register-{secrets.token_hex(8)}@runner'; tag=secrets.token_hex(5)
+              def msg(cseq,auth=''):
+                  lines=[f'REGISTER {uri} SIP/2.0',f'Via: SIP/2.0/UDP {LIP}:{sport};branch=z9hG4bKv23reg{secrets.token_hex(8)}{cseq};rport','Max-Forwards: 70',f'From: <sip:{USER}@{DOMAIN}>;tag={tag}',f'To: <sip:{USER}@{DOMAIN}>',f'Call-ID: {cid}',f'CSeq: {cseq} REGISTER',f'Contact: {contact};expires=300','Expires: 300','User-Agent: Phone11RtpEchoSelfTest/23']
+                  if auth: lines.append(auth)
+                  lines+=['Content-Length: 0','','']; return '\r\n'.join(lines)
+              send(msg(1)); first,_=recv(cid,10); c=code(first)
+              if c in (401,407):
+                  ch=header(first,'WWW-Authenticate') or header(first,'Proxy-Authenticate'); name='Proxy-Authorization' if c==407 else 'Authorization'; send(msg(2,f'{name}: {digest(USER,PASSWORD,ch,"REGISTER",uri)}')); final,_=recv(cid,10); c=code(final)
+              print(f'registration_status={c}')
+              if c!=200: raise RuntimeError(f'registration failed status={c}')
+          def invite():
+              cid=f'phone11-v23-rtp-echo-{secrets.token_hex(8)}@runner'; print(f'call_id={cid}'); print(f'::notice title=Phone11 V23 Call-ID::{cid}')
+              from_tag=secrets.token_hex(6); req=f'sip:{TARGET}@{DOMAIN}'
+              offer='\r\n'.join(['v=0',f'o=phone11-{USER} 1 1 IN IP4 {LIP}','s=Phone11 RTP Echo Self Test',f'c=IN IP4 {LIP}','t=0 0',f'm=audio {rport} RTP/AVP 0','a=rtpmap:0 PCMU/8000','a=sendrecv',''])
+              def msg(cseq,auth=''):
+                  lines=[f'INVITE {req} SIP/2.0',f'Via: SIP/2.0/UDP {LIP}:{sport};branch=z9hG4bKv23inv{secrets.token_hex(8)}{cseq};rport','Max-Forwards: 70',f'From: Phone11 V23 <sip:{USER}@{DOMAIN}>;tag={from_tag}',f'To: <{req}>',f'Call-ID: {cid}',f'CSeq: {cseq} INVITE',f'Contact: {contact}','Allow: INVITE, ACK, CANCEL, BYE, OPTIONS','User-Agent: Phone11RtpEchoSelfTest/23']
+                  if auth: lines.append(auth)
+                  lines+=['Content-Type: application/sdp',f'Content-Length: {len(offer.encode())}','',offer]; return '\r\n'.join(lines)
+              cseq=1; send(msg(cseq)); got=''; end=time.time()+30; auths=0
+              while time.time()<end and not got:
+                  text,addr=recv(cid,max(0.5,end-time.time())); c=code(text); print(f'caller_rx_status={c} from={addr[0]}:{addr[1]}')
+                  if c in (401,407):
+                      auths+=1
+                      if auths>3: raise RuntimeError('too many INVITE auth challenges')
+                      ch=header(text,'WWW-Authenticate') or header(text,'Proxy-Authenticate'); name='Proxy-Authorization' if c==407 else 'Authorization'; cseq+=1; send(msg(cseq,f'{name}: {digest(USER,PASSWORD,ch,"INVITE",req)}'))
+                  elif c==200 and 'application/sdp' in text.lower(): got=text
+              if not got: raise RuntimeError('no 200 OK with SDP')
+              ip,port=sdp_media(body(got)); to=header(got,'To'); print(f'answer_media={ip}:{port}')
+              ack='\r\n'.join([f'ACK {req} SIP/2.0',f'Via: SIP/2.0/UDP {LIP}:{sport};branch=z9hG4bKv23ack{secrets.token_hex(8)};rport','Max-Forwards: 70',f'From: Phone11 V23 <sip:{USER}@{DOMAIN}>;tag={from_tag}',f'To: {to}',f'Call-ID: {cid}',f'CSeq: {cseq} ACK',f'Contact: {contact}','Content-Length: 0','',''])
+              send(ack); return cid,ip,port
+          def media(ip,port):
+              print(f'rtp_destination={ip}:{port}'); dest=(ip,port); ssrc=random.randint(1,0xffffffff); seq=random.randint(1,65000); ts=random.randint(1,0xffffffff); tx=rx=0; end=time.time()+8; nxt=time.time()
+              while time.time()<end:
+                  now=time.time()
+                  if now>=nxt:
+                      rsock.sendto(rtp(seq,ts,ssrc,0xff if tx%2==0 else 0x7f),dest); tx+=1; seq+=1; ts+=160; nxt=now+0.02
+                  ready,_,_=select.select([rsock],[],[],0.01)
+                  for _ in ready:
+                      data,addr=rsock.recvfrom(4096)
+                      if len(data)>=12: rx+=1
+              print(f'caller_rtp_tx={tx}'); print(f'caller_rtp_rx={rx}'); print('MEDIA_SELF_TEST_RESULT='+('pass' if tx>=100 and rx>=5 else 'fail')); return tx,rx
+          register(); cid,ip,port=invite(); tx,rx=media(ip,port)
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh: fh.write(f'call_id={cid}\nrtp_tx={tx}\nrtp_rx={rx}\n')
+          sys.exit(0 if tx>=100 and rx>=5 else 71)
+          PY
+
+      - name: Fetch server evidence for this Call-ID
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CALL_ID="${{ steps.rtp.outputs.call_id }}"
+          ssh -i ~/.ssh/phone11_rtp_echo_v23_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<REMOTE
+          set -Eeuo pipefail
+          CALL_ID="$CALL_ID"
+          echo "===== V23 Call-ID ====="
+          echo "\$CALL_ID"
+          echo "===== Kamailio logs ====="
+          if [ -n "\$CALL_ID" ]; then
+            docker logs --since 180s --timestamps p11-kamailio 2>&1 | grep -Eia "\$CALL_ID|RTPENGINE|FREESWITCH_REPLY|BEFORE_ANSWER|AFTER_ANSWER|FORCED_PUBLIC|1998|9196" | tail -n 260 || true
+          fi
+          echo "===== RTPEngine logs ====="
+          docker logs --since 180s --timestamps p11-rtpengine 2>&1 | grep -Eia "\$CALL_ID|1998|9196|offer|answer|packet|created|delete|RTP|warning|error" | tail -n 260 || true
+          echo "===== FreeSWITCH logs ====="
+          docker logs --since 180s --timestamps p11-freeswitch 2>&1 | grep -Eia "\$CALL_ID|1998|9196|echo|RTP|Codec|media|hangup|error|warning" | tail -n 260 || true
+          echo "===== Server packet capture summary ====="
+          if [ -s /tmp/phone11-v23-media.pcap.txt ]; then
+            grep -aE "SIP/2.0|INVITE|ACK|BYE|Call-ID:|CSeq:|c=IN IP4|m=audio|\$CALL_ID|9196|1998" /tmp/phone11-v23-media.pcap.txt | tail -n 320 || true
+          else
+            echo "no_server_capture"
+          fi
+          echo "V23_SERVER_EVIDENCE_RESULT=pass"
+          REMOTE
