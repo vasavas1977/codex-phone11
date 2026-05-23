@@ -1,0 +1,80 @@
+name: Phone11 live Kamailio force strip auth v32
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/phone11-live-kamailio-force-strip-auth-v32.yml"
+
+jobs:
+  kamailio-force-strip-auth-v32:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch live Kamailio without forwarding stale auth
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PHONE11_EC2_HOST }}
+          username: ${{ secrets.PHONE11_EC2_USER }}
+          key: ${{ secrets.PHONE11_EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+            docker cp p11-kamailio:/etc/kamailio/kamailio.cfg /tmp/kamailio.cfg.v32
+            cp /tmp/kamailio.cfg.v32 /tmp/kamailio.cfg.v32.before
+
+            python3 - <<'PY'
+            from pathlib import Path
+
+            path = Path("/tmp/kamailio.cfg.v32")
+            text = path.read_text()
+
+            if 'loadmodule "textopsx.so"' not in text:
+                text = text.replace(
+                    'loadmodule "textops.so"\n',
+                    'loadmodule "textops.so"\nloadmodule "textopsx.so"\n',
+                    1,
+                )
+
+            marker = "phone11-strip-fs-auth"
+            block = (
+                '    # phone11-strip-fs-auth: Kamailio already consumed caller auth; '
+                'do not forward it to FreeSWITCH.\n'
+                '    remove_hf("Proxy-Authorization");\n'
+                '    remove_hf("Authorization");\n'
+                '    msg_apply_changes();\n'
+            )
+            if marker not in text:
+                candidates = [
+                    '    $var(rtpe_rc) = rtpengine_offer',
+                    '$var(rtpe_rc) = rtpengine_offer',
+                    '    rtpengine_offer(',
+                    'rtpengine_offer(',
+                ]
+                for candidate in candidates:
+                    if candidate in text:
+                        text = text.replace(candidate, block + candidate, 1)
+                        break
+                else:
+                    raise SystemExit("V32_INSERT_TARGET_NOT_FOUND")
+
+            path.write_text(text)
+            PY
+
+            docker cp /tmp/kamailio.cfg.v32 p11-kamailio:/etc/kamailio/kamailio.cfg
+
+            echo "===== V32 live config proof ====="
+            docker exec p11-kamailio sh -lc "grep -n 'textopsx\\|phone11-strip-fs-auth\\|remove_hf\\|msg_apply_changes\\|rtpengine_offer' /etc/kamailio/kamailio.cfg | sed -n '1,140p'"
+            echo "===== V32 route context ====="
+            docker exec p11-kamailio sh -lc "grep -n -A45 'route\\[TO_FREESWITCH\\]' /etc/kamailio/kamailio.cfg | sed -n '1,90p'"
+
+            docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg
+            docker restart p11-kamailio
+            sleep 5
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep p11-kamailio
+            echo "V32_FORCE_STRIP_AUTH_PATCH_RESULT=pass"
