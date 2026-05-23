@@ -1,0 +1,113 @@
+name: Phone11 Live SIP Target Probe V9
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-sip-target-probe-v9.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  target-probe:
+    name: Probe live Kamailio SIP listener targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_sip_target_probe_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_sip_target_probe_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Probe SIP targets from EC2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ steps.ec2.outputs.ec2_host }}"
+          ssh -i ~/.ssh/phone11_sip_target_probe_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" "EC2_HOST='$EC2_HOST' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          echo "container_status:"
+          docker ps --format 'container={{.Names}} status={{.Status}} ports={{.Ports}}' | grep -E 'p11-kamailio|p11-rtpengine|p11-freeswitch|cp11-postgres' || true
+          echo "kamailio_env:"
+          docker exec p11-kamailio sh -lc 'echo DB_HOST=$DB_HOST; echo DB_NAME=$DB_NAME; echo DB_USER=$DB_USER; if [ -n "$DB_PASS" ]; then echo DB_PASS_present=yes; else echo DB_PASS_present=no; fi' || true
+          echo "host_udp_listeners_5060:"
+          (sudo ss -lunp || ss -lunp || netstat -lunp) 2>/dev/null | grep -E ':5060|:5061|:5080' || true
+          echo "kamailio_recent_start_logs:"
+          docker logs --since 10m p11-kamailio 2>&1 | grep -Eia 'listening|listen|udp|tcp|5060|error|crit|fatal|db_url|auth_db' | tail -n 120 || true
+          export PRIVATE_IP="$(hostname -I | awk '{print $1}')"
+          export PUBLIC_IP="$EC2_HOST"
+          export DOMAIN_IP="$(getent hosts sip.phone11.ai | awk '{print $1}' | head -n1 || true)"
+          python3 - <<'PY'
+          import os, random, secrets, select, socket, time
+          domain = 'sip.phone11.ai'
+          private_ip = os.environ.get('PRIVATE_IP','')
+          public_ip = os.environ.get('PUBLIC_IP','')
+          domain_ip = os.environ.get('DOMAIN_IP','')
+          targets = [('loopback','127.0.0.1'), ('private', private_ip), ('public', public_ip), ('domain', domain)]
+          print(f'private_ip={private_ip}')
+          print(f'public_ip={public_ip}')
+          print(f'domain_ip={domain_ip}')
+          for label, host in targets:
+              if not host: continue
+              sip_port = random.randint(26000, 26999)
+              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+              s.bind(('0.0.0.0', sip_port)); s.setblocking(False)
+              call_id = f'phone11-target-probe-{label}-{secrets.token_hex(4)}@{private_ip or public_ip}'
+              msg = '\r\n'.join([
+                  f'OPTIONS sip:{domain} SIP/2.0',
+                  f'Via: SIP/2.0/UDP {private_ip or public_ip}:{sip_port};branch=z9hG4bK{secrets.token_hex(8)};rport',
+                  'Max-Forwards: 70',
+                  f'From: <sip:probe@{domain}>;tag={secrets.token_hex(4)}',
+                  f'To: <sip:{domain}>',
+                  f'Call-ID: {call_id}',
+                  'CSeq: 1 OPTIONS',
+                  'User-Agent: Phone11TargetProbe/9',
+                  'Content-Length: 0', '', ''
+              ])
+              try:
+                  s.sendto(msg.encode(), (host, 5060))
+                  deadline = time.time() + 3
+                  got = None
+                  while time.time() < deadline:
+                      ready,_,_ = select.select([s], [], [], 0.2)
+                      if not ready: continue
+                      data, addr = s.recvfrom(65535)
+                      text = data.decode(errors='replace')
+                      if call_id in text:
+                          got = (text.splitlines()[0] if text.splitlines() else '', addr)
+                          break
+                  if got:
+                      print(f'target_probe_{label}=response first_line="{got[0]}" from={got[1][0]}:{got[1][1]}')
+                  else:
+                      print(f'target_probe_{label}=timeout host={host}')
+              except Exception as exc:
+                  print(f'target_probe_{label}=exception {type(exc).__name__}: {exc}')
+              finally:
+                  s.close()
+          PY
+          REMOTE
