@@ -105,21 +105,23 @@ jobs:
           sleep 5
           docker exec p11-freeswitch fs_cli -x "sofia status profile external" | grep -E "Name|Domain Name|URL|BIND-URL|RUNNING|Port|Auth|RTP-IP|SIP-IP" | sed -n '1,160p' || true
 
-          echo "===== Write FreeSWITCH echo test dialplan ====="
-          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/public/99_phone11_media_self_test.xml' <<'XML'
+          echo "===== Write high-priority FreeSWITCH echo test dialplan ====="
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/public/00_phone11_media_self_test.xml' <<'XML'
           <include>
             <extension name="phone11_media_echo_star_9196">
-              <condition field="destination_number" expression="^\*9196$">
+              <condition field="destination_number" expression="^\*9196$" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
                 <action application="answer"/>
                 <action application="echo"/>
               </condition>
             </extension>
           </include>
           XML
-          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/default/99_phone11_media_self_test.xml' <<'XML'
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/default/00_phone11_media_self_test.xml' <<'XML'
           <include>
             <extension name="phone11_media_echo_star_9196">
-              <condition field="destination_number" expression="^\*9196$">
+              <condition field="destination_number" expression="^\*9196$" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
                 <action application="answer"/>
                 <action application="echo"/>
               </condition>
@@ -127,12 +129,13 @@ jobs:
           </include>
           XML
           docker exec p11-freeswitch fs_cli -x reloadxml
-          docker exec p11-freeswitch sh -lc 'grep -RIn "\*9196\\|phone11_media_echo" /etc/freeswitch/dialplan/public/99_phone11_media_self_test.xml /etc/freeswitch/dialplan/default/99_phone11_media_self_test.xml'
+          docker exec p11-freeswitch sh -lc 'grep -RIn "\*9196\\|phone11_media_echo\\|phone11_media_self_test" /etc/freeswitch/dialplan/public/00_phone11_media_self_test.xml /etc/freeswitch/dialplan/default/00_phone11_media_self_test.xml /etc/freeswitch/dialplan/public/99_phone11_media_self_test.xml /etc/freeswitch/dialplan/default/99_phone11_media_self_test.xml 2>/dev/null || true'
+          echo "SERVER_LOG_MARKER_EPOCH=$(date +%s)"
 
           echo "===== Upsert external self-test subscriber ====="
           docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
           INSERT INTO subscriber (username, domain, password, ha1, ha1b)
-          VALUES ('$TEST_EXTENSION', '$DOMAIN', '$TEST_PASSWORD', md5('$TEST_EXTENSION:$DOMAIN:$TEST_PASSWORD'), md5('$TEST_EXTENSION@$DOMAIN:$TEST_PASSWORD'))
+          VALUES ('$TEST_EXTENSION', '$DOMAIN', '$TEST_PASSWORD', md5('$TEST_EXTENSION:$DOMAIN:$TEST_PASSWORD'), md5('$TEST_EXTENSION@$DOMAIN:$DOMAIN:$TEST_PASSWORD'))
           ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b;
           SELECT username, domain, length(ha1) AS ha1_len FROM subscriber WHERE username = '$TEST_EXTENSION' AND domain = '$DOMAIN';
           SQL
@@ -406,6 +409,8 @@ jobs:
           docker logs --since 220s --timestamps p11-rtpengine 2>&1 | grep -Eia "\$CALL_ID|1998|9196|offer|answer|packet|created|delete|RTP|warning|error" | tail -n 320 || true
           echo "===== FreeSWITCH logs ====="
           docker logs --since 220s --timestamps p11-freeswitch 2>&1 | grep -Eia "\$CALL_ID|1998|9196|echo|RTP|Codec|media|hangup|error|warning|407|200 OK" | tail -n 320 || true
+          echo "===== FreeSWITCH broad recent logs ====="
+          docker logs --since 220s --timestamps p11-freeswitch 2>&1 | tail -n 500 || true
           echo "===== Server packet capture summary ====="
           if [ -s /tmp/phone11-v24-media.pcap.txt ]; then
             grep -aE "SIP/2.0|INVITE|ACK|BYE|Call-ID:|CSeq:|c=IN IP4|m=audio|\$CALL_ID|9196|1998" /tmp/phone11-v24-media.pcap.txt | tail -n 420 || true
