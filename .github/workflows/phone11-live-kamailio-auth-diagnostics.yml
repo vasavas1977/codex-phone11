@@ -1,0 +1,122 @@
+name: Phone11 Live Kamailio Auth Diagnostics
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-kamailio-auth-diagnostics.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  kamailio-auth-diagnostics:
+    name: Inspect live Kamailio auth source of truth
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Locate live SIP/media EC2 instance
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS credentials are not configured."
+            exit 30
+          fi
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 31
+          fi
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_kamailio_auth_diag_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_kamailio_auth_diag_key.pub" >/dev/null
+
+      - name: Print live Kamailio auth diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ steps.ec2.outputs.ec2_host }}"
+          ssh -i ~/.ssh/phone11_kamailio_auth_diag_key \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE' | sed -E 's#(password|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig; s#(postgresql://[^:]+:)[^@]+#\1<redacted>#g; s#(postgres://[^:]+:)[^@]+#\1<redacted>#g'
+          set -Eeuo pipefail
+          echo "===== containers ====="
+          docker ps --format 'container={{.Names}} image={{.Image}} status={{.Status}}'
+
+          echo "===== live kamailio auth config ====="
+          docker exec p11-kamailio sh -lc 'grep -nE "auth_db|auth_check|auth_challenge|www_|proxy_|MY_DOMAIN|DB_URL|version_table|calculate_ha1|password_column|use_domain" /etc/kamailio/kamailio.cfg || true'
+
+          echo "===== live kamailio selected env ====="
+          docker exec p11-kamailio sh -lc 'env | sort | grep -E "^(DB|DATABASE|KAMAILIO|SIP|DOMAIN|POSTGRES)" || true'
+
+          echo "===== postgres subscriber schema and version table ====="
+          if docker ps --format '{{.Names}}' | grep -qx 'cp11-postgres'; then
+            PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+            PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+            PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+            echo "postgres_container=cp11-postgres"
+            echo "postgres_user=$PGUSER"
+            echo "postgres_database=$PGDATABASE"
+            docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<'SQL'
+          SELECT current_database() AS database, current_user AS user_name;
+          SELECT to_regclass('public.subscriber') AS subscriber_table, to_regclass('public.version') AS version_table;
+          SELECT column_name, data_type, character_maximum_length, is_nullable
+          FROM information_schema.columns
+          WHERE table_schema='public' AND table_name='subscriber'
+          ORDER BY ordinal_position;
+          SELECT indexname, indexdef
+          FROM pg_indexes
+          WHERE schemaname='public' AND tablename='subscriber'
+          ORDER BY indexname;
+          SELECT username, domain, length(password) AS password_len, length(ha1) AS ha1_len, length(ha1b) AS ha1b_len, left(ha1, 8) AS ha1_prefix
+          FROM subscriber
+          WHERE username IN ('1001', '1996', '1997')
+          ORDER BY username, domain;
+          SQL
+          else
+            echo "cp11-postgres_missing=yes"
+          fi
+
+          echo "===== recent Kamailio auth/db errors ====="
+          docker logs --since 30m --timestamps p11-kamailio 2>&1 \
+            | grep -Eia 'auth|subscriber|401|403|database|db_|version|wrong|password|invalid|1996|1997|1001|REGISTER' \
+            | tail -n 240 || true
+          REMOTE
