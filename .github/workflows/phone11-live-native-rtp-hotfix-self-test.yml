@@ -1,0 +1,331 @@
+name: Phone11 Live Native RTP Hotfix And Media Self Test
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-native-rtp-hotfix-self-test.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+      public_media_ip:
+        description: Public media IP to advertise to native mobile clients
+        required: true
+        default: 43.210.122.111
+      private_media_ip:
+        description: Private media IP that must not leak to mobile clients
+        required: true
+        default: 10.0.1.69
+      test_extension:
+        description: Existing SIP extension used only for the automated media test
+        required: true
+        default: "1001"
+      test_destination:
+        description: FreeSWITCH tone/echo extension for controlled RTP media verification
+        required: true
+        default: "9197"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  hotfix-and-media-self-test:
+    name: Apply hotfix and verify RTP media both ways
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate live SIP/media EC2 instance
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS credentials are not configured."
+            exit 30
+          fi
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 31
+          fi
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_live_native_rtp_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_live_native_rtp_key.pub" >/dev/null
+
+      - name: Apply live Kamailio public media hotfix and run RTP self-test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ steps.ec2.outputs.ec2_host }}"
+          PUBLIC_MEDIA_IP="${{ github.event.inputs.public_media_ip || '43.210.122.111' }}"
+          PRIVATE_MEDIA_IP="${{ github.event.inputs.private_media_ip || '10.0.1.69' }}"
+          TEST_EXTENSION="${{ github.event.inputs.test_extension || '1001' }}"
+          TEST_DESTINATION="${{ github.event.inputs.test_destination || '9197' }}"
+
+          ssh -i ~/.ssh/phone11_live_native_rtp_key \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$EC2_USER@$EC2_HOST" \
+            "PUBLIC_MEDIA_IP='$PUBLIC_MEDIA_IP' PRIVATE_MEDIA_IP='$PRIVATE_MEDIA_IP' TEST_EXTENSION='$TEST_EXTENSION' TEST_DESTINATION='$TEST_DESTINATION' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+
+          redact() {
+            sed -E \
+              -e 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' \
+              -e 's#(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN|PGPASSWORD|DB_PASSWORD|POSTGRES_PASSWORD|SIP_PASSWORD|PASSWORD|SECRET|TOKEN)=([^[:space:]]+)#\1=<redacted>#Ig' \
+              -e 's#(password|passwd|pwd|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig'
+          }
+          section() { printf '\n===== %s =====\n' "$1"; }
+
+          KAMAILIO_CONTAINER="${KAMAILIO_CONTAINER:-p11-kamailio}"
+          KAMAILIO_CFG="${KAMAILIO_CFG:-/etc/kamailio/kamailio.cfg}"
+          WORK_DIR="/tmp/phone11-native-rtp-hotfix-$(date -u +%Y%m%dT%H%M%SZ)"
+          mkdir -p "$WORK_DIR"
+
+          section "metadata"
+          echo "time_utc=$(date -u -Iseconds)"
+          echo "public_media_ip=$PUBLIC_MEDIA_IP"
+          echo "private_media_ip=$PRIVATE_MEDIA_IP"
+          echo "test_extension=$TEST_EXTENSION"
+          echo "test_destination=$TEST_DESTINATION"
+          echo "work_dir=$WORK_DIR"
+
+          section "containers"
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' | redact || true
+          if ! docker ps -a --format '{{.Names}}' | grep -qx "$KAMAILIO_CONTAINER"; then
+            echo "ERROR: Kamailio container does not exist: $KAMAILIO_CONTAINER"
+            exit 40
+          fi
+
+          docker cp "$KAMAILIO_CONTAINER:$KAMAILIO_CFG" "$WORK_DIR/kamailio.cfg.before"
+
+          section "before Kamailio media evidence"
+          grep -nE 'loadmodule "textopsx|rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC_NATIVE_ANSWER_SDP|AFTER_ANSWER|phone11_media_profile|transport-protocol' "$WORK_DIR/kamailio.cfg.before" | redact || true
+
+          HAS_TEXTOPSX=""
+          if docker exec "$KAMAILIO_CONTAINER" sh -lc "find /usr/lib /usr/local/lib -name textopsx.so 2>/dev/null | head -1" >/tmp/phone11-textopsx-path 2>/dev/null; then
+            HAS_TEXTOPSX="$(cat /tmp/phone11-textopsx-path || true)"
+          fi
+
+          HAS_TEXTOPSX="$HAS_TEXTOPSX" python3 - "$WORK_DIR/kamailio.cfg.before" "$WORK_DIR/kamailio.cfg.after" <<'PY'
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          src = Path(sys.argv[1])
+          dst = Path(sys.argv[2])
+          text = src.read_text()
+          public_ip = os.environ["PUBLIC_MEDIA_IP"]
+          private_ip = os.environ["PRIVATE_MEDIA_IP"]
+          has_textopsx = bool(os.environ.get("HAS_TEXTOPSX"))
+
+          if has_textopsx and 'loadmodule "textopsx.so"' not in text:
+              if 'loadmodule "textops.so"' in text:
+                  text = text.replace('loadmodule "textops.so"', 'loadmodule "textops.so"\nloadmodule "textopsx.so"', 1)
+              else:
+                  text = 'loadmodule "textopsx.so"\n' + text
+
+          additions = ["replace-origin", "replace-session-connection", "address-family=IP4", f"media-address={public_ip}"]
+
+          def ensure_flags(flags: str) -> str:
+              updated = flags
+              for item in additions:
+                  if item not in updated:
+                      updated = f"{updated} {item}"
+              return updated
+
+          native_offer_hint = "transport-protocol=RTP/AVP"
+          native_answer_hint = "transport-protocol=RTP/AVP"
+          offer_seen = 0
+          answer_seen = 0
+
+          def patch_rtpengine(match: re.Match[str]) -> str:
+              nonlocal_offer = match.group(1)
+              flags = match.group(2)
+              suffix = match.group(3)
+              global offer_seen, answer_seen
+              if "rtpengine_offer" in nonlocal_offer and native_offer_hint in flags and "DTLS=off" in flags:
+                  offer_seen += 1
+                  return nonlocal_offer + ensure_flags(flags) + suffix
+              if "rtpengine_answer" in nonlocal_offer and native_answer_hint in flags and "DTLS=off" in flags:
+                  answer_seen += 1
+                  return nonlocal_offer + ensure_flags(flags) + suffix
+              return match.group(0)
+
+          text = re.sub(r'(\$var\(rtpe_rc\)\s*=\s*rtpengine_(?:offer|answer)\(")([^"]+)("\);)', patch_rtpengine, text)
+          if offer_seen == 0:
+              raise SystemExit("Could not find native rtpengine_offer RTP/AVP block")
+          if answer_seen == 0:
+              raise SystemExit("Could not find native rtpengine_answer RTP/AVP block")
+
+          marker = "FORCED_PUBLIC_NATIVE_ANSWER_SDP_V4"
+          if marker not in text:
+              escaped_private = private_ip.replace('.', r'\.')
+              apply_changes = "                msg_apply_changes();\n" if has_textopsx else ""
+              block = f'''            if ($avp(phone11_media_profile) == "native" && has_body("application/sdp") && $rb =~ "{escaped_private}") {{
+                  subst_body('/{escaped_private}/{public_ip}/g');
+          {apply_changes}                xlog("L_ALERT", "{marker} public_media_ip={public_ip} private_media_ip={private_ip} call $ci\\n");
+              }}
+'''
+              after_answer_log = re.compile(r'(\s*xlog\("L_ALERT",\s*"AFTER_ANSWER SDP[^\n]+\n)')
+              text, count = after_answer_log.subn(block + r'\1', text, count=1)
+              if count == 0:
+                  answer_call = re.compile(r'(\s*\$var\(rtpe_rc\)\s*=\s*rtpengine_answer\("[^"]*"\);\n)')
+                  text, count = answer_call.subn(r'\1' + block, text, count=1)
+              if count == 0:
+                  raise SystemExit("Could not insert native public SDP fallback block")
+
+          dst.write_text(text)
+          PY
+
+          section "after Kamailio media evidence"
+          grep -nE 'loadmodule "textopsx|rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC_NATIVE_ANSWER_SDP|AFTER_ANSWER|phone11_media_profile|transport-protocol' "$WORK_DIR/kamailio.cfg.after" | redact || true
+
+          docker cp "$WORK_DIR/kamailio.cfg.after" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG"
+
+          section "Kamailio syntax check"
+          if ! docker exec "$KAMAILIO_CONTAINER" sh -lc "kamailio -c -f '$KAMAILIO_CFG'" 2>&1 | redact; then
+            echo "ERROR: Kamailio syntax check failed; rolling back."
+            docker cp "$WORK_DIR/kamailio.cfg.before" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG" || true
+            exit 41
+          fi
+
+          section "restart Kamailio"
+          docker restart "$KAMAILIO_CONTAINER" 2>&1 | redact
+          sleep 10
+          STATE="$(docker inspect --format '{{.State.Running}} {{.State.Restarting}} {{.RestartCount}} {{.State.ExitCode}}' "$KAMAILIO_CONTAINER" 2>/dev/null || true)"
+          echo "container_state=$STATE"
+          if ! echo "$STATE" | grep -q '^true false '; then
+            echo "ERROR: Kamailio did not stay running; rolling back."
+            docker cp "$WORK_DIR/kamailio.cfg.before" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG" || true
+            docker restart "$KAMAILIO_CONTAINER" 2>&1 | redact || true
+            docker logs --tail 160 "$KAMAILIO_CONTAINER" 2>&1 | redact || true
+            exit 42
+          fi
+
+          section "install media test tools"
+          if ! command -v sipp >/dev/null 2>&1 || ! command -v tcpdump >/dev/null 2>&1 || ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update >/dev/null 2>&1 || true
+            sudo apt-get install -y sipp tcpdump postgresql-client >/dev/null 2>&1 || true
+          fi
+          command -v sipp || { echo "ERROR: sipp is not available"; exit 50; }
+          command -v tcpdump || { echo "ERROR: tcpdump is not available"; exit 51; }
+          command -v psql || { echo "ERROR: psql is not available"; exit 52; }
+
+          section "retrieve SIP test credential without printing secret"
+          DB_URL="$(grep -E 'postgres(ql)?://' "$WORK_DIR/kamailio.cfg.after" | sed -nE 's#.*(postgres(ql)?://[^";![:space:]]+).*#\1#p' | head -1 || true)"
+          if [ -z "$DB_URL" ]; then
+            DB_URL="$(docker exec "$KAMAILIO_CONTAINER" sh -lc "grep -E 'postgres(ql)?://' '$KAMAILIO_CFG' | sed -nE 's#.*(postgres(ql)?://[^\";![:space:]]+).*#\\1#p' | head -1" 2>/dev/null || true)"
+          fi
+          if [ -z "$DB_URL" ]; then
+            echo "ERROR: Could not discover Kamailio DB URL for SIP credential lookup."
+            exit 53
+          fi
+          SIP_PASSWORD="$(PGCONNECT_TIMEOUT=8 psql "$DB_URL" -tAc "SELECT password FROM subscriber WHERE username='${TEST_EXTENSION}' AND domain='sip.phone11.ai' LIMIT 1;" 2>/tmp/phone11-psql-error | tr -d '[:space:]' || true)"
+          if [ -z "$SIP_PASSWORD" ]; then
+            echo "ERROR: Could not read SIP password for extension ${TEST_EXTENSION}."
+            sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' /tmp/phone11-psql-error 2>/dev/null || true
+            exit 54
+          fi
+          echo "sip_credential_lookup=ok"
+
+          section "run controlled SIP/RTP media self-test"
+          LOCAL_IP="$(hostname -I | awk '{print $1}')"
+          SIPP_LOG="$WORK_DIR/sipp-media-test.log"
+          SIPP_MSG="$WORK_DIR/sipp-media-test_messages.log"
+          SIPP_ERR="$WORK_DIR/sipp-media-test_errors.log"
+          RTP_CAPTURE="$WORK_DIR/rtp-media-test.txt"
+          KAMAILIO_LOG="$WORK_DIR/kamailio-media-test.log"
+          echo "local_ip=$LOCAL_IP"
+          echo "target=sip.phone11.ai:5060"
+          echo "test_uri=sip:${TEST_DESTINATION}@sip.phone11.ai"
+
+          sudo timeout 45 tcpdump -ni any -tttt -vv "udp port 5060 or udp portrange 20000-30000 or udp port 6070" > "$RTP_CAPTURE" 2>&1 &
+          TCPDUMP_PID=$!
+          set +e
+          timeout 35 sipp sip.phone11.ai:5060 \
+            -sn uac \
+            -s "$TEST_DESTINATION" \
+            -au "$TEST_EXTENSION" \
+            -ap "$SIP_PASSWORD" \
+            -i "$LOCAL_IP" \
+            -p 5070 \
+            -mp 6070 \
+            -m 1 \
+            -l 1 \
+            -r 1 \
+            -d 15000 \
+            -rtp_echo \
+            -trace_msg \
+            -trace_err \
+            -trace_screen > "$SIPP_LOG" 2>&1
+          SIPP_STATUS=$?
+          set -e
+          sleep 3
+          sudo kill "$TCPDUMP_PID" >/dev/null 2>&1 || true
+          wait "$TCPDUMP_PID" >/dev/null 2>&1 || true
+          docker logs --since 90s --timestamps "$KAMAILIO_CONTAINER" > "$KAMAILIO_LOG" 2>&1 || true
+
+          section "SIPp summary"
+          sed -E 's#(-ap )[[:graph:]]+#\1<redacted>#g' "$SIPP_LOG" | tail -n 120 | redact || true
+          if [ -f "${SIPP_LOG%.log}_messages.log" ]; then sed -E 's#Authorization: Digest .*#Authorization: Digest <redacted>#g' "${SIPP_LOG%.log}_messages.log" | tail -n 220 | redact || true; fi
+          if [ -f "${SIPP_LOG%.log}_errors.log" ]; then cat "${SIPP_LOG%.log}_errors.log" | redact || true; fi
+
+          section "RTP packet evidence"
+          INBOUND_TO_SIPP=$(grep -Ec "IP .* > ${LOCAL_IP}\.6070:" "$RTP_CAPTURE" || true)
+          OUTBOUND_FROM_SIPP=$(grep -Ec "IP ${LOCAL_IP}\.6070 > .*:" "$RTP_CAPTURE" || true)
+          RTP_ANY=$(grep -Ec "IP .*\.([2][0-9]{4}|30000|6070) > .*\.([2][0-9]{4}|30000|6070):" "$RTP_CAPTURE" || true)
+          echo "sipp_status=$SIPP_STATUS"
+          echo "rtp_packets_to_sipp_port_6070=$INBOUND_TO_SIPP"
+          echo "rtp_packets_from_sipp_port_6070=$OUTBOUND_FROM_SIPP"
+          echo "rtp_packets_any_candidate=$RTP_ANY"
+          grep -E "IP .*\.([2][0-9]{4}|30000|6070) > .*\.([2][0-9]{4}|30000|6070):" "$RTP_CAPTURE" | tail -n 120 | redact || true
+
+          section "Kamailio media logs from self-test"
+          grep -Eia "${TEST_EXTENSION}|${TEST_DESTINATION}|RTPENGINE|BEFORE_ANSWER|AFTER_ANSWER|FORCED_PUBLIC_NATIVE_ANSWER_SDP|c=IN IP4|m=audio|INVITE|ACK|BYE|SIP/2.0|Call-ID" "$KAMAILIO_LOG" | tail -n 220 | redact || true
+
+          if [ "$SIPP_STATUS" -eq 0 ] && [ "${INBOUND_TO_SIPP:-0}" -gt 0 ] && [ "${OUTBOUND_FROM_SIPP:-0}" -gt 0 ]; then
+            echo "MEDIA_SELF_TEST_RESULT=pass"
+            echo "voice_exchange_objective=rtp_packets_seen_both_directions"
+            exit 0
+          fi
+
+          echo "MEDIA_SELF_TEST_RESULT=fail"
+          echo "voice_exchange_objective=not_proven"
+          exit 60
+          REMOTE
