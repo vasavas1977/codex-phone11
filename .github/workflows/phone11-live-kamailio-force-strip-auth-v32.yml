@@ -85,13 +85,27 @@ jobs:
               else:
                   raise SystemExit("V32_INSERT_TARGET_NOT_FOUND")
 
+          all_marker = "phone11-strip-fs-auth-all"
+          all_block = (
+              '    # phone11-strip-fs-auth-all: Strip authenticated caller headers before '
+              'the WebRTC/native media split.\n'
+              '    remove_hf("Proxy-Authorization");\n'
+              '    remove_hf("Authorization");\n'
+              '    msg_apply_changes();\n'
+          )
+          if all_marker not in text:
+              branch_marker = '    if ($proto == "ws" || $proto == "wss") {'
+              if branch_marker not in text:
+                  raise SystemExit("V32_BRANCH_MARKER_NOT_FOUND")
+              text = text.replace(branch_marker, all_block + branch_marker, 1)
+
           path.write_text(text)
           PY
 
           docker cp /tmp/kamailio.cfg.v32 p11-kamailio:/etc/kamailio/kamailio.cfg
 
           echo "===== V32 live config proof ====="
-          docker exec p11-kamailio sh -lc "grep -n 'textopsx\\|phone11-strip-fs-auth\\|remove_hf\\|msg_apply_changes\\|rtpengine_offer' /etc/kamailio/kamailio.cfg | sed -n '1,140p'"
+          docker exec p11-kamailio sh -lc "grep -n 'textopsx\\|phone11-strip-fs-auth\\|remove_hf\\|msg_apply_changes\\|rtpengine_offer' /etc/kamailio/kamailio.cfg | sed -n '1,180p'"
           echo "===== V32 route context ====="
           docker exec p11-kamailio sh -lc "grep -n -A45 'route\\[TO_FREESWITCH\\]' /etc/kamailio/kamailio.cfg | sed -n '1,90p'"
 
