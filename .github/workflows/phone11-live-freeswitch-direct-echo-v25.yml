@@ -1,0 +1,272 @@
+name: Phone11 Live FreeSWITCH Direct Echo V25
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-freeswitch-direct-echo-v25.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  FS_HOST: 43.210.122.111
+  FS_PORT: "5080"
+  TEST_TARGET: "*9196"
+
+jobs:
+  freeswitch-direct-echo:
+    name: Prove direct FreeSWITCH echo RTP before Kamailio retest
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_fs_echo_v25_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_fs_echo_v25_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare direct FreeSWITCH echo target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_fs_echo_v25_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "===== FreeSWITCH external profile ====="
+          docker exec p11-freeswitch fs_cli -x "sofia status profile external" | grep -E "Name|URL|BIND-URL|RUNNING|RTP-IP|SIP-IP|Ext-RTP-IP|Ext-SIP-IP" | sed -n '1,120p' || true
+          docker exec p11-freeswitch sh -lc 'grep -n "auth-calls\|sip-port\|context" /etc/freeswitch/sip_profiles/external.xml | sed -n "1,120p"' || true
+
+          echo "===== Install robust direct echo dialplan ====="
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/public/00_phone11_media_self_test.xml' <<'XML'
+          <include>
+            <extension name="phone11_media_echo_destination_9196">
+              <condition field="destination_number" expression="^(\*9196|9196|%2A9196)$" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+            <extension name="phone11_media_echo_to_user_9196">
+              <condition field="${sip_to_user}" expression="^(\*9196|9196|%2A9196)$" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+            <extension name="phone11_media_echo_req_uri_9196">
+              <condition field="${sip_req_uri}" expression="9196" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+          </include>
+          XML
+          docker exec p11-freeswitch fs_cli -x reloadxml
+          docker exec p11-freeswitch sh -lc 'grep -RIn "9196\|phone11_media_echo\|phone11_media_self_test" /etc/freeswitch/dialplan/public/00_phone11_media_self_test.xml 2>/dev/null || true'
+          docker exec p11-freeswitch fs_cli -x "sofia profile external siptrace on" || true
+          echo "SERVER_LOG_MARKER_EPOCH=$(date +%s)"
+
+          echo "===== Start direct FreeSWITCH packet capture ====="
+          sudo rm -f /tmp/phone11-v25-fs-direct.pcap.txt
+          if command -v tcpdump >/dev/null 2>&1; then
+            sudo sh -lc 'nohup timeout 75 tcpdump -i any -nn -s0 -A "(udp port 5080) or (udp portrange 30000-32050) or (udp portrange 16000-17050)" > /tmp/phone11-v25-fs-direct.pcap.txt 2>&1 &' || true
+            sleep 2
+          else
+            echo "tcpdump_missing=yes" | sudo tee /tmp/phone11-v25-fs-direct.pcap.txt >/dev/null
+          fi
+          echo "SERVER_PREP_RESULT=pass"
+          REMOTE
+
+      - name: Run direct FreeSWITCH SIP and RTP echo self-test
+        id: echo
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' | tee /tmp/phone11-v25-fs-direct.log
+          import os, random, re, secrets, select, socket, struct, sys, time
+          FS_HOST=os.environ["FS_HOST"]
+          FS_PORT=int(os.environ["FS_PORT"])
+          TARGET=os.environ["TEST_TARGET"]
+          SERVER=(FS_HOST, FS_PORT)
+
+          def status_code(text):
+              first=text.splitlines()[0] if text.splitlines() else ""
+              m=re.match(r"SIP/2.0\s+(\d+)", first)
+              return int(m.group(1)) if m else 0
+          def header(text, name):
+              m=re.search(rf"^{re.escape(name)}:\s*(.+)$", text, re.I|re.M)
+              return m.group(1).strip() if m else ""
+          def body(text):
+              return text.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in text else ""
+          def parse_sdp_media(sdp):
+              ip=""
+              port=0
+              for line in sdp.splitlines():
+                  if line.startswith("c=IN IP4 "):
+                      ip=line.split()[-1].strip()
+                  if line.startswith("m=audio "):
+                      port=int(line.split()[1])
+              return ip, port
+          def rtp_packet(seq, ts, ssrc, payload_byte):
+              return struct.pack("!BBHII", 0x80, 0x00, seq & 0xffff, ts & 0xffffffff, ssrc) + bytes([payload_byte]) * 160
+          def local_ip_for_server():
+              s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+              try:
+                  s.connect(SERVER)
+                  return s.getsockname()[0]
+              finally:
+                  s.close()
+
+          local_ip=local_ip_for_server()
+          sip=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sip.bind(("0.0.0.0", random.randint(25000, 25999)))
+          sip.setblocking(False)
+          sip_port=sip.getsockname()[1]
+          rtp=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          rtp.bind(("0.0.0.0", random.randrange(30000, 31998, 2)))
+          rtp.setblocking(False)
+          rtp_port=rtp.getsockname()[1]
+          call_id=f"phone11-v25-fs-direct-{secrets.token_hex(8)}@runner"
+          print(f"call_id={call_id}")
+          print(f"::notice title=Phone11 V25 Direct FS Call-ID::{call_id}")
+          req_uri=f"sip:{TARGET}@{FS_HOST}:{FS_PORT}"
+          from_tag=secrets.token_hex(6)
+          offer="\r\n".join([
+              "v=0",
+              f"o=phone11-direct 1 1 IN IP4 {local_ip}",
+              "s=Phone11 Direct FreeSWITCH Echo",
+              f"c=IN IP4 {local_ip}",
+              "t=0 0",
+              f"m=audio {rtp_port} RTP/AVP 0",
+              "a=rtpmap:0 PCMU/8000",
+              "a=sendrecv",
+              "",
+          ])
+          invite="\r\n".join([
+              f"INVITE {req_uri} SIP/2.0",
+              f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch=z9hG4bKv25{secrets.token_hex(8)};rport",
+              "Max-Forwards: 70",
+              f"From: Phone11 V25 Direct <sip:v25@{local_ip}>;tag={from_tag}",
+              f"To: <{req_uri}>",
+              f"Call-ID: {call_id}",
+              "CSeq: 1 INVITE",
+              f"Contact: <sip:v25@{local_ip}:{sip_port};transport=udp>",
+              "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS",
+              "User-Agent: Phone11FreeSwitchDirectEcho/25",
+              "Content-Type: application/sdp",
+              f"Content-Length: {len(offer.encode())}",
+              "",
+              offer,
+          ])
+          sip.sendto(invite.encode(), SERVER)
+          got_200=""
+          deadline=time.time()+20
+          while time.time()<deadline and not got_200:
+              ready,_,_=select.select([sip], [], [], 0.5)
+              if not ready:
+                  continue
+              data,addr=sip.recvfrom(65535)
+              text=data.decode(errors="replace")
+              if call_id not in text:
+                  continue
+              code=status_code(text)
+              print(f"direct_fs_rx_status={code} from={addr[0]}:{addr[1]}")
+              if code in (401,407):
+                  print("DIRECT_FS_AUTH_CHALLENGE=yes")
+                  sys.exit(72)
+              if code == 200 and "application/sdp" in text.lower():
+                  got_200=text
+          if not got_200:
+              raise RuntimeError("direct FreeSWITCH did not return 200 OK with SDP")
+          media_ip, media_port=parse_sdp_media(body(got_200))
+          print(f"direct_fs_answer_media={media_ip}:{media_port}")
+          to_value=header(got_200, "To")
+          ack="\r\n".join([
+              f"ACK {req_uri} SIP/2.0",
+              f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch=z9hG4bKv25ack{secrets.token_hex(8)};rport",
+              "Max-Forwards: 70",
+              f"From: Phone11 V25 Direct <sip:v25@{local_ip}>;tag={from_tag}",
+              f"To: {to_value}",
+              f"Call-ID: {call_id}",
+              "CSeq: 1 ACK",
+              f"Contact: <sip:v25@{local_ip}:{sip_port};transport=udp>",
+              "Content-Length: 0",
+              "",
+              "",
+          ])
+          sip.sendto(ack.encode(), SERVER)
+          tx=0
+          rx=0
+          ssrc=random.randint(1, 0xffffffff)
+          seq=random.randint(1, 65000)
+          ts=random.randint(1, 0xffffffff)
+          deadline=time.time()+10
+          next_send=time.time()
+          while time.time()<deadline:
+              now=time.time()
+              if now >= next_send:
+                  rtp.sendto(rtp_packet(seq, ts, ssrc, 0xff if tx % 2 == 0 else 0x7f), (media_ip, media_port))
+                  tx += 1
+                  seq += 1
+                  ts += 160
+                  next_send=now+0.02
+              ready,_,_=select.select([rtp], [], [], 0.01)
+              for sock in ready:
+                  data,addr=sock.recvfrom(4096)
+                  if len(data) >= 12:
+                      rx += 1
+          print(f"direct_fs_rtp_tx={tx}")
+          print(f"direct_fs_rtp_rx={rx}")
+          print("DIRECT_FS_MEDIA_SELF_TEST_RESULT=" + ("pass" if tx >= 100 and rx >= 5 else "fail"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"call_id={call_id}\n")
+              fh.write(f"rtp_tx={tx}\n")
+              fh.write(f"rtp_rx={rx}\n")
+          sys.exit(0 if tx >= 100 and rx >= 5 else 71)
+          PY
+
+      - name: Fetch FreeSWITCH evidence
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CALL_ID="${{ steps.echo.outputs.call_id }}"
+          ssh -i ~/.ssh/phone11_fs_echo_v25_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<REMOTE
+          set -Eeuo pipefail
+          CALL_ID="$CALL_ID"
+          echo "===== V25 Direct FS Call-ID ====="
+          echo "\$CALL_ID"
+          echo "===== Active FreeSWITCH calls ====="
+          docker exec p11-freeswitch fs_cli -x "show calls" || true
+          echo "===== FreeSWITCH direct echo logs ====="
+          docker logs --since 160s --timestamps p11-freeswitch 2>&1 | grep -Eia "\$CALL_ID|9196|phone11_media_self_test|echo|RTP|Codec|media|hangup|407|200 OK|error|warning" | tail -n 420 || true
+          echo "===== Direct FS packet capture summary ====="
+          if [ -s /tmp/phone11-v25-fs-direct.pcap.txt ]; then
+            grep -aE "SIP/2.0|INVITE|ACK|BYE|Call-ID:|CSeq:|c=IN IP4|m=audio|\$CALL_ID|9196" /tmp/phone11-v25-fs-direct.pcap.txt | tail -n 420 || true
+          else
+            echo "no_server_capture"
+          fi
+          echo "V25_SERVER_EVIDENCE_RESULT=pass"
+          REMOTE
