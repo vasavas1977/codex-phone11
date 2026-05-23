@@ -25,7 +25,7 @@ on:
         required: true
         default: "1001"
       test_destination:
-        description: FreeSWITCH tone/echo extension for controlled RTP media verification
+        description: FreeSWITCH tone or echo extension for RTP media verification
         required: true
         default: "9197"
 
@@ -45,8 +45,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
       - name: Locate live SIP/media EC2 instance
         id: ec2
         shell: bash
@@ -134,14 +132,9 @@ jobs:
           docker cp "$KAMAILIO_CONTAINER:$KAMAILIO_CFG" "$WORK_DIR/kamailio.cfg.before"
 
           section "before Kamailio media evidence"
-          grep -nE 'loadmodule "textopsx|rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC_NATIVE_ANSWER_SDP|AFTER_ANSWER|phone11_media_profile|transport-protocol' "$WORK_DIR/kamailio.cfg.before" | redact || true
+          grep -nE 'rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC_NATIVE_ANSWER_SDP|AFTER_ANSWER|phone11_media_profile|transport-protocol' "$WORK_DIR/kamailio.cfg.before" | redact || true
 
-          HAS_TEXTOPSX=""
-          if docker exec "$KAMAILIO_CONTAINER" sh -lc "find /usr/lib /usr/local/lib -name textopsx.so 2>/dev/null | head -1" >/tmp/phone11-textopsx-path 2>/dev/null; then
-            HAS_TEXTOPSX="$(cat /tmp/phone11-textopsx-path || true)"
-          fi
-
-          HAS_TEXTOPSX="$HAS_TEXTOPSX" python3 - "$WORK_DIR/kamailio.cfg.before" "$WORK_DIR/kamailio.cfg.after" <<'PY'
+          python3 - "$WORK_DIR/kamailio.cfg.before" "$WORK_DIR/kamailio.cfg.after" <<'PY'
           import os
           import re
           import sys
@@ -152,69 +145,64 @@ jobs:
           text = src.read_text()
           public_ip = os.environ["PUBLIC_MEDIA_IP"]
           private_ip = os.environ["PRIVATE_MEDIA_IP"]
-          has_textopsx = bool(os.environ.get("HAS_TEXTOPSX"))
 
-          if has_textopsx and 'loadmodule "textopsx.so"' not in text:
-              if 'loadmodule "textops.so"' in text:
-                  text = text.replace('loadmodule "textops.so"', 'loadmodule "textops.so"\nloadmodule "textopsx.so"', 1)
-              else:
-                  text = 'loadmodule "textopsx.so"\n' + text
+          required_flags = [
+              "replace-origin",
+              "replace-session-connection",
+              "address-family=IP4",
+              f"media-address={public_ip}",
+          ]
 
-          additions = ["replace-origin", "replace-session-connection", "address-family=IP4", f"media-address={public_ip}"]
-
-          def ensure_flags(flags: str) -> str:
+          def add_flags(flags: str) -> str:
               updated = flags
-              for item in additions:
-                  if item not in updated:
-                      updated = f"{updated} {item}"
+              for flag in required_flags:
+                  if flag not in updated:
+                      updated = f"{updated} {flag}"
               return updated
 
-          native_offer_hint = "transport-protocol=RTP/AVP"
-          native_answer_hint = "transport-protocol=RTP/AVP"
-          offer_seen = 0
-          answer_seen = 0
+          changed = {"offer": 0, "answer": 0}
+          pattern = re.compile(r'(\$var\(rtpe_rc\)\s*=\s*rtpengine_(offer|answer)\(")([^"]+)("\);)')
 
-          def patch_rtpengine(match: re.Match[str]) -> str:
-              nonlocal_offer = match.group(1)
-              flags = match.group(2)
-              suffix = match.group(3)
-              global offer_seen, answer_seen
-              if "rtpengine_offer" in nonlocal_offer and native_offer_hint in flags and "DTLS=off" in flags:
-                  offer_seen += 1
-                  return nonlocal_offer + ensure_flags(flags) + suffix
-              if "rtpengine_answer" in nonlocal_offer and native_answer_hint in flags and "DTLS=off" in flags:
-                  answer_seen += 1
-                  return nonlocal_offer + ensure_flags(flags) + suffix
+          def replace_flags(match: re.Match[str]) -> str:
+              prefix = match.group(1)
+              kind = match.group(2)
+              flags = match.group(3)
+              suffix = match.group(4)
+              if "transport-protocol=RTP/AVP" in flags and "DTLS=off" in flags:
+                  changed[kind] += 1
+                  return prefix + add_flags(flags) + suffix
               return match.group(0)
 
-          text = re.sub(r'(\$var\(rtpe_rc\)\s*=\s*rtpengine_(?:offer|answer)\(")([^"]+)("\);)', patch_rtpengine, text)
-          if offer_seen == 0:
-              raise SystemExit("Could not find native rtpengine_offer RTP/AVP block")
-          if answer_seen == 0:
-              raise SystemExit("Could not find native rtpengine_answer RTP/AVP block")
+          text = pattern.sub(replace_flags, text)
+          if changed["offer"] == 0:
+              raise SystemExit("Could not find native RTP/AVP rtpengine_offer block")
+          if changed["answer"] == 0:
+              raise SystemExit("Could not find native RTP/AVP rtpengine_answer block")
 
-          marker = "FORCED_PUBLIC_NATIVE_ANSWER_SDP_V4"
+          marker = "FORCED_PUBLIC_NATIVE_ANSWER_SDP_V5"
           if marker not in text:
-              escaped_private = private_ip.replace('.', r'\.')
-              apply_changes = "                msg_apply_changes();\n" if has_textopsx else ""
-              block = f'''            if ($avp(phone11_media_profile) == "native" && has_body("application/sdp") && $rb =~ "{escaped_private}") {{
-                  subst_body('/{escaped_private}/{public_ip}/g');
-          {apply_changes}                xlog("L_ALERT", "{marker} public_media_ip={public_ip} private_media_ip={private_ip} call $ci\\n");
-              }}
-'''
-              after_answer_log = re.compile(r'(\s*xlog\("L_ALERT",\s*"AFTER_ANSWER SDP[^\n]+\n)')
-              text, count = after_answer_log.subn(block + r'\1', text, count=1)
+              escaped_private = private_ip.replace(".", r"\.")
+              block_lines = [
+                  '            if ($avp(phone11_media_profile) == "native" && has_body("application/sdp")) {',
+                  f"                subst_body('/{escaped_private}/{public_ip}/g');",
+                  f'                xlog("L_ALERT", "{marker} public_media_ip={public_ip} private_media_ip={private_ip} call $ci\\n");',
+                  '            }',
+                  '',
+              ]
+              block = "\n".join(block_lines)
+              text, count = re.subn(r'(\s*xlog\("L_ALERT",\s*"AFTER_ANSWER SDP[^\n]+\n)', block + r'\1', text, count=1)
               if count == 0:
-                  answer_call = re.compile(r'(\s*\$var\(rtpe_rc\)\s*=\s*rtpengine_answer\("[^"]*"\);\n)')
-                  text, count = answer_call.subn(r'\1' + block, text, count=1)
+                  text, count = re.subn(r'(\s*\$var\(rtpe_rc\)\s*=\s*rtpengine_answer\("[^"]*"\);\n)', r'\1' + block, text, count=1)
               if count == 0:
                   raise SystemExit("Could not insert native public SDP fallback block")
 
           dst.write_text(text)
+          print(f"patched_native_offer_blocks={changed['offer']}")
+          print(f"patched_native_answer_blocks={changed['answer']}")
           PY
 
           section "after Kamailio media evidence"
-          grep -nE 'loadmodule "textopsx|rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC_NATIVE_ANSWER_SDP|AFTER_ANSWER|phone11_media_profile|transport-protocol' "$WORK_DIR/kamailio.cfg.after" | redact || true
+          grep -nE 'rtpengine_offer|rtpengine_answer|media-address|FORCED_PUBLIC_NATIVE_ANSWER_SDP|AFTER_ANSWER|phone11_media_profile|transport-protocol' "$WORK_DIR/kamailio.cfg.after" | redact || true
 
           docker cp "$WORK_DIR/kamailio.cfg.after" "$KAMAILIO_CONTAINER:$KAMAILIO_CFG"
 
@@ -248,9 +236,9 @@ jobs:
           command -v psql || { echo "ERROR: psql is not available"; exit 52; }
 
           section "retrieve SIP test credential without printing secret"
-          DB_URL="$(grep -E 'postgres(ql)?://' "$WORK_DIR/kamailio.cfg.after" | sed -nE 's#.*(postgres(ql)?://[^";![:space:]]+).*#\1#p' | head -1 || true)"
+          DB_URL="$(grep -E 'postgres(ql)?://' "$WORK_DIR/kamailio.cfg.after" | sed -nE 's#.*(postgres(ql)?://[^";[:space:]]+).*#\1#p' | head -1 || true)"
           if [ -z "$DB_URL" ]; then
-            DB_URL="$(docker exec "$KAMAILIO_CONTAINER" sh -lc "grep -E 'postgres(ql)?://' '$KAMAILIO_CFG' | sed -nE 's#.*(postgres(ql)?://[^\";![:space:]]+).*#\\1#p' | head -1" 2>/dev/null || true)"
+            DB_URL="$(docker exec "$KAMAILIO_CONTAINER" sh -lc "grep -E 'postgres(ql)?://' '$KAMAILIO_CFG' | sed -nE 's#.*(postgres(ql)?://[^\";[:space:]]+).*#\\1#p' | head -1" 2>/dev/null || true)"
           fi
           if [ -z "$DB_URL" ]; then
             echo "ERROR: Could not discover Kamailio DB URL for SIP credential lookup."
@@ -267,8 +255,6 @@ jobs:
           section "run controlled SIP/RTP media self-test"
           LOCAL_IP="$(hostname -I | awk '{print $1}')"
           SIPP_LOG="$WORK_DIR/sipp-media-test.log"
-          SIPP_MSG="$WORK_DIR/sipp-media-test_messages.log"
-          SIPP_ERR="$WORK_DIR/sipp-media-test_errors.log"
           RTP_CAPTURE="$WORK_DIR/rtp-media-test.txt"
           KAMAILIO_LOG="$WORK_DIR/kamailio-media-test.log"
           echo "local_ip=$LOCAL_IP"
