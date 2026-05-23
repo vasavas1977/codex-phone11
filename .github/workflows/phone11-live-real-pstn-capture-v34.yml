@@ -1,0 +1,77 @@
+name: Phone11 live real PSTN capture v34
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-real-pstn-capture-v34.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  real-pstn-capture-v34:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Arm server-side call capture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_real_pstn_v34_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_real_pstn_v34_key.pub" >/dev/null
+          ssh -i ~/.ssh/phone11_real_pstn_v34_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          STAMP="$(date +%Y%m%d-%H%M%S)"
+          PCAP="/tmp/phone11-real-pstn-v34-$STAMP.pcap.txt"
+          sudo rm -f /tmp/phone11-real-pstn-v34-*.pcap.txt
+          echo "REAL_PSTN_CAPTURE_READY_AT=$(date -Iseconds)"
+          echo "REAL_PSTN_CAPTURE_WINDOW_SECONDS=130"
+          echo "REAL_PSTN_CAPTURE_FILE=$PCAP"
+          sudo sh -lc "timeout 130 tcpdump -i any -nn -s0 -A '(udp port 5060) or (udp port 5080) or (udp portrange 10000-40000)' > '$PCAP' 2>&1" &
+          CAP_PID=$!
+          sleep 130 || true
+          wait "$CAP_PID" || true
+
+          echo "===== Kamailio call evidence, sanitized ====="
+          docker logs --since 150s --timestamps p11-kamailio 2>&1 \
+            | grep -Eia "INVITE|ACK|BYE|CANCEL|RTPENGINE|FREESWITCH|200 OK|180|183|407|401|488|error|warning|rtp|media" \
+            | sed -E 's/[0-9]{7,15}/<number>/g' \
+            | tail -n 500 || true
+
+          echo "===== FreeSWITCH call evidence, sanitized ====="
+          docker logs --since 150s --timestamps p11-freeswitch 2>&1 \
+            | grep -Eia "INVITE|ACK|BYE|CANCEL|Codec|RTP|media|answer|hangup|200 OK|180|183|407|401|488|error|warning" \
+            | sed -E 's/[0-9]{7,15}/<number>/g' \
+            | tail -n 500 || true
+
+          echo "===== SIP/SDP packet evidence, sanitized ====="
+          if [ -s "$PCAP" ]; then
+            grep -aE "SIP/2.0|INVITE|ACK|BYE|CANCEL|Call-ID:|CSeq:|Contact:|Via:|Record-Route|Route:|WWW-Authenticate|Proxy-Authenticate|Authorization|Proxy-Authorization|c=IN IP4|m=audio|a=rtpmap|a=sendrecv|a=sendonly|a=recvonly|a=inactive" "$PCAP" \
+              | sed -E 's/[0-9]{7,15}/<number>/g' \
+              | tail -n 1000 || true
+            echo "===== RTP packet count summary ====="
+            grep -aE "UDP, length (160|172|214|220|240)" "$PCAP" \
+              | sed -E 's/[0-9]{7,15}/<number>/g' \
+              | awk '{print $3 " > " $5}' \
+              | sort | uniq -c | sort -nr | head -n 60 || true
+          else
+            echo "REAL_PSTN_CAPTURE_FILE_EMPTY=yes"
+          fi
+          echo "REAL_PSTN_CAPTURE_RESULT=printed"
+          REMOTE
