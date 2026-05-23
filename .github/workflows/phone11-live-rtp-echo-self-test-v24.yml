@@ -141,7 +141,7 @@ jobs:
           SQL
 
           echo "===== Start short server packet capture ====="
-          rm -f /tmp/phone11-v24-media.pcap.txt
+          sudo rm -f /tmp/phone11-v24-media.pcap.txt
           if command -v tcpdump >/dev/null 2>&1; then
             sudo sh -lc 'nohup timeout 95 tcpdump -i any -nn -s0 -A "(udp port 5060) or (udp portrange 20000-20150)" > /tmp/phone11-v24-media.pcap.txt 2>&1 &' || true
             sleep 2
