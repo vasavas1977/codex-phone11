@@ -162,7 +162,7 @@ export default function SipDiagnosticsScreen() {
         level: "info",
         category: "registration",
         message: "Manual SIP registration test requested",
-        detail: "If the app restarts after this line, the native PJSIP startup path crashed before JavaScript could catch it.",
+        detail: "This forces a fresh native SIP restart so a stuck previous 401/registering state cannot no-op the test.",
         context: {
           username: loadedAccount.username,
           domain: loadedAccount.domain,
@@ -170,10 +170,12 @@ export default function SipDiagnosticsScreen() {
           port: loadedAccount.port,
           transport: loadedAccount.transport,
           srtp: loadedAccount.srtp,
+          sipCredentialPresent: Boolean(loadedAccount.password),
+          sipCredentialLength: loadedAccount.password?.length ?? 0,
         },
       });
 
-      await sipEngine.initialize();
+      await sipEngine.restart();
     } catch (error) {
       addEvent({
         level: "error",
