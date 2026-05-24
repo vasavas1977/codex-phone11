@@ -72,6 +72,12 @@ function toBuffer(value: unknown): Buffer | null {
 }
 
 function getSipPassword(row: any): string {
+  // Kamailio authenticates against subscriber.password. Prefer that same source
+  // so mobile provisioning cannot drift from the live SIP auth table.
+  if (row.subscriber_password) {
+    return row.subscriber_password;
+  }
+
   const ciphertext = toBuffer(row.secret_ciphertext);
   const iv = toBuffer(row.secret_iv);
   const tag = toBuffer(row.secret_tag);
@@ -340,18 +346,21 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan,
              t.name as tenant_name, t.plan as tenant_plan,
              sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
-             sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference
+             sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference,
+             sub.password as subscriber_password
       FROM extensions e
       LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
       LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
       LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
       LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+      LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
+        AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
       WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
         AND COALESCE(e.status, 'active') = 'active'
         AND e.deleted_at IS NULL
       ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
       LIMIT 1
-    `, [userId]);
+    `, [userId, DEFAULT_SIP_DOMAIN]);
 
     if (assignedResult.rows.length > 0) {
       const ext = assignedResult.rows[0];
@@ -379,16 +388,19 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
         SELECT e.*, o.name as org_name, o.plan as org_plan,
                t.name as tenant_name, t.plan as tenant_plan,
                sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
-               sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference
+               sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference,
+               sub.password as subscriber_password
         FROM extensions e
         LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
         LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
         LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+        LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
+          AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $1)
         WHERE (e.sip_username = '1020' OR e.extension_number = '1020')
           AND COALESCE(e.status, 'active') = 'active'
           AND e.deleted_at IS NULL
         LIMIT 1
-      `);
+      `, [DEFAULT_SIP_DOMAIN]);
 
       if (ownerExt.rows.length > 0) {
         const ext = ownerExt.rows[0];
