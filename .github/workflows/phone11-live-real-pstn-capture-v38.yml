@@ -1,0 +1,104 @@
+name: Phone11 live real PSTN capture v38
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-real-pstn-capture-v38.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  real-pstn-capture-v38:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Arm targeted iPhone PSTN capture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_real_pstn_v38_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_real_pstn_v38_key.pub" >/dev/null
+          ssh -i ~/.ssh/phone11_real_pstn_v38_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          STAMP="$(date +%Y%m%d-%H%M%S)"
+          PCAP="/tmp/phone11-real-pstn-v38-$STAMP.pcap.txt"
+          sudo rm -f /tmp/phone11-real-pstn-v38-*.pcap.txt
+
+          echo "REAL_PSTN_CAPTURE_READY_AT=$(date -Iseconds)"
+          echo "REAL_PSTN_CAPTURE_WINDOW_SECONDS=180"
+          echo "REAL_PSTN_CAPTURE_EXPECTED_CALLER_EXTENSION=1001"
+          echo "REAL_PSTN_CAPTURE_FILE=$PCAP"
+          echo "PLACE_ONE_IPHONE_TO_PSTN_CALL_NOW=yes"
+
+          sudo sh -lc "timeout 180 tcpdump -i any -nn -s0 -A '(udp port 5060) or (udp port 5080) or (udp portrange 10000-40000)' > '$PCAP' 2>&1" &
+          CAP_PID=$!
+          sleep 180 || true
+          wait "$CAP_PID" || true
+
+          echo "===== Candidate Call-IDs involving extension 1001 ====="
+          if [ -s "$PCAP" ]; then
+            grep -a -B8 -A8 -E "sip:1001@|From:.*1001|To:.*1001" "$PCAP" \
+              | grep -aE "Call-ID:|INVITE|ACK|BYE|CANCEL|SIP/2.0|CSeq:|From:|To:" \
+              | sed -E 's/[0-9]{7,15}/<number>/g' \
+              | tail -n 260 || true
+          else
+            echo "REAL_PSTN_CAPTURE_FILE_EMPTY=yes"
+          fi
+
+          CALL_ID="$(grep -a -B10 -A20 -E "sip:1001@|From:.*1001|To:.*1001" "$PCAP" 2>/dev/null \
+            | grep -a "Call-ID:" \
+            | sed -E 's/.*Call-ID:[[:space:]]*//I' \
+            | tail -n 1 \
+            | tr -d '\r' || true)"
+          echo "REAL_PSTN_SELECTED_CALL_ID=${CALL_ID:-none}"
+
+          echo "===== Kamailio selected-call evidence ====="
+          if [ -n "${CALL_ID:-}" ]; then
+            docker logs --since 220s --timestamps p11-kamailio 2>&1 \
+              | grep -F "$CALL_ID" \
+              | sed -E 's/[0-9]{7,15}/<number>/g' \
+              | tail -n 300 || true
+          fi
+
+          echo "===== FreeSWITCH selected-call evidence ====="
+          if [ -n "${CALL_ID:-}" ]; then
+            docker logs --since 220s --timestamps p11-freeswitch 2>&1 \
+              | grep -F "$CALL_ID" \
+              | sed -E 's/[0-9]{7,15}/<number>/g' \
+              | tail -n 300 || true
+          fi
+
+          echo "===== SIP/SDP selected-call packet evidence ====="
+          if [ -n "${CALL_ID:-}" ]; then
+            grep -a -B6 -A40 -F "$CALL_ID" "$PCAP" \
+              | grep -aE "SIP/2.0|INVITE|ACK|BYE|CANCEL|Call-ID:|CSeq:|Contact:|Via:|Record-Route|Route:|From:|To:|c=IN IP4|m=audio|a=rtpmap|a=sendrecv|a=sendonly|a=recvonly|a=inactive" \
+              | sed -E 's/[0-9]{7,15}/<number>/g' \
+              | tail -n 900 || true
+          fi
+
+          echo "===== RTP packet count summary by endpoint ====="
+          if [ -s "$PCAP" ]; then
+            grep -aE "UDP, length (160|172|214|220|240)" "$PCAP" \
+              | sed -E 's/[0-9]{7,15}/<number>/g' \
+              | awk '{print $3 " > " $5}' \
+              | sort | uniq -c | sort -nr | head -n 80 || true
+          fi
+          echo "REAL_PSTN_CAPTURE_RESULT=printed"
+          REMOTE
