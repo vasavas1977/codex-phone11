@@ -36,7 +36,7 @@ PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres
 PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
 PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
 
-PSQL_BASE=(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE")
+PSQL_BASE=(docker exec -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE")
 
 echo "===== Subscriber auth row, no secrets ====="
 "${PSQL_BASE[@]}" -c "SELECT username, domain, length(coalesce(password,'')) AS password_len, substring(md5(coalesce(password,'')) for 10) AS password_fingerprint, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len, (coalesce(ha1,'') = md5(username || ':' || domain || ':' || coalesce(password,''))) AS ha1_ok, (coalesce(ha1b,'') = md5(username || '@' || domain || ':' || domain || ':' || coalesce(password,''))) AS ha1b_ok FROM subscriber WHERE username='1001' AND domain='sip.phone11.ai';"
@@ -60,7 +60,7 @@ sudo journalctl --since "$START" --until "$END" --no-pager 2>/dev/null \
   | sed -E 's/(nonce=")[^"]+(")/\1<redacted>\2/g; s/(response=")[^"]+(")/\1<redacted>\2/g; s/(cnonce=")[^"]+(")/\1<redacted>\2/g; s/(password=)[^ ,;]+/\1<redacted>/g' \
   | tail -n 500 || true
 
-PASS="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT coalesce(password,'') FROM subscriber WHERE username = '$USER_NAME' AND domain = '$DOMAIN' LIMIT 1;")"
+PASS="$(docker exec -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT coalesce(password,'') FROM subscriber WHERE username = '$USER_NAME' AND domain = '$DOMAIN' LIMIT 1;")"
 if [ -z "$PASS" ]; then
   echo "V60_BLOCKER=no_subscriber_plaintext_password"
   exit 31
