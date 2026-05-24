@@ -1,6 +1,6 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-21T23:18:25+07:00
-reason=fix iOS PSTN answer media crash and add native audio bridge diagnostics
-answer_media_crash_fix_commit=9265c817a305a5cfabd0641013c689fe04922468
-previous_diagnostics_build=2590cfa4-dbd5-4815-8a80-8e774057bb5d
+requested_at=2026-05-24T15:26:54+07:00
+reason=build current SIP diagnostics and call-state handling before further PSTN media testing
+previous_tested_build=2590cfa4-dbd5-4815-8a80-8e774057bb5d
+previous_tested_commit=7d93321e9ab3dfe638ae7df5d02458c4ed3d5f45
 workflow_trigger_commit=pending
