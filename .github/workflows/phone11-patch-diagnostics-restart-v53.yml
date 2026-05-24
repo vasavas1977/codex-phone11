@@ -1,0 +1,65 @@
+name: Phone11 patch diagnostics restart v53
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-patch-diagnostics-restart-v53.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch diagnostics test to force fresh SIP restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const file = 'app/settings/sip-diagnostics.tsx';
+          let source = fs.readFileSync(file, 'utf8');
+          const before = source;
+          source = source.replace(
+            'detail: "If the app restarts after this line, the native PJSIP startup path crashed before JavaScript could catch it.",',
+            'detail: "This forces a fresh native SIP restart so a stuck previous 401/registering state cannot no-op the test.",'
+          );
+          source = source.replace(
+            'srtp: loadedAccount.srtp,\n        },\n      });\n\n      await sipEngine.initialize();',
+            'srtp: loadedAccount.srtp,\n          sipCredentialPresent: Boolean(loadedAccount.password),\n          sipCredentialLength: loadedAccount.password?.length ?? 0,\n        },\n      });\n\n      await sipEngine.restart();'
+          );
+          if (source === before) {
+            throw new Error('Expected diagnostics restart patch target was not found');
+          }
+          fs.writeFileSync(file, source);
+          NODE
+          git diff -- app/settings/sip-diagnostics.tsx
+      - name: Verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'await sipEngine.restart();' app/settings/sip-diagnostics.tsx
+          grep -q 'sipCredentialPresent' app/settings/sip-diagnostics.tsx
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git config user.name 'phone11-actions'
+          git config user.email 'actions@phone11.ai'
+          git add app/settings/sip-diagnostics.tsx
+          git commit -m 'Force fresh SIP restart from diagnostics test'
+          git push origin HEAD:codex/phone11-mobile-pjsip-20260506
