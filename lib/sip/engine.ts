@@ -213,6 +213,8 @@ class SipEngine {
           proxy: account.proxy || registrationServer,
           srtp: account.srtp,
           stun: account.stun || "none",
+          hasPassword: Boolean(account.password),
+          passwordLength: account.password?.length ?? 0,
         },
       });
 
@@ -340,6 +342,8 @@ class SipEngine {
           transport: account.transport,
           srtp: account.srtp,
           stun: account.stun || "none",
+          hasPassword: Boolean(account.password),
+          passwordLength: account.password?.length ?? 0,
         },
       });
       await recordPersistentSipDiagnosticEvent({
@@ -355,6 +359,8 @@ class SipEngine {
           transport: account.transport,
           srtp: account.srtp,
           stun: account.stun || "none",
+          hasPassword: Boolean(account.password),
+          passwordLength: account.password?.length ?? 0,
         },
       });
       this.pjsipAccount = await this.endpoint.createAccount({
@@ -364,8 +370,8 @@ class SipEngine {
         password: account.password,
         proxy: outboundProxy,
         transport: account.transport,
-        regOnAdd: false,
-        regServer: null,
+        regOnAdd: true,
+        regServer: registrationServer,
         regTimeout: 300,
         contactParams: null,
         contactUriParams: null,
@@ -390,48 +396,31 @@ class SipEngine {
         context: initialSnapshot.context,
       });
 
-      if (typeof this.endpoint.registerAccount !== "function") {
-        const detail = "react-native-pjsip Endpoint.registerAccount is missing.";
-        this._diag("error", "registration", "SIP account cannot be explicitly registered", {
-          destination: registrationServer,
-          detail,
-          context: {
-            endpointKeys: safeKeys(this.endpoint),
-          },
-        });
-        setRegistrationState("failed", detail);
-        return;
-      }
-
-      this._diag("info", "registration", "Native PJSIP registerAccount attempt", {
+      this._diag("info", "registration", "Native PJSIP auto-registration armed", {
         destination: registrationServer,
         context: {
-          stage: "endpoint.registerAccount",
+          stage: "endpoint.createAccount.regOnAdd",
           username: account.username,
           domain: account.domain,
           proxy: outboundProxy,
           transport: account.transport,
+          hasPassword: Boolean(account.password),
+          passwordLength: account.password?.length ?? 0,
         },
       });
       await recordPersistentSipDiagnosticEvent({
         level: "info",
         category: "registration",
-        message: "Native PJSIP registerAccount attempt",
+        message: "Native PJSIP auto-registration armed",
         destination: registrationServer,
         context: {
-          stage: "endpoint.registerAccount",
+          stage: "endpoint.createAccount.regOnAdd",
           username: account.username,
           domain: account.domain,
           proxy: outboundProxy,
           transport: account.transport,
-        },
-      });
-      await this.endpoint.registerAccount(this.pjsipAccount, true);
-      this._diag("info", "registration", "Native PJSIP registerAccount accepted", {
-        destination: registrationServer,
-        context: {
-          username: account.username,
-          domain: account.domain,
+          hasPassword: Boolean(account.password),
+          passwordLength: account.password?.length ?? 0,
         },
       });
 
