@@ -1,0 +1,35 @@
+name: Phone11 synthetic SIP REGISTER auth proof v57
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-synthetic-register-auth-v57.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  synthetic-register:
+    name: Prove current live SIP auth accepts 1001
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Run synthetic REGISTER auth proof
+        shell: bash
+        run: bash .github/scripts/phone11-register-401-postmortem-v50.sh
