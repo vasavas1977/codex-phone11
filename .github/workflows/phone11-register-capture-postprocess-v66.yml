@@ -1,0 +1,94 @@
+name: Phone11 register capture postprocess v66
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-register-capture-postprocess-v66.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postprocess-register-capture:
+    runs-on: ubuntu-24.04
+    env:
+      AWS_DEFAULT_REGION: ap-southeast-7
+      EC2_HOST: 43.210.122.111
+      EC2_USER: ubuntu
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Parse existing V65 capture for true REGISTER traffic
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v66_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "V66_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CAPTURE_FILE="/tmp/phone11-v65-register-20260525T035957Z.log"
+          if [ ! -s "$CAPTURE_FILE" ]; then
+            CAPTURE_FILE=$(ls -1t /tmp/phone11-v65-register-*.log 2>/dev/null | head -1 || true)
+          fi
+          if [ -z "${CAPTURE_FILE:-}" ] || [ ! -s "$CAPTURE_FILE" ]; then
+            echo "V66_CAPTURE_FILE_MISSING=true"
+            exit 31
+          fi
+          echo "V66_CAPTURE_FILE=$CAPTURE_FILE"
+          echo "V66_CAPTURE_SIZE_BYTES=$(wc -c < "$CAPTURE_FILE" | tr -d ' ')"
+
+          echo "V66_REGISTER_REQUEST_COUNTS_BEGIN"
+          printf 'register_request_lines='; grep -Eia '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'register_cseq_lines='; grep -Eia 'CSeq: [0-9]+ REGISTER' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'phone11_user_agent_lines='; grep -Eia 'User-Agent:.*(Phone11|PJSIP|pjsua|react-native)' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'register_401_lines='; grep -Eia 'SIP/2.0 401' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'register_200_lines='; grep -Eia 'SIP/2.0 200' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          echo "V66_REGISTER_REQUEST_COUNTS_END"
+
+          echo "V66_REGISTER_ONLY_CONTEXT_BEGIN"
+          grep -Eina -B 4 -A 38 '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" | head -420 || true
+          echo "V66_REGISTER_ONLY_CONTEXT_END"
+
+          echo "V66_PHONE11_OR_PJSIP_CONTEXT_BEGIN"
+          grep -Eina -B 8 -A 32 'Phone11|PJSIP|pjsua|react-native-pjsip' "$CAPTURE_FILE" | head -420 || true
+          echo "V66_PHONE11_OR_PJSIP_CONTEXT_END"
+
+          echo "V66_AUTH_LINES_FOR_1001_BEGIN"
+          grep -Eina 'Authorization: Digest username="1001"|Proxy-Authorization: Digest username="1001"|WWW-Authenticate: Digest realm="sip.phone11.ai"|Proxy-Authenticate: Digest realm="sip.phone11.ai"' "$CAPTURE_FILE" | head -260 || true
+          echo "V66_AUTH_LINES_FOR_1001_END"
+
+          echo "V66_SOURCE_IPS_FOR_REGISTER_BEGIN"
+          grep -Eia '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" \
+            | sed -nE 's/.* IP ([0-9.]+)\.([0-9]+) > ([0-9.]+)\.([0-9]+): SIP:.*/src=\1 src_port=\2 dst=\3 dst_port=\4/p' \
+            | sort | uniq -c | sort -nr | head -50 || true
+          echo "V66_SOURCE_IPS_FOR_REGISTER_END"
+
+          echo "V66_SCANNER_INVITE_SAMPLE_BEGIN"
+          grep -Eina -B 2 -A 12 'INVITE sip:.*@43\.210\.122\.111|User-Agent: voip' "$CAPTURE_FILE" | head -120 || true
+          echo "V66_SCANNER_INVITE_SAMPLE_END"
+          REMOTE
