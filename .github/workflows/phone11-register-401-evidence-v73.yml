@@ -1,0 +1,88 @@
+name: Phone11 REGISTER 401 evidence v73
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-register-401-evidence-v73.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ap-southeast-7
+  EC2_USER: ubuntu
+  EC2_HOST: 43.210.122.111
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v73_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v73_key.pub" >/dev/null
+
+      - name: Collect compact 401 evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_v73_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=12 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          START="2026-05-25T14:43:30Z"
+          END="2026-05-25T14:44:20Z"
+          echo "===== V73 target iPhone diagnostic ====="
+          echo "iphone_diag_build=6ef59041-7835-4a01-b94a-886dd2da5b38"
+          echo "iphone_diag_commit=72c0764edf9e44060691d51f0d01040ea3fd000c"
+          echo "iphone_401_time_utc=2026-05-25T14:43:49.233Z"
+          echo "server_window_start=$START"
+          echo "server_window_end=$END"
+          date -u +server_now_utc=%FT%TZ
+
+          echo "===== Containers ====="
+          docker ps --format '{{.Names}} {{.Status}} {{.Ports}}' | sort
+
+          echo "===== Kamailio auth config evidence ====="
+          docker exec p11-kamailio sh -lc 'grep -nE "auth_db|calculate_ha1|password_column|use_domain|auth_check|www_challenge|REGISTER|consume_credentials|realm|subscriber" /etc/kamailio/kamailio.cfg | sed -n "1,220p"' || true
+          docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg >/dev/null
+          echo "kamailio_config_syntax=pass"
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+
+          echo "===== Subscriber row for 1001, redacted ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT username, domain, length(coalesce(password,'')) AS password_len, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len, (coalesce(ha1,'') = md5(username || ':' || domain || ':' || coalesce(password,''))) AS ha1_ok, (coalesce(ha1b,'') = md5(username || '@' || domain || ':' || domain || ':' || coalesce(password,''))) AS ha1b_ok FROM subscriber WHERE username='1001' AND domain='sip.phone11.ai';"
+
+          PASS_LEN="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT length(coalesce(password,'')) FROM subscriber WHERE username='1001' AND domain='sip.phone11.ai' LIMIT 1;")"
+          echo "subscriber_password_length=${PASS_LEN:-missing}"
+          if [ -z "$PASS_LEN" ] || [ "$PASS_LEN" = "0" ]; then
+            echo "V73_BLOCKER=no_subscriber_password_for_1001"
+            exit 31
+          fi
+
+          echo "===== Kamailio logs around exact iPhone 401 window ====="
+          LOG_LINES=$(docker logs --since "$START" --until "$END" --timestamps p11-kamailio 2>&1 \
+            | grep -Eia 'REGISTER|Phone11|1001|401|407|200 OK|Unauthorized|auth|nonce|digest|error|warning|failed|received|reply|realm' \
+            | sed -E 's/(nonce=")[^"]+(".*response=")[^"]+(".*)/\1<redacted>\2<redacted>\3/g; s/(response=")[^"]+(".*)/\1<redacted>\2/g; s/(password=)[^ ,;]+/\1<redacted>/g' \
+            | tail -n 500 || true)
+          if [ -z "$LOG_LINES" ]; then
+            echo "V73_SERVER_LOG_MATCHES=none"
+          else
+            echo "$LOG_LINES"
+          fi
+          echo "V73_EVIDENCE_COMPLETE=yes"
+          REMOTE
