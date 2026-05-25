@@ -28,6 +28,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Enable pnpm
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.10.0 --activate
+          pnpm --version
+
       - name: Explain exact evidence
         run: |
           set -euo pipefail
