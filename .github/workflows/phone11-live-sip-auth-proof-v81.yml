@@ -1,0 +1,156 @@
+name: Phone11 V81 Live SIP Auth Proof
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-sip-auth-proof-v81.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  prove-live-sip-auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect live SIP auth without exposing passwords
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v81_auth_proof_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "V81_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V81_HOST=$(hostname)"
+
+          DEPLOY_CHECKOUT="/opt/phone11ai/codex-phone11-deploy"
+          if [ -d "$DEPLOY_CHECKOUT/.git" ]; then
+            cd "$DEPLOY_CHECKOUT"
+            echo "V81_DEPLOYED_SHA=$(git rev-parse HEAD)"
+            echo "V81_DEPLOYED_BRANCH=$(git rev-parse --abbrev-ref HEAD)"
+            grep -n "subscriber_password" server/phone-provisioning.ts || true
+            grep -n "regServer" lib/sip/engine.ts || true
+          else
+            echo "V81_DEPLOY_CHECKOUT_MISSING=$DEPLOY_CHECKOUT"
+          fi
+
+          echo "V81_BACKEND_HEALTH_BEGIN"
+          (curl -fsS http://127.0.0.1:3000/api/health || true) 2>&1
+          echo
+          echo "V81_BACKEND_HEALTH_END"
+
+          echo "V81_DOCKER_CONTAINERS_BEGIN"
+          docker ps --format 'container={{.Names}} image={{.Image}} ports={{.Ports}}' | sort
+          echo "V81_DOCKER_CONTAINERS_END"
+
+          POSTGRES_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'postgres|db' | head -1 || true)
+          KAMAILIO_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'kamailio|sip' | head -1 || true)
+          echo "V81_POSTGRES_CONTAINER=${POSTGRES_CONTAINER:-missing}"
+          echo "V81_KAMAILIO_CONTAINER=${KAMAILIO_CONTAINER:-missing}"
+          test -n "$POSTGRES_CONTAINER"
+
+          docker exec -i "$POSTGRES_CONTAINER" sh <<'DBSCRIPT'
+          set -Eeuo pipefail
+          DB_USER="${POSTGRES_USER:-postgres}"
+          DB_NAME="${POSTGRES_DB:-$DB_USER}"
+          echo "V81_DB_IDENTITY=user:${DB_USER}|db:${DB_NAME}"
+          echo "V81_SUBSCRIBER_PROOF_BEGIN"
+          psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -AtF $'\t' <<'SQL' | while IFS=$'\t' read -r username domain password ha1 ha1b; do
+            fp=$(printf '%s' "$password" | sha256sum | awk '{print $1}' | cut -c1-16)
+            ha1_calc=$(printf '%s' "$username:$domain:$password" | md5sum | awk '{print $1}')
+            ha1b_calc=$(printf '%s' "$username@$domain:$domain:$password" | md5sum | awk '{print $1}')
+            ha1_lc=$(printf '%s' "$ha1" | tr '[:upper:]' '[:lower:]')
+            ha1b_lc=$(printf '%s' "$ha1b" | tr '[:upper:]' '[:lower:]')
+            if [ "$ha1_lc" = "$ha1_calc" ]; then ha1_ok=true; else ha1_ok=false; fi
+            if [ "$ha1b_lc" = "$ha1b_calc" ]; then ha1b_ok=true; else ha1b_ok=false; fi
+            echo "subscriber|$username|$domain|password_len=${#password}|sipFp=$fp|ha1_ok=$ha1_ok|ha1b_ok=$ha1b_ok|ha1_prefix=$(printf '%s' "$ha1_lc" | cut -c1-10)|ha1_calc_prefix=$(printf '%s' "$ha1_calc" | cut -c1-10)"
+          done
+          SELECT username, domain, password, COALESCE(ha1,''), COALESCE(ha1b,'')
+          FROM subscriber
+          WHERE username IN ('1001','phone11ai') OR domain IN ('sip.phone11.ai','phone11.ai')
+          ORDER BY username, domain
+          LIMIT 20;
+SQL
+          echo "V81_SUBSCRIBER_PROOF_END"
+
+          echo "V81_USER_EXTENSION_JOIN_BEGIN"
+          psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -AtF $'\t' <<'SQL' | while IFS=$'\t' read -r ext_id extension_number ext_user_id ue_user_id sa_user_id sa_username sa_domain sub_username sub_domain sub_password ext_password; do
+            sub_fp="none"
+            ext_fp="none"
+            if [ -n "$sub_password" ]; then sub_fp=$(printf '%s' "$sub_password" | sha256sum | awk '{print $1}' | cut -c1-16); fi
+            if [ -n "$ext_password" ]; then ext_fp=$(printf '%s' "$ext_password" | sha256sum | awk '{print $1}' | cut -c1-16); fi
+            echo "assignment|ext_id=$ext_id|extension=$extension_number|e_user=${ext_user_id:-null}|ue_user=${ue_user_id:-null}|sa_user=${sa_user_id:-null}|sa_username=${sa_username:-null}|sa_domain=${sa_domain:-null}|sub_match=${sub_username:-none}@${sub_domain:-none}|sub_len=${#sub_password}|subFp=$sub_fp|ext_len=${#ext_password}|extFp=$ext_fp"
+          done
+          SELECT e.id, e.extension_number, COALESCE(e.user_id::text,''), COALESCE(ue.user_id::text,''), COALESCE(sa.user_id::text,''),
+                 COALESCE(sa.sip_username,''), COALESCE(sa.sip_domain,''), COALESCE(sub.username,''), COALESCE(sub.domain,''),
+                 COALESCE(sub.password,''), COALESCE(e.sip_password,'')
+          FROM extensions e
+          LEFT JOIN user_extensions ue ON ue.extension_id = e.id
+          LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+          LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
+            AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, 'sip.phone11.ai')
+          WHERE e.extension_number='1001' OR e.user_id=1 OR ue.user_id=1 OR sa.user_id=1
+          ORDER BY e.id, ue.is_primary DESC NULLS LAST
+          LIMIT 20;
+SQL
+          echo "V81_USER_EXTENSION_JOIN_END"
+          DBSCRIPT
+
+          echo "V81_KAMAILIO_AUTH_CONFIG_BEGIN"
+          for file in \
+            /etc/kamailio/kamailio.cfg \
+            /usr/local/etc/kamailio/kamailio.cfg \
+            /opt/phone11ai/codex-phone11-deploy/infra/configs/kamailio/kamailio.cfg \
+            /opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg \
+            /opt/phone11ai/cloudphone11/kamailio/kamailio.cfg; do
+            if [ -f "$file" ]; then
+              echo "-- file=$file"
+              grep -nEi 'loadmodule.*auth|auth_db|subscriber|calculate_ha1|use_domain|password_column|user_column|domain_column|www_challenge|www_authenticate|auth_check|pv_www_authenticate|authenticate|realm|db_url' "$file" \
+                | sed -E 's#(postgres://|mysql://)[^@ ]+@#\1[redacted]@#g; s#(DBURL[[:space:]]+["'"']?)[^"'"']+#\1[redacted]#g' || true
+            fi
+          done
+          if [ -n "$KAMAILIO_CONTAINER" ]; then
+            echo "-- container=$KAMAILIO_CONTAINER"
+            docker exec "$KAMAILIO_CONTAINER" sh -lc "for file in /etc/kamailio/kamailio.cfg /usr/local/etc/kamailio/kamailio.cfg; do if [ -f \"\$file\" ]; then echo -- file=\$file; grep -nEi 'loadmodule.*auth|auth_db|subscriber|calculate_ha1|use_domain|password_column|user_column|domain_column|www_challenge|www_authenticate|auth_check|pv_www_authenticate|authenticate|realm|db_url' \"\$file\" | sed -E 's#(postgres://|mysql://)[^@ ]+@#\\1[redacted]@#g'; fi; done" || true
+          fi
+          echo "V81_KAMAILIO_AUTH_CONFIG_END"
+
+          echo "V81_KAMAILIO_RECENT_AUTH_LOGS_BEGIN"
+          if [ -n "$KAMAILIO_CONTAINER" ]; then
+            docker logs --since 6h "$KAMAILIO_CONTAINER" 2>&1 | grep -Ei 'REGISTER|1001|phone11ai|401|403|unauthorized|auth|subscriber|ha1|sip.phone11.ai|phone11.ai' | tail -160 || true
+          fi
+          echo "V81_KAMAILIO_RECENT_AUTH_LOGS_END"
+          echo "V81_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          REMOTE
