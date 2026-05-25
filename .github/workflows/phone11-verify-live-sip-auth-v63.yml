@@ -1,0 +1,86 @@
+name: Phone11 V63 Verify Live SIP Auth
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/phone11-verify-live-sip-auth-v63.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  verify-live-sip-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Verify live backend and SIP auth rows
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v63_verify_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DEPLOY_CHECKOUT="/opt/phone11ai/codex-phone11-deploy"
+          cd "$DEPLOY_CHECKOUT"
+          echo "V63_DEPLOYED_SHA=$(git rev-parse HEAD)"
+          grep -n "row.subscriber_password" server/phone-provisioning.ts
+          grep -n "sub.password as subscriber_password" server/phone-provisioning.ts
+          curl -fsS http://127.0.0.1:3000/api/health
+          echo
+          echo "V63_BACKEND_HEALTH=pass"
+
+          POSTGRES_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'postgres|db' | head -1)
+          test -n "$POSTGRES_CONTAINER"
+          echo "V63_POSTGRES_CONTAINER=$POSTGRES_CONTAINER"
+
+          docker exec "$POSTGRES_CONTAINER" sh -lc '
+            set -Eeuo pipefail
+            DB_USER="${POSTGRES_USER:-postgres}"
+            DB_NAME="${POSTGRES_DB:-$DB_USER}"
+            echo "V63_DB_IDENTITY=user:${DB_USER}|db:${DB_NAME}"
+            psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tAc "
+              SELECT 'subscriber|' || username || '|' || domain || '|password_len=' || length(password) || '|password_sha10=' || left(encode(digest(password, 'sha256'), 'hex'), 10) || '|ha1_ok=' || (lower(ha1)=md5(username || ':' || domain || ':' || password)) || '|ha1b_ok=' || (lower(ha1b)=md5(username || '@' || domain || ':' || domain || ':' || password))
+              FROM subscriber
+              WHERE username='1001' AND domain='sip.phone11.ai';
+            "
+            psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tAc "
+              SELECT 'extension|' || e.extension_number || '|user=' || COALESCE(e.user_id::text,'null') || '|status=' || COALESCE(e.status,'null') || '|ext_password_len=' || COALESCE(length(e.sip_password)::text,'null') || '|account=' || COALESCE(sa.sip_username,'null') || '|account_domain=' || COALESCE(sa.sip_domain,'null') || '|secret_present=' || (sa.secret_ciphertext IS NOT NULL)
+              FROM extensions e
+              LEFT JOIN sip_accounts sa ON sa.extension_id=e.id AND sa.deleted_at IS NULL
+              WHERE e.extension_number='1001'
+              ORDER BY e.id
+              LIMIT 5;
+            "
+          '
+          REMOTE
