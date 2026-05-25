@@ -1,0 +1,83 @@
+name: Phone11 live SIP REGISTER capture v74
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-sip-register-capture-v74.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ap-southeast-7
+  EC2_USER: ubuntu
+  EC2_HOST: 43.210.122.111
+  CAPTURE_SECONDS: 150
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v74_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v74_key.pub" >/dev/null
+
+      - name: Capture one live SIP registration attempt
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_v74_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=12 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          CAPTURE_SECONDS="${CAPTURE_SECONDS:-150}"
+          OUT=/tmp/phone11-v74-sip-register.pcap.txt
+          CLEAN=/tmp/phone11-v74-sip-register.redacted.txt
+          rm -f "$OUT" "$CLEAN"
+          echo "===== V74 live SIP REGISTER capture ====="
+          date -u +capture_ready_utc=%FT%TZ
+          echo "V74_CAPTURE_READY=tap_Start_SIP_Registration_Test_now"
+          echo "capture_seconds=$CAPTURE_SECONDS"
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo "V74_BLOCKER=tcpdump_missing_on_ec2"
+            exit 32
+          fi
+          sudo timeout "$CAPTURE_SECONDS" tcpdump -i any -nn -s 0 -vvv -A '(udp port 5060 or tcp port 5060)' >"$OUT" 2>&1 || TCPDUMP_STATUS=$?
+          echo "tcpdump_status=${TCPDUMP_STATUS:-0}"
+          date -u +capture_finished_utc=%FT%TZ
+
+          echo "===== Redacted SIP evidence ====="
+          grep -Eia 'REGISTER|SIP/2.0 401|SIP/2.0 200|WWW-Authenticate|Authorization: Digest|CSeq:|From:|To:|Call-ID:|User-Agent:|Contact:|Via:' "$OUT" \
+            | sed -E 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g' \
+            | sed -E 's/(Call-ID:).*/\1 <redacted>/Ig' \
+            | sed -E 's/(branch=z9hG4bK)[^;[:space:]]+/\1<redacted>/Ig' \
+            | sed -E 's/(tag=)[^;[:space:]]+/\1<redacted>/Ig' \
+            | sed -E 's/(nonce=")[^"]+/\1<redacted>/Ig' \
+            | sed -E 's/(response=")[^"]+/\1<redacted>/Ig' \
+            | sed -E 's/(cnonce=")[^"]+/\1<redacted>/Ig' \
+            | sed -E 's/(opaque=")[^"]+/\1<redacted>/Ig' \
+            | tail -n 220 > "$CLEAN" || true
+          if [ ! -s "$CLEAN" ]; then
+            echo "V74_REGISTER_SEEN=no"
+          else
+            cat "$CLEAN"
+            if grep -qi 'REGISTER' "$CLEAN"; then echo "V74_REGISTER_SEEN=yes"; else echo "V74_REGISTER_SEEN=no"; fi
+            if grep -qi 'Authorization: Digest' "$CLEAN"; then echo "V74_AUTHORIZATION_SEEN=yes"; else echo "V74_AUTHORIZATION_SEEN=no"; fi
+            if grep -qi 'WWW-Authenticate' "$CLEAN"; then echo "V74_CHALLENGE_SEEN=yes"; else echo "V74_CHALLENGE_SEEN=no"; fi
+          fi
+          rm -f "$OUT" "$CLEAN"
+          echo "V74_CAPTURE_COMPLETE=yes"
+          REMOTE
