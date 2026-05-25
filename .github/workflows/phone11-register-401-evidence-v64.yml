@@ -1,0 +1,112 @@
+name: Phone11 V64 REGISTER 401 Evidence
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/phone11-register-401-evidence-v64.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  collect-register-evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Collect backend and Kamailio evidence
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v64_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "V64_NOW_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V64_TARGET_EVENT_UTC=2026-05-25T03:46:23Z"
+          echo "V64_DOCKER_PS_BEGIN"
+          docker ps --format 'name={{.Names}} image={{.Image}} status={{.Status}} ports={{.Ports}}'
+          echo "V64_DOCKER_PS_END"
+
+          BACKEND_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'backend|api|phone11' | grep -vi postgres | head -1 || true)
+          KAMAILIO_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'kamailio|sip' | head -1 || true)
+          POSTGRES_CONTAINER=$(docker ps --format '{{.Names}}' | grep -E 'postgres|db' | head -1 || true)
+          echo "V64_BACKEND_CONTAINER=${BACKEND_CONTAINER:-none}"
+          echo "V64_KAMAILIO_CONTAINER=${KAMAILIO_CONTAINER:-none}"
+          echo "V64_POSTGRES_CONTAINER=${POSTGRES_CONTAINER:-none}"
+
+          if [ -n "${BACKEND_CONTAINER:-}" ]; then
+            echo "V64_BACKEND_CONTAINER_PATCH_BEGIN"
+            docker exec "$BACKEND_CONTAINER" sh -lc "find / -path '*/server/phone-provisioning.*' -type f 2>/dev/null | head -10 | while read f; do echo FILE=\$f; grep -n 'row.subscriber_password\|sub.password as subscriber_password' \$f || true; done" || true
+            echo "V64_BACKEND_CONTAINER_PATCH_END"
+            echo "V64_BACKEND_LOGS_AROUND_SYNC_BEGIN"
+            docker logs --since '2026-05-25T03:45:30Z' --until '2026-05-25T03:47:00Z' "$BACKEND_CONTAINER" 2>&1 | grep -Ei 'phone|provision|sip|1001|error|warn|auth' || true
+            echo "V64_BACKEND_LOGS_AROUND_SYNC_END"
+          fi
+
+          if [ -n "${POSTGRES_CONTAINER:-}" ]; then
+            echo "V64_DB_ROWS_BEGIN"
+            docker exec -i "$POSTGRES_CONTAINER" sh <<'DBSCRIPT'
+            set -Eeuo pipefail
+            DB_USER="${POSTGRES_USER:-postgres}"
+            DB_NAME="${POSTGRES_DB:-$DB_USER}"
+            echo "V64_DB_IDENTITY=user:${DB_USER}|db:${DB_NAME}"
+            psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tAc "
+              SELECT 'subscriber|' || username || '|' || domain || '|password_len=' || length(password) || '|password_md5_10=' || left(md5(password), 10) || '|ha1_ok=' || (lower(ha1)=md5(username || ':' || domain || ':' || password)) || '|ha1b_ok=' || (lower(ha1b)=md5(username || '@' || domain || ':' || domain || ':' || password))
+              FROM subscriber
+              WHERE username='1001' AND domain='sip.phone11.ai';
+            "
+            psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tAc "
+              SELECT 'extension|' || e.id || '|ext=' || e.extension_number || '|user=' || COALESCE(e.user_id::text,'null') || '|status=' || COALESCE(e.status,'null') || '|ext_password_len=' || COALESCE(length(e.sip_password)::text,'null') || '|ext_password_md5_10=' || COALESCE(left(md5(e.sip_password),10),'null') || '|account=' || COALESCE(sa.sip_username,'null') || '|account_domain=' || COALESCE(sa.sip_domain,'null') || '|secret_present=' || (sa.secret_ciphertext IS NOT NULL)
+              FROM extensions e
+              LEFT JOIN sip_accounts sa ON sa.extension_id=e.id AND sa.deleted_at IS NULL
+              WHERE e.extension_number='1001'
+              ORDER BY e.id
+              LIMIT 10;
+            "
+            DBSCRIPT
+            echo "V64_DB_ROWS_END"
+          fi
+
+          if [ -n "${KAMAILIO_CONTAINER:-}" ]; then
+            echo "V64_KAMAILIO_LOGS_0346_BEGIN"
+            docker logs --since '2026-05-25T03:45:30Z' --until '2026-05-25T03:47:00Z' "$KAMAILIO_CONTAINER" 2>&1 | grep -Ei '1001|REGISTER|401|407|Unauthorized|auth|nonce|sip.phone11.ai|43.210.122.111' || true
+            echo "V64_KAMAILIO_LOGS_0346_END"
+            echo "V64_KAMAILIO_RECENT_1001_BEGIN"
+            docker logs --since '2026-05-25T03:00:00Z' "$KAMAILIO_CONTAINER" 2>&1 | grep -Ei '1001|REGISTER|401|407|Unauthorized|auth|sip.phone11.ai' | tail -200 || true
+            echo "V64_KAMAILIO_RECENT_1001_END"
+          fi
+
+          echo "V64_NETWORK_LISTEN_BEGIN"
+          (ss -lunpt || sudo ss -lunpt || true) 2>/dev/null | grep -E ':5060|:5061|:3000' || true
+          echo "V64_NETWORK_LISTEN_END"
+          REMOTE
