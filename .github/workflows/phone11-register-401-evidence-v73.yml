@@ -56,7 +56,7 @@ jobs:
           docker ps --format '{{.Names}} {{.Status}} {{.Ports}}' | sort
 
           echo "===== Kamailio auth config evidence ====="
-          docker exec p11-kamailio sh -lc 'grep -nE "auth_db|calculate_ha1|password_column|use_domain|auth_check|www_challenge|REGISTER|consume_credentials|realm|subscriber" /etc/kamailio/kamailio.cfg | sed -n "1,220p"' || true
+          docker exec p11-kamailio sh -lc 'grep -nE "MY_DOMAIN|alias|advertise|listen|auth_db|calculate_ha1|password_column|use_domain|auth_check|www_challenge|REGISTER|consume_credentials|realm|subscriber" /etc/kamailio/kamailio.cfg | sed -n "1,260p"' || true
           docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg >/dev/null
           echo "kamailio_config_syntax=pass"
 
@@ -65,9 +65,9 @@ jobs:
           PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
 
           echo "===== Subscriber row for 1001, redacted ====="
-          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT username, domain, length(coalesce(password,'')) AS password_len, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len, (coalesce(ha1,'') = md5(username || ':' || domain || ':' || coalesce(password,''))) AS ha1_ok, (coalesce(ha1b,'') = md5(username || '@' || domain || ':' || domain || ':' || coalesce(password,''))) AS ha1b_ok FROM subscriber WHERE username='1001' AND domain='sip.phone11.ai';"
+          docker exec -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT username, domain, length(coalesce(password,'')) AS password_len, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len, (coalesce(ha1,'') = md5(username || ':' || domain || ':' || coalesce(password,''))) AS ha1_ok, (coalesce(ha1b,'') = md5(username || '@' || domain || ':' || domain || ':' || coalesce(password,''))) AS ha1b_ok FROM subscriber WHERE username='1001' AND domain='sip.phone11.ai';"
 
-          PASS_LEN="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT length(coalesce(password,'')) FROM subscriber WHERE username='1001' AND domain='sip.phone11.ai' LIMIT 1;")"
+          PASS_LEN="$(docker exec -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT length(coalesce(password,'')) FROM subscriber WHERE username='1001' AND domain='sip.phone11.ai' LIMIT 1;")"
           echo "subscriber_password_length=${PASS_LEN:-missing}"
           if [ -z "$PASS_LEN" ] || [ "$PASS_LEN" = "0" ]; then
             echo "V73_BLOCKER=no_subscriber_password_for_1001"
