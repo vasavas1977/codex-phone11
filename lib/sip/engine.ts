@@ -371,7 +371,7 @@ class SipEngine {
         proxy: outboundProxy,
         transport: account.transport,
         regOnAdd: true,
-        regServer: registrationServer,
+        regServer: null,
         regTimeout: 300,
         contactParams: null,
         contactUriParams: null,
