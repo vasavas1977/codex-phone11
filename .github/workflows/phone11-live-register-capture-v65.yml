@@ -1,0 +1,84 @@
+name: Phone11 V65 Live REGISTER Capture
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/phone11-live-register-capture-v65.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  capture-register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Arm live SIP capture
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v65_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "V65_CAPTURE_READY_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V65_ACTION=Tap Phone11 SIP Diagnostics > Start SIP Registration Test now. Capture window is 180 seconds."
+          echo "V65_DNS_BEGIN"
+          (getent ahostsv4 sip.phone11.ai || nslookup sip.phone11.ai || host sip.phone11.ai || true) 2>&1
+          echo "V65_DNS_END"
+          echo "V65_LISTEN_BEGIN"
+          (ss -lunpt || sudo ss -lunpt || true) 2>/dev/null | grep -E ':5060|:5061|:3000' || true
+          echo "V65_LISTEN_END"
+
+          CAPTURE_FILE="/tmp/phone11-v65-register-$(date -u +%Y%m%dT%H%M%SZ).log"
+          echo "V65_CAPTURE_FILE=$CAPTURE_FILE"
+          if command -v timeout >/dev/null 2>&1; then TIMEOUT=timeout; else TIMEOUT=gtimeout; fi
+          if command -v tcpdump >/dev/null 2>&1; then
+            ($TIMEOUT 180 sudo tcpdump -nn -s 0 -A -i any '(udp port 5060 or tcp port 5060 or udp port 5061 or tcp port 5061)' > "$CAPTURE_FILE" 2>&1) || true
+            echo "V65_CAPTURE_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "V65_CAPTURE_MATCHES_BEGIN"
+            grep -Eia -C 5 'REGISTER|SIP/2.0 401|SIP/2.0 200|Authorization:|WWW-Authenticate:|1001|sip.phone11.ai|Phone11|PJSIP' "$CAPTURE_FILE" | head -260 || true
+            echo "V65_CAPTURE_MATCHES_END"
+            echo "V65_CAPTURE_COUNTS_BEGIN"
+            printf 'register_count='; grep -Eia 'REGISTER sip:|REGISTER ' "$CAPTURE_FILE" | wc -l | tr -d ' '
+            printf 'auth_header_count='; grep -Eia 'Authorization:' "$CAPTURE_FILE" | wc -l | tr -d ' '
+            printf 'status_401_count='; grep -Eia 'SIP/2.0 401' "$CAPTURE_FILE" | wc -l | tr -d ' '
+            printf 'status_200_count='; grep -Eia 'SIP/2.0 200' "$CAPTURE_FILE" | wc -l | tr -d ' '
+            printf 'user_1001_count='; grep -Eia '1001' "$CAPTURE_FILE" | wc -l | tr -d ' '
+            echo "V65_CAPTURE_COUNTS_END"
+          else
+            echo "V65_TCPDUMP_MISSING=true"
+            exit 25
+          fi
+          REMOTE
