@@ -49,7 +49,7 @@ jobs:
             --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
 
           ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
-          set -Eeuo pipefail
+          set -Eeu
           echo "V66_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           CAPTURE_FILE="/tmp/phone11-v65-register-20260525T035957Z.log"
           if [ ! -s "$CAPTURE_FILE" ]; then
