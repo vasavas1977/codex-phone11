@@ -75,25 +75,16 @@ jobs:
 
           if [ -n "${POSTGRES_CONTAINER:-}" ]; then
             echo "V64_DB_ROWS_BEGIN"
-            docker exec -i "$POSTGRES_CONTAINER" sh <<'DBSCRIPT'
-            set -Eeuo pipefail
-            DB_USER="${POSTGRES_USER:-postgres}"
-            DB_NAME="${POSTGRES_DB:-$DB_USER}"
-            echo "V64_DB_IDENTITY=user:${DB_USER}|db:${DB_NAME}"
-            psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tAc "
-              SELECT 'subscriber|' || username || '|' || domain || '|password_len=' || length(password) || '|password_md5_10=' || left(md5(password), 10) || '|ha1_ok=' || (lower(ha1)=md5(username || ':' || domain || ':' || password)) || '|ha1b_ok=' || (lower(ha1b)=md5(username || '@' || domain || ':' || domain || ':' || password))
-              FROM subscriber
-              WHERE username='1001' AND domain='sip.phone11.ai';
-            "
-            psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tAc "
-              SELECT 'extension|' || e.id || '|ext=' || e.extension_number || '|user=' || COALESCE(e.user_id::text,'null') || '|status=' || COALESCE(e.status,'null') || '|ext_password_len=' || COALESCE(length(e.sip_password)::text,'null') || '|ext_password_md5_10=' || COALESCE(left(md5(e.sip_password),10),'null') || '|account=' || COALESCE(sa.sip_username,'null') || '|account_domain=' || COALESCE(sa.sip_domain,'null') || '|secret_present=' || (sa.secret_ciphertext IS NOT NULL)
-              FROM extensions e
-              LEFT JOIN sip_accounts sa ON sa.extension_id=e.id AND sa.deleted_at IS NULL
-              WHERE e.extension_number='1001'
-              ORDER BY e.id
-              LIMIT 10;
-            "
-            DBSCRIPT
+            SQL_SUBSCRIBER_B64="U0VMRUNUIGNvbmNhdCgnc3Vic2NyaWJlcnwnLCB1c2VybmFtZSwgJ3wnLCBkb21haW4sICd8cGFzc3dvcmRfbGVuPScsIGxlbmd0aChwYXNzd29yZCksICd8cGFzc3dvcmRfbWQ1XzEwPScsIGxlZnQobWQ1KHBhc3N3b3JkKSwgMTApLCAnfGhhMV9vaz0nLCBsb3dlcihoYTEpPW1kNSh1c2VybmFtZSB8fCAnOicgfHwgZG9tYWluIHx8ICc6JyB8fCBwYXNzd29yZCksICd8aGExYl9vaz0nLCBsb3dlcihoYTFiKT1tZDUodXNlcm5hbWUgfHwgJ0AnIHx8IGRvbWFpbiB8fCAnOicgfHwgZG9tYWluIHx8ICc6JyB8fCBwYXNzd29yZCkpIEZST00gc3Vic2NyaWJlciBXSEVSRSB1c2VybmFtZT0nMTAwMScgQU5EIGRvbWFpbj0nc2lwLnBob25lMTEuYWknOw=="
+            SQL_EXTENSION_B64="U0VMRUNUIGNvbmNhdCgnZXh0ZW5zaW9ufCcsIGUuaWQsICd8ZXh0PScsIGUuZXh0ZW5zaW9uX251bWJlciwgJ3x1c2VyPScsIENPQUxFU0NFKGUudXNlcl9pZDo6dGV4dCwnbnVsbCcpLCAnfHN0YXR1cz0nLCBDT0FMRVNDRShlLnN0YXR1cywnbnVsbCcpLCAnfGV4dF9wYXNzd29yZF9sZW49JywgQ09BTEVTQ0UobGVuZ3RoKGUuc2lwX3Bhc3N3b3JkKTo6dGV4dCwnbnVsbCcpLCAnfGV4dF9wYXNzd29yZF9tZDVfMTA9JywgQ09BTEVTQ0UobGVmdChtZDUoZS5zaXBfcGFzc3dvcmQpLDEwKSwnbnVsbCcpLCAnfGFjY291bnQ9JywgQ09BTEVTQ0Uoc2Euc2lwX3VzZXJuYW1lLCdudWxsJyksICd8YWNjb3VudF9kb21haW49JywgQ09BTEVTQ0Uoc2Euc2lwX2RvbWFpbiwnbnVsbCcpLCAnfHNlY3JldF9wcmVzZW50PScsIChzYS5zZWNyZXRfY2lwaGVydGV4dCBJUyBOT1QgTlVMTCkpIEZST00gZXh0ZW5zaW9ucyBlIExFRlQgSk9JTiBzaXBfYWNjb3VudHMgc2EgT04gc2EuZXh0ZW5zaW9uX2lkPWUuaWQgQU5EIHNhLmRlbGV0ZWRfYXQgSVMgTlVMTCBXSEVSRSBlLmV4dGVuc2lvbl9udW1iZXI9JzEwMDEnIE9SREVSIEJZIGUuaWQgTElNSVQgMTA7"
+            docker exec -e SQL_SUBSCRIBER_B64="$SQL_SUBSCRIBER_B64" -e SQL_EXTENSION_B64="$SQL_EXTENSION_B64" "$POSTGRES_CONTAINER" sh -lc '
+              set -Eeuo pipefail
+              DB_USER="${POSTGRES_USER:-postgres}"
+              DB_NAME="${POSTGRES_DB:-$DB_USER}"
+              echo "V64_DB_IDENTITY=user:${DB_USER}|db:${DB_NAME}"
+              echo "$SQL_SUBSCRIBER_B64" | base64 -d | psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tA
+              echo "$SQL_EXTENSION_B64" | base64 -d | psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -tA
+            '
             echo "V64_DB_ROWS_END"
           fi
 
