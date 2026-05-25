@@ -1,0 +1,92 @@
+name: Phone11 V67 capture postprocess v68
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-v67-capture-postprocess-v68.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postprocess-v67-capture:
+    runs-on: ubuntu-24.04
+    env:
+      AWS_DEFAULT_REGION: ap-southeast-7
+      EC2_HOST: 43.210.122.111
+      EC2_USER: ubuntu
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Parse latest saved V67 capture
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v68_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeu
+          echo "V68_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          CAPTURE_FILE=$(ls -1t /tmp/phone11-v67-register-*.log 2>/dev/null | head -1 || true)
+          if [ -z "${CAPTURE_FILE:-}" ] || [ ! -s "$CAPTURE_FILE" ]; then
+            echo "V68_CAPTURE_FILE_MISSING=true"
+            exit 31
+          fi
+          echo "V68_CAPTURE_FILE=$CAPTURE_FILE"
+          echo "V68_CAPTURE_SIZE_BYTES=$(wc -c < "$CAPTURE_FILE" | tr -d ' ')"
+          echo "V68_CAPTURE_TIMES_BEGIN"
+          head -5 "$CAPTURE_FILE" || true
+          tail -5 "$CAPTURE_FILE" || true
+          echo "V68_CAPTURE_TIMES_END"
+
+          echo "V68_COUNTS_BEGIN"
+          printf 'register_request_lines='; grep -Eia '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'phone11_or_pjsip_user_agent_lines='; grep -Eia 'User-Agent:.*(Phone11|PJSIP|pjsua|react-native)' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'sip_1001_domain_lines='; grep -Eia 'sip:1001@sip.phone11.ai|username="1001"|Extension 1001|1001@sip.phone11.ai' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'status_401_lines='; grep -Eia 'SIP/2.0 401' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'status_200_lines='; grep -Eia 'SIP/2.0 200' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'scanner_voip_lines='; grep -Eia 'User-Agent: voip|User-Agent: SNAPmobile' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          echo "V68_COUNTS_END"
+
+          echo "V68_TRUE_PHONE11_CONTEXT_BEGIN"
+          grep -Eina -B 8 -A 50 'REGISTER sip:.*sip.phone11.ai|sip:1001@sip.phone11.ai|1001@sip.phone11.ai|username="1001"|User-Agent:.*(Phone11|PJSIP|pjsua|react-native)' "$CAPTURE_FILE" | head -800 || true
+          echo "V68_TRUE_PHONE11_CONTEXT_END"
+
+          echo "V68_ALL_REGISTER_CONTEXT_BEGIN"
+          grep -Eina -B 4 -A 34 '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" | head -500 || true
+          echo "V68_ALL_REGISTER_CONTEXT_END"
+
+          echo "V68_REGISTER_SOURCE_IPS_BEGIN"
+          grep -Eia '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" \
+            | sed -nE 's/.* IP ([0-9.]+)\.([0-9]+) > ([0-9.]+)\.([0-9]+): SIP:.*/src=\1 src_port=\2 dst=\3 dst_port=\4/p' \
+            | sort | uniq -c | sort -nr | head -50 || true
+          echo "V68_REGISTER_SOURCE_IPS_END"
+
+          echo "V68_CONTAINER_RECENT_KAMAILIO_BEGIN"
+          (docker logs --since 20m p11-kamailio 2>&1 || sudo docker logs --since 20m p11-kamailio 2>&1 || true) | grep -Eia '1001|REGISTER|401|authorized|auth|sip.phone11.ai|Phone11|PJSIP' | tail -200 || true
+          echo "V68_CONTAINER_RECENT_KAMAILIO_END"
+          REMOTE
