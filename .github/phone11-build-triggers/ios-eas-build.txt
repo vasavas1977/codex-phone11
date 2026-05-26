@@ -1,6 +1,7 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-27T00:01:45+07:00
-reason=build iOS buildNumber 5 with SIP stuck-registration diagnostics patch
+requested_at=2026-05-27T00:07:49+07:00
+reason=build SIP diagnostics with preview iOS autoIncrement enabled so tester gets a new binary
 patched_commit=8118052
 build_number_commit=ac8ed6c
+auto_increment_commit=830d40a
 workflow_trigger_commit=pending
