@@ -1,6 +1,5 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-24T15:26:54+07:00
-reason=build current SIP diagnostics and call-state handling before further PSTN media testing
-previous_tested_build=2590cfa4-dbd5-4815-8a80-8e774057bb5d
-previous_tested_commit=7d93321e9ab3dfe638ae7df5d02458c4ed3d5f45
+requested_at=2026-05-26T23:46:06+07:00
+reason=build SIP stuck-registration diagnostics patch with non-secret credential fingerprint and 401 terminal-state handling
+patched_commit=8118052
 workflow_trigger_commit=pending
