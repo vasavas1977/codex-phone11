@@ -102,7 +102,7 @@ jobs:
           WHERE username IN ('1001','phone11ai') OR domain IN ('sip.phone11.ai','phone11.ai')
           ORDER BY username, domain
           LIMIT 20;
-SQL
+          SQL
           echo "V81_SUBSCRIBER_PROOF_END"
 
           echo "V81_USER_EXTENSION_JOIN_BEGIN"
@@ -124,7 +124,7 @@ SQL
           WHERE e.extension_number='1001' OR e.user_id=1 OR ue.user_id=1 OR sa.user_id=1
           ORDER BY e.id, ue.is_primary DESC NULLS LAST
           LIMIT 20;
-SQL
+          SQL
           echo "V81_USER_EXTENSION_JOIN_END"
           DBSCRIPT
 
