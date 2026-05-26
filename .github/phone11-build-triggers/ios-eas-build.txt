@@ -1,5 +1,6 @@
 Phone11 iOS EAS build trigger
-requested_at=2026-05-26T23:46:06+07:00
-reason=build SIP stuck-registration diagnostics patch with non-secret credential fingerprint and 401 terminal-state handling
+requested_at=2026-05-27T00:01:45+07:00
+reason=build iOS buildNumber 5 with SIP stuck-registration diagnostics patch
 patched_commit=8118052
+build_number_commit=ac8ed6c
 workflow_trigger_commit=pending
