@@ -85,11 +85,10 @@ jobs:
           set -Eeuo pipefail
           DB_USER="${POSTGRES_USER:-postgres}"
           DB_NAME="${POSTGRES_DB:-$DB_USER}"
-          PSQL="psql -U $DB_USER -d $DB_NAME -v ON_ERROR_STOP=1 -AtF $(printf '\t')"
           echo "V81_DB_IDENTITY=user:${DB_USER}|db:${DB_NAME}"
 
           echo "V81_SUBSCRIBER_PROOF_BEGIN"
-          $PSQL -c "SELECT username, domain, password, COALESCE(ha1,''), COALESCE(ha1b,'') FROM subscriber WHERE username IN ('1001','phone11ai') OR domain IN ('sip.phone11.ai','phone11.ai') ORDER BY username, domain LIMIT 20;" | while IFS=$(printf '\t') read -r username domain password ha1 ha1b; do
+          psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT username, domain, password, COALESCE(ha1,''), COALESCE(ha1b,'') FROM subscriber WHERE username IN ('1001','phone11ai') OR domain IN ('sip.phone11.ai','phone11.ai') ORDER BY username, domain LIMIT 20;" | while IFS='|' read -r username domain password ha1 ha1b; do
             fp=$(printf '%s' "$password" | sha256sum | awk '{print $1}' | cut -c1-16)
             ha1_calc=$(printf '%s' "$username:$domain:$password" | md5sum | awk '{print $1}')
             ha1b_calc=$(printf '%s' "$username@$domain:$domain:$password" | md5sum | awk '{print $1}')
@@ -102,7 +101,7 @@ jobs:
           echo "V81_SUBSCRIBER_PROOF_END"
 
           echo "V81_USER_EXTENSION_JOIN_BEGIN"
-          $PSQL -c "SELECT e.id, e.extension_number, COALESCE(e.user_id::text,''), COALESCE(ue.user_id::text,''), COALESCE(sa.user_id::text,''), COALESCE(sa.sip_username,''), COALESCE(sa.sip_domain,''), COALESCE(sub.username,''), COALESCE(sub.domain,''), COALESCE(sub.password,''), COALESCE(e.sip_password,'') FROM extensions e LEFT JOIN user_extensions ue ON ue.extension_id = e.id LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number) AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, 'sip.phone11.ai') WHERE e.extension_number='1001' OR e.user_id=1 OR ue.user_id=1 OR sa.user_id=1 ORDER BY e.id, ue.is_primary DESC NULLS LAST LIMIT 20;" | while IFS=$(printf '\t') read -r ext_id extension_number ext_user_id ue_user_id sa_user_id sa_username sa_domain sub_username sub_domain sub_password ext_password; do
+          psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 -AtF '|' -c "SELECT e.id, e.extension_number, COALESCE(e.user_id::text,''), COALESCE(ue.user_id::text,''), COALESCE(sa.user_id::text,''), COALESCE(sa.sip_username,''), COALESCE(sa.sip_domain,''), COALESCE(sub.username,''), COALESCE(sub.domain,''), COALESCE(sub.password,''), COALESCE(e.sip_password,'') FROM extensions e LEFT JOIN user_extensions ue ON ue.extension_id = e.id LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number) AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, 'sip.phone11.ai') WHERE e.extension_number='1001' OR e.user_id=1 OR ue.user_id=1 OR sa.user_id=1 ORDER BY e.id, ue.is_primary DESC NULLS LAST LIMIT 20;" | while IFS='|' read -r ext_id extension_number ext_user_id ue_user_id sa_user_id sa_username sa_domain sub_username sub_domain sub_password ext_password; do
             sub_fp="none"
             ext_fp="none"
             if [ -n "$sub_password" ]; then sub_fp=$(printf '%s' "$sub_password" | sha256sum | awk '{print $1}' | cut -c1-16); fi
