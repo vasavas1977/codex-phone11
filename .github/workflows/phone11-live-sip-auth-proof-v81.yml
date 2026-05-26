@@ -120,13 +120,12 @@ jobs:
             /opt/phone11ai/cloudphone11/kamailio/kamailio.cfg; do
             if [ -f "$file" ]; then
               echo "-- file=$file"
-              grep -nEi 'loadmodule.*auth|auth_db|subscriber|calculate_ha1|use_domain|password_column|user_column|domain_column|www_challenge|www_authenticate|auth_check|pv_www_authenticate|authenticate|realm|db_url' "$file" \
-                | sed -E 's#(postgres://|mysql://)[^@ ]+@#\1[redacted]@#g; s#(DBURL[[:space:]]+["'"']?)[^"'"']+#\1[redacted]#g' || true
+              grep -nEi 'loadmodule.*auth|auth_db|subscriber|calculate_ha1|use_domain|password_column|user_column|domain_column|www_challenge|www_authenticate|auth_check|pv_www_authenticate|authenticate|realm' "$file" || true
             fi
           done
           if [ -n "$KAMAILIO_CONTAINER" ]; then
             echo "-- container=$KAMAILIO_CONTAINER"
-            docker exec "$KAMAILIO_CONTAINER" sh -lc "for file in /etc/kamailio/kamailio.cfg /usr/local/etc/kamailio/kamailio.cfg; do if [ -f \"\$file\" ]; then echo -- file=\$file; grep -nEi 'loadmodule.*auth|auth_db|subscriber|calculate_ha1|use_domain|password_column|user_column|domain_column|www_challenge|www_authenticate|auth_check|pv_www_authenticate|authenticate|realm|db_url' \"\$file\" | sed -E 's#(postgres://|mysql://)[^@ ]+@#\\1[redacted]@#g'; fi; done" || true
+            docker exec "$KAMAILIO_CONTAINER" sh -lc "for file in /etc/kamailio/kamailio.cfg /usr/local/etc/kamailio/kamailio.cfg; do if [ -f \"\$file\" ]; then echo -- file=\$file; grep -nEi 'loadmodule.*auth|auth_db|subscriber|calculate_ha1|use_domain|password_column|user_column|domain_column|www_challenge|www_authenticate|auth_check|pv_www_authenticate|authenticate|realm' \"\$file\" || true; fi; done" || true
           fi
           echo "V81_KAMAILIO_AUTH_CONFIG_END"
 
