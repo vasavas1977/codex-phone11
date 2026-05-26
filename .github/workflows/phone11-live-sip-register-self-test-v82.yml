@@ -1,0 +1,196 @@
+name: Phone11 V82 Live SIP Register Self Test
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-sip-register-self-test-v82.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  live-sip-register-self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Run live REGISTER digest self-test
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v82_register_selftest_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "V82_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V82_HOST=$(hostname)"
+
+          POSTGRES_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'postgres|db' | head -1 || true)
+          KAMAILIO_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'kamailio|sip' | head -1 || true)
+          test -n "$POSTGRES_CONTAINER"
+          test -n "$KAMAILIO_CONTAINER"
+          KAMAILIO_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$KAMAILIO_CONTAINER")
+          test -n "$KAMAILIO_IP"
+          echo "V82_POSTGRES_CONTAINER=$POSTGRES_CONTAINER"
+          echo "V82_KAMAILIO_CONTAINER=$KAMAILIO_CONTAINER"
+          echo "V82_KAMAILIO_IP=$KAMAILIO_IP"
+
+          SIP_PASSWORD=$(docker exec "$POSTGRES_CONTAINER" sh -lc 'DB_USER="${POSTGRES_USER:-postgres}"; DB_NAME="${POSTGRES_DB:-$DB_USER}"; psql -U "$DB_USER" -d "$DB_NAME" -At -v ON_ERROR_STOP=1 -c "SELECT password FROM subscriber WHERE username='"'"'1001'"'"' AND domain='"'"'sip.phone11.ai'"'"' LIMIT 1;"')
+          test -n "$SIP_PASSWORD"
+          echo "V82_DB_USERNAME=1001"
+          echo "V82_DB_DOMAIN=sip.phone11.ai"
+          echo "V82_DB_PASSWORD_LEN=${#SIP_PASSWORD}"
+          echo "V82_DB_PASSWORD_FP=$(printf '%s' "$SIP_PASSWORD" | sha256sum | awk '{print $1}' | cut -c1-16)"
+          command -v python3 >/dev/null
+
+          SIP_PASSWORD="$SIP_PASSWORD" KAMAILIO_IP="$KAMAILIO_IP" python3 - <<'PY'
+          import hashlib
+          import os
+          import random
+          import re
+          import socket
+          import string
+          import time
+
+          USERNAME = "1001"
+          DOMAIN = "sip.phone11.ai"
+          PASSWORD = os.environ["SIP_PASSWORD"]
+          HOST = os.environ["KAMAILIO_IP"]
+          PORT = 5060
+          URI = f"sip:{DOMAIN}"
+
+          def token(n=12):
+              alphabet = string.ascii_letters + string.digits
+              return ''.join(random.choice(alphabet) for _ in range(n))
+
+          def md5(value):
+              return hashlib.md5(value.encode('utf-8')).hexdigest()
+
+          def parse_status(raw):
+              first = raw.splitlines()[0] if raw else ''
+              match = re.match(r"SIP/2.0\s+(\d+)\s*(.*)", first)
+              if not match:
+                  return None, first
+              return int(match.group(1)), match.group(2).strip()
+
+          def digest_header(raw):
+              for line in raw.splitlines():
+                  if line.lower().startswith('www-authenticate:'):
+                      return line.split(':', 1)[1].strip()
+              return ''
+
+          def parse_digest(header):
+              if header.lower().startswith('digest '):
+                  header = header[7:]
+              parts = {}
+              for key, quoted, bare in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', header):
+                  parts[key.lower()] = quoted if quoted else bare
+              return parts
+
+          def build_register(local_ip, local_port, call_id, tag, cseq, branch, auth=None):
+              lines = [
+                  f"REGISTER {URI} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {local_ip}:{local_port};branch={branch};rport",
+                  "Max-Forwards: 70",
+                  f"From: <sip:{USERNAME}@{DOMAIN}>;tag={tag}",
+                  f"To: <sip:{USERNAME}@{DOMAIN}>",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} REGISTER",
+                  f"Contact: <sip:{USERNAME}@{local_ip}:{local_port};transport=udp>",
+                  "Expires: 300",
+                  "User-Agent: Phone11-V82-SelfTest",
+              ]
+              if auth:
+                  lines.insert(7, auth)
+              lines.extend(["Content-Length: 0", "", ""])
+              return "\r\n".join(lines).encode('utf-8')
+
+          sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sock.settimeout(4)
+          sock.connect((HOST, PORT))
+          local_ip, local_port = sock.getsockname()
+          call_id = f"phone11-v82-{int(time.time())}-{token(8)}@selftest"
+          tag = token(10)
+
+          first = build_register(local_ip, local_port, call_id, tag, 1, f"z9hG4bK{token(14)}")
+          sock.send(first)
+          raw1 = sock.recv(8192).decode('utf-8', 'replace')
+          status1, reason1 = parse_status(raw1)
+          print(f"V82_SELFTEST_FIRST_STATUS={status1}")
+          print(f"V82_SELFTEST_FIRST_REASON={reason1}")
+
+          challenge = digest_header(raw1)
+          if not challenge:
+              print("V82_SELFTEST_RESULT=no_www_authenticate_header")
+              raise SystemExit(2)
+          params = parse_digest(challenge)
+          realm = params.get('realm', '')
+          nonce = params.get('nonce', '')
+          algorithm = params.get('algorithm', 'MD5')
+          qop_options = params.get('qop', '')
+          qop = 'auth' if 'auth' in qop_options.lower().split(',') or 'auth' in qop_options.lower() else ''
+          print(f"V82_SELFTEST_REALM={realm}")
+          print(f"V82_SELFTEST_NONCE_PREFIX={nonce[:12]}")
+          print(f"V82_SELFTEST_ALGORITHM={algorithm}")
+          print(f"V82_SELFTEST_QOP={qop or 'none'}")
+
+          ha1 = md5(f"{USERNAME}:{realm}:{PASSWORD}")
+          ha2 = md5(f"REGISTER:{URI}")
+          if qop:
+              nc = '00000001'
+              cnonce = token(16)
+              response = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+              auth = f'Digest username="{USERNAME}", realm="{realm}", nonce="{nonce}", uri="{URI}", response="{response}", algorithm=MD5, qop={qop}, nc={nc}, cnonce="{cnonce}"'
+          else:
+              response = md5(f"{ha1}:{nonce}:{ha2}")
+              auth = f'Digest username="{USERNAME}", realm="{realm}", nonce="{nonce}", uri="{URI}", response="{response}", algorithm=MD5'
+          if 'opaque' in params:
+              auth += f', opaque="{params["opaque"]}"'
+          auth = 'Authorization: ' + auth
+          print(f"V82_SELFTEST_RESPONSE_PREFIX={response[:12]}")
+
+          second = build_register(local_ip, local_port, call_id, tag, 2, f"z9hG4bK{token(14)}", auth=auth)
+          sock.send(second)
+          raw2 = sock.recv(8192).decode('utf-8', 'replace')
+          status2, reason2 = parse_status(raw2)
+          print(f"V82_SELFTEST_SECOND_STATUS={status2}")
+          print(f"V82_SELFTEST_SECOND_REASON={reason2}")
+          if status2 and 200 <= status2 < 300:
+              print("V82_SELFTEST_RESULT=server_accepts_live_db_credentials")
+          elif status2 == 401:
+              print("V82_SELFTEST_RESULT=server_rejected_live_db_credentials")
+          else:
+              print("V82_SELFTEST_RESULT=unexpected_second_status")
+          PY
+          echo "V82_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          REMOTE
