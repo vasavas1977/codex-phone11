@@ -1,0 +1,118 @@
+name: Phone11 V87 Robust SIP Routing Evidence
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-sip-routing-evidence-v87.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  SIP_HOST: sip.phone11.ai
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  sip-routing-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Collect evidence
+        shell: bash
+        run: |
+          set -u
+          mkdir -p artifacts
+          OUT="artifacts/phone11-v87-sip-routing-evidence.txt"
+          : > "$OUT"
+          log() { printf '%s\n' "$*" | tee -a "$OUT"; }
+
+          log "V87_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          log "V87_SIP_HOST=$SIP_HOST"
+          log "V87_EXPECTED_EC2_HOST=$EC2_HOST"
+
+          log "V87_RUNNER_DNS_BEGIN"
+          getent ahostsv4 "$SIP_HOST" 2>&1 | tee -a "$OUT" || true
+          python3 -c 'import socket; host="sip.phone11.ai"; print("V87_RUNNER_PYTHON_ADDRS=" + ",".join(sorted({x[4][0] for x in socket.getaddrinfo(host, 5060, socket.AF_INET, socket.SOCK_DGRAM)})))' 2>&1 | tee -a "$OUT" || true
+          log "V87_RUNNER_DNS_END"
+
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json 2>&1)
+          EC2_DESCRIBE_STATUS=$?
+          log "V87_EC2_DESCRIBE_STATUS=$EC2_DESCRIBE_STATUS"
+          printf '%s\n' "$INSTANCE_JSON" | jq -c '{InstanceId,PrivateIpAddress,PublicIpAddress,Placement}' 2>/dev/null | tee -a "$OUT" || true
+          INSTANCE_ID=$(printf '%s' "$INSTANCE_JSON" | jq -r '.InstanceId // empty' 2>/dev/null || true)
+          AZ=$(printf '%s' "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty' 2>/dev/null || true)
+          log "V87_EC2_INSTANCE_ID=${INSTANCE_ID:-none}"
+          log "V87_EC2_AZ=${AZ:-none}"
+
+          if [ -n "${INSTANCE_ID:-}" ] && [ -n "${AZ:-}" ]; then
+            KEY_PATH="${HOME}/.ssh/phone11_v87_sip_routing_key"
+            mkdir -p ~/.ssh && chmod 700 ~/.ssh
+            ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+            if aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null 2>&1; then
+              log "V87_EIC_PUSH=true"
+              {
+                printf '%s\n' 'set -uo pipefail'
+                printf '%s\n' 'SIP_HOST="sip.phone11.ai"'
+                printf '%s\n' 'EC2_HOST="43.210.122.111"'
+                printf '%s\n' 'echo "V87_EC2_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+                printf '%s\n' 'echo "V87_EC2_HOSTNAME=$(hostname)"'
+                printf '%s\n' 'echo "V87_EC2_PUBLIC_IP_EXPECTED=$EC2_HOST"'
+                printf '%s\n' 'echo "V87_EC2_DNS_GETENT_BEGIN"'
+                printf '%s\n' 'getent ahostsv4 "$SIP_HOST" || true'
+                printf '%s\n' 'echo "V87_EC2_DNS_GETENT_END"'
+                printf '%s\n' 'python3 -c '\''import socket; host="sip.phone11.ai"; print("V87_EC2_PYTHON_ADDRS=" + ",".join(sorted({x[4][0] for x in socket.getaddrinfo(host, 5060, socket.AF_INET, socket.SOCK_DGRAM)})))'\'' || true'
+                printf '%s\n' 'echo "V87_EC2_SIP_LISTEN_BEGIN"'
+                printf '%s\n' '(sudo -n ss -lunpt 2>/dev/null || ss -lunpt || true) | grep -E "(:5060|:5061|:10000|:20000|kamailio|rtpengine)" || true'
+                printf '%s\n' 'echo "V87_EC2_SIP_LISTEN_END"'
+                printf '%s\n' 'echo "V87_DOCKER_CONTAINERS_BEGIN"'
+                printf '%s\n' 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}" | grep -Ei "kamailio|rtp|free|postgres|phone11|sip|5060|5061" || true'
+                printf '%s\n' 'echo "V87_DOCKER_CONTAINERS_END"'
+                printf '%s\n' 'KAMAILIO_CONTAINER=$(docker ps --format "{{.Names}}" | grep -Ei "kamailio|sip" | head -1 || true)'
+                printf '%s\n' 'echo "V87_KAMAILIO_CONTAINER=${KAMAILIO_CONTAINER:-none}"'
+                printf '%s\n' 'if [ -n "$KAMAILIO_CONTAINER" ]; then echo "V87_KAMAILIO_RECENT_1001_BEGIN"; docker logs --since 2h "$KAMAILIO_CONTAINER" 2>&1 | grep -E "1001|REGISTER|Unauthorized|401|200 OK" | tail -200 | sed -E '\''s/(response=")[^"]+(")/\1[redacted]\2/g'\'' || true; echo "V87_KAMAILIO_RECENT_1001_END"; fi'
+                printf '%s\n' 'ADDRS=$(python3 -c '\''import socket; print(",".join(sorted({x[4][0] for x in socket.getaddrinfo("sip.phone11.ai", 5060, socket.AF_INET, socket.SOCK_DGRAM)})))'\'' 2>/dev/null || true)'
+                printf '%s\n' 'if echo ",$ADDRS," | grep -q ",43.210.122.111,"; then echo "V87_DNS_MATCH_EXPECTED=true"; else echo "V87_DNS_MATCH_EXPECTED=false"; fi'
+                printf '%s\n' 'echo "V87_EC2_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
+              } | ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' >> "$OUT" 2>&1
+              log "V87_SSH_STATUS=$?"
+            else
+              log "V87_EIC_PUSH=false"
+            fi
+          fi
+
+          log "V87_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Upload evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-v87-sip-routing-evidence
+          path: artifacts/phone11-v87-sip-routing-evidence.txt
+
+      - name: Commit evidence artifact
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          git config user.name "phone11-actions"
+          git config user.email "phone11-actions@users.noreply.github.com"
+          git add artifacts/phone11-v87-sip-routing-evidence.txt
+          if git diff --cached --quiet; then
+            echo "V87_NO_ARTIFACT_CHANGE=true"
+          else
+            git commit -m "Persist V87 SIP routing evidence [skip ci]"
+            git push
+          fi
