@@ -59,11 +59,20 @@ jobs:
           KAMAILIO_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'kamailio|sip' | head -1 || true)
           test -n "$POSTGRES_CONTAINER"
           test -n "$KAMAILIO_CONTAINER"
-          KAMAILIO_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$KAMAILIO_CONTAINER")
-          test -n "$KAMAILIO_IP"
+          command -v python3 >/dev/null
+
+          KAMAILIO_INSPECT=$(docker inspect "$KAMAILIO_CONTAINER")
+          KAMAILIO_INSPECT_IP=$(printf '%s' "$KAMAILIO_INSPECT" | python3 -c 'import json, re, sys; data=json.load(sys.stdin)[0]; nets=data.get("NetworkSettings",{}).get("Networks",{}); ips=[v.get("IPAddress","") for v in nets.values()]; print(next((ip for ip in ips if re.match(r"^\d+(?:\.\d+){3}$", ip)), ""))')
+          KAMAILIO_NET=$(printf '%s' "$KAMAILIO_INSPECT" | python3 -c 'import json, sys; data=json.load(sys.stdin)[0]; nets=data.get("NetworkSettings",{}).get("Networks",{}); print(next(iter(nets.keys()), ""))')
+          HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
+          ROUTE_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}' || true)
+          KAMAILIO_TARGETS=$(printf '%s\n' "$KAMAILIO_INSPECT_IP" 127.0.0.1 "$HOST_IP" "$ROUTE_IP" | awk 'NF && !seen[$0]++' | paste -sd, -)
+          test -n "$KAMAILIO_TARGETS"
           echo "V82_POSTGRES_CONTAINER=$POSTGRES_CONTAINER"
           echo "V82_KAMAILIO_CONTAINER=$KAMAILIO_CONTAINER"
-          echo "V82_KAMAILIO_IP=$KAMAILIO_IP"
+          echo "V82_KAMAILIO_NET=${KAMAILIO_NET:-none}"
+          echo "V82_KAMAILIO_INSPECT_IP=${KAMAILIO_INSPECT_IP:-none}"
+          echo "V82_KAMAILIO_TARGETS=$KAMAILIO_TARGETS"
 
           SIP_PASSWORD=$(docker exec "$POSTGRES_CONTAINER" sh -lc 'DB_USER="${POSTGRES_USER:-postgres}"; DB_NAME="${POSTGRES_DB:-$DB_USER}"; psql -U "$DB_USER" -d "$DB_NAME" -At -v ON_ERROR_STOP=1 -c "SELECT password FROM subscriber WHERE username='"'"'1001'"'"' AND domain='"'"'sip.phone11.ai'"'"' LIMIT 1;"')
           test -n "$SIP_PASSWORD"
@@ -71,9 +80,8 @@ jobs:
           echo "V82_DB_DOMAIN=sip.phone11.ai"
           echo "V82_DB_PASSWORD_LEN=${#SIP_PASSWORD}"
           echo "V82_DB_PASSWORD_FP=$(printf '%s' "$SIP_PASSWORD" | sha256sum | awk '{print $1}' | cut -c1-16)"
-          command -v python3 >/dev/null
 
-          SIP_PASSWORD="$SIP_PASSWORD" KAMAILIO_IP="$KAMAILIO_IP" python3 - <<'PY'
+          SIP_PASSWORD="$SIP_PASSWORD" KAMAILIO_TARGETS="$KAMAILIO_TARGETS" python3 - <<'PY'
           import hashlib
           import os
           import random
@@ -85,7 +93,7 @@ jobs:
           USERNAME = "1001"
           DOMAIN = "sip.phone11.ai"
           PASSWORD = os.environ["SIP_PASSWORD"]
-          HOST = os.environ["KAMAILIO_IP"]
+          TARGETS = [target for target in os.environ["KAMAILIO_TARGETS"].split(",") if target]
           PORT = 5060
           URI = f"sip:{DOMAIN}"
 
@@ -135,24 +143,37 @@ jobs:
               lines.extend(["Content-Length: 0", "", ""])
               return "\r\n".join(lines).encode('utf-8')
 
-          sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-          sock.settimeout(4)
-          sock.connect((HOST, PORT))
-          local_ip, local_port = sock.getsockname()
-          call_id = f"phone11-v82-{int(time.time())}-{token(8)}@selftest"
-          tag = token(10)
+          selected = None
+          for host in TARGETS:
+              sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+              sock.settimeout(4)
+              try:
+                  sock.connect((host, PORT))
+                  local_ip, local_port = sock.getsockname()
+                  call_id = f"phone11-v82-{int(time.time())}-{token(8)}@selftest"
+                  tag = token(10)
+                  first = build_register(local_ip, local_port, call_id, tag, 1, f"z9hG4bK{token(14)}")
+                  sock.send(first)
+                  raw1 = sock.recv(8192).decode('utf-8', 'replace')
+                  status1, reason1 = parse_status(raw1)
+                  challenge = digest_header(raw1)
+                  print(f"V82_SELFTEST_CANDIDATE={host}|status={status1}|reason={reason1}|challenge={bool(challenge)}")
+                  if challenge:
+                      selected = (host, sock, local_ip, local_port, call_id, tag, raw1, status1, reason1, challenge)
+                      break
+              except Exception as exc:
+                  print(f"V82_SELFTEST_CANDIDATE={host}|error={type(exc).__name__}:{exc}")
+                  sock.close()
 
-          first = build_register(local_ip, local_port, call_id, tag, 1, f"z9hG4bK{token(14)}")
-          sock.send(first)
-          raw1 = sock.recv(8192).decode('utf-8', 'replace')
-          status1, reason1 = parse_status(raw1)
+          if not selected:
+              print("V82_SELFTEST_RESULT=no_kamailio_target_responded")
+              raise SystemExit(2)
+
+          host, sock, local_ip, local_port, call_id, tag, raw1, status1, reason1, challenge = selected
+          print(f"V82_SELFTEST_SELECTED_TARGET={host}")
           print(f"V82_SELFTEST_FIRST_STATUS={status1}")
           print(f"V82_SELFTEST_FIRST_REASON={reason1}")
 
-          challenge = digest_header(raw1)
-          if not challenge:
-              print("V82_SELFTEST_RESULT=no_www_authenticate_header")
-              raise SystemExit(2)
           params = parse_digest(challenge)
           realm = params.get('realm', '')
           nonce = params.get('nonce', '')
