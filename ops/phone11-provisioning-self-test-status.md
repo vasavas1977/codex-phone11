@@ -1,8 +1,8 @@
 # Phone11 Provisioning Backend Self-Test Status
 
-- Time UTC: 2026-05-24T16:37:58+00:00
+- Time UTC: 2026-05-27T01:28:13+00:00
 - Branch: codex/phone11-mobile-pjsip-20260506
-- Workflow commit: 159af3c02b1d704db73e782447921188f8fb193d
+- Workflow commit: 697df8afb329c9c792f36ab007f8d0116ea34f0e
 - EC2 host: 43.209.112.208
 - EC2 instance: i-0cc8f248b08c5f2fb
 - Pilot user id: 1
@@ -12,22 +12,22 @@
 ## Sanitized output
 ```text
 === Phone11 provisioning backend self-test ===
-Time: 2026-05-24T16:37:37+00:00
+Time: 2026-05-27T01:27:54+00:00
 --- Locate EC2 ---
 Found EC2 instance i-0cc8f248b08c5f2fb in ap-southeast-7b
 --- Prepare temporary SSH access ---
 {
-    "RequestId": "3223b9db-65a4-469c-bcaf-66e96cbab650",
+    "RequestId": "5e581d04-29d3-4057-802a-ebb720deb7b5",
     "Success": true
 }
 --- Prepare remote live-backend test script ---
 --- Run remote live-backend test ---
 Warning: Permanently added '43.209.112.208' (ED25519) to the list of known hosts.
 --- Runtime containers ---
-cp11-backend phone11-backend-public:7b0c678eeff3893ce53c964f17a88d76327299ab Up 7 days (healthy)
+cp11-backend phone11-backend-public:7b0c678eeff3893ce53c964f17a88d76327299ab Up 9 days (healthy)
 --- Public and local health ---
-{"ok":true,"timestamp":1779640677159,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
-{"ok":true,"timestamp":1779640677168,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
+{"ok":true,"timestamp":1779845292684,"build":"93c2913c67c886fe297a0e8e1ebf748981dd632e","service":"phone11-backend"}
+{"ok":true,"timestamp":1779845292694,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
 --- Backend env keys, names only ---
 DB_HOST=<set>
 DB_NAME=<set>
