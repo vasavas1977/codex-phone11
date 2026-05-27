@@ -1,0 +1,167 @@
+name: Phone11 V91 Route53 API DNS Alignment
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-route53-api-live-v91.yml
+      - ops/phone11-route53-api-live-v91-trigger-*
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  ROOT_DOMAIN: phone11.ai
+  API_RECORD: api.phone11.ai
+  LIVE_API_IP: 43.210.122.111
+  OLD_API_IP_SEEN: 43.209.112.208
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  align-api-dns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Upsert API DNS record and write evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG=/tmp/phone11-route53-api-live-v91.log
+          STATUS=0
+          ZONE_ID=''
+          CHANGE_ID=''
+          exec > >(tee "$LOG") 2>&1
+
+          sanitize_log() {
+            sed -E \
+              -e 's#(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN)=([^[:space:]]+)#\1=<redacted>#g' \
+              "$LOG" 2>/dev/null || true
+          }
+
+          write_status() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 V91 Route53 API DNS Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- Hosted zone id: ${ZONE_ID:-not-set}"
+              echo "- Change id: ${CHANGE_ID:-not-set}"
+              echo "- API record: $API_RECORD"
+              echo "- Target live API IP: $LIVE_API_IP"
+              echo "- Old API IP observed by V90: $OLD_API_IP_SEEN"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sanitize_log
+              echo '```'
+            } > ops/phone11-route53-api-live-v91-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-route53-api-live-v91-status.md
+            if git diff --cached --quiet; then
+              echo 'No V91 status file changes to commit.'
+            else
+              git commit -m "Update Phone11 V91 Route53 API DNS status" || true
+              git push || true
+            fi
+          }
+
+          trap 'STATUS=$?; write_status; exit $STATUS' EXIT
+
+          echo '=== Phone11 V91 Route53 API DNS alignment ==='
+          echo "Time: $(date -u -Iseconds)"
+          echo "Record: ${API_RECORD}. -> ${LIVE_API_IP}"
+          echo "Old API IP observed in V90: ${OLD_API_IP_SEEN}"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '--- Locate hosted zone ---'
+          ZONE_ID=$(aws route53 list-hosted-zones-by-name \
+            --dns-name "${ROOT_DOMAIN}." \
+            --query "HostedZones[?Name=='${ROOT_DOMAIN}.'].Id | [0]" \
+            --output text | sed 's#^/hostedzone/##')
+          if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = 'None' ]; then
+            echo "ERROR: Could not locate Route53 hosted zone for ${ROOT_DOMAIN}."
+            exit 40
+          fi
+          echo "Hosted zone id: $ZONE_ID"
+
+          echo '--- Current API A record from Route53 ---'
+          aws route53 list-resource-record-sets \
+            --hosted-zone-id "$ZONE_ID" \
+            --query "ResourceRecordSets[?Name=='${API_RECORD}.' && Type=='A'] | [0]" \
+            --output json
+
+          echo '--- Upsert API A record to live backend IP ---'
+          cat >/tmp/phone11-api-record-change.json <<JSON
+          {
+            "Comment": "Phone11: point api.phone11.ai at the live backend used by SIP provisioning",
+            "Changes": [
+              {
+                "Action": "UPSERT",
+                "ResourceRecordSet": {
+                  "Name": "${API_RECORD}.",
+                  "Type": "A",
+                  "TTL": 60,
+                  "ResourceRecords": [
+                    { "Value": "${LIVE_API_IP}" }
+                  ]
+                }
+              }
+            ]
+          }
+          JSON
+          cat /tmp/phone11-api-record-change.json
+          CHANGE_ID=$(aws route53 change-resource-record-sets \
+            --hosted-zone-id "$ZONE_ID" \
+            --change-batch file:///tmp/phone11-api-record-change.json \
+            --query 'ChangeInfo.Id' \
+            --output text)
+          echo "Route53 change id: $CHANGE_ID"
+
+          echo '--- Wait for Route53 INSYNC ---'
+          aws route53 wait resource-record-sets-changed --id "$CHANGE_ID"
+          echo 'Route53 change is INSYNC.'
+
+          echo '--- Post-change API A record from Route53 ---'
+          POST_JSON=$(aws route53 list-resource-record-sets \
+            --hosted-zone-id "$ZONE_ID" \
+            --query "ResourceRecordSets[?Name=='${API_RECORD}.' && Type=='A'] | [0]" \
+            --output json)
+          echo "$POST_JSON"
+          if ! echo "$POST_JSON" | jq -e --arg ip "$LIVE_API_IP" '.ResourceRecords[]?.Value == $ip' >/dev/null; then
+            echo "ERROR: Route53 post-change record does not contain ${LIVE_API_IP}."
+            exit 41
+          fi
+
+          echo '--- Resolver spot check ---'
+          if command -v dig >/dev/null 2>&1; then
+            dig +short "${API_RECORD}" A || true
+            dig +short @8.8.8.8 "${API_RECORD}" A || true
+            dig +short @1.1.1.1 "${API_RECORD}" A || true
+          else
+            getent ahostsv4 "${API_RECORD}" || true
+          fi
+
+          echo 'V91 Route53 API DNS alignment succeeded.'
