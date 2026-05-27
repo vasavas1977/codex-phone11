@@ -1,8 +1,8 @@
 # Phone11 V92 Old API Host Proxy Status
 
-- Time UTC: 2026-05-27T01:17:33+00:00
+- Time UTC: 2026-05-27T01:17:53+00:00
 - Branch: codex/phone11-mobile-pjsip-20260506
-- Workflow commit: e004c0e42cf23b2ab3e74b21d5f5620fa0c9d2fc
+- Workflow commit: 2481d65aa9a558153d0ce32ceaac554b65033054
 - Old public API host: 43.209.112.208
 - Live backend host: 43.210.122.111
 - API hostname: api.phone11.ai
@@ -13,7 +13,7 @@
 ## Sanitized output
 ```text
 === Phone11 V92 old public API proxy to live backend ===
-Time: 2026-05-27T01:17:16+00:00
+Time: 2026-05-27T01:17:36+00:00
 Old API host: 43.209.112.208
 Live backend host: 43.210.122.111
 API hostname: api.phone11.ai
@@ -21,7 +21,7 @@ API hostname: api.phone11.ai
 Found old API EC2 instance i-0cc8f248b08c5f2fb in ap-southeast-7b
 --- Prepare temporary SSH access ---
 {
-    "RequestId": "0f6f68ac-c6a4-4868-9179-484c4e224730",
+    "RequestId": "71eb0a73-cc48-48d4-b818-118a196f1605",
     "Success": true
 }
 --- Prepare remote nginx proxy patch ---
@@ -29,11 +29,11 @@ Found old API EC2 instance i-0cc8f248b08c5f2fb in ap-southeast-7b
 Warning: Permanently added '43.209.112.208' (ED25519) to the list of known hosts.
 --- Preflight: old API host and live backend health ---
 ip-10-0-2-252
-2026-05-27T01:17:32+00:00
+2026-05-27T01:17:52+00:00
 Current old public API health through local resolve:
-{"ok":true,"timestamp":1779844652315,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
+{"ok":true,"timestamp":1779844672213,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
 Live backend HTTP Host-route health from old API host:
-{"ok":true,"timestamp":1779844652324,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
+{"ok":true,"timestamp":1779844672222,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
 --- Discover existing nginx config and certificates ---
 	types_hash_max_size 2048;
 	# server_tokens off;
