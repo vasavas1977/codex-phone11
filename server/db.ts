@@ -3,6 +3,7 @@ import type { InsertUser, User } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let pool: Pool | null = null;
+let ensureUsersTablePromise: Promise<void> | null = null;
 
 const isTruthy = (value: string | undefined) =>
   value !== undefined && value.length > 0 && value.toLowerCase() !== "false";
@@ -52,6 +53,33 @@ export async function getDb() {
   return pool;
 }
 
+async function ensureUsersTable(db: Pool): Promise<void> {
+  if (!ensureUsersTablePromise) {
+    ensureUsersTablePromise = db
+      .query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          "openId" VARCHAR(64) NOT NULL,
+          name TEXT,
+          email VARCHAR(320),
+          "loginMethod" VARCHAR(64),
+          role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+          "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          "lastSignedIn" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS users_openid_unique ON users ("openId");
+      `)
+      .then(() => undefined)
+      .catch((error) => {
+        ensureUsersTablePromise = null;
+        throw error;
+      });
+  }
+
+  return ensureUsersTablePromise;
+}
+
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
@@ -62,6 +90,8 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     console.warn("[Database] Cannot upsert user: database not configured");
     return;
   }
+
+  await ensureUsersTable(db);
 
   const values: unknown[] = [user.openId];
   const columns = ['"openId"'];
@@ -108,6 +138,8 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
     console.warn("[Database] Cannot get user: database not configured");
     return undefined;
   }
+
+  await ensureUsersTable(db);
 
   const { rows } = await db.query<User>(
     `SELECT id, "openId", name, email, "loginMethod", role, "createdAt", "updatedAt", "lastSignedIn"
