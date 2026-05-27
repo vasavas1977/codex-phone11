@@ -1,0 +1,216 @@
+name: Phone11 V93 Exact Old API Nginx Proxy Patch
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-old-api-exact-proxy-v93.yml
+      - ops/phone11-old-api-exact-proxy-v93-trigger-*
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  OLD_API_HOST: 43.209.112.208
+  LIVE_BACKEND_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  API_HOSTNAME: api.phone11.ai
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  patch-exact-api-proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Patch exact api.phone11.ai nginx server block
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG=/tmp/phone11-old-api-exact-proxy-v93.log
+          STATUS=0
+          INSTANCE_ID=''
+          AZ=''
+          exec > >(tee "$LOG") 2>&1
+
+          sanitize_log() {
+            sed -E \
+              -e 's#(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN)=([^[:space:]]+)#\1=<redacted>#g' \
+              "$LOG" 2>/dev/null || true
+          }
+
+          write_status() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 V93 Exact Old API Proxy Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- Old public API host: $OLD_API_HOST"
+              echo "- Live backend host: $LIVE_BACKEND_HOST"
+              echo "- API hostname: $API_HOSTNAME"
+              echo "- Old EC2 instance: ${INSTANCE_ID:-not-set}"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sanitize_log
+              echo '```'
+            } > ops/phone11-old-api-exact-proxy-v93-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-old-api-exact-proxy-v93-status.md
+            if git diff --cached --quiet; then
+              echo 'No V93 status file changes to commit.'
+            else
+              git commit -m "Update Phone11 V93 exact API proxy status" || true
+              git push || true
+            fi
+          }
+
+          trap 'STATUS=$?; write_status; exit $STATUS' EXIT
+
+          echo '=== Phone11 V93 exact old API nginx proxy patch ==='
+          echo "Old API host: $OLD_API_HOST"
+          echo "Live backend host: $LIVE_BACKEND_HOST"
+          echo "API hostname: $API_HOSTNAME"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$OLD_API_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for old API host $OLD_API_HOST"
+            exit 32
+          fi
+          echo "Found old API EC2 instance $INSTANCE_ID in $AZ"
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v93_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v93_eic_key.pub"
+
+          cat >/tmp/phone11-v93-exact-api-proxy.sh <<'REMOTE'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          echo '--- Preflight health ---'
+          echo 'Old API through DNS target before patch:'
+          curl -k -fsS --connect-timeout 5 --max-time 12 --resolve "${API_HOSTNAME}:443:${OLD_API_HOST}" "https://${API_HOSTNAME}/api/health" || true
+          echo
+          echo 'Live backend from old host:'
+          curl -fsS --connect-timeout 5 --max-time 12 -H "Host: ${API_HOSTNAME}" "http://${LIVE_BACKEND_HOST}/api/health"
+          echo
+
+          CONFIG_FILE=''
+          while IFS= read -r file; do
+            if sudo grep -qE "server_name[[:space:]]+${API_HOSTNAME};" "$file"; then
+              CONFIG_FILE="$file"
+              break
+            fi
+          done < <(sudo grep -RIl "server_name .*${API_HOSTNAME}" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true)
+
+          if [ -z "$CONFIG_FILE" ]; then
+            echo "ERROR: no exact nginx server_name ${API_HOSTNAME}; block found."
+            sudo nginx -T 2>/dev/null | grep -E -C 4 "${API_HOSTNAME}|server_name|proxy_pass" | head -260 || true
+            exit 50
+          fi
+          echo "Nginx config file selected: $CONFIG_FILE"
+
+          BACKUP="${CONFIG_FILE}.v93-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo cp "$CONFIG_FILE" "$BACKUP"
+          echo "Backup written: $BACKUP"
+
+          sudo API_HOSTNAME="$API_HOSTNAME" LIVE_BACKEND_HOST="$LIVE_BACKEND_HOST" CONFIG_FILE="$CONFIG_FILE" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ['CONFIG_FILE'])
+          api = os.environ['API_HOSTNAME']
+          live = os.environ['LIVE_BACKEND_HOST']
+          text = path.read_text()
+
+          starts = [m.start() for m in re.finditer(r'\bserver\s*\{', text)]
+          target = None
+          for start in starts:
+            brace = text.find('{', start)
+            depth = 0
+            end = None
+            for i in range(brace, len(text)):
+              if text[i] == '{':
+                depth += 1
+              elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                  end = i + 1
+                  break
+            if end is None:
+              continue
+            block = text[start:end]
+            if re.search(r'server_name\s+' + re.escape(api) + r'\s*;', block):
+              target = (start, end, block)
+              break
+
+          if target is None:
+            raise SystemExit(f'exact server block for {api} not found')
+
+          start, end, block = target
+          original_block = block
+          block = re.sub(r'proxy_pass\s+http://[^;]+;', f'proxy_pass http://{live};', block)
+          block = re.sub(r'proxy_set_header\s+Host\s+[^;]+;', f'proxy_set_header Host {api};', block)
+          if f'proxy_pass http://{live};' not in block:
+            raise SystemExit('proxy_pass replacement did not take effect')
+          if block == original_block:
+            print('Exact api server block already pointed at requested backend or no replacement was needed.')
+          else:
+            text = text[:start] + block + text[end:]
+            path.write_text(text)
+            print(f'Patched exact api server block to proxy_pass http://{live};')
+          PY
+
+          echo '--- Patched exact api block preview ---'
+          sudo nginx -T 2>/dev/null | awk '/server_name api\.phone11\.ai;/{show=1} show{print} show && /}/{count++; if (count>=2) exit}' | head -120 || true
+
+          echo '--- Validate and reload nginx ---'
+          sudo nginx -t
+          sudo systemctl reload nginx || sudo nginx -s reload
+
+          echo '--- Verify old API now returns live backend build ---'
+          sleep 2
+          OLD_PROXY_HEALTH=$(curl -k -fsS --connect-timeout 5 --max-time 12 --resolve "${API_HOSTNAME}:443:${OLD_API_HOST}" "https://${API_HOSTNAME}/api/health")
+          LIVE_HEALTH=$(curl -fsS --connect-timeout 5 --max-time 12 -H "Host: ${API_HOSTNAME}" "http://${LIVE_BACKEND_HOST}/api/health")
+          echo "$OLD_PROXY_HEALTH"
+          echo "$LIVE_HEALTH"
+          OLD_BUILD=$(printf '%s' "$OLD_PROXY_HEALTH" | jq -r '.build // empty')
+          LIVE_BUILD=$(printf '%s' "$LIVE_HEALTH" | jq -r '.build // empty')
+          if [ -z "$OLD_BUILD" ] || [ -z "$LIVE_BUILD" ] || [ "$OLD_BUILD" != "$LIVE_BUILD" ]; then
+            echo "ERROR: old API proxy build mismatch: old=${OLD_BUILD:-missing} live=${LIVE_BUILD:-missing}"
+            exit 51
+          fi
+          echo "V93_EXACT_API_PROXY_TO_LIVE_OK=true build=$OLD_BUILD"
+          REMOTE
+
+          scp -i ~/.ssh/phone11_v93_eic_key -o StrictHostKeyChecking=no /tmp/phone11-v93-exact-api-proxy.sh "$EC2_USER@$OLD_API_HOST:/tmp/phone11-v93-exact-api-proxy.sh"
+          ssh -i ~/.ssh/phone11_v93_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$OLD_API_HOST" "OLD_API_HOST='$OLD_API_HOST' LIVE_BACKEND_HOST='$LIVE_BACKEND_HOST' API_HOSTNAME='$API_HOSTNAME' bash /tmp/phone11-v93-exact-api-proxy.sh"
+
+          echo 'V93 old exact API host proxy patch succeeded.'
