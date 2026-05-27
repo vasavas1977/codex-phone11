@@ -1,8 +1,8 @@
 # Phone11 V93 Exact Old API Proxy Status
 
-- Time UTC: 2026-05-27T01:19:25+00:00
+- Time UTC: 2026-05-27T01:21:18+00:00
 - Branch: codex/phone11-mobile-pjsip-20260506
-- Workflow commit: c1329983eda6cc7770a5abe5e97355abe39f3dcb
+- Workflow commit: 651eb16e1487c38442a65e0640b39692302a8d2e
 - Old public API host: 43.209.112.208
 - Live backend host: 43.210.122.111
 - API hostname: api.phone11.ai
@@ -18,17 +18,17 @@ Live backend host: 43.210.122.111
 API hostname: api.phone11.ai
 Found old API EC2 instance i-0cc8f248b08c5f2fb in ap-southeast-7b
 {
-    "RequestId": "2e3d0006-eead-4a5e-903d-f30d016786c2",
+    "RequestId": "f9699e57-bcd0-48bc-94dc-158f7ed91e39",
     "Success": true
 }
 Warning: Permanently added '43.209.112.208' (ED25519) to the list of known hosts.
 --- Preflight health ---
 Old API through DNS target before patch:
-{"ok":true,"timestamp":1779844762896,"build":"7b0c678eeff3893ce53c964f17a88d76327299ab","service":"phone11-backend"}
+{"ok":true,"timestamp":1779844875121,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
 Live backend from old host:
-{"ok":true,"timestamp":1779844762905,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
-Nginx config file selected: /etc/nginx/sites-enabled/phone11ai
-Backup written: /etc/nginx/sites-enabled/phone11ai.v93-backup-20260527T011922Z
+{"ok":true,"timestamp":1779844875130,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
+Nginx config file selected: /etc/nginx/sites-enabled/phone11ai.v93-backup-20260527T011922Z
+Backup written: /etc/nginx/sites-enabled/phone11ai.v93-backup-20260527T011922Z.v93-backup-20260527T012115Z
 Patched exact api server block to proxy_pass http://43.210.122.111;
 --- Patched exact api block preview ---
     server_name api.phone11.ai;
@@ -52,17 +52,23 @@ Patched exact api server block to proxy_pass http://43.210.122.111;
     }
 }
 --- Validate and reload nginx ---
---- Verify old API now returns live backend build ---
-2026/05/27 01:19:23 [warn] 2018915#2018915: conflicting server name "phone11.ai" on 0.0.0.0:80, ignored
-2026/05/27 01:19:23 [warn] 2018915#2018915: conflicting server name "1toall.phone11.ai" on 0.0.0.0:80, ignored
-2026/05/27 01:19:23 [warn] 2018915#2018915: conflicting server name "api.phone11.ai" on 0.0.0.0:80, ignored
-2026/05/27 01:19:23 [warn] 2018915#2018915: conflicting server name "phone11.ai" on 0.0.0.0:443, ignored
-2026/05/27 01:19:23 [warn] 2018915#2018915: conflicting server name "1toall.phone11.ai" on 0.0.0.0:443, ignored
-2026/05/27 01:19:23 [warn] 2018915#2018915: conflicting server name "api.phone11.ai" on 0.0.0.0:443, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "phone11.ai" on 0.0.0.0:80, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "1toall.phone11.ai" on 0.0.0.0:80, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "api.phone11.ai" on 0.0.0.0:80, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "phone11.ai" on 0.0.0.0:80, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "1toall.phone11.ai" on 0.0.0.0:80, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "api.phone11.ai" on 0.0.0.0:80, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "phone11.ai" on 0.0.0.0:443, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "1toall.phone11.ai" on 0.0.0.0:443, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "api.phone11.ai" on 0.0.0.0:443, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "phone11.ai" on 0.0.0.0:443, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "1toall.phone11.ai" on 0.0.0.0:443, ignored
+2026/05/27 01:21:15 [warn] 2019825#2019825: conflicting server name "api.phone11.ai" on 0.0.0.0:443, ignored
 nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
 nginx: configuration file /etc/nginx/nginx.conf test is successful
-{"ok":true,"timestamp":1779844765084,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
-{"ok":true,"timestamp":1779844765093,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
+--- Verify old API now returns live backend build ---
+{"ok":true,"timestamp":1779844877328,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
+{"ok":true,"timestamp":1779844877337,"build":"14055c1e5c77967c65941b674c6a8e7c8e9ab1ff","service":"phone11-backend"}
 V93_EXACT_API_PROXY_TO_LIVE_OK=true build=14055c1e5c77967c65941b674c6a8e7c8e9ab1ff
 V93 old exact API host proxy patch succeeded.
 ```
