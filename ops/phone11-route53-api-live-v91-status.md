@@ -1,8 +1,8 @@
 # Phone11 V91 Route53 API DNS Status
 
-- Time UTC: 2026-05-27T01:15:00+00:00
+- Time UTC: 2026-05-27T01:15:20+00:00
 - Branch: codex/phone11-mobile-pjsip-20260506
-- Workflow commit: b962aee7047afd9150de05e27e1c9dd9aa35ada0
+- Workflow commit: 1e963f1550b26daf580cc937b7eb45dd41499031
 - Hosted zone id: not-set
 - Change id: not-set
 - API record: api.phone11.ai
@@ -14,7 +14,7 @@
 ## Sanitized output
 ```text
 === Phone11 V91 Route53 API DNS alignment ===
-Time: 2026-05-27T01:14:56+00:00
+Time: 2026-05-27T01:15:18+00:00
 Record: api.phone11.ai. -> 43.210.122.111
 Old API IP observed in V90: 43.209.112.208
 --- Locate hosted zone ---
