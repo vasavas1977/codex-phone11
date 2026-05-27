@@ -1,0 +1,257 @@
+name: Phone11 V94 Live Auth Table And SIP Credential Proof
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-auth-provisioning-v94.yml
+      - ops/phone11-live-auth-provisioning-v94-trigger-*
+      - server/db.ts
+      - server/phone-provisioning.ts
+      - server/routers.ts
+      - server/_core/**
+      - infra/docker/backend/Dockerfile
+      - infra/compose/docker-compose.prod.yml
+      - ops/scripts/redeploy-mobile-branch.sh
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  DEPLOY_CHECKOUT: /opt/phone11ai/codex-phone11-deploy
+  PILOT_USER_ID: '1'
+  PILOT_EXTENSION: '1001'
+  LATEST_APP_SIP_PW_FP: 2b847b074c0ba53a
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  live-auth-provisioning-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Deploy live backend and prove SIP credential source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG=/tmp/phone11-live-auth-provisioning-v94.log
+          STATUS=0
+          INSTANCE_ID=''
+          exec > >(tee "$LOG") 2>&1
+
+          sanitize_log() {
+            sed -E \
+              -e 's#(Authorization: Bearer )[A-Za-z0-9._~+/=-]+#\1<redacted>#g' \
+              -e 's#(PGPASSWORD|DB_PASSWORD|POSTGRES_PASSWORD|JWT_SECRET|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN)=([^[:space:]]+)#\1=<redacted>#g' \
+              -e 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' \
+              "$LOG" 2>/dev/null || true
+          }
+
+          write_status() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 V94 Live Auth Table And SIP Credential Proof Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- Live EC2 host: $EC2_HOST"
+              echo "- Live EC2 instance: ${INSTANCE_ID:-not-set}"
+              echo "- Pilot user id: $PILOT_USER_ID"
+              echo "- Pilot extension: $PILOT_EXTENSION"
+              echo "- Latest app SIP password fingerprint from user log: $LATEST_APP_SIP_PW_FP"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sanitize_log
+              echo '```'
+            } > ops/phone11-live-auth-provisioning-v94-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-live-auth-provisioning-v94-status.md
+            if git diff --cached --quiet; then
+              echo 'No V94 status file changes to commit.'
+            else
+              git commit -m "Update Phone11 V94 live auth provisioning status" || true
+              git push || true
+            fi
+          }
+
+          trap 'STATUS=$?; write_status; exit $STATUS' EXIT
+
+          echo '=== Phone11 V94 live auth table and SIP credential proof ==='
+          echo "Time: $(date -u -Iseconds)"
+          echo "Live EC2 host: $EC2_HOST"
+          echo "Pilot extension: $PILOT_EXTENSION"
+          echo "Latest failed app credential fingerprint: $LATEST_APP_SIP_PW_FP"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '--- Locate live EC2 ---'
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for live host $EC2_HOST"
+            exit 32
+          fi
+          echo "Found live EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '--- Prepare temporary SSH access ---'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v94_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v94_eic_key.pub"
+
+          echo '--- Copy deploy script to live EC2 ---'
+          scp -i ~/.ssh/phone11_v94_eic_key -o StrictHostKeyChecking=no ops/scripts/redeploy-mobile-branch.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-v94-redeploy-mobile-branch.sh"
+
+          echo '--- Redeploy current branch commit to live backend ---'
+          ssh -i ~/.ssh/phone11_v94_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION' GITHUB_SHA='$GITHUB_SHA' DEPLOY_CHECKOUT='$DEPLOY_CHECKOUT' PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-v94-redeploy-mobile-branch.sh"
+
+          echo '--- Prepare remote proof script ---'
+          cat >/tmp/phone11-v94-proof.sh <<'REMOTE'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          echo '--- Runtime containers ---'
+          docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -E '^cp11-backend\b|^p11-kamailio\b' || true
+
+          echo '--- Public and local health ---'
+          curl -fsS --connect-timeout 5 --max-time 12 https://api.phone11.ai/api/health
+          echo
+          curl -fsS --connect-timeout 5 --max-time 12 http://127.0.0.1:3000/api/health
+          echo
+
+          echo '--- Backend env keys, names only ---'
+          docker exec cp11-backend sh -lc 'env | sort | awk -F= '\''/^(DB_HOST|DB_NAME|DB_USER|DB_PASSWORD|JWT_SECRET|SIP_DOMAIN|VITE_APP_ID)=/ { print $1"=<set>" }'\'''
+
+          echo '--- Live database auth table and credential proof ---'
+          docker exec -i \
+            -e PILOT_USER_ID="${PILOT_USER_ID:-1}" \
+            -e PILOT_EXTENSION="${PILOT_EXTENSION:-1001}" \
+            -e LATEST_APP_SIP_PW_FP="${LATEST_APP_SIP_PW_FP:-}" \
+            cp11-backend node --input-type=module - <<'NODE'
+          import crypto from 'node:crypto';
+          import pg from 'pg';
+
+          const firstEnv = (...keys) => keys.map((key) => process.env[key]).find((value) => value && value.length > 0);
+          const fp = (value) => value ? crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16) : 'none';
+          const safe = (value) => ({ present: Boolean(value), len: value ? String(value).length : 0, fp: fp(value) });
+          const pilotUserId = Number.parseInt(process.env.PILOT_USER_ID || '1', 10);
+          const pilotExtension = process.env.PILOT_EXTENSION || '1001';
+          const latestAppFp = process.env.LATEST_APP_SIP_PW_FP || '';
+          const cfg = {
+            host: firstEnv('PG_HOST', 'DB_HOST', 'POSTGRES_HOST'),
+            port: Number(firstEnv('PG_PORT', 'DB_PORT', 'POSTGRES_PORT') || 5432),
+            user: firstEnv('PG_USER', 'DB_USER', 'POSTGRES_USER'),
+            password: firstEnv('PG_PASSWORD', 'DB_PASSWORD', 'POSTGRES_PASSWORD'),
+            database: firstEnv('PG_DATABASE', 'DB_NAME', 'DB_DATABASE', 'POSTGRES_DB'),
+          };
+          const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
+          if (missing.length) throw new Error(`Missing backend DB env: ${missing.join(', ')}`);
+          const sslMode = firstEnv('PG_SSL', 'DB_SSL', 'POSTGRES_SSL', 'DATABASE_SSL')?.toLowerCase();
+          const ssl = sslMode === 'false' || sslMode === '0' || sslMode === 'disable' ? false : { rejectUnauthorized: false };
+
+          console.log(`DB env present: host=${cfg.host}, user=${cfg.user}, database=${cfg.database}, ssl=${ssl ? 'enabled' : 'disabled'}, password=<set>`);
+          console.log(`LATEST_APP_SIP_PW_FP=${latestAppFp || 'not-provided'}`);
+          const pool = new pg.Pool({ ...cfg, ssl, connectionTimeoutMillis: 5000, max: 2 });
+          try {
+            const auth = await pool.query('select current_user, current_database()');
+            console.log(`DB auth OK: current_user=${auth.rows[0].current_user}, database=${auth.rows[0].current_database}`);
+
+            await pool.query(`
+              CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                "openId" VARCHAR(64) NOT NULL,
+                name TEXT,
+                email VARCHAR(320),
+                "loginMethod" VARCHAR(64),
+                role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+                "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                "lastSignedIn" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+              );
+              CREATE UNIQUE INDEX IF NOT EXISTS users_openid_unique ON users ("openId");
+            `);
+            const authTable = await pool.query(`select to_regclass('public.users') as users_table`);
+            console.log(`AUTH_USERS_TABLE=${authTable.rows[0].users_table || 'missing'}`);
+
+            const rows = await pool.query(`
+              SELECT e.id AS extension_id,
+                     e.extension_number,
+                     e.sip_username AS extension_sip_username,
+                     e.sip_domain AS extension_sip_domain,
+                     e.sip_password AS extension_sip_password,
+                     e.user_id AS extension_user_id,
+                     ue.user_id AS assigned_user_id,
+                     sa.user_id AS sip_account_user_id,
+                     sa.sip_username AS account_sip_username,
+                     sa.sip_domain AS account_sip_domain,
+                     sa.transport_preference,
+                     sub.password AS subscriber_password,
+                     length(sa.secret_ciphertext::text) AS secret_ciphertext_text_len
+              FROM extensions e
+              LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+              LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+              LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
+                AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $3)
+              WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1 OR e.extension_number = $2 OR sa.sip_username = $2)
+                AND COALESCE(e.status, 'active') = 'active'
+                AND e.deleted_at IS NULL
+              ORDER BY (e.extension_number = $2) DESC, ue.is_primary DESC NULLS LAST, e.id ASC
+              LIMIT 10
+            `, [pilotUserId, pilotExtension, 'sip.phone11.ai']);
+
+            console.log(`DB credential rows: count=${rows.rows.length}`);
+            for (const row of rows.rows) {
+              console.log(`DB_CREDENTIAL extension=${row.extension_number} assignedUser=${row.assigned_user_id || row.extension_user_id || row.sip_account_user_id || 'none'} accountUsername=${row.account_sip_username || row.extension_sip_username || row.extension_number} domain=${row.account_sip_domain || row.extension_sip_domain || 'sip.phone11.ai'} extensionPw=${JSON.stringify(safe(row.extension_sip_password))} subscriberPw=${JSON.stringify(safe(row.subscriber_password))} secretCiphertextTextLen=${row.secret_ciphertext_text_len || 0}`);
+            }
+
+            const current = rows.rows.find((row) => String(row.account_sip_username || row.extension_sip_username || row.extension_number) === pilotExtension) || rows.rows[0];
+            if (!current) throw new Error(`No credential row found for user ${pilotUserId} or extension ${pilotExtension}`);
+            if (!current.subscriber_password) {
+              throw new Error(`subscriber.password is missing for extension ${pilotExtension}; Kamailio cannot authenticate this provisioned account`);
+            }
+
+            const provisioningPassword = current.subscriber_password;
+            const provisionedFp = fp(provisioningPassword);
+            console.log(`V94_EXPECTED_PROVISIONING_PASSWORD_SOURCE=subscriber username=${current.account_sip_username || current.extension_sip_username || current.extension_number} domain=${current.account_sip_domain || current.extension_sip_domain || 'sip.phone11.ai'} fp=${provisionedFp} len=${String(provisioningPassword).length}`);
+            if (latestAppFp && provisionedFp === latestAppFp) {
+              throw new Error(`Live backend still points at the same stale app password fingerprint ${latestAppFp}`);
+            }
+            if (latestAppFp) {
+              console.log(`V94_STALE_APP_PASSWORD_CONFIRMED=true oldAppFp=${latestAppFp} liveProvisioningFp=${provisionedFp}`);
+            }
+            console.log(`V94_LIVE_AUTH_AND_SIP_CREDENTIAL_READY=true extension=${pilotExtension} fp=${provisionedFp} len=${String(provisioningPassword).length}`);
+          } finally {
+            await pool.end();
+          }
+          NODE
+          REMOTE
+
+          echo '--- Run remote proof script on live EC2 ---'
+          scp -i ~/.ssh/phone11_v94_eic_key -o StrictHostKeyChecking=no /tmp/phone11-v94-proof.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-v94-proof.sh"
+          ssh -i ~/.ssh/phone11_v94_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "PILOT_USER_ID='$PILOT_USER_ID' PILOT_EXTENSION='$PILOT_EXTENSION' LATEST_APP_SIP_PW_FP='$LATEST_APP_SIP_PW_FP' bash /tmp/phone11-v94-proof.sh"
+
+          echo 'V94 live auth table and SIP credential proof succeeded.'
