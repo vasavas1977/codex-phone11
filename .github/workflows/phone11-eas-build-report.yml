@@ -1,0 +1,57 @@
+name: Phone11 EAS build error report
+
+on:
+  push:
+    branches: [codex/phone11-owned-auth-20260909]
+    paths: [.github/workflows/phone11-eas-build-report.yml]
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: Existing EAS build UUID to inspect
+        required: true
+        default: 51869357-f87c-4d6f-9ea3-cfe4477af673
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: "23.2.0"
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Inspect existing build only
+        env:
+          BUILD_ID: ${{ inputs.build_id || '51869357-f87c-4d6f-9ea3-cfe4477af673' }}
+        run: |
+          [[ "$BUILD_ID" =~ ^[a-f0-9-]{36}$ ]]
+          eas build:view "$BUILD_ID" --json > "$RUNNER_TEMP/report.json"
+          node <<'NODE'
+          const fs = require("fs");
+          const b = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/report.json", "utf8"));
+          console.log(JSON.stringify({id:b.id,status:b.status,error:b.error,gitCommitHash:b.gitCommitHash}));
+          (async () => {
+            for (const url of b.logFiles || []) {
+              const parsed = new URL(url);
+              if (parsed.protocol !== "https:") throw new Error("Unexpected log URL protocol");
+              const r = await fetch(url);
+              if (!r.ok) throw new Error("Cannot retrieve build log");
+              const text = await r.text();
+              for (const line of text.split("\n")) {
+                let event;
+                try { event = JSON.parse(line); } catch { continue; }
+                const msg = event.msg || event.message || "";
+                if (typeof msg === "string" && /error|failed|exception|unsupported|cannot find|could not|unable to/i.test(msg)) {
+                  const safe = msg.replace(/https?:\/\/[^\s]+/g, "[url]").replace(/(?:token|password|secret|authorization)\s*[:=]\s*\S+/gi, "[redacted]");
+                  console.log(JSON.stringify({phase:event.phase,level:event.level,message:safe.slice(0,2000)}));
+                }
+              }
+            }
+          })().catch(() => { console.error("Build log retrieval failed without exposing credentials."); process.exitCode=1; });
+          NODE
