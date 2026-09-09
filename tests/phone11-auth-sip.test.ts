@@ -18,7 +18,10 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
     removeItem: vi.fn(async (key: string) => { state.plain.delete(key); }),
   },
 }));
-vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: state.user }) }));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: state.user }),
+  addAuthChangeListener: vi.fn(() => () => {}),
+}));
 vi.mock("../lib/sip/diagnostics-store", () => ({
   formatSipError: () => "Test error",
   recordPersistentSipDiagnosticEvent: vi.fn(),

@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
-import { Alert, View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { Alert, View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
@@ -9,6 +10,9 @@ import { useColors } from "@/hooks/use-colors";
 import { useNotificationStore } from "@/lib/notifications/store";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
+import { useAuth } from "@/hooks/use-auth";
+import { useCallHistoryStore } from "@/lib/sip/call-history";
+import { normalizeDialInput } from "@/lib/sip/dial-input";
 
 const DIAL_KEYS = [
   { digit: "1", sub: "" },
@@ -30,12 +34,6 @@ const DIAL_KEY_ROWS = [
   DIAL_KEYS.slice(3, 6),
   DIAL_KEYS.slice(6, 9),
   DIAL_KEYS.slice(9, 12),
-];
-
-const RECENT_NUMBERS = [
-  { number: "+1 (555) 234-5678", name: "John Smith" },
-  { number: "+1 (555) 987-6543", name: "Acme Corp" },
-  { number: "1001", name: "Ext. 1001" },
 ];
 
 function registrationLabel(state: RegistrationState): string {
@@ -63,6 +61,12 @@ function registrationColor(state: RegistrationState, colors: ReturnType<typeof u
 export default function DialpadScreen() {
   const colors = useColors();
   const [input, setInput] = useState("");
+  const { user } = useAuth({ autoFetch: false });
+  const history = useCallHistoryStore();
+  useFocusEffect(useCallback(() => { void history.reload(); }, [history.reload, user?.id]));
+  const recentNumbers = (history.ownerUserId === user?.id ? history.entries : [])
+    .filter((entry, index, all) => entry.ownerUserId === user?.id && all.findIndex(other => other.number === entry.number) === index)
+    .slice(0, 3);
   const unreadCount = useNotificationStore((s) => s.unreadCount);
   const { makeCall } = useSip();
   const account = useSipAccountStore((s) => s.account);
@@ -71,7 +75,7 @@ export default function DialpadScreen() {
 
   const handleKey = useCallback((digit: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setInput((prev) => prev + digit);
+    setInput((prev) => normalizeDialInput(prev + digit) ?? prev);
   }, []);
 
   const handleBackspace = useCallback(() => {
@@ -167,13 +171,23 @@ export default function DialpadScreen() {
 
         {/* Number Input */}
         <View style={styles.inputRow}>
-          <Text
+          <TextInput
             style={[styles.numberInput, { color: colors.foreground }]}
-            numberOfLines={1}
-            adjustsFontSizeToFit
-          >
-            {input || " "}
-          </Text>
+            value={input}
+            onChangeText={value => {
+              const number = normalizeDialInput(value);
+              if (number !== null) setInput(number);
+              else Alert.alert("Invalid phone number", "Paste one phone number, including its country code if needed.");
+            }}
+            accessibilityLabel="Phone number"
+            placeholder="Phone number"
+            placeholderTextColor={colors.muted}
+            keyboardType="phone-pad"
+            autoCorrect={false}
+            autoCapitalize="none"
+            contextMenuHidden={false}
+            selectionColor={colors.primary}
+          />
           {input.length > 0 && (
             <TouchableOpacity onPress={handleBackspace} style={styles.backspaceBtn}>
               <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
@@ -252,7 +266,7 @@ export default function DialpadScreen() {
         {/* Recent Quick Dial */}
         <View style={[styles.recentSection, { borderTopColor: colors.border }]}> 
           <Text style={[styles.recentTitle, { color: colors.muted }]}>RECENT</Text>
-          {RECENT_NUMBERS.map((item) => (
+          {recentNumbers.map((item) => (
             <TouchableOpacity
               key={item.number}
               style={styles.recentRow}
@@ -261,11 +275,11 @@ export default function DialpadScreen() {
             >
               <View style={[styles.recentAvatar, { backgroundColor: colors.primary + "20" }]}> 
                 <Text style={[styles.recentAvatarText, { color: colors.primary }]}> 
-                  {item.name.charAt(0)}
+                  {(item.name || item.number).charAt(0)}
                 </Text>
               </View>
               <View style={styles.recentInfo}>
-                <Text style={[styles.recentName, { color: colors.foreground }]}>{item.name}</Text>
+                <Text style={[styles.recentName, { color: colors.foreground }]}>{item.name || item.number}</Text>
                 <Text style={[styles.recentNumber, { color: colors.muted }]}>{item.number}</Text>
               </View>
               <IconSymbol name="phone.fill" size={18} color={colors.success} />

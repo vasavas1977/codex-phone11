@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
-import { View, Text, TouchableOpacity, FlatList, StyleSheet } from "react-native";
+import { useState, useCallback } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+import { Alert, View, Text, TouchableOpacity, FlatList, StyleSheet } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
@@ -7,6 +8,10 @@ import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useRecordingStore } from "@/lib/recording/store";
+import { useAuth } from "@/hooks/use-auth";
+import { useCallHistoryStore, historyDuration, isMissedCall } from "@/lib/sip/call-history";
+import { useSip } from "@/lib/sip/sip-provider";
+import { useSipAccountStore } from "@/lib/sip/account-store";
 
 type CallType = "incoming" | "outgoing" | "missed";
 
@@ -30,14 +35,14 @@ const PRESENCE_COLORS: Record<string, string> = {
   offline: "#6B7280",
 };
 
-const CALL_LOG: CallRecord[] = [
-  { id: "1", name: "John Smith", number: "+1 (555) 234-5678", type: "incoming", duration: "4:32", time: "2:15 PM", group: "Today", presence: "online", hasRecording: true, recordingId: "rec-001" },
-  { id: "2", name: "Acme Corp", number: "+1 (555) 987-6543", type: "outgoing", duration: "12:08", time: "11:42 AM", group: "Today", presence: "busy", hasRecording: true, recordingId: "rec-002" },
-  { id: "3", name: "Unknown", number: "+1 (555) 111-2222", type: "missed", duration: "", time: "9:05 AM", group: "Today", presence: "offline" },
-  { id: "4", name: "Sarah Lee", number: "Ext. 2001", type: "incoming", duration: "1:45", time: "4:50 PM", group: "Yesterday", presence: "away", hasRecording: true, recordingId: "rec-003" },
-  { id: "5", name: "Bob Chen", number: "+1 (555) 333-4444", type: "outgoing", duration: "8:20", time: "10:30 AM", group: "Yesterday", presence: "online" },
-  { id: "6", name: "Support Line", number: "+1 (800) 555-0100", type: "missed", duration: "", time: "Mar 20", group: "Older", presence: "offline" },
-];
+function dateGroup(timestamp: number): string {
+  const date = new Date(timestamp);
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (date.toDateString() === new Date().toDateString()) return "Today";
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
 
 const CALL_ICONS: Record<CallType, "phone.arrow.down.left" | "phone.arrow.up.right" | "phone.fill.arrow.down.left"> = {
   incoming: "phone.arrow.down.left",
@@ -53,17 +58,35 @@ function formatPlaybackTime(seconds: number): string {
 
 export default function RecentsScreen() {
   const colors = useColors();
-  const [filter, setFilter] = useState<"all" | "missed" | "recorded">("all");
+  const [filter, setFilter] = useState<"all" | "missed">("all");
+  const { user } = useAuth({ autoFetch: false });
+  const history = useCallHistoryStore();
+  const { makeCall } = useSip();
+  const registration = useSipAccountStore(state => state.registrationState);
+  const dial = async (number: string) => {
+    if (registration !== "registered") {
+      Alert.alert("Phone is not registered", "Register your phone before calling.");
+      return;
+    }
+    try {
+      const callId = await makeCall(number, false);
+      if (!callId) throw new Error("Call did not start");
+      router.push({ pathname: "/call/active", params: { callId, number, type: "voice" } });
+    } catch { Alert.alert("Call could not start", "Check SIP registration and try again."); }
+  };
+  useFocusEffect(useCallback(() => { void history.reload(); }, [history.reload, user?.id]));
   const { recordings, playback, startPlayback, stopPlayback, togglePlayPause } = useRecordingStore();
 
-  const filtered =
-    filter === "missed"
-      ? CALL_LOG.filter((c) => c.type === "missed")
-      : filter === "recorded"
-      ? CALL_LOG.filter((c) => c.hasRecording)
-      : CALL_LOG;
-
-  const groups = ["Today", "Yesterday", "Older"];
+  const filtered: CallRecord[] = (history.ownerUserId === user?.id ? history.entries : [])
+    .filter(call => call.ownerUserId === user?.id && (filter === "all" || isMissedCall(call)))
+    .map(call => ({
+      id: call.id, name: call.name || call.number, number: call.number,
+      type: isMissedCall(call) ? "missed" : call.direction === "inbound" ? "incoming" : "outgoing",
+      duration: call.endedAt === undefined ? "Incomplete" : call.answeredAt !== undefined
+        ? formatPlaybackTime(historyDuration(call)) : isMissedCall(call) ? "Missed" : "Not answered",
+      time: new Date(call.startedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
+      group: dateGroup(call.startedAt),
+    }));
 
   const isPlaying = playback.isPlaying && playback.recordingId !== null;
   const currentRecording = recordings.find((r) => r.id === playback.recordingId);
@@ -82,7 +105,7 @@ export default function RecentsScreen() {
         style={[styles.row, { borderBottomColor: colors.border }]}
         onPress={() => {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          router.push({ pathname: "/call/active", params: { number: item.number, type: "voice" } });
+          void dial(item.number);
         }}
         activeOpacity={0.7}
       >
@@ -98,7 +121,7 @@ export default function RecentsScreen() {
         </View>
         <View style={styles.info}>
           <View style={styles.nameRow}>
-            <Text style={[styles.name, { color: nameColor }]}>{item.name}</Text>
+            <Text numberOfLines={1} style={[styles.name, { color: nameColor, flexShrink: 1 }]}>{item.name}</Text>
             {item.hasRecording && (
               <View style={[styles.recBadge, { backgroundColor: colors.error + "15" }]}>
                 <View style={[styles.recDot, { backgroundColor: colors.error }]} />
@@ -136,7 +159,7 @@ export default function RecentsScreen() {
             style={styles.iconBtn}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push({ pathname: "/call/active", params: { number: item.number, type: "voice" } });
+              void dial(item.number);
             }}
           >
             <IconSymbol name="phone.fill" size={16} color={colors.primary} />
@@ -146,33 +169,20 @@ export default function RecentsScreen() {
     );
   };
 
-  const renderSectionHeader = (group: string) => {
-    const items = filtered.filter((c) => c.group === group);
-    if (!items.length) return null;
-    return (
-      <View key={group}>
-        <Text style={[styles.groupHeader, { color: colors.muted, backgroundColor: colors.background }]}>
-          {group}
-        </Text>
-        {items.map((item) => renderItem({ item }))}
-      </View>
-    );
-  };
-
   return (
     <ScreenContainer>
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.title, { color: colors.foreground }]}>Recents</Text>
         <View style={styles.filterRow}>
-          {(["all", "missed", "recorded"] as const).map((f) => (
+          {(["all", "missed"] as const).map((f) => (
             <TouchableOpacity
               key={f}
               style={[styles.filterBtn, filter === f && { backgroundColor: colors.primary }]}
               onPress={() => setFilter(f)}
             >
               <Text style={[styles.filterText, { color: filter === f ? "#fff" : colors.muted }]}>
-                {f === "all" ? "All" : f === "missed" ? "Missed" : "Recorded"}
+                {f === "all" ? "All" : "Missed"}
               </Text>
             </TouchableOpacity>
           ))}
@@ -180,15 +190,19 @@ export default function RecentsScreen() {
       </View>
 
       <FlatList
-        data={[]}
-        renderItem={null}
-        ListHeaderComponent={
-          <View>
-            {groups.map((g) => renderSectionHeader(g))}
-          </View>
-        }
-        ListEmptyComponent={null}
-        keyExtractor={() => "header"}
+        data={filtered}
+        renderItem={({ item, index }) => <View>
+          {(index === 0 || filtered[index - 1].group !== item.group) &&
+            <Text style={[styles.groupHeader, { color: colors.muted }]}>{item.group}</Text>}
+          {renderItem({ item })}
+        </View>}
+        refreshing={history.loading}
+        onRefresh={() => void history.reload()}
+        ListHeaderComponent={history.error ? <Text style={{ padding: 20, color: colors.error }}>{history.error}</Text> : null}
+        ListEmptyComponent={<Text style={{ padding: 24, textAlign: "center", color: colors.muted }}>
+          {!user ? "Sign in to see your calls" : history.loading ? "Loading calls..." : filter === "missed" ? "No missed calls" : "No saved calls"}
+        </Text>}
+        keyExtractor={item => item.id}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={isPlaying ? { paddingBottom: 80 } : undefined}
       />
@@ -245,6 +259,8 @@ export default function RecentsScreen() {
 const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
     alignItems: "center",
     justifyContent: "space-between",
     paddingHorizontal: 20,
@@ -262,7 +278,7 @@ const styles = StyleSheet.create({
   filterBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 16,
+    borderRadius: 6,
     backgroundColor: "transparent",
   },
   filterText: {
@@ -309,6 +325,7 @@ const styles = StyleSheet.create({
   },
   info: {
     flex: 1,
+    minWidth: 0,
   },
   nameRow: {
     flexDirection: "row",

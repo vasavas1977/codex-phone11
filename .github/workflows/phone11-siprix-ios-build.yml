@@ -46,6 +46,7 @@ jobs:
           pnpm run test:auth-client
           pnpm run test:auth-sip
           pnpm exec vitest run tests/phone11-siprix-engine.test.ts tests/phone11-siprix-callkit.test.ts tests/phone11-siprix-selection.test.ts
+          pnpm exec vitest run tests/phone11-call-history.test.ts tests/phone11-dial-input.test.ts
           node --test tests/phone11-siprix-packaging.test.mjs
       - name: Stage and verify isolated Siprix native modules
         env:

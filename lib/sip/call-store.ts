@@ -4,6 +4,8 @@
  */
 
 import { create } from "zustand";
+import { getAuthSnapshot } from "../_core/auth";
+import { callNumber, useCallHistoryStore, type CallHistoryEntry } from "./call-history";
 
 export type CallDirection = "inbound" | "outbound";
 export type CallStatus =
@@ -28,6 +30,28 @@ export interface SipCall {
   isVideo: boolean;
   // Raw PJSIP call object (native only)
   _nativeCall?: any;
+  history?: CallHistoryEntry;
+}
+
+let historySequence = 0;
+function rememberCall(call: SipCall, ended = false): SipCall {
+  const owner = call.history?.ownerUserId ?? getAuthSnapshot().user?.id;
+  if (!owner) return call;
+  const now = Date.now();
+  const history: CallHistoryEntry = {
+    ...call.history,
+    id: call.history?.id ?? `${now}-${++historySequence}-${Math.random().toString(36).slice(2)}`,
+    ownerUserId: owner,
+    number: callNumber(call.remoteNumber),
+    name: call.remoteName,
+    direction: call.direction,
+    startedAt: call.history?.startedAt ?? call.startTime?.getTime() ?? now,
+    answeredAt: call.history?.answeredAt ?? call.connectTime?.getTime(),
+    endedAt: call.history?.endedAt ?? (ended ? now : undefined),
+    updatedAt: now,
+  };
+  useCallHistoryStore.getState().upsert(history);
+  return { ...call, history };
 }
 
 function callIdFromNative(nativeCall: any): string {
@@ -74,6 +98,7 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
 
   addOutgoingCall: (nativeCall: any, destination: string) => {
     const id = callIdFromNative(nativeCall);
+    if (get().activeCalls[id]) return;
     const call: SipCall = {
       id,
       direction: "outbound",
@@ -87,12 +112,13 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
       _nativeCall: nativeCall,
     };
     set((state) => ({
-      activeCalls: { ...state.activeCalls, [id]: call },
+      activeCalls: { ...state.activeCalls, [id]: rememberCall(call) },
     }));
   },
 
   setIncomingCall: (nativeCall: any) => {
     const id = callIdFromNative(nativeCall);
+    if (get().incomingCall?.id === id || get().activeCalls[id]) return;
     const info = callInfoFromNative(nativeCall);
     const remoteUri: string = callValue(
       () => nativeCall?.getRemoteUri?.() ?? info.remoteUri ?? info.remoteContact,
@@ -115,7 +141,7 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
       startTime: new Date(),
       _nativeCall: nativeCall,
     };
-    set({ incomingCall: call });
+    set({ incomingCall: rememberCall(call) });
   },
 
   updateCallState: (nativeCall: any) => {
@@ -132,7 +158,8 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
       PJSIP_INV_STATE_DISCONNECTED: "disconnected",
     };
 
-    const newStatus = statusMap[pjState] ?? "active";
+    const newStatus = statusMap[pjState];
+    if (!newStatus) return;
 
     set((state) => {
       const existing = state.activeCalls[id];
@@ -171,9 +198,17 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
       }
       return state;
     });
+    const current = get().activeCalls[id] ?? (get().incomingCall?.id === id ? get().incomingCall : null);
+    if (current) {
+      const saved = rememberCall(current, newStatus === "disconnected");
+      if (get().activeCalls[id]) set((state) => ({ activeCalls: { ...state.activeCalls, [id]: saved } }));
+      else set({ incomingCall: saved });
+    }
   },
 
   terminateCall: (callId: string) => {
+    const call = get().activeCalls[callId] ?? (get().incomingCall?.id === callId ? get().incomingCall : null);
+    if (call) rememberCall(call, true);
     set((state) => {
       const calls = { ...state.activeCalls };
       delete calls[callId];
