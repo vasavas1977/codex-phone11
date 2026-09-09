@@ -194,6 +194,7 @@ class NativeCallManager {
     callerName?: string,
     hasVideo = false
   ): void {
+    if (callIdToUuid.has(sipCallId)) return;
     const callKeep = getCallKeep();
     if (!callKeep || !this.initialized) return;
 
@@ -234,6 +235,7 @@ class NativeCallManager {
     callerName?: string,
     hasVideo = false
   ): void {
+    if (callIdToUuid.has(sipCallId)) return;
     const callKeep = getCallKeep();
     if (!callKeep || !this.initialized) return;
 

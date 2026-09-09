@@ -30,6 +30,8 @@ it("initializes one CallKit provider for simultaneous callers", async () => {
 it("reports real outgoing connection using the iOS method", async () => {
   await nativeCallManager.initialize();
   nativeCallManager.reportOutgoingCall("42", "1002");
+  nativeCallManager.reportOutgoingCall("42", "sip:1002@example.test");
+  expect(mocks.keep.startCall).toHaveBeenCalledTimes(1);
   expect(mocks.keep.reportConnectedOutgoingCallWithUUID).not.toHaveBeenCalled();
   nativeCallManager.reportCallConnected("42");
   expect(mocks.keep.reportConnectedOutgoingCallWithUUID).toHaveBeenCalledTimes(1);
