@@ -3,7 +3,7 @@ name: Phone11 owned auth iOS build
 on:
   push:
     branches: [codex/phone11-owned-auth-20260909]
-    paths: [.github/workflows/phone11-owned-auth-ios-build.yml]
+    paths: [.github/workflows/phone11-owned-auth-ios-build.yml, eas.json]
   workflow_dispatch:
 
 permissions:
@@ -32,6 +32,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Test mobile authentication and SIP isolation
         run: |
+          node -e 'const p=require("./eas.json").build["preview-ios-existing-credentials"];if(p.ios.image!=="macos-sequoia-15.6-xcode-26.0")throw new Error("Unexpected iOS build image");'
           pnpm run test:auth-client
           pnpm run test:auth-sip
       - uses: expo/expo-github-action@v8
