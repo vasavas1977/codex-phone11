@@ -1,0 +1,49 @@
+name: Phone11 Siprix build status
+on:
+  push:
+    branches: [codex/phone11-owned-auth-20260909]
+    paths: [.github/workflows/phone11-siprix-build-status.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  status:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm install --frozen-lockfile --ignore-scripts
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: "23.2.0"
+          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Read current Siprix build and sanitized log tail
+        run: |
+          eas build:list --platform ios --build-profile preview-ios-siprix --limit 1 --json --non-interactive > "$RUNNER_TEMP/builds.json"
+          node <<'NODE'
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+          const list = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+'/builds.json', 'utf8'));
+          if (!list.length) throw new Error('No Siprix build exists');
+          const b = JSON.parse(execFileSync('eas', ['build:view', list[0].id, '--json'], {encoding:'utf8'}));
+          console.log(JSON.stringify({id:b.id,status:b.status,gitCommitHash:b.gitCommitHash,appBuildVersion:b.appBuildVersion,error:b.error}));
+          (async () => {
+            for (const url of b.logFiles || []) {
+              if (new URL(url).protocol !== 'https:') throw new Error('Invalid log protocol');
+              const response = await fetch(url);
+              if (!response.ok) continue;
+              const events = (await response.text()).split('\n').flatMap(line => {try {return [JSON.parse(line)];} catch {return [];}});
+              const relevant = events.filter(e => /error|failed|exception/i.test(e.msg || e.message || '') || e.marker);
+              for (const e of [...relevant.slice(-8), ...events.slice(-2)]) {
+                const message = String(e.msg || e.message || '').replace(/https?:\/\/\S+/g,'[url]').replace(/(?:token|password|secret|authorization)\s*[:=]\s*\S+/gi,'[redacted]').slice(0,1600);
+                console.log(JSON.stringify({phase:e.phase,level:e.level,message}));
+              }
+            }
+          })().catch(() => { console.error('Build log retrieval failed'); process.exitCode=1; });
+          NODE
