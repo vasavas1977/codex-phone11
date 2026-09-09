@@ -59,6 +59,15 @@ static void P11Reject(RCTPromiseRejectBlock reject, NSString *code, NSString *me
   reject(code, message, nil);
 }
 
+static BOOL P11PinnedSDKVersion(NSString *version) {
+  if (![version isKindOfClass:NSString.class]) return NO;
+  NSString *normalized = [version stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  // The checksum-pinned vendor binary returns its product name and build date.
+  return [normalized isEqualToString:@"1.0.40"] ||
+    [normalized isEqualToString:@"1.0.40 from 20260620_1419"] ||
+    [normalized isEqualToString:@"siprix 1.0.40 from 20260620_1419"];
+}
+
 static NSString *P11ID(NSInteger value) {
   return [NSString stringWithFormat:@"%ld", (long)value];
 }
@@ -401,7 +410,7 @@ RCT_EXPORT_METHOD(initialize:(NSDictionary *)options resolver:(RCTPromiseResolve
   }
   runtime.initialized = YES;
   runtime.sdkVersion = [runtime.sdk version];
-  if (![runtime.sdkVersion isEqualToString:@"1.0.40"]) {
+  if (!P11PinnedSDKVersion(runtime.sdkVersion)) {
     [runtime shutdown];
     P11Reject(reject, @"E_SDK_VERSION", @"This bridge requires pinned Siprix SDK 1.0.40."); return;
   }

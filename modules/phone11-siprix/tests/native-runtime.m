@@ -45,7 +45,7 @@ static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, de
 static int nextAccount = 10, nextCall = 20;
 static BOOL sdkInitialized, speakerOK = YES, callKitEnabled;
 static HoldState mockHold = HoldStateNone;
-static NSString *mockVersion = @"1.0.40";
+static NSString *mockVersion = @"siprix 1.0.40 from 20260620_1419";
 static SiprixIniData *lastInit;
 static id<SiprixEventDelegate> sdkDelegate;
 
@@ -112,7 +112,7 @@ int main(void) {
     CHECK([error isEqualToString:@"E_INVALID_ARGUMENT"] && initializes == 0);
     [bridge initialize:@{} resolver:resolve rejecter:reject];
     CHECK(!error && [result[@"initialized"] boolValue] && initializes == 1);
-    CHECK([result[@"sdkVersion"] isEqualToString:@"1.0.40"] && callKitEnabled);
+    CHECK([result[@"sdkVersion"] isEqualToString:@"siprix 1.0.40 from 20260620_1419"] && callKitEnabled);
     CHECK(lastInit.logLevelFile.intValue == LogLevelNoLog && lastInit.logLevelIde.intValue == LogLevelNoLog);
     CHECK(lastInit.tlsVerifyServer.boolValue && lastInit.singleCallMode.boolValue && !lastInit.enableVideoCall.boolValue);
     CHECK(lastInit.license == nil && lastInit.homeFolder == nil);
@@ -286,13 +286,25 @@ int main(void) {
     [bridge initialize:@{} resolver:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_SIPRIX_-12"] && !P11SiprixRuntime.shared.quarantined);
     initCode = 0;
-    mockVersion = @"1.0.41";
-    [bridge initialize:@{} resolver:resolve rejecter:reject];
-    CHECK([error isEqualToString:@"E_SDK_VERSION"] && !P11SiprixRuntime.shared.sdk);
-    mockVersion = @"1.0.40";
-    [bridge initialize:@{} resolver:resolve rejecter:reject];
-    CHECK(!error);
-    [bridge destroy:resolve rejecter:reject];
+    for (NSString *version in @[@"1.0.41", @"1.0.400", @"invalid", @"", @"   ", @"1.0.40garbage",
+        @"1.0.40 from 20260621_1419", @"siprix 1.0.40 from 20260620_1419 extra",
+        @"siprix 1.0.41 from 20260620_1419", @"siprix 1.0.40"]) {
+      mockVersion = version;
+      [bridge initialize:@{} resolver:resolve rejecter:reject];
+      CHECK([error isEqualToString:@"E_SDK_VERSION"] && !P11SiprixRuntime.shared.sdk);
+    }
+    for (NSString *version in @[@"1.0.40", @"1.0.40 from 20260620_1419",
+        @" 1.0.40 from 20260620_1419", @" \tsiprix 1.0.40 from 20260620_1419\n",
+        @"siprix 1.0.40 from 20260620_1419"]) {
+      mockVersion = version;
+      [bridge initialize:@{} resolver:resolve rejecter:reject];
+      CHECK(!error && [result[@"initialized"] boolValue]);
+      CHECK([result[@"sdkVersion"] isEqualToString:version]);
+      [bridge getSnapshot:resolve rejecter:reject];
+      CHECK(!error && [result[@"sdkVersion"] isEqualToString:version]);
+      [bridge destroy:resolve rejecter:reject];
+      CHECK(!error && !P11SiprixRuntime.shared.sdk);
+    }
     int count = shutdowns;
     [bridge destroy:resolve rejecter:reject];
     CHECK(!error && shutdowns == count);
