@@ -55,7 +55,9 @@ jobs:
                 let event;
                 try { event = JSON.parse(line); } catch { continue; }
                 const msg = event.msg || event.message || "";
-                if (typeof msg === "string" && /error|failed|exception|unsupported|cannot find|could not|unable to/i.test(msg)) {
+                const diagnostic = event.phase === "RUN_EXPO_DOCTOR" ||
+                  (event.phase === "SPIN_UP_BUILDER" && /Xcode|image|Node.js|macOS/i.test(msg));
+                if (typeof msg === "string" && (diagnostic || /error|failed|exception|unsupported|cannot find|could not|unable to/i.test(msg))) {
                   const safe = msg.replace(/https?:\/\/[^\s]+/g, "[url]").replace(/(?:token|password|secret|authorization)\s*[:=]\s*\S+/gi, "[redacted]");
                   console.log(JSON.stringify({phase:event.phase,level:event.level,message:safe.slice(0,2000)}));
                 }
