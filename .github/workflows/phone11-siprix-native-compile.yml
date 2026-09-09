@@ -88,7 +88,8 @@ jobs:
           test -f "$app/Frameworks/siprix.framework/siprix"
           test -f "$app/Frameworks/siprixMedia.framework/siprixMedia"
           plutil -lint "$app/Info.plist"
-          xcrun lipo -verify_arch arm64 "$app/SampleSwiftUI"
+          # -verify_arch consumes all following arguments as architecture names.
+          xcrun lipo "$app/SampleSwiftUI" -verify_arch arm64
           file "$app/SampleSwiftUI" | tee "evidence/product-$SDK.txt"
           test ! -e "$app/embedded.mobileprovision"
           test ! -d "$app/_CodeSignature"
@@ -96,6 +97,7 @@ jobs:
           printf '%s\n' \
             "PASS: $SDK arm64 compile/link, sample $SAMPLE_SHA." \
             'Trial only; no signing, install, launch, SIP registration or calls.' \
+            'Vendor trial drops calls after 60 seconds; PushKit handling has upstream TODOs.' \
             'This is not handset, CallKit, PushKit, auth or PSTN proof.' \
             >> "$GITHUB_STEP_SUMMARY"
 
