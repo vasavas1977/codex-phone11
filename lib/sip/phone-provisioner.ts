@@ -6,7 +6,7 @@ import { useSipAccountStore } from "./account-store";
 import { sipAccountFromPhoneConfig } from "./provisioning";
 
 export function PhoneProvisioner() {
-  const { isAuthenticated, loading } = useAuth();
+  const { user, isAuthenticated, loading } = useAuth();
   const account = useSipAccountStore((s) => s.account);
   const setAccount = useSipAccountStore((s) => s.setAccount);
 
@@ -17,10 +17,11 @@ export function PhoneProvisioner() {
   });
 
   useEffect(() => {
-    if (!configQuery.data?.configured || !configQuery.data.sip) return;
+    if (!user || !isAuthenticated || loading || !configQuery.data?.configured || !configQuery.data.sip) return;
 
-    const nextAccount = sipAccountFromPhoneConfig(configQuery.data, account?.id);
+    const nextAccount = { ...sipAccountFromPhoneConfig(configQuery.data, account?.id), ownerUserId: user.id };
     const unchanged =
+      account?.ownerUserId === user.id &&
       account?.username === nextAccount.username &&
       account?.domain === nextAccount.domain &&
       account?.port === nextAccount.port &&
@@ -32,9 +33,9 @@ export function PhoneProvisioner() {
     // Keep root startup safe: provisioning may refresh while the app is launching,
     // but the native SIP stack should only start from an explicit sync/call path.
     setAccount(nextAccount).catch((error) =>
-      console.error("[PhoneProvisioner] Failed to store SIP config:", error),
+      console.error("[PhoneProvisioner] Could not securely store provisioning"),
     );
-  }, [account, configQuery.data, setAccount]);
+  }, [account, configQuery.data, setAccount, user, isAuthenticated, loading]);
 
   return null;
 }

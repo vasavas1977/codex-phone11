@@ -56,6 +56,7 @@ COPY tsconfig.json ./
 # Build only the backend bundle. Avoid pnpm build here because npm lifecycle
 # scripts would run the Expo mobile prebuild inside the backend image.
 RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs
+RUN pnpm exec esbuild scripts/phone11-auth-admin.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/auth-admin.mjs
 
 # --- Stage 3: Production ---
 FROM node:22-alpine AS production

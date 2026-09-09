@@ -5,8 +5,9 @@ import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { getOAuthConfigMessage, isOAuthConfigured, startOAuthLogin } from "@/constants/oauth";
+import { SIGN_IN_ROUTE } from "@/constants/oauth";
 import { useAuth } from "@/hooks/use-auth";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useColors } from "@/hooks/use-colors";
 import { trpc } from "@/lib/trpc";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
@@ -41,7 +42,6 @@ function pilotExtensionCandidates(userId: number): string[] {
 export default function SIPAccountScreen() {
   const colors = useColors();
   const { user, loading: authLoading, isAuthenticated, refresh: refreshAuth } = useAuth();
-  const [loginBusy, setLoginBusy] = useState(false);
   const [accountLoaded, setAccountLoaded] = useState(false);
   const autoProvisionAttempted = useRef(false);
   const account = useSipAccountStore((s) => s.account);
@@ -78,24 +78,7 @@ export default function SIPAccountScreen() {
       ? colors.error
       : colors.muted;
 
-  const handleSignIn = async () => {
-    if (!isOAuthConfigured()) {
-      Alert.alert("Sign in is not configured", getOAuthConfigMessage());
-      return;
-    }
-
-    try {
-      setLoginBusy(true);
-      await startOAuthLogin();
-    } catch (error) {
-      Alert.alert(
-        "Sign in could not start",
-        error instanceof Error ? error.message : "Check the Phone11 login configuration.",
-      );
-    } finally {
-      setLoginBusy(false);
-    }
-  };
+  const handleSignIn = () => router.push(SIGN_IN_ROUTE);
 
   const applyProvisioningConfig = async (config: PhoneProvisioningConfig, title: string) => {
     if (!config.configured || !config.sip) {
@@ -103,7 +86,10 @@ export default function SIPAccountScreen() {
     }
 
     const provisionedAccount = sipAccountFromPhoneConfig(config, account?.id);
-    await setAccount(provisionedAccount);
+    if (!user?.id || getAuthSnapshot().user?.id !== user.id) {
+      throw new Error("Please sign in before saving your phone account.");
+    }
+    await setAccount({ ...provisionedAccount, ownerUserId: user.id });
     setRegistrationState("unregistered");
     addDiagnosticEvent({
       level: "info",
@@ -194,7 +180,7 @@ export default function SIPAccountScreen() {
     }
 
     try {
-      await refreshAuth(false);
+      await refreshAuth();
       const result = await phoneConfigQuery.refetch();
 
       if (result.error) throw result.error;
@@ -314,13 +300,9 @@ export default function SIPAccountScreen() {
               <TouchableOpacity
                 style={[styles.signInButton, { backgroundColor: colors.primary }]}
                 onPress={handleSignIn}
-                disabled={loginBusy}
+                accessibilityRole="button"
               >
-                {loginBusy ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.signInText}>Sign In</Text>
-                )}
+                <Text style={styles.signInText}>Sign In</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -370,7 +352,7 @@ export default function SIPAccountScreen() {
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
             <Text style={[styles.infoTitle, { color: colors.primary }]}>Admin-managed configuration</Text>
           </View>
-          <Text style={[styles.infoBody, { color: colors.muted }]}>Create or assign the user's extension in Admin Portal &gt; Phone Provisioning. For pilot testing, this screen can request a server-created pilot extension for the signed-in user.</Text>
+          <Text style={[styles.infoBody, { color: colors.muted }]}>Create or assign the user&apos;s extension in Admin Portal &gt; Phone Provisioning. For pilot testing, this screen can request a server-created pilot extension for the signed-in user.</Text>
         </View>
 
         <View style={{ height: 32 }} />

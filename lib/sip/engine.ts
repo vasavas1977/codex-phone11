@@ -18,6 +18,7 @@
  */
 
 import { NativeModules, Platform } from "react-native";
+import { getAuthSnapshot } from "../_core/auth";
 import { useSipAccountStore, type RegistrationState } from "./account-store";
 import { useSipCallStore } from "./call-store";
 import {
@@ -283,12 +284,32 @@ class SipEngine {
   private endpoint: any = null;
   private pjsipAccount: any = null;
   private initialized = false;
+  private nativeOwnerId: number | null = null;
+  private lifecycle: Promise<void> = Promise.resolve();
+
+  private serializeLifecycle(operation: () => Promise<void>): Promise<void> {
+    const task = this.lifecycle.then(operation, operation);
+    this.lifecycle = task.catch(() => undefined);
+    return task;
+  }
 
   /**
    * Initialize PJSIP endpoint and register SIP account.
    * Call this once on app start after loading account config.
    */
-  async initialize(): Promise<void> {
+  initialize(): Promise<void> {
+    return this.serializeLifecycle(() => this.initializeEndpoint());
+  }
+
+  private async initializeEndpoint(): Promise<void> {
+    const configured = useSipAccountStore.getState().account;
+    if (!configured?.ownerUserId || configured.ownerUserId !== getAuthSnapshot().user?.id) {
+      useSipAccountStore.getState().setRegistrationState("unregistered", "Sign in and sync your Phone11 extension");
+      return;
+    }
+    if (this.endpoint && (!this.initialized || this.nativeOwnerId !== configured.ownerUserId)) {
+      await this.destroyEndpoint();
+    }
     if (this.initialized) {
       const { account, registrationState, registrationError } = useSipAccountStore.getState();
       this._diag("warning", "engine", "SIP engine initialize skipped because endpoint is already active", {
@@ -492,6 +513,11 @@ class SipEngine {
           sipPwFp,
         },
       });
+      if (account.ownerUserId !== getAuthSnapshot().user?.id || useSipAccountStore.getState().account !== account) {
+        await this.destroyEndpoint();
+        return;
+      }
+      this.nativeOwnerId = account.ownerUserId ?? null;
       this.pjsipAccount = await this.endpoint.createAccount({
         name: account.displayName || account.username,
         username: account.username,
@@ -650,6 +676,10 @@ class SipEngine {
         }
       });
 
+      if (account.ownerUserId !== getAuthSnapshot().user?.id || useSipAccountStore.getState().account !== account) {
+        await this.destroyEndpoint();
+        return;
+      }
       this.initialized = true;
       console.log("[SIP Engine] Initialized, account:", this.pjsipAccount?.getId?.() ?? account.username);
       this._diag("info", "engine", "SIP engine initialized", { destination: registrationServer });
@@ -683,6 +713,9 @@ class SipEngine {
    * @param destination SIP URI or phone number, e.g. "+66812345678" or "sip:1001@domain.com"
    */
   async makeCall(destination: string, video = false): Promise<string | null> {
+    await this.lifecycle;
+    const owner = getAuthSnapshot().user?.id;
+    if (!owner || owner !== this.nativeOwnerId || useSipAccountStore.getState().account?.ownerUserId !== owner) return null;
     const pjsip = getPjsip();
     if (!pjsip || !this.endpoint || !this.pjsipAccount) {
       console.warn("[SIP Engine] Cannot make call — not initialized");
@@ -832,32 +865,51 @@ class SipEngine {
   }
 
   /** Unregister and destroy endpoint */
-  async destroy(): Promise<void> {
+  destroy(): Promise<void> {
+    return this.serializeLifecycle(() => this.destroyEndpoint());
+  }
+
+  private async destroyEndpoint(): Promise<void> {
     if (this.endpoint) {
+      const endpoint = this.endpoint;
+      const account = this.pjsipAccount;
       try {
-        if (typeof this.endpoint.stop === "function") {
-          await this.endpoint.stop();
-        } else {
-          this._diag("warning", "engine", "PJSIP endpoint stop is not supported by this native module", {
-            context: {
-              endpointType: describeNativeValue(this.endpoint),
-              endpointKeys: safeKeys(this.endpoint),
-            },
-          });
+        const calls = useSipCallStore.getState();
+        const pending = new Map(Object.values(calls.activeCalls).map(call => [call.id, call]));
+        if (calls.incomingCall) pending.set(calls.incomingCall.id, calls.incomingCall);
+        for (const call of pending.values()) {
+          if (call.status !== "disconnected" && call._nativeCall) {
+            await endpoint.hangupCall(call._nativeCall);
+            calls.terminateCall(call.id);
+          }
         }
+        // Legacy PJSIP has deleteAccount(), not stop(). Remove its registration explicitly.
+        if (account) {
+          if (typeof endpoint.deleteAccount !== "function") throw new Error("Native account deletion unavailable");
+          await endpoint.deleteAccount(account);
+          this.pjsipAccount = null;
+        }
+        if (typeof endpoint.stop === "function") await endpoint.stop();
       } catch (e) {
-        console.error("[SIP Engine] destroy failed:", e);
-        this._diag("error", "engine", "SIP engine destroy failed", { detail: formatSipError(e) });
+        this._diag("error", "engine", "Native SIP cleanup failed; close the app before changing accounts");
+        this.initialized = false;
+        useSipAccountStore.getState().setRegistrationState("failed", "Close Phone11 before changing accounts");
+        throw new Error("Phone11 could not stop the previous phone session. Close the app and retry.");
       }
+      endpoint.removeAllListeners?.();
       this.endpoint = null;
       this.pjsipAccount = null;
+      this.nativeOwnerId = null;
       this.initialized = false;
+      useSipAccountStore.getState().setRegistrationState("unregistered");
     }
   }
 
-  async restart(): Promise<void> {
-    await this.destroy();
-    await this.initialize();
+  restart(): Promise<void> {
+    return this.serializeLifecycle(async () => {
+      await this.destroyEndpoint();
+      await this.initializeEndpoint();
+    });
   }
 
   private _mapRegState(pjsipState: string): RegistrationState {

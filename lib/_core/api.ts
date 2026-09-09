@@ -2,202 +2,312 @@ import { Platform } from "react-native";
 import { getApiBaseUrl } from "@/constants/oauth";
 import * as Auth from "./auth";
 
-type ApiResponse<T> = {
-  data?: T;
-  error?: string;
+export const API_TIMEOUT_MS = 15000;
+export type MobileAuthConfig = {
+  authProvider: "phone11";
+  emailPasswordEnabled: boolean;
+  registrationEnabled: false;
 };
-
-type GetMeOptions = {
-  swallowErrors?: boolean;
-};
-
-const DEFAULT_API_TIMEOUT_MS = 15000;
 
 export class ApiError extends Error {
-  status?: number;
-
-  constructor(message: string, status?: number) {
+  constructor(
+    message: string,
+    public status?: number,
+  ) {
     super(message);
     this.name = "ApiError";
-    this.status = status;
   }
 }
 
-export async function apiCall<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...((options.headers as Record<string, string>) || {}),
-  };
+function statusMessage(status: number): string {
+  if (status === 401) return "Your session has expired. Please sign in again.";
+  if (status === 403) return "This action is unavailable for your account.";
+  if (status === 429)
+    return "Too many attempts. Please wait a moment and try again.";
+  return "Phone11 is unavailable right now. Please try again.";
+}
 
-  // Determine the auth method:
-  // - Native platform: use stored session token as Bearer auth
-  // - Web (including iframe): use cookie-based auth (browser handles automatically)
-  //   Cookie is set on backend domain via POST /api/auth/session after receiving token via postMessage
-  if (Platform.OS !== "web") {
-    const sessionToken = await Auth.getSessionToken();
-    console.log("[API] apiCall:", {
-      endpoint,
-      hasToken: !!sessionToken,
-      method: options.method || "GET",
-    });
-    if (sessionToken) {
-      headers["Authorization"] = `Bearer ${sessionToken}`;
-      console.log("[API] Authorization header added");
-    }
-  } else {
-    console.log("[API] apiCall:", { endpoint, platform: "web", method: options.method || "GET" });
-  }
+export function authErrorMessage(error: unknown): string {
+  return error instanceof ApiError
+    ? error.message
+    : "Phone11 could not complete sign-in. Please try again.";
+}
 
-  const baseUrl = getApiBaseUrl();
-  // Ensure no double slashes between baseUrl and endpoint
-  const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-  const cleanEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-  const url = baseUrl ? `${cleanBaseUrl}${cleanEndpoint}` : endpoint;
-  console.log("[API] Full URL:", url);
-
-  const timeoutController =
-    typeof AbortController !== "undefined" && !options.signal ? new AbortController() : null;
-  const timeoutId = timeoutController
-    ? setTimeout(() => timeoutController.abort(), DEFAULT_API_TIMEOUT_MS)
-    : undefined;
-
+async function withTimeout<T>(
+  options: RequestInit,
+  run: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) abort();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    console.log("[API] Making request...");
-    const response = await fetch(url, {
-      ...options,
-      headers,
-      credentials: "include",
-      ...(timeoutController ? { signal: timeoutController.signal } : {}),
-    });
-
-    console.log("[API] Response status:", response.status, response.statusText);
-    const responseHeaders = Object.fromEntries(response.headers.entries());
-    console.log("[API] Response headers:", responseHeaders);
-
-    // Check if Set-Cookie header is present (cookies are automatically handled in React Native)
-    const setCookie = response.headers.get("Set-Cookie");
-    if (setCookie) {
-      console.log("[API] Set-Cookie header received:", setCookie);
-    }
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("[API] Error response:", errorText);
-      let errorMessage = errorText;
-      try {
-        const errorJson = JSON.parse(errorText);
-        errorMessage = errorJson.error || errorJson.message || errorText;
-      } catch {
-        // Not JSON, use text as is
-      }
-      throw new ApiError(errorMessage || `API call failed: ${response.statusText}`, response.status);
-    }
-
-    const contentType = response.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-      const data = await response.json();
-      console.log("[API] JSON response received");
-      return data as T;
-    }
-
-    const text = await response.text();
-    console.log("[API] Text response received");
-    return (text ? JSON.parse(text) : {}) as T;
+    return await Promise.race([
+      run(controller.signal),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(
+            new ApiError("Phone11 took too long to respond. Please try again."),
+          );
+        }, API_TIMEOUT_MS);
+      }),
+    ]);
   } catch (error) {
-    console.error("[API] Request failed:", error);
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new ApiError(`API request timed out after ${DEFAULT_API_TIMEOUT_MS / 1000}s: ${endpoint}`);
-    }
-    if (error instanceof Error) {
-      throw error;
-    }
-    throw new Error("Unknown error occurred");
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(
+      controller.signal.aborted
+        ? "Phone11 took too long to respond. Please try again."
+        : "Cannot connect to Phone11. Check your connection and try again.",
+    );
   } finally {
-    if (timeoutId) clearTimeout(timeoutId);
+    if (timer !== undefined) clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
   }
 }
 
-// OAuth callback handler - exchange code for session token
-// Calls /api/oauth/mobile endpoint which returns JSON with app_session_id and user
-export async function exchangeOAuthCode(
-  code: string,
-  state: string,
-): Promise<{ sessionToken: string; user: any }> {
-  console.log("[API] exchangeOAuthCode called");
-  // Use GET with query params
-  const params = new URLSearchParams({ code, state });
-  const endpoint = `/api/oauth/mobile?${params.toString()}`;
-  console.log("[API] Calling OAuth mobile endpoint:", endpoint);
-  const result = await apiCall<{ app_session_id: string; user: any }>(endpoint);
+export function fetchWithTimeout(
+  url: RequestInfo | URL,
+  options: RequestInit = {},
+): Promise<Response> {
+  return withTimeout(options, (signal) => fetch(url, { ...options, signal }));
+}
 
-  // Convert app_session_id to sessionToken for compatibility
-  const sessionToken = result.app_session_id;
-  console.log("[API] OAuth exchange result:", {
-    hasSessionToken: !!sessionToken,
-    hasUser: !!result.user,
-    sessionToken: sessionToken ? `${sessionToken.substring(0, 50)}...` : null,
+async function requestJson<T>(
+  endpoint: string,
+  options: RequestInit = {},
+  authenticated = true,
+) {
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  // Native sessions use only the signed bearer; browser sessions use only HttpOnly cookies.
+  headers.delete("Authorization");
+  if (authenticated && Platform.OS !== "web") {
+    const token = await Auth.getSessionToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+  return withTimeout(options, async (signal) => {
+    const response = await fetch(
+      `${getApiBaseUrl()}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`,
+      {
+        ...options,
+        headers,
+        signal,
+        credentials: Platform.OS === "web" ? "include" : "omit",
+      },
+    );
+    if (!response.ok)
+      throw new ApiError(statusMessage(response.status), response.status);
+    let data: T;
+    try {
+      data =
+        response.status === 204 ? ({} as T) : ((await response.json()) as T);
+    } catch {
+      throw new ApiError(
+        "Phone11 returned an unexpected response. Please try again.",
+      );
+    }
+    return { data, response };
   });
+}
 
+export async function apiCall<T>(
+  endpoint: string,
+  options: RequestInit = {},
+): Promise<T> {
+  return (await requestJson<T>(endpoint, options)).data;
+}
+
+export async function getMobileAuthConfig(): Promise<MobileAuthConfig> {
+  const { data } = await requestJson<MobileAuthConfig>(
+    "/api/mobile/config",
+    {},
+    false,
+  );
+  if (
+    !data ||
+    data.authProvider !== "phone11" ||
+    typeof data.emailPasswordEnabled !== "boolean" ||
+    data.registrationEnabled !== false
+  ) {
+    throw new ApiError(
+      "Phone11 sign-in is unavailable right now. Please try again.",
+    );
+  }
   return {
-    sessionToken,
-    user: result.user,
+    authProvider: "phone11",
+    emailPasswordEnabled: data.emailPasswordEnabled,
+    registrationEnabled: false,
   };
 }
 
-// Logout
-export async function logout(): Promise<void> {
-  await apiCall<void>("/api/auth/logout", {
-    method: "POST",
-  });
+// A newer sign-in/sign-out must win over an older session validation response.
+let authRevision = 0;
+let authMutationPending = false;
+let refreshInFlight: Promise<Auth.User | null> | null = null;
+let clearedAuthRevision = -1;
+
+async function clearAuthForRevision(revision: number): Promise<void> {
+  if (revision !== authRevision || clearedAuthRevision === revision) return;
+  await Auth.clearAuth();
+  if (revision === authRevision) clearedAuthRevision = revision;
 }
 
-// Get current authenticated user (web uses cookie-based auth)
-export async function getMe(options: GetMeOptions = {}): Promise<{
-  id: number;
-  openId: string;
-  name: string | null;
-  email: string | null;
-  loginMethod: string | null;
-  lastSignedIn: string;
-} | null> {
-  const { swallowErrors = true } = options;
-
+export async function getMe(_options?: {
+  swallowErrors?: boolean;
+}): Promise<Auth.User | null> {
+  const revision = authRevision;
   try {
-    const result = await apiCall<{ user: any }>("/api/auth/me");
-    return result.user || null;
+    const result = await apiCall<{ user: unknown }>("/api/auth/me");
+    const user = Auth.userFromData(result?.user);
+    if (!user)
+      throw new ApiError(
+        "Phone11 could not verify your account. Please try again.",
+      );
+    if (revision === authRevision) clearedAuthRevision = -1;
+    return user;
   } catch (error) {
-    console.error("[API] getMe failed:", error);
-    if (!swallowErrors) throw error;
-    return null;
+    if (error instanceof ApiError && error.status === 401) {
+      await clearAuthForRevision(revision);
+      return null;
+    }
+    // Network failures and server errors never erase an existing session.
+    throw error;
   }
 }
 
-// Establish session cookie on the backend (3000-xxx domain)
-// Called after receiving token via postMessage to get a proper Set-Cookie from the backend
-export async function establishSession(token: string): Promise<boolean> {
-  try {
-    console.log("[API] establishSession: setting cookie on backend...");
-    const baseUrl = getApiBaseUrl();
-    const url = `${baseUrl}/api/auth/session`;
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      credentials: "include", // Important: allows Set-Cookie to be stored
-    });
-
-    if (!response.ok) {
-      console.error("[API] establishSession failed:", response.status);
-      return false;
+export function refreshAuth(): Promise<Auth.User | null> {
+  if (authMutationPending) return Promise.resolve(Auth.getAuthSnapshot().user);
+  if (refreshInFlight) return refreshInFlight;
+  const revision = authRevision;
+  const pending = (async () => {
+    try {
+      Auth.updateAuthState({ error: null });
+      if (Platform.OS !== "web") {
+        const token = await Auth.getSessionToken();
+        if (revision !== authRevision) return null;
+        if (!token) {
+          await clearAuthForRevision(revision);
+          return null;
+        }
+      }
+      // A persisted profile is not proof of a currently valid session.
+      const user = await getMe();
+      if (revision !== authRevision) return null;
+      if (user) await Auth.setUserInfo(user);
+      if (revision === authRevision) Auth.updateAuthState({ user });
+      return user;
+    } catch (error) {
+      if (revision === authRevision)
+        Auth.updateAuthState({ error: new ApiError(authErrorMessage(error)) });
+      return null;
+    } finally {
+      if (revision === authRevision) Auth.updateAuthState({ loading: false });
     }
+  })();
+  refreshInFlight = pending;
+  void pending.finally(() => {
+    if (refreshInFlight === pending) refreshInFlight = null;
+  });
+  return pending;
+}
 
-    console.log("[API] establishSession: cookie set successfully");
-    return true;
+function beginAuthMutation(): void {
+  if (authMutationPending)
+    throw new ApiError(
+      "Please wait for the current sign-in or sign-out to finish.",
+    );
+  authMutationPending = true;
+  authRevision += 1;
+  refreshInFlight = null;
+}
+
+export async function signInWithEmail(
+  email: string,
+  password: string,
+): Promise<Auth.User> {
+  if (!email.trim() || !password)
+    throw new ApiError("Enter your email and password.");
+  beginAuthMutation();
+  try {
+    await Auth.waitForAuthCleanup();
+    const config = await getMobileAuthConfig();
+    if (!config.emailPasswordEnabled)
+      throw new ApiError(
+        "Email sign-in is currently unavailable. Please contact your Phone11 administrator.",
+      );
+    const { response } = await requestJson<unknown>(
+      "/api/auth/sign-in/email",
+      {
+        method: "POST",
+        ...(Platform.OS !== "web"
+          ? { headers: { "X-Phone11-Client": "native" } }
+          : {}),
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+          rememberMe: false,
+        }),
+      },
+      false,
+    );
+    if (Platform.OS !== "web") {
+      const token = response.headers.get("set-auth-token");
+      if (!token?.trim())
+        throw new ApiError(
+          "Phone11 could not establish a secure session. Please try again.",
+        );
+      await Auth.setSessionToken(token);
+    }
+    await Auth.clearUserInfo();
+    Auth.updateAuthState({ user: null, error: null });
+    const user = await getMe();
+    if (!user)
+      throw new ApiError(
+        "Phone11 could not verify your session. Please sign in again.",
+      );
+    await Auth.setUserInfo(user);
+    Auth.updateAuthState({ user, loading: false, error: null });
+    return user;
   } catch (error) {
-    console.error("[API] establishSession error:", error);
-    return false;
+    if (
+      error instanceof ApiError &&
+      (error.status === 401 || error.status === 400)
+    ) {
+      throw new ApiError(
+        "Email or password is incorrect. Please try again.",
+        error.status,
+      );
+    }
+    throw new ApiError(
+      authErrorMessage(error),
+      error instanceof ApiError ? error.status : undefined,
+    );
+  } finally {
+    authMutationPending = false;
+    Auth.updateAuthState({ loading: false });
+  }
+}
+
+export async function logout(): Promise<void> {
+  beginAuthMutation();
+  try {
+    await Auth.waitForAuthCleanup();
+    try {
+      await apiCall("/api/auth/sign-out", { method: "POST", body: "{}" });
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 401)) throw error;
+    }
+    await clearAuthForRevision(authRevision);
+  } catch {
+    const safeError = new ApiError(
+      "Phone11 could not sign out. Please check your connection and try again.",
+    );
+    Auth.updateAuthState({ error: safeError });
+    throw safeError;
+  } finally {
+    authMutationPending = false;
+    Auth.updateAuthState({ loading: false });
   }
 }

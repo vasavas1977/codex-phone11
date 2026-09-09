@@ -116,6 +116,26 @@ wait_for_backend_health() {
   return 1
 }
 
+wait_for_auth_readiness() {
+  echo "--- Verifying Phone11 auth readiness locally and through the public route ---"
+  local url body ready
+  for url in http://127.0.0.1:3000/api/ready/auth https://api.phone11.ai/api/ready/auth; do
+    ready=false
+    for _ in $(seq 1 20); do
+      if body="$(curl -fsS --connect-timeout 5 --max-time 12 "$url" 2>/dev/null)" &&
+        docker exec -i cp11-backend node -e 'try { const data = JSON.parse(require("node:fs").readFileSync(0, "utf8")); process.exit(data?.ready === true && data.authProvider === "phone11" ? 0 : 1); } catch { process.exit(1); }' <<< "$body" 2>/dev/null; then
+        ready=true
+        break
+      fi
+      sleep 3
+    done
+    if [ "$ready" != true ]; then
+      echo "ERROR: Phone11 auth is not ready at $url. Verify the approved migration and linked credential before accepting this deployment."
+      return 63
+    fi
+  done
+}
+
 try_repair_backend_db_password_from_rds_secret() {
   echo "--- Checking RDS managed secret for DB password repair ---"
   local db_host db_port db_user db_password db_name secret_arn secret_json secret_file
@@ -405,6 +425,7 @@ deploy_standalone_backend() {
   wait_for_backend_running
   wait_for_backend_health
   wait_for_public_api_health
+  wait_for_auth_readiness
   echo "Redeploy finished."
 }
 
@@ -438,4 +459,5 @@ docker restart cp11-backend >/dev/null
 wait_for_backend_running
 wait_for_backend_health
 wait_for_public_api_health
+wait_for_auth_readiness
 echo "Redeploy finished."

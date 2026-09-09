@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { revokePhone11Session } from "./_core/phone11-auth";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { pbxRouter } from "./pbx/pbx-router";
@@ -30,7 +31,10 @@ export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+      const response = await revokePhone11Session(ctx.req.headers);
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length) ctx.res.setHeader("Set-Cookie", cookies);
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return {

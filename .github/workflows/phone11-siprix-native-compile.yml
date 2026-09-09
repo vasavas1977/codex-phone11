@@ -1,0 +1,108 @@
+name: Phone11 Siprix native compile (unsigned trial only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone11-siprix-native-compile-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compile:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphonesimulator, iphoneos]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      SAMPLE_SHA: 53ae99e16531f64cf6e7832ed9e5d126a7e2d4ce
+      SDK: ${{ matrix.sdk }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Compile only upstream code. Do not check out or build the Phone11 app.
+      - name: Checkout pinned official sample
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: siprix/SampleSwiftUI
+          ref: 53ae99e16531f64cf6e7832ed9e5d126a7e2d4ce
+          path: siprix-sample
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+
+      - name: Verify source and toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          test "$(git -C siprix-sample rev-parse HEAD)" = "$SAMPLE_SHA"
+          test -z "$(git -C siprix-sample status --porcelain)"
+          # The vendor placeholder is deliberately unchanged: no paid license.
+          grep -Fq 'iniData.license = "...license-credentials..."' \
+            siprix-sample/SampleSwiftUI/SiprixModels.swift
+          test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+          xcodebuild -version | tee evidence/xcode-version.txt
+          grep -Fxq 'Xcode 16.4' evidence/xcode-version.txt
+          xcrun --sdk "$SDK" --show-sdk-version | tee evidence/sdk-version.txt
+          git -C siprix-sample rev-parse HEAD > evidence/sample-sha.txt
+          printf '%s\n' "$GITHUB_SHA" > evidence/workflow-sha.txt
+          for framework in siprix siprixMedia; do
+            plutil -lint "siprix-sample/SampleSwiftUI/$framework.xcframework/Info.plist"
+          done
+
+      - name: Compile and link without signing or running
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/siprix-$SDK"
+          # There is no shared scheme upstream; build only the app target.
+          xcodebuild \
+            -project "$GITHUB_WORKSPACE/siprix-sample/SampleSwiftUI.xcodeproj" \
+            -target SampleSwiftUI \
+            -configuration Debug \
+            -sdk "$SDK" \
+            "SYMROOT=$output/products" \
+            "OBJROOT=$output/intermediates" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            CODE_SIGN_ENTITLEMENTS= \
+            DEVELOPMENT_TEAM= \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            build 2>&1 | tee "evidence/build-$SDK.log"
+
+          app="$output/products/Debug-$SDK/SampleSwiftUI.app"
+          test -f "$app/SampleSwiftUI"
+          test -f "$app/Frameworks/siprix.framework/siprix"
+          test -f "$app/Frameworks/siprixMedia.framework/siprixMedia"
+          plutil -lint "$app/Info.plist"
+          xcrun lipo -verify_arch arm64 "$app/SampleSwiftUI"
+          file "$app/SampleSwiftUI" | tee "evidence/product-$SDK.txt"
+          test ! -e "$app/embedded.mobileprovision"
+          test ! -d "$app/_CodeSignature"
+          test -z "$(git -C siprix-sample status --porcelain)"
+          printf '%s\n' \
+            "PASS: $SDK arm64 compile/link, sample $SAMPLE_SHA." \
+            'Trial only; no signing, install, launch, SIP registration or calls.' \
+            'This is not handset, CallKit, PushKit, auth or PSTN proof.' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # Keep diagnostics only, not SDK binaries or an installable application.
+      - name: Retain compile evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: siprix-native-compile-${{ matrix.sdk }}-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 7

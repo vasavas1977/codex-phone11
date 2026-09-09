@@ -1,0 +1,47 @@
+name: Phone11 owned auth iOS build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone11-owned-auth-ios
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test mobile authentication and SIP isolation
+        run: |
+          pnpm run test:auth-client
+          pnpm run test:auth-sip
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: "23.2.0"
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+      - name: Verify EAS access
+        run: eas whoami
+      - name: Build signed internal iOS app using existing credentials
+        env:
+          EXPO_NO_TELEMETRY: "1"
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          eas build --platform ios --profile preview-ios-existing-credentials --non-interactive --wait --json > "$RUNNER_TEMP/phone11-build.json"
+          node -e 'const fs=require("fs");const builds=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/phone11-build.json","utf8"));for(const b of builds){console.log(JSON.stringify({id:b.id,status:b.status,gitCommitHash:b.gitCommitHash,buildUrl:b.artifacts?.buildUrl}));if(b.status!=="FINISHED"||b.gitCommitHash!==process.env.GITHUB_SHA)process.exitCode=1;}'

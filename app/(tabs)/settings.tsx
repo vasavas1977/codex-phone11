@@ -6,6 +6,8 @@ import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useSipAccountStore } from "@/lib/sip/account-store";
+import { useAuth } from "@/hooks/use-auth";
+import { SIGN_IN_ROUTE } from "@/constants/oauth";
 
 interface SettingRow {
   icon: string;
@@ -19,6 +21,7 @@ interface SettingRow {
 
 export default function SettingsScreen() {
   const colors = useColors();
+  const { isAuthenticated } = useAuth();
   const account = useSipAccountStore((s) => s.account);
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const registrationColor =
@@ -103,6 +106,12 @@ export default function SettingsScreen() {
         </View>
 
         {/* SIP Configuration */}
+        <SettingItem
+          icon="person.crop.circle.fill"
+          iconColor="#00C896"
+          label={isAuthenticated ? "Signed In" : "Sign In"}
+          onPress={() => router.push(SIGN_IN_ROUTE)}
+        />
         <SectionHeader title="SIP CONFIGURATION" />
         <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <SettingItem

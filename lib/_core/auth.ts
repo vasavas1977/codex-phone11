@@ -11,136 +11,169 @@ export type User = {
   lastSignedIn: Date;
 };
 
-type AuthChangeListener = () => void;
-const authChangeListeners = new Set<AuthChangeListener>();
+type AuthState = { user: User | null; loading: boolean; error: Error | null };
+let authState: AuthState = { user: null, loading: true, error: null };
+const authChangeListeners = new Set<() => void>();
 
-function notifyAuthChanged() {
+export function addAuthChangeListener(listener: () => void): () => void {
+  authChangeListeners.add(listener);
+  return () => {
+    authChangeListeners.delete(listener);
+  };
+}
+
+export function getAuthSnapshot(): AuthState {
+  return authState;
+}
+
+export function updateAuthState(next: Partial<AuthState>): void {
+  const updated = { ...authState, ...next };
+  if (
+    updated.user === authState.user &&
+    updated.loading === authState.loading &&
+    updated.error === authState.error
+  )
+    return;
+  authState = updated;
   authChangeListeners.forEach((listener) => listener());
 }
 
-export function addAuthChangeListener(listener: AuthChangeListener): () => void {
-  authChangeListeners.add(listener);
-  return () => authChangeListeners.delete(listener);
+export function userFromData(value: unknown): User | null {
+  if (!value || typeof value !== "object") return null;
+  const user = value as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(user.id) ||
+    (user.id as number) <= 0 ||
+    typeof user.openId !== "string" ||
+    !user.openId ||
+    ![user.name, user.email, user.loginMethod].every(
+      (field) => field === null || typeof field === "string",
+    ) ||
+    !(
+      typeof user.lastSignedIn === "string" || user.lastSignedIn instanceof Date
+    )
+  )
+    return null;
+  const lastSignedIn = new Date(user.lastSignedIn);
+  if (!Number.isFinite(lastSignedIn.getTime())) return null;
+  return {
+    id: user.id as number,
+    openId: user.openId,
+    name: user.name as string | null,
+    email: user.email as string | null,
+    loginMethod: user.loginMethod as string | null,
+    lastSignedIn,
+  };
 }
 
 export async function getSessionToken(): Promise<string | null> {
+  if (Platform.OS === "web") return null;
   try {
-    // Web platform uses cookie-based auth, no manual token management needed
-    if (Platform.OS === "web") {
-      console.log("[Auth] Web platform uses cookie-based auth, skipping token retrieval");
-      return null;
-    }
-
-    // Use SecureStore for native
-    console.log("[Auth] Getting session token...");
-    const token = await SecureStore.getItemAsync(SESSION_TOKEN_KEY);
-    console.log(
-      "[Auth] Session token retrieved from SecureStore:",
-      token ? `present (${token.substring(0, 20)}...)` : "missing",
+    return await SecureStore.getItemAsync(SESSION_TOKEN_KEY);
+  } catch {
+    throw new Error(
+      "Phone11 could not read the saved session. Please try again.",
     );
-    return token;
-  } catch (error) {
-    console.error("[Auth] Failed to get session token:", error);
-    return null;
   }
 }
 
 export async function setSessionToken(token: string): Promise<void> {
+  if (Platform.OS === "web") return;
+  if (!token.trim())
+    throw new Error(
+      "Phone11 could not save the session. Please sign in again.",
+    );
   try {
-    // Web platform uses cookie-based auth, no manual token management needed
-    if (Platform.OS === "web") {
-      console.log("[Auth] Web platform uses cookie-based auth, skipping token storage");
-      return;
-    }
-
-    // Use SecureStore for native
-    console.log("[Auth] Setting session token...", token.substring(0, 20) + "...");
     await SecureStore.setItemAsync(SESSION_TOKEN_KEY, token);
-    console.log("[Auth] Session token stored in SecureStore successfully");
-    notifyAuthChanged();
-  } catch (error) {
-    console.error("[Auth] Failed to set session token:", error);
-    throw error;
+  } catch {
+    throw new Error(
+      "Phone11 could not save the session securely. Please try again.",
+    );
   }
 }
 
 export async function removeSessionToken(): Promise<void> {
+  if (Platform.OS === "web") return;
   try {
-    // Web platform uses cookie-based auth, logout is handled by server clearing cookie
-    if (Platform.OS === "web") {
-      console.log("[Auth] Web platform uses cookie-based auth, skipping token removal");
-      return;
-    }
-
-    // Use SecureStore for native
-    console.log("[Auth] Removing session token...");
     await SecureStore.deleteItemAsync(SESSION_TOKEN_KEY);
-    console.log("[Auth] Session token removed from SecureStore successfully");
-    notifyAuthChanged();
-  } catch (error) {
-    console.error("[Auth] Failed to remove session token:", error);
+  } catch {
+    throw new Error(
+      "Phone11 could not clear the saved session. Please try again.",
+    );
   }
 }
 
 export async function getUserInfo(): Promise<User | null> {
+  if (Platform.OS === "web") return authState.user;
   try {
-    console.log("[Auth] Getting user info...");
-
-    let info: string | null = null;
-    if (Platform.OS === "web") {
-      // Use localStorage for web
-      info = window.localStorage.getItem(USER_INFO_KEY);
-    } else {
-      // Use SecureStore for native
-      info = await SecureStore.getItemAsync(USER_INFO_KEY);
-    }
-
-    if (!info) {
-      console.log("[Auth] No user info found");
-      return null;
-    }
-    const user = JSON.parse(info);
-    console.log("[Auth] User info retrieved:", user);
-    return user;
-  } catch (error) {
-    console.error("[Auth] Failed to get user info:", error);
+    const info = await SecureStore.getItemAsync(USER_INFO_KEY);
+    return info ? userFromData(JSON.parse(info)) : null;
+  } catch {
     return null;
   }
 }
 
+// Profile caching is optional and never emits auth events or stores browser credentials.
 export async function setUserInfo(user: User): Promise<void> {
+  if (Platform.OS === "web") return;
   try {
-    console.log("[Auth] Setting user info...", user);
-
-    if (Platform.OS === "web") {
-      // Use localStorage for web
-      window.localStorage.setItem(USER_INFO_KEY, JSON.stringify(user));
-      console.log("[Auth] User info stored in localStorage successfully");
-      return;
-    }
-
-    // Use SecureStore for native. This is only a profile cache, not the auth
-    // source of truth, so it must not notify auth listeners or it will
-    // re-trigger useAuth.fetchUser after every successful validation.
     await SecureStore.setItemAsync(USER_INFO_KEY, JSON.stringify(user));
-    console.log("[Auth] User info stored in SecureStore successfully");
-  } catch (error) {
-    console.error("[Auth] Failed to set user info:", error);
+  } catch {
+    // A cache failure does not invalidate a verified session.
   }
 }
 
 export async function clearUserInfo(): Promise<void> {
+  if (Platform.OS === "web") return;
   try {
-    if (Platform.OS === "web") {
-      // Use localStorage for web
-      window.localStorage.removeItem(USER_INFO_KEY);
-      return;
-    }
-
-    // Use SecureStore for native. Session token changes are the only auth
-    // events listeners need; clearing cached profile data should stay quiet.
     await SecureStore.deleteItemAsync(USER_INFO_KEY);
-  } catch (error) {
-    console.error("[Auth] Failed to clear user info:", error);
+  } catch {
+    // Cached profiles are never sufficient to authenticate.
   }
+}
+
+let clearingAuth: Promise<void> | null = null;
+let cleanupFailed = false;
+
+export function waitForAuthCleanup(): Promise<void> {
+  return clearingAuth ?? (cleanupFailed ? clearAuth() : Promise.resolve());
+}
+
+export function clearAuth(): Promise<void> {
+  if (clearingAuth) return clearingAuth;
+  updateAuthState({ user: null, loading: false, error: null });
+  const pending = (async () => {
+    // Attempt every cleanup even when one fails, so SIP cannot retain a prior identity.
+    const results = await Promise.allSettled([
+      removeSessionToken(),
+      clearUserInfo(),
+      (async () => {
+        try {
+          const { sipEngine } = await import("@/lib/sip/engine");
+          await sipEngine.destroy();
+        } finally {
+          const { useSipAccountStore } =
+            await import("@/lib/sip/account-store");
+          await useSipAccountStore.getState().clearAccount();
+        }
+      })(),
+    ]);
+    if (results.some((result) => result.status === "rejected")) {
+      throw new Error(
+        "Phone11 could not finish clearing the session. Please try again.",
+      );
+    }
+  })();
+  clearingAuth = pending;
+  void pending.then(
+    () => {
+      cleanupFailed = false;
+      clearingAuth = null;
+    },
+    () => {
+      cleanupFailed = true;
+      clearingAuth = null;
+    },
+  );
+  return pending;
 }

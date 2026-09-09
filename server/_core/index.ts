@@ -3,7 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
+import { registerAuthRoutes, phone11Cors } from "./auth-routes";
 import { registerStorageProxy } from "./storageProxy";
 import { fullRouter } from "../routers";
 import { createContext } from "./context";
@@ -36,32 +36,15 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
-  // Enable CORS for all routes - reflect the request origin to support credentials
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.header("Access-Control-Allow-Origin", origin);
-    }
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header(
-      "Access-Control-Allow-Headers",
-      "Origin, X-Requested-With, Content-Type, Accept, Authorization",
-    );
-    res.header("Access-Control-Allow-Credentials", "true");
-
-    // Handle preflight requests
-    if (req.method === "OPTIONS") {
-      res.sendStatus(200);
-      return;
-    }
-    next();
-  });
+  const trustedProxies = process.env.PHONE11_TRUSTED_PROXY_CIDRS?.split(",").map(v => v.trim()).filter(Boolean);
+  if (trustedProxies?.length) app.set("trust proxy", trustedProxies);
+  app.use(phone11Cors);
+  registerAuthRoutes(app);
 
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
 
   app.get("/api/health", (_req, res) => {
     res.json({
@@ -96,14 +79,15 @@ async function startServer() {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
-  // Initialize WebSocket server for real-time events
-  wsManager.init(server);
+  // The legacy /ws endpoint trusted caller-supplied tenant/role values.
+  // Keep it disabled until upgrades use authenticated tenant membership.
 
   // WebSocket status endpoint
   app.get("/api/ws/status", (_req, res) => {
-    res.json({
-      ok: true,
-      clients: wsManager.getClientCount(),
+    res.status(503).json({
+      ok: false,
+      enabled: false,
+      reason: "Authenticated event delivery is not enabled",
       timestamp: Date.now(),
     });
   });
