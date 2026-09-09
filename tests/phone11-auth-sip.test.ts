@@ -142,3 +142,90 @@ describe("Phone11 auth and SIP account isolation", () => {
     initialize.mockRestore();
   });
 });
+
+describe("Phone11 CallKit audio ownership", () => {
+  const internals = sipEngine as unknown as {
+    _activateAudioSession: (callId: string, reason: string) => Promise<void>;
+    endpoint: unknown;
+  };
+  const endpoint = () => ({
+    activateAudioSession: vi.fn().mockResolvedValue(undefined),
+    deactivateAudioSession: vi.fn().mockResolvedValue(undefined),
+  });
+  beforeEach(async () => {
+    await sipEngine.handleNativeAudioSession(false);
+    internals.endpoint = null;
+  });
+  it("does not open iOS audio at call creation or confirmation before CallKit grants it", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await internals._activateAudioSession("1", "outbound_call_created");
+    await internals._activateAudioSession("1", "call_changed");
+    expect(native.activateAudioSession).not.toHaveBeenCalled();
+    await sipEngine.handleNativeAudioSession(true);
+    expect(native.activateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("does not tear down and reopen an already activated sound device on confirmation", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await Promise.all([
+      internals._activateAudioSession("1", "call_changed"),
+      sipEngine.handleNativeAudioSession(true),
+    ]);
+    expect(native.activateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("reopens after a CallKit deactivation and later reactivation", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await sipEngine.handleNativeAudioSession(false);
+    await internals._activateAudioSession("1", "call_changed");
+    expect(native.activateAudioSession).toHaveBeenCalledOnce();
+    await sipEngine.handleNativeAudioSession(true);
+    expect(native.activateAudioSession).toHaveBeenCalledTimes(2);
+    expect(native.deactivateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("serializes deactivation behind an in-flight activation", async () => {
+    const native = endpoint();
+    let finish!: () => void;
+    native.activateAudioSession.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    internals.endpoint = native;
+    const start = sipEngine.handleNativeAudioSession(true);
+    await Promise.resolve();
+    const stop = sipEngine.handleNativeAudioSession(false);
+    expect(native.deactivateAudioSession).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([start, stop]);
+    expect(native.deactivateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("does not treat failed activation as an active sound device", async () => {
+    const native = endpoint();
+    native.activateAudioSession.mockRejectedValueOnce(new Error("audio unavailable"));
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await internals._activateAudioSession("1", "call_changed");
+    expect(native.activateAudioSession).toHaveBeenCalledTimes(2);
+  });
+  it("cycles the sound device when deactivation and reactivation arrive together", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await Promise.all([
+      sipEngine.handleNativeAudioSession(false),
+      sipEngine.handleNativeAudioSession(true),
+    ]);
+    expect(native.deactivateAudioSession).toHaveBeenCalledOnce();
+    expect(native.activateAudioSession).toHaveBeenCalledTimes(2);
+  });
+  it("does not activate an endpoint replaced before the queued callback runs", async () => {
+    const old = endpoint();
+    internals.endpoint = old;
+    const start = sipEngine.handleNativeAudioSession(true);
+    const next = endpoint();
+    internals.endpoint = next;
+    await start;
+    expect(old.activateAudioSession).not.toHaveBeenCalled();
+    expect(next.activateAudioSession).not.toHaveBeenCalled();
+  });
+});

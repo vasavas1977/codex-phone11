@@ -13,7 +13,7 @@
     "auth:admin": "tsx scripts/phone11-auth-admin.ts",
     "test:auth": "node scripts/test-phone11-auth.mjs",
     "test:auth-client": "vitest run --config tests/phone11-auth-client.config.ts",
-    "test:auth-sip": "vitest run tests/phone11-auth-sip.test.ts tests/auth.logout.test.ts",
+    "test:auth-sip": "vitest run tests/phone11-auth-sip.test.ts tests/auth.logout.test.ts tests/phone11-native-audio-patch.test.ts",
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc --noEmit",
     "lint": "expo lint",

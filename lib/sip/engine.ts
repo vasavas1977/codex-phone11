@@ -286,6 +286,10 @@ class SipEngine {
   private initialized = false;
   private nativeOwnerId: number | null = null;
   private lifecycle: Promise<void> = Promise.resolve();
+  private iosAudioSessionActive = false;
+  private audioSessionGeneration = 0;
+  private audioEndpoint: any = null;
+  private audioLifecycle: Promise<void> = Promise.resolve();
 
   private serializeLifecycle(operation: () => Promise<void>): Promise<void> {
     const task = this.lifecycle.then(operation, operation);
@@ -870,6 +874,7 @@ class SipEngine {
   }
 
   private async destroyEndpoint(): Promise<void> {
+    if (Platform.OS === "ios") await this.handleNativeAudioSession(false, "endpoint_cleanup");
     if (this.endpoint) {
       const endpoint = this.endpoint;
       const account = this.pjsipAccount;
@@ -1064,7 +1069,47 @@ class SipEngine {
     }
   }
 
-  private async _activateAudioSession(callId: string, reason: string): Promise<void> {
+  handleNativeAudioSession(active: boolean, source = "callkit"): Promise<void> {
+    if (Platform.OS !== "ios") return Promise.resolve();
+    if (active !== this.iosAudioSessionActive) this.audioSessionGeneration += 1;
+    this.iosAudioSessionActive = active;
+    this._diag("info", "media", active ? "Native audio session activated" : "Native audio session deactivated", { context: { source } });
+    if (active) return this._activateAudioSession("system", "callkit_activated");
+    this.audioEndpoint = null;
+    const endpoint = this.endpoint;
+    const operation = this.audioLifecycle.then(async () => {
+      if (!endpoint || endpoint !== this.endpoint) return;
+      try {
+        await endpoint.deactivateAudioSession?.();
+        this.audioEndpoint = null;
+      } catch (error) {
+        this._diag("warning", "media", "PJSIP audio session deactivation failed", { detail: formatSipError(error) });
+      }
+    });
+    this.audioLifecycle = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private _activateAudioSession(callId: string, reason: string): Promise<void> {
+    const endpoint = this.endpoint;
+    const generation = this.audioSessionGeneration;
+    const operation = this.audioLifecycle.then(async () => {
+      if (!endpoint || endpoint !== this.endpoint) return;
+      if (Platform.OS === "ios") {
+        if (generation !== this.audioSessionGeneration) return;
+        if (!this.iosAudioSessionActive) {
+          this._diag("info", "media", "PJSIP audio waiting for CallKit activation", { callId, context: { reason } });
+          return;
+        }
+        if (this.audioEndpoint === endpoint) return;
+      }
+      await this.activateAudioDevice(callId, reason, endpoint, generation);
+    });
+    this.audioLifecycle = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async activateAudioDevice(callId: string, reason: string, endpoint: any, generation: number): Promise<void> {
     if (!this.endpoint || typeof this.endpoint.activateAudioSession !== "function") {
       this._diag("warning", "media", "PJSIP audio session activation is not available", {
         callId,
@@ -1076,13 +1121,15 @@ class SipEngine {
       return;
     }
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.endpoint.activateAudioSession(),
+        endpoint.activateAudioSession(),
         new Promise((_, reject) => {
-          setTimeout(() => reject(new Error("activateAudioSession timed out")), 1500);
+          timer = setTimeout(() => reject(new Error("activateAudioSession timed out")), 1500);
         }),
       ]);
+      if (endpoint === this.endpoint && generation === this.audioSessionGeneration) this.audioEndpoint = endpoint;
       this._diag("info", "media", "PJSIP audio session activated", {
         callId,
         context: { reason },
@@ -1093,6 +1140,8 @@ class SipEngine {
         detail: formatSipError(error),
         context: { reason },
       });
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

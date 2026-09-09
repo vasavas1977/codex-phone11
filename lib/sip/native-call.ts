@@ -501,6 +501,12 @@ class NativeCallManager {
     // VoIP push notification received (iOS only)
     // This is critical for waking the app when a call comes in while app is killed
     if (Platform.OS === "ios") {
+      callKeep.addEventListener("didActivateAudioSession", () => {
+        void sipEngine.handleNativeAudioSession(true);
+      });
+      callKeep.addEventListener("didDeactivateAudioSession", () => {
+        void sipEngine.handleNativeAudioSession(false);
+      });
       callKeep.addEventListener(
         "didReceiveStartCallAction",
         async ({ callUUID, handle, name }: any) => {
@@ -553,6 +559,7 @@ class NativeCallManager {
 
       // Provider reset (iOS) — clean up all calls
       callKeep.addEventListener("didResetProvider", () => {
+        void sipEngine.handleNativeAudioSession(false, "provider_reset");
         console.log("[NativeCall] Provider reset — ending all calls");
         callIdToUuid.clear();
         uuidToCallId.clear();

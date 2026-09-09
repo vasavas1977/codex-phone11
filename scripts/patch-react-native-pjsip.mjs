@@ -1,5 +1,6 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { patchCallKitAudioStartup } from "./pjsip-callkit-patch.mjs";
 
 const packageRoot = path.join(process.cwd(), "node_modules", "react-native-pjsip");
 const podspecPath = path.join(packageRoot, "react-native-pjsip.podspec");
@@ -8,6 +9,7 @@ const iosModulePath = path.join(iosRoot, "RTCPjSip", "PjSipModule.m");
 const iosAccountPath = path.join(iosRoot, "RTCPjSip", "PjSipAccount.m");
 const iosCallPath = path.join(iosRoot, "RTCPjSip", "PjSipCall.m");
 const iosUtilPath = path.join(iosRoot, "RTCPjSip", "PjSipUtil.m");
+const iosEndpointPath = path.join(iosRoot, "RTCPjSip", "PjSipEndpoint.m");
 const androidRoot = path.join(packageRoot, "android");
 const gradlePath = path.join(androidRoot, "build.gradle");
 const manifestPath = path.join(androidRoot, "src", "main", "AndroidManifest.xml");
@@ -520,6 +522,8 @@ const manifestChanged = await patchFile(manifestPath, (source) =>
 );
 const sourceChanged = await patchSourceTree(sourceRoot);
 
+const iosCallKitAudioChanged = await patchFile(iosEndpointPath, patchCallKitAudioStartup);
+
 if (
   podspecChanged ||
   iosModuleChanged ||
@@ -527,6 +531,7 @@ if (
   iosAudioChanged ||
   iosStringChanged ||
   iosMediaChanged ||
+  iosCallKitAudioChanged ||
   gradleChanged ||
   manifestChanged ||
   sourceChanged
