@@ -3,6 +3,8 @@ import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 
 const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
+const sipEngine = process.env.EXPO_PUBLIC_SIP_ENGINE ?? "pjsip";
+if (!["siprix", "pjsip"].includes(sipEngine)) throw new Error("Invalid SIP engine selection");
 const bundleId =
   rawBundleId
     .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
@@ -33,11 +35,12 @@ const config: ExpoConfig = {
   name: env.appName,
   slug: env.appSlug,
   version: "1.0.0",
+  runtimeVersion: `1.0.0-${sipEngine}-1`,
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
   userInterfaceStyle: "dark",
-  // react-native-pjsip exposes its iOS module through the legacy NativeModules bridge.
+  // Both native SIP adapters currently expose the legacy NativeModules bridge.
   newArchEnabled: false,
   ios: {
     supportsTablet: true,
@@ -129,6 +132,8 @@ const config: ExpoConfig = {
       projectId: "e354ffd3-485c-49f1-9e6f-aebe571d8dfb",
     },
     buildInfo: {
+      sipEngine,
+      sipSdkVersion: sipEngine === "siprix" ? "1.0.40-trial" : "react-native-pjsip-2.7.4",
       easBuildId: process.env.EAS_BUILD_ID ?? "local",
       easBuildProfile: process.env.EAS_BUILD_PROFILE ?? "unknown",
       gitCommitHash: process.env.EAS_BUILD_GIT_COMMIT_HASH ?? process.env.GITHUB_SHA ?? "unknown",

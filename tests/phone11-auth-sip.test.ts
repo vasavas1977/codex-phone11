@@ -27,7 +27,7 @@ vi.mock("../lib/sip/diagnostics-store", () => ({
 
 import * as SecureStore from "expo-secure-store";
 import { useSipAccountStore, type SipAccount } from "../lib/sip/account-store";
-import { sipEngine } from "../lib/sip/engine";
+import { sipEngine } from "../lib/sip/pjsip-engine";
 import { useSipCallStore } from "../lib/sip/call-store";
 
 const account: SipAccount = {

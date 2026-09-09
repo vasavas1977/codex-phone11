@@ -1,0 +1,71 @@
+name: Phone11 Siprix iOS internal build
+
+on:
+  push:
+    branches: [codex/phone11-owned-auth-20260909]
+    paths: [.github/workflows/phone11-siprix-ios-build.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone11-siprix-ios
+  cancel-in-progress: false
+
+jobs:
+  native-check:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check exact SDK headers and native bridge behavior
+        run: |
+          node scripts/stage-siprix-sdk.mjs
+          node --test modules/phone11-siprix/tests/*.test.mjs
+  build:
+    needs: native-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test authentication and adapters
+        run: |
+          pnpm run test:auth-client
+          pnpm run test:auth-sip
+          pnpm exec vitest run tests/phone11-siprix-engine.test.ts tests/phone11-siprix-callkit.test.ts tests/phone11-siprix-selection.test.ts
+          node --test tests/phone11-siprix-packaging.test.mjs
+      - name: Stage and verify isolated Siprix native modules
+        env:
+          EXPO_PUBLIC_SIP_ENGINE: siprix
+        run: |
+          node scripts/stage-siprix-sdk.mjs
+          node scripts/verify-siprix-autolinking.mjs
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: "23.2.0"
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+      - name: Build signed Siprix trial using existing iOS credentials
+        env:
+          EXPO_NO_TELEMETRY: "1"
+        run: |
+          eas build --platform ios --profile preview-ios-siprix --non-interactive --wait --json > "$RUNNER_TEMP/phone11-siprix-build.json"
+          node -e 'const fs=require("fs");const builds=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/phone11-siprix-build.json","utf8"));for(const b of builds){console.log(JSON.stringify({id:b.id,status:b.status,gitCommitHash:b.gitCommitHash,buildUrl:b.artifacts?.buildUrl}));if(b.status!=="FINISHED"||b.gitCommitHash!==process.env.GITHUB_SHA)process.exitCode=1;}'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phone11-siprix-build-result
+          path: ${{ runner.temp }}/phone11-siprix-build.json

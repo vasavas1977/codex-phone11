@@ -146,7 +146,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     answerCall: async (id, video) => {
       await ensureNativeStackInitialized();
       await sipEngine.answerCall(id, video);
-      nativeCallManager.reportCallConnected(id);
+      if (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix") nativeCallManager.reportCallConnected(id);
     },
     setMute: async (id, muted) => {
       await sipEngine.setMute(id, muted);
@@ -159,6 +159,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       nativeCallManager.setOnHold(id, held);
     },
     setSpeaker: async (id, speaker) => {
+      await sipEngine.setSpeaker(id, speaker);
       useSipCallStore.getState().setSpeaker(id, speaker);
     },
     sendDtmf: async (id, digit) => {

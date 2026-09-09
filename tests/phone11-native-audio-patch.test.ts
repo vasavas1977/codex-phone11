@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { patchCallKitAudioStartup } from "../scripts/pjsip-callkit-patch.mjs";
 
 const startup = `status = pjsua_start();
     if (status != PJ_SUCCESS) NSLog(@"Error starting pjsua");
     return self;`;
+
+describe("CallKeep iOS audio configuration contract", () => {
+  it("passes the SDK's native voice-chat mode and HFP option without mixing", () => {
+    const source = readFileSync(new URL("../lib/sip/native-call.ts", import.meta.url), "utf8");
+    const sdk = readFileSync(new URL("../node_modules/react-native-callkeep/index.js", import.meta.url), "utf8");
+    expect(sdk).toContain("voiceChat: 'AVAudioSessionModeVoiceChat'");
+    expect(source).toContain('mode: "AVAudioSessionModeVoiceChat"');
+    expect(source).not.toContain('mode: "voiceChat"');
+    expect(source).toContain("categoryOptions: 0x04,");
+  });
+});
 
 describe("PJSIP native CallKit startup patch", () => {
   it("disables automatic sound-device opening before returning the endpoint", () => {

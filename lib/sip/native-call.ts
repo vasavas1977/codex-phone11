@@ -44,9 +44,10 @@ function generateUUID(): string {
   });
 }
 
-// Map between PJSIP call IDs and CallKit UUIDs
+// Map between SIP engine call IDs and CallKit UUIDs
 const callIdToUuid: Map<string, string> = new Map();
 const uuidToCallId: Map<string, string> = new Map();
+const outgoingCalls = new Set<string>();
 const outgoingHandleEchoes: Map<string, { sipCallId: string; expiresAt: number }> = new Map();
 
 function normalizeHandle(handle?: string | null): string {
@@ -93,6 +94,7 @@ function addNativeCallDiagnostic(
 
 class NativeCallManager {
   private initialized = false;
+  private initialization: Promise<void> | null = null;
   private appStateSubscription: any = null;
 
   /**
@@ -100,6 +102,14 @@ class NativeCallManager {
    * Must be called once on app start, after SIP engine initialization.
    */
   async initialize(): Promise<void> {
+    if (this.initialized) return;
+    if (!this.initialization) {
+      this.initialization = this.initializeOnce().finally(() => { this.initialization = null; });
+    }
+    await this.initialization;
+  }
+
+  private async initializeOnce(): Promise<void> {
     const callKeep = getCallKeep();
     if (!callKeep) {
       console.log("[NativeCall] Not available on this platform");
@@ -113,13 +123,14 @@ class NativeCallManager {
           appName: "CloudPhone11",
           // Supported handle types
           includesCallsInRecents: true,
-          maximumCallGroups: 2,
+          maximumCallGroups: process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" ? 1 : 2,
           maximumCallsPerCallGroup: 1,
-          supportsVideo: true,
+          supportsVideo: process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix",
           // Audio session configuration
           audioSession: {
-            categoryOptions: 0x01 | 0x04, // AllowBluetooth | AllowBluetoothA2DP
-            mode: "voiceChat",
+            categoryOptions: 0x04, // AllowBluetooth (bidirectional HFP, not MixWithOthers)
+            // CallKeep passes this value directly to AVAudioSession.setMode.
+            mode: "AVAudioSessionModeVoiceChat",
           },
           // Ringtone sound file (must be in app bundle)
           ringtoneSound: "ringtone.caf",
@@ -169,6 +180,7 @@ class NativeCallManager {
       addNativeCallDiagnostic("error", "CallKit initialization failed", {
         detail: formatSipError(error),
       });
+      if (process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix") throw error;
     }
   }
 
@@ -228,6 +240,7 @@ class NativeCallManager {
     const uuid = generateUUID();
     callIdToUuid.set(sipCallId, uuid);
     uuidToCallId.set(uuid, sipCallId);
+    outgoingCalls.add(sipCallId);
     rememberOutgoingHandle(callerNumber, sipCallId);
 
     addNativeCallDiagnostic("info", "CallKit outgoing call reported", {
@@ -263,7 +276,7 @@ class NativeCallManager {
   }
 
   /**
-   * Report that a call has been connected (media flowing).
+   * Report the SDK's connected state. This does not prove audible media.
    */
   reportCallConnected(sipCallId: string): void {
     const callKeep = getCallKeep();
@@ -273,7 +286,11 @@ class NativeCallManager {
     if (!uuid) return;
 
     try {
-      callKeep.setCurrentCallActive(uuid);
+      if (Platform.OS === "ios") {
+        if (outgoingCalls.has(sipCallId)) callKeep.reportConnectedOutgoingCallWithUUID(uuid);
+      } else {
+        callKeep.setCurrentCallActive(uuid);
+      }
       addNativeCallDiagnostic("info", "CallKit call marked active", {
         callId: sipCallId,
         context: { callUUID: uuid },
@@ -325,6 +342,7 @@ class NativeCallManager {
     // Clean up mappings
     callIdToUuid.delete(sipCallId);
     uuidToCallId.delete(uuid);
+    outgoingCalls.delete(sipCallId);
 
     console.log(`[NativeCall] Call ended: ${uuid} (reason: ${endReason})`);
   }
@@ -415,6 +433,13 @@ class NativeCallManager {
 
     callIdToUuid.clear();
     uuidToCallId.clear();
+    outgoingHandleEchoes.clear();
+    outgoingCalls.clear();
+    if (callKeep && this.initialized) {
+      for (const event of ["answerCall", "endCall", "didToggleHoldCallAction", "didPerformSetMutedCallAction", "didPerformDTMFAction", "didChangeAudioRoute", "didActivateAudioSession", "didDeactivateAudioSession", "didReceiveStartCallAction", "didResetProvider", "checkReachability"]) {
+        callKeep.removeEventListener(event);
+      }
+    }
     this.initialized = false;
   }
 
@@ -428,6 +453,7 @@ class NativeCallManager {
 
       console.log(`[NativeCall] User answered call from native UI: ${callUUID}`);
       await sipEngine.answerCall(sipCallId);
+      if (process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix") return;
       try {
         callKeep.setCurrentCallActive(callUUID);
       } catch (error) {
@@ -520,6 +546,9 @@ class NativeCallManager {
               uuidToCallId.set(callUUID, sipCallId);
               callIdToUuid.set(sipCallId, callUUID);
             }
+            if (useSipCallStore.getState().activeCalls[sipCallId]?.status === "active") {
+              this.reportCallConnected(sipCallId);
+            }
             addNativeCallDiagnostic("info", "Ignored CallKit start-call echo for existing outbound SIP call", {
               callId: sipCallId,
               destination: handle,
@@ -586,7 +615,7 @@ class NativeCallManager {
           const callKeep = getCallKeep();
           if (callKeep) {
             try {
-              callKeep.setCurrentCallActive(uuid);
+              this.reportCallConnected(call.id);
             } catch (error) {
               addNativeCallDiagnostic("error", "CallKit foreground active sync failed", {
                 callId: call.id,

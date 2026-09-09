@@ -37,6 +37,8 @@ function buildInfoLines(): string[] {
 
   return [
     `appVersion=${expoConfig?.version ?? "unknown"}`,
+    `sipEngine=${buildInfo.sipEngine ?? "unknown"}`,
+    `sipSdkVersion=${buildInfo.sipSdkVersion ?? "unknown"}`,
     `easBuildId=${buildInfo.easBuildId ?? "unknown"}`,
     `easBuildProfile=${buildInfo.easBuildProfile ?? "unknown"}`,
     `gitCommitHash=${buildInfo.gitCommitHash ?? "unknown"}`,
@@ -109,7 +111,7 @@ export default function SipDiagnosticsScreen() {
             category: "registration",
             message: "SIP diagnostics opened without starting native registration",
             detail:
-              "This screen no longer starts PJSIP automatically. Use Start SIP Registration Test when you want an explicit native SIP attempt.",
+              "Diagnostics opened without starting the SIP engine. Registration requires an explicit test.",
             context: {
               username: loadedAccount.username,
               domain: loadedAccount.domain,

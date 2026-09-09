@@ -1,0 +1,11 @@
+{
+  "name": "phone11-siprix",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phone11 iOS Siprix 1.0.40 trial bridge; RNCallKeep owns CallKit",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts", "ios", "vendor", "Phone11Siprix.podspec", "react-native.config.js", "README.md"],
+  "scripts": { "test": "node --test tests/*.test.mjs" },
+  "peerDependencies": { "react-native": ">=0.76 <0.82" }
+}

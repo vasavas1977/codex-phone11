@@ -27,6 +27,7 @@ terraform.tfvars
 
 # === Dependencies ===
 node_modules/
+modules/phone11-siprix/vendor/
 .pnp.*
 
 # === Build Artifacts ===
