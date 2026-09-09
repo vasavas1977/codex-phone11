@@ -1,6 +1,9 @@
 name: Phone11 owned auth iOS build
 
 on:
+  push:
+    branches: [codex/phone11-owned-auth-20260909]
+    paths: [.github/workflows/phone11-owned-auth-ios-build.yml]
   workflow_dispatch:
 
 permissions:

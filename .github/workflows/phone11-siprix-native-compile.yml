@@ -1,6 +1,9 @@
 name: Phone11 Siprix native compile (unsigned trial only)
 
 on:
+  push:
+    branches: [codex/phone11-owned-auth-20260909]
+    paths: [.github/workflows/phone11-siprix-native-compile.yml]
   workflow_dispatch:
 
 permissions:
@@ -12,7 +15,6 @@ concurrency:
 
 jobs:
   compile:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     timeout-minutes: 25
     strategy:
