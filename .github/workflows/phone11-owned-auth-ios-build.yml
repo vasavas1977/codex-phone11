@@ -33,6 +33,7 @@ jobs:
       - name: Test mobile authentication and SIP isolation
         run: |
           node -e 'const p=require("./eas.json").build["preview-ios-existing-credentials"];if(p.ios.image!=="macos-sequoia-15.6-xcode-26.0")throw new Error("Unexpected iOS build image");'
+          node -e 'const p=require("./package.json");if(p.dependencies["expo-asset"]!=="12.0.11")throw new Error("Required native audio peer missing");const r=JSON.parse(require("child_process").execFileSync("pnpm",["exec","expo-modules-autolinking","resolve","--platform","apple","--json"],{encoding:"utf8"}));if(!r.modules.some(m=>m.packageName==="expo-asset"&&m.modules.includes("AssetModule")))throw new Error("ExpoAsset is not linked");console.log("ExpoAsset native module resolved");'
           pnpm run test:auth-client
           pnpm run test:auth-sip
       - uses: expo/expo-github-action@v8
