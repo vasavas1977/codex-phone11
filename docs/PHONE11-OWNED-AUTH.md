@@ -1,6 +1,8 @@
 # Phone11-owned sign-in
 
-Status: implemented locally on 2026-09-09; not deployed or installed on a handset.
+Status: backend deployed and public login/provisioning/logout verified on 2026-09-09.
+Updated handset installation and live calling are not yet verified. See
+`ops/phone11-owned-auth-production-20260909.md` for the approved recovery/cutover.
 
 ## Scope
 
@@ -19,7 +21,8 @@ requires a separately reviewed admin flow; do not promise these controls yet.
 ## Identity and session boundaries
 
 - New tables are prefixed `phone11_auth_`. Existing users, roles, tenants, extensions,
-  SIP credentials, and subscriber records are not recreated or rotated.
+  SIP credentials, and subscriber records are not automatically recreated or rotated.
+  The explicit, approved empty-user-table recovery is described below.
 - An operator must explicitly link a new auth identity to an existing numeric user
   ID and its unique canonical email. There is no automatic email-based claim.
 - Native clients store only the signed session header in SecureStore. Browsers use
@@ -140,8 +143,9 @@ Backend/admin compilation and iOS JavaScript export do not produce a signed IPA.
 Full-repository TypeScript checking still has pre-existing transfer, marketing-site,
 and backend type failures. Full Xcode/signing access and the production cutover are
 separate gates. Siprix is selected but still requires native integration/build and
-physical handset proof. No live user password, SIP password, or production record
-was changed during this implementation.
+physical handset proof. Initial implementation used isolated data only. The later
+approved production recovery created the missing canonical user and owned login;
+it did not change SIP credentials or routing records.
 
 References: [Bearer sessions](https://better-auth.com/docs/plugins/bearer),
 [Express integration](https://better-auth.com/docs/integrations/express),
