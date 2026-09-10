@@ -35,6 +35,12 @@ The first release is now deployed and installed:
 
 Subsequent push-engineering changes are a separate candidate, not part of this deployed/installed source. The candidate adds durable session-bound device records, explicit APNs HTTP/2 delivery, and a disabled native PushKit foundation. Native cold-launch/SIP resume, call correlation and proxy wake routing still require implementation; provider credentials alone will not complete background calling. See [native foundation](NATIVE-PUSH-FOUNDATION.md) and [server candidate](SERVER-PUSH-CANDIDATE.md).
 
+### Latest installed app: build 15
+
+Build **15** now supersedes build 14 on the paired iPhone. Its source is `ab518f6396b0141be633b7ce11ed984622ac113a`, and signed EAS build `3d00896a-f0be-4fee-afa5-e8f008687a92` passed every required check in [GitHub run 34473813573](https://github.com/vasavas1977/codex-phone11/actions/runs/34473813573). This includes actual iOS native linking, the real PostgreSQL chat/push/auth tests and mobile regression checks. The IPA is 16,565,794 bytes, SHA256 `83e0908c8ccba41d01281a487f6f6ce4ee55fd394b5bca1ba2a4c8e344a6e818`. Installation succeeded and the device inventory independently reports version 1.0.0/build 15 with the expected bundle identifier.
+
+Build 15 adds the disabled native push foundation and bounded sign-out cleanup. It still has no production Siprix license. Push registration remains compiled off; no Apple delivery or cold/locked calling is claimed. The live backend still runs `75fa3c9`; the separate server push migration/candidate has not been deployed. Actual build 15 UI/call acceptance remains blocked by the owner's Mac unlock for iPhone Mirroring.
+
 The immediately preceding build 13 passed a direct incoming echo call and handset-initiated hang-up, confirmed by the user. That call bypassed the public-number carrier; public DID inbound acceptance remains separate. Earlier outbound PSTN testing also does not prove every new release or network state.
 
 ## Remaining production gates
