@@ -141,7 +141,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     },
     hangupCall: async (id) => {
       await sipEngine.hangupCall(id);
-      nativeCallManager.reportCallEnded(id);
+      if (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix") nativeCallManager.reportCallEnded(id);
     },
     answerCall: async (id, video) => {
       await ensureNativeStackInitialized();

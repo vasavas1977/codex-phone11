@@ -16,6 +16,7 @@ import type { EdgeInsets, Rect } from "react-native-safe-area-context";
 import { trpc, createTRPCClient } from "@/lib/trpc";
 import { PhoneProvisioner } from "@/lib/sip/phone-provisioner";
 import { SipProvider } from "@/lib/sip/sip-provider";
+import { CurrentCallBanner } from "@/components/current-call-banner";
 import * as Auth from "@/lib/_core/auth";
 
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -97,6 +98,7 @@ export default function RootLayout() {
               <Stack.Screen name="auth/sign-in" />
               <Stack.Screen name="oauth/callback" />
             </Stack>
+            <CurrentCallBanner />
             <StatusBar style="light" backgroundColor={ROOT_BACKGROUND} />
           </QueryClientProvider>
         </trpc.Provider>

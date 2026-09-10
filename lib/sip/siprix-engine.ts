@@ -304,6 +304,7 @@ export class SiprixEngine {
     return this.command(callId, "answer", bridge => bridge.answerCall(callId));
   }
   hangupCall(callId: string): Promise<void> {
+    useSipDiagnosticsStore.getState().addEvent({ level: "info", category: "call", message: "Siprix hang-up requested", context: { callId } });
     return this.command(callId, "hangup", bridge => bridge.hangupCall(callId));
   }
   setMute(callId: string, muted: boolean): Promise<void> {

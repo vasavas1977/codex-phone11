@@ -1,13 +1,14 @@
 import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (data?: any) => unknown>(),
-  keep: { setup: vi.fn(async (_options?: any) => {}), startCall: vi.fn(), reportConnectedOutgoingCallWithUUID: vi.fn(), setCurrentCallActive: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn(), reportEndCallWithUUID: vi.fn() },
-  engine: { handleNativeAudioSession: vi.fn(async (_active: boolean) => {}), answerCall: vi.fn(async () => {}) },
+  keep: { setup: vi.fn(async (_options?: any) => {}), startCall: vi.fn(), displayIncomingCall: vi.fn(), reportConnectedOutgoingCallWithUUID: vi.fn(), setCurrentCallActive: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn(), reportEndCallWithUUID: vi.fn() },
+  engine: { handleNativeAudioSession: vi.fn(async (_active: boolean) => {}), answerCall: vi.fn(async () => {}), hangupCall: vi.fn(async (_id: string) => {}) },
+  terminate: vi.fn(), diagnostic: vi.fn(),
 }));
 vi.mock("react-native", () => ({ Platform: { OS: "ios" }, AppState: { addEventListener: () => ({ remove: vi.fn() }) } }));
 vi.mock("../lib/sip/engine", () => ({ sipEngine: mocks.engine }));
-vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ activeCalls: {} }) } }));
-vi.mock("../lib/sip/diagnostics-store", () => ({ formatSipError: String, useSipDiagnosticsStore: { getState: () => ({ addEvent: vi.fn() }) } }));
+vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ activeCalls: {}, terminateCall: mocks.terminate }) } }));
+vi.mock("../lib/sip/diagnostics-store", () => ({ formatSipError: String, useSipDiagnosticsStore: { getState: () => ({ addEvent: mocks.diagnostic }) } }));
 
 // NativeCallManager loads CallKeep with CommonJS require; inject that package's cached export.
 import { createRequire } from "node:module";
@@ -42,4 +43,24 @@ it("forwards CallKit audio activation and deactivation to the selected SDK", asy
   await mocks.handlers.get("didActivateAudioSession")?.();
   await mocks.handlers.get("didDeactivateAudioSession")?.();
   expect(mocks.engine.handleNativeAudioSession.mock.calls).toEqual([[true], [false]]);
+});
+it("forwards native hang-up but retains the call until SDK termination", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("200", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  await mocks.handlers.get("endCall")!({ callUUID });
+  expect(mocks.engine.hangupCall).toHaveBeenCalledWith("200");
+  expect(mocks.terminate).not.toHaveBeenCalled();
+  expect(mocks.keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+  nativeCallManager.reportCallEnded("200");
+  expect(mocks.keep.reportEndCallWithUUID).toHaveBeenCalledWith(callUUID, expect.any(Number));
+});
+it("records native hang-up failure and preserves the mapping for retry", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("201", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  mocks.engine.hangupCall.mockRejectedValueOnce(new Error("SDK refused"));
+  await mocks.handlers.get("endCall")!({ callUUID });
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ level: "error", message: expect.stringContaining("hang-up failed") }));
+  await mocks.handlers.get("endCall")!({ callUUID });
+  expect(mocks.engine.hangupCall).toHaveBeenCalledTimes(2);
+  expect(mocks.terminate).not.toHaveBeenCalled();
 });

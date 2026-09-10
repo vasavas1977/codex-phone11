@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, Vibration } from "react-native";
+import { useEffect, useState } from "react";
+import { Alert, View, Text, TouchableOpacity, StyleSheet, Vibration } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 
@@ -7,42 +7,50 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore } from "@/lib/sip/call-store";
+import { resolveCurrentCall } from "@/lib/sip/current-call";
 
 export default function IncomingCallScreen() {
   const colors = useColors();
-  const { number, name, callId } = useLocalSearchParams<{ number?: string; name?: string; callId?: string }>();
+  const { number, name, callId: requestedCallId } = useLocalSearchParams<{ number?: string; name?: string; callId?: string }>();
   const { answerCall, hangupCall } = useSip();
-  const incomingCall = useSipCallStore((state) =>
-    callId ? (state.incomingCall?.id === callId ? state.incomingCall : null) : state.incomingCall
-  );
+  const incomingCall = useSipCallStore(state => resolveCurrentCall(state, requestedCallId));
+  const callId = incomingCall?.id;
+  const [busy, setBusy] = useState(false);
   const callerNumber = incomingCall?.remoteNumber ?? number ?? "SIP Call";
   const callerName = incomingCall?.remoteName ?? name ?? callerNumber;
 
   useEffect(() => {
-    // Simulate ringtone vibration pattern
+    if (incomingCall?.status !== "incoming") return;
     const pattern = [0, 500, 300, 500];
     Vibration.vibrate(pattern, true);
     return () => Vibration.cancel();
-  }, []);
+  }, [callId, incomingCall?.status]);
+
+  useEffect(() => {
+    if (callId && (incomingCall?.status === "active" || incomingCall?.status === "held")) {
+      router.replace({ pathname: "/call/active", params: { callId, number: callerNumber, type: "voice" } });
+    }
+  }, [callId, incomingCall?.status, callerNumber]);
 
   const handleAccept = async () => {
+    if (!callId || busy) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Vibration.cancel();
-    if (callId) {
-      await answerCall(callId);
-    }
-    const params: Record<string, string> = { number: callerNumber, type: "voice" };
-    if (callId) params.callId = callId;
-    router.replace({ pathname: "/call/active", params });
+    setBusy(true);
+    try { await answerCall(callId); }
+    catch { Alert.alert("Could not answer call", "Please try again while the caller is still ringing."); }
+    finally { setBusy(false); }
   };
 
   const handleDecline = async () => {
+    if (busy) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     Vibration.cancel();
-    if (callId) {
-      await hangupCall(callId);
-    }
-    router.back();
+    if (!callId) { router.back(); return; }
+    setBusy(true);
+    try { await hangupCall(callId); }
+    catch { Alert.alert("Could not end call", "Please try Decline again."); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -53,7 +61,7 @@ export default function IncomingCallScreen() {
 
       {/* Caller Info */}
       <View style={styles.callerSection}>
-        <Text style={styles.incomingLabel}>Incoming Call</Text>
+        <Text style={styles.incomingLabel}>{incomingCall ? "Incoming Call" : "Call ended"}</Text>
         <View style={[styles.avatar, { backgroundColor: colors.primary + "30" }]}> 
           <Text style={styles.avatarText}>{callerName.charAt(0).toUpperCase()}</Text>
         </View>
@@ -70,18 +78,20 @@ export default function IncomingCallScreen() {
         {/* Decline */}
         <View style={styles.actionItem}>
           <TouchableOpacity
+            accessibilityRole="button" accessibilityLabel={incomingCall ? "Decline call" : "Close ended call"} disabled={busy}
             style={[styles.actionBtn, { backgroundColor: colors.error }]}
             onPress={handleDecline}
             activeOpacity={0.8}
           >
             <IconSymbol name="phone.down.fill" size={30} color="#fff" />
           </TouchableOpacity>
-          <Text style={styles.actionLabel}>Decline</Text>
+          <Text style={styles.actionLabel}>{incomingCall ? "Decline" : "Close"}</Text>
         </View>
 
         {/* Accept */}
         <View style={styles.actionItem}>
           <TouchableOpacity
+            accessibilityRole="button" accessibilityLabel="Answer call" disabled={busy || !incomingCall}
             style={[styles.actionBtn, { backgroundColor: colors.success }]}
             onPress={handleAccept}
             activeOpacity={0.8}

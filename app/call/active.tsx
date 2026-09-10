@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import { Alert, View, Text, TouchableOpacity, StyleSheet } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 
@@ -7,16 +7,15 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore } from "@/lib/sip/call-store";
+import { resolveCurrentCall } from "@/lib/sip/current-call";
 
 export default function ActiveCallScreen() {
   const colors = useColors();
-  const { number, type, callId } = useLocalSearchParams<{ number?: string; type?: string; callId?: string }>();
+  const { number, type, callId: requestedCallId } = useLocalSearchParams<{ number?: string; type?: string; callId?: string }>();
   const { hangupCall, setMute, setHold, setSpeaker, sendDtmf } = useSip();
-  const call = useSipCallStore((state) =>
-    callId
-      ? state.activeCalls[callId] ?? (state.incomingCall?.id === callId ? state.incomingCall : null)
-      : null
-  );
+  const call = useSipCallStore(state => resolveCurrentCall(state, requestedCallId));
+  const callId = call?.id;
+  const [ending, setEnding] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [fallbackMuted, setFallbackMuted] = useState(false);
   const [fallbackHeld, setFallbackHeld] = useState(false);
@@ -27,13 +26,13 @@ export default function ActiveCallScreen() {
   const held = call?.isHeld ?? fallbackHeld;
   const speaker = call?.isSpeaker ?? fallbackSpeaker;
   const remoteNumber = call?.remoteNumber ?? number ?? "Unknown";
-  const callMissing = Boolean(callId && !call);
+  const callMissing = !call;
 
   useEffect(() => {
     const timer = setInterval(() => {
       const startedAt = call?.connectTime ?? call?.startTime;
       if (!startedAt) {
-        setElapsed((s) => s + 1);
+        setElapsed(0);
         return;
       }
       setElapsed(Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000)));
@@ -60,11 +59,13 @@ export default function ActiveCallScreen() {
 
   const handleEndCall = useCallback(async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    if (callId && call) {
-      await hangupCall(callId);
-    }
-    router.back();
-  }, [call, callId, hangupCall]);
+    if (!callId) { router.back(); return; }
+    if (ending) return;
+    setEnding(true);
+    try { await hangupCall(callId); }
+    catch { Alert.alert("Could not end call", "The call may still be connected. Please try End call again."); }
+    finally { setEnding(false); }
+  }, [callId, ending, hangupCall]);
 
   const handleMute = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -201,7 +202,8 @@ export default function ActiveCallScreen() {
         </View>
 
         {/* End Call */}
-        <TouchableOpacity style={[styles.endCallBtn, { backgroundColor: colors.error }]} onPress={handleEndCall}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel={call ? "End call" : "Close ended call"}
+          disabled={ending} style={[styles.endCallBtn, { backgroundColor: colors.error, opacity: ending ? 0.6 : 1 }]} onPress={handleEndCall}>
           <IconSymbol name="phone.down.fill" size={30} color="#fff" />
         </TouchableOpacity>
       </View>

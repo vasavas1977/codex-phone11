@@ -470,10 +470,22 @@ class NativeCallManager {
     // User declined call from native UI
     callKeep.addEventListener("endCall", async ({ callUUID }: any) => {
       const sipCallId = uuidToCallId.get(callUUID);
-      if (!sipCallId) return;
+      if (!sipCallId) {
+        addNativeCallDiagnostic("warning", "Ignored native end action for an unknown call");
+        return;
+      }
 
-      console.log(`[NativeCall] User ended call from native UI: ${callUUID}`);
-      await sipEngine.hangupCall(sipCallId);
+      addNativeCallDiagnostic("info", "Native hang-up requested", { callId: sipCallId });
+      try {
+        await sipEngine.hangupCall(sipCallId);
+      } catch (error) {
+        addNativeCallDiagnostic("error", "Native hang-up failed; call remains available for retry", {
+          callId: sipCallId, detail: formatSipError(error),
+        });
+        return;
+      }
+      // Siprix's termination callback owns history and CallKit cleanup.
+      if (process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix") return;
       useSipCallStore.getState().terminateCall(sipCallId);
 
       callIdToUuid.delete(sipCallId);
