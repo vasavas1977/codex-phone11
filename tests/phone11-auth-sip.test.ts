@@ -85,6 +85,19 @@ describe("Phone11 auth and SIP account isolation", () => {
     expect(useSipAccountStore.getState().account).toBeNull();
     expect(state.secure.size).toBe(0);
   });
+  it("does not publish or retain a keychain write if the verified owner changes during it", async () => {
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value) => {
+      await blocked; state.secure.set(key, value);
+    });
+    const write = useSipAccountStore.getState().setAccount(account);
+    await Promise.resolve();
+    state.user = { id: 29 };
+    finish(); await write;
+    expect(useSipAccountStore.getState().account).toBeNull();
+    expect(state.secure.size).toBe(0);
+  });
   it("blocks native registration without a verified matching Phone11 user", async () => {
     useSipAccountStore.setState({ account, registrationState: "registered" });
     state.user = null;

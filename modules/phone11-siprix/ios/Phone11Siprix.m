@@ -6,6 +6,14 @@
 
 static NSString *const P11EventName = @"Phone11SiprixEvent";
 
+// Native build configuration only. A configured string is not proof of a valid license;
+// SDK errors and onTrialModeNotified remain authoritative. Never return/log this value.
+static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
+  if (![value isKindOfClass:NSString.class]) return;
+  NSString *license = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (license.length > 0) ini.license = license;
+}
+
 @interface Phone11Siprix ()
 @property(nonatomic, copy) NSString *lease;
 @property(nonatomic) BOOL observing;
@@ -396,6 +404,7 @@ RCT_EXPORT_METHOD(initialize:(NSDictionary *)options resolver:(RCTPromiseResolve
   runtime.delegate.runtime = runtime;
   runtime.delegate.generation = runtime.generation;
   SiprixIniData *ini = [SiprixIniData new];
+  P11ApplyBuildLicense(ini, [NSBundle.mainBundle objectForInfoDictionaryKey:@"Phone11SiprixLicense"]);
   ini.logLevelFile = @(LogLevelNoLog);
   ini.logLevelIde = @(LogLevelNoLog);
   ini.tlsVerifyServer = @YES;

@@ -5,6 +5,9 @@ import { Platform, View, Text, StyleSheet } from "react-native";
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useChatStore } from "@/lib/chat/store";
+import { useAuth } from "@/hooks/use-auth";
+import { PHONE_CAPABILITIES } from "@/lib/phone/capabilities";
 
 function UnreadBadge({ count, color }: { count: number; color: string }) {
   if (count <= 0) return null;
@@ -17,6 +20,8 @@ function UnreadBadge({ count, color }: { count: number; color: string }) {
 
 export default function TabLayout() {
   const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
+  const unreadCount = useChatStore(state => state.userId === user?.id ? state.channels.reduce((sum, channel) => sum + channel.unreadCount, 0) : 0);
   const insets = useSafeAreaInsets();
   const bottomPadding = Platform.OS === "web" ? 12 : Math.max(insets.bottom, 8);
   const tabBarHeight = 56 + bottomPadding;
@@ -48,7 +53,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Keypad",
+          title: "Phone",
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="rectangle.grid.3x2.fill" color={color} />,
         }}
       />
@@ -73,6 +78,7 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => (
             <View>
               <IconSymbol size={26} name="bubble.left.and.bubble.right.fill" color={color} />
+              <UnreadBadge count={unreadCount} color={colors.error} />
             </View>
           ),
         }}
@@ -81,6 +87,7 @@ export default function TabLayout() {
         name="messages"
         options={{
           title: "SMS",
+          href: PHONE_CAPABILITIES.sms ? undefined : null,
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="message.fill" color={color} />,
         }}
       />

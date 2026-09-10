@@ -7,7 +7,7 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { useNotificationStore } from "@/lib/notifications/store";
+import { usePhoneCall } from "@/hooks/use-phone-call";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
 import { useAuth } from "@/hooks/use-auth";
@@ -39,15 +39,15 @@ const DIAL_KEY_ROWS = [
 function registrationLabel(state: RegistrationState): string {
   switch (state) {
     case "registered":
-      return "SIP Registered";
+      return "Ready to call";
     case "registering":
-      return "Registering";
+      return "Connecting…";
     case "failed":
-      return "SIP Failed";
+      return "Connection failed";
     case "network_error":
-      return "Network Error";
+      return "Offline";
     default:
-      return "Not Registered";
+      return "Connecting…";
   }
 }
 
@@ -67,9 +67,11 @@ export default function DialpadScreen() {
   const recentNumbers = (history.ownerUserId === user?.id ? history.entries : [])
     .filter((entry, index, all) => entry.ownerUserId === user?.id && all.findIndex(other => other.number === entry.number) === index)
     .slice(0, 3);
-  const unreadCount = useNotificationStore((s) => s.unreadCount);
-  const { makeCall } = useSip();
-  const account = useSipAccountStore((s) => s.account);
+  const { placeCall, calling } = usePhoneCall();
+  const { reconnectPhone } = useSip();
+  const [reconnecting, setReconnecting] = useState(false);
+  const savedAccount = useSipAccountStore((s) => s.account);
+  const account = savedAccount?.ownerUserId === user?.id ? savedAccount : null;
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const statusColor = registrationColor(registrationState, colors);
 
@@ -83,64 +85,14 @@ export default function DialpadScreen() {
     setInput((prev) => prev.slice(0, -1));
   }, []);
 
-  const handleCall = useCallback(async (number?: string) => {
-    const target = (number || input).trim();
-    if (!target) return;
-
-    if (!account?.enabled) {
-      Alert.alert("Phone provisioning needed", "Sync this phone from admin management before placing PSTN calls.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
-      ]);
-      return;
-    }
-
-    if (registrationState !== "registered") {
-      Alert.alert("Phone is not registered", "Open Phone Provisioning, sync from admin, and wait for SIP Registered before placing PSTN calls.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
-      ]);
-      return;
-    }
-
-    const callId = await makeCall(target, false);
-    if (!callId) {
-      Alert.alert("Call could not start", "Check SIP registration and server connectivity, then try again.");
-      return;
-    }
-
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.push({ pathname: "/call/active", params: { callId, number: target, type: "voice" } });
-  }, [account?.enabled, input, makeCall, registrationState]);
-
-  const handleVideoCall = useCallback(async () => {
-    const target = input.trim();
-    if (!target) return;
-    if (!account?.enabled) {
-      Alert.alert("Phone provisioning needed", "Sync this phone from admin management before starting video calls.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
-      ]);
-      return;
-    }
-
-    if (registrationState !== "registered") {
-      Alert.alert("Phone is not registered", "Open Phone Provisioning, sync from admin, and wait for SIP Registered before starting calls.", [
-        { text: "Cancel", style: "cancel" },
-        { text: "Open Provisioning", onPress: () => router.push("/settings/sip" as any) },
-      ]);
-      return;
-    }
-
-    const callId = await makeCall(target, true);
-    if (!callId) {
-      Alert.alert("Video call could not start", "Check SIP registration and server connectivity, then try again.");
-      return;
-    }
-
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.push({ pathname: "/call/video", params: { callId, number: target, type: "video" } });
-  }, [account?.enabled, input, makeCall, registrationState]);
+  const handleCall = (number?: string) => placeCall(number || input);
+  const reconnect = async () => {
+    if (reconnecting) return;
+    setReconnecting(true);
+    try { await reconnectPhone(); }
+    catch { Alert.alert("Unable to reconnect", "Check your connection and account setup, then try again."); }
+    finally { setReconnecting(false); }
+  };
 
   return (
     <ScreenContainer>
@@ -151,22 +103,14 @@ export default function DialpadScreen() {
             <Text style={[styles.headerTitle, { color: colors.foreground }]}>Phone11</Text>
             <View style={styles.sipStatus}>
               <View style={[styles.sipDot, { backgroundColor: statusColor }]} />
-              <Text style={[styles.sipText, { color: colors.muted }]}>{registrationLabel(registrationState)}</Text>
+              <Text style={[styles.sipText, { color: colors.muted }]}>{!user ? "Sign in to call" : !account?.enabled ? "Set up your work phone" : registrationLabel(registrationState)}</Text>
             </View>
           </View>
-          <TouchableOpacity
-            onPress={() => router.push("/notifications" as any)}
-            style={styles.bellBtn}
-          >
-            <IconSymbol name="bell.fill" size={22} color={colors.foreground} />
-            {unreadCount > 0 && (
-              <View style={[styles.bellBadge, { backgroundColor: colors.error }]}> 
-                <Text style={styles.bellBadgeText}>
-                  {unreadCount > 9 ? "9+" : unreadCount}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          {user && account?.enabled && registrationState !== "registered" && (
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Reconnect phone" disabled={reconnecting} onPress={reconnect} style={styles.bellBtn}>
+              <Text style={{ color: colors.primary, fontWeight: "700" }}>{reconnecting ? "Connecting…" : "Reconnect"}</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Number Input */}
@@ -189,7 +133,7 @@ export default function DialpadScreen() {
             selectionColor={colors.primary}
           />
           {input.length > 0 && (
-            <TouchableOpacity onPress={handleBackspace} style={styles.backspaceBtn}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Delete last digit" onPress={handleBackspace} style={styles.backspaceBtn}>
               <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
             </TouchableOpacity>
           )}
@@ -203,6 +147,8 @@ export default function DialpadScreen() {
                 <TouchableOpacity
                   key={digit}
                   style={[styles.dialKey, { backgroundColor: colors.surface }]}
+                  accessibilityRole="button" accessibilityLabel={digit === "0" ? "0, hold for plus" : digit}
+                  onLongPress={digit === "0" ? () => handleKey("+") : undefined}
                   onPress={() => handleKey(digit)}
                   activeOpacity={0.7}
                 >
@@ -214,62 +160,23 @@ export default function DialpadScreen() {
           ))}
         </View>
 
-        {/* Call Buttons */}
         <View style={styles.callRow}>
-          <TouchableOpacity
-            style={[styles.videoBtn, { backgroundColor: colors.primary + "20", borderColor: colors.primary }]}
-            onPress={handleVideoCall}
-            activeOpacity={0.8}
-          >
-            <IconSymbol name="video.fill" size={22} color={colors.primary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.callBtn, { backgroundColor: colors.success }]}
-            onPress={() => handleCall()}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Call number" disabled={calling || !input.trim()}
+            style={[styles.callBtn, { backgroundColor: colors.success, opacity: calling || !input.trim() ? 0.5 : 1 }]}
+            onPress={() => handleCall()} activeOpacity={0.8}>
             <IconSymbol name="phone.fill" size={28} color="#fff" />
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.meetNowBtn, { backgroundColor: colors.primary + "20", borderColor: colors.primary }]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              router.push("/conference" as any);
-            }}
-            activeOpacity={0.8}
-          >
-            <IconSymbol name="person.3.fill" size={22} color={colors.primary} />
-          </TouchableOpacity>
         </View>
-
-        {/* Meet Now Banner */}
-        <TouchableOpacity
-          style={[styles.meetNowBanner, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            router.push("/conference" as any);
-          }}
-          activeOpacity={0.7}
-        >
-          <View style={[styles.meetNowIconBg, { backgroundColor: colors.primary + "20" }]}> 
-            <IconSymbol name="video.fill" size={18} color={colors.primary} />
-          </View>
-          <View style={styles.meetNowInfo}>
-            <Text style={[styles.meetNowTitle, { color: colors.foreground }]}>Conference Bridge</Text>
-            <Text style={[styles.meetNowSub, { color: colors.muted }]}>Meet Now • Up to 50 participants</Text>
-          </View>
-          <IconSymbol name="chevron.right" size={16} color={colors.muted} />
-        </TouchableOpacity>
 
         {/* Recent Quick Dial */}
         <View style={[styles.recentSection, { borderTopColor: colors.border }]}> 
           <Text style={[styles.recentTitle, { color: colors.muted }]}>RECENT</Text>
+          {recentNumbers.length === 0 && <Text style={{ color: colors.muted, paddingVertical: 18 }}>Your recent calls will appear here.</Text>}
           {recentNumbers.map((item) => (
             <TouchableOpacity
               key={item.number}
               style={styles.recentRow}
+              accessibilityRole="button" accessibilityLabel={`Call ${item.name || item.number}`} disabled={calling}
               onPress={() => handleCall(item.number)}
               activeOpacity={0.7}
             >

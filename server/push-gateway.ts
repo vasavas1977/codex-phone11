@@ -18,10 +18,12 @@
  */
 
 import { z } from "zod";
+import { assignedPushOwners, requirePushOwner, type PushOwner } from "./pbx/push-access";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface PushToken {
+  owner: PushOwner;
   token: string;
   tokenType: "voip" | "fcm" | "apns";
   sipUri: string;
@@ -50,26 +52,26 @@ export interface PushPayload {
 // ─── Validation Schemas ─────────────────────────────────────────────
 
 export const registerTokenSchema = z.object({
-  token: z.string().min(1),
+  token: z.string().min(1).max(4096),
   tokenType: z.enum(["voip", "fcm", "apns"]),
-  sipUri: z.string().min(1),
-  deviceId: z.string().min(1),
+  sipUri: z.string().min(1).max(512),
+  deviceId: z.string().min(1).max(512),
   platform: z.enum(["ios", "android"]),
-  bundleId: z.string().min(1),
+  bundleId: z.string().min(1).max(512),
   appVersion: z.string().optional(),
   sandbox: z.boolean().optional(),
 });
 
 export const unregisterTokenSchema = z.object({
-  token: z.string().min(1),
-  deviceId: z.string().min(1),
+  token: z.string().min(1).max(4096),
+  deviceId: z.string().min(1).max(512),
   platform: z.enum(["ios", "android"]),
 });
 
 export const triggerPushSchema = z.object({
-  sipUri: z.string().min(1),
-  callId: z.string().min(1),
-  callerNumber: z.string().min(1),
+  sipUri: z.string().min(1).max(512),
+  callId: z.string().min(1).max(512),
+  callerNumber: z.string().min(1).max(512),
   callerName: z.string().optional(),
   hasVideo: z.boolean().optional(),
 });
@@ -78,69 +80,33 @@ export const triggerPushSchema = z.object({
 // Key: sipUri → Map of deviceId → PushToken
 // TODO: Replace with database table for production persistence
 
-const tokenStore = new Map<string, Map<string, PushToken>>();
+const tokenStore = new Map<number, Map<string, PushToken>>();
 
-/**
- * Register a push token for a device.
- */
-export function registerPushToken(data: z.infer<typeof registerTokenSchema>): {
-  success: boolean;
-  message: string;
-} {
-  const { sipUri, deviceId } = data;
-
-  if (!tokenStore.has(sipUri)) {
-    tokenStore.set(sipUri, new Map());
-  }
-
-  const deviceTokens = tokenStore.get(sipUri)!;
-  deviceTokens.set(deviceId, {
-    ...data,
-    registeredAt: Date.now(),
-  });
-
-  console.log(
-    `[PushGateway] Token registered: ${data.tokenType} for ${sipUri} (device: ${deviceId})`
-  );
-
-  return {
-    success: true,
-    message: `Token registered for ${sipUri}`,
-  };
+/** Ownership is resolved from the server assignment, never accepted from the app. */
+export async function registerPushToken(data: z.infer<typeof registerTokenSchema>, userId: number) {
+  const owner = await requirePushOwner(userId, data.sipUri);
+  let devices = tokenStore.get(userId);
+  if (!devices) { devices = new Map(); tokenStore.set(userId, devices); }
+  const key = `${owner.extensionId}:${data.deviceId}`;
+  if (!devices.has(key) && devices.size >= 10) throw new Error("Too many registered devices");
+  devices.set(key, { ...data, sipUri: owner.sipUri, owner, registeredAt: Date.now() });
+  return { success: true, message: "Device token stored; background call delivery requires an available push provider" };
 }
 
-/**
- * Unregister a push token for a device.
- */
-export function unregisterPushToken(data: z.infer<typeof unregisterTokenSchema>): {
-  success: boolean;
-  message: string;
-} {
-  const { token, deviceId } = data;
-
-  // Find and remove the token across all SIP URIs
-  for (const [sipUri, devices] of tokenStore.entries()) {
-    const existing = devices.get(deviceId);
-    if (existing && existing.token === token) {
-      devices.delete(deviceId);
-      if (devices.size === 0) {
-        tokenStore.delete(sipUri);
-      }
-      console.log(`[PushGateway] Token unregistered: ${deviceId} from ${sipUri}`);
-      return { success: true, message: "Token unregistered" };
+export function unregisterPushToken(data: z.infer<typeof unregisterTokenSchema>, userId: number) {
+  const devices = tokenStore.get(userId);
+  if (devices) {
+    for (const [key, token] of devices) {
+      if (token.deviceId === data.deviceId && token.token === data.token && token.platform === data.platform) devices.delete(key);
     }
+    if (!devices.size) tokenStore.delete(userId);
   }
-
-  return { success: true, message: "Token not found (already removed)" };
+  return { success: true, message: "Device token removed" };
 }
 
-/**
- * Get all registered tokens for a SIP URI.
- */
+/** Used only after authenticating the trusted call integration. */
 export function getTokensForUser(sipUri: string): PushToken[] {
-  const devices = tokenStore.get(sipUri);
-  if (!devices) return [];
-  return Array.from(devices.values());
+  return Array.from(tokenStore.values()).flatMap(devices => Array.from(devices.values()).filter(token => token.sipUri === sipUri));
 }
 
 /**
@@ -156,10 +122,15 @@ export async function triggerPushForUser(
 ): Promise<{ sent: number; errors: string[] }> {
   const { sipUri, callId, callerNumber, callerName, hasVideo } = data;
 
-  const tokens = getTokensForUser(sipUri);
+  const owners = await assignedPushOwners(sipUri);
+  if (new Set(owners.map(owner => owner.tenantId)).size > 1) {
+    return { sent: 0, errors: ["The target phone account is ambiguous"] };
+  }
+  const canonicalUri = owners[0]?.sipUri ?? sipUri;
+  const tokens = getTokensForUser(canonicalUri).filter(token => owners.some(owner =>
+    owner.userId === token.owner.userId && owner.tenantId === token.owner.tenantId && owner.extensionId === token.owner.extensionId));
   if (tokens.length === 0) {
-    console.log(`[PushGateway] No tokens registered for ${sipUri}`);
-    return { sent: 0, errors: [`No tokens for ${sipUri}`] };
+    return { sent: 0, errors: ["No assigned device is available for push delivery"] };
   }
 
   const payload: PushPayload = {
@@ -182,16 +153,16 @@ export async function triggerPushForUser(
       token.lastUsed = Date.now();
       sent++;
     } catch (error: any) {
-      const msg = `Failed to push to ${token.deviceId}: ${error.message}`;
+      const msg = "Push delivery unavailable or rejected by provider";
       console.error(`[PushGateway] ${msg}`);
       errors.push(msg);
 
       // If token is invalid, remove it
       if (isInvalidTokenError(error)) {
-        const devices = tokenStore.get(sipUri);
+        const devices = tokenStore.get(token.owner.userId);
         if (devices) {
-          devices.delete(token.deviceId);
-          console.log(`[PushGateway] Removed invalid token: ${token.deviceId}`);
+          devices.delete(`${token.owner.extensionId}:${token.deviceId}`);
+
         }
       }
     }
@@ -225,12 +196,7 @@ async function sendApnsPush(token: PushToken, payload: PushPayload): Promise<voi
     console.warn(
       "[PushGateway] APNs not configured. Set APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID."
     );
-    // In development, log the push instead of sending
-    console.log("[PushGateway] [DEV] Would send APNs VoIP push:", {
-      token: token.token.substring(0, 16) + "...",
-      payload,
-    });
-    return;
+    throw new Error("APNs push delivery is not configured");
   }
 
   // APNs HTTP/2 push
@@ -312,7 +278,7 @@ async function generateApnsJwt(
   const sign = crypto.createSign("SHA256");
   sign.update(signingInput);
   const signature = sign
-    .sign(key, "base64")
+    .sign({ key, dsaEncoding: "ieee-p1363" }, "base64")
     // Convert standard base64 to base64url
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -381,7 +347,8 @@ async function getFcmAccessToken(): Promise<string> {
  * handles display via Notifee full-screen notification.
  */
 async function sendFcmPush(token: PushToken, payload: PushPayload): Promise<void> {
-  const projectId = process.env.FCM_PROJECT_ID || "phone11-push";
+  const projectId = process.env.FCM_PROJECT_ID;
+  if (!projectId) throw new Error("FCM push delivery is not configured");
 
   // Check if ADC is available
   let accessToken: string;
@@ -392,12 +359,7 @@ async function sendFcmPush(token: PushToken, payload: PushPayload): Promise<void
       `[PushGateway] FCM ADC not available: ${adcError.message}. ` +
       `Set GOOGLE_APPLICATION_CREDENTIALS or run 'gcloud auth application-default login'.`
     );
-    // In development, log the push instead of sending
-    console.log("[PushGateway] [DEV] Would send FCM push:", {
-      token: token.token.substring(0, 16) + "...",
-      payload,
-    });
-    return;
+    throw new Error("FCM push credentials are unavailable");
   }
 
   // FCM HTTP v1 API payload

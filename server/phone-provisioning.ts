@@ -16,6 +16,7 @@ import { createSipCredentials, decryptSecret } from "./pbx/sip-secrets";
 
 export interface PhoneConfig {
   configured: boolean;
+  tenantId?: number;
   extension?: {
     number: string;
     displayName: string;
@@ -100,6 +101,7 @@ function buildConfig(ext: any, dids: Array<{ number: string; description: string
 
   return {
     configured: true,
+    tenantId: Number.isSafeInteger(ext.tenant_id) && ext.tenant_id > 0 ? ext.tenant_id : undefined,
     extension: {
       number: ext.extension_number,
       displayName: ext.display_name || `Extension ${ext.extension_number}`,

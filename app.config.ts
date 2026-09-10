@@ -1,6 +1,7 @@
 // Load environment variables with proper priority (system > .env)
 import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
+import { withInfoPlist } from "expo/config-plugins";
 
 const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
 const sipEngine = process.env.EXPO_PUBLIC_SIP_ENGINE ?? "pjsip";
@@ -143,4 +144,14 @@ const config: ExpoConfig = {
   },
 };
 
-export default config;
+// Apply only during native prebuild. Putting this value directly in ios.infoPlist
+// would also expose it through Expo's public runtime configuration.
+export default withInfoPlist(config, (nativeConfig) => {
+  const license = process.env.PHONE11_SIPRIX_LICENSE?.trim();
+  if (sipEngine === "siprix" && license) {
+    nativeConfig.modResults.Phone11SiprixLicense = license;
+  } else {
+    delete nativeConfig.modResults.Phone11SiprixLicense;
+  }
+  return nativeConfig;
+});

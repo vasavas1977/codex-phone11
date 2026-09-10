@@ -1,6 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
-import { Alert, View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import {
+  Alert,
+  ScrollView,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+} from "react-native";
 import * as Haptics from "expo-haptics";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 
 import { IconSymbol } from "@/components/ui/icon-symbol";
@@ -11,20 +19,24 @@ import { resolveCurrentCall } from "@/lib/sip/current-call";
 
 export default function ActiveCallScreen() {
   const colors = useColors();
-  const { number, type, callId: requestedCallId } = useLocalSearchParams<{ number?: string; type?: string; callId?: string }>();
+  const insets = useSafeAreaInsets();
+  const { number, callId: requestedCallId } = useLocalSearchParams<{
+    number?: string;
+    type?: string;
+    callId?: string;
+  }>();
   const { hangupCall, setMute, setHold, setSpeaker, sendDtmf } = useSip();
-  const call = useSipCallStore(state => resolveCurrentCall(state, requestedCallId));
+  const call = useSipCallStore((state) =>
+    resolveCurrentCall(state, requestedCallId),
+  );
   const callId = call?.id;
   const [ending, setEnding] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [fallbackMuted, setFallbackMuted] = useState(false);
-  const [fallbackHeld, setFallbackHeld] = useState(false);
-  const [fallbackSpeaker, setFallbackSpeaker] = useState(false);
   const [showKeypad, setShowKeypad] = useState(false);
 
-  const muted = call?.isMuted ?? fallbackMuted;
-  const held = call?.isHeld ?? fallbackHeld;
-  const speaker = call?.isSpeaker ?? fallbackSpeaker;
+  const muted = call?.isMuted ?? false;
+  const held = call?.isHeld ?? false;
+  const speaker = call?.isSpeaker ?? false;
   const remoteNumber = call?.remoteNumber ?? number ?? "Unknown";
   const callMissing = !call;
 
@@ -35,13 +47,17 @@ export default function ActiveCallScreen() {
         setElapsed(0);
         return;
       }
-      setElapsed(Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000)));
+      setElapsed(
+        Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000)),
+      );
     }, 1000);
     return () => clearInterval(timer);
   }, [call?.connectTime, call?.startTime]);
 
   const formatTime = (s: number) => {
-    const m = Math.floor(s / 60).toString().padStart(2, "0");
+    const m = Math.floor(s / 60)
+      .toString()
+      .padStart(2, "0");
     const sec = (s % 60).toString().padStart(2, "0");
     return `${m}:${sec}`;
   };
@@ -59,153 +75,211 @@ export default function ActiveCallScreen() {
 
   const handleEndCall = useCallback(async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    if (!callId) { router.back(); return; }
+    if (!callId) {
+      router.canGoBack() ? router.back() : router.replace("/(tabs)");
+      return;
+    }
     if (ending) return;
     setEnding(true);
-    try { await hangupCall(callId); }
-    catch { Alert.alert("Could not end call", "The call may still be connected. Please try End call again."); }
-    finally { setEnding(false); }
+    try {
+      await hangupCall(callId);
+    } catch {
+      Alert.alert(
+        "Could not end call",
+        "The call may still be connected. Please try End call again.",
+      );
+    } finally {
+      setEnding(false);
+    }
   }, [callId, ending, hangupCall]);
 
-  const handleMute = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (callId && call) {
-      await setMute(callId, !muted);
-      return;
+  const controlsReady = Boolean(
+    call && (call.status === "active" || call.status === "held"),
+  );
+  const control = async (operation: () => Promise<void>) => {
+    if (!controlsReady) return;
+    try {
+      await operation();
+    } catch {
+      Alert.alert(
+        "Could not update call",
+        "Your call is still available. Please try that control again.",
+      );
     }
-    setFallbackMuted((value) => !value);
-  }, [call, callId, muted, setMute]);
+  };
+  const handleMute = () => callId && control(() => setMute(callId, !muted));
+  const handleHold = () => callId && control(() => setHold(callId, !held));
+  const handleSpeaker = () =>
+    callId && control(() => setSpeaker(callId, !speaker));
+  const handleDtmf = (digit: string) =>
+    callId && control(() => sendDtmf(callId, digit));
 
-  const handleHold = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (callId && call) {
-      await setHold(callId, !held);
-      return;
-    }
-    setFallbackHeld((value) => !value);
-  }, [call, callId, held, setHold]);
-
-  const handleSpeaker = useCallback(async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    if (callId && call) {
-      await setSpeaker(callId, !speaker);
-      return;
-    }
-    setFallbackSpeaker((value) => !value);
-  }, [call, callId, setSpeaker, speaker]);
-
-  const handleDtmf = useCallback(async (digit: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (callId && call) {
-      await sendDtmf(callId, digit);
-    }
-  }, [call, callId, sendDtmf]);
-
-  const openVideo = useCallback(() => {
-    const params: Record<string, string> = {
-      number: remoteNumber,
-      type: type ?? "voice",
-    };
-    if (callId) params.callId = callId;
-    router.push({ pathname: "/call/video", params });
-  }, [callId, remoteNumber, type]);
-
-  const KEYPAD = ["1","2","3","4","5","6","7","8","9","*","0","#"];
+  const KEYPAD = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 
   return (
-    <View style={[styles.container, { backgroundColor: "#0D0F14" }]}>
-      {/* Caller Info */}
-      <View style={styles.callerSection}>
-        <View style={[styles.callerAvatar, { backgroundColor: colors.primary + "30" }]}>
-          <Text style={styles.callerInitial}>
-            {remoteNumber.charAt(0).toUpperCase()}
+    <View
+      style={[
+        styles.container,
+        {
+          backgroundColor: "#0D0F14",
+          paddingTop: Math.max(insets.top, 12),
+          paddingBottom: Math.max(insets.bottom, 12),
+        },
+      ]}
+    >
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Caller Info */}
+        <View style={styles.callerSection}>
+          <View
+            style={[
+              styles.callerAvatar,
+              { backgroundColor: colors.primary + "30" },
+            ]}
+          >
+            <Text style={styles.callerInitial}>
+              {remoteNumber.charAt(0).toUpperCase()}
+            </Text>
+          </View>
+          <Text style={styles.callerName}>{remoteNumber}</Text>
+          <Text
+            style={[
+              styles.callStatus,
+              { color: held ? colors.warning : colors.success },
+            ]}
+          >
+            {callStatusLabel()}
           </Text>
         </View>
-        <Text style={styles.callerName}>{remoteNumber}</Text>
-        <Text style={[styles.callStatus, { color: held ? colors.warning : colors.success }]}>
-          {callStatusLabel()}
-        </Text>
-      </View>
 
-      {/* Keypad overlay */}
-      {showKeypad && (
-        <View style={styles.keypadOverlay}>
-          <View style={styles.keypadGrid}>
-            {KEYPAD.map((k) => (
-              <TouchableOpacity
-                key={k}
-                style={[styles.keypadKey, { backgroundColor: "#ffffff15" }]}
-                onPress={() => handleDtmf(k)}
-              >
-                <Text style={styles.keypadDigit}>{k}</Text>
-              </TouchableOpacity>
-            ))}
+        {/* Keypad overlay */}
+        {showKeypad && controlsReady && (
+          <View style={styles.keypadOverlay}>
+            <View style={styles.keypadGrid}>
+              {KEYPAD.map((k) => (
+                <TouchableOpacity
+                  key={k}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Send ${k}`}
+                  style={[styles.keypadKey, { backgroundColor: "#ffffff15" }]}
+                  onPress={() => handleDtmf(k)}
+                >
+                  <Text style={styles.keypadDigit}>{k}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Controls */}
+        <View style={styles.controls}>
+          <View style={styles.controlRow}>
+            <TouchableOpacity
+              style={[
+                styles.controlBtn,
+                muted && { backgroundColor: colors.primary + "40" },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={
+                muted ? "Unmute microphone" : "Mute microphone"
+              }
+              disabled={!controlsReady}
+              onPress={handleMute}
+            >
+              <IconSymbol
+                name={muted ? "mic.slash.fill" : "mic.fill"}
+                size={24}
+                color={muted ? colors.primary : "#fff"}
+              />
+              <Text style={styles.controlLabel}>
+                {muted ? "Unmute" : "Mute"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.controlBtn,
+                held && { backgroundColor: colors.warning + "40" },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={held ? "Resume call" : "Hold call"}
+              disabled={!controlsReady}
+              onPress={handleHold}
+            >
+              <IconSymbol
+                name="pause.fill"
+                size={24}
+                color={held ? colors.warning : "#fff"}
+              />
+              <Text style={styles.controlLabel}>
+                {held ? "Resume" : "Hold"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.controlBtn,
+                speaker && { backgroundColor: colors.primary + "40" },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={speaker ? "Use earpiece" : "Use speaker"}
+              disabled={!controlsReady}
+              onPress={handleSpeaker}
+            >
+              <IconSymbol
+                name={speaker ? "speaker.wave.3.fill" : "speaker.slash.fill"}
+                size={24}
+                color={speaker ? colors.primary : "#fff"}
+              />
+              <Text style={styles.controlLabel}>Speaker</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.controlRow}>
+            <TouchableOpacity
+              style={[
+                styles.controlBtn,
+                showKeypad && { backgroundColor: colors.primary + "40" },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Show call keypad"
+              disabled={!controlsReady}
+              onPress={() => {
+                setShowKeypad(!showKeypad);
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              }}
+            >
+              <IconSymbol
+                name="rectangle.grid.3x2.fill"
+                size={24}
+                color={showKeypad ? colors.primary : "#fff"}
+              />
+              <Text style={styles.controlLabel}>Keypad</Text>
+            </TouchableOpacity>
           </View>
         </View>
-      )}
+      </ScrollView>
 
-      {/* Controls */}
-      <View style={styles.controls}>
-        <View style={styles.controlRow}>
-          <TouchableOpacity
-            style={[styles.controlBtn, muted && { backgroundColor: colors.primary + "40" }]}
-            onPress={handleMute}
-          >
-            <IconSymbol name={muted ? "mic.slash.fill" : "mic.fill"} size={24} color={muted ? colors.primary : "#fff"} />
-            <Text style={styles.controlLabel}>{muted ? "Unmute" : "Mute"}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.controlBtn, held && { backgroundColor: colors.warning + "40" }]}
-            onPress={handleHold}
-          >
-            <IconSymbol name="pause.fill" size={24} color={held ? colors.warning : "#fff"} />
-            <Text style={styles.controlLabel}>{held ? "Resume" : "Hold"}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.controlBtn, speaker && { backgroundColor: colors.primary + "40" }]}
-            onPress={handleSpeaker}
-          >
-            <IconSymbol name={speaker ? "speaker.wave.3.fill" : "speaker.slash.fill"} size={24} color={speaker ? colors.primary : "#fff"} />
-            <Text style={styles.controlLabel}>Speaker</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.controlRow}>
-          <TouchableOpacity
-            style={[styles.controlBtn, showKeypad && { backgroundColor: colors.primary + "40" }]}
-            onPress={() => { setShowKeypad(!showKeypad); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
-          >
-            <IconSymbol name="rectangle.grid.3x2.fill" size={24} color={showKeypad ? colors.primary : "#fff"} />
-            <Text style={styles.controlLabel}>Keypad</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.controlBtn}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push({ pathname: "/call/transfer", params: { callId: callId ?? `preview_${Date.now()}` } });
-            }}
-          >
-            <IconSymbol name="arrow.triangle.2.circlepath" size={24} color="#fff" />
-            <Text style={styles.controlLabel}>Transfer</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.controlBtn}
-            onPress={openVideo}
-          >
-            <IconSymbol name="video.fill" size={24} color="#fff" />
-            <Text style={styles.controlLabel}>Video</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* End Call */}
-        <TouchableOpacity accessibilityRole="button" accessibilityLabel={call ? "End call" : "Close ended call"}
-          disabled={ending} style={[styles.endCallBtn, { backgroundColor: colors.error, opacity: ending ? 0.6 : 1 }]} onPress={handleEndCall}>
+      {/* End stays visible while the caller, keypad and media controls scroll. */}
+      <View style={styles.endFooter}>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={call ? "End call" : "Close ended call"}
+          disabled={ending}
+          style={[
+            styles.endCallBtn,
+            { backgroundColor: colors.error, opacity: ending ? 0.6 : 1 },
+          ]}
+          onPress={handleEndCall}
+        >
           <IconSymbol name="phone.down.fill" size={30} color="#fff" />
         </TouchableOpacity>
+        <Text style={[styles.controlLabel, { textAlign: "center" }]}>
+          {ending ? "Ending…" : call ? "End call" : "Close"}
+        </Text>
       </View>
     </View>
   );
@@ -214,10 +288,10 @@ export default function ActiveCallScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: "space-between",
-    paddingTop: 60,
-    paddingBottom: 48,
   },
+  scroll: { flex: 1 },
+  scrollContent: { paddingTop: 16, paddingBottom: 20, gap: 24 },
+  endFooter: { alignItems: "center", paddingTop: 12, gap: 8, flexShrink: 0 },
   callerSection: {
     alignItems: "center",
     gap: 12,
@@ -239,6 +313,8 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#fff",
     letterSpacing: 0.3,
+    textAlign: "center",
+    paddingHorizontal: 24,
   },
   callStatus: {
     fontSize: 16,
@@ -255,7 +331,8 @@ const styles = StyleSheet.create({
   },
   keypadKey: {
     width: 72,
-    height: 56,
+    minHeight: 56,
+    paddingVertical: 10,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
@@ -272,20 +349,26 @@ const styles = StyleSheet.create({
   },
   controlRow: {
     flexDirection: "row",
-    gap: 24,
+    gap: 12,
+    width: "100%",
     justifyContent: "center",
   },
   controlBtn: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    flex: 1,
+    minWidth: 72,
+    maxWidth: 120,
+    minHeight: 80,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+    borderRadius: 24,
     backgroundColor: "#ffffff18",
     alignItems: "center",
     justifyContent: "center",
     gap: 4,
   },
   controlLabel: {
-    fontSize: 11,
+    fontSize: 13,
+    textAlign: "center",
     color: "#fff",
     fontWeight: "500",
   },

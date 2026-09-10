@@ -1,11 +1,13 @@
 /**
  * SIP Provider — Phone11
- * Loads SIP account data at app start, registers SIP only when an
- * admin-provisioned account is explicitly synced or a call flow needs it,
- * and initializes native call UI when calling is used.
+ * Connects the verified owner's provisioned account while the app is active
+ * and recovers registration without interrupting a live call.
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
+import { AppState, Platform } from "react-native";
+import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
+import { createRegistrationLifecycle } from "./registration-lifecycle";
 import { sipEngine } from "./engine";
 import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
@@ -13,6 +15,7 @@ import { useSipDiagnosticsStore } from "./diagnostics-store";
 import { nativeCallManager, registerVoipPush } from "./native-call";
 
 interface SipContextValue {
+  reconnectPhone: () => Promise<void>;
   makeCall: (destination: string, video?: boolean) => Promise<string | null>;
   hangupCall: (callId: string) => Promise<void>;
   answerCall: (callId: string, video?: boolean) => Promise<void>;
@@ -24,6 +27,7 @@ interface SipContextValue {
 }
 
 const SipContext = createContext<SipContextValue>({
+  reconnectPhone: async () => {},
   makeCall: async () => null,
   hangupCall: async () => {},
   answerCall: async () => {},
@@ -35,19 +39,23 @@ const SipContext = createContext<SipContextValue>({
 });
 
 export function SipProvider({ children }: { children: React.ReactNode }) {
-  const accountLoaded = useRef(false);
+  const registrationLifecycle = useRef<ReturnType<typeof createRegistrationLifecycle> | null>(null);
+  const accountLoadedFor = useRef<number | undefined>(undefined);
   const accountLoadPromise = useRef<Promise<void> | null>(null);
   const nativeStackInitialized = useRef(false);
   const nativeStackInitPromise = useRef<Promise<void> | null>(null);
   const { loadAccount } = useSipAccountStore();
 
   const ensureAccountLoaded = useCallback(async () => {
-    if (accountLoaded.current) return;
+    const owner = getAuthSnapshot().user?.id;
+    if (!owner || getAuthSnapshot().loading) return;
+    if (accountLoadedFor.current === owner) return;
 
     if (!accountLoadPromise.current) {
       accountLoadPromise.current = loadAccount()
         .then(() => {
-          accountLoaded.current = true;
+          accountLoadedFor.current = owner;
+          accountLoadPromise.current = null;
         })
         .catch((error) => {
           accountLoadPromise.current = null;
@@ -57,13 +65,15 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     }
 
     await accountLoadPromise.current;
+    if (getAuthSnapshot().user?.id !== owner) return;
   }, [loadAccount]);
 
   const ensureSipRegistered = useCallback(async (): Promise<boolean> => {
     await ensureAccountLoaded();
 
     const { account } = useSipAccountStore.getState();
-    if (!account || !account.enabled) {
+    const auth = getAuthSnapshot();
+    if (!account || !account.enabled || auth.loading || account.ownerUserId !== auth.user?.id) {
       useSipDiagnosticsStore.getState().addEvent({
         level: "warning",
         category: "registration",
@@ -78,7 +88,10 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
   }, [ensureAccountLoaded]);
 
   const ensureNativeStackInitialized = useCallback(async () => {
-    if (nativeStackInitialized.current) return;
+    if (nativeStackInitialized.current) {
+      await ensureSipRegistered();
+      return;
+    }
 
     if (!nativeStackInitPromise.current) {
       nativeStackInitPromise.current = (async () => {
@@ -103,10 +116,34 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
   }, [ensureSipRegistered]);
 
   useEffect(() => {
-    ensureAccountLoaded().catch(() => {});
+    const lifecycle = createRegistrationLifecycle({
+      snapshot: () => {
+        const auth = getAuthSnapshot();
+        const calls = useSipCallStore.getState();
+        return {
+          userId: auth.user?.id,
+          authLoading: auth.loading,
+          ...useSipAccountStore.getState(),
+          hasLiveCall: (!!calls.incomingCall && calls.incomingCall.status !== "disconnected") ||
+            Object.values(calls.activeCalls).some(call => call.status !== "disconnected"),
+        };
+      },
+      loadAccount,
+      initialize: ensureNativeStackInitialized,
+      restart: async () => { await sipEngine.restart(); await ensureNativeStackInitialized(); },
+      onError: () => useSipDiagnosticsStore.getState().addEvent({
+        level: "warning", category: "registration", message: "Phone connection unavailable; automatic retry pending",
+      }),
+    }, Platform.OS !== "web" && AppState.currentState === "active");
+    registrationLifecycle.current = lifecycle;
+    const unsubAccount = useSipAccountStore.subscribe(lifecycle.changed);
+    const unsubAuth = addAuthChangeListener(lifecycle.changed);
+    const appState = AppState.addEventListener("change", state => lifecycle.setActive(Platform.OS !== "web" && state === "active"));
+    lifecycle.start();
 
     let prevIncomingId: string | null = null;
     const unsubIncoming = useSipCallStore.subscribe((state) => {
+      lifecycle.changed();
       const incomingCall = state.incomingCall;
       if (incomingCall && incomingCall.id !== prevIncomingId) {
         prevIncomingId = incomingCall.id;
@@ -122,15 +159,24 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
+      lifecycle.stop();
+      if (registrationLifecycle.current === lifecycle) registrationLifecycle.current = null;
+      unsubAccount();
+      unsubAuth();
+      appState.remove();
       unsubIncoming();
       nativeCallManager.destroy();
       sipEngine.destroy().catch(console.error);
       nativeStackInitialized.current = false;
       nativeStackInitPromise.current = null;
     };
-  }, [ensureAccountLoaded]);
+  }, [loadAccount, ensureNativeStackInitialized]);
 
   const value: SipContextValue = {
+    reconnectPhone: async () => {
+      if (!registrationLifecycle.current) throw new Error("Phone connection is starting. Please try again.");
+      await registrationLifecycle.current.reconnect();
+    },
     makeCall: async (dest, video) => {
       await ensureNativeStackInitialized();
       const callId = await sipEngine.makeCall(dest, video);

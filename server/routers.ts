@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { integrationSecretStatus } from "./pbx/integration-auth";
+import { findOwnedRecording } from "./pbx/media-access";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { revokePhone11Session } from "./_core/phone11-auth";
@@ -6,6 +9,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { pbxRouter } from "./pbx/pbx-router";
 import { ivrRouter } from "./pbx/ivr-router";
+import { chatRouter } from "./chat/router";
 import { invokeLLM } from "./_core/llm";
 import {
   getPhoneConfig,
@@ -113,18 +117,19 @@ export const appRouter = router({
 
   /** AI-powered call transcript analysis */
   recording: router({
-    analyzeTranscript: publicProcedure
+    analyzeTranscript: protectedProcedure
       .input(
         z.object({
           recordingId: z.string(),
-          transcription: z.string().min(1),
+          transcription: z.string().min(1).max(100_000),
           callerName: z.string(),
           calleeName: z.string(),
           direction: z.string(),
           duration: z.number(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        if (!await findOwnedRecording(ctx.user.id, input.recordingId)) throw new TRPCError({ code: "NOT_FOUND", message: "Recording not found" });
         const { transcription, callerName, calleeName, direction, duration } = input;
 
         const durationMin = Math.round(duration / 60);
@@ -227,23 +232,24 @@ Rules:
     /** Register a VoIP push token (called by mobile app on startup) */
     register: protectedProcedure
       .input(registerTokenSchema)
-      .mutation(async ({ input }) => {
-        return registerPushToken(input);
+      .mutation(async ({ input, ctx }) => {
+        return registerPushToken(input, ctx.user.id);
       }),
 
     /** Unregister a push token (called on logout) */
     unregister: protectedProcedure
       .input(unregisterTokenSchema)
-      .mutation(async ({ input }) => {
-        return unregisterPushToken(input);
+      .mutation(async ({ input, ctx }) => {
+        return unregisterPushToken(input, ctx.user.id);
       }),
 
     /** Trigger a VoIP push for incoming call (called by SIP proxy webhook) */
     triggerCall: publicProcedure
       .input(triggerPushSchema)
-      .mutation(async ({ input }) => {
-        // TODO: Add authentication for SIP proxy webhook
-        // (shared secret or IP whitelist)
+      .mutation(async ({ input, ctx }) => {
+        const auth = integrationSecretStatus("PUSH_SHARED_SECRET", ctx.req.headers["x-push-secret"]);
+        if (auth === "unavailable") throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Push integration is not configured" });
+        if (auth !== "ok") throw new TRPCError({ code: "FORBIDDEN" });
         return triggerPushForUser(input);
       }),
 
@@ -258,6 +264,7 @@ export const fullRouter = router({
   ...appRouter._def.record,
   pbx: pbxRouter,
   ivr: ivrRouter,
+  chat: chatRouter,
 });
 
 export type AppRouter = typeof fullRouter;

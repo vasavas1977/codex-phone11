@@ -1,0 +1,120 @@
+name: Phone11 daily-use checks
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "hooks/**"
+      - "lib/**"
+      - "server/**"
+      - "tests/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "vitest.config.ts"
+      - ".github/workflows/phone11-daily-use.yml"
+      - ".github/workflows/phone11-siprix-ios-build.yml"
+  push:
+    branches: [codex/phone11-daily-use-20260910]
+    paths:
+      - "app/**"
+      - "components/**"
+      - "hooks/**"
+      - "lib/**"
+      - "server/**"
+      - "tests/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "vitest.config.ts"
+      - ".github/workflows/phone11-daily-use.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  app-and-service-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test phone readiness, actual call entry, controls, and directory
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-registration-lifecycle.test.ts \
+            tests/phone11-call-entry.test.tsx \
+            tests/phone11-active-controls.test.tsx \
+            tests/phone11-recents-ui.test.tsx \
+            tests/phone11-directory.test.ts \
+            tests/phone11-directory-ui.test.tsx
+      - name: Test media, push, PBX authorization, and durable chat state
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-media-security.test.ts \
+            tests/phone11-storage-proxy.test.ts \
+            tests/phone11-push-security.test.ts \
+            tests/phone11-pbx-integration-security.test.ts \
+            tests/phone11-chat-state.test.ts \
+            tests/phone11-chat-controls.test.tsx \
+            tests/phone11-chat-persistence.test.ts
+      - name: Compile backend with esbuild
+        run: pnpm run build:backend
+
+  chat-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_chat_test
+          POSTGRES_PASSWORD: phone11_chat_test
+          POSTGRES_DB: phone11_chat_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_chat_test -d phone11_chat_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Ephemeral loopback service credentials, never a deployment secret or tenant DB.
+      PHONE11_CHAT_TEST_DATABASE_URL: postgresql://phone11_chat_test:phone11_chat_test@127.0.0.1:5432/phone11_chat_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the dedicated local test database
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const value = process.env.PHONE11_CHAT_TEST_DATABASE_URL;
+          assert.ok(value, 'PostgreSQL integration tests must not silently skip');
+          const url = new URL(value);
+          assert.equal(url.protocol, 'postgresql:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '5432');
+          assert.equal(url.pathname, '/phone11_chat_test');
+          assert.equal(url.username, 'phone11_chat_test');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          JS
+      - name: Test real PostgreSQL persistence and tenant isolation
+        run: pnpm exec vitest run tests/phone11-chat-postgres.test.ts

@@ -14,6 +14,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  daily-use-check:
+    uses: ./.github/workflows/phone11-daily-use.yml
   native-check:
     runs-on: macos-15
     timeout-minutes: 10
@@ -27,7 +29,7 @@ jobs:
           node scripts/stage-siprix-sdk.mjs
           node --test modules/phone11-siprix/tests/*.test.mjs
   build:
-    needs: native-check
+    needs: [native-check, daily-use-check]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

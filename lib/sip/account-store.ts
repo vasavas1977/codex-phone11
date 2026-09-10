@@ -14,6 +14,7 @@ export type SipTransport = "UDP" | "TCP" | "TLS";
 
 export interface SipAccount {
   ownerUserId?: number;
+  tenantId?: number;
   id: string;
   displayName: string;
   username: string;       // SIP username / extension
@@ -83,7 +84,13 @@ export const useSipAccountStore = create<SipAccountState>((set) => ({
         });
       }
       await AsyncStorage.removeItem(STORAGE_KEY);
-      if (current === revision) set({ account });
+      if (current === revision && account.ownerUserId === getAuthSnapshot().user?.id) {
+        set({ account });
+      } else if (Platform.OS !== "web") {
+        // Auth can change while the keychain write is in flight. Do not leave that
+        // owner's credentials available to a later hydration before cleanup runs.
+        await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+      }
     });
   },
 

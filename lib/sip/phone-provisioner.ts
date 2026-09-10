@@ -22,17 +22,22 @@ export function PhoneProvisioner() {
     const nextAccount = { ...sipAccountFromPhoneConfig(configQuery.data, account?.id), ownerUserId: user.id };
     const unchanged =
       account?.ownerUserId === user.id &&
+      account?.tenantId === nextAccount.tenantId &&
       account?.username === nextAccount.username &&
       account?.domain === nextAccount.domain &&
       account?.port === nextAccount.port &&
       account?.transport === nextAccount.transport &&
-      account?.password === nextAccount.password;
+      account?.password === nextAccount.password &&
+      account?.displayName === nextAccount.displayName &&
+      account?.proxy === nextAccount.proxy &&
+      account?.srtp === nextAccount.srtp &&
+      account?.stun === nextAccount.stun &&
+      account?.enabled === nextAccount.enabled;
 
     if (unchanged) return;
 
-    // Keep root startup safe: provisioning may refresh while the app is launching,
-    // but the native SIP stack should only start from an explicit sync/call path.
-    setAccount(nextAccount).catch((error) =>
+    // SipProvider connects only after this account belongs to the verified owner.
+    setAccount(nextAccount).catch(() =>
       console.error("[PhoneProvisioner] Could not securely store provisioning"),
     );
   }, [account, configQuery.data, setAccount, user, isAuthenticated, loading]);

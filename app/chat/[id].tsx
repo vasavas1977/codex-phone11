@@ -1,515 +1,116 @@
-import { useEffect, useState, useRef, useCallback } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  TextInput,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  Alert,
-} from "react-native";
-import * as Haptics from "expo-haptics";
-import { router, useLocalSearchParams } from "expo-router";
-
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useAuth } from "@/hooks/use-auth";
+import { chatError } from "@/lib/chat/state";
 import { useChatStore } from "@/lib/chat/store";
-import { type ChatMessage, formatChatTime } from "@/lib/chat/types";
-import { getPresenceColor } from "@/lib/presence/store";
-import type { PresenceStatus } from "@/lib/presence/engine";
-
-// Simulated presence for DM contacts
-const CONTACT_PRESENCE: Record<string, PresenceStatus> = {
-  "dm-sarah": "online",
-  "dm-james": "busy",
-  "dm-alex": "away",
-};
+import { formatChatTime, type ChatMessage } from "@/lib/chat/types";
 
 export default function ChatRoomScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id: string; tenantId?: string }>();
+  const id = typeof params.id === "string" ? params.id : "";
+  const tenantId = Number(params.tenantId);
   const colors = useColors();
-  const flatListRef = useRef<FlatList>(null);
-  const [inputText, setInputText] = useState("");
-  const [showActions, setShowActions] = useState(false);
-
-  const {
-    channels,
-    messages,
-    loadMessages,
-    sendMessage,
-    markAsRead,
-    addReaction,
-    setActiveChannel,
-  } = useChatStore();
-
-  const channel = channels.find((ch) => ch.id === id);
-  const channelMessages = messages[id || ""] || [];
-  const isDM = channel?.type === "direct";
-  const presence = isDM && id ? CONTACT_PRESENCE[id] : undefined;
-
+  const { user } = useAuth({ autoFetch: false });
+  const chat = useChatStore();
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const [searching, setSearching] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [searchResult, setSearchResult] = useState<{ messages: ChatMessage[]; hasMore: boolean }>({ messages: [], hasMore: false });
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const draft = chat.drafts[id] || "";
+  const setDraft = (value: string) => chat.setDraft(id, value);
+  const list = useRef<FlatList<ChatMessage>>(null);
+  const channel = chat.channels.find(c => c.id === id);
+  const messages = chat.messages[id] || [];
+  const atBottom = useRef(true);
+  const initialScroll = useRef(true);
+  useEffect(() => { atBottom.current = true; initialScroll.current = true; setSearching(false); setSearchText(""); }, [user?.id, id, tenantId]);
+  const canCompose = Boolean(user && chat.userId === user.id && chat.workspace && channel &&
+    (!params.tenantId || (Number.isSafeInteger(tenantId) && tenantId > 0 && chat.workspace.id === tenantId)));
   useEffect(() => {
-    if (id) {
-      loadMessages(id);
-      markAsRead(id);
-      setActiveChannel(id);
-    }
-    return () => setActiveChannel(null);
-  }, [id]);
-
-  useEffect(() => {
-    // Scroll to bottom when messages change
-    if (channelMessages.length > 0) {
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-    }
-  }, [channelMessages.length]);
-
-  const handleSend = useCallback(() => {
-    if (!inputText.trim() || !id) return;
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    sendMessage(id, inputText.trim());
-    setInputText("");
-  }, [inputText, id, sendMessage]);
-
-  const handleReaction = useCallback(
-    (messageId: string) => {
-      if (!id) return;
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      const emojis = ["👍", "❤️", "😂", "🎉", "🔥", "✅"];
-      Alert.alert(
-        "React",
-        "Choose a reaction",
-        emojis.map((emoji) => ({
-          text: emoji,
-          onPress: () => addReaction(id, messageId, emoji),
-        }))
-      );
-    },
-    [id, addReaction]
-  );
-
-  const handleCallPress = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push("/call/active" as any);
-  }, []);
-
-  const handleVideoPress = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    router.push("/call/video" as any);
-  }, []);
-
-  const renderMessage = ({ item, index }: { item: ChatMessage; index: number }) => {
-    const isMe = item.senderId === "me";
-    const isSystem = item.type === "system";
-    const prevMessage = index > 0 ? channelMessages[index - 1] : null;
-    const showSender = !isMe && !isSystem && prevMessage?.senderId !== item.senderId;
-    const showTimeDivider =
-      !prevMessage || item.timestamp - prevMessage.timestamp > 600000; // 10 min gap
-
-    const reactionEntries = Object.entries(item.reactions);
-
-    if (isSystem) {
-      return (
-        <View style={styles.systemMessage}>
-          <Text style={[styles.systemText, { color: colors.muted }]}>
-            ⚙️ {item.content}
-          </Text>
-        </View>
-      );
-    }
-
-    return (
-      <View>
-        {showTimeDivider && (
-          <View style={styles.timeDivider}>
-            <View style={[styles.timeLine, { backgroundColor: colors.border }]} />
-            <Text style={[styles.timeLabel, { color: colors.muted, backgroundColor: colors.background }]}>
-              {new Date(item.timestamp).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </Text>
-            <View style={[styles.timeLine, { backgroundColor: colors.border }]} />
-          </View>
-        )}
-        <TouchableOpacity
-          style={[styles.messageRow, isMe && styles.messageRowMe]}
-          onLongPress={() => handleReaction(item.id)}
-          activeOpacity={0.8}
-        >
-          {/* Avatar for others */}
-          {!isMe && showSender && (
-            <View
-              style={[styles.msgAvatar, { backgroundColor: colors.primary + "20" }]}
-            >
-              <Text style={[styles.msgAvatarText, { color: colors.primary }]}>
-                {item.senderName.charAt(0)}
-              </Text>
-            </View>
-          )}
-          {!isMe && !showSender && <View style={styles.msgAvatarSpacer} />}
-
-          <View style={[styles.messageBubbleContainer, isMe && styles.messageBubbleContainerMe]}>
-            {/* Sender name */}
-            {showSender && (
-              <Text style={[styles.senderName, { color: colors.primary }]}>
-                {item.senderName}
-              </Text>
-            )}
-
-            {/* Bubble */}
-            <View
-              style={[
-                styles.messageBubble,
-                isMe
-                  ? { backgroundColor: colors.primary }
-                  : { backgroundColor: colors.surface, borderColor: colors.border, borderWidth: 1 },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.messageText,
-                  { color: isMe ? "#fff" : colors.foreground },
-                ]}
-              >
-                {item.content}
-              </Text>
-              <View style={styles.messageFooter}>
-                <Text
-                  style={[
-                    styles.messageTime,
-                    { color: isMe ? "#ffffff80" : colors.muted },
-                  ]}
-                >
-                  {formatChatTime(item.timestamp)}
-                </Text>
-                {isMe && (
-                  <Text style={{ color: "#ffffff80", fontSize: 10, marginLeft: 4 }}>
-                    {item.delivered ? "✓✓" : "✓"}
-                  </Text>
-                )}
-              </View>
-            </View>
-
-            {/* Reactions */}
-            {reactionEntries.length > 0 && (
-              <View style={styles.reactionsRow}>
-                {reactionEntries.map(([emoji, users]) => (
-                  <TouchableOpacity
-                    key={emoji}
-                    style={[
-                      styles.reactionChip,
-                      {
-                        backgroundColor: users.includes("me")
-                          ? colors.primary + "20"
-                          : colors.surface,
-                        borderColor: users.includes("me") ? colors.primary : colors.border,
-                      },
-                    ]}
-                    onPress={() => {
-                      if (id) addReaction(id, item.id, emoji);
-                    }}
-                  >
-                    <Text style={styles.reactionEmoji}>{emoji}</Text>
-                    <Text style={[styles.reactionCount, { color: colors.foreground }]}>
-                      {users.length}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-          </View>
-        </TouchableOpacity>
-      </View>
-    );
+    let current = true;
+    setSearchResult({ messages: [], hasMore: false }); setSearchError(null);
+    if (!searching || searchText.trim().length < 2 || !user || !chat.workspace) { setSearchLoading(false); return; }
+    setSearchLoading(true);
+    const timer = setTimeout(() => {
+      void chat.searchMessages(id, searchText.trim()).then(result => { if (current) setSearchResult(result); })
+        .catch(error => { if (current) setSearchError(chatError(error)); }).finally(() => { if (current) setSearchLoading(false); });
+    }, 350);
+    return () => { current = false; clearTimeout(timer); };
+  }, [searching, searchText, id, user?.id, chat.workspace?.id]);
+  useFocusEffect(useCallback(() => {
+    chat.setUser(user?.id ?? null);
+    if (!user || !id) return;
+    let mounted = true;
+    const refresh = async () => {
+      if (!mounted || AppState.currentState !== "active") return;
+      const state = useChatStore.getState();
+      if (!state.workspace || !state.channels.some(c => c.id === id) || (Number.isSafeInteger(tenantId) && tenantId > 0 && state.workspace.id !== tenantId))
+        await state.loadChannels(Number.isSafeInteger(tenantId) && tenantId > 0 ? tenantId : undefined);
+      if (!mounted) return;
+      await useChatStore.getState().loadMessages(id);
+      if (mounted && AppState.currentState === "active" && atBottom.current && !searching) await useChatStore.getState().markAsRead(id);
+    };
+    void refresh();
+    const interval = setInterval(() => void refresh(), 5000);
+    const subscription = AppState.addEventListener("change", state => { if (state === "active") void refresh(); });
+    return () => { mounted = false; clearInterval(interval); subscription.remove(); };
+  }, [user?.id, id, tenantId, searching]));
+  const send = async () => {
+    if (sendingRef.current || !canCompose || !draft.trim() || draft.trim().length > 4000) return;
+    const content = draft.trim(); atBottom.current = true;
+    sendingRef.current = true; setSending(true);
+    try { await chat.sendMessage(id, content); }
+    finally { sendingRef.current = false; setSending(false); }
   };
-
-  if (!channel) {
-    return (
-      <ScreenContainer edges={["top", "bottom", "left", "right"]} className="items-center justify-center">
-        <Text style={{ color: colors.muted }}>Channel not found</Text>
-      </ScreenContainer>
-    );
-  }
-
-  return (
-    <ScreenContainer edges={["top", "left", "right"]}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={0}
-      >
-        {/* Header */}
-        <View style={[styles.header, { borderBottomColor: colors.border, backgroundColor: colors.background }]}>
-          <TouchableOpacity
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.back();
-            }}
-            style={styles.backButton}
-          >
-            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-          </TouchableOpacity>
-
-          <View style={styles.headerCenter}>
-            <View style={styles.headerNameRow}>
-              <Text style={[styles.headerTitle, { color: colors.foreground }]} numberOfLines={1}>
-                {isDM ? channel.name : `# ${channel.name}`}
-              </Text>
-              {presence && (
-                <View
-                  style={[styles.headerPresence, { backgroundColor: getPresenceColor(presence) }]}
-                />
-              )}
-            </View>
-            <Text style={[styles.headerSubtitle, { color: colors.muted }]} numberOfLines={1}>
-              {isDM
-                ? presence
-                  ? presence === "online"
-                    ? "Online"
-                    : presence === "busy"
-                    ? "On a call"
-                    : "Away"
-                  : "Offline"
-                : `${channel.members.length} members`}
-            </Text>
-          </View>
-
-          <View style={styles.headerActions}>
-            <TouchableOpacity onPress={handleCallPress} style={styles.headerAction}>
-              <IconSymbol name="phone.fill" size={20} color={colors.primary} />
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleVideoPress} style={styles.headerAction}>
-              <IconSymbol name="video.fill" size={20} color={colors.primary} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Channel topic bar */}
-        {channel.type === "channel" && channel.topic && (
-          <View style={[styles.topicBar, { backgroundColor: colors.primary + "08", borderBottomColor: colors.border }]}>
-            <IconSymbol name="pin.fill" size={12} color={colors.primary} />
-            <Text style={[styles.topicText, { color: colors.muted }]} numberOfLines={1}>
-              {channel.topic}
-            </Text>
-          </View>
-        )}
-
-        {/* Messages */}
-        <FlatList
-          ref={flatListRef}
-          data={channelMessages}
-          keyExtractor={(item) => item.id}
-          renderItem={renderMessage}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingVertical: 12, paddingHorizontal: 8 }}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
-        />
-
-        {/* Input Bar */}
-        <View style={[styles.inputBar, { backgroundColor: colors.background, borderTopColor: colors.border }]}>
-          <TouchableOpacity
-            style={styles.inputAction}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              setShowActions(!showActions);
-            }}
-          >
-            <IconSymbol name="plus.circle.fill" size={26} color={colors.primary} />
-          </TouchableOpacity>
-
-          <View style={[styles.inputContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <TextInput
-              style={[styles.textInput, { color: colors.foreground }]}
-              placeholder="Type a message..."
-              placeholderTextColor={colors.muted}
-              value={inputText}
-              onChangeText={setInputText}
-              multiline
-              maxLength={2000}
-              returnKeyType="default"
-            />
-          </View>
-
-          {inputText.trim().length > 0 ? (
-            <TouchableOpacity style={[styles.sendButton, { backgroundColor: colors.primary }]} onPress={handleSend}>
-              <IconSymbol name="arrow.up.circle.fill" size={28} color="#fff" />
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity style={styles.inputAction} onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}>
-              <IconSymbol name="mic.fill" size={22} color={colors.primary} />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        {/* Quick Actions Panel */}
-        {showActions && (
-          <View style={[styles.actionsPanel, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
-            {[
-              { icon: "photo.fill" as const, label: "Photo", color: "#22C55E" },
-              { icon: "paperclip" as const, label: "File", color: "#0057FF" },
-              { icon: "person.fill" as const, label: "Contact", color: "#8B5CF6" },
-              { icon: "pin.fill" as const, label: "Location", color: "#EF4444" },
-            ].map((action) => (
-              <TouchableOpacity
-                key={action.label}
-                style={styles.actionItem}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  setShowActions(false);
-                }}
-              >
-                <View style={[styles.actionIcon, { backgroundColor: action.color + "20" }]}>
-                  <IconSymbol name={action.icon} size={22} color={action.color} />
-                </View>
-                <Text style={[styles.actionLabel, { color: colors.foreground }]}>{action.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-      </KeyboardAvoidingView>
-    </ScreenContainer>
-  );
+  return <ScreenContainer>
+    <View style={[styles.header, { borderBottomColor: colors.border }]}>
+      <Pressable accessibilityRole="button" accessibilityLabel="Back to conversations" onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/teamchat")} style={styles.back}><Text style={{ color: colors.primary, fontSize: 18 }}>‹ Back</Text></Pressable>
+      <View style={{ flex: 1 }}><Text numberOfLines={1} style={[styles.title, { color: colors.foreground }]}>{channel?.name || "Conversation"}</Text><Text style={{ color: colors.muted, fontSize: 12 }}>{channel ? `${channel.memberIds.length} members · ${chat.workspace?.name}` : "Loading your workspace"}</Text></View>
+      <Pressable accessibilityRole="button" accessibilityLabel={searching ? "Close message search" : "Search messages"} onPress={() => setSearching(value => !value)} style={{ padding: 8 }}><Text style={{ color: colors.primary }}>{searching ? "Close" : "Search"}</Text></Pressable>
+    </View>
+    {searching && <View style={{ padding: 12, gap: 6 }}><TextInput accessibilityLabel="Search saved messages" value={searchText} onChangeText={setSearchText} maxLength={100} autoFocus placeholder="Search saved messages in this chat" placeholderTextColor={colors.muted} style={[styles.input, { flex: 0, backgroundColor: colors.surface, color: colors.foreground }]} />
+      <Text style={{ color: colors.muted, fontSize: 12 }}>{searchResult.hasMore ? "Showing the latest 50 matches. Narrow your search for older results." : "Search saved messages with at least two characters."}</Text></View>}
+    {!user ? <View style={styles.empty}><Text style={{ color: colors.foreground }}>Sign in again to open this conversation.</Text></View> : <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={0}>
+      {(chat.error || chat.roomErrors[id] || chat.storageError) && <Pressable accessibilityRole="button" onPress={() => { void chat.loadChannels(); void chat.loadMessages(id); }} style={styles.notice}><Text style={{ color: colors.error }}>{chat.storageError || chat.roomErrors[id] || chat.error} Tap to retry.</Text></Pressable>}
+      <FlatList ref={list} data={searching ? searchResult.messages : messages} keyExtractor={item => `${item.senderId}:${item.clientId}`} contentContainerStyle={styles.messages}
+        onScroll={event => { const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+          const wasAtBottom = atBottom.current;
+          atBottom.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 60;
+          if (!searching && !wasAtBottom && atBottom.current) void chat.markAsRead(id);
+        }} scrollEventThrottle={150}
+        onContentSizeChange={() => { if (!searching && (initialScroll.current || atBottom.current) && messages.length) { list.current?.scrollToEnd({ animated: !initialScroll.current }); initialScroll.current = false; } }}
+        ListHeaderComponent={!searching && chat.hasMore[id] ? <Pressable accessibilityRole="button" disabled={chat.roomLoading[id]} onPress={() => { atBottom.current = false; void chat.loadMessages(id, true); }} style={styles.older}><Text style={{ color: colors.primary }}>{chat.roomLoading[id] ? "Loading…" : "Load earlier messages"}</Text></Pressable> : null}
+        renderItem={({ item }) => {
+          const own = item.senderId === user.id;
+          return <View style={[styles.message, own ? { alignSelf: "flex-end" } : { alignSelf: "flex-start" }]}>
+            {!own && <Text style={{ color: colors.muted, fontSize: 12, marginBottom: 4 }}>{item.senderName}</Text>}
+            <View style={[styles.bubble, { backgroundColor: own ? colors.primary : colors.surface }]}><Text selectable style={{ color: own ? "white" : colors.foreground, fontSize: 16, lineHeight: 23 }}>{item.content}</Text></View>
+            <Text style={{ color: colors.muted, fontSize: 11, marginTop: 4, textAlign: own ? "right" : "left" }}>{formatChatTime(item.timestamp)}{own ? ` · ${item.status === "sending" ? "Sending…" : item.status === "failed" ? "Not sent" : "Sent"}` : ""}</Text>
+            {own && item.status === "failed" && <Pressable accessibilityRole="button" accessibilityLabel="Retry sending message" onPress={() => chat.retryMessage(id, item.clientId)} style={styles.retry}><Text style={{ color: colors.error, fontWeight: "600" }}>Retry</Text></Pressable>}
+          </View>;
+        }}
+        ListEmptyComponent={<View style={styles.empty}>{searching ? searchLoading ? <ActivityIndicator color={colors.primary} /> : <Text style={{ color: searchError ? colors.error : colors.muted }}>{searchError || (searchText.trim().length < 2 ? "Enter a word or phrase to search this conversation." : "No saved messages match your search.")}</Text> : chat.roomLoading[id] || chat.loading ? <ActivityIndicator color={colors.primary} /> : <><Text style={[styles.emptyTitle, { color: colors.foreground }]}>{channel ? "Start the conversation" : "Conversation unavailable"}</Text><Text style={{ color: colors.muted, textAlign: "center" }}>{channel ? "Messages are saved to your workspace when sent." : "Refresh Team Chat to check your access."}</Text></>}</View>} />
+      {!searching && <View style={[styles.composer, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
+        <TextInput accessibilityLabel="Message" value={draft} onChangeText={setDraft} editable={canCompose} multiline maxLength={4000} placeholder={canCompose ? "Message" : "Connect to chat to send"} placeholderTextColor={colors.muted} style={[styles.input, { color: colors.foreground, backgroundColor: colors.surface }]} />
+        <Pressable accessibilityRole="button" accessibilityLabel="Send message" disabled={sending || !canCompose || !draft.trim()} onPress={send} style={[styles.send, { backgroundColor: colors.primary, opacity: !sending && canCompose && draft.trim() ? 1 : 0.4 }]}><Text style={{ color: "white", fontWeight: "700" }}>{sending ? "Sending…" : "Send"}</Text></Pressable>
+      </View>}
+    </KeyboardAvoidingView>}
+  </ScreenContainer>;
 }
-
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 10,
-    borderBottomWidth: 0.5,
-  },
-  backButton: { padding: 8 },
-  headerCenter: { flex: 1, marginLeft: 4 },
-  headerNameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  headerTitle: { fontSize: 17, fontWeight: "700" },
-  headerPresence: { width: 8, height: 8, borderRadius: 4 },
-  headerSubtitle: { fontSize: 12, marginTop: 1 },
-  headerActions: { flexDirection: "row", gap: 4 },
-  headerAction: { padding: 8 },
-  topicBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderBottomWidth: 0.5,
-    gap: 6,
-  },
-  topicText: { fontSize: 12, flex: 1 },
-  // Messages
-  timeDivider: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginVertical: 12,
-    paddingHorizontal: 16,
-  },
-  timeLine: { flex: 1, height: 0.5 },
-  timeLabel: { fontSize: 11, paddingHorizontal: 12, fontWeight: "500" },
-  systemMessage: {
-    alignItems: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 32,
-  },
-  systemText: { fontSize: 12, textAlign: "center", fontStyle: "italic" },
-  messageRow: {
-    flexDirection: "row",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    alignItems: "flex-end",
-  },
-  messageRowMe: { flexDirection: "row-reverse" },
-  msgAvatar: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 6,
-    marginBottom: 4,
-  },
-  msgAvatarText: { fontSize: 13, fontWeight: "700" },
-  msgAvatarSpacer: { width: 36 },
-  messageBubbleContainer: { maxWidth: "75%" },
-  messageBubbleContainerMe: { alignItems: "flex-end" },
-  senderName: { fontSize: 12, fontWeight: "600", marginBottom: 2, marginLeft: 4 },
-  messageBubble: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 18,
-  },
-  messageText: { fontSize: 15, lineHeight: 21 },
-  messageFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    marginTop: 4,
-  },
-  messageTime: { fontSize: 10 },
-  reactionsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 4,
-    marginTop: 4,
-    marginLeft: 4,
-  },
-  reactionChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-    borderWidth: 1,
-    gap: 3,
-  },
-  reactionEmoji: { fontSize: 14 },
-  reactionCount: { fontSize: 12, fontWeight: "600" },
-  // Input
-  inputBar: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderTopWidth: 0.5,
-    gap: 6,
-  },
-  inputAction: { padding: 4, marginBottom: 4 },
-  inputContainer: {
-    flex: 1,
-    borderRadius: 20,
-    borderWidth: 1,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    maxHeight: 120,
-  },
-  textInput: { fontSize: 15, lineHeight: 20 },
-  sendButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 2,
-  },
-  // Actions panel
-  actionsPanel: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    borderTopWidth: 0.5,
-  },
-  actionItem: { alignItems: "center", gap: 6 },
-  actionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  actionLabel: { fontSize: 12, fontWeight: "500" },
+  header: { flexDirection: "row", alignItems: "center", paddingVertical: 12, paddingRight: 18, borderBottomWidth: StyleSheet.hairlineWidth, gap: 8 },
+  back: { padding: 14 }, title: { fontSize: 18, fontWeight: "700", marginBottom: 3 },
+  messages: { padding: 16, flexGrow: 1 }, message: { maxWidth: "85%", marginBottom: 16 },
+  bubble: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 16 }, retry: { paddingVertical: 8, alignSelf: "flex-end" },
+  notice: { padding: 12 }, older: { padding: 12, alignItems: "center" },
+  empty: { padding: 30, flex: 1, alignItems: "center", justifyContent: "center", gap: 10 }, emptyTitle: { fontSize: 20, fontWeight: "600" },
+  composer: { flexDirection: "row", gap: 10, padding: 12, alignItems: "flex-end", borderTopWidth: StyleSheet.hairlineWidth },
+  input: { flex: 1, minHeight: 44, maxHeight: 140, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 16, fontSize: 16 },
+  send: { minHeight: 44, justifyContent: "center", borderRadius: 14, paddingHorizontal: 16 },
 });

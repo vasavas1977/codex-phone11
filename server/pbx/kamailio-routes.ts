@@ -10,19 +10,13 @@
  */
 import { Router, Request, Response } from "express";
 import { query } from "./db";
+import { requireIntegrationSecret } from "./integration-auth";
 import { cacheGetOrSet, invalidateCache } from "./redis";
 
 const router = Router();
 
-const KAM_SHARED_SECRET = process.env.KAM_SHARED_SECRET || "phone11-kam-secret-change-me";
+const verifyKamAuth = requireIntegrationSecret("KAM_SHARED_SECRET", "x-kam-secret");
 
-function verifyKamAuth(req: Request, res: Response, next: Function) {
-  const secret = req.headers["x-kam-secret"] || req.query.secret;
-  if (secret !== KAM_SHARED_SECRET) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-  next();
-}
 
 /**
  * POST /api/kamailio/auth
@@ -44,7 +38,8 @@ router.post("/auth", verifyKamAuth, async (req: Request, res: Response) => {
          FROM sip_accounts sa
          JOIN extensions e ON sa.extension_id = e.id
          JOIN tenants t ON sa.tenant_id = t.id
-         WHERE sa.sip_username = $1 AND sa.sip_domain = $2 AND sa.deleted_at IS NULL`,
+         WHERE sa.sip_username = $1 AND sa.sip_domain = $2 AND sa.deleted_at IS NULL
+           AND e.tenant_id = sa.tenant_id AND e.deleted_at IS NULL`,
         [username, domain]
       );
 
@@ -117,7 +112,7 @@ router.post("/route", verifyKamAuth, async (req: Request, res: Response) => {
       `SELECT pn.*, t.slug as tenant_slug
        FROM phone_numbers pn
        JOIN tenants t ON pn.tenant_id = t.id
-       WHERE pn.number_e164 = $1 AND pn.status = 'active' AND pn.deleted_at IS NULL`,
+       WHERE pn.number_e164 = $1 AND pn.status = 'active' AND pn.deleted_at IS NULL AND t.status = 'active'`,
       [ruri_user]
     );
 
@@ -130,8 +125,8 @@ router.post("/route", verifyKamAuth, async (req: Request, res: Response) => {
           `SELECT sa.sip_username, sa.sip_domain
            FROM extensions e
            JOIN sip_accounts sa ON e.id = sa.extension_id AND sa.deleted_at IS NULL
-           WHERE e.id = $1 AND e.status = 'active'`,
-          [did.assigned_route_id]
+           WHERE e.id = $1 AND e.tenant_id = $2 AND sa.tenant_id = e.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL AND sa.status = 'active'`,
+          [did.assigned_route_id, did.tenant_id]
         );
         
         if (extResult.rows.length > 0) {
@@ -150,13 +145,20 @@ router.post("/route", verifyKamAuth, async (req: Request, res: Response) => {
       });
     }
 
-    // Check if it's an internal extension
+    // Internal extension numbers are meaningful only inside the caller's verified SIP tenant.
+    if (typeof from_user !== "string" || typeof domain !== "string") return res.json({ action: "reject", code: 403 });
+    const caller = await query(
+      `SELECT sa.tenant_id FROM sip_accounts sa JOIN extensions e ON e.id = sa.extension_id AND e.tenant_id = sa.tenant_id
+       JOIN tenants t ON t.id = e.tenant_id WHERE sa.sip_username = $1 AND sa.sip_domain = $2
+       AND sa.status = 'active' AND sa.deleted_at IS NULL AND e.status = 'active' AND e.deleted_at IS NULL AND t.status = 'active'`,
+      [from_user, domain]);
+    if (caller.rows.length !== 1) return res.json({ action: "reject", code: 403 });
     const extResult = await query(
       `SELECT sa.sip_username, sa.sip_domain, e.tenant_id
        FROM extensions e
        JOIN sip_accounts sa ON e.id = sa.extension_id AND sa.deleted_at IS NULL
-       WHERE e.extension_number = $1 AND e.status = 'active' AND e.deleted_at IS NULL`,
-      [ruri_user]
+       WHERE e.extension_number = $1 AND e.tenant_id = $2 AND sa.tenant_id = e.tenant_id AND sa.status = 'active' AND e.status = 'active' AND e.deleted_at IS NULL`,
+      [ruri_user, caller.rows[0].tenant_id]
     );
 
     if (extResult.rows.length > 0) {

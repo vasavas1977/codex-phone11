@@ -96,6 +96,15 @@ static void flush(void) {
 
 int main(void) {
   @autoreleasepool {
+    SiprixIniData *licenseProbe = [SiprixIniData new];
+    P11ApplyBuildLicense(licenseProbe, nil);
+    CHECK(licenseProbe.license == nil);
+    P11ApplyBuildLicense(licenseProbe, @" \n\t ");
+    CHECK(licenseProbe.license == nil);
+    P11ApplyBuildLicense(licenseProbe, @123);
+    CHECK(licenseProbe.license == nil);
+    P11ApplyBuildLicense(licenseProbe, @"  fake-test-license-not-valid  ");
+    CHECK([licenseProbe.license isEqualToString:@"fake-test-license-not-valid"]);
     __block id result;
     __block NSString *error;
     __block int resolved = 0;

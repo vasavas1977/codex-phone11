@@ -2,6 +2,7 @@ import { DEFAULT_ACCOUNT, type SipAccount, type SipTransport } from "./account-s
 
 export interface PhoneProvisioningConfig {
   configured: boolean;
+  tenantId?: number;
   extension?: {
     number: string;
     displayName: string;
@@ -57,6 +58,7 @@ export function sipAccountFromPhoneConfig(
 
   return {
     id: existingId,
+    tenantId: config.tenantId,
     displayName: config.extension?.displayName || config.sip.username,
     username: config.sip.username,
     password: config.sip.password,
