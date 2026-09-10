@@ -233,14 +233,14 @@ Rules:
     register: protectedProcedure
       .input(registerTokenSchema)
       .mutation(async ({ input, ctx }) => {
-        return registerPushToken(input, ctx.user.id);
+        return registerPushToken(input, ctx.user.id, ctx.req.headers);
       }),
 
     /** Unregister a push token (called on logout) */
     unregister: protectedProcedure
       .input(unregisterTokenSchema)
       .mutation(async ({ input, ctx }) => {
-        return unregisterPushToken(input, ctx.user.id);
+        return unregisterPushToken(input, ctx.user.id, ctx.req.headers);
       }),
 
     /** Trigger a VoIP push for incoming call (called by SIP proxy webhook) */

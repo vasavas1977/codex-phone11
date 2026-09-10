@@ -1,28 +1,14 @@
-/**
- * Push Gateway — Phone11 Server
- *
- * Manages VoIP push token registration and push notification delivery.
- *
- * Token storage:
- *  - In-memory Map for development (no persistence across restarts)
- *  - TODO: Migrate to database table for production
- *
- * Push delivery:
- *  - iOS: APNs VoIP push via PushKit token
- *  - Android: FCM high-priority data message
- *
- * Integration with SIP proxy:
- *  - Kamailio/FreeSWITCH calls triggerPushForUser() when INVITE arrives
- *  - This sends the VoIP push to wake the device
- *  - Device wakes → registers SIP → receives INVITE via WebSocket
- */
-
+import type { Request } from "express";
+import { resolvePushSession } from "./push/session";
 import { z } from "zod";
+import { pushRepository } from "./push/repository";
+import { sendApnsPush } from "./push/apns";
 import { assignedPushOwners, requirePushOwner, type PushOwner } from "./pbx/push-access";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
 export interface PushToken {
+  sessionId: string;
   owner: PushOwner;
   token: string;
   tokenType: "voip" | "fcm" | "apns";
@@ -58,7 +44,7 @@ export const registerTokenSchema = z.object({
   deviceId: z.string().min(1).max(512),
   platform: z.enum(["ios", "android"]),
   bundleId: z.string().min(1).max(512),
-  appVersion: z.string().optional(),
+  appVersion: z.string().max(128).optional(),
   sandbox: z.boolean().optional(),
 });
 
@@ -72,219 +58,84 @@ export const triggerPushSchema = z.object({
   sipUri: z.string().min(1).max(512),
   callId: z.string().min(1).max(512),
   callerNumber: z.string().min(1).max(512),
-  callerName: z.string().optional(),
+  callerName: z.string().max(512).optional(),
   hasVideo: z.boolean().optional(),
 });
 
-// ─── In-Memory Token Store ──────────────────────────────────────────
-// Key: sipUri → Map of deviceId → PushToken
-// TODO: Replace with database table for production persistence
-
-const tokenStore = new Map<number, Map<string, PushToken>>();
-
-/** Ownership is resolved from the server assignment, never accepted from the app. */
-export async function registerPushToken(data: z.infer<typeof registerTokenSchema>, userId: number) {
+/** Ownership is resolved from the server assignment, then rechecked in the storage transaction. */
+export async function registerPushToken(data: z.infer<typeof registerTokenSchema>, userId: number, headers?: Request["headers"]) {
   const owner = await requirePushOwner(userId, data.sipUri);
-  let devices = tokenStore.get(userId);
-  if (!devices) { devices = new Map(); tokenStore.set(userId, devices); }
-  const key = `${owner.extensionId}:${data.deviceId}`;
-  if (!devices.has(key) && devices.size >= 10) throw new Error("Too many registered devices");
-  devices.set(key, { ...data, sipUri: owner.sipUri, owner, registeredAt: Date.now() });
+  const sessionId = await resolvePushSession(headers, userId);
+  await pushRepository.put({ ...data, sessionId, sipUri: owner.sipUri, owner, registeredAt: Date.now() });
   return { success: true, message: "Device token stored; background call delivery requires an available push provider" };
 }
-
-export function unregisterPushToken(data: z.infer<typeof unregisterTokenSchema>, userId: number) {
-  const devices = tokenStore.get(userId);
-  if (devices) {
-    for (const [key, token] of devices) {
-      if (token.deviceId === data.deviceId && token.token === data.token && token.platform === data.platform) devices.delete(key);
-    }
-    if (!devices.size) tokenStore.delete(userId);
-  }
+export async function unregisterPushToken(data: z.infer<typeof unregisterTokenSchema>, userId: number, headers?: Request["headers"]) {
+  const sessionId = await resolvePushSession(headers, userId);
+  await pushRepository.remove(userId, data, sessionId);
   return { success: true, message: "Device token removed" };
 }
-
-/** Used only after authenticating the trusted call integration. */
-export function getTokensForUser(sipUri: string): PushToken[] {
-  return Array.from(tokenStore.values()).flatMap(devices => Array.from(devices.values()).filter(token => token.sipUri === sipUri));
+export async function getTokensForUser(sipUri: string) {
+  return pushRepository.list(sipUri);
 }
 
-/**
- * Trigger a VoIP push notification for an incoming call.
- *
- * Called by the SIP proxy integration when an INVITE arrives
- * for a user who may not have an active WebSocket connection.
- *
- * @returns Number of push notifications sent
- */
+class PushDeadlineError extends Error {
+  constructor() { super("Push delivery deadline elapsed"); }
+}
+/** Bound every asynchronous stage. Late completion/rejection is observed but cannot resume the caller. */
+function withinCallDeadline<T>(deadlineAt: number, operation: () => Promise<T>): Promise<T> {
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) return Promise.reject(new PushDeadlineError());
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new PushDeadlineError()), remaining);
+    Promise.resolve().then(() => {
+      if (Date.now() >= deadlineAt) throw new PushDeadlineError();
+      return operation();
+    }).then(value => {
+      clearTimeout(timer);
+      if (Date.now() >= deadlineAt) reject(new PushDeadlineError()); else resolve(value);
+    }, error => { clearTimeout(timer); reject(error); });
+  });
+}
+const deliveryUnavailable = "Push delivery unavailable or rejected by provider";
+function safeDeliveryError(error: unknown) { return error instanceof PushDeadlineError ? error.message : deliveryUnavailable; }
+
+/** A single five-second deadline includes lookup, provider work and revision-scoped cleanup. */
 export async function triggerPushForUser(
   data: z.infer<typeof triggerPushSchema>
 ): Promise<{ sent: number; errors: string[] }> {
-  const { sipUri, callId, callerNumber, callerName, hasVideo } = data;
-
-  const owners = await assignedPushOwners(sipUri);
-  if (new Set(owners.map(owner => owner.tenantId)).size > 1) {
-    return { sent: 0, errors: ["The target phone account is ambiguous"] };
-  }
-  const canonicalUri = owners[0]?.sipUri ?? sipUri;
-  const tokens = getTokensForUser(canonicalUri).filter(token => owners.some(owner =>
-    owner.userId === token.owner.userId && owner.tenantId === token.owner.tenantId && owner.extensionId === token.owner.extensionId));
-  if (tokens.length === 0) {
-    return { sent: 0, errors: ["No assigned device is available for push delivery"] };
-  }
-
-  const payload: PushPayload = {
-    callId,
-    callerNumber,
-    callerName,
-    hasVideo,
-  };
-
+  const deadlineAt = Date.now() + 5000;
+  const bounded = <T>(operation: () => Promise<T>) => withinCallDeadline(deadlineAt, operation);
   let sent = 0;
   const errors: string[] = [];
-
-  for (const token of tokens) {
-    try {
-      if (token.platform === "ios") {
-        await sendApnsPush(token, payload);
-      } else {
-        await sendFcmPush(token, payload);
-      }
-      token.lastUsed = Date.now();
-      sent++;
-    } catch (error: any) {
-      const msg = "Push delivery unavailable or rejected by provider";
-      console.error(`[PushGateway] ${msg}`);
-      errors.push(msg);
-
-      // If token is invalid, remove it
-      if (isInvalidTokenError(error)) {
-        const devices = tokenStore.get(token.owner.userId);
-        if (devices) {
-          devices.delete(`${token.owner.extensionId}:${token.deviceId}`);
-
-        }
-      }
-    }
-  }
-
-  console.log(
-    `[PushGateway] Push sent for ${sipUri}: ${sent}/${tokens.length} successful`
-  );
-
-  return { sent, errors };
-}
-
-// ─── APNs Push (iOS VoIP) ───────────────────────────────────────────
-
-/**
- * Send a VoIP push notification via Apple Push Notification service.
- *
- * Requirements:
- *  - APNs VoIP certificate (.p12) or Auth Key (.p8)
- *  - Set APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_PATH environment variables
- *
- * The push payload is minimal — just enough to wake the app and
- * display CallKit UI. Full call details come via SIP INVITE.
- */
-async function sendApnsPush(token: PushToken, payload: PushPayload): Promise<void> {
-  const apnsKeyPath = process.env.APNS_KEY_PATH;
-  const apnsKeyId = process.env.APNS_KEY_ID;
-  const apnsTeamId = process.env.APNS_TEAM_ID;
-
-  if (!apnsKeyPath || !apnsKeyId || !apnsTeamId) {
-    console.warn(
-      "[PushGateway] APNs not configured. Set APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID."
-    );
-    throw new Error("APNs push delivery is not configured");
-  }
-
-  // APNs HTTP/2 push
-  // Production: api.push.apple.com
-  // Sandbox: api.sandbox.push.apple.com
-  const host = token.sandbox
-    ? "api.sandbox.push.apple.com"
-    : "api.push.apple.com";
-
-  const apnsPayload = {
-    aps: {
-      // VoIP pushes don't use alert/badge — the app handles display via CallKit
-      "content-available": 1,
-    },
-    // Custom data for the app
-    callId: payload.callId,
-    callerNumber: payload.callerNumber,
-    callerName: payload.callerName || payload.callerNumber,
-    hasVideo: payload.hasVideo || false,
-    type: "voip_call",
-    timestamp: Date.now(),
-  };
-
   try {
-    // Use node-apn or HTTP/2 client in production
-    // For now, use fetch with HTTP/2 (Node 18+)
-    const jwt = await generateApnsJwt(apnsKeyPath, apnsKeyId, apnsTeamId);
-
-    const response = await fetch(
-      `https://${host}/3/device/${token.token}`,
-      {
-        method: "POST",
-        headers: {
-          authorization: `bearer ${jwt}`,
-          "apns-topic": `${token.bundleId}.voip`, // VoIP topic = bundleId + ".voip"
-          "apns-push-type": "voip",
-          "apns-priority": "10", // Immediate delivery
-          "apns-expiration": "0", // Don't store if device offline
-        },
-        body: JSON.stringify(apnsPayload),
+    const owners = await bounded(() => assignedPushOwners(data.sipUri));
+    if (new Set(owners.map(owner => owner.tenantId)).size > 1) return { sent: 0, errors: ["The target phone account is ambiguous"] };
+    const canonicalUri = owners[0]?.sipUri ?? data.sipUri;
+    const tokens = (await bounded(() => getTokensForUser(canonicalUri))).filter(token => owners.some(owner =>
+      owner.userId === token.owner.userId && owner.tenantId === token.owner.tenantId && owner.extensionId === token.owner.extensionId));
+    if (!tokens.length) return { sent: 0, errors: ["No assigned device is available for push delivery"] };
+    const payload: PushPayload = { callId: data.callId, callerNumber: data.callerNumber, callerName: data.callerName, hasVideo: data.hasVideo };
+    for (const token of tokens) {
+      try {
+        if (!await bounded(() => pushRepository.isCurrent(token))) { errors.push("No assigned device is available for push delivery"); continue; }
+        if (token.platform === "ios") {
+          await bounded(() => sendApnsPush(token, payload, () => bounded(() => pushRepository.isCurrent(token)), deadlineAt));
+        } else {
+          await bounded(() => sendFcmPush(token, payload, deadlineAt));
+        }
+        sent++; // Retain observed provider acceptance even if its persistence later times out.
+        await bounded(() => pushRepository.markUsed(token));
+      } catch (error: any) {
+        errors.push(safeDeliveryError(error));
+        if (isInvalidTokenError(error) && (error.invalidatedAt === undefined || token.registeredAt <= error.invalidatedAt)) {
+          try { await bounded(() => pushRepository.removeInvalid(token)); }
+          catch (cleanupError) { errors.push(safeDeliveryError(cleanupError)); }
+        }
+        if (Date.now() >= deadlineAt || error instanceof PushDeadlineError) break;
       }
-    );
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => "");
-      throw new Error(`APNs error ${response.status}: ${errorBody}`);
     }
-
-    console.log(`[PushGateway] APNs VoIP push sent to ${token.deviceId}`);
-  } catch (error: any) {
-    throw new Error(`APNs push failed: ${error.message}`);
-  }
-}
-
-/**
- * Generate a JWT for APNs authentication.
- * Uses the .p8 auth key file.
- */
-async function generateApnsJwt(
-  keyPath: string,
-  keyId: string,
-  teamId: string
-): Promise<string> {
-  const fs = await import("fs");
-  const crypto = await import("crypto");
-
-  const key = fs.readFileSync(keyPath, "utf8");
-
-  const header = Buffer.from(
-    JSON.stringify({ alg: "ES256", kid: keyId })
-  ).toString("base64url");
-
-  const now = Math.floor(Date.now() / 1000);
-  const claims = Buffer.from(
-    JSON.stringify({ iss: teamId, iat: now })
-  ).toString("base64url");
-
-  const signingInput = `${header}.${claims}`;
-  const sign = crypto.createSign("SHA256");
-  sign.update(signingInput);
-  const signature = sign
-    .sign({ key, dsaEncoding: "ieee-p1363" }, "base64")
-    // Convert standard base64 to base64url
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-  return `${header}.${claims}.${signature}`;
+  } catch (error) { errors.push(safeDeliveryError(error)); }
+  return { sent, errors };
 }
 
 // ─── FCM Push (Android) — FCM HTTP v1 API ──────────────────────────
@@ -306,19 +157,19 @@ let fcmTokenExpiry = 0;
  *
  * Install: npm install google-auth-library
  */
-async function getFcmAccessToken(): Promise<string> {
+async function getFcmAccessToken(deadlineAt: number): Promise<string> {
   const now = Date.now();
   if (fcmAccessToken && now < fcmTokenExpiry - 5 * 60 * 1000) {
     return fcmAccessToken;
   }
 
-  const { GoogleAuth } = await import("google-auth-library");
+  const { GoogleAuth } = await withinCallDeadline(deadlineAt, () => import("google-auth-library"));
   const auth = new GoogleAuth({
     scopes: ["https://www.googleapis.com/auth/firebase.messaging"],
   });
 
-  const client = await auth.getClient();
-  const tokenResponse = await client.getAccessToken();
+  const client = await withinCallDeadline(deadlineAt, () => auth.getClient());
+  const tokenResponse = await withinCallDeadline(deadlineAt, () => client.getAccessToken());
 
   if (!tokenResponse.token) {
     throw new Error("Failed to obtain FCM access token via ADC");
@@ -328,7 +179,6 @@ async function getFcmAccessToken(): Promise<string> {
   // Default expiry: 1 hour
   fcmTokenExpiry = now + 55 * 60 * 1000;
 
-  console.log("[PushGateway] FCM OAuth2 access token refreshed");
   return fcmAccessToken;
 }
 
@@ -346,21 +196,20 @@ async function getFcmAccessToken(): Promise<string> {
  * Uses data-only message (no notification field) so the app
  * handles display via Notifee full-screen notification.
  */
-async function sendFcmPush(token: PushToken, payload: PushPayload): Promise<void> {
+async function sendFcmPush(token: PushToken, payload: PushPayload, deadlineAt: number): Promise<void> {
   const projectId = process.env.FCM_PROJECT_ID;
   if (!projectId) throw new Error("FCM push delivery is not configured");
 
   // Check if ADC is available
   let accessToken: string;
   try {
-    accessToken = await getFcmAccessToken();
+    accessToken = await withinCallDeadline(deadlineAt, () => getFcmAccessToken(deadlineAt));
   } catch (adcError: any) {
-    console.warn(
-      `[PushGateway] FCM ADC not available: ${adcError.message}. ` +
-      `Set GOOGLE_APPLICATION_CREDENTIALS or run 'gcloud auth application-default login'.`
-    );
+    if (adcError instanceof PushDeadlineError) throw adcError;
     throw new Error("FCM push credentials are unavailable");
   }
+
+  if (Date.now() >= deadlineAt) throw new Error("Push delivery deadline elapsed");
 
   // FCM HTTP v1 API payload
   const fcmPayload = {
@@ -395,6 +244,7 @@ async function sendFcmPush(token: PushToken, payload: PushPayload): Promise<void
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify(fcmPayload),
+        signal: AbortSignal.timeout(Math.max(1, deadlineAt - Date.now())),
       }
     );
 
@@ -408,57 +258,27 @@ async function sendFcmPush(token: PushToken, payload: PushPayload): Promise<void
       }
 
       // Handle invalid token errors
-      if (response.status === 404 || errorBody.includes("UNREGISTERED")) {
+      if (errorBody.includes("UNREGISTERED")) {
         throw Object.assign(
-          new Error(`FCM token invalid: ${errorBody}`),
+          new Error("FCM token invalid"),
           { invalidToken: true }
         );
       }
 
-      throw new Error(`FCM v1 error ${response.status}: ${errorBody}`);
+      throw new Error("FCM provider rejected delivery");
     }
 
-    const result = await response.json();
-    console.log(`[PushGateway] FCM v1 push sent to ${token.deviceId}: ${result.name}`);
+    // Success headers are provider acceptance; discard the body without delaying the call.
+    void response.body?.cancel().catch(() => {});
   } catch (error: any) {
     if (error.invalidToken) throw error;
-    throw new Error(`FCM push failed: ${error.message}`);
+    throw new Error("FCM push delivery unavailable");
   }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
-function isInvalidTokenError(error: any): boolean {
-  return (
-    error?.invalidToken === true ||
-    error?.message?.includes("NotRegistered") ||
-    error?.message?.includes("InvalidRegistration") ||
-    error?.message?.includes("BadDeviceToken") ||
-    error?.message?.includes("Unregistered")
-  );
-}
+function isInvalidTokenError(error: any): boolean { return error?.invalidToken === true; }
 
-/**
- * Get stats about registered tokens (for admin dashboard).
- */
-export function getPushStats(): {
-  totalUsers: number;
-  totalDevices: number;
-  byPlatform: { ios: number; android: number };
-} {
-  let totalDevices = 0;
-  const byPlatform = { ios: 0, android: 0 };
-
-  for (const devices of tokenStore.values()) {
-    for (const token of devices.values()) {
-      totalDevices++;
-      byPlatform[token.platform]++;
-    }
-  }
-
-  return {
-    totalUsers: tokenStore.size,
-    totalDevices,
-    byPlatform,
-  };
-}
+/** Admin-only aggregate. No token/device identifiers are returned. */
+export async function getPushStats() { return pushRepository.stats(); }

@@ -12,10 +12,12 @@ const mocks = vi.hoisted(() => {
     remove: vi.fn(async (key: string) => {
       storage.delete(key);
     }),
+    beforeLogout: vi.fn(async () => {}),
     destroy: vi.fn(async () => {}),
     clearAccount: vi.fn(async () => {}),
   };
 });
+vi.mock("../lib/push/client", () => ({ beforePhoneLogout: mocks.beforeLogout }));
 vi.mock("react-native", () => ({ Platform: mocks.platform }));
 vi.mock("expo-secure-store", () => ({
   getItemAsync: mocks.get,
@@ -532,6 +534,7 @@ describe("Phone11 session lifecycle", () => {
       mocks.platform.OS = platform;
       await signedIn();
       fetchMock.mockImplementationOnce(async (url, options) => {
+        expect(mocks.beforeLogout).toHaveBeenCalledTimes(1);
         expect(url).toBe("https://phone11.test/api/auth/sign-out");
         expect(options.method).toBe("POST");
         expect(auth.getAuthSnapshot().user).not.toBeNull();
@@ -548,6 +551,47 @@ describe("Phone11 session lifecycle", () => {
       expect(await auth.getSessionToken()).toBeNull();
       expect(mocks.destroy).toHaveBeenCalledTimes(1);
       expect(mocks.clearAccount).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("still revokes the server session if local push cleanup is unavailable", async () => {
+    await signedIn();
+    mocks.beforeLogout.mockRejectedValueOnce(new Error("native cleanup unavailable"));
+    fetchMock.mockResolvedValueOnce(json({ success: true }));
+    await api.logout();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(auth.getAuthSnapshot().user).toBeNull();
+    expect(await auth.getSessionToken()).toBeNull();
+  });
+
+  it.each(["stopNative", "read", "unregister"] as const)(
+    "reaches authoritative logout within one second when push %s is stuck",
+    async method => {
+      const { VoipTokenCoordinator } = await import("../lib/push/token-coordinator");
+      const user = await signedIn();
+      const binding = { ownerUserId: user.id, token: "provider-token", deviceId: "device", platform: "ios" as const,
+        sipUri: "sip:3001@sip.phone11.ai", bundleId: "ai.phone11", sandbox: false };
+      let release: (value?: unknown) => void = () => {};
+      const deps = {
+        currentOwner: () => auth.getAuthSnapshot().user?.id ?? null,
+        read: vi.fn(async () => [binding]), write: vi.fn(async () => {}),
+        register: vi.fn(async () => {}), unregister: vi.fn(async () => {}), stopNative: vi.fn(async () => {}),
+      };
+      deps[method].mockImplementation(() => new Promise(resolve => { release = resolve; }) as never);
+      const coordinator = new VoipTokenCoordinator(deps);
+      mocks.beforeLogout.mockImplementationOnce(() => coordinator.beforeLogout());
+      fetchMock.mockResolvedValueOnce(json({ success: true }));
+      vi.useFakeTimers();
+      const logout = api.logout();
+      await vi.waitFor(() => expect(deps.stopNative).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(1000);
+      await logout;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(auth.getAuthSnapshot().user).toBeNull();
+      release(method === "read" ? [binding] : undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(deps.register).not.toHaveBeenCalled();
+      expect(deps.write).not.toHaveBeenCalled();
     },
   );
 

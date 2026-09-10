@@ -1,14 +1,25 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 const db = vi.hoisted(() => ({ query: vi.fn() }));
 vi.mock("../server/pbx/db", () => ({ query: db.query, withTransaction: vi.fn() }));
+// Test-only repository adapter; production exclusively uses PostgreSQL.
+const storage = vi.hoisted(() => ({ tokens: [] as any[] }));
+vi.mock("../server/push/repository", () => ({ pushRepository: {
+  put: async (token: any) => { storage.tokens = storage.tokens.filter(t => !(t.owner.userId === token.owner.userId && t.deviceId === token.deviceId)); storage.tokens.push({ ...token, revision: "test-revision" }); },
+  remove: async (userId: number, data: any) => { storage.tokens = storage.tokens.filter(t => !(t.owner.userId === userId && t.deviceId === data.deviceId && t.token === data.token && t.platform === data.platform)); },
+  list: async (uri: string) => storage.tokens.filter(t => t.sipUri === uri),
+  isCurrent: async () => true,
+  markUsed: async (token: any) => { token.lastUsed = Date.now(); },
+  removeInvalid: async (token: any) => { storage.tokens = storage.tokens.filter(t => t !== token); },
+} }));
+vi.mock("../server/push/session", () => ({ resolvePushSession: async () => "test-session" }));
 import { registerPushToken, unregisterPushToken, getTokensForUser, triggerPushForUser } from "../server/push-gateway";
 import { appRouter } from "../server/routers";
 import type { TrpcContext } from "../server/_core/context";
 const token = { token: "not-a-real-device-token", tokenType: "voip" as const, sipUri: "sip:3001@sip.example.test", deviceId: "test-device", platform: "ios" as const, bundleId: "example.test" };
 const assignment = { user_id: 17, tenant_id: 12, extension_id: 4, sip_username: "3001", sip_domain: "sip.example.test" };
 const context = (userId?: number): TrpcContext => ({ user: userId ? { id: userId, role: "user" } : null, req: { headers: {} }, res: {} }) as TrpcContext;
-beforeEach(() => { vi.clearAllMocks(); db.query.mockResolvedValue({ rows: [assignment] }); vi.stubEnv("APNS_KEY_PATH", ""); vi.stubEnv("FCM_PROJECT_ID", ""); vi.stubEnv("PUSH_SHARED_SECRET", ""); });
-afterEach(() => { unregisterPushToken(token, 17); unregisterPushToken({ ...token, platform: "android" }, 17); vi.unstubAllEnvs(); });
+beforeEach(() => { vi.clearAllMocks(); storage.tokens = []; db.query.mockResolvedValue({ rows: [assignment] }); vi.stubEnv("APNS_KEY_PATH", ""); vi.stubEnv("FCM_PROJECT_ID", ""); vi.stubEnv("PUSH_SHARED_SECRET", ""); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("push account isolation and delivery evidence", () => {
   it("rejects registration without an authenticated session", async () => {
@@ -22,17 +33,17 @@ describe("push account isolation and delivery evidence", () => {
   });
   it("only unregisters the current user's device even when device ID and token are known", async () => {
     await registerPushToken(token, 17);
-    unregisterPushToken(token, 29);
-    expect(getTokensForUser(token.sipUri)).toHaveLength(1);
-    unregisterPushToken(token, 17);
-    expect(getTokensForUser(token.sipUri)).toHaveLength(0);
+    await unregisterPushToken(token, 29);
+    expect(await getTokensForUser(token.sipUri)).toHaveLength(1);
+    await unregisterPushToken(token, 17);
+    expect(await getTokensForUser(token.sipUri)).toHaveLength(0);
   });
   it("reports zero sent when APNs credentials are missing", async () => {
     await registerPushToken(token, 17);
     const result = await triggerPushForUser({ sipUri: token.sipUri, callId: "test-call", callerNumber: "test-caller" });
     expect(result.sent).toBe(0);
     expect(result.errors).toHaveLength(1);
-    expect(getTokensForUser(token.sipUri)[0].lastUsed).toBeUndefined();
+    expect((await getTokensForUser(token.sipUri))[0].lastUsed).toBeUndefined();
   });
   it("reports zero sent when FCM is unavailable instead of a mock success", async () => {
     await registerPushToken({ ...token, tokenType: "fcm", platform: "android" }, 17);

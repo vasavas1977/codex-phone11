@@ -15,19 +15,32 @@
 
 - 174 combined calling, account, directory, media and push regression tests passed.
 - 52 existing authentication client/UI tests passed.
-- 33 chat state, restart persistence and real PostgreSQL tests passed, including concurrent retries and cross-workspace denial.
+- Chat state, restart persistence, controls and real PostgreSQL tests passed, including concurrent retries and cross-workspace denial.
 - Additional Recents, native audio/SDP, packaging and legacy storage checks passed.
 - Backend bundle and iOS JavaScript export passed. The repository-wide TypeScript check still has legacy diagnostics; these are not a clean full-project typecheck claim.
 - Continuous integration now requires the daily-use tests and a disposable real PostgreSQL service before the existing native/signing build.
 
 ## Deployment and handset evidence
 
-Pending at this source checkpoint. Append exact deployed source/image, migration result, signed build, installation and physical results after execution. Do not infer these from the tests above.
+The first release is now deployed and installed:
+
+- Source: `75fa3c940aa983cff30ed967d444c73b43cc9a53`.
+- Backend image: `sha256:baf25c98c7af79635cd81b7a1cc0d09292491d87264c75fd5f2239771a64b4a0`. Existing runtime settings, network, port and storage were preserved. The original image/Compose remain available for application rollback.
+- Chat migration: three new tables, 18 columns and four foreign keys verified. Five existing phone-binding table digests remained identical. No conversations or messages were seeded.
+- A complete 57,707-byte private database backup was saved before migration and its restore catalog parsed. A full restoration rehearsal was not performed.
+- Candidate and public API checks passed with the existing approved owner: actual password sign-in, canonical profile, extension 3001/tenant 1 provisioning, authorized chat list/directory, sign-out and revoked-session HTTP 401. Probe credentials and session values were not published; the probe created no conversations or messages.
+- Public workspace currently has zero conversations and zero other directory users. Two-person chat acceptance requires an explicitly authorized second account.
+- Signed iOS build **14**, EAS build `07d50ba3-7983-46b6-8e88-24ac0cba5091`, completed in [GitHub run 34470366819](https://github.com/vasavas1977/codex-phone11/actions/runs/34470366819). Exact source matched. The 16,556,558-byte IPA SHA256 is `be8f351d0681cc425fb77262bddf44874075594c23a6bfd85ec387486cc5d58b`.
+- Build 14 installed successfully in place on the existing paired iPhone. It has no configured production Siprix license and remains a trial. New physical UI/call testing is awaiting the owner's Mac unlock for iPhone Mirroring; installation does not prove audio, reconnection, or public-number receipt.
+
+Subsequent push-engineering changes are a separate candidate, not part of this deployed/installed source. The candidate adds durable session-bound device records, explicit APNs HTTP/2 delivery, and a disabled native PushKit foundation. Native cold-launch/SIP resume, call correlation and proxy wake routing still require implementation; provider credentials alone will not complete background calling. See [native foundation](NATIVE-PUSH-FOUNDATION.md) and [server candidate](SERVER-PUSH-CANDIDATE.md).
 
 The immediately preceding build 13 passed a direct incoming echo call and handset-initiated hang-up, confirmed by the user. That call bypassed the public-number carrier; public DID inbound acceptance remains separate. Earlier outbound PSTN testing also does not prove every new release or network state.
 
 ## Remaining production gates
 
-Incoming public-number calling, native PushKit/APNs delivery while locked/backgrounded, production Siprix licensing and long calls, two authorized chat clients, and physical audio-route/control tests remain separate acceptance gates. PushKit and production notification transport still require implementation as well as provider configuration. Do not describe these as credentials-only blockers.
+Incoming public-number calling, native PushKit/APNs delivery while locked/backgrounded, production Siprix licensing and long calls, two authorized chat clients, and physical audio-route/control tests remain separate acceptance gates. The commissioned background call path still requires implementation as well as provider configuration. Do not describe these as credentials-only blockers.
+
+The optional production license now has a native prebuild-only configuration path that excludes the value from public Expo configuration. A configured value alone is not proof that the SDK accepted a valid license or that a long call passed.
 
 See [the researched gap audit](ZOOM-GAP-AUDIT.md), [chat deployment instructions](../../server/chat/README.md), and [backend compatibility changes](backend-security.md). Later PBX and collaboration features must be accepted before their controls are enabled.

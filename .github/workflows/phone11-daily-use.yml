@@ -63,6 +63,11 @@ jobs:
             tests/phone11-media-security.test.ts \
             tests/phone11-storage-proxy.test.ts \
             tests/phone11-push-security.test.ts \
+            tests/phone11-push-session.test.ts \
+            tests/phone11-voip-token.test.ts \
+            tests/phone11-voip-client.test.ts \
+            tests/phone11-apns.test.ts \
+            tests/phone11-push-delivery.test.ts \
             tests/phone11-pbx-integration-security.test.ts \
             tests/phone11-chat-state.test.ts \
             tests/phone11-chat-controls.test.tsx \
@@ -118,3 +123,52 @@ jobs:
           JS
       - name: Test real PostgreSQL persistence and tenant isolation
         run: pnpm exec vitest run tests/phone11-chat-postgres.test.ts
+
+  push-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_push_test
+          POSTGRES_PASSWORD: phone11_push_test
+          POSTGRES_DB: phone11_push_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_push_test -d phone11_push_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # A separate ephemeral service: never reuse the chat fixture or production DB.
+      PHONE11_PUSH_TEST_DATABASE_URL: postgresql://phone11_push_test:phone11_push_test@127.0.0.1:5432/phone11_push_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the dedicated local push test database
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const value = process.env.PHONE11_PUSH_TEST_DATABASE_URL;
+          assert.ok(value, 'Push PostgreSQL tests must not silently skip');
+          const url = new URL(value);
+          assert.equal(url.protocol, 'postgresql:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '5432');
+          assert.equal(url.pathname, '/phone11_push_test');
+          assert.equal(url.username, 'phone11_push_test');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          JS
+      - name: Test durable device ownership, session revocation, and token replacement
+        run: pnpm exec vitest run tests/phone11-push-postgres.test.ts tests/phone11-push-auth-schema.test.ts

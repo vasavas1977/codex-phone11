@@ -295,6 +295,12 @@ export async function logout(): Promise<void> {
   try {
     await Auth.waitForAuthCleanup();
     try {
+      const { beforePhoneLogout } = await import("../push/client");
+      await beforePhoneLogout();
+    } catch {
+      // Server session revocation also revokes push bindings; it must still run.
+    }
+    try {
       await apiCall("/api/auth/sign-out", { method: "POST", body: "{}" });
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 401)) throw error;

@@ -660,60 +660,14 @@ class NativeCallManager {
 // Singleton instance
 export const nativeCallManager = new NativeCallManager();
 
-/**
- * VoIP Push Notification Handler
- *
- * On iOS, VoIP pushes wake the app and must immediately display a CallKit UI.
- * On Android, FCM high-priority messages trigger the foreground service.
- *
- * Usage in your push notification handler:
- *   import { handleVoipPush } from "@/lib/sip/native-call";
- *   handleVoipPush(payload);
- */
-export function handleVoipPush(payload: {
-  callId: string;
-  callerNumber: string;
-  callerName?: string;
-  hasVideo?: boolean;
-}): void {
-  console.log("[NativeCall] VoIP push received:", payload);
-
-  // Immediately display incoming call UI
-  // This MUST happen within 3 seconds on iOS or the app will be terminated
-  nativeCallManager.displayIncomingCall(
-    payload.callId,
-    payload.callerNumber,
-    payload.callerName,
-    payload.hasVideo ?? false
-  );
-}
-
-/**
- * iOS VoIP Push Registration
- *
- * Register for VoIP pushes on iOS to receive incoming call notifications
- * even when the app is killed. The push token must be sent to your
- * Flexisip push gateway or custom push server.
- *
- * This is called automatically by the SIP provider on initialization.
- */
+/** Register an authenticated device only when native wake is commissioned. */
 export async function registerVoipPush(): Promise<string | null> {
   if (Platform.OS !== "ios") return null;
-
   try {
-    const callKeep = getCallKeep();
-    if (!callKeep) return null;
-
-    // Request VoIP push permission and get token
-    // The token is returned via the "didLoadWithEvents" callback
-    // You must send this token to your Flexisip push gateway
-    console.log("[NativeCall] Requesting VoIP push registration...");
-
-    // Note: In production, use PushKit directly via a native module
-    // or use expo-notifications with the VoIP push category
-    return null;
-  } catch (error) {
-    console.error("[NativeCall] VoIP push registration failed:", error);
+    const { registerPhoneVoipPush } = await import("../push/client");
+    return await registerPhoneVoipPush();
+  } catch {
+    // Registration diagnostics must never expose provider tokens or credentials.
     return null;
   }
 }

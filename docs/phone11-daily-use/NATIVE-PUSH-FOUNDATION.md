@@ -1,0 +1,30 @@
+# Disabled native VoIP push foundation — 10 September 2026
+
+This candidate implements device registration plumbing and safe handling of an unexpected native VoIP delivery. **Background and closed-app calling remain unavailable.** Nothing in this work opens the PushKit gate, configures APNs, changes signed entitlements, sends a push, or proves a phone can wake and answer.
+
+## Implemented
+
+- `Phone11VoipPush.m` is a second React Native module in the existing local pod. It implements PushKit token rotation, invalidation, stop and a native random device identifier. `PHONE11_VOIP_WAKE_COMMISSIONED` defaults to `0`: the ordinary app path returns unavailable and allocates no `PKPushRegistry`. It is not a remote toggle.
+- Unexpected VoIP deliveries are reported immediately through the **existing RNCallKeep public `callKeepProvider`**. A fresh UUID and generic Phone11 text ignore all payload identifiers and caller content. Only a successful report is ended with failure; report errors never end a call. This fallback does not await JavaScript, a keychain read or network access, and cannot answer a call.
+- `lib/push/client.ts` starts only for the authenticated enabled phone owner and an explicitly configured APNs environment. There is no ordinary notification token fallback. It uses an immutable bearer captured for the initiating owner, with a five-second request bound and a one-second total pre-logout cleanup budget. Device identity and pending revocation metadata use `WHEN_UNLOCKED_THIS_DEVICE_ONLY`; no session or SIP password enters the revocation ledger.
+- The token coordinator persists revocation evidence before registration, serializes rotation, rejects cross-owner work, cancels queued registration on logout and retains uncertain cleanup. Cleanup only retries under the same authenticated owner. The backend also scopes unregister to its authenticated session, protecting a newer session's token from late cleanup.
+- Pre-logout attempts native stop immediately, then best-effort unregister. The entire cleanup has a one-second budget, including queued work, native stop, secure storage and network. Completion or timeout aborts outstanding network work and invalidates the cleanup revision; late promises are observed and cannot bind or unregister under a replacement session, including the same owner. Server session revocation, with the new token FK cascade, is the authoritative deletion gate. Failure of local cleanup does not prevent that server request. Existing logout failure semantics preserve the session when server sign-out fails.
+
+## Native architecture and remaining work
+
+RNCallKeep 4.3.16 owns the single CXProvider. The new module references its public header property; it does not create a provider or alter the active SIP engine, CallKit delegate, native answer/hang-up mapping, Siprix account or audio session. The pod adds the already-installed RNCallKeep dependency and Apple PushKit framework only.
+
+No Expo AppDelegate/cold-launch bootstrap is installed. The React Native module can register only after the app is running. Opening registration before a complete cold-launch consumer exists would create a device that receives real calls it cannot answer, so shipping registration stays off. The native unavailable-call fallback is a defensive path for an unexpected/late callback, not a calling implementation.
+
+Existing SIP credentials remain accessible only while the device is unlocked. A warm native SDK may still have an account in memory, but a reclaimed process cannot assume that account or read locked credentials. This candidate never relaxes keychain accessibility or copies credentials into preferences. A separate reviewed design must supply a narrowly authorized native wake credential/account path, or explicitly decline locked cold calls. AppDelegate startup, SIP initialization, provider delegate handoff and Answer deferral need one coordinated runtime rather than a second SDK/provider instance.
+
+The eventual wake protocol must authenticate the assigned user/session/tenant/extension, correlate one pending PBX INVITE with one CallKit UUID, and handle duplicate delivery, caller cancellation, expiry, answer-before-registration, logout and process reclamation. The current server's caller payload does not establish that protocol. APNs provider configuration, signed entitlement/topic/environment checks, PBX hold/resume/cancel and real Wi-Fi/cellular locked/foreground/OS-reclaimed handset acceptance remain required. User force-quit behavior must be measured separately.
+
+## Verification and limits
+
+- Mobile tests exercise disabled registration, explicit environment, owner mismatch, locked storage, late token events, no secret logging, persist-before-bind, rotation, failed cleanup and owner changes. The 51 auth-client tests retain server-first sign-out behavior and now check native cleanup precedes the server request.
+- The actual new Objective-C implementation runs in two host harness builds: commissioning gate zero and one (test-only). The harness exercises no allocation under the disabled gate, idempotent start, byte-correct tokens, invalidation, stale-registry callbacks, stop, report-before-completion, and no call ending after provider report failure.
+- A separate syntax check compiles the bridge against the **installed real RNCallKeep header**, with host stubs for Apple iOS and React types. Existing Siprix exact-vendor-header syntax and 127 native bridge assertions still pass.
+- This Mac has no iPhoneOS SDK. These checks do **not** prove CocoaPods/iOS framework linking, system CallKit/PushKit behavior, Apple delivery or physical wake. A separate signed build with the gate still closed should establish native linkage before any commissioning work.
+
+Official references: [Apple responding to VoIP notifications](https://developer.apple.com/documentation/pushkit/responding-to-voip-notifications-from-pushkit), [RNCallKeep native integration](https://github.com/react-native-webrtc/react-native-callkeep), and the pinned installed `node_modules/react-native-callkeep/ios/RNCallKeep/RNCallKeep.h` and `.m` source used by the harness.
