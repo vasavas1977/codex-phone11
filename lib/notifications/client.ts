@@ -7,6 +7,7 @@ import superjson from 'superjson';
 import type { AppRouter } from '../../server/routers';
 import { getAuthSnapshot,getSessionToken } from '../_core/auth';
 import { getApiBaseUrl } from '../../constants/oauth';
+import { ChatNotificationSetupError } from './coordinator';
 const deviceKey='phone11_chat_notification_device_v1';
 let devicePromise:Promise<string>|undefined;
 export function chatNotificationClientEnabled() {
@@ -37,10 +38,19 @@ export async function chatNotificationPermission(requestPermission:boolean) {
  if(!permission.granted&&requestPermission)permission=await Notifications.requestPermissionsAsync({ios:{allowAlert:true,allowBadge:false,allowSound:true}});
  return permission.granted;
 }
+export function parseOrdinaryApnsToken(value:unknown):string|null {
+ if(!value||typeof value!=='object')return null;
+ const result=value as {type?:unknown;data?:unknown};
+ return result.type==='ios'&&typeof result.data==='string'&&/^[0-9a-fA-F]{32,512}$/.test(result.data)?result.data.toLowerCase():null;
+}
 export async function ordinaryApnsToken() {
- const result=await Notifications.getDevicePushTokenAsync();
- if(result.type!=='ios'||typeof result.data!=='string'||!/^[0-9a-fA-F]{32,512}$/.test(result.data))throw new Error('Notification token unavailable');
- return result.data;
+ // Expo's getter retains a rejected native promise. Retrying it cannot recover;
+ // a later validated token event or a fresh app process may provide a token.
+ try {
+  const token=parseOrdinaryApnsToken(await Notifications.getDevicePushTokenAsync());
+  if(!token)throw new ChatNotificationSetupError(false);
+  return token;
+ }catch{throw new ChatNotificationSetupError(false);}
 }
 export async function registerChatNotificationToken(token:string,tenantId:number,current:()=>boolean) {
  if(!chatNotificationClientEnabled()||!current())return false;

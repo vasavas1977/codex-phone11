@@ -1,6 +1,14 @@
 /** Ordinary text notifications only. No CallKit, PushKit or SIP code. */
 export interface NotificationIdentity { owner:object|null; tenantId:number|null; active:boolean; enabled:boolean; }
-export type ChatNotificationEnableResult = {status:"enabled"|"permission-denied"|"unavailable"|"session-changed"};
+export type ChatNotificationEnableResult = {status:"enabled"|"permission-denied"|"unavailable"|"session-changed";retryable?:boolean};
+export class ChatNotificationSetupError extends Error {
+ constructor(readonly retryable:boolean){super("Notification setup unavailable");}
+}
+function retryableSetupError(error:unknown) {
+ if(error instanceof ChatNotificationSetupError)return error.retryable;
+ const code=(error as {data?:{code?:string}}|null)?.data?.code;
+ return !code||!["UNAUTHORIZED","FORBIDDEN","BAD_REQUEST","NOT_FOUND","PRECONDITION_FAILED","METHOD_NOT_SUPPORTED","PARSE_ERROR","UNPROCESSABLE_CONTENT"].includes(code);
+}
 export interface NotificationDestination {tenantId:number;conversationId:string;}
 export function createChatNotificationCoordinator(deps:{
  identity():NotificationIdentity;
@@ -36,7 +44,7 @@ export function createChatNotificationCoordinator(deps:{
    }
    const origin=deps.identity(),at=revision;
    if(!origin.enabled||!origin.active||!origin.owner||!origin.tenantId)return {status:"unavailable"};
-   let deadline=Infinity;
+   let deadline=Infinity,afterPermission=false;
    const current=()=>same(origin,at)&&Date.now()<deadline;
    const bounded=<T>(operation:()=>Promise<T>):Promise<T>=>{
     const remaining=deadline-Date.now();
@@ -53,6 +61,7 @@ export function createChatNotificationCoordinator(deps:{
      if(requestPermission)permissionTicket=ticket;
      const granted=await deps.permission(requestPermission);if(!same(origin,at,false))return {status:"session-changed"};
      if(!granted)return {status:"permission-denied"};
+     afterPermission=true;
      // The OS permission dialog is deliberately untimed. All subsequent native
      // token, SecureStore and server work shares one bounded enrollment budget.
      deadline=Date.now()+15_000;
@@ -64,10 +73,11 @@ export function createChatNotificationCoordinator(deps:{
       };check();
      });
      if(permissionTicket===ticket)permissionTicket=null;
-     const token=await bounded(deps.token);if(!current())return {status:same(origin,at)?"unavailable":"session-changed"};
+     const token=await bounded(deps.token);if(!current())return same(origin,at)?{status:"unavailable",retryable:true}:{status:"session-changed"};
      const registered=await bounded(()=>deps.register(token,origin.tenantId!,current));
-     return {status:!same(origin,at)?"session-changed":current()&&registered?"enabled":"unavailable"};
-    }catch{return {status:same(origin,at,false)?"unavailable":"session-changed"};}
+     if(!same(origin,at))return {status:"session-changed"};
+     return !current()?{status:"unavailable",retryable:true}:{status:registered?"enabled":"unavailable"};
+    }catch(error){return !same(origin,at,false)?{status:"session-changed"}:afterPermission&&retryableSetupError(error)?{status:"unavailable",retryable:true}:{status:"unavailable"};}
     finally{if(permissionTicket===ticket)permissionTicket=null;}
    })();pendingPermission=requestPermission;pending=work;
    try{return await work;}finally{if(pending===work)pending=null;}

@@ -35,7 +35,11 @@ PushKit wake grants and call delivery are unchanged. Text never uses a VoIP toke
   distinct truthful outcomes. After the permission dialog resolves, native-token and
   enrollment work shares a fifteen-second deadline; late completion cannot bind a
   replacement session or report false success. Unmount removes listeners; default-off does no token,
-  permission or listener work. Tokens are not logged or persisted in the mobile
+  permission or listener work. Transient enrollment failures retry only for the
+  same active account and workspace, backing off to once a minute without permission
+  prompts. Denied permission, unavailable configuration and authorization failures
+  do not retry. Native token events are consumed and deduplicated without calling
+  the token getter recursively. Tokens are not logged or persisted in the mobile
   app; a non-secret local grouping ID uses device-only SecureStore.
 
 ## Separate deployment and commissioning

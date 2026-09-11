@@ -92,6 +92,7 @@ jobs:
             tests/phone11-chat-foreground.test.ts \
             tests/phone11-legacy-unavailable.test.tsx \
             tests/phone11-chat-notification-client.test.ts \
+            tests/phone11-enrollment-recovery.test.ts \
             tests/phone11-chat-notification-component.test.ts \
             tests/phone11-chat-notification-server.test.ts \
             tests/phone11-chat-notification-settings.test.tsx \
