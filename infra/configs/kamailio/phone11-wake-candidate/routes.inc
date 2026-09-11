@@ -42,15 +42,16 @@ route[PHONE11_WAKE_RESUME] {
         exit;
     }
     if (t_is_expired()) { exit; }
-    $var(wake_status) = $null;
-    $var(wake_version) = $null;
-    $var(wake_uuid) = $null;
+    # $var cannot hold null; regex validation safely stringifies malformed types.
+    $var(wake_status) = "";
+    $var(wake_version) = 0;
+    $var(wake_uuid) = "";
     if ($http_ok && $http_rs == 200 && $http_bs <= 4096) {
         jansson_get("status", "$http_rb", "$var(wake_status)");
         jansson_get("v", "$http_rb", "$var(wake_version)");
         jansson_get("callUUID", "$http_rb", "$var(wake_uuid)");
     }
-    if ($var(wake_status) != "ready" || $var(wake_version) != 1 || $var(wake_uuid) == $null || !($var(wake_uuid) =~ "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")) {
+    if (!($var(wake_status) =~ "^ready$") || !($var(wake_version) =~ "^1$") || !($var(wake_uuid) =~ "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")) {
         $var(wake_terminal) = "cancelled";
         route(PHONE11_WAKE_TERMINAL);
         t_reply("480", "Phone unavailable");

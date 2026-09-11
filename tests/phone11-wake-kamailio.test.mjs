@@ -33,7 +33,7 @@ test('correlation discards spoofed headers and rejects invalid server UUID befor
   const resume=body('PHONE11_WAKE_RESUME');
   assert.match(resume,/jansson_get\("callUUID"/);
   assert.match(resume,/\[0-9a-fA-F\]\{8\}-\[0-9a-fA-F\]\{4\}-4\[0-9a-fA-F\]\{3\}-\[89aAbB\]\[0-9a-fA-F\]\{3\}-\[0-9a-fA-F\]\{12\}/);
-  const validation=resume.indexOf('$var(wake_status) != "ready"'),remove=resume.indexOf('remove_hf("X-Phone11-Wake-ID")'),append=resume.indexOf('append_hf("X-Phone11-Wake-ID:');
+  const validation=resume.indexOf('!($var(wake_status) =~ "^ready$")'),remove=resume.indexOf('remove_hf("X-Phone11-Wake-ID")'),append=resume.indexOf('append_hf("X-Phone11-Wake-ID:');
   assert.ok(validation>=0&&remove>validation&&append>remove);
   assert.match(resume.slice(validation,remove),/t_reply\("480"[\s\S]*exit;/);
 });

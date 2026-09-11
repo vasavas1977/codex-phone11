@@ -8,6 +8,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef } from
 import { AppState, Platform } from "react-native";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { createRegistrationLifecycle } from "./registration-lifecycle";
+import { createVoipEnrollmentLifecycle } from "../push/enrollment-lifecycle";
 import { sipEngine } from "./engine";
 import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
@@ -171,6 +172,28 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       nativeStackInitPromise.current = null;
     };
   }, [loadAccount, ensureNativeStackInitialized]);
+
+  useEffect(() => {
+    const snapshot = () => {
+      const auth = getAuthSnapshot();
+      const phone = useSipAccountStore.getState();
+      const calls = useSipCallStore.getState();
+      return { owner: auth.user, account: phone.account,
+        ready: nativeStackInitialized.current && phone.registrationState === "registered" &&
+          !!phone.account?.enabled && phone.account.ownerUserId === auth.user?.id,
+        busy: !!calls.incomingCall || Object.values(calls.activeCalls).some(call => call.status !== "disconnected") };
+    };
+    const canRefresh = () => Platform.OS === "ios" && AppState.currentState === "active" && snapshot().ready && !snapshot().busy;
+    const maintenance = createVoipEnrollmentLifecycle({ snapshot,
+      refresh: async signal => { const { refreshPhoneVoipEnrollment } = await import("../push/client"); await refreshPhoneVoipEnrollment(signal, canRefresh); },
+    }, Platform.OS === "ios" && AppState.currentState === "active");
+    const unsubAuth = addAuthChangeListener(maintenance.changed);
+    const unsubAccount = useSipAccountStore.subscribe(maintenance.changed);
+    const unsubCalls = useSipCallStore.subscribe(maintenance.changed);
+    const appState = AppState.addEventListener("change", state => maintenance.setActive(Platform.OS === "ios" && state === "active"));
+    maintenance.start();
+    return () => { maintenance.dispose(); unsubAuth(); unsubAccount(); unsubCalls(); appState.remove(); };
+  }, []);
 
   const value: SipContextValue = {
     reconnectPhone: async () => {

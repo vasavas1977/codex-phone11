@@ -15,6 +15,9 @@ const deviceKey = "phone11_voip_device_v1";
 const secureOptions = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 let unsubscribe: (() => void) | undefined;
 let generation = 0;
+let foregroundRefresh: Promise<null> | null = null;
+const renewalCandidates = new WeakSet<PushBinding>();
+type RefreshOptions = { signal?: AbortSignal; canRefresh?: () => boolean; waitForEnrollment?: boolean; renew?: boolean };
 // Transient identity only; the durable ledger never receives auth/session data.
 const registrationOrigins = new WeakMap<PushBinding, ReturnType<typeof phoneIdentity>>();
 
@@ -26,21 +29,21 @@ function validBinding(value: unknown): value is PushBinding {
     entry.platform === "ios" && typeof entry.sandbox === "boolean";
 }
 
-function phoneIdentity() {
+function phoneIdentity(options: RefreshOptions = {}) {
   const user = getAuthSnapshot().user;
   const configured = useSipAccountStore.getState().account;
   const account = configured ? { ...configured } : null;
   const fields = ["id", "ownerUserId", "tenantId", "username", "domain", "password", "proxy", "port", "transport", "srtp", "stun", "enabled"] as const;
-  return { user, account, current: () => {
+  return { user, account, signal: options.signal, current: () => {
     const now = useSipAccountStore.getState().account;
-    return !!user && !!account?.enabled && account.ownerUserId === user.id &&
+    return !options.signal?.aborted && (!options.canRefresh || options.canRefresh()) && !!user && !!account?.enabled && account.ownerUserId === user.id &&
       getAuthSnapshot().user === user && !!now && fields.every(key => account[key] === now[key]);
   } };
 }
 
-async function requestClient(owner: number, signal: AbortSignal) {
+async function requestClient(owner: number, signal: AbortSignal, refreshSignal?: AbortSignal) {
   const user = getAuthSnapshot().user;
-  const current = () => !signal.aborted && user?.id === owner && getAuthSnapshot().user === user;
+  const current = () => !signal.aborted && !refreshSignal?.aborted && user?.id === owner && getAuthSnapshot().user === user;
   if (!current()) throw new Error("Phone account changed");
   const token = await getSessionToken();
   if (!token || !current()) throw new Error("Phone account changed");
@@ -53,9 +56,10 @@ async function requestClient(owner: number, signal: AbortSignal) {
       const controller = new AbortController();
       const abort = () => controller.abort();
       signal.addEventListener("abort", abort, { once: true });
+      refreshSignal?.addEventListener("abort", abort, { once: true });
       const timeout = setTimeout(() => controller.abort(), 5000);
       try { return await fetch(url, { ...options, credentials: "omit", signal: controller.signal }); }
-      finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); }
+      finally { clearTimeout(timeout); signal.removeEventListener("abort", abort); refreshSignal?.removeEventListener("abort", abort); }
     },
   })] });
 }
@@ -79,7 +83,7 @@ const coordinator = new VoipTokenCoordinator({
       }
     };
     current();
-    const client = await requestClient(binding.ownerUserId, signal); current();
+    const client = await requestClient(binding.ownerUserId, signal, origin.signal); current();
     const { ownerUserId: _, ...data } = binding;
     await client.push.register.mutate({ ...data, tokenType: "voip" }); current();
     const cached = await getNativeWakeBinding(); current();
@@ -88,7 +92,7 @@ const coordinator = new VoipTokenCoordinator({
     let publicBinding = cached?.ownerUserId === binding.ownerUserId && cached.deviceId === binding.deviceId
       ? await client.push.resolveWakeBinding.query({ bindingId: cached.bindingId }) : null;
     current();
-    if (!publicBinding) {
+    if (!publicBinding || (renewalCandidates.has(binding) && publicBinding.expiresAt - Date.now() <= 24 * 60 * 60_000)) {
       const enrollment = await client.push.enrollWake.mutate({ deviceId: binding.deviceId, platform: "ios" }); current();
       if (enrollment.ownerUserId !== binding.ownerUserId || enrollment.deviceId !== binding.deviceId || origin.account?.tenantId !== enrollment.tenantId) throw new Error("Incoming phone account changed");
       await saveNativeWakeEnrollment(enrollment); current();
@@ -137,8 +141,8 @@ export async function getWakeAdoptionBinding(): Promise<WakeBinding | null> {
 /** Called only after an authenticated, enabled phone account was initialized.
  * The shipping native capability is false; no PKRegistry, token or network work
  * occurs until a separate reviewed native wake implementation is commissioned. */
-export async function registerPhoneVoipPush(): Promise<null> {
-  const origin = phoneIdentity();
+export async function registerPhoneVoipPush(options: RefreshOptions = {}): Promise<null> {
+  const origin = phoneIdentity(options);
   if (Platform.OS !== "ios" || !(await getVoipCapabilities()).registrationAvailable || !origin.current()) return null;
   const account = origin.account;
   const owner = origin.user?.id;
@@ -160,17 +164,33 @@ export async function registerPhoneVoipPush(): Promise<null> {
   if (environment !== "sandbox" && environment !== "production") return null;
   const binding = { ownerUserId: owner, deviceId, sipUri: `sip:${account.username}@${account.domain}`,
     bundleId, platform: "ios" as const, sandbox: environment === "sandbox" };
+  let initialOperation: Promise<void> | undefined;
   const remove = await startNativeVoip(token => {
     if (generation !== current || !origin.current()) return;
     const candidate = token ? { ...binding, token } : null;
-    if (candidate) registrationOrigins.set(candidate, origin);
+    if (candidate) { registrationOrigins.set(candidate, origin); if (options.renew) renewalCandidates.add(candidate); }
     const operation = candidate ? coordinator.bind(candidate) : coordinator.beforeLogout();
+    initialOperation = operation;
     // Provider tokens and request errors must never be logged. The durable ledger
     // preserves cleanup across a lost response or account/session transition.
     void operation.catch(() => undefined);
   });
   if (generation !== current || !origin.current()) remove(); else unsubscribe = remove;
+  if (options.waitForEnrollment) {
+    if (!initialOperation) throw new Error("Incoming call device token is not ready");
+    await initialOperation;
+  }
   return null;
+}
+
+/** Foreground maintenance only; serialized separately from call entry/Answer.
+ * A hung native/storage dependency cannot accumulate additional refresh work. */
+export async function refreshPhoneVoipEnrollment(signal: AbortSignal, canRefresh: () => boolean): Promise<void> {
+  if (foregroundRefresh) throw new Error("Incoming call refresh is already pending");
+  if (signal.aborted || !canRefresh()) return;
+  const work = registerPhoneVoipPush({ signal, canRefresh, renew: true, waitForEnrollment: true });
+  foregroundRefresh = work;
+  try { await work; } finally { if (foregroundRefresh === work) foregroundRefresh = null; }
 }
 
 export async function beforePhoneLogout(): Promise<void> {

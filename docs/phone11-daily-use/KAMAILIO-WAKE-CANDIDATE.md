@@ -46,9 +46,9 @@ CANCEL is matched to the original INVITE before copying its flag; terminal HTTP 
 
 ## Verification and release gates
 
-1. Read-only live inventory confirmed Kamailio 5.8.4 and installed `http_async_client.so`, `jansson.so` and `tm.so`. The observed config already loads tm/tmx, dialog and registrar, but does not load HTTP async. Its dynamic-library resolution and complete candidate parse remain unverified; file presence is not runtime module proof.
-2. Run the synthetic parser helper with a reviewed image providing 5.8.4: `node ops/scripts/check-phone11-wake-kamailio.mjs --image registry/repository@sha256:<digest>`. Both gated states must parse. This uses no network and starts no SIP listener. Then privately parse the complete candidate copy with the exact installed binary/module build; never print secret-bearing parse context.
-3. In an isolated synthetic SIP harness, prove one held INVITE and one resumed branch; retransmissions produce no duplicate push/branch; cancelled-before-ready never resumes; terminal-first is remembered; backend timeout, invalid JSON, missing registration and busy responses terminate; late HTTP callbacks cannot relay a cancelled/expired transaction. Verify actual CANCEL behavior while suspended and per-transaction AVP/dialog retention. These runtime checks are still required.
+1. Read-only live inventory confirmed Kamailio 5.8.4 and installed `http_async_client.so`, `jansson.so` and `tm.so`. The observed config already loads tm/tmx, dialog and registrar, but does not load HTTP async. A subsequent private full candidate also passed `kamailio -c` with the exact installed binary and module build. The parser-only copy preserves the existing configuration byte-for-byte outside six insertion blocks and uses synthetic wake endpoint/secret values; it was never activated. Real provider connectivity remains separate.
+2. Run the synthetic parser helper with a reviewed image providing 5.8.4: `node ops/scripts/check-phone11-wake-kamailio.mjs --image registry/repository@sha256:<digest>`. Both gated states must parse. This uses no network and starts no SIP listener. The private complete-candidate parse has also passed against the installed binary. Recheck a refreshed exact candidate before any deployment; never print secret-bearing parse context.
+3. The isolated runtime harness now passed seven scenarios on the pinned 5.8.4 image: successful hold/resume, CANCEL before readiness, HTTP unavailable, malformed JSON, invalid UUID, wrong JSON field types, and the actual 28-second HTTP timeout. It confirmed one offer for repeated INVITEs, no forwarding while held, one resumed branch with only the backend UUID, unchanged original SDP/From/Call-ID, no late forwarding after CANCEL, and terminal notification after a relayed 486 failure. A separate PostgreSQL test proves terminal-first retention. Complete production-copy routing/media behavior, connected-dialog BYE execution and physical device registration are still separate gates.
 4. Independently review the exact candidate diff against the private current config, including unused flag selection, pilot source gate and no overlapping failure hooks. Back up that exact config and prepare exact rollback before any separately authorized reload/restart.
 5. Provider/APNs acceptance, physical locked/background registration, incoming Answer, two-way audio, End/BYE and Recents remain separate handset gates. This source candidate does not close them.
 
@@ -58,7 +58,12 @@ Runnable local/Ubuntu CI checks:
 
 ```sh
 node --test tests/phone11-wake-kamailio.test.mjs
+node ops/scripts/test-phone11-wake-kamailio.mjs
 node ops/scripts/check-phone11-wake-kamailio.mjs --image ghcr.io/kamailio/kamailio-ci@sha256:8eebac744905d360d04bd871ee46a3de0908aa30989649c00fd590914cb35fa0
 ```
 
 The first run may pull this public image; no registry login or live server access is required. The parser helper rejects a mutable image tag and a version other than 5.8.4. No actual addresses, pilot number, subscriber password, push token or shared secret were copied into this document or the candidate.
+
+The runtime runner creates a unique `--internal` Docker network with an isolated proxy and synthetic Python HTTP/SIP endpoints, publishes no host ports, and removes only its own containers/network afterward. It pins the Python fixture to `python@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834`. Its SIP registry exists only in container memory; no real database, subscriber, provider or backend is contacted. Fixtures are in `tests/fixtures/phone11-wake-kamailio/`.
+
+The runtime tests caught and fixed a behavior that syntax checks did not detect: Kamailio `$var` cannot retain null, and mixed numeric/string comparison prevented the unavailable path from returning a final response. The candidate now initializes safe values and validates response fields without unsafe numeric coercion. Both parser modes and the four static checks passed again after that correction.

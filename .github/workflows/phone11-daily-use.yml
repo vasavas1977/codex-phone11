@@ -9,6 +9,7 @@ on:
       - "plugins/**"
       - "infra/configs/kamailio/phone11-wake-candidate/**"
       - "ops/scripts/check-phone11-wake-kamailio.mjs"
+      - "ops/scripts/test-phone11-wake-kamailio.mjs"
       - "app/**"
       - "components/**"
       - "hooks/**"
@@ -27,6 +28,7 @@ on:
       - "plugins/**"
       - "infra/configs/kamailio/phone11-wake-candidate/**"
       - "ops/scripts/check-phone11-wake-kamailio.mjs"
+      - "ops/scripts/test-phone11-wake-kamailio.mjs"
       - "app/**"
       - "components/**"
       - "hooks/**"
@@ -88,11 +90,15 @@ jobs:
             tests/phone11-chat-transport.test.ts \
             tests/phone11-chat-owner.test.ts \
             tests/phone11-wake-client.test.ts \
+            tests/phone11-wake-refresh.test.ts \
+            tests/phone11-voip-enrollment-lifecycle.test.ts \
             tests/phone11-wake-service.test.ts \
             tests/phone11-wake-routes.test.ts
           node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
       - name: Parse disabled and enabled wake candidates with exact Kamailio version
         run: node ops/scripts/check-phone11-wake-kamailio.mjs --image ghcr.io/kamailio/kamailio-ci@sha256:8eebac744905d360d04bd871ee46a3de0908aa30989649c00fd590914cb35fa0
+      - name: Test held INVITE, cancellation and timeout with isolated SIP endpoints
+        run: node ops/scripts/test-phone11-wake-kamailio.mjs
       - name: Compile backend with esbuild
         run: pnpm run build:backend
 
