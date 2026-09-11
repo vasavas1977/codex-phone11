@@ -63,6 +63,8 @@ jobs:
         run: |
           node scripts/stage-siprix-sdk.mjs
           node scripts/verify-siprix-autolinking.mjs
+      - name: Generate the real Expo iOS project before requesting signing
+        run: node scripts/check-phone11-native-prebuild.mjs
       - uses: expo/expo-github-action@v8
         with:
           eas-version: "23.2.0"
