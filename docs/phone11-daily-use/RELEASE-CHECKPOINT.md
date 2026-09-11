@@ -39,9 +39,13 @@ Subsequent push-engineering changes are a separate candidate, not part of this d
 
 Build **15** now supersedes build 14 on the paired iPhone. Its source is `ab518f6396b0141be633b7ce11ed984622ac113a`, and signed EAS build `3d00896a-f0be-4fee-afa5-e8f008687a92` passed every required check in [GitHub run 34473813573](https://github.com/vasavas1977/codex-phone11/actions/runs/34473813573). This includes actual iOS native linking, the real PostgreSQL chat/push/auth tests and mobile regression checks. The IPA is 16,565,794 bytes, SHA256 `83e0908c8ccba41d01281a487f6f6ce4ee55fd394b5bca1ba2a4c8e344a6e818`. Installation succeeded and the device inventory independently reports version 1.0.0/build 15 with the expected bundle identifier.
 
-Build 15 adds the disabled native push foundation and bounded sign-out cleanup. It still has no production Siprix license. Push registration remains compiled off; no Apple delivery or cold/locked calling is claimed. The live backend still runs `75fa3c9`; the separate server push migration/candidate has not been deployed. Actual build 15 UI/call acceptance remains blocked by the owner's Mac unlock for iPhone Mirroring.
+Build 15 adds the disabled native push foundation and bounded sign-out cleanup. It still has no production Siprix license. Push registration remains compiled off; no Apple delivery or cold/locked calling is claimed. The live backend still runs `75fa3c9`; the separate server push migration/candidate has not been deployed. On 11 September, device inventory and foreground UI were checked again. An outgoing echo connected and appeared once in Recents; physical audio and End confirmation remain pending. A direct incoming retest received no handset response. See the [handset checkpoint](HANDSET-20260911.md). Further acceptance should use Phone11 open on the physical phone because iPhone Mirroring disconnects during calls.
 
 The immediately preceding build 13 passed a direct incoming echo call and handset-initiated hang-up, confirmed by the user. That call bypassed the public-number carrier; public DID inbound acceptance remains separate. Earlier outbound PSTN testing also does not prove every new release or network state.
+
+### Answer repair prepared: build 17; installation pending
+
+The 11 September answer-control repair is signed as **build 17**, source `b284243d86a14eb55225be0b61148184d4f969df`. The exact-source [signing workflow](https://github.com/vasavas1977/codex-phone11/actions/runs/34559119758) passed all required checks; the downloaded app version and bundle were verified. Installation could not proceed because the paired iPhone was no longer connected. Build 15 remains the last verified installed version. See the [answer repair checkpoint](ANSWER-CONTROLS-20260911.md) for the artifact hash and reconnect/install/test sequence.
 
 ## Remaining production gates
 
