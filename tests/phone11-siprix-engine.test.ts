@@ -38,6 +38,7 @@ vi.mock("../lib/sip/diagnostics-store", () => ({
 vi.mock("../lib/push/client", () => ({ getWakeAdoptionBinding: runtime.wakeBinding }));
 vi.mock("../lib/sip/native-call", () => ({ nativeCallManager: runtime.callManager }));
 
+import { createRegistrationLifecycle } from "../lib/sip/registration-lifecycle";
 import { SiprixEngine } from "../lib/sip/siprix-engine";
 import { useSipAccountStore, type SipAccount } from "../lib/sip/account-store";
 import { useSipCallStore } from "../lib/sip/call-store";
@@ -79,7 +80,11 @@ const bridge = {
     snapshot.accounts = [result];
     return result;
   }),
-  registerAccount: vi.fn(async (_id: string, _expires: number) => {}),
+  registerAccount: vi.fn(async (id: string, _expires: number) => {
+    // Mirrors the real native bridge snapshot, covered by native-runtime.m.
+    snapshot.accounts = snapshot.accounts.map(account => account.accountId === id
+      ? { id: account.id, accountId: id, registrationState: "registering" } : account);
+  }),
   makeCall: vi.fn(async (_id: string, _destination: string) => newCall()),
   answerCall: vi.fn(async (_id: string) => {}),
   hangupCall: vi.fn(async (_id: string) => {}),
@@ -119,6 +124,47 @@ beforeEach(() => {
 afterEach(async () => { await engine.destroy(); });
 
 describe("Siprix native adapter", () => {
+
+  it.each(["callback", "stalled"])("gives the real initialized native snapshot its registration grace (%s)", async (outcome) => {
+    vi.useFakeTimers();
+    const restart = vi.fn(() => engine.restart());
+    const lifecycle = createRegistrationLifecycle({
+      snapshot: () => ({
+        userId: runtime.user?.id, authLoading: false,
+        account: useSipAccountStore.getState().account,
+        registrationState: useSipAccountStore.getState().registrationState,
+        hasLiveCall: !!useSipCallStore.getState().incomingCall ||
+          Object.keys(useSipCallStore.getState().activeCalls).length > 0,
+      }),
+      loadAccount: async () => {}, initialize: () => engine.initialize(), restart,
+      onError: () => { throw new Error("Unexpected lifecycle failure"); },
+    }, true);
+    const unsubscribe = useSipAccountStore.subscribe(() => lifecycle.changed());
+    try {
+      lifecycle.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bridge.registerAccount).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(restart).not.toHaveBeenCalled();
+      expect(bridge.destroy).not.toHaveBeenCalled();
+      expect(useSipAccountStore.getState().registrationState).toBe("registering");
+      if (outcome === "callback") {
+        await vi.advanceTimersByTimeAsync(5_000);
+        registered();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(useSipAccountStore.getState().registrationState).toBe("registered");
+        expect(restart).not.toHaveBeenCalled();
+      } else {
+        await vi.advanceTimersByTimeAsync(24_999);
+        expect(restart).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(restart).toHaveBeenCalledOnce();
+        expect(bridge.initialize).toHaveBeenCalledTimes(2);
+      }
+    } finally {
+      lifecycle.stop(); unsubscribe(); vi.useRealTimers();
+    }
+  });
 
   it("explicitly registers after account creation and only accepts native regState success", async () => {
     await engine.initialize();

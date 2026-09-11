@@ -814,7 +814,16 @@ RCT_EXPORT_METHOD(registerAccount:(NSString *)accountId expireTime:(NSNumber *)e
   if (!P11Integer(expireTime, 1, 86400)) {
     P11Reject(reject, @"E_INVALID_ARGUMENT", @"Registration expiry must be between 1 and 86400 seconds."); return;
   }
-  if ([self checkSDK:[runtime.sdk accountRegister:accountId.intValue expireTime:expireTime.intValue] operation:@"accountRegister" reject:reject]) resolve(nil);
+  if (![self checkSDK:[runtime.sdk accountRegister:accountId.intValue expireTime:expireTime.intValue] operation:@"accountRegister" reject:reject]) return;
+  // Command acceptance is pending, not registration success. The lifecycle must
+  // allow its registration grace instead of restarting an unregistered snapshot.
+  // SDK callbacks (including inline callbacks) are queued on this main queue and
+  // apply their authoritative success/failure after this command finishes.
+  NSMutableDictionary *account = runtime.accounts[accountId];
+  account[@"registrationState"] = @"registering";
+  [account removeObjectForKey:@"regState"];
+  [account removeObjectForKey:@"sipStatusCode"];
+  resolve(nil);
 }
 
 RCT_EXPORT_METHOD(unregisterAccount:(NSString *)accountId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {

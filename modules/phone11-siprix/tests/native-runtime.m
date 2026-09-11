@@ -41,6 +41,7 @@ NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
 @end
 
 static int sdkCode, initCode, shutdownCode, initializes, shutdowns, registrations;
+static int inlineRegistrationState = -1;
 static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, deactivations;
 static int nextAccount = 10, nextCall = 20;
 static BOOL sdkInitialized, speakerOK = YES, callKitEnabled;
@@ -71,7 +72,14 @@ static id<SiprixEventDelegate> sdkDelegate;
   data.myAccId = nextAccount;
   return 0;
 }
-- (int)accountRegister:(int)accId expireTime:(int)expireTime { registrations++; return sdkCode; }
+- (int)accountRegister:(int)accId expireTime:(int)expireTime {
+  registrations++;
+  if (!sdkCode && inlineRegistrationState >= 0) {
+    [sdkDelegate onAccountRegState:accId regState:(RegState)inlineRegistrationState
+                         response:inlineRegistrationState == RegStateSuccess ? @"200 OK" : @"403 Forbidden"];
+  }
+  return sdkCode;
+}
 - (int)accountUnRegister:(int)accId { return sdkCode; }
 - (int)accountDelete:(int)accId { return sdkCode; }
 - (int)callInvite:(SiprixDestData *)data { invites++; if (!sdkCode) data.myCallId = nextCall++; return sdkCode; }
@@ -152,7 +160,8 @@ int main(void) {
     [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
     CHECK(!error && registrations == 1);
     [bridge getSnapshot:resolve rejecter:reject];
-    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"unregistered"]);
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"registering"]);
+    CHECK(!result[@"accounts"][0][@"regState"] && !result[@"accounts"][0][@"sipStatusCode"]);
     [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"401 Unauthorized"];
     flush();
     CHECK([bridge.testEvents.lastObject[@"account"][@"sipStatusCode"] intValue] == 401);
@@ -164,6 +173,32 @@ int main(void) {
     [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"];
     flush();
     CHECK([bridge.testEvents.lastObject[@"account"][@"registrationState"] isEqualToString:@"registered"]);
+    // Inline SDK callbacks must win after the queued delegate delivery.
+    inlineRegistrationState = RegStateFailed;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    flush();
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"failed"]);
+    CHECK([result[@"accounts"][0][@"sipStatusCode"] intValue] == 403);
+    inlineRegistrationState = -1;
+    sdkCode = -77;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-77"]);
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"failed"]);
+    CHECK([result[@"accounts"][0][@"sipStatusCode"] intValue] == 403);
+    sdkCode = 0;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"registering"]);
+    CHECK(!result[@"accounts"][0][@"regState"] && !result[@"accounts"][0][@"sipStatusCode"]);
+    inlineRegistrationState = RegStateSuccess;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    flush();
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"registered"]);
+    CHECK([result[@"accounts"][0][@"regState"] intValue] == RegStateSuccess);
+    inlineRegistrationState = -1;
     sdkCode = -77;
     [bridge makeCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_SIPRIX_-77"] && P11SiprixRuntime.shared.calls.count == 0);
