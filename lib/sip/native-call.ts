@@ -7,15 +7,16 @@
  *  - Call management from system call UI (answer, decline, end)
  *  - Audio route management (speaker, bluetooth)
  *  - Call history integration with native phone app
- *  - VoIP push notification handling for background call wake
+ *  - System call controls for calls received by the running SIP engine
  *
  * Architecture:
- *   VoIP Push (APNs/FCM) → NativeCallManager → CallKit/ConnectionService
+ *   SIP incoming callback → NativeCallManager → CallKit/ConnectionService
  *                                            → SIP Engine (answer/decline)
  *                                            → Call Store (state sync)
  */
 
-import { Platform, AppState, AppStateStatus } from "react-native";
+import { Alert, Platform, AppState, AppStateStatus } from "react-native";
+import { getAuthSnapshot } from "../_core/auth";
 import { sipEngine } from "./engine";
 import { useSipCallStore, type SipCall } from "./call-store";
 import { formatSipError, useSipDiagnosticsStore } from "./diagnostics-store";
@@ -96,6 +97,7 @@ class NativeCallManager {
   private initialized = false;
   private initialization: Promise<void> | null = null;
   private appStateSubscription: any = null;
+  private pendingAnswers = new Set<string>();
 
   /**
    * Initialize CallKit (iOS) / ConnectionService (Android).
@@ -342,6 +344,7 @@ class NativeCallManager {
     }
 
     // Clean up mappings
+    this.pendingAnswers.delete(uuid);
     callIdToUuid.delete(sipCallId);
     uuidToCallId.delete(uuid);
     outgoingCalls.delete(sipCallId);
@@ -435,6 +438,7 @@ class NativeCallManager {
 
     callIdToUuid.clear();
     uuidToCallId.clear();
+    this.pendingAnswers.clear();
     outgoingHandleEchoes.clear();
     outgoingCalls.clear();
     if (callKeep && this.initialized) {
@@ -451,19 +455,47 @@ class NativeCallManager {
     // User answered call from native UI (lock screen / notification)
     callKeep.addEventListener("answerCall", async ({ callUUID }: any) => {
       const sipCallId = uuidToCallId.get(callUUID);
-      if (!sipCallId) return;
+      if (!sipCallId) {
+        addNativeCallDiagnostic("warning", "Ignored native answer action for an unknown call");
+        return;
+      }
+      if (this.pendingAnswers.has(callUUID)) return;
+      this.pendingAnswers.add(callUUID);
+      let accepted = false;
+      const owner = getAuthSnapshot().user;
 
-      console.log(`[NativeCall] User answered call from native UI: ${callUUID}`);
-      await sipEngine.answerCall(sipCallId);
-      if (process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix") return;
+      addNativeCallDiagnostic("info", "Native answer requested", { callId: sipCallId });
       try {
-        callKeep.setCurrentCallActive(callUUID);
-      } catch (error) {
-        addNativeCallDiagnostic("error", "CallKit native answer active update failed", {
+        await sipEngine.answerCall(sipCallId);
+        accepted = true;
+        // A completed command is not evidence of connection. Siprix's connected
+        // callback owns that transition; retain the mapping on failure for retry.
+        if (process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" || uuidToCallId.get(callUUID) !== sipCallId) return;
+        try {
+          callKeep.setCurrentCallActive(callUUID);
+        } catch (error) {
+          addNativeCallDiagnostic("error", "CallKit native answer active update failed", {
+            callId: sipCallId,
+            detail: formatSipError(error),
+            context: { callUUID },
+          });
+        }
+      } catch {
+        // SDK diagnostics already preserve a bounded error code. Do not leak
+        // arbitrary event/request text or reject an async native event listener.
+        const incoming = useSipCallStore.getState().incomingCall;
+        const canRetry = AppState.currentState === "active" && owner && getAuthSnapshot().user === owner &&
+          uuidToCallId.get(callUUID) === sipCallId && incoming?.id === sipCallId && incoming.status === "incoming";
+        addNativeCallDiagnostic("error", canRetry ? "Native answer failed; call remains available for retry" : "Native answer failed", {
           callId: sipCallId,
-          detail: formatSipError(error),
-          context: { callUUID },
         });
+        if (canRetry) {
+          Alert.alert("Could not answer call", "Tap Answer again in Phone11 while the caller is still ringing.");
+        }
+      } finally {
+        // Keep successful requests latched until real termination, including the
+        // ringing-to-connected gap. A failed request remains retryable.
+        if (!accepted) this.pendingAnswers.delete(callUUID);
       }
     });
 
@@ -606,6 +638,7 @@ class NativeCallManager {
         console.log("[NativeCall] Provider reset — ending all calls");
         callIdToUuid.clear();
         uuidToCallId.clear();
+        this.pendingAnswers.clear();
       });
     }
 

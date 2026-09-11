@@ -1,5 +1,14 @@
-import { useEffect, useState } from "react";
-import { Alert, View, Text, TouchableOpacity, StyleSheet, Vibration } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  ScrollView,
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  Vibration,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 
@@ -11,11 +20,38 @@ import { resolveCurrentCall } from "@/lib/sip/current-call";
 
 export default function IncomingCallScreen() {
   const colors = useColors();
-  const { number, name, callId: requestedCallId } = useLocalSearchParams<{ number?: string; name?: string; callId?: string }>();
+  const insets = useSafeAreaInsets();
+  const {
+    number,
+    name,
+    callId: requestedCallId,
+  } = useLocalSearchParams<{
+    number?: string;
+    name?: string;
+    callId?: string;
+  }>();
   const { answerCall, hangupCall } = useSip();
-  const incomingCall = useSipCallStore(state => resolveCurrentCall(state, requestedCallId));
+  const incomingCall = useSipCallStore((state) =>
+    resolveCurrentCall(state, requestedCallId),
+  );
   const callId = incomingCall?.id;
-  const [busy, setBusy] = useState(false);
+  type Action = { kind: "answer" | "decline"; callId: string };
+  const pending = useRef<Action | null>(null);
+  const [operation, setOperation] = useState<Action["kind"] | null>(null);
+  const ringing = incomingCall?.status === "incoming";
+  const stillRinging = () =>
+    Boolean(
+      callId &&
+      resolveCurrentCall(useSipCallStore.getState(), callId)?.status ===
+        "incoming",
+    );
+  useEffect(() => {
+    pending.current = null;
+    setOperation(null);
+    return () => {
+      pending.current = null;
+    };
+  }, [callId, incomingCall?.status]);
   const callerNumber = incomingCall?.remoteNumber ?? number ?? "SIP Call";
   const callerName = incomingCall?.remoteName ?? name ?? callerNumber;
 
@@ -27,83 +63,175 @@ export default function IncomingCallScreen() {
   }, [callId, incomingCall?.status]);
 
   useEffect(() => {
-    if (callId && (incomingCall?.status === "active" || incomingCall?.status === "held")) {
-      router.replace({ pathname: "/call/active", params: { callId, number: callerNumber, type: "voice" } });
+    if (
+      callId &&
+      (incomingCall?.status === "active" || incomingCall?.status === "held")
+    ) {
+      router.replace({
+        pathname: "/call/active",
+        params: { callId, number: callerNumber, type: "voice" },
+      });
     }
   }, [callId, incomingCall?.status, callerNumber]);
 
   const handleAccept = async () => {
-    if (!callId || busy) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (!callId || pending.current || !stillRinging()) return;
+    const action: Action = { kind: "answer", callId };
+    pending.current = action;
+    setOperation("answer");
     Vibration.cancel();
-    setBusy(true);
-    try { await answerCall(callId); }
-    catch { Alert.alert("Could not answer call", "Please try again while the caller is still ringing."); }
-    finally { setBusy(false); }
+    void Haptics.notificationAsync(
+      Haptics.NotificationFeedbackType.Success,
+    ).catch(() => {});
+    try {
+      await answerCall(callId);
+      // Command acceptance is not a connected call. Wait for the native state
+      // effect to leave Incoming; repeated taps must not re-answer the SDK call.
+    } catch {
+      if (pending.current !== action) return;
+      pending.current = null;
+      setOperation(null);
+      if (stillRinging())
+        Alert.alert(
+          "Could not answer call",
+          "Tap Answer to retry while the caller is still ringing.",
+        );
+    }
   };
 
   const handleDecline = async () => {
-    if (busy) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    if (pending.current?.kind === "decline") return;
+    if (!callId) {
+      router.canGoBack() ? router.back() : router.replace("/(tabs)");
+      return;
+    }
+    if (!resolveCurrentCall(useSipCallStore.getState(), callId)) return;
+    const action: Action = { kind: "decline", callId };
+    pending.current = action;
+    setOperation("decline");
     Vibration.cancel();
-    if (!callId) { router.back(); return; }
-    setBusy(true);
-    try { await hangupCall(callId); }
-    catch { Alert.alert("Could not end call", "Please try Decline again."); }
-    finally { setBusy(false); }
+    void Haptics.notificationAsync(
+      Haptics.NotificationFeedbackType.Warning,
+    ).catch(() => {});
+    try {
+      await hangupCall(callId);
+    } catch {
+      if (
+        pending.current === action &&
+        resolveCurrentCall(useSipCallStore.getState(), callId)
+      )
+        Alert.alert("Could not end call", "Please try ending the call again.");
+    } finally {
+      if (pending.current === action) {
+        pending.current = null;
+        setOperation(null);
+      }
+    }
   };
 
   return (
-    <View style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        {
+          paddingTop: Math.max(insets.top, 16),
+          paddingBottom: Math.max(insets.bottom, 16),
+        },
+      ]}
+    >
       {/* Background gradient effect */}
       <View style={[styles.bgTop, { backgroundColor: "#0D1F3C" }]} />
       <View style={[styles.bgBottom, { backgroundColor: "#0D0F14" }]} />
 
-      {/* Caller Info */}
-      <View style={styles.callerSection}>
-        <Text style={styles.incomingLabel}>{incomingCall ? "Incoming Call" : "Call ended"}</Text>
-        <View style={[styles.avatar, { backgroundColor: colors.primary + "30" }]}> 
-          <Text style={styles.avatarText}>{callerName.charAt(0).toUpperCase()}</Text>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+      >
+        {/* Caller Info */}
+        <View style={styles.callerSection}>
+          <Text style={styles.incomingLabel}>
+            {ringing
+              ? "Incoming Call"
+              : incomingCall
+                ? "Connecting call"
+                : "Call ended"}
+          </Text>
+          <View
+            style={[styles.avatar, { backgroundColor: colors.primary + "30" }]}
+          >
+            <Text style={styles.avatarText}>
+              {callerName.charAt(0).toUpperCase()}
+            </Text>
+          </View>
+          <Text style={styles.callerName}>{callerName}</Text>
+          <Text style={[styles.callerNumber, { color: "#ffffff80" }]}>
+            {callerNumber}
+          </Text>
         </View>
-        <Text style={styles.callerName}>{callerName}</Text>
-        <Text style={[styles.callerNumber, { color: "#ffffff80" }]}>{callerNumber}</Text>
-        <View style={[styles.sipBadge, { backgroundColor: colors.primary + "30", borderColor: colors.primary + "60" }]}> 
-          <IconSymbol name="antenna.radiowaves.left.and.right" size={12} color={colors.primary} />
-          <Text style={[styles.sipBadgeText, { color: colors.primary }]}>SIP / VoIP</Text>
-        </View>
-      </View>
+      </ScrollView>
 
       {/* Action Buttons */}
-      <View style={styles.actions}>
-        {/* Decline */}
-        <View style={styles.actionItem}>
-          <TouchableOpacity
-            accessibilityRole="button" accessibilityLabel={incomingCall ? "Decline call" : "Close ended call"} disabled={busy}
-            style={[styles.actionBtn, { backgroundColor: colors.error }]}
-            onPress={handleDecline}
-            activeOpacity={0.8}
-          >
-            <IconSymbol name="phone.down.fill" size={30} color="#fff" />
-          </TouchableOpacity>
-          <Text style={styles.actionLabel}>{incomingCall ? "Decline" : "Close"}</Text>
+      <View style={styles.footer}>
+        <View style={styles.actions}>
+          {/* Decline */}
+          <View style={styles.actionItem}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={
+                ringing
+                  ? "Decline call"
+                  : incomingCall
+                    ? "End call"
+                    : "Close ended call"
+              }
+              disabled={operation === "decline"}
+              style={[styles.actionBtn, { backgroundColor: colors.error }]}
+              onPress={handleDecline}
+              activeOpacity={0.8}
+            >
+              <IconSymbol name="phone.down.fill" size={30} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.actionLabel}>
+              {operation === "decline"
+                ? "Ending…"
+                : ringing
+                  ? "Decline"
+                  : incomingCall
+                    ? "End call"
+                    : "Close"}
+            </Text>
+          </View>
+
+          {/* Accept */}
+          <View style={styles.actionItem}>
+            <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Answer call"
+              accessibilityState={{
+                disabled: operation !== null || !ringing,
+                busy: operation === "answer",
+              }}
+              disabled={operation !== null || !ringing}
+              style={[styles.actionBtn, { backgroundColor: colors.success }]}
+              onPress={handleAccept}
+              activeOpacity={0.8}
+            >
+              <IconSymbol name="phone.fill" size={30} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.actionLabel}>
+              {operation === "answer" ? "Answering…" : "Answer"}
+            </Text>
+          </View>
         </View>
 
-        {/* Accept */}
-        <View style={styles.actionItem}>
-          <TouchableOpacity
-            accessibilityRole="button" accessibilityLabel="Answer call" disabled={busy || !incomingCall}
-            style={[styles.actionBtn, { backgroundColor: colors.success }]}
-            onPress={handleAccept}
-            activeOpacity={0.8}
-          >
-            <IconSymbol name="phone.fill" size={30} color="#fff" />
-          </TouchableOpacity>
-          <Text style={styles.actionLabel}>Accept</Text>
-        </View>
+        {ringing && (
+          <Text style={[styles.hint, { color: "#ffffff80" }]}>
+            {operation === "answer"
+              ? "Connecting your call. You can still decline."
+              : "Tap Answer or Decline"}
+          </Text>
+        )}
       </View>
-
-      {/* Swipe hint */}
-      <Text style={[styles.hint, { color: "#ffffff40" }]}>Slide to answer or decline</Text>
     </View>
   );
 }
@@ -112,10 +240,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#0D0F14",
-    justifyContent: "space-between",
-    paddingTop: 80,
-    paddingBottom: 60,
   },
+  scroll: { flex: 1 },
+  scrollContent: { flexGrow: 1, justifyContent: "center", padding: 24 },
+  footer: { paddingTop: 16, gap: 20 },
   bgTop: {
     position: "absolute",
     top: 0,
@@ -164,27 +292,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "400",
   },
-  sipBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    marginTop: 4,
-  },
-  sipBadgeText: {
-    fontSize: 12,
-    fontWeight: "600",
-  },
   actions: {
     flexDirection: "row",
     justifyContent: "center",
-    gap: 80,
-    paddingHorizontal: 40,
+    gap: 24,
+    paddingHorizontal: 24,
   },
   actionItem: {
+    flex: 1,
     alignItems: "center",
     gap: 12,
   },
