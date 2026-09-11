@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Parser proof only: a disposable network-disabled container and synthetic values.
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,9 @@ if (!args.includes('--image') || !/^[-\w./:]+@sha256:[a-f0-9]{64}$/.test(image??
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 const candidate=join(root,'infra/configs/kamailio/phone11-wake-candidate');
 const scratch=await mkdtemp(join(tmpdir(),'phone11-wake-parser-'));
+// Synthetic fixture only: the non-root image UID must traverse the mounted
+// directory on Linux runners (mkdtemp otherwise creates owner-only mode0700).
+await chmod(scratch,0o755);
 const common=['--rm','--network','none','--read-only','--tmpfs','/var/run/kamailio:rw,nosuid,noexec,size=1m,mode=1777','--cap-drop','ALL','--platform','linux/amd64','--entrypoint','/usr/sbin/kamailio'];
 function run(extra) {
   const result=spawnSync('docker',['run',...common,...extra],{encoding:'utf8',timeout:45000,maxBuffer:2*1024*1024});
