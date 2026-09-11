@@ -455,11 +455,22 @@ class NativeCallManager {
     // User answered call from native UI (lock screen / notification)
     callKeep.addEventListener("answerCall", async ({ callUUID }: any) => {
       const sipCallId = uuidToCallId.get(callUUID);
+      const incoming = useSipCallStore.getState().incomingCall;
+      // Persist only our mapped SDK identifier and bounded state, never the
+      // untrusted event payload, caller handle, or raw native error.
+      const context = {
+        mapped: !!sipCallId,
+        ringing: !!sipCallId && incoming?.id === sipCallId && incoming.status === "incoming",
+      };
+      addNativeCallDiagnostic("info", "Native answer callback received", { callId: sipCallId, context });
       if (!sipCallId) {
-        addNativeCallDiagnostic("warning", "Ignored native answer action for an unknown call");
+        addNativeCallDiagnostic("warning", "Ignored native answer action for an unknown call", { context });
         return;
       }
-      if (this.pendingAnswers.has(callUUID)) return;
+      if (this.pendingAnswers.has(callUUID)) {
+        addNativeCallDiagnostic("info", "Ignored duplicate pending native answer", { callId: sipCallId, context });
+        return;
+      }
       this.pendingAnswers.add(callUUID);
       let accepted = false;
       const owner = getAuthSnapshot().user;
@@ -468,6 +479,10 @@ class NativeCallManager {
       try {
         await sipEngine.answerCall(sipCallId);
         accepted = true;
+        addNativeCallDiagnostic("info", "Native answer command accepted", {
+          callId: sipCallId,
+          context: { mapped: uuidToCallId.get(callUUID) === sipCallId },
+        });
         // A completed command is not evidence of connection. Siprix's connected
         // callback owns that transition; retain the mapping on failure for retry.
         if (process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" || uuidToCallId.get(callUUID) !== sipCallId) return;

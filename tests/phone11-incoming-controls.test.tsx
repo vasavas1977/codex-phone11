@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({
   answer: vi.fn(async (_id: string) => {}),
   hangup: vi.fn(async (_id: string) => {}),
   alert: vi.fn(),
+  diagnostics: vi.fn(),
   back: vi.fn(),
   replace: vi.fn(),
   canGoBack: true,
@@ -68,6 +69,9 @@ vi.mock("../lib/sip/call-store", () => ({
 vi.mock("../lib/_core/auth", () => ({
   getAuthSnapshot: () => ({ user: m.owner }),
 }));
+vi.mock("../lib/sip/diagnostics-store", () => ({
+  useSipDiagnosticsStore: { getState: () => ({ addEvent: m.diagnostics }) },
+}));
 import IncomingCallScreen from "../app/call/incoming";
 function render() {
   return renderToStaticMarkup(<IncomingCallScreen />);
@@ -97,6 +101,21 @@ it("uses honest tap instructions and keeps Answer outside the scrolling caller d
     html.indexOf("</section>"),
   );
   expect(m.press.get("Answer call")!.disabled).toBe(false);
+});
+it("records whether an Answer tap was eligible without recording the caller or account", async () => {
+  render();
+  const answer = m.press.get("Answer call")!.run;
+  await answer();
+  await answer();
+  expect(m.diagnostics).toHaveBeenNthCalledWith(1, {
+    level: "info", category: "call", message: "Incoming Answer tapped",
+    context: { eligible: true, pending: false, hasCall: true },
+  });
+  expect(m.diagnostics).toHaveBeenNthCalledWith(2, {
+    level: "info", category: "call", message: "Incoming Answer tapped",
+    context: { eligible: false, pending: true, hasCall: true },
+  });
+  expect(m.answer).toHaveBeenCalledOnce();
 });
 it("answers the real incoming ID once, including while awaiting the connected callback", async () => {
   render();

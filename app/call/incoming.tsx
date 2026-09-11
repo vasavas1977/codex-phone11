@@ -18,6 +18,7 @@ import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore } from "@/lib/sip/call-store";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import { resolveCurrentCall } from "@/lib/sip/current-call";
+import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 
 export default function IncomingCallScreen() {
   const colors = useColors();
@@ -81,7 +82,12 @@ export default function IncomingCallScreen() {
   }, [callId, incomingCall?.status, callerNumber]);
 
   const handleAccept = async () => {
-    if (!callId || pending.current || !stillRinging()) return;
+    const eligible = !!callId && !pending.current && stillRinging();
+    useSipDiagnosticsStore.getState().addEvent({
+      level: "info", category: "call", message: "Incoming Answer tapped",
+      context: { eligible, pending: !!pending.current, hasCall: !!callId },
+    });
+    if (!eligible || !callId) return;
     const action: Action = { kind: "answer", callId };
     pending.current = action;
     setOperation("answer");

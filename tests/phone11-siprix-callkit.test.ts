@@ -134,3 +134,36 @@ it.each(["background", "ended", "connected", "ownerChanged"])("suppresses late n
   expect(mocks.alert).not.toHaveBeenCalled();
   expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ level: "error", message: "Native answer failed" }));
 });
+
+it("persists safe answer callback, duplicate, and command acceptance separately from connection", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("208", "private-caller-address");
+  mocks.incoming = { id: "208", status: "incoming" };
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  let complete: () => void = () => {};
+  mocks.engine.answerCall.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+  const first = mocks.handlers.get("answerCall")!({ callUUID, token: "private-event-token" });
+  await mocks.handlers.get("answerCall")!({ callUUID });
+  const messages = () => mocks.diagnostic.mock.calls.map(([event]) => event.message);
+  expect(messages()).toEqual([
+    "Native answer callback received", "Native answer requested",
+    "Native answer callback received", "Ignored duplicate pending native answer",
+  ]);
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({
+    message: "Native answer callback received", callId: "208", context: { mapped: true, ringing: true },
+  }));
+  complete(); await first;
+  expect(messages().at(-1)).toBe("Native answer command accepted");
+  expect(messages()).not.toContain("CallKit call marked active");
+  nativeCallManager.reportCallConnected("208");
+  expect(messages().at(-1)).toBe("CallKit call marked active");
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private-");
+});
+it("records an unmapped answer callback without persisting the supplied identifier or invoking SIP", async () => {
+  await nativeCallManager.initialize();
+  await mocks.handlers.get("answerCall")!({ callUUID: "private-untrusted-address" });
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({
+    message: "Native answer callback received", context: { mapped: false, ringing: false },
+  }));
+  expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private-untrusted-address");
+});

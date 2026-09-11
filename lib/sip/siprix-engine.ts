@@ -301,7 +301,17 @@ export class SiprixEngine {
 
   answerCall(callId: string, video = false): Promise<void> {
     if (video) return Promise.reject(unsupported("video calls"));
-    return this.command(callId, "answer", bridge => bridge.answerCall(callId));
+    const session = this.session;
+    const record = (message: string) => {
+      if (this.current(session)) useSipDiagnosticsStore.getState().addEvent({
+        level: "info", category: "call", message, context: { callId },
+      });
+    };
+    record("Siprix answer requested");
+    return this.command(callId, "answer", bridge => bridge.answerCall(callId)).then(() => {
+      // SDK command acceptance is separate from the later connected event.
+      record("Siprix answer command accepted");
+    });
   }
   hangupCall(callId: string): Promise<void> {
     useSipDiagnosticsStore.getState().addEvent({ level: "info", category: "call", message: "Siprix hang-up requested", context: { callId } });

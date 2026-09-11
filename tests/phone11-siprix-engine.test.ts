@@ -355,6 +355,31 @@ describe("Siprix native adapter", () => {
     expect(runtime.callManager.reportCallConnected).toHaveBeenCalledWith("11");
   });
 
+  it("distinguishes a requested Answer from SDK acceptance and actual connection", async () => {
+    await ready();
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    const accepted = deferred<void>();
+    bridge.answerCall.mockImplementationOnce(() => accepted.promise);
+    const answer = engine.answerCall("11");
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer requested" }));
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer command accepted" }));
+    accepted.resolve();
+    await answer;
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer command accepted", context: { callId: "11" } }));
+    expect(useSipCallStore.getState().incomingCall?.status).toBe("incoming");
+    expect(runtime.callManager.reportCallConnected).not.toHaveBeenCalled();
+  });
+
+  it("does not record Answer acceptance or raw SDK text after rejection", async () => {
+    await ready();
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    bridge.answerCall.mockRejectedValueOnce(new Error(account.password));
+    await expect(engine.answerCall("11")).rejects.toThrow("Siprix answer failed");
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer command accepted" }));
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+    expect(useSipCallStore.getState().incomingCall?.status).toBe("incoming");
+  });
+
   it("enforces single-call mode for concurrent commands and second incoming calls", async () => {
     await ready();
     const results = await Promise.allSettled([engine.makeCall("2002"), engine.makeCall("2003")]);

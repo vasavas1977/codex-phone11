@@ -79,20 +79,54 @@ function mergeDiagnosticEvents(current: SipDiagnosticEvent[], existing: SipDiagn
     .slice(0, MAX_EVENTS);
 }
 
-async function persistDiagnosticEvents(events: SipDiagnosticEvent[], mergeExisting = false): Promise<void> {
+// One queue owns every storage read/write/remove. UI/call handlers update memory
+// immediately; only explicit persistent-record/hydration callers await this queue.
+let persistenceQueue: Promise<void> = Promise.resolve();
+let clearGeneration = 0;
+
+function enqueueDiagnosticOperation(operation: () => Promise<void>): Promise<void> {
+  const task = persistenceQueue.then(operation).catch(() => {
+    // Storage errors can contain platform details; do not copy them into diagnostics.
+    console.warn("[SIP Diagnostics] Could not update stored diagnostic events");
+  });
+  persistenceQueue = task;
+  return task;
+}
+
+async function hydrateDiagnosticGeneration(generation: number): Promise<boolean> {
+  if (generation !== clearGeneration) return false;
+  if (useSipDiagnosticsStore.getState().hydrated) return true;
+  let existing: SipDiagnosticEvent[] = [];
   try {
-    let eventsToPersist = events;
-
-    if (mergeExisting) {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      const existingEvents = normalizeDiagnosticEvents(raw ? JSON.parse(raw) : []);
-      eventsToPersist = mergeDiagnosticEvents(events, existingEvents);
-    }
-
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(eventsToPersist));
-  } catch (error) {
-    console.warn("[SIP Diagnostics] Could not persist diagnostic events:", error);
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    existing = normalizeDiagnosticEvents(raw ? JSON.parse(raw) : []);
+  } catch {
+    console.warn("[SIP Diagnostics] Could not load stored diagnostic events");
+    // Preserve unknown disk history on read failure; a later operation can retry.
+    return false;
   }
+  // A clear invalidates an already-running read as well as queued old writes.
+  if (generation !== clearGeneration) return false;
+  useSipDiagnosticsStore.setState(state => ({
+    events: mergeDiagnosticEvents(state.events, existing),
+    hydrated: true,
+  }));
+  return true;
+}
+
+function persistCurrentDiagnosticEvents(): Promise<void> {
+  const generation = clearGeneration;
+  return enqueueDiagnosticOperation(async () => {
+    if (!await hydrateDiagnosticGeneration(generation) || generation !== clearGeneration) return;
+    // Take the latest memory snapshot only after older storage work completes.
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(useSipDiagnosticsStore.getState().events));
+  });
+}
+
+function appendDiagnosticEvent(event: Omit<SipDiagnosticEvent, "id" | "timestamp">): Promise<void> {
+  const entry = createDiagnosticEvent(event);
+  useSipDiagnosticsStore.setState(state => ({ events: [entry, ...state.events].slice(0, MAX_EVENTS) }));
+  return persistCurrentDiagnosticEvents();
 }
 
 export function formatDiagnosticContext(context?: SipDiagnosticContext): string {
@@ -140,49 +174,29 @@ export function formatSipError(error: any): string {
   return parts.join(" | ") || "Unknown error";
 }
 
-export const useSipDiagnosticsStore = create<SipDiagnosticsState>((set, get) => ({
+export const useSipDiagnosticsStore = create<SipDiagnosticsState>((set) => ({
   events: [],
   hydrated: false,
 
   addEvent: (event) => {
-    const entry = createDiagnosticEvent(event);
-    let nextEvents: SipDiagnosticEvent[] = [];
-
-    set((state) => ({
-      events: (nextEvents = [entry, ...state.events].slice(0, MAX_EVENTS)),
-    }));
-
-    persistDiagnosticEvents(nextEvents, !get().hydrated).catch(() => {});
+    void appendDiagnosticEvent(event);
   },
 
   clearEvents: () => {
-    set({ events: [] });
-    AsyncStorage.removeItem(STORAGE_KEY).catch(() => {});
+    clearGeneration++;
+    // Clearing is also initialization: a later hydration must not reload old data.
+    set({ events: [], hydrated: true });
+    void enqueueDiagnosticOperation(() => AsyncStorage.removeItem(STORAGE_KEY));
   },
 
-  hydrateEvents: async () => {
-    try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      const events = normalizeDiagnosticEvents(raw ? JSON.parse(raw) : []);
-      set({ events, hydrated: true });
-    } catch (error) {
-      console.warn("[SIP Diagnostics] Could not load diagnostic events:", error);
-      set({ hydrated: true });
-    }
+  hydrateEvents: () => {
+    const generation = clearGeneration;
+    return enqueueDiagnosticOperation(async () => { await hydrateDiagnosticGeneration(generation); });
   },
 }));
 
 export async function recordPersistentSipDiagnosticEvent(
   event: Omit<SipDiagnosticEvent, "id" | "timestamp">
 ): Promise<void> {
-  const entry = createDiagnosticEvent(event);
-  let nextEvents: SipDiagnosticEvent[] = [];
-  const shouldMergeExisting = !useSipDiagnosticsStore.getState().hydrated;
-
-  useSipDiagnosticsStore.setState((state) => {
-    nextEvents = [entry, ...state.events].slice(0, MAX_EVENTS);
-    return { events: nextEvents };
-  });
-
-  await persistDiagnosticEvents(nextEvents, shouldMergeExisting);
+  await appendDiagnosticEvent(event);
 }

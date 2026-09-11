@@ -45,7 +45,7 @@ The immediately preceding build 13 passed a direct incoming echo call and handse
 
 ### Latest installed app: answer repair build 17
 
-The 11 September answer-control repair is signed as **build 17**, source `b284243d86a14eb55225be0b61148184d4f969df`. The exact-source [signing workflow](https://github.com/vasavas1977/codex-phone11/actions/runs/34559119758) passed all required checks; the downloaded app version and bundle were verified. After the user reconnected the iPhone, the verified IPA was installed successfully and independent device inventory confirmed version 1.0.0/build 17. Physical incoming acceptance remains pending with Phone11 open on the phone and its screen on. See the [answer repair checkpoint](ANSWER-CONTROLS-20260911.md) for the artifact hash and verification details.
+The 11 September answer-control repair is signed as **build 17**, source `b284243d86a14eb55225be0b61148184d4f969df`. The exact-source [signing workflow](https://github.com/vasavas1977/codex-phone11/actions/runs/34559119758) passed all required checks; the downloaded app version and bundle were verified. After the user reconnected the iPhone, the verified IPA was installed successfully and independent device inventory confirmed version 1.0.0/build 17. The first build 17 incoming test answered but was cut short by the test helper; a corrected retry rang and timed out unanswered. Audio and handset End acceptance remain open. See the [build 17 handset checkpoint](HANDSET-BUILD17-20260911.md). See the [answer repair checkpoint](ANSWER-CONTROLS-20260911.md) for the artifact hash and verification details.
 
 ## Remaining production gates
 
