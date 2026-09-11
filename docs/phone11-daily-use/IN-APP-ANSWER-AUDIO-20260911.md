@@ -22,3 +22,10 @@ The installed CallKeep source implements answerIncomingCall by submitting a CXAn
 The correction routes the in-app iOS Siprix Answer action through the system answer transaction. The native Answer handling remains responsible for SDK acceptance, with duplicate protection and owner/call binding. Audio activation follows the actual CallKit callback; no manual activation bypass or second audio provider is introduced. Independent review covered retries, duplicate taps, pending/end/reset cleanup, owner changes, same-ID replacement calls and callbacks arriving after timeout. All 147 focused tests passed, including 31 native mapping/answer tests and 14 actual provider-hook tests. The local iOS JavaScript export also passed. Audible handset acceptance remains required after a new signed build is installed.
 
 System caller labels now use the parsed caller number/name instead of displaying a raw SIP server URI. Routing retains the original URI. Bounded diagnostics distinguish the system answer request, actual CallKit audio activation, SDK forwarding and the native audio-session event; incoming SIP connection no longer implies that CallKit activated audio.
+
+
+## Signed build 19 installed
+
+Exact source `aba6ff24f6ebebd688c51dc669fd213cdae3d44b` passed every required job in [GitHub run 34577365729](https://github.com/vasavas1977/codex-phone11/actions/runs/34577365729). EAS build `05e5e98f-a61e-4532-b7d3-06c3bd68a877` produced version 1.0.0/build **19**. The downloaded IPA source, bundle and version matched; its 16,572,596-byte SHA256 is `08e42e4fe9da52097b143838ca7342aeeac22674db7edbf5f200dfefbf7045d5`. Installation succeeded and independent paired-device inventory confirmed build 19.
+
+No production SDK license is embedded. The live backend remains on `75fa3c940aa983cff30ed967d444c73b43cc9a53`; background calling remains uncommissioned. Build 19 physical audio acceptance is pending renewed readiness and a bounded direct echo test using the in-app Answer button. Native audio-activation diagnostics establish only that the bridge ran, not that media flowed or that a person heard clear audio.

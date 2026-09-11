@@ -47,11 +47,17 @@ The immediately preceding build 13 passed a direct incoming echo call and handse
 
 The 11 September answer-control repair is signed as **build 17**, source `b284243d86a14eb55225be0b61148184d4f969df`. The exact-source [signing workflow](https://github.com/vasavas1977/codex-phone11/actions/runs/34559119758) passed all required checks; the downloaded app version and bundle were verified. After the user reconnected the iPhone, the verified IPA was installed successfully and independent device inventory confirmed version 1.0.0/build 17. The first build 17 incoming test answered but was cut short by the test helper; a corrected retry rang and timed out unanswered. Audio and handset End acceptance remain open. See the [build 17 handset checkpoint](HANDSET-BUILD17-20260911.md). See the [answer repair checkpoint](ANSWER-CONTROLS-20260911.md) for the artifact hash and verification details.
 
-### Latest installed app: build 18
+### Previous installed app: build 18
 
 Build **18** is installed and independently verified on the paired iPhone. Exact source `89288f8683b70ab71428eb9d592ed92925eb019d` passed [signing workflow 34569374391](https://github.com/vasavas1977/codex-phone11/actions/runs/34569374391); EAS build `e32b0f23-b501-4bcf-97d9-997eb94a4ec8`. It keeps current incoming calls reachable from stale or wrong-type call screens, binds banner actions to their owner/call, and preserves ordered Answer diagnostics. All 112 focused tests passed. The 16,569,291-byte IPA SHA256 is `da16c2e826989c037a4db978d98850d71c0c9af4a160294743e16f2fd74acc54`.
 
-A new physical test on build 18 rang, connected through the in-app Answer action and ended from the handset after approximately 17 seconds. The owner reported missing or unclear echo; the exact-call server record shows zero audio packets in either direction. Review identified that in-app Answer bypassed the system answer transaction used to activate CallKit audio. The correction and 147 focused regression tests are complete, awaiting a signed build and audible handset acceptance. See the [audio repair and physical evidence](IN-APP-ANSWER-AUDIO-20260911.md). This is not public-number, background, long-call or two-person-chat acceptance. The live backend remains on the first-release source.
+A new physical test on build 18 rang, connected through the in-app Answer action and ended from the handset after approximately 17 seconds. The owner reported missing or unclear echo; the exact-call server record shows zero audio packets in either direction. Review identified that in-app Answer bypassed the system answer transaction used to activate CallKit audio. The correction and 147 focused regression tests are complete and installed as build 19 below; audible handset acceptance remains pending. See the [audio repair and physical evidence](IN-APP-ANSWER-AUDIO-20260911.md). This is not public-number, background, long-call or two-person-chat acceptance. The live backend remains on the first-release source.
+
+### Latest installed app: build 19
+
+Build **19** routes in-app iOS Answer through the system CallKit answer transaction, preserves call/owner identity through pending actions and retries, and records bounded audio activation diagnostics. Caller labels now omit the SIP server URI. All 147 focused tests, iOS export, native and required server checks passed. Exact source `aba6ff24f6ebebd688c51dc669fd213cdae3d44b` completed [signing workflow 34577365729](https://github.com/vasavas1977/codex-phone11/actions/runs/34577365729); EAS build `05e5e98f-a61e-4532-b7d3-06c3bd68a877`. The 16,572,596-byte IPA SHA256 is `08e42e4fe9da52097b143838ca7342aeeac22674db7edbf5f200dfefbf7045d5`. Installation succeeded and independent device inventory confirmed version 1.0.0/build 19.
+
+The build 18 audio failure remains open until clear physical echo is confirmed on build 19. See the [audio repair checkpoint](IN-APP-ANSWER-AUDIO-20260911.md).
 
 ## Remaining production gates
 
