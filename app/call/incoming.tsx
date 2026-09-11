@@ -42,23 +42,62 @@ export default function IncomingCallScreen() {
     kind: "answer" | "decline";
     callId: string;
     failed?: boolean;
+    deadlineAt?: number;
   };
   const pending = useRef<Action | null>(null);
   const [operation, setOperation] = useState<Action["kind"] | null>(null);
+  const [connectionDelayed, setConnectionDelayed] = useState(false);
+  const deadline = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ringing = incomingCall?.status === "incoming";
-  const currentOwnedCall = () =>
-    owner && getAuthSnapshot().user === owner && callId
-      ? resolveCurrentCall(useSipCallStore.getState(), callId)
-      : null;
+  const identity = incomingCall?.history?.id ?? incomingCall?.startTime?.getTime() ?? incomingCall;
+  const settled = !incomingCall || ["active", "held", "disconnected"].includes(incomingCall.status);
+  const clearDeadline = () => {
+    if (deadline.current !== null) clearTimeout(deadline.current);
+    deadline.current = null;
+  };
+  const currentOwnedCall = () => {
+    if (!owner || getAuthSnapshot().user !== owner || !callId) return null;
+    const live = resolveCurrentCall(useSipCallStore.getState(), callId);
+    const liveIdentity = live?.history?.id ?? live?.startTime?.getTime() ?? live;
+    return liveIdentity === identity ? live : null;
+  };
   const stillRinging = () => currentOwnedCall()?.status === "incoming";
 
+  const armDeadline = (action: Action) => {
+    clearDeadline();
+    if (action.deadlineAt === undefined) return;
+    deadline.current = setTimeout(() => {
+      deadline.current = null;
+      const live = currentOwnedCall();
+      if (pending.current !== action || !live || !["incoming", "connecting"].includes(live.status)) return;
+      setConnectionDelayed(true);
+      useSipDiagnosticsStore.getState().addEvent({
+        level: "warning", category: "call", message: "Incoming connection still pending after Answer",
+        context: { hasCall: true },
+      });
+    }, Math.max(0, action.deadlineAt - Date.now()));
+  };
+
   useEffect(() => {
+    clearDeadline();
     pending.current = null;
     setOperation(null);
+    setConnectionDelayed(false);
     return () => {
+      clearDeadline();
       pending.current = null;
     };
-  }, [owner, callId, incomingCall?.status]);
+  }, [owner, callId, identity]);
+
+  useEffect(() => {
+    if (!settled) return;
+    clearDeadline();
+    if (pending.current?.kind === "answer") {
+      pending.current = null;
+      setOperation(null);
+      setConnectionDelayed(false);
+    }
+  }, [settled]);
   const callerNumber = incomingCall?.remoteNumber ?? number ?? "SIP Call";
   const callerName = incomingCall?.remoteName ?? name ?? callerNumber;
 
@@ -71,7 +110,7 @@ export default function IncomingCallScreen() {
 
   useEffect(() => {
     if (
-      callId &&
+      callId && pending.current?.kind !== "decline" &&
       (incomingCall?.status === "active" || incomingCall?.status === "held")
     ) {
       router.replace({
@@ -91,17 +130,21 @@ export default function IncomingCallScreen() {
     const action: Action = { kind: "answer", callId };
     pending.current = action;
     setOperation("answer");
+    setConnectionDelayed(false);
     Vibration.cancel();
     void Haptics.notificationAsync(
       Haptics.NotificationFeedbackType.Success,
     ).catch(() => {});
     try {
       await answerCall(callId);
+      action.deadlineAt = Date.now() + 20_000;
+      if (pending.current === action && currentOwnedCall()) armDeadline(action);
       // Command acceptance is not a connected call. Wait for the native state
       // effect to leave Incoming; repeated taps must not re-answer the SDK call.
     } catch {
       action.failed = true;
       if (pending.current !== action) return;
+      clearDeadline();
       pending.current = null;
       setOperation(null);
       if (stillRinging())
@@ -123,6 +166,7 @@ export default function IncomingCallScreen() {
       pending.current?.kind === "answer" ? pending.current : null;
     let declineFailed = false;
     const action: Action = { kind: "decline", callId };
+    clearDeadline();
     pending.current = action;
     setOperation("decline");
     Vibration.cancel();
@@ -136,14 +180,17 @@ export default function IncomingCallScreen() {
       if (pending.current === action && currentOwnedCall())
         Alert.alert("Could not end call", "Please try ending the call again.");
     } finally {
-      if (pending.current === action) {
+      // Accepted End is still pending until the real terminal event. Do not
+      // reopen Answer or dispatch duplicate End commands during that gap.
+      if (declineFailed && pending.current === action) {
         const restoreAnswer =
           declineFailed &&
           answerBeforeDecline &&
           !answerBeforeDecline.failed &&
-          stillRinging();
+          ["incoming", "connecting"].includes(currentOwnedCall()?.status ?? "");
         pending.current = restoreAnswer ? answerBeforeDecline : null;
         setOperation(restoreAnswer ? "answer" : null);
+        if (restoreAnswer) armDeadline(answerBeforeDecline);
       }
     }
   };
@@ -197,7 +244,7 @@ export default function IncomingCallScreen() {
             <TouchableOpacity
               accessibilityRole="button"
               accessibilityLabel={
-                ringing
+                ringing && operation === null
                   ? "Decline call"
                   : incomingCall
                     ? "End call"
@@ -213,7 +260,7 @@ export default function IncomingCallScreen() {
             <Text style={styles.actionLabel}>
               {operation === "decline"
                 ? "Ending…"
-                : ringing
+                : ringing && operation === null
                   ? "Decline"
                   : incomingCall
                     ? "End call"
@@ -238,16 +285,20 @@ export default function IncomingCallScreen() {
               <IconSymbol name="phone.fill" size={30} color="#fff" />
             </TouchableOpacity>
             <Text style={styles.actionLabel}>
-              {operation === "answer" ? "Answering…" : "Answer"}
+              {operation === "answer" ? connectionDelayed ? "Not connected" : "Answering…" : "Answer"}
             </Text>
           </View>
         </View>
 
-        {ringing && (
+        {incomingCall && !settled && (
           <Text style={[styles.hint, { color: "#ffffff80" }]}>
-            {operation === "answer"
-              ? "Connecting your call. You can still decline."
-              : "Tap Answer or Decline"}
+            {operation === "decline"
+              ? "Waiting for the call to end."
+              : connectionDelayed
+                ? "The call has not connected. Tap End call to stop trying."
+                : operation === "answer"
+                  ? "Connecting your call. You can still end it."
+                  : "Tap Answer or Decline"}
           </Text>
         )}
       </View>

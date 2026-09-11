@@ -1,10 +1,11 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup(node: ReactNode): string };
 const m = vi.hoisted(() => ({
+  hooks: null as { values: any[]; index: number; effects: (() => void)[] } | null,
   owner: { id: 1 } as { id: number } | null,
   state: {} as any,
   params: { callId: "incoming-1" } as any,
@@ -17,6 +18,30 @@ const m = vi.hoisted(() => ({
   replace: vi.fn(),
   canGoBack: true,
 }));
+vi.mock("react", async () => {
+  const actual = await vi.importActual<typeof import("react")>("react");
+  return { ...actual,
+    useState(initial: any) {
+      if (!m.hooks) return actual.useState(initial);
+      const frame = m.hooks, i = frame.index++;
+      if (i >= frame.values.length) frame.values[i] = typeof initial === "function" ? initial() : initial;
+      return [frame.values[i], (value: any) => { frame.values[i] = typeof value === "function" ? value(frame.values[i]) : value; }];
+    },
+    useRef(initial: any) {
+      if (!m.hooks) return actual.useRef(initial);
+      const frame = m.hooks, i = frame.index++;
+      if (i >= frame.values.length) frame.values[i] = { current: initial };
+      return frame.values[i];
+    },
+    useEffect(effect: () => void | (() => void), deps: any[]) {
+      if (!m.hooks) return actual.useEffect(effect, deps);
+      const frame = m.hooks, i = frame.index++, previous = frame.values[i];
+      if (!previous || deps.some((value, n) => !Object.is(value, previous.deps[n]))) {
+        frame.effects.push(() => { previous?.cleanup?.(); frame.values[i] = { deps, cleanup: effect() }; });
+      }
+    },
+  };
+});
 vi.mock("react-native", () => ({
   Alert: { alert: m.alert },
   Vibration: { vibrate: vi.fn(), cancel: vi.fn() },
@@ -77,6 +102,8 @@ function render() {
   return renderToStaticMarkup(<IncomingCallScreen />);
 }
 beforeEach(() => {
+  vi.useFakeTimers();
+  m.hooks = null;
   vi.clearAllMocks();
   m.owner = { id: 1 };
   m.press.clear();
@@ -254,4 +281,126 @@ it("retains accepted Answer after a failed Decline while keeping Decline retryab
   );
   await decline();
   expect(m.hangup).toHaveBeenCalledTimes(2);
+});
+
+function persistentRender() {
+  m.hooks ??= { values: [], index: 0, effects: [] };
+  m.hooks.index = 0;
+  const html = render();
+  for (const effect of m.hooks.effects.splice(0)) effect();
+  return html;
+}
+function unmount() { for (const slot of m.hooks?.values ?? []) slot?.cleanup?.(); }
+afterEach(() => { unmount(); vi.clearAllTimers(); vi.useRealTimers(); });
+
+it("keeps accepted End latched until actual termination instead of enabling Answer again", async () => {
+  persistentRender();
+  await m.press.get("Answer call")!.run();
+  await m.press.get("Decline call")!.run();
+  const html = persistentRender();
+  expect(html).toContain("Ending…");
+  expect(m.press.get("Answer call")!.disabled).toBe(true);
+  await m.press.get("Answer call")!.run();
+  await (m.press.get("End call") ?? m.press.get("Decline call"))!.run();
+  expect(m.answer).toHaveBeenCalledOnce();
+  expect(m.hangup).toHaveBeenCalledOnce();
+  m.state.incomingCall = null;
+  persistentRender();
+  expect(persistentRender()).toContain("Call ended");
+  expect(m.press.get("Close ended call")!.disabled).toBe(false);
+});
+
+it("replaces endless Answering after 20 seconds while retaining a usable End and no fake connection", async () => {
+  persistentRender();
+  await m.press.get("Answer call")!.run();
+  await vi.advanceTimersByTimeAsync(19_999);
+  expect(persistentRender()).toContain("Answering…");
+  await vi.advanceTimersByTimeAsync(1);
+  const html = persistentRender();
+  expect(html).toContain("The call has not connected. Tap End call to stop trying.");
+  expect(html).not.toContain("Answering…");
+  expect(m.press.get("Answer call")!.disabled).toBe(true);
+  expect(m.press.get("End call")!.disabled).toBe(false);
+  expect(m.state.incomingCall.status).toBe("incoming");
+  expect(m.replace).not.toHaveBeenCalled();
+  await m.press.get("End call")!.run();
+  expect(m.hangup).toHaveBeenCalledOnce();
+});
+
+it.each(["connected", "owner", "replacement", "unmount"])("cancels the no-connect deadline on %s", async transition => {
+  m.state.incomingCall.history = { id: "old-call" };
+  persistentRender();
+  await m.press.get("Answer call")!.run();
+  expect(vi.getTimerCount()).toBe(1);
+  if (transition === "connected") m.state.incomingCall.status = "active";
+  if (transition === "owner") m.owner = { id: 1 };
+  if (transition === "replacement") m.state.incomingCall = { ...m.state.incomingCall, history: { id: "replacement" } };
+  if (transition === "unmount") unmount(); else persistentRender();
+  expect(vi.getTimerCount()).toBe(0);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(m.hangup).not.toHaveBeenCalled();
+  expect(m.alert).not.toHaveBeenCalled();
+  if (transition === "owner" || transition === "replacement") {
+    expect(persistentRender()).not.toContain("The call has not connected");
+    expect(m.press.get("Answer call")!.disabled).toBe(false);
+  }
+});
+
+it("keeps Ending latched if a late connected callback arrives before termination", async () => {
+  persistentRender();
+  await m.press.get("Answer call")!.run();
+  await m.press.get("Decline call")!.run();
+  m.state.incomingCall.status = "active";
+  persistentRender();
+  expect(persistentRender()).toContain("Ending…");
+  expect(m.press.get("End call")!.disabled).toBe(true);
+  expect(m.replace).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("restores the original connection deadline after an explicit End rejection", async () => {
+  persistentRender();
+  await m.press.get("Answer call")!.run();
+  await vi.advanceTimersByTimeAsync(19_000);
+  m.hangup.mockRejectedValueOnce(new Error("command rejected"));
+  await m.press.get("Decline call")!.run();
+  expect(m.alert).toHaveBeenCalledWith("Could not end call", expect.any(String));
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(persistentRender()).toContain("The call has not connected.");
+  expect(m.press.get("End call")!.disabled).toBe(false);
+  expect(m.press.get("Answer call")!.disabled).toBe(true);
+});
+
+it("never arms an old Answer's deadline after the owner and reused call ID change", async () => {
+  let finish!: () => void;
+  m.answer.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  m.state.incomingCall.history = { id: "old-call" };
+  persistentRender();
+  const old = m.press.get("Answer call")!.run();
+  m.owner = { id: 1 };
+  m.state.incomingCall = { ...m.state.incomingCall, history: { id: "new-call" } };
+  persistentRender();
+  await m.press.get("Answer call")!.run();
+  expect(vi.getTimerCount()).toBe(1);
+  finish(); await old;
+  expect(vi.getTimerCount()).toBe(1);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(persistentRender()).toContain("The call has not connected.");
+  expect(m.hangup).not.toHaveBeenCalled();
+});
+
+it("keeps a replacement call's End pending when an old End request rejects late", async () => {
+  let failOld!: (error: Error) => void;
+  m.hangup.mockImplementationOnce(() => new Promise<void>((_, reject) => { failOld = reject; }));
+  m.state.incomingCall.history = { id: "old-call" };
+  persistentRender();
+  const old = m.press.get("Decline call")!.run();
+  m.state.incomingCall = { ...m.state.incomingCall, history: { id: "replacement" } };
+  persistentRender(); persistentRender();
+  expect(m.press.get("Decline call")!.disabled).toBe(false);
+  await m.press.get("Decline call")!.run();
+  failOld(new Error("old SDK failure")); await old;
+  expect(persistentRender()).toContain("Ending…");
+  expect(m.press.get("End call")!.disabled).toBe(true);
+  expect(m.alert).not.toHaveBeenCalled();
 });
