@@ -2,10 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 PKPushType const PKPushTypeVoIP = @"voip";
-static int allocations, setups, reports, ends, checks;
-static NSUUID *reportedUUID;
-static BOOL reportError;
-static NSMutableArray *order;
+static int allocations, clears, deliveries, checks;
 static void check(BOOL ok) { checks++; if (!ok) { fprintf(stderr, "FAIL assertion %d\n", checks); exit(1); } }
 @implementation PKPushRegistry
 - (instancetype)initWithQueue:(dispatch_queue_t)queue { allocations++; return [super init]; }
@@ -19,56 +16,39 @@ static void check(BOOL ok) { checks++; if (!ok) { fprintf(stderr, "FAIL assertio
 - (void)sendEventWithName:(NSString *)name body:(id)body { [self.testEvents addObject:body]; }
 - (void)invalidate {}
 @end
-@implementation CXHandle
-- (instancetype)initWithType:(CXHandleType)type value:(NSString *)value { if ((self = [super init])) self.value = value; return self; }
-@end
-@implementation CXCallUpdate
-@end
-@implementation CXProvider
-- (void)reportNewIncomingCallWithUUID:(NSUUID *)uuid update:(CXCallUpdate *)update completion:(void (^)(NSError *error))completion {
-  reports++; reportedUUID = uuid; [order addObject:@"report"];
-  check([uuid isKindOfClass:[NSUUID class]]);
-  check([update.remoteHandle.value isEqual:@"Phone11"] && !update.hasVideo);
-  completion(reportError ? [NSError errorWithDomain:@"CallKit" code:2 userInfo:nil] : nil);
-}
-- (void)reportCallWithUUID:(NSUUID *)uuid endedAtDate:(NSDate *)date reason:(CXCallEndedReason)reason { ends++; [order addObject:@"end"]; check([uuid isEqual:reportedUUID] && reason == CXCallEndedReasonFailed); }
-@end
-@implementation RNCallKeep
-+ (id)allocWithZone:(NSZone *)zone { static RNCallKeep *instance; static dispatch_once_t once; dispatch_once(&once, ^{ instance = [super allocWithZone:zone]; }); return instance; }
-+ (void)setup:(NSDictionary *)options { setups++; RNCallKeep *instance = [self allocWithZone:nil]; instance.callKeepProvider = [CXProvider new]; [[NSUserDefaults standardUserDefaults] setObject:options forKey:@"RNCallKeepSettings"]; }
+@implementation Phone11WakeCoordinator
++ (instancetype)shared { static Phone11WakeCoordinator *value; if (!value) value = [self new]; return value; }
++ (void)restoreCallKitDelegate {}
+- (BOOL)saveEnrollment:(NSDictionary *)value { return NO; }
+- (NSDictionary *)publicBinding { return nil; }
+- (void)clearEnrollment { clears++; }
+- (void)receivePayload:(NSDictionary *)payload completion:(void (^)(void))completion { deliveries++; completion(); }
+- (void)providerDidReset:(CXProvider *)provider {}
 @end
 int main(void) { @autoreleasepool {
-  Phone11VoipPush *module = [Phone11VoipPush new];
-  __block BOOL rejected = NO;
+  // Early bootstrap has no dependency on an RCTEventEmitter allocation.
+  [Phone11VoipPush bootstrap];
+  check(allocations == (PHONE11_VOIP_WAKE_COMMISSIONED ? 1 : 0));
+  Phone11VoipPush *module = [Phone11VoipPush new]; __block BOOL rejected = NO;
   [module getCapabilities:^(id value) { check(![value[@"closedAppCalling"] boolValue]); check([value[@"registrationAvailable"] boolValue] == (PHONE11_VOIP_WAKE_COMMISSIONED != 0)); } rejecter:nil];
   [module start:^(id value) {} rejecter:^(NSString *code, NSString *message, NSError *error) { rejected = YES; }];
   check(rejected == !PHONE11_VOIP_WAKE_COMMISSIONED);
-  check(allocations == (PHONE11_VOIP_WAKE_COMMISSIONED ? 1 : 0));
+  P11VoipRegistry *manager = [P11VoipRegistry shared];
   if (PHONE11_VOIP_WAKE_COMMISSIONED) {
     [module start:^(id value) {} rejecter:nil]; check(allocations == 1);
-    PKPushRegistry *registry = module.registry;
-    [module startObserving];
+    PKPushRegistry *registry = manager.registry; [module startObserving];
     PKPushCredentials *credentials = [PKPushCredentials new];
     unsigned char bytes[] = {0, 1, 127, 255}; credentials.token = [NSData dataWithBytes:bytes length:4];
-    [module pushRegistry:registry didUpdatePushCredentials:credentials forType:PKPushTypeVoIP];
-    check([module.token isEqual:@"00017fff"]); check(module.testEvents.count == 1);
-    [module pushRegistry:registry didInvalidatePushTokenForType:PKPushTypeVoIP]; check(module.token == nil);
-    check(module.testEvents.lastObject[@"token"] == [NSNull null]);
-    [module stop:^(id value) {} rejecter:nil]; check(!module.registry && !registry.delegate && registry.desiredPushTypes.count == 0);
-    [module pushRegistry:registry didUpdatePushCredentials:credentials forType:PKPushTypeVoIP]; check(module.token == nil);
+    [manager pushRegistry:registry didUpdatePushCredentials:credentials forType:PKPushTypeVoIP];
+    check([manager.token isEqual:@"00017fff"]); check(module.testEvents.count == 1);
+    [module invalidate]; check(manager.registry == registry && manager.sink == nil);
+    [manager pushRegistry:registry didInvalidatePushTokenForType:PKPushTypeVoIP]; check(manager.token == nil && clears == 1);
+    [module stop:^(id value) {} rejecter:nil]; check(!manager.registry && !registry.delegate && registry.desiredPushTypes.count == 0);
+    [manager pushRegistry:registry didUpdatePushCredentials:credentials forType:PKPushTypeVoIP]; check(manager.token == nil);
   }
-  // Unexpected delivery still reports and ends with JS absent and the gate shut.
-  order = [NSMutableArray new];
-  [[NSUserDefaults standardUserDefaults] setObject:@{@"appName": @"Existing"} forKey:@"RNCallKeepSettings"];
-  [RNCallKeep allocWithZone:nil].callKeepProvider = [CXProvider new];
-  PKPushPayload *payload = [PKPushPayload new]; payload.dictionaryPayload = @{@"callId": @"existing-sip-call", @"callerName": @"PRIVATE"};
-  [module pushRegistry:nil didReceiveIncomingPushWithPayload:payload forType:PKPushTypeVoIP withCompletionHandler:^{ [order addObject:@"complete"]; }];
-  check(reports == 1 && ends == 1 && setups == 0);
-  check([order isEqual:@[@"report", @"end", @"complete"]]);
-  check(![reportedUUID.UUIDString isEqual:@"existing-sip-call"]);
-  reportError = YES; order = [NSMutableArray new];
-  [module pushRegistry:nil didReceiveIncomingPushWithPayload:payload forType:PKPushTypeVoIP withCompletionHandler:^{ [order addObject:@"complete"]; }];
-  check(reports == 2 && ends == 1); check([order isEqual:@[@"report", @"complete"]]);
-  [module invalidate]; check(module.registry == nil);
+  PKPushPayload *payload = [PKPushPayload new]; payload.dictionaryPayload = @{@"callId":@"untrusted"};
+  __block BOOL completed = NO;
+  [manager pushRegistry:nil didReceiveIncomingPushWithPayload:payload forType:PKPushTypeVoIP withCompletionHandler:^{ completed = YES; }];
+  check(completed && deliveries == 1);
   printf("PASS: %d native push assertions\n", checks);
 } return 0; }

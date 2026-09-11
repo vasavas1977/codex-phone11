@@ -45,6 +45,8 @@ static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, de
 static int nextAccount = 10, nextCall = 20;
 static BOOL sdkInitialized, speakerOK = YES, callKitEnabled;
 static HoldState mockHold = HoldStateNone;
+static NSString *wakeHeader;
+static int incomingPushes, headerReads;
 static NSString *mockVersion = @"siprix 1.0.40 from 20260620_1419";
 static SiprixIniData *lastInit;
 static id<SiprixEventDelegate> sdkDelegate;
@@ -60,6 +62,8 @@ static id<SiprixEventDelegate> sdkDelegate;
 - (int)unInitialize { shutdowns++; if (!shutdownCode) sdkInitialized = NO; return shutdownCode; }
 - (BOOL)isInitialized { return sdkInitialized; }
 - (NSString *)version { return mockVersion; }
+- (void)handleIncomingPush { incomingPushes++; }
+- (NSString *)callGetSipHeader:(int)callId hdrName:(NSString *)hdrName { headerReads++; if (![hdrName isEqual:@"X-Phone11-Wake-ID"]) abort(); return wakeHeader; }
 - (void)enableCallKit:(BOOL)enabled { callKitEnabled = enabled; }
 - (int)accountAdd:(SiprixAccData *)data {
   if (sdkCode) return sdkCode;
@@ -96,6 +100,11 @@ static void flush(void) {
 
 int main(void) {
   @autoreleasepool {
+#if !PHONE11_VOIP_WAKE_COMMISSIONED
+    __block BOOL disabled = NO;
+    [Phone11Siprix prepareIncomingWake:@{} sip:@{} event:^(NSDictionary *event) { abort(); } completion:^(NSError *error) { disabled = error != nil; }];
+    CHECK(disabled && initializes == 0 && incomingPushes == 0);
+#endif
     SiprixIniData *licenseProbe = [SiprixIniData new];
     P11ApplyBuildLicense(licenseProbe, nil);
     CHECK(licenseProbe.license == nil);

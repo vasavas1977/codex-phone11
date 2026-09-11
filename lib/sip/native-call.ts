@@ -115,6 +115,7 @@ class NativeCallManager {
   private initialized = false;
   private initialization: Promise<void> | null = null;
   private appStateSubscription: any = null;
+  private wakeCalls = new Set<string>();
   private pendingAnswers = new Set<string>();
   private acceptedAnswers = new Set<string>();
   private systemAnswered = new Set<string>();
@@ -153,7 +154,7 @@ class NativeCallManager {
       this.finishAnswerWaiter(uuid, new Error("Call controls did not respond. Try Answer again while the caller is ringing."));
     }, 8_000);
     this.answerWaiters.set(uuid, { call: incoming, historyId: incoming.history?.id, startedAt: incoming.startTime?.getTime(), owner, promise, resolve, reject, timer });
-    if (this.systemAnswered.has(uuid) && !this.pendingAnswers.has(uuid)) {
+    if (this.systemAnswered.has(uuid) && !this.pendingAnswers.has(uuid) && !this.wakeCalls.has(uuid)) {
       // CallKit already fulfilled CXAnswerCallAction for this exact owner/call.
       // Retry a rejected SDK accept through the same handler, not a second CX action.
       void this.handleNativeAnswer(uuid, false);
@@ -182,6 +183,7 @@ class NativeCallManager {
     this.acceptedAnswers.clear();
     this.systemAnswered.clear();
     this.incomingOwners.clear();
+    this.wakeCalls.clear();
     this.answerCalls.clear();
   }
 
@@ -276,6 +278,19 @@ class NativeCallManager {
    * Display incoming call on native UI (lock screen).
    * Called when SIP engine receives an incoming call.
    */
+  adoptIncomingCall(sipCallId: string, uuid: string, alreadyAnswered: boolean): void {
+    const owner = getAuthSnapshot().user;
+    if (!owner || !this.initialized || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(uuid) ||
+      (callIdToUuid.has(sipCallId) && callIdToUuid.get(sipCallId) !== uuid) ||
+      (uuidToCallId.has(uuid) && uuidToCallId.get(uuid) !== sipCallId) ||
+      (this.incomingOwners.has(uuid) && this.incomingOwners.get(uuid) !== owner)) {
+      throw new Error("This native wake call cannot be adopted");
+    }
+    callIdToUuid.set(sipCallId, uuid); uuidToCallId.set(uuid, sipCallId);
+    this.incomingOwners.set(uuid, owner); this.wakeCalls.add(uuid);
+    if (alreadyAnswered) { this.systemAnswered.add(uuid); this.acceptedAnswers.add(uuid); }
+  }
+
   displayIncomingCall(
     sipCallId: string,
     callerNumber: string,
@@ -376,6 +391,7 @@ class NativeCallManager {
     const uuid = callIdToUuid.get(sipCallId);
     if (!uuid) return;
 
+    if (this.wakeCalls.has(uuid)) this.finishAnswerWaiter(uuid);
     try {
       if (Platform.OS === "ios") {
         if (outgoingCalls.has(sipCallId)) callKeep.reportConnectedOutgoingCallWithUUID(uuid);
@@ -411,7 +427,8 @@ class NativeCallManager {
     // Map reason to CallKit end reason
     const endReason = this._mapEndReason(reason);
     try {
-      callKeep.reportEndCallWithUUID(uuid, endReason);
+      // Native wake coordinator owns the pre-reported system call lifecycle.
+      if (!this.wakeCalls.has(uuid)) callKeep.reportEndCallWithUUID(uuid, endReason);
       addNativeCallDiagnostic("info", "CallKit call ended", {
         callId: sipCallId,
         detail: reason,
@@ -437,6 +454,7 @@ class NativeCallManager {
     this.acceptedAnswers.delete(uuid);
     this.systemAnswered.delete(uuid);
     this.incomingOwners.delete(uuid);
+    this.wakeCalls.delete(uuid);
     this.answerCalls.delete(uuid);
     callIdToUuid.delete(sipCallId);
     uuidToCallId.delete(uuid);
@@ -559,6 +577,8 @@ class NativeCallManager {
         addNativeCallDiagnostic("warning", "Ignored native answer action for an unknown call", { context });
         return;
       }
+      // The native coordinator exclusively accepts its correlated wake call.
+      if (this.wakeCalls.has(callUUID)) return;
       const owner = getAuthSnapshot().user;
       if (!owner || this.incomingOwners.get(callUUID) !== owner) {
         this.finishAnswerWaiter(callUUID, new Error("Your phone session changed."));

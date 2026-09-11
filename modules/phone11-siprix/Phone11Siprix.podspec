@@ -12,6 +12,10 @@ Pod::Spec.new do |s|
   s.source = { :git => 'https://github.com/vasavas1977/codex-phone11.git', :tag => s.version.to_s }
   s.platform = :ios, '15.1'
   s.source_files = 'ios/**/*.{h,m}'
+  # Swift AppDelegate imports the bootstrap from this Objective-C static pod.
+  s.module_name = 'Phone11Siprix'
+  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
+  s.public_header_files = 'ios/Phone11Siprix.h', 'ios/Phone11VoipPush.h'
   s.requires_arc = true
   s.dependency 'React-Core'
   s.dependency 'RNCallKeep'

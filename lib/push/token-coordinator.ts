@@ -37,20 +37,29 @@ export class VoipTokenCoordinator {
     return this.serialize(async () => {
       if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
       const entries = await this.deps.read();
-      for (const previous of entries.filter(entry => entry.ownerUserId === binding.ownerUserId &&
-          (entry.token !== binding.token || entry.sipUri !== binding.sipUri))) {
-        if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
-        await this.deps.unregister(previous, signal);
-        if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
-        entries.splice(entries.indexOf(previous), 1);
+      const previousEntries = entries.filter(entry => entry.ownerUserId === binding.ownerUserId &&
+        (entry.token !== binding.token || entry.deviceId !== binding.deviceId || entry.sipUri !== binding.sipUri));
+      const exists = entries.some(entry => entry.ownerUserId === binding.ownerUserId &&
+        entry.token === binding.token && entry.deviceId === binding.deviceId && entry.sipUri === binding.sipUri);
+      if (!exists) {
+        entries.push(binding);
         await this.deps.write(entries);
       }
       if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
-      const exists = entries.some(entry => entry.ownerUserId === binding.ownerUserId &&
-        entry.token === binding.token && entry.deviceId === binding.deviceId && entry.sipUri === binding.sipUri);
-      if (!exists) await this.deps.write([...entries, binding]);
-      if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
+      // Register first so a same-session provider rotation can atomically move
+      // the existing wake grant to the new server revision without a deletion gap.
       await this.deps.register(binding, signal);
+      for (const previous of previousEntries) {
+        if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
+        // unregister is token/device scoped; the same token/device now names the
+        // NEW assignment and must never be removed as an old sipUri cleanup.
+        if (previous.token !== binding.token || previous.deviceId !== binding.deviceId) {
+          await this.deps.unregister(previous, signal);
+          if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
+        }
+        entries.splice(entries.indexOf(previous), 1);
+        await this.deps.write(entries);
+      }
     });
   }
 

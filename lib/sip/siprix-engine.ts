@@ -5,7 +5,7 @@ import { useSipCallStore } from "./call-store";
 import { callNumber } from "./call-history";
 import { useSipDiagnosticsStore } from "./diagnostics-store";
 import type {
-  Phone11SiprixModule, SiprixAccount, SiprixCall, SiprixEvent, SiprixSnapshot,
+  AccountConfig, WakeBinding, Phone11SiprixModule, SiprixAccount, SiprixCall, SiprixEvent, SiprixSnapshot,
 } from "../../modules/phone11-siprix";
 
 // These compatibility labels belong to call-store, not to the Siprix SDK.
@@ -33,6 +33,7 @@ function nativeCall(call: SiprixCall) {
 }
 
 type Session = {
+  owner: ReturnType<typeof getAuthSnapshot>["user"];
   revision: number;
   account: SipAccount;
   generation: number | null;
@@ -40,9 +41,25 @@ type Session = {
 };
 
 const accountFields = [
-  "ownerUserId", "id", "displayName", "username", "password", "domain", "proxy",
+  "ownerUserId", "tenantId", "id", "displayName", "username", "password", "domain", "proxy",
   "port", "transport", "srtp", "stun", "enabled",
 ] as const satisfies ReadonlyArray<keyof SipAccount>;
+
+function nativeAccount(account: SipAccount): AccountConfig {
+  return {
+    sipServer: account.domain, sipExtension: account.username, sipPassword: account.password,
+    sipAuthId: account.username, ...(account.proxy ? { sipProxy: account.proxy } : {}),
+    displName: account.displayName || account.username, transport: account.transport,
+    port: account.port, secureMedia: account.srtp ? 1 : 0,
+    ...(account.stun ? { stunServer: account.stun } : {}),
+  };
+}
+function sameWake(binding: WakeBinding, snapshot: SiprixSnapshot): boolean {
+  const wake = snapshot.nativeWake;
+  return !!wake && binding.expiresAt > Date.now() &&
+    (["bindingId", "ownerUserId", "tenantId", "deviceId", "sessionBinding"] as const)
+      .every(key => binding[key] === wake[key]);
+}
 
 function sameAccount(snapshot: SipAccount, account: SipAccount | null): boolean {
   // Secure-store hydration creates new objects. Compare credentials privately, never log them.
@@ -71,7 +88,7 @@ export class SiprixEngine {
 
   private current(session = this.session): session is Session {
     return Boolean(session && session === this.session && session.revision === this.revision &&
-      session.account.enabled && sameAccount(session.account, useSipAccountStore.getState().account) &&
+      session.owner === getAuthSnapshot().user && session.account.enabled && sameAccount(session.account, useSipAccountStore.getState().account) &&
       session.account.ownerUserId === getAuthSnapshot().user?.id);
   }
 
@@ -82,6 +99,19 @@ export class SiprixEngine {
     const message = `Siprix ${operation} failed${suffix}`;
     useSipDiagnosticsStore.getState().addEvent({ level: "error", category: "engine", message });
     return new Error(message);
+  }
+
+  bindWakeOwner(binding: WakeBinding): Promise<void> {
+    const owner = getAuthSnapshot().user;
+    return this.serialize(async () => {
+      const session = this.requireSession();
+      if (owner !== getAuthSnapshot().user || binding.ownerUserId !== owner?.id ||
+          binding.tenantId !== session.account.tenantId || binding.expiresAt <= Date.now()) {
+        throw new Error("The wake binding does not match this phone session");
+      }
+      await this.bridge!.bindForegroundWakeContext(binding, nativeAccount(session.account));
+      if (!this.current(session)) throw new Error("Your phone session changed");
+    });
   }
 
   initialize(): Promise<void> {
@@ -100,7 +130,15 @@ export class SiprixEngine {
         useSipAccountStore.getState().setRegistrationState("failed", error.message);
         throw error;
       }
-      if (this.current() && this.session?.accountId) return;
+      if (this.current() && this.session?.accountId) {
+        const session = this.session;
+        const snapshot = await this.bridge!.getSnapshot();
+        if (snapshot.nativeWake && this.current(session)) {
+          await this.bridge!.restoreIncomingWakeDelegate();
+          this.applySnapshot(snapshot, session);
+        }
+        return;
+      }
       if (this.bridge) await this.cleanup();
       if (revision !== this.revision) return;
       const bridge = NativeModules.Phone11Siprix as Phone11SiprixModule | undefined;
@@ -110,7 +148,7 @@ export class SiprixEngine {
         throw error;
       }
       this.bridge = bridge;
-      const session: Session = { revision, account, generation: null, accountId: null };
+      const session: Session = { revision, account, owner: getAuthSnapshot().user, generation: null, accountId: null };
       this.session = session;
       const invalidate = () => {
         if (this.session === session && !this.current(session)) {
@@ -120,11 +158,27 @@ export class SiprixEngine {
       this.subscriptions.push(addAuthChangeListener(invalidate), useSipAccountStore.subscribe(invalidate));
       useSipAccountStore.getState().setRegistrationState("registering");
       try {
-        // A native session surviving a JS reload has no authenticated JS owner. Remove it first.
         const previous = await bridge.getSnapshot();
-        if (previous.initialized) await bridge.destroy();
-        if (!this.current(session)) { await this.cleanup(); return; }
-        const started = await bridge.initialize({});
+        let adopted = false;
+        let started: SiprixSnapshot;
+        if (previous.nativeWake) {
+          // A native wake must survive JS startup until the server validates its
+          // exact login binding. Never tear down another session during adoption.
+          this.bridge = null;
+          const { getWakeAdoptionBinding } = await import("../push/client");
+          const binding = await getWakeAdoptionBinding();
+          if (!this.current(session) || !binding || !sameWake(binding, previous) ||
+              binding.ownerUserId !== session.account.ownerUserId || binding.tenantId !== session.account.tenantId) {
+            throw new Error("Incoming wake session could not be verified");
+          }
+          started = await bridge.adoptIncomingWake(binding, nativeAccount(account));
+          this.bridge = bridge;
+          adopted = true;
+        } else {
+          if (previous.initialized) await bridge.destroy();
+          if (!this.current(session)) { await this.cleanup(); return; }
+          started = await bridge.initialize({});
+        }
         if (!this.current(session)) { await this.cleanup(); return; }
         if (!started.initialized || !Number.isSafeInteger(started.generation)) throw new Error("Invalid native initialization");
         session.generation = started.generation;
@@ -137,18 +191,19 @@ export class SiprixEngine {
         await nativeCallManager.initialize();
         if (!this.current(session)) { await this.cleanup(); return; }
         this.callManager = nativeCallManager;
+        if (adopted) await bridge.restoreIncomingWakeDelegate();
+        if (!this.current(session)) { await this.cleanup(); return; }
         const listener = new NativeEventEmitter(bridge as never).addListener(
           "Phone11SiprixEvent", (event: SiprixEvent) => this.onEvent(event, session),
         );
         this.subscriptions.push(() => listener.remove());
-        const created = await bridge.createAccount({
-          sipServer: account.domain, sipExtension: account.username, sipPassword: account.password,
-          sipAuthId: account.username,
-          ...(account.proxy ? { sipProxy: account.proxy } : {}),
-          displName: account.displayName || account.username, transport: account.transport,
-          port: account.port, secureMedia: account.srtp ? 1 : 0,
-          ...(account.stun ? { stunServer: account.stun } : {}),
-        });
+        if (adopted) {
+          if (started.accounts.length !== 1) throw new Error("Invalid native wake account");
+          session.accountId = started.accounts[0].accountId;
+          this.applySnapshot(await bridge.getSnapshot(), session);
+          return;
+        }
+        const created = await bridge.createAccount(nativeAccount(account));
         if (!this.current(session)) { await this.cleanup(); return; }
         if (!created.accountId) throw new Error("Missing native account ID");
         session.accountId = created.accountId;
@@ -207,6 +262,14 @@ export class SiprixEngine {
       });
     } else if (event.type === "error") {
       this.failure("native event");
+      if (event.operation === "wakeCleanup") {
+        const owner = session.owner;
+        void this.destroy().then(() => {
+          if (getAuthSnapshot().user === owner && sameAccount(session.account, useSipAccountStore.getState().account)) {
+            useSipAccountStore.getState().setRegistrationState("failed", "Incoming call cleanup required. Reconnect your phone.");
+          }
+        }).catch(() => undefined);
+      }
     }
   }
 
@@ -249,7 +312,9 @@ export class SiprixEngine {
       // System UI/history get a display handle; the engine and SIP routing retain the full URI.
       const displayHandle = callNumber(call.remoteUri);
       if (call.direction === "incoming") {
-        this.callManager?.displayIncomingCall(call.callId, displayHandle);
+        if (call.wakeCallUUID) {
+          this.callManager?.adoptIncomingCall(call.callId, call.wakeCallUUID, !!call.wakeSystemAnswered);
+        } else this.callManager?.displayIncomingCall(call.callId, displayHandle);
         store.setIncomingCall(handle);
       } else {
         this.callManager?.reportOutgoingCall(call.callId, displayHandle);
@@ -387,6 +452,14 @@ export class SiprixEngine {
   }
 
   async restart(): Promise<void> {
+    const requestedRevision = this.revision;
+    // Foreground recovery must not destroy an already ringing native wake.
+    if (this.current() && this.bridge) {
+      const session = this.session;
+      const snapshot = await this.bridge.getSnapshot();
+      if (requestedRevision !== this.revision) return;
+      if (this.current(session) && snapshot.nativeWake) { await this.initialize(); return; }
+    }
     const cleanup = this.destroy();
     const revision = this.revision;
     await cleanup;

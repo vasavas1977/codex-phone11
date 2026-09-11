@@ -70,7 +70,9 @@ describe("Team Chat network state", () => {
   it("keeps unread counts until server acknowledgement", async () => {
     const { store, api } = setup({ history: vi.fn(async () => ({ messages: [saved()], hasMore: false })), read: vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ ok: true }) });
     await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().markAsRead("room");
-    expect(store.getState().channels[0].unreadCount).toBe(2); await store.getState().markAsRead("room"); expect(store.getState().channels[0].unreadCount).toBe(0); expect(api.read).toHaveBeenCalledWith(10, "room", 1);
+    expect(store.getState().channels[0].unreadCount).toBe(2);
+    vi.mocked(api.list).mockResolvedValue({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [{ ...channel, unreadCount: 0 }] });
+    await store.getState().markAsRead("room"); expect(store.getState().channels[0].unreadCount).toBe(0); expect(api.read).toHaveBeenCalledWith(10, "room", 1);
   });
   it("clears revoked workspace data instead of showing cached conversations", async () => {
     const { store, api } = setup(); await store.getState().loadChannels();
@@ -90,5 +92,52 @@ describe("Team Chat network state", () => {
     const { store, api } = setup({ history: vi.fn().mockResolvedValueOnce({ messages: [saved({ sequence: 200 })], hasMore: true }).mockResolvedValueOnce({ messages: [saved({ clientId: "older", sequence: 1, timestamp: 1 })], hasMore: false }) });
     await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().loadMessages("room", true);
     expect(api.history).toHaveBeenLastCalledWith(10, "room", 200); expect(store.getState().messages.room).toHaveLength(2); expect(store.getState().hasMore.room).toBe(false);
+  });
+  it("retains newer unread messages when an older read acknowledgment arrives", async () => {
+    let finish!: () => void;
+    const { store, api } = setup({ history: async () => ({ messages: [saved()], hasMore: false }), read: () => new Promise<void>(resolve => { finish = resolve; }) });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room");
+    const reading = store.getState().markAsRead("room");
+    vi.mocked(api.list).mockResolvedValue({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [{ ...channel, unreadCount: 1, lastMessage: "Arrived during read" }] });
+    finish(); await reading;
+    expect(store.getState().channels[0].unreadCount).toBe(1);
+  });
+  it("orders saved messages by server sequence even when timestamps regress", async () => {
+    const { store } = setup({ history: async () => ({ messages: [saved({ sequence: 1, timestamp: 200 }), saved({ id: "second", clientId: "second", sequence: 2, timestamp: 100 })], hasMore: false }) });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room");
+    expect(store.getState().messages.room.map(m => m.sequence)).toEqual([1, 2]);
+  });
+  it("honors the latest workspace selection while an earlier workspace is still loading", async () => {
+    let first!: (value: Awaited<ReturnType<ChatTransport["list"]>>) => void;
+    const { store, api } = setup(); await store.getState().loadChannels();
+    vi.mocked(api.list).mockImplementationOnce(() => new Promise(resolve => { first = resolve; }))
+      .mockResolvedValueOnce({ workspace: { id: 30, name: "Gamma" }, workspaces: [], channels: [] });
+    const previous = store.getState().loadChannels(20); await store.getState().loadChannels(30);
+    first({ workspace: { id: 20, name: "Beta" }, workspaces: [], channels: [channel] }); await previous;
+    expect(store.getState().workspace?.id).toBe(30); expect(store.getState().channels).toEqual([]);
+  });
+  it("preserves pending text but removes cached received messages when conversation access is revoked", async () => {
+    const { store, api } = setup({ send: vi.fn().mockRejectedValue(new Error("offline")) });
+    await store.getState().loadChannels(); store.getState().setDraft("room", "keep draft");
+    await store.getState().sendMessage("room", "keep failed message");
+    store.getState().setDraft("room", "next draft");
+    vi.mocked(api.history).mockResolvedValueOnce({ messages: [saved({ senderId: 2 })], hasMore: false });
+    await store.getState().loadMessages("room");
+    vi.mocked(api.history).mockRejectedValue({ data: { code: "NOT_FOUND" } });
+    await store.getState().loadMessages("room");
+    expect(store.getState().messages.room).toHaveLength(1);
+    expect(store.getState().messages.room[0]).toMatchObject({ content: "keep failed message", status: "failed" });
+    expect(store.getState().drafts.room).toBe("next draft"); expect(store.getState().channels).toEqual([]);
+    await store.getState().retryMessage("room", store.getState().messages.room[0].clientId);
+    await store.getState().sendMessage("room", "blocked");
+    expect(api.send).toHaveBeenCalledTimes(1);
+  });
+  it("does not downgrade another sender's matching client key when retrying", async () => {
+    const { store, api } = setup({ send: vi.fn().mockRejectedValue(new Error("offline")) });
+    await store.getState().loadChannels(); await store.getState().sendMessage("room", "pending");
+    const pending = store.getState().messages.room[0];
+    vi.mocked(api.history).mockResolvedValue({ messages: [saved({ clientId: pending.clientId, senderId: 2 })], hasMore: false });
+    await store.getState().loadMessages("room"); await store.getState().retryMessage("room", pending.clientId);
+    expect(store.getState().messages.room.find(m => m.senderId === 2)?.status).toBe("sent");
   });
 });

@@ -10,6 +10,9 @@ import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_
 import { pbxRouter } from "./pbx/pbx-router";
 import { ivrRouter } from "./pbx/ivr-router";
 import { chatRouter } from "./chat/router";
+import { wakeService,wakeEnrollSchema,wakeIdentitySchema } from "./push/wake-service";
+import { resolvePushSession } from "./push/session";
+import { WakeError } from "./push/wake-repository";
 import { invokeLLM } from "./_core/llm";
 import {
   getPhoneConfig,
@@ -229,6 +232,19 @@ Rules:
 
   /** Push Gateway — VoIP push token management and call trigger */
   push: router({
+    enrollWake: protectedProcedure.input(wakeEnrollSchema).mutation(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      return wakeService.enroll(session,ctx.user.id,input);
+    }),
+    resolveWakeBinding: protectedProcedure.input(wakeIdentitySchema).query(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      try{return await wakeService.resolve(session,ctx.user.id,input.bindingId);}
+      catch(error){if(error instanceof WakeError && error.status===403)return null;throw error;}
+    }),
+    revokeWake: protectedProcedure.input(wakeIdentitySchema).mutation(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      await wakeService.revoke(session,ctx.user.id,input.bindingId);return {ok:true};
+    }),
     /** Register a VoIP push token (called by mobile app on startup) */
     register: protectedProcedure
       .input(registerTokenSchema)

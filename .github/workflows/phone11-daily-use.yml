@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - "app.config.ts"
+      - "plugins/**"
+      - "infra/configs/kamailio/phone11-wake-candidate/**"
+      - "ops/scripts/check-phone11-wake-kamailio.mjs"
       - "app/**"
       - "components/**"
       - "hooks/**"
@@ -19,6 +23,10 @@ on:
   push:
     branches: [codex/phone11-daily-use-20260910]
     paths:
+      - "app.config.ts"
+      - "plugins/**"
+      - "infra/configs/kamailio/phone11-wake-candidate/**"
+      - "ops/scripts/check-phone11-wake-kamailio.mjs"
       - "app/**"
       - "components/**"
       - "hooks/**"
@@ -75,7 +83,16 @@ jobs:
             tests/phone11-pbx-integration-security.test.ts \
             tests/phone11-chat-state.test.ts \
             tests/phone11-chat-controls.test.tsx \
-            tests/phone11-chat-persistence.test.ts
+            tests/phone11-chat-persistence.test.ts \
+            tests/phone11-chat-scope-ui.test.tsx \
+            tests/phone11-chat-transport.test.ts \
+            tests/phone11-chat-owner.test.ts \
+            tests/phone11-wake-client.test.ts \
+            tests/phone11-wake-service.test.ts \
+            tests/phone11-wake-routes.test.ts
+          node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
+      - name: Parse disabled and enabled wake candidates with exact Kamailio version
+        run: node ops/scripts/check-phone11-wake-kamailio.mjs --image ghcr.io/kamailio/kamailio-ci@sha256:8eebac744905d360d04bd871ee46a3de0908aa30989649c00fd590914cb35fa0
       - name: Compile backend with esbuild
         run: pnpm run build:backend
 
@@ -175,4 +192,4 @@ jobs:
           assert.equal(url.hash, '');
           JS
       - name: Test durable device ownership, session revocation, and token replacement
-        run: pnpm exec vitest run tests/phone11-push-postgres.test.ts tests/phone11-push-auth-schema.test.ts
+        run: pnpm exec vitest run tests/phone11-push-postgres.test.ts tests/phone11-push-auth-schema.test.ts tests/phone11-wake-postgres.test.ts

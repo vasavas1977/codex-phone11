@@ -50,7 +50,11 @@ export function createPushRepository(transaction: Transaction = withTransaction)
         const count = await client.query("SELECT count(*)::integer AS n FROM phone11_push_devices WHERE user_id=$1", [token.owner.userId]);
         if (!current.rows.length && Number(count.rows[0].n) >= 10) throw new Error("Too many registered devices");
         // A provider token must not keep receiving calls for a previous signed-in owner.
-        await client.query("DELETE FROM phone11_push_devices WHERE platform=$1 AND bundle_id=$2 AND sandbox=$3 AND token_hash=$4", [token.platform, token.bundleId, !!token.sandbox, hash]);
+        // Keep this identity for an atomic UPDATE. A wake grant can follow a same-session
+        // token refresh while provider-response revision protection still advances.
+        await client.query(`DELETE FROM phone11_push_devices WHERE platform=$1 AND bundle_id=$2 AND sandbox=$3 AND token_hash=$4
+          AND NOT (user_id=$5 AND tenant_id=$6 AND extension_id=$7 AND device_id=$8)`,
+          [token.platform,token.bundleId,!!token.sandbox,hash,token.owner.userId,token.owner.tenantId,token.owner.extensionId,token.deviceId]);
         await client.query(`INSERT INTO phone11_push_devices
           (user_id,tenant_id,extension_id,device_id,platform,bundle_id,sandbox,token_type,token,token_hash,sip_uri,app_version,revision,session_id)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)

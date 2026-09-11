@@ -120,8 +120,9 @@ export function createApnsSender(deps: Dependencies = {}) {
     const config = loadConfig();
     if (token.platform !== "ios" || token.tokenType !== "voip" || token.bundleId !== config.bundleId || !!token.sandbox !== (config.environment === "sandbox")) throw new PushProviderError("configuration");
     if (!/^[0-9a-fA-F]{32,512}$/.test(token.token)) throw new PushProviderError("invalid-token");
-    const body = JSON.stringify({ aps: { "content-available": 1 }, callId: payload.callId, callerNumber: payload.callerNumber,
-      callerName: payload.callerName || payload.callerNumber, hasVideo: !!payload.hasVideo, type: "voip_call", timestamp: now() });
+    const body = JSON.stringify(payload.wake ? { aps: { "content-available": 1 }, ...payload.wake }
+      : { aps: { "content-available": 1 }, callId: payload.callId, callerNumber: payload.callerNumber,
+        callerName: payload.callerName || payload.callerNumber, hasVideo: !!payload.hasVideo, type: "voip_call", timestamp: now() });
     if (Buffer.byteLength(body) > 5120) throw new PushProviderError("rejected", 413, "PayloadTooLarge");
     const authorization = await withinBudget(() => jwt(config)), id = randomUUID();
     for (let attempt = 0; ; attempt++) {

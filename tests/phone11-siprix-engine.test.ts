@@ -7,9 +7,10 @@ const runtime = vi.hoisted(() => ({
   authListeners: new Set<() => void>(),
   listeners: new Set<(event: SiprixEvent) => void>(),
   diagnostics: vi.fn(),
+  wakeBinding: vi.fn(),
   callManager: {
     initialize: vi.fn(async () => {}), displayIncomingCall: vi.fn(), reportOutgoingCall: vi.fn(),
-    reportCallConnected: vi.fn(), reportCallEnded: vi.fn(),
+    reportCallConnected: vi.fn(), reportCallEnded: vi.fn(), adoptIncomingCall: vi.fn(),
   },
 }));
 vi.mock("react-native", () => ({
@@ -34,6 +35,7 @@ vi.mock("../lib/_core/auth", () => ({
 vi.mock("../lib/sip/diagnostics-store", () => ({
   useSipDiagnosticsStore: { getState: () => ({ addEvent: runtime.diagnostics }) },
 }));
+vi.mock("../lib/push/client", () => ({ getWakeAdoptionBinding: runtime.wakeBinding }));
 vi.mock("../lib/sip/native-call", () => ({ nativeCallManager: runtime.callManager }));
 
 import { SiprixEngine } from "../lib/sip/siprix-engine";
@@ -63,6 +65,9 @@ function deferred<T>() {
 
 let snapshot: SiprixSnapshot;
 const bridge = {
+  bindForegroundWakeContext: vi.fn(async () => {}),
+  adoptIncomingWake: vi.fn(async () => structuredClone(snapshot)),
+  restoreIncomingWakeDelegate: vi.fn(async () => {}),
   getSnapshot: vi.fn(async () => structuredClone(snapshot)),
   initialize: vi.fn(async () => {
     snapshot.initialized = true;
@@ -99,8 +104,7 @@ function registered() {
 }
 async function ready() { await engine.initialize(); registered(); }
 
-describe("Siprix native adapter", () => {
-  beforeEach(() => {
+beforeEach(() => {
     vi.clearAllMocks();
     snapshot = emptySnapshot();
     runtime.platform.OS = "ios";
@@ -112,7 +116,9 @@ describe("Siprix native adapter", () => {
     useSipCallStore.setState({ activeCalls: {}, incomingCall: null });
     engine = new SiprixEngine();
   });
-  afterEach(async () => { await engine.destroy(); });
+afterEach(async () => { await engine.destroy(); });
+
+describe("Siprix native adapter", () => {
 
   it("explicitly registers after account creation and only accepts native regState success", async () => {
     await engine.initialize();
@@ -288,7 +294,7 @@ describe("Siprix native adapter", () => {
   it.each([
     { domain: "new.example.test" }, { proxy: "proxy.example.test" }, { transport: "TCP" as const },
     { port: 5060 }, { srtp: false }, { stun: "new-stun.example.test" }, { enabled: false },
-    { username: "1002" }, { id: "new" }, { displayName: "New name" }, { ownerUserId: 29 },
+    { username: "1002" }, { tenantId: 9 }, { id: "new" }, { displayName: "New name" }, { ownerUserId: 29 },
   ])("invalidates a changed account field %o", async change => {
     await ready();
     useSipAccountStore.setState({ account: { ...account, ...change } });
@@ -548,4 +554,72 @@ describe("Siprix native adapter", () => {
     await Promise.all([audio, cleanup]);
     expect(bridge.handleNativeAudioSession).toHaveBeenCalledTimes(2);
   });
+});
+
+
+describe("validated native wake adoption", () => {
+  const binding = { bindingId: "binding", ownerUserId: 17, tenantId: 2, deviceId: "device", sessionBinding: "session", expiresAt: Date.now()+600000 };
+  const uuid = "11111111-1111-4111-8111-111111111111";
+  function pendingWake(state: "ringing" | "connected" = "ringing") {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    snapshot = { ...emptySnapshot(), initialized: true, generation: 7, sequence: 5,
+      nativeWake: { ...binding, v: 1, callUUID: uuid, expiresAt: Date.now()+30000, grantExpiresAt: binding.expiresAt },
+      accounts: [{ id: "1", accountId: "1", registrationState: "registered", regState: 0 }],
+      calls: [newCall({ direction: "incoming", state, wakeCallUUID: uuid, wakeSystemAnswered: state === "connected" })] };
+    runtime.wakeBinding.mockResolvedValue(binding);
+  }
+  it.each(["ringing", "connected"] as const)("adopts a %s native wake without destroying, registering, or reporting another system call", async state => {
+    pendingWake(state);
+    await engine.initialize();
+    expect(bridge.destroy).not.toHaveBeenCalled(); expect(bridge.initialize).not.toHaveBeenCalled();
+    expect(bridge.createAccount).not.toHaveBeenCalled(); expect(bridge.registerAccount).not.toHaveBeenCalled();
+    expect(bridge.adoptIncomingWake).toHaveBeenCalledWith(binding, expect.objectContaining({ sipExtension: account.username }));
+    expect(bridge.restoreIncomingWakeDelegate).toHaveBeenCalledOnce();
+    expect(runtime.callManager.adoptIncomingCall).toHaveBeenCalledWith("11", uuid, state === "connected");
+    expect(runtime.callManager.displayIncomingCall).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+  it.each(["unverified", "session", "tenant"])("refuses %s wake without tearing down its native owner", async reason => {
+    pendingWake();
+    runtime.wakeBinding.mockResolvedValue(reason === "unverified" ? null : { ...binding, ...(reason === "session" ? { sessionBinding: "replacement" } : { tenantId: 9 }) });
+    await expect(engine.initialize()).rejects.toThrow("initialization failed");
+    expect(bridge.adoptIncomingWake).not.toHaveBeenCalled(); expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(runtime.callManager.adoptIncomingCall).not.toHaveBeenCalled();
+  });
+  it("does not adopt after same-user re-login during server verification", async () => {
+    pendingWake(); const wait=deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task=engine.initialize(); await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalled());
+    runtime.user={ id:17 }; wait.resolve(binding); await task;
+    expect(bridge.adoptIncomingWake).not.toHaveBeenCalled(); expect(bridge.destroy).not.toHaveBeenCalled();
+  });
+  it("keeps a verified wake alive on foreground restart", async () => {
+    pendingWake(); await engine.initialize();
+    await engine.restart();
+    expect(bridge.destroy).not.toHaveBeenCalled(); expect(bridge.initialize).not.toHaveBeenCalled();
+    expect(runtime.callManager.adoptIncomingCall).toHaveBeenCalledOnce();
+  });
+  it("binds only the current authenticated account and tenant for a future warm wake", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); await ready();
+    await engine.bindWakeOwner(binding);
+    expect(bridge.bindForegroundWakeContext).toHaveBeenCalledWith(binding, expect.objectContaining({ sipServer: account.domain }));
+    await expect(engine.bindWakeOwner({ ...binding, tenantId: 9 })).rejects.toThrow("does not match");
+    expect(bridge.bindForegroundWakeContext).toHaveBeenCalledOnce();
+  });
+  it("clears an adopted session after native wake cleanup fails without retaining a live call", async () => {
+    pendingWake(); await engine.initialize();
+    emit({ type: "error", operation: "wakeCleanup", code: -1 });
+    await vi.waitFor(() => expect(bridge.destroy).toHaveBeenCalledOnce());
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+    expect(useSipAccountStore.getState().registrationState).toBe("failed");
+  });
+
+  it("does not resurrect registration when destroy wins during wake restart inspection", async () => {
+    pendingWake(); await engine.initialize();
+    const wait=deferred<SiprixSnapshot>(); bridge.getSnapshot.mockReturnValueOnce(wait.promise);
+    const restart=engine.restart(); await engine.destroy();
+    wait.resolve({ ...emptySnapshot() }); await restart;
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.adoptIncomingWake).toHaveBeenCalledOnce();
+  });
+
 });

@@ -308,3 +308,36 @@ it("does not reuse a previous system Answer proof for a replacement call after S
   expect(mocks.engine.answerCall).toHaveBeenCalledTimes(1);
   expect(mocks.keep.answerIncomingCall).toHaveBeenCalledTimes(1);
 });
+
+
+it("adopts the pre-reported wake UUID and leaves SIP acceptance to its native coordinator", async () => {
+  await nativeCallManager.initialize();
+  const uuid="11111111-1111-4111-8111-111111111111";
+  nativeCallManager.adoptIncomingCall("wake-1",uuid,false);
+  mocks.incoming={ id:"wake-1",status:"incoming" };
+  const requested=nativeCallManager.answerIncomingCall("wake-1");
+  expect(mocks.keep.answerIncomingCall).toHaveBeenCalledWith(uuid);
+  expect(mocks.keep.displayIncomingCall).not.toHaveBeenCalled();
+  await mocks.handlers.get("answerCall")!({ callUUID: uuid });
+  expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+  nativeCallManager.reportCallConnected("wake-1"); await requested;
+  nativeCallManager.reportCallEnded("wake-1");
+  expect(mocks.keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+});
+it("refuses conflicting or new-owner wake mappings", async () => {
+  await nativeCallManager.initialize(); const uuid="11111111-1111-4111-8111-111111111111";
+  nativeCallManager.adoptIncomingCall("wake-1",uuid,false);
+  expect(() => nativeCallManager.adoptIncomingCall("wake-2",uuid,false)).toThrow("cannot be adopted");
+  mocks.owner={id:1};
+  expect(() => nativeCallManager.adoptIncomingCall("wake-1",uuid,false)).toThrow("cannot be adopted");
+  mocks.incoming={id:"wake-1",status:"incoming"};
+  await expect(nativeCallManager.answerIncomingCall("wake-1")).rejects.toThrow("no longer available");
+});
+it("rejects a waiting wake answer on native termination without a second system End report", async () => {
+  await nativeCallManager.initialize(); const uuid="11111111-1111-4111-8111-111111111111";
+  nativeCallManager.adoptIncomingCall("wake-1",uuid,false); mocks.incoming={id:"wake-1",status:"incoming"};
+  const requested=nativeCallManager.answerIncomingCall("wake-1");
+  nativeCallManager.reportCallEnded("wake-1");
+  await expect(requested).rejects.toThrow("ended");
+  expect(mocks.keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+});

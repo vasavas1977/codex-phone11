@@ -26,6 +26,11 @@ export interface Account {
   sipStatusCode?: number;
 }
 
+export interface WakeBinding {
+  bindingId: string; ownerUserId: number; tenantId: number; deviceId: string; sessionBinding: string; expiresAt: number;
+}
+export interface NativeWake extends WakeBinding { v: 1; callUUID: string; grantExpiresAt: number; }
+
 export interface Call {
   id: string;
   callId: string;
@@ -38,9 +43,12 @@ export interface Call {
   held: boolean;
   holdState: number;
   statusCode?: number;
+  wakeCallUUID?: string;
+  wakeSystemAnswered?: boolean;
 }
 
 export interface Snapshot {
+  nativeWake?: NativeWake;
   initialized: boolean;
   generation: number;
   sequence: number;
@@ -68,6 +76,9 @@ export type SiprixSnapshot = Snapshot;
 
 /** Channel: Phone11SiprixEvent via new NativeEventEmitter(Phone11Siprix). */
 export interface Phone11SiprixModule {
+  bindForegroundWakeContext(binding: WakeBinding, sip: AccountConfig): Promise<void>;
+  adoptIncomingWake(binding: WakeBinding, sip: AccountConfig): Promise<Snapshot>;
+  restoreIncomingWakeDelegate(): Promise<void>;
   initialize(options: Record<string, never>): Promise<Snapshot>;
   getSnapshot(): Promise<Snapshot>;
   createAccount(config: AccountConfig): Promise<Account>;

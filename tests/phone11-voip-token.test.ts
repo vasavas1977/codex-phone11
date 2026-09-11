@@ -36,12 +36,30 @@ describe("authenticated VoIP token lifecycle", () => {
     const h = harness(); h.deps.register.mockRejectedValue(new Error("offline"));
     await expect(h.coordinator.bind(binding())).rejects.toThrow(); expect(h.entries()).toEqual([binding()]);
   });
-  it("revokes the previous token before rotation and reuses only the same owner", async () => {
+  it("registers the replacement before old-token cleanup and reuses only the same owner", async () => {
     const oldOther = binding(2, "other"); const h = harness([binding(), oldOther]);
     await h.coordinator.bind(binding(1, "new"));
+    expect(h.calls).toEqual(["persist", "register", "unregister", "persist"]);
     expect(h.deps.unregister).toHaveBeenCalledTimes(1);
     expect(h.deps.unregister).toHaveBeenCalledWith(binding(), expect.any(AbortSignal));
     expect(h.entries()).toEqual([oldOther, binding(1, "new")]);
+  });
+  it("retains old and new cleanup evidence if replacement registration fails", async () => {
+    const h=harness([binding()]); h.deps.register.mockRejectedValue(new Error("offline"));
+    await expect(h.coordinator.bind(binding(1,"new"))).rejects.toThrow("offline");
+    expect(h.entries()).toEqual([binding(),binding(1,"new")]); expect(h.deps.unregister).not.toHaveBeenCalled();
+  });
+  it("does not unregister a new assignment that reuses the same token and device", async () => {
+    const h=harness([binding()]); const next={...binding(),sipUri:"sip:3002@sip.phone11.ai"};
+    await h.coordinator.bind(next); expect(h.deps.unregister).not.toHaveBeenCalled(); expect(h.entries()).toEqual([next]);
+  });
+  it("logout during replacement registration blocks stale old-token cleanup", async () => {
+    const h=harness([binding()]); let finish!:()=>void;
+    h.deps.register.mockImplementation(()=>new Promise<void>(resolve=>{finish=resolve;}));
+    const pending=h.coordinator.bind(binding(1,"new")); await vi.waitFor(()=>expect(h.deps.register).toHaveBeenCalled());
+    vi.useFakeTimers(); try { const logout=h.coordinator.beforeLogout(); await vi.advanceTimersByTimeAsync(1000); await logout;
+      finish(); await pending; expect(h.deps.unregister).not.toHaveBeenCalled(); expect(h.entries()).toHaveLength(2);
+    } finally {vi.useRealTimers();}
   });
   it("stops native before unregister and clears only current owner's entries", async () => {
     const h = harness([binding(), binding(2, "other")]); await h.coordinator.beforeLogout();

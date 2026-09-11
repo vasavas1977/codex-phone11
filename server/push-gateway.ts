@@ -23,6 +23,8 @@ export interface PushToken {
 }
 
 export interface PushPayload {
+  /** Call-scoped native wake envelope; never contains credentials or caller content. */
+  wake?: { v: 1; callUUID: string; bindingId: string; expiresAt: number };
   /** SIP Call-ID for deduplication */
   callId: string;
   /** Caller number */

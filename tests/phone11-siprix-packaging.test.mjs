@@ -92,3 +92,25 @@ test("license is absent from public Expo runtime configuration", () => {
     else process.env.PHONE11_SIPRIX_LICENSE = previousLicense;
   }
 });
+
+
+test("Swift bootstrap has an explicitly defined static pod module and public header", () => {
+  const spec = readFileSync(new URL("../modules/phone11-siprix/Phone11Siprix.podspec", import.meta.url), "utf8");
+  assert.match(spec, /s\.module_name\s*=\s*'Phone11Siprix'/);
+  assert.match(spec, /s\.pod_target_xcconfig\s*=\s*\{\s*'DEFINES_MODULE'\s*=>\s*'YES'\s*\}/);
+  assert.match(spec, /s\.public_header_files\s*=\s*'ios\/Phone11Siprix\.h',\s*'ios\/Phone11VoipPush\.h'/);
+  assert.doesNotMatch(spec, /PHONE11_VOIP_WAKE_COMMISSIONED.*1/);
+});
+
+
+test("real Siprix Expo config wires Swift startup to the exported bootstrap module", async () => {
+  const configured = await nativeLicenseConfig("siprix", undefined);
+  assert.equal(typeof configured.mods.ios.appDelegate, "function");
+  const source = "import Expo\nclass AppDelegate: ExpoAppDelegate {\n override func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {\n let factory = ExpoReactNativeFactory(delegate: delegate)\n return true\n }\n}";
+  const result = await configured.mods.ios.appDelegate({
+    ...configured, modResults: { language: "swift", path: "AppDelegate.swift", contents: source },
+    modRequest: { projectRoot, platform: "ios", modName: "appDelegate", introspect: true },
+  });
+  assert.match(result.modResults.contents, /import Phone11Siprix/);
+  assert.ok(result.modResults.contents.indexOf("Phone11VoipPush.bootstrap()") < result.modResults.contents.indexOf("let factory"));
+});

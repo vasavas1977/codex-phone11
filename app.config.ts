@@ -85,6 +85,9 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    ...(sipEngine === "siprix" ? [["./plugins/with-phone11-voip-wake.js", {
+      origin: process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://api.phone11.ai",
+    }] as [string, { origin: string }]] : []),
     [
       "expo-audio",
       {

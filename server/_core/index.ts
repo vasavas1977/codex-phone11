@@ -12,6 +12,7 @@ import { kamailioRouter } from "../pbx/kamailio-routes";
 import { storageRouter } from "../pbx/recording-storage";
 import { wsManager } from "../pbx/websocket";
 import { fsEventListener } from "../pbx/fs-event-listener";
+import { registerWakeRoutes } from "../push/wake-routes";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -40,6 +41,8 @@ async function startServer() {
   if (trustedProxies?.length) app.set("trust proxy", trustedProxies);
   app.use(phone11Cors);
   registerAuthRoutes(app);
+  // Wake requests have their own small body limit and fail closed until commissioned.
+  registerWakeRoutes(app);
 
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));

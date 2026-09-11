@@ -26,7 +26,10 @@ export function chatError(error: unknown): string {
 function mergeMessages(existing: ChatMessage[], incoming: ChatMessage[]) {
   const result = new Map(existing.map(m => [`${m.senderId}:${m.clientId}`, m]));
   incoming.forEach(m => result.set(`${m.senderId}:${m.clientId}`, m));
-  return [...result.values()].sort((a, b) => a.timestamp - b.timestamp || a.sequence - b.sequence);
+  // Server sequence is authoritative; transaction timestamps and phone clocks can
+  // be out of order. Keep unacknowledged local messages after saved history.
+  return [...result.values()].sort((a, b) => a.status === "sent" && b.status === "sent" ? a.sequence - b.sequence
+    : a.status === "sent" ? -1 : b.status === "sent" ? 1 : a.timestamp - b.timestamp);
 }
 interface ChatState {
   userId: number | null; workspace: ChatWorkspace | null; workspaces: ChatWorkspace[];
@@ -50,6 +53,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
   let restoredWorkspace: number | null = null;
   let restoreInFlight: Promise<void> | null = null;
   let restoreFailed = false;
+  let requestedWorkspace: number | undefined;
   const empty = () => ({ workspace: null, workspaces: [], channels: [], messages: {}, people: [], drafts: {}, storageError: null, loading: false, error: null, roomErrors: {}, roomLoading: {}, hasMore: {} });
   return create<ChatState>((set, get) => {
     const persist = async () => {
@@ -71,11 +75,12 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
     };
     const deliver = async (id: string, pending: ChatMessage) => {
       const state = get();
-      if (!state.userId || !state.workspace) return;
+      if (!state.userId || !state.workspace || pending.senderId !== state.userId || !state.channels.some(c => c.id === id)) return;
       const current = generation;
-      set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => m.clientId === pending.clientId ? { ...m, status: "sending" } : m) } }));
+      const matchesPending = (m: ChatMessage) => m.senderId === pending.senderId && m.clientId === pending.clientId;
+      set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) ? { ...m, status: "sending" } : m) } }));
       if (!await persist()) {
-        if (current === generation) set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => m.clientId === pending.clientId ? { ...m, status: "failed" } : m) } }));
+        if (current === generation) set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) ? { ...m, status: "failed" } : m) } }));
         return;
       }
       if (current !== generation) return;
@@ -83,11 +88,11 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         const sent = await api.send(state.workspace.id, id, pending.clientId, pending.content);
         if (current !== generation) return;
         set(s => ({ messages: { ...s.messages, [id]: mergeMessages(s.messages[id] || [], [sent]) },
-          channels: s.channels.map(c => c.id === id ? { ...c, lastMessage: sent.content, lastMessageAt: sent.timestamp } : c) }));
+          channels: s.channels.map(c => c.id === id && sent.timestamp >= c.lastMessageAt ? { ...c, lastMessage: sent.content, lastMessageAt: sent.timestamp } : c).sort((a, b) => b.lastMessageAt - a.lastMessageAt) }));
         await persist();
       } catch (error) {
         if (current !== generation) return;
-        set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => m.clientId === pending.clientId && m.status !== "sent" ? { ...m, status: "failed" } : m) },
+        set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) && m.status !== "sent" ? { ...m, status: "failed" } : m) },
           roomErrors: { ...s.roomErrors, [id]: chatError(error) } }));
         await persist();
       }
@@ -97,7 +102,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       setUser: id => {
         const previous = get().userId;
         if (id !== previous) {
-          generation++; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ userId: id, ...empty() });
+          generation++; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ userId: id, ...empty() });
           if (previous && persistence) void persistence.clearOwner(previous).catch(() => {
             set({ storageError: "Could not clear saved chat drafts. Sign out again before sharing this phone." });
           });
@@ -110,15 +115,17 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       },
       loadChannels: async tenantId => {
         if (!get().userId) return;
-        if (tenantId && get().workspace && tenantId !== get().workspace?.id) {
+        if (tenantId !== undefined && tenantId !== (requestedWorkspace ?? get().workspace?.id)) {
           generation++; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty() });
         }
+        requestedWorkspace = tenantId ?? requestedWorkspace ?? get().workspace?.id;
         const current = generation;
         if (get().loading) return;
         set({ loading: true, error: null });
         try {
-          const data = await api.list(tenantId ?? get().workspace?.id);
+          const data = await api.list(requestedWorkspace);
           if (current !== generation) return;
+          requestedWorkspace = data.workspace.id;
           set({ ...data, loading: false });
           if (persistence && restoredWorkspace !== data.workspace.id) {
             restoredWorkspace = data.workspace.id;
@@ -139,7 +146,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         } catch (error) {
           if (current === generation) {
             const denied = ["FORBIDDEN", "UNAUTHORIZED"].includes((error as any)?.data?.code);
-            if (denied) { generation++; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty(), error: chatError(error) }); }
+            if (denied) { generation++; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty(), error: chatError(error) }); }
             else set({ loading: false, error: chatError(error) });
           }
         }
@@ -147,6 +154,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       loadDirectory: async () => {
         const state = get(), current = generation;
         if (!state.workspace || !state.userId) return;
+        set({ people: [] });
         const people = await api.directory(state.workspace.id);
         if (current === generation) set({ people });
       },
@@ -183,7 +191,8 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         } catch (error) {
           if (current !== generation) return;
           const forbidden = ["FORBIDDEN", "NOT_FOUND", "UNAUTHORIZED"].includes((error as any)?.data?.code);
-          set(s => ({ messages: { ...s.messages, [id]: forbidden ? [] : s.messages[id] || [] },
+          set(s => ({ messages: { ...s.messages, [id]: forbidden ? (s.messages[id] || []).filter(m => m.senderId === s.userId && m.status !== "sent") : s.messages[id] || [] },
+            channels: forbidden ? s.channels.filter(c => c.id !== id) : s.channels,
             roomErrors: { ...s.roomErrors, [id]: chatError(error) }, roomLoading: { ...s.roomLoading, [id]: false } }));
         }
       },
@@ -194,7 +203,9 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         if (!through) return;
         try {
           await api.read(state.workspace.id, id, through);
-          if (current === generation) set(s => ({ channels: s.channels.map(c => c.id === id ? { ...c, unreadCount: 0 } : c) }));
+          // New messages may arrive after the acknowledged cursor. Fetch the
+          // server's remaining count instead of erasing those unread messages.
+          if (current === generation) await get().loadChannels();
         } catch { /* Keep the unread marker until the server acknowledges it. */ }
       },
       searchMessages: async (id, text) => {
@@ -206,14 +217,14 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       },
       sendMessage: async (id, text) => {
         const state = get(), content = text.trim();
-        if (!state.userId || !state.workspace || !content || content.length > 4000) return;
+        if (!state.userId || !state.workspace || !state.channels.some(c => c.id === id) || !content || content.length > 4000) return;
         const pending: ChatMessage = { id: newId(), clientId: newId(), channelId: id, senderId: state.userId, senderName: "You",
           content, timestamp: Date.now(), sequence: 0, status: "sending" };
         set(s => ({ drafts: { ...s.drafts, [id]: "" }, messages: { ...s.messages, [id]: [...(s.messages[id] || []), pending] }, roomErrors: { ...s.roomErrors, [id]: null } }));
         await deliver(id, pending);
       },
       retryMessage: async (id, clientId) => {
-        const pending = get().messages[id]?.find(m => m.clientId === clientId);
+        const pending = get().messages[id]?.find(m => m.clientId === clientId && m.senderId === get().userId);
         if (pending?.status === "failed") await deliver(id, pending);
       },
     };

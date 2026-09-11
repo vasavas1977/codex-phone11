@@ -23,6 +23,14 @@ This replaces the sample channels and local-only messages with authenticated, pe
 
 `tests/phone11-chat-persistence.test.ts` covers restart recovery, explicit retry, storage failure, and logout/write ordering. `tests/phone11-chat-state.test.ts` covers network acknowledgement, failed retry, refresh deduplication, pagination, unread acknowledgement, logout/account switching, and revoked access. The PostgreSQL test uses real transactions and multiple concurrent connections; it never targets the configured application database.
 
+The September 11 reliability candidate also checks account/workspace changes with the same mounted conversation/composer, abandoned pending actions, and late directory/create/search responses. Saved messages follow server sequence even when timestamps regress. Read acknowledgments refresh the authoritative remaining unread count; they do not erase newer unreads. Losing room access removes received history and send controls while preserving the owner's draft and failed outbox for recovery. A failed teammate refresh preserves the group name and selection.
+
+`tests/phone11-chat-transport.test.ts` exercises the actual tRPC transport with synthetic responses: native bearer credentials are captured for the initiating owner before request batching, then identity is checked again before dispatch and after response. A queued old message cannot acquire the next account's token. `tests/phone11-chat-controls.test.tsx` and `tests/phone11-chat-scope-ui.test.tsx` verify captured controls cannot write or navigate in a replacement scope, and old pending operations cannot disable or release new controls.
+
+The candidate sends `X-Phone11-Chat-Owner` on every chat request. The chat router compares it with the authenticated user before invoking any conversation service. This also prevents another browser tab's changed HttpOnly cookie from applying a queued message as a different user while the original tab still displays the old account. The header grants no authority. Trusted-origin CORS explicitly permits it; untrusted origins remain rejected. `tests/phone11-chat-owner.test.ts` covers all seven procedures, malformed assertions, and CORS.
+
+**Rollout order:** deploy the updated chat router and CORS policy before releasing the new browser client. The currently deployed September 10 backend does not enforce this new assertion. Header omission remains accepted for compatibility with installed older clients; those clients do not receive the new actor-binding guarantee and must upgrade. No chat schema migration is needed for these September 11 fixes.
+
 ```sh
 # Start a dedicated disposable local database. Pick an unused loopback port.
 docker run --detach --rm --name phone11-chat-test \
