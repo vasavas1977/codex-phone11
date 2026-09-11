@@ -38,3 +38,16 @@ test('incomplete or misplaced existing bootstrap fails closed', () => {
     assert.throws(() => injectBootstrap(changed), /incomplete or misplaced/);
   }
 });
+
+const {wakeBuildSettings}=require('../plugins/with-phone11-voip-wake.js');
+test('wake gate is off by default and pilot requires explicit production Siprix settings',()=>{
+  assert.deepEqual(wakeBuildSettings({}),{gate:'0',environment:undefined});
+  assert.deepEqual(wakeBuildSettings({PHONE11_VOIP_WAKE_COMMISSIONED:'1',PHONE11_APNS_ENVIRONMENT:'production',EXPO_PUBLIC_SIP_ENGINE:'siprix'}),{gate:'1',environment:'production'});
+  for(const env of [
+    {PHONE11_VOIP_WAKE_COMMISSIONED:'true'},
+    {PHONE11_VOIP_WAKE_COMMISSIONED:'1'},
+    {PHONE11_VOIP_WAKE_COMMISSIONED:'1',PHONE11_APNS_ENVIRONMENT:'sandbox',EXPO_PUBLIC_SIP_ENGINE:'siprix'},
+    {PHONE11_VOIP_WAKE_COMMISSIONED:'1',PHONE11_APNS_ENVIRONMENT:'production',EXPO_PUBLIC_SIP_ENGINE:'pjsip'},
+    {PHONE11_APNS_ENVIRONMENT:'production'},
+  ]) assert.throws(()=>wakeBuildSettings(env));
+});

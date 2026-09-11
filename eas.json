@@ -54,12 +54,21 @@
       "extends": "preview-ios-existing-credentials",
       "channel": "siprix-trial",
       "env": {
-        "EXPO_PUBLIC_SIP_ENGINE": "siprix"
+        "EXPO_PUBLIC_SIP_ENGINE": "siprix",
+        "PHONE11_VOIP_WAKE_COMMISSIONED": "0"
       }
     },
     "production": {
       "channel": "production",
       "autoIncrement": true
+    },
+    "preview-ios-siprix-wake-pilot": {
+      "extends": "preview-ios-siprix",
+      "channel": "siprix-wake-pilot",
+      "env": {
+        "PHONE11_VOIP_WAKE_COMMISSIONED": "1",
+        "PHONE11_APNS_ENVIRONMENT": "production"
+      }
     }
   },
   "submit": {

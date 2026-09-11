@@ -3,6 +3,9 @@ import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
 import { withInfoPlist } from "expo/config-plugins";
 
+const { wakeBuildSettings } = require("./plugins/with-phone11-voip-wake.js");
+const wakeSettings = wakeBuildSettings();
+
 const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
 const sipEngine = process.env.EXPO_PUBLIC_SIP_ENGINE ?? "pjsip";
 if (!["siprix", "pjsip"].includes(sipEngine)) throw new Error("Invalid SIP engine selection");
@@ -36,7 +39,7 @@ const config: ExpoConfig = {
   name: env.appName,
   slug: env.appSlug,
   version: "1.0.0",
-  runtimeVersion: `1.0.0-${sipEngine}-1`,
+  runtimeVersion: `1.0.0-${sipEngine}${wakeSettings.gate === "1" ? "-wake-pilot" : ""}-1`,
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
@@ -47,6 +50,7 @@ const config: ExpoConfig = {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
     buildNumber: "5",
+    ...(wakeSettings.environment ? { entitlements: { "aps-environment": wakeSettings.environment } } : {}),
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
       NSMicrophoneUsageDescription: "Allow Phone11 to access your microphone for voice and video calls.",
@@ -132,6 +136,7 @@ const config: ExpoConfig = {
     reactCompiler: false,
   },
   extra: {
+    ...(wakeSettings.environment ? { phone11ApnsEnvironment: wakeSettings.environment } : {}),
     eas: {
       projectId: "e354ffd3-485c-49f1-9e6f-aebe571d8dfb",
     },

@@ -1,4 +1,15 @@
-const { withAppDelegate, withInfoPlist } = require("expo/config-plugins");
+const { withAppDelegate, withInfoPlist, withEntitlementsPlist, withPodfileProperties } = require("expo/config-plugins");
+
+function wakeBuildSettings(env = process.env) {
+  const gate = env.PHONE11_VOIP_WAKE_COMMISSIONED ?? "0";
+  const environment = env.PHONE11_APNS_ENVIRONMENT;
+  if (!["0", "1"].includes(gate)) throw new Error("Phone11 native wake gate must be 0 or 1");
+  if (gate === "1" && (env.EXPO_PUBLIC_SIP_ENGINE !== "siprix" || environment !== "production")) {
+    throw new Error("Phone11 wake pilot requires Siprix and explicit production APNs environment");
+  }
+  if (gate === "0" && environment !== undefined) throw new Error("Phone11 disabled wake gate must not configure an APNs environment");
+  return { gate, environment: gate === "1" ? environment : undefined };
+}
 
 function wakeOrigin(value) {
   const url = new URL(value);
@@ -33,7 +44,26 @@ function injectBootstrap(source) {
 
 function withPhone11VoipWake(config, options = {}) {
   const origin = wakeOrigin(options.origin ?? "https://api.phone11.ai");
-  config = withInfoPlist(config, native => { native.modResults.Phone11WakeOrigin = origin; return native; });
+  const settings = wakeBuildSettings();
+  config = withInfoPlist(config, native => {
+    native.modResults.Phone11WakeOrigin = origin;
+    native.modResults.Phone11WakeCommissioned = Number(settings.gate);
+    return native;
+  });
+  config = withPodfileProperties(config, native => {
+    native.modResults["phone11.voipWakeCommissioned"] = settings.gate;
+    if (settings.environment) native.modResults["phone11.apnsEnvironment"] = settings.environment;
+    else delete native.modResults["phone11.apnsEnvironment"];
+    return native;
+  });
+  config = withEntitlementsPlist(config, native => {
+    if (settings.environment) {
+      const existing = native.modResults["aps-environment"];
+      if (existing && existing !== settings.environment) throw new Error("Phone11 APNs entitlement conflicts with wake pilot environment");
+      native.modResults["aps-environment"] = settings.environment;
+    }
+    return native;
+  });
   return withAppDelegate(config, native => {
     if (native.modResults.language !== "swift") throw new Error("Phone11 wake bootstrap requires Swift AppDelegate");
     native.modResults.contents = injectBootstrap(native.modResults.contents);
@@ -43,3 +73,5 @@ function withPhone11VoipWake(config, options = {}) {
 module.exports = withPhone11VoipWake;
 module.exports.injectBootstrap = injectBootstrap;
 module.exports.wakeOrigin = wakeOrigin;
+
+module.exports.wakeBuildSettings = wakeBuildSettings;

@@ -97,9 +97,9 @@ test("license is absent from public Expo runtime configuration", () => {
 test("Swift bootstrap has an explicitly defined static pod module and public header", () => {
   const spec = readFileSync(new URL("../modules/phone11-siprix/Phone11Siprix.podspec", import.meta.url), "utf8");
   assert.match(spec, /s\.module_name\s*=\s*'Phone11Siprix'/);
-  assert.match(spec, /s\.pod_target_xcconfig\s*=\s*\{\s*'DEFINES_MODULE'\s*=>\s*'YES'\s*\}/);
+  assert.match(spec, /s\.pod_target_xcconfig\s*=\s*\{\s*'DEFINES_MODULE'\s*=>\s*'YES'\s*,/);
   assert.match(spec, /s\.public_header_files\s*=\s*'ios\/Phone11Siprix\.h',\s*'ios\/Phone11VoipPush\.h'/);
-  assert.doesNotMatch(spec, /PHONE11_VOIP_WAKE_COMMISSIONED.*1/);
+  assert.match(spec, /ENV\.fetch\('PHONE11_VOIP_WAKE_COMMISSIONED', '0'\)/);
 });
 
 

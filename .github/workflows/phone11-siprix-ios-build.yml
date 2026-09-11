@@ -5,6 +5,15 @@ on:
     branches: [codex/phone11-owned-auth-20260909]
     paths: [.github/workflows/phone11-siprix-ios-build.yml]
   workflow_dispatch:
+    inputs:
+      build_profile:
+        description: Signed build profile; wake pilot requires server and Apple commissioning
+        required: true
+        default: preview-ios-siprix
+        type: choice
+        options:
+          - preview-ios-siprix
+          - preview-ios-siprix-wake-pilot
 
 permissions:
   contents: read
@@ -34,6 +43,7 @@ jobs:
         run: |
           node scripts/stage-siprix-sdk.mjs
           node --test modules/phone11-siprix/tests/*.test.mjs
+          node --test tests/phone11-wake-build-config.test.mjs
   build:
     needs: [native-check, daily-use-check]
     runs-on: ubuntu-24.04
@@ -70,11 +80,16 @@ jobs:
           eas-version: "23.2.0"
           token: ${{ secrets.EXPO_TOKEN }}
           packager: pnpm
-      - name: Build signed Siprix trial using existing iOS credentials
+      - name: Build signed Siprix app using existing iOS credentials
         env:
           EXPO_NO_TELEMETRY: "1"
+          PHONE11_BUILD_PROFILE: ${{ inputs.build_profile || 'preview-ios-siprix' }}
         run: |
-          eas build --platform ios --profile preview-ios-siprix --non-interactive --wait --json > "$RUNNER_TEMP/phone11-siprix-build.json"
+          case "$PHONE11_BUILD_PROFILE" in
+            preview-ios-siprix|preview-ios-siprix-wake-pilot) ;;
+            *) echo 'Unsupported Phone11 build profile'; exit 1 ;;
+          esac
+          eas build --platform ios --profile "$PHONE11_BUILD_PROFILE" --non-interactive --wait --json > "$RUNNER_TEMP/phone11-siprix-build.json"
           node -e 'const fs=require("fs");const builds=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/phone11-siprix-build.json","utf8"));for(const b of builds){console.log(JSON.stringify({id:b.id,status:b.status,gitCommitHash:b.gitCommitHash,buildUrl:b.artifacts?.buildUrl}));if(b.status!=="FINISHED"||b.gitCommitHash!==process.env.GITHUB_SHA)process.exitCode=1;}'
       - uses: actions/upload-artifact@v4
         if: always()
