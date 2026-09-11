@@ -16,11 +16,13 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore } from "@/lib/sip/call-store";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 import { resolveCurrentCall } from "@/lib/sip/current-call";
 
 export default function IncomingCallScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
+  const owner = getAuthSnapshot().user;
   const {
     number,
     name,
@@ -35,23 +37,27 @@ export default function IncomingCallScreen() {
     resolveCurrentCall(state, requestedCallId),
   );
   const callId = incomingCall?.id;
-  type Action = { kind: "answer" | "decline"; callId: string };
+  type Action = {
+    kind: "answer" | "decline";
+    callId: string;
+    failed?: boolean;
+  };
   const pending = useRef<Action | null>(null);
   const [operation, setOperation] = useState<Action["kind"] | null>(null);
   const ringing = incomingCall?.status === "incoming";
-  const stillRinging = () =>
-    Boolean(
-      callId &&
-      resolveCurrentCall(useSipCallStore.getState(), callId)?.status ===
-        "incoming",
-    );
+  const currentOwnedCall = () =>
+    owner && getAuthSnapshot().user === owner && callId
+      ? resolveCurrentCall(useSipCallStore.getState(), callId)
+      : null;
+  const stillRinging = () => currentOwnedCall()?.status === "incoming";
+
   useEffect(() => {
     pending.current = null;
     setOperation(null);
     return () => {
       pending.current = null;
     };
-  }, [callId, incomingCall?.status]);
+  }, [owner, callId, incomingCall?.status]);
   const callerNumber = incomingCall?.remoteNumber ?? number ?? "SIP Call";
   const callerName = incomingCall?.remoteName ?? name ?? callerNumber;
 
@@ -60,7 +66,7 @@ export default function IncomingCallScreen() {
     const pattern = [0, 500, 300, 500];
     Vibration.vibrate(pattern, true);
     return () => Vibration.cancel();
-  }, [callId, incomingCall?.status]);
+  }, [owner, callId, incomingCall?.status]);
 
   useEffect(() => {
     if (
@@ -88,6 +94,7 @@ export default function IncomingCallScreen() {
       // Command acceptance is not a connected call. Wait for the native state
       // effect to leave Incoming; repeated taps must not re-answer the SDK call.
     } catch {
+      action.failed = true;
       if (pending.current !== action) return;
       pending.current = null;
       setOperation(null);
@@ -105,7 +112,10 @@ export default function IncomingCallScreen() {
       router.canGoBack() ? router.back() : router.replace("/(tabs)");
       return;
     }
-    if (!resolveCurrentCall(useSipCallStore.getState(), callId)) return;
+    if (!currentOwnedCall()) return;
+    const answerBeforeDecline =
+      pending.current?.kind === "answer" ? pending.current : null;
+    let declineFailed = false;
     const action: Action = { kind: "decline", callId };
     pending.current = action;
     setOperation("decline");
@@ -116,15 +126,18 @@ export default function IncomingCallScreen() {
     try {
       await hangupCall(callId);
     } catch {
-      if (
-        pending.current === action &&
-        resolveCurrentCall(useSipCallStore.getState(), callId)
-      )
+      declineFailed = true;
+      if (pending.current === action && currentOwnedCall())
         Alert.alert("Could not end call", "Please try ending the call again.");
     } finally {
       if (pending.current === action) {
-        pending.current = null;
-        setOperation(null);
+        const restoreAnswer =
+          declineFailed &&
+          answerBeforeDecline &&
+          !answerBeforeDecline.failed &&
+          stillRinging();
+        pending.current = restoreAnswer ? answerBeforeDecline : null;
+        setOperation(restoreAnswer ? "answer" : null);
       }
     }
   };

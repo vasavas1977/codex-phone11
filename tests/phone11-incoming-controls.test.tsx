@@ -5,6 +5,7 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup(node: ReactNode): string };
 const m = vi.hoisted(() => ({
+  owner: { id: 1 } as { id: number } | null,
   state: {} as any,
   params: { callId: "incoming-1" } as any,
   press: new Map<string, { run: () => Promise<void>; disabled: boolean }>(),
@@ -64,12 +65,16 @@ vi.mock("../lib/sip/call-store", () => ({
     getState: () => m.state,
   }),
 }));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: m.owner }),
+}));
 import IncomingCallScreen from "../app/call/incoming";
 function render() {
   return renderToStaticMarkup(<IncomingCallScreen />);
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  m.owner = { id: 1 };
   m.press.clear();
   m.params = { callId: "incoming-1" };
   m.canGoBack = true;
@@ -182,4 +187,52 @@ it("can stop the same call if it becomes connecting between Answer and Decline",
   m.state.incomingCall.status = "connecting";
   await m.press.get("Decline call")!.run();
   expect(m.hangup).toHaveBeenCalledWith("incoming-1");
+});
+
+it("old controls cannot answer or end a replacement owner's reused SDK call ID", async () => {
+  render();
+  const answer = m.press.get("Answer call")!.run;
+  const decline = m.press.get("Decline call")!.run;
+  m.owner = { id: 2 };
+  m.state.incomingCall = {
+    id: "incoming-1",
+    status: "incoming",
+    remoteNumber: "3003",
+  };
+  await answer();
+  await decline();
+  expect(m.answer).not.toHaveBeenCalled();
+  expect(m.hangup).not.toHaveBeenCalled();
+});
+it("suppresses a late answer error after the same owner signs in to a replacement session", async () => {
+  let reject!: (error: Error) => void;
+  m.answer.mockImplementationOnce(
+    () =>
+      new Promise((_, no) => {
+        reject = no;
+      }),
+  );
+  render();
+  const pending = m.press.get("Answer call")!.run();
+  m.owner = { id: 1 };
+  reject(new Error("old session ended"));
+  await pending;
+  expect(m.alert).not.toHaveBeenCalled();
+});
+
+it("retains accepted Answer after a failed Decline while keeping Decline retryable", async () => {
+  m.hangup.mockRejectedValueOnce(new Error("SDK refused hangup"));
+  render();
+  const answer = m.press.get("Answer call")!.run;
+  const decline = m.press.get("Decline call")!.run;
+  await answer();
+  await decline();
+  await answer();
+  expect(m.answer).toHaveBeenCalledOnce();
+  expect(m.alert).toHaveBeenCalledWith(
+    "Could not end call",
+    expect.any(String),
+  );
+  await decline();
+  expect(m.hangup).toHaveBeenCalledTimes(2);
 });
