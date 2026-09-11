@@ -55,6 +55,7 @@ jobs:
             tests/phone11-call-entry.test.tsx \
             tests/phone11-active-controls.test.tsx \
             tests/phone11-incoming-controls.test.tsx \
+            tests/phone11-in-app-answer.test.tsx \
             tests/phone11-current-call-banner.test.tsx \
             tests/phone11-diagnostics-persistence.test.ts \
             tests/phone11-recents-ui.test.tsx \

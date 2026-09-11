@@ -2,6 +2,7 @@ import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { useSipAccountStore, type SipAccount } from "./account-store";
 import { useSipCallStore } from "./call-store";
+import { callNumber } from "./call-history";
 import { useSipDiagnosticsStore } from "./diagnostics-store";
 import type {
   Phone11SiprixModule, SiprixAccount, SiprixCall, SiprixEvent, SiprixSnapshot,
@@ -198,8 +199,12 @@ export class SiprixEngine {
     } else if (event.type === "network" && "networkState" in event && event.networkState === 0) {
       this.networkLost = true;
       useSipAccountStore.getState().setRegistrationState("network_error", "Siprix network lost");
-    } else if (event.type === "audioSession" && "audioSessionActive" in event) {
+    } else if (event.type === "audioSession" && "audioSessionActive" in event && typeof event.audioSessionActive === "boolean") {
       this.audioActive = event.audioSessionActive;
+      useSipDiagnosticsStore.getState().addEvent({
+        level: "info", category: "media", message: "Siprix native audio session changed",
+        context: { active: event.audioSessionActive },
+      });
     } else if (event.type === "error") {
       this.failure("native event");
     }
@@ -241,11 +246,13 @@ export class SiprixEngine {
     const handle = nativeCall(call);
     const store = useSipCallStore.getState();
     if (!previous) {
+      // System UI/history get a display handle; the engine and SIP routing retain the full URI.
+      const displayHandle = callNumber(call.remoteUri);
       if (call.direction === "incoming") {
-        this.callManager?.displayIncomingCall(call.callId, call.remoteUri);
+        this.callManager?.displayIncomingCall(call.callId, displayHandle);
         store.setIncomingCall(handle);
       } else {
-        this.callManager?.reportOutgoingCall(call.callId, call.remoteUri);
+        this.callManager?.reportOutgoingCall(call.callId, displayHandle);
         store.addOutgoingCall(handle, call.remoteUri);
       }
     }

@@ -93,11 +93,97 @@ function addNativeCallDiagnostic(
   });
 }
 
+interface AnswerWaiter {
+  call: SipCall;
+  historyId?: string;
+  startedAt?: number;
+  owner: ReturnType<typeof getAuthSnapshot>["user"];
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+type AnswerCallIdentity = Pick<AnswerWaiter, "call" | "historyId" | "startedAt">;
+function sameAnswerCall(identity: AnswerCallIdentity, call: SipCall | null): boolean {
+  if (!call || call.id !== identity.call.id) return false;
+  return identity.historyId ? call.history?.id === identity.historyId
+    : identity.startedAt !== undefined ? call.startTime?.getTime() === identity.startedAt : call === identity.call;
+}
+
 class NativeCallManager {
   private initialized = false;
   private initialization: Promise<void> | null = null;
   private appStateSubscription: any = null;
   private pendingAnswers = new Set<string>();
+  private acceptedAnswers = new Set<string>();
+  private systemAnswered = new Set<string>();
+  private incomingOwners = new Map<string, ReturnType<typeof getAuthSnapshot>["user"]>();
+  private answerWaiters = new Map<string, AnswerWaiter>();
+  private answerCalls = new Map<string, AnswerCallIdentity>();
+
+  /** Request the system answer transaction; its delegate remains the only SIP accept path. */
+  answerIncomingCall(sipCallId: string): Promise<void> {
+    const owner = getAuthSnapshot().user;
+    const incoming = useSipCallStore.getState().incomingCall;
+    const uuid = callIdToUuid.get(sipCallId);
+    const callKeep = getCallKeep();
+    if (!owner || !uuid || this.incomingOwners.get(uuid) !== owner || !this.initialized || !callKeep ||
+      incoming?.id !== sipCallId || incoming.status !== "incoming") {
+      return Promise.reject(new Error("This incoming call is no longer available."));
+    }
+    const identity = this.answerCalls.get(uuid);
+    if (identity && !sameAnswerCall(identity, incoming)) {
+      return Promise.reject(new Error("This incoming call is no longer available."));
+    }
+    this.answerCalls.set(uuid, identity ?? { call: incoming, historyId: incoming.history?.id, startedAt: incoming.startTime?.getTime() });
+    const existing = this.answerWaiters.get(uuid);
+    if (existing) {
+      if (existing.owner !== owner) return Promise.reject(new Error("Your phone session changed."));
+      return existing.promise;
+    }
+    if (this.acceptedAnswers.has(uuid)) return Promise.resolve();
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    // CallKeep's void transaction API cannot propagate CXTransaction errors.
+    // Bound the wait without falling back to a SIP accept that bypasses CallKit.
+    const timer = setTimeout(() => {
+      addNativeCallDiagnostic("warning", "Native answer transaction timed out", { callId: sipCallId });
+      this.finishAnswerWaiter(uuid, new Error("Call controls did not respond. Try Answer again while the caller is ringing."));
+    }, 8_000);
+    this.answerWaiters.set(uuid, { call: incoming, historyId: incoming.history?.id, startedAt: incoming.startTime?.getTime(), owner, promise, resolve, reject, timer });
+    if (this.systemAnswered.has(uuid) && !this.pendingAnswers.has(uuid)) {
+      // CallKit already fulfilled CXAnswerCallAction for this exact owner/call.
+      // Retry a rejected SDK accept through the same handler, not a second CX action.
+      void this.handleNativeAnswer(uuid, false);
+    } else if (!this.pendingAnswers.has(uuid)) {
+      addNativeCallDiagnostic("info", "Native answer transaction requested", { callId: sipCallId });
+      try { callKeep.answerIncomingCall(uuid); }
+      catch { this.finishAnswerWaiter(uuid, new Error("Could not open the system call controls. Please try again.")); }
+    }
+    return promise;
+  }
+
+  private finishAnswerWaiter(uuid: string, error?: Error): void {
+    const waiter = this.answerWaiters.get(uuid);
+    if (!waiter) return;
+    this.answerWaiters.delete(uuid);
+    clearTimeout(waiter.timer);
+    if (error) waiter.reject(error);
+    else if (waiter.owner !== getAuthSnapshot().user || !uuidToCallId.has(uuid)) {
+      waiter.reject(new Error("Your phone session changed."));
+    } else waiter.resolve();
+  }
+
+  private clearAnswerActions(): void {
+    for (const uuid of this.answerWaiters.keys()) this.finishAnswerWaiter(uuid, new Error("This incoming call ended."));
+    this.pendingAnswers.clear();
+    this.acceptedAnswers.clear();
+    this.systemAnswered.clear();
+    this.incomingOwners.clear();
+    this.answerCalls.clear();
+  }
 
   /**
    * Initialize CallKit (iOS) / ConnectionService (Android).
@@ -203,6 +289,7 @@ class NativeCallManager {
     const uuid = generateUUID();
     callIdToUuid.set(sipCallId, uuid);
     uuidToCallId.set(uuid, sipCallId);
+    this.incomingOwners.set(uuid, getAuthSnapshot().user);
 
     try {
       callKeep.displayIncomingCall(
@@ -295,7 +382,8 @@ class NativeCallManager {
       } else {
         callKeep.setCurrentCallActive(uuid);
       }
-      addNativeCallDiagnostic("info", "CallKit call marked active", {
+      addNativeCallDiagnostic("info", Platform.OS === "ios" && !outgoingCalls.has(sipCallId)
+        ? "Incoming SIP call connected" : "CallKit call marked active", {
         callId: sipCallId,
         context: { callUUID: uuid },
       });
@@ -344,7 +432,12 @@ class NativeCallManager {
     }
 
     // Clean up mappings
+    this.finishAnswerWaiter(uuid, new Error("This incoming call ended."));
     this.pendingAnswers.delete(uuid);
+    this.acceptedAnswers.delete(uuid);
+    this.systemAnswered.delete(uuid);
+    this.incomingOwners.delete(uuid);
+    this.answerCalls.delete(uuid);
     callIdToUuid.delete(sipCallId);
     uuidToCallId.delete(uuid);
     outgoingCalls.delete(sipCallId);
@@ -438,7 +531,7 @@ class NativeCallManager {
 
     callIdToUuid.clear();
     uuidToCallId.clear();
-    this.pendingAnswers.clear();
+    this.clearAnswerActions();
     outgoingHandleEchoes.clear();
     outgoingCalls.clear();
     if (callKeep && this.initialized) {
@@ -451,9 +544,8 @@ class NativeCallManager {
 
   // ─── Private Methods ──────────────────────────────────────────────
 
-  private _registerListeners(callKeep: any): void {
-    // User answered call from native UI (lock screen / notification)
-    callKeep.addEventListener("answerCall", async ({ callUUID }: any) => {
+  private async handleNativeAnswer(callUUID: string, systemCallback = true): Promise<void> {
+      const callKeep = getCallKeep();
       const sipCallId = uuidToCallId.get(callUUID);
       const incoming = useSipCallStore.getState().incomingCall;
       // Persist only our mapped SDK identifier and bounded state, never the
@@ -462,23 +554,40 @@ class NativeCallManager {
         mapped: !!sipCallId,
         ringing: !!sipCallId && incoming?.id === sipCallId && incoming.status === "incoming",
       };
-      addNativeCallDiagnostic("info", "Native answer callback received", { callId: sipCallId, context });
+      addNativeCallDiagnostic("info", systemCallback ? "Native answer callback received" : "Retrying SDK answer after system answer", { callId: sipCallId, context });
       if (!sipCallId) {
         addNativeCallDiagnostic("warning", "Ignored native answer action for an unknown call", { context });
+        return;
+      }
+      const owner = getAuthSnapshot().user;
+      if (!owner || this.incomingOwners.get(callUUID) !== owner) {
+        this.finishAnswerWaiter(callUUID, new Error("Your phone session changed."));
+        addNativeCallDiagnostic("warning", "Ignored native answer for a changed phone session", { callId: sipCallId });
         return;
       }
       if (this.pendingAnswers.has(callUUID)) {
         addNativeCallDiagnostic("info", "Ignored duplicate pending native answer", { callId: sipCallId, context });
         return;
       }
+      const identity = this.answerCalls.get(callUUID);
+      if (!context.ringing || !incoming || (identity && !sameAnswerCall(identity, incoming))) {
+        this.finishAnswerWaiter(callUUID, new Error("This incoming call is no longer available."));
+        addNativeCallDiagnostic("warning", "Ignored native answer for a call that is no longer ringing", { callId: sipCallId });
+        return;
+      }
+      this.answerCalls.set(callUUID, identity ?? { call: incoming, historyId: incoming.history?.id, startedAt: incoming.startTime?.getTime() });
+      if (systemCallback) this.systemAnswered.add(callUUID);
       this.pendingAnswers.add(callUUID);
       let accepted = false;
-      const owner = getAuthSnapshot().user;
 
       addNativeCallDiagnostic("info", "Native answer requested", { callId: sipCallId });
       try {
         await sipEngine.answerCall(sipCallId);
         accepted = true;
+        if (uuidToCallId.get(callUUID) === sipCallId && getAuthSnapshot().user === owner) {
+          this.acceptedAnswers.add(callUUID);
+        }
+        this.finishAnswerWaiter(callUUID);
         addNativeCallDiagnostic("info", "Native answer command accepted", {
           callId: sipCallId,
           context: { mapped: uuidToCallId.get(callUUID) === sipCallId },
@@ -496,6 +605,8 @@ class NativeCallManager {
           });
         }
       } catch {
+        const requestedInApp = this.answerWaiters.has(callUUID);
+        this.finishAnswerWaiter(callUUID, new Error("Could not answer call. Please try again while the caller is ringing."));
         // SDK diagnostics already preserve a bounded error code. Do not leak
         // arbitrary event/request text or reject an async native event listener.
         const incoming = useSipCallStore.getState().incomingCall;
@@ -504,7 +615,7 @@ class NativeCallManager {
         addNativeCallDiagnostic("error", canRetry ? "Native answer failed; call remains available for retry" : "Native answer failed", {
           callId: sipCallId,
         });
-        if (canRetry) {
+        if (canRetry && !requestedInApp) {
           Alert.alert("Could not answer call", "Tap Answer again in Phone11 while the caller is still ringing.");
         }
       } finally {
@@ -512,7 +623,22 @@ class NativeCallManager {
         // ringing-to-connected gap. A failed request remains retryable.
         if (!accepted) this.pendingAnswers.delete(callUUID);
       }
-    });
+  }
+
+  private async handleAudioSession(active: boolean, source?: string): Promise<void> {
+    addNativeCallDiagnostic("info", active ? "CallKit audio activation received" : "CallKit audio deactivation received");
+    try {
+      if (source) await sipEngine.handleNativeAudioSession(active, source);
+      else await sipEngine.handleNativeAudioSession(active);
+      addNativeCallDiagnostic("info", "CallKit audio session forwarded to SDK", { context: { active } });
+    } catch {
+      addNativeCallDiagnostic("error", "CallKit audio session update failed", { context: { active } });
+    }
+  }
+
+  private _registerListeners(callKeep: any): void {
+    // User answered call from native UI (lock screen / notification)
+    callKeep.addEventListener("answerCall", ({ callUUID }: any) => this.handleNativeAnswer(callUUID));
 
     // User declined call from native UI
     callKeep.addEventListener("endCall", async ({ callUUID }: any) => {
@@ -585,15 +711,10 @@ class NativeCallManager {
       }
     );
 
-    // VoIP push notification received (iOS only)
-    // This is critical for waking the app when a call comes in while app is killed
+    // CallKit owns native audio-session activation for system call controls.
     if (Platform.OS === "ios") {
-      callKeep.addEventListener("didActivateAudioSession", () => {
-        void sipEngine.handleNativeAudioSession(true);
-      });
-      callKeep.addEventListener("didDeactivateAudioSession", () => {
-        void sipEngine.handleNativeAudioSession(false);
-      });
+      callKeep.addEventListener("didActivateAudioSession", () => this.handleAudioSession(true));
+      callKeep.addEventListener("didDeactivateAudioSession", () => this.handleAudioSession(false));
       callKeep.addEventListener(
         "didReceiveStartCallAction",
         async ({ callUUID, handle, name }: any) => {
@@ -649,11 +770,11 @@ class NativeCallManager {
 
       // Provider reset (iOS) — clean up all calls
       callKeep.addEventListener("didResetProvider", () => {
-        void sipEngine.handleNativeAudioSession(false, "provider_reset");
+        void this.handleAudioSession(false, "provider_reset");
         console.log("[NativeCall] Provider reset — ending all calls");
         callIdToUuid.clear();
         uuidToCallId.clear();
-        this.pendingAnswers.clear();
+        this.clearAnswerActions();
       });
     }
 

@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (data?: any) => unknown>(),
-  keep: { setup: vi.fn(async (_options?: any) => {}), startCall: vi.fn(), displayIncomingCall: vi.fn(), reportConnectedOutgoingCallWithUUID: vi.fn(), setCurrentCallActive: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn(), reportEndCallWithUUID: vi.fn() },
+  keep: { setup: vi.fn(async (_options?: any) => {}), startCall: vi.fn(), answerIncomingCall: vi.fn(), displayIncomingCall: vi.fn(), reportConnectedOutgoingCallWithUUID: vi.fn(), setCurrentCallActive: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn(), reportEndCallWithUUID: vi.fn() },
   engine: { handleNativeAudioSession: vi.fn(async (_active: boolean) => {}), answerCall: vi.fn(async (_id: string) => {}), hangupCall: vi.fn(async (_id: string) => {}) },
   terminate: vi.fn(), diagnostic: vi.fn(),
   alert: vi.fn(), appState: { currentState: "active", addEventListener: () => ({ remove: vi.fn() }) },
@@ -71,6 +71,7 @@ it("records native hang-up failure and preserves the mapping for retry", async (
 });
 it("answers the mapped incoming SDK call without claiming connection or ending it", async () => {
   await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("202", "3001");
+  mocks.incoming = { id: "202", status: "incoming" };
   const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
   await mocks.handlers.get("answerCall")!({ callUUID });
   expect(mocks.engine.answerCall).toHaveBeenCalledWith("202");
@@ -82,6 +83,7 @@ it("answers the mapped incoming SDK call without claiming connection or ending i
 });
 it("observes native answer failure, hides raw error text, and preserves retry mapping", async () => {
   await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("203", "3001");
+  mocks.incoming = { id: "203", status: "incoming" };
   const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
   mocks.engine.answerCall.mockRejectedValueOnce(new Error("private raw SIP credential"));
   await expect(mocks.handlers.get("answerCall")!({ callUUID })).resolves.toBeUndefined();
@@ -93,6 +95,7 @@ it("observes native answer failure, hides raw error text, and preserves retry ma
 });
 it("suppresses simultaneous duplicate native answer actions while preserving terminal cleanup", async () => {
   await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("204", "3001");
+  mocks.incoming = { id: "204", status: "incoming" };
   const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
   let complete: () => void = () => {};
   mocks.engine.answerCall.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
@@ -155,7 +158,7 @@ it("persists safe answer callback, duplicate, and command acceptance separately 
   expect(messages().at(-1)).toBe("Native answer command accepted");
   expect(messages()).not.toContain("CallKit call marked active");
   nativeCallManager.reportCallConnected("208");
-  expect(messages().at(-1)).toBe("CallKit call marked active");
+  expect(messages().at(-1)).toBe("Incoming SIP call connected");
   expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private-");
 });
 it("records an unmapped answer callback without persisting the supplied identifier or invoking SIP", async () => {
@@ -166,4 +169,142 @@ it("records an unmapped answer callback without persisting the supplied identifi
   }));
   expect(mocks.engine.answerCall).not.toHaveBeenCalled();
   expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private-untrusted-address");
+});
+
+async function incomingForSystemAnswer(id = "301") {
+  await nativeCallManager.initialize();
+  nativeCallManager.displayIncomingCall(id, "3001");
+  mocks.incoming = { id, status: "incoming" };
+  return mocks.keep.displayIncomingCall.mock.calls.at(-1)![0];
+}
+it("routes in-app Answer through one system transaction and waits for SDK acceptance from its callback", async () => {
+  const callUUID = await incomingForSystemAnswer();
+  let accept!: () => void;
+  mocks.engine.answerCall.mockImplementationOnce(() => new Promise(resolve => { accept = resolve; }));
+  const request = nativeCallManager.answerIncomingCall("301");
+  expect(nativeCallManager.answerIncomingCall("301")).toBe(request);
+  expect(mocks.keep.answerIncomingCall).toHaveBeenCalledTimes(1);
+  expect(mocks.keep.answerIncomingCall).toHaveBeenCalledWith(callUUID);
+  expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+  let completed = false; void request.then(() => { completed = true; });
+  const callback = mocks.handlers.get("answerCall")!({ callUUID });
+  expect(mocks.engine.answerCall).toHaveBeenCalledTimes(1);
+  expect(mocks.engine.answerCall).toHaveBeenCalledWith("301");
+  await Promise.resolve(); expect(completed).toBe(false);
+  accept(); await callback; await request;
+  expect(completed).toBe(true);
+  expect(mocks.keep.setCurrentCallActive).not.toHaveBeenCalled();
+  await nativeCallManager.answerIncomingCall("301");
+  expect(mocks.keep.answerIncomingCall).toHaveBeenCalledTimes(1);
+  expect(mocks.engine.answerCall).toHaveBeenCalledTimes(1);
+});
+it("retries SDK failure after a fulfilled system Answer without requesting a second CXAnswer action", async () => {
+  const callUUID = await incomingForSystemAnswer();
+  mocks.engine.answerCall.mockRejectedValueOnce(new Error("private SDK response"));
+  const first = nativeCallManager.answerIncomingCall("301");
+  const rejected = expect(first).rejects.toThrow("Could not answer call");
+  await mocks.handlers.get("answerCall")!({ callUUID }); await rejected;
+  expect(mocks.alert).not.toHaveBeenCalled(); // The in-app handler owns its error UI.
+  await nativeCallManager.answerIncomingCall("301");
+  expect(mocks.keep.answerIncomingCall).toHaveBeenCalledTimes(1);
+  expect(mocks.engine.answerCall).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private SDK");
+});
+it("joins an in-flight system Answer instead of issuing another transaction", async () => {
+  const callUUID = await incomingForSystemAnswer();
+  let accept!: () => void;
+  mocks.engine.answerCall.mockImplementationOnce(() => new Promise(resolve => { accept = resolve; }));
+  const callback = mocks.handlers.get("answerCall")!({ callUUID });
+  const inApp = nativeCallManager.answerIncomingCall("301");
+  expect(mocks.keep.answerIncomingCall).not.toHaveBeenCalled();
+  accept(); await callback; await inApp;
+  expect(mocks.engine.answerCall).toHaveBeenCalledTimes(1);
+});
+it("bounds a missing system callback and permits a new transaction without accepting SIP directly", async () => {
+  vi.useFakeTimers();
+  try {
+    const callUUID = await incomingForSystemAnswer();
+    const request = nativeCallManager.answerIncomingCall("301");
+    const rejected = expect(request).rejects.toThrow("Call controls did not respond");
+    await vi.advanceTimersByTimeAsync(8_000); await rejected;
+    expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+    const retry = nativeCallManager.answerIncomingCall("301");
+    expect(mocks.keep.answerIncomingCall).toHaveBeenCalledTimes(2);
+    await mocks.handlers.get("answerCall")!({ callUUID }); await retry;
+    expect(mocks.engine.answerCall).toHaveBeenCalledTimes(1);
+  } finally { vi.useRealTimers(); }
+});
+it.each(["ended", "destroyed", "reset"])("rejects pending app Answer after %s and ignores late callback for a reused SDK id", async change => {
+  const oldUUID = await incomingForSystemAnswer();
+  const oldCallback = mocks.handlers.get("answerCall")!;
+  const request = nativeCallManager.answerIncomingCall("301");
+  const rejected = expect(request).rejects.toThrow("incoming call ended");
+  if (change === "ended") nativeCallManager.reportCallEnded("301");
+  if (change === "destroyed") nativeCallManager.destroy();
+  if (change === "reset") await mocks.handlers.get("didResetProvider")!();
+  await rejected;
+  await incomingForSystemAnswer();
+  await oldCallback({ callUUID: oldUUID });
+  expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+});
+it("rejects a late system callback when the original owner session was replaced", async () => {
+  const callUUID = await incomingForSystemAnswer();
+  const request = nativeCallManager.answerIncomingCall("301");
+  const rejected = expect(request).rejects.toThrow("phone session changed");
+  mocks.owner = { id: 1 };
+  await mocks.handlers.get("answerCall")!({ callUUID }); await rejected;
+  expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+  await expect(nativeCallManager.answerIncomingCall("301")).rejects.toThrow("no longer available");
+});
+it("catches system transaction dispatch errors without a direct SIP fallback", async () => {
+  await incomingForSystemAnswer();
+  mocks.keep.answerIncomingCall.mockImplementationOnce(() => { throw new Error("private native response"); });
+  await expect(nativeCallManager.answerIncomingCall("301")).rejects.toThrow("Could not open the system call controls");
+  expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private native");
+});
+it("observes audio activation failures and records bounded callback evidence", async () => {
+  await nativeCallManager.initialize();
+  mocks.engine.handleNativeAudioSession.mockRejectedValueOnce(new Error("private native audio response"));
+  await expect(mocks.handlers.get("didActivateAudioSession")!()).resolves.toBeUndefined();
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "CallKit audio activation received" }));
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "CallKit audio session update failed", context: { active: true } }));
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private native");
+});
+
+it.each(["missing", "active", "replacement"])("rejects late system answer after ringing call is %s", async state => {
+  const callUUID = await incomingForSystemAnswer();
+  const request = nativeCallManager.answerIncomingCall("301");
+  const rejected = expect(request).rejects.toThrow("no longer available");
+  if (state === "missing") mocks.incoming = null;
+  if (state === "active") mocks.incoming = { id: "301", status: "active" };
+  if (state === "replacement") mocks.incoming = { id: "301", status: "incoming" };
+  await mocks.handlers.get("answerCall")!({ callUUID }); await rejected;
+  expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+});
+
+it("retains call identity after timeout so a late old callback cannot answer a same-ID replacement", async () => {
+  vi.useFakeTimers();
+  try {
+    const callUUID = await incomingForSystemAnswer();
+    const request = nativeCallManager.answerIncomingCall("301");
+    const rejected = expect(request).rejects.toThrow("Call controls did not respond");
+    await vi.advanceTimersByTimeAsync(8_000); await rejected;
+    mocks.incoming = { id: "301", status: "incoming" };
+    await mocks.handlers.get("answerCall")!({ callUUID });
+    await expect(nativeCallManager.answerIncomingCall("301")).rejects.toThrow("no longer available");
+    expect(mocks.engine.answerCall).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+it("does not reuse a previous system Answer proof for a replacement call after SDK rejection", async () => {
+  const callUUID = await incomingForSystemAnswer();
+  mocks.engine.answerCall.mockRejectedValueOnce(new Error("SDK refused"));
+  const request = nativeCallManager.answerIncomingCall("301");
+  const rejected = expect(request).rejects.toThrow("Could not answer call");
+  await mocks.handlers.get("answerCall")!({ callUUID }); await rejected;
+  mocks.incoming = { id: "301", status: "incoming" };
+  await expect(nativeCallManager.answerIncomingCall("301")).rejects.toThrow("no longer available");
+  await mocks.handlers.get("answerCall")!({ callUUID });
+  expect(mocks.engine.answerCall).toHaveBeenCalledTimes(1);
+  expect(mocks.keep.answerIncomingCall).toHaveBeenCalledTimes(1);
 });

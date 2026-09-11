@@ -355,6 +355,56 @@ describe("Siprix native adapter", () => {
     expect(runtime.callManager.reportCallConnected).toHaveBeenCalledWith("11");
   });
 
+  it.each([
+    ["sip:phone11-test@internal.example.test", "phone11-test"],
+    ["sips:+66812345678@internal.example.test;transport=tls", "+66812345678"],
+    ['"Support desk" <sip:3001@internal.example.test>', "3001"],
+    ["3001", "3001"],
+  ])("shows a clean incoming system handle while preserving the native URI (%s)", async (remoteUri, label) => {
+    await ready();
+    const incoming = newCall({ direction: "incoming", state: "ringing", remoteUri });
+    emit({ type: "callIncoming", call: incoming }); emit({ type: "callIncoming", call: incoming });
+    expect(runtime.callManager.displayIncomingCall).toHaveBeenCalledOnce();
+    expect(runtime.callManager.displayIncomingCall).toHaveBeenCalledWith("11", label);
+    const native = useSipCallStore.getState().getCall("11");
+    expect(native.getRemoteUri()).toBe(remoteUri); expect(native.getInfo().remoteUri).toBe(remoteUri);
+    expect(useSipCallStore.getState().incomingCall?.history?.number).toBe(label);
+    expect(bridge.makeCall).not.toHaveBeenCalled();
+    await engine.answerCall("11"); expect(bridge.answerCall).toHaveBeenCalledWith("11");
+  });
+
+  it("normalizes only the outgoing system handle and deduplicates early callbacks", async () => {
+    await ready();
+    const remoteUri = "sips:+66812345678@internal.example.test;transport=tls";
+    const outgoing = newCall({ remoteUri });
+    bridge.makeCall.mockImplementationOnce(async () => {
+      emit({ type: "callProceeding", call: { ...outgoing, state: "proceeding" } }); return outgoing;
+    });
+    expect(await engine.makeCall(remoteUri)).toBe("11");
+    expect(bridge.makeCall).toHaveBeenCalledWith("1", remoteUri);
+    expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledOnce();
+    expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledWith("11", "+66812345678");
+    expect(useSipCallStore.getState().activeCalls["11"]._nativeCall.getRemoteUri()).toBe(remoteUri);
+    expect(useSipCallStore.getState().activeCalls["11"].history?.number).toBe("+66812345678");
+  });
+
+  it("records only sequenced current-session audio activation booleans without claiming call connection", async () => {
+    await ready(); emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    const active = emit({ type: "audioSession", audioSessionActive: true, speaker: false });
+    runtime.listeners.forEach(listener => listener(active)); // Same sequence is ignored.
+    runtime.listeners.forEach(listener => listener({ ...active, sequence: active.sequence + 1, generation: active.generation + 1 }));
+    emit({ type: "audioSession", audioSessionActive: "private-device-detail" });
+    emit({ type: "audioSession", audioSessionActive: false, speaker: false });
+    runtime.user = { id: 29 }; emit({ type: "audioSession", audioSessionActive: true, speaker: false });
+    const diagnostics = runtime.diagnostics.mock.calls.map(([entry]) => entry).filter(entry => entry.message === "Siprix native audio session changed");
+    expect(diagnostics).toEqual([
+      { level: "info", category: "media", message: "Siprix native audio session changed", context: { active: true } },
+      { level: "info", category: "media", message: "Siprix native audio session changed", context: { active: false } },
+    ]);
+    expect(runtime.callManager.reportCallConnected).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().incomingCall?.status).toBe("incoming");
+  });
+
   it("distinguishes a requested Answer from SDK acceptance and actual connection", async () => {
     await ready();
     emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });

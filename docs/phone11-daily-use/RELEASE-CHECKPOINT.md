@@ -51,11 +51,11 @@ The 11 September answer-control repair is signed as **build 17**, source `b28424
 
 Build **18** is installed and independently verified on the paired iPhone. Exact source `89288f8683b70ab71428eb9d592ed92925eb019d` passed [signing workflow 34569374391](https://github.com/vasavas1977/codex-phone11/actions/runs/34569374391); EAS build `e32b0f23-b501-4bcf-97d9-997eb94a4ec8`. It keeps current incoming calls reachable from stale or wrong-type call screens, binds banner actions to their owner/call, and preserves ordered Answer diagnostics. All 112 focused tests passed. The 16,569,291-byte IPA SHA256 is `da16c2e826989c037a4db978d98850d71c0c9af4a160294743e16f2fd74acc54`.
 
-The preceding build 17 handset answer failure remains unresolved until a new physical test succeeds. This is not public-number, background, long-call or two-person-chat acceptance. The live backend remains on the first-release source. See the [detailed handset and follow-up record](HANDSET-BUILD17-20260911.md).
+A new physical test on build 18 rang, connected through the in-app Answer action and ended from the handset after approximately 17 seconds. The owner reported missing or unclear echo; the exact-call server record shows zero audio packets in either direction. Review identified that in-app Answer bypassed the system answer transaction used to activate CallKit audio. The correction and 147 focused regression tests are complete, awaiting a signed build and audible handset acceptance. See the [audio repair and physical evidence](IN-APP-ANSWER-AUDIO-20260911.md). This is not public-number, background, long-call or two-person-chat acceptance. The live backend remains on the first-release source.
 
 ## Remaining production gates
 
-The [11 September handset checkpoint](HANDSET-20260911.md) verifies foreground readiness, a connected outgoing echo and saved history on build 15. The direct incoming retest received no handset response; audio and physical End confirmation remain pending. A controlled test with Phone11 open on the physical phone is the next gate.
+The latest build 18 direct incoming test establishes ringing, in-app Answer signaling and handset-initiated End, but audio failed. Clear physical echo on the corrected app is the next gate; the earlier [build 15 checkpoint](HANDSET-20260911.md) does not establish audio acceptance for this release.
 
 Incoming public-number calling, native PushKit/APNs delivery while locked/backgrounded, production Siprix licensing and long calls, two authorized chat clients, and physical audio-route/control tests remain separate acceptance gates. The commissioned background call path still requires implementation as well as provider configuration. Do not describe these as credentials-only blockers.
 

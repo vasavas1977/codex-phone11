@@ -190,7 +190,29 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       if (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix") nativeCallManager.reportCallEnded(id);
     },
     answerCall: async (id, video) => {
+      const systemAnswer = Platform.OS === "ios" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix";
+      if (systemAnswer && video) throw new Error("Siprix iOS voice trial does not support video calls");
+      const owner = getAuthSnapshot().user;
+      const incoming = useSipCallStore.getState().incomingCall;
+      // Initialization can cross a logout or a replacement call with a reused native ID.
+      // Capture identity before yielding; accepting the SDK directly skips CallKit audio activation.
+      const historyId = incoming?.history?.id;
+      const startedAt = incoming?.startTime?.getTime();
+      const stillThisIncomingCall = () => {
+        const auth = getAuthSnapshot();
+        const live = useSipCallStore.getState().incomingCall;
+        if (!owner || auth.loading || auth.user !== owner || live?.id !== id || live.status !== "incoming" ||
+          (live.history?.ownerUserId !== undefined && live.history.ownerUserId !== owner.id)) return false;
+        return historyId ? live.history?.id === historyId
+          : startedAt !== undefined ? live.startTime?.getTime() === startedAt : live === incoming;
+      };
+      if (systemAnswer && !stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
       await ensureNativeStackInitialized();
+      if (systemAnswer) {
+        if (!stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
+        await nativeCallManager.answerIncomingCall(id);
+        return;
+      }
       await sipEngine.answerCall(id, video);
       if (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix") nativeCallManager.reportCallConnected(id);
     },
