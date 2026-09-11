@@ -45,6 +45,8 @@ The immediately preceding build 13 passed a direct incoming echo call and handse
 
 ## Remaining production gates
 
+The [11 September handset checkpoint](HANDSET-20260911.md) verifies foreground readiness, a connected outgoing echo and saved history on build 15. The direct incoming retest received no handset response; audio and physical End confirmation remain pending. A controlled test with Phone11 open on the physical phone is the next gate.
+
 Incoming public-number calling, native PushKit/APNs delivery while locked/backgrounded, production Siprix licensing and long calls, two authorized chat clients, and physical audio-route/control tests remain separate acceptance gates. The commissioned background call path still requires implementation as well as provider configuration. Do not describe these as credentials-only blockers.
 
 The optional production license now has a native prebuild-only configuration path that excludes the value from public Expo configuration. A configured value alone is not proof that the SDK accepted a valid license or that a long call passed.
