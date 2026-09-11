@@ -43,9 +43,15 @@ Build 15 adds the disabled native push foundation and bounded sign-out cleanup. 
 
 The immediately preceding build 13 passed a direct incoming echo call and handset-initiated hang-up, confirmed by the user. That call bypassed the public-number carrier; public DID inbound acceptance remains separate. Earlier outbound PSTN testing also does not prove every new release or network state.
 
-### Latest installed app: answer repair build 17
+### Previous answer repair: build 17
 
 The 11 September answer-control repair is signed as **build 17**, source `b284243d86a14eb55225be0b61148184d4f969df`. The exact-source [signing workflow](https://github.com/vasavas1977/codex-phone11/actions/runs/34559119758) passed all required checks; the downloaded app version and bundle were verified. After the user reconnected the iPhone, the verified IPA was installed successfully and independent device inventory confirmed version 1.0.0/build 17. The first build 17 incoming test answered but was cut short by the test helper; a corrected retry rang and timed out unanswered. Audio and handset End acceptance remain open. See the [build 17 handset checkpoint](HANDSET-BUILD17-20260911.md). See the [answer repair checkpoint](ANSWER-CONTROLS-20260911.md) for the artifact hash and verification details.
+
+### Latest installed app: build 18
+
+Build **18** is installed and independently verified on the paired iPhone. Exact source `89288f8683b70ab71428eb9d592ed92925eb019d` passed [signing workflow 34569374391](https://github.com/vasavas1977/codex-phone11/actions/runs/34569374391); EAS build `e32b0f23-b501-4bcf-97d9-997eb94a4ec8`. It keeps current incoming calls reachable from stale or wrong-type call screens, binds banner actions to their owner/call, and preserves ordered Answer diagnostics. All 112 focused tests passed. The 16,569,291-byte IPA SHA256 is `da16c2e826989c037a4db978d98850d71c0c9af4a160294743e16f2fd74acc54`.
+
+The preceding build 17 handset answer failure remains unresolved until a new physical test succeeds. This is not public-number, background, long-call or two-person-chat acceptance. The live backend remains on the first-release source. See the [detailed handset and follow-up record](HANDSET-BUILD17-20260911.md).
 
 ## Remaining production gates
 

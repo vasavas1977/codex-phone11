@@ -24,3 +24,7 @@ Signed iOS **build 17** was produced from reviewed source `b284243d86a14eb55225b
 **Build 17 is installed.** After the user reconnected the iPhone, its pre-install inventory confirmed build 15. The verified IPA was installed in place, and an independent device inventory then confirmed version 1.0.0/build 17 with the expected bundle identifier. The earlier disconnected attempt was not counted as success despite its zero exit code. Two bounded direct incoming attempts were made with build 17. The first answered but the test helper ended it after 100 ms; the corrected retry received ringing but timed out unanswered after 20 seconds. Audio and handset End remain unaccepted. See the [build 17 handset checkpoint](HANDSET-BUILD17-20260911.md). Build 16 was superseded and was not installed.
 
 The live backend remains on `75fa3c940aa983cff30ed967d444c73b43cc9a53`. No calling route or live push configuration was changed for this repair.
+
+## Follow-up installed
+
+Build **18** now supersedes build 17 on the paired iPhone. Its source `89288f8683b70ab71428eb9d592ed92925eb019d` adds current-call navigation recovery and ordered, bounded Answer diagnostics; 112 focused tests and all signing-workflow checks passed. Independent inventory confirms installation. Physical answer/audio/End acceptance is still pending; see the [handset and follow-up record](HANDSET-BUILD17-20260911.md).

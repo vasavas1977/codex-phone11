@@ -31,3 +31,9 @@ The incoming screen now records an Answer handler invocation with bounded eligib
 Diagnostic storage operations now run in order, merge newly arrived events during hydration, and invalidate stale work after clearing history. Call handlers remain nonblocking. Storage failures can still prevent persistence; missing logs must not override handset or server evidence.
 
 All **112 focused tests** passed across incoming/active controls, route selection and banner actions, Siprix engine and native mapping, and diagnostic persistence. Independent review covered the navigation/action-token changes, engine tracing, and persistence races. These changes do not yet constitute a successful physical answer/audio/End test.
+
+## Follow-up build 18 installed
+
+Source `89288f8683b70ab71428eb9d592ed92925eb019d` completed all required jobs in [GitHub run 34569374391](https://github.com/vasavas1977/codex-phone11/actions/runs/34569374391). EAS build `e32b0f23-b501-4bcf-97d9-997eb94a4ec8` produced version 1.0.0/build **18**. Artifact source, bundle identifier and build metadata matched; the 16,569,291-byte IPA SHA256 is `da16c2e826989c037a4db978d98850d71c0c9af4a160294743e16f2fd74acc54`. Installation succeeded and independent paired-device inventory confirms build 18. The local iOS export also passed after resolving the installed Expo Babel preset through the local module path.
+
+Build 18 includes the navigation and diagnostic changes described above. No production SDK license is embedded, background calling remains uncommissioned, and the live backend remains on `75fa3c940aa983cff30ed967d444c73b43cc9a53`. A new physical test has been prepared with a 35-second ringing window, an independently accepted 55-second safety guard, and planned device-screen capture while ringing. It has not been placed; renewed physical readiness and audio/End confirmation are required.
