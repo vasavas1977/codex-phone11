@@ -17,6 +17,8 @@ import { trpc, createTRPCClient } from "@/lib/trpc";
 import { PhoneProvisioner } from "@/lib/sip/phone-provisioner";
 import { SipProvider } from "@/lib/sip/sip-provider";
 import { CurrentCallBanner } from "@/components/current-call-banner";
+import { ChatForegroundRefresh } from "@/lib/chat/foreground-refresh";
+import { ChatNotifications } from "@/lib/notifications/chat-notifications";
 import * as Auth from "@/lib/_core/auth";
 
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -91,6 +93,8 @@ export default function RootLayout() {
         <trpc.Provider client={trpcClient} queryClient={queryClient}>
           <QueryClientProvider client={queryClient}>
             <PhoneProvisioner />
+            <ChatForegroundRefresh />
+            <ChatNotifications />
             {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
             {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: ROOT_BACKGROUND } }}>

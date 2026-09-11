@@ -39,9 +39,7 @@ export default function TeamChatScreen() {
     if (!user) return;
     const refresh = () => { if (getAuthSnapshot().user === user && AppState.currentState === "active") void useChatStore.getState().loadChannels(); };
     refresh();
-    const timer = setInterval(refresh, 5000);
-    const subscription = AppState.addEventListener("change", state => { if (state === "active") refresh(); });
-    return () => { clearInterval(timer); subscription.remove(); };
+    // Root foreground refresh keeps unread counts current on every tab.
   }, [user]));
 
   const refreshDirectory = async () => {

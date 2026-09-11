@@ -40,6 +40,7 @@ interface ChatState {
   roomLoading: Record<string, boolean>; hasMore: Record<string, boolean>;
   setUser: (id: number | null) => void;
   loadChannels: (tenantId?: number) => Promise<void>;
+  cancelChannelRefresh: () => void;
   loadDirectory: () => Promise<void>;
   createConversation: (kind: ChatKind, name: string, memberIds: number[]) => Promise<string>;
   loadMessages: (id: string, older?: boolean) => Promise<void>;
@@ -50,6 +51,7 @@ interface ChatState {
 }
 export function createChatStore(api: ChatTransport, persistence?: ChatPersistence) {
   let generation = 0;
+  let channelRequest = 0;
   let restoredWorkspace: number | null = null;
   let restoreInFlight: Promise<void> | null = null;
   let restoreFailed = false;
@@ -113,6 +115,11 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         set(s => ({ drafts: { ...s.drafts, [id]: text.slice(0, 4000) } }));
         void persist();
       },
+      cancelChannelRefresh: () => {
+        // Invalidate only list responses; do not discard drafts or interrupt sends.
+        channelRequest++;
+        if (get().loading) set({ loading: false });
+      },
       loadChannels: async tenantId => {
         if (!get().userId) return;
         if (tenantId !== undefined && tenantId !== (requestedWorkspace ?? get().workspace?.id)) {
@@ -121,10 +128,12 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         requestedWorkspace = tenantId ?? requestedWorkspace ?? get().workspace?.id;
         const current = generation;
         if (get().loading) return;
+        const request = ++channelRequest;
+        const currentRequest = () => current === generation && request === channelRequest;
         set({ loading: true, error: null });
         try {
           const data = await api.list(requestedWorkspace);
-          if (current !== generation) return;
+          if (!currentRequest()) return;
           requestedWorkspace = data.workspace.id;
           set({ ...data, loading: false });
           if (persistence && restoredWorkspace !== data.workspace.id) {
@@ -144,7 +153,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
             await restoreInFlight;
           }
         } catch (error) {
-          if (current === generation) {
+          if (currentRequest()) {
             const denied = ["FORBIDDEN", "UNAUTHORIZED"].includes((error as any)?.data?.code);
             if (denied) { generation++; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty(), error: chatError(error) }); }
             else set({ loading: false, error: chatError(error) });

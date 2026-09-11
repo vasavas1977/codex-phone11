@@ -5,6 +5,12 @@ import { withInfoPlist } from "expo/config-plugins";
 
 const { wakeBuildSettings } = require("./plugins/with-phone11-voip-wake.js");
 const wakeSettings = wakeBuildSettings();
+const chatCommissioned = process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED ?? "0";
+if (!["0", "1"].includes(chatCommissioned)) throw new Error("Invalid chat notification build flag");
+if (chatCommissioned === "1" && (wakeSettings.gate !== "1" || wakeSettings.environment !== "production")) {
+  throw new Error("Chat notification pilot requires the production incoming-call pilot configuration");
+}
+const chatNotificationsEnabled = chatCommissioned === "1";
 
 const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
 const sipEngine = process.env.EXPO_PUBLIC_SIP_ENGINE ?? "pjsip";
@@ -39,7 +45,7 @@ const config: ExpoConfig = {
   name: env.appName,
   slug: env.appSlug,
   version: "1.0.0",
-  runtimeVersion: `1.0.0-${sipEngine}${wakeSettings.gate === "1" ? "-wake-pilot" : ""}-1`,
+  runtimeVersion: `1.0.0-${sipEngine}${chatNotificationsEnabled ? "-daily-pilot" : wakeSettings.gate === "1" ? "-wake-pilot" : ""}-1`,
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
@@ -52,6 +58,7 @@ const config: ExpoConfig = {
     buildNumber: "5",
     ...(wakeSettings.environment ? { entitlements: { "aps-environment": wakeSettings.environment } } : {}),
     infoPlist: {
+      Phone11ChatNotificationsCommissioned: chatNotificationsEnabled ? 1 : 0,
       ITSAppUsesNonExemptEncryption: false,
       NSMicrophoneUsageDescription: "Allow Phone11 to access your microphone for voice and video calls.",
       UIBackgroundModes: ["audio", "voip", "remote-notification"],
@@ -136,6 +143,7 @@ const config: ExpoConfig = {
     reactCompiler: false,
   },
   extra: {
+    phone11ChatNotificationsEnabled: chatNotificationsEnabled,
     ...(wakeSettings.environment ? { phone11ApnsEnvironment: wakeSettings.environment } : {}),
     eas: {
       projectId: "e354ffd3-485c-49f1-9e6f-aebe571d8dfb",

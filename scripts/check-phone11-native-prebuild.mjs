@@ -20,7 +20,8 @@ try {
   const env={...process.env,CI:'1',EXPO_NO_TELEMETRY:'1',EXPO_PUBLIC_SIP_ENGINE:'siprix',
     PHONE11_BUNDLE_ID:'space.manus.phone11ai.t20260425073427',EXPO_PUBLIC_API_BASE_URL:'https://api.phone11.ai'};
   delete env.PHONE11_SIPRIX_LICENSE;
-  for (const gate of ['0','1']) {
+  for (const [gate,chat] of [['0','0'],['1','0'],['1','1']]) {
+    env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED=chat;
     env.PHONE11_VOIP_WAKE_COMMISSIONED=gate;
     if(gate==='1')env.PHONE11_APNS_ENVIRONMENT='production';
     else delete env.PHONE11_APNS_ENVIRONMENT;
@@ -40,11 +41,12 @@ try {
     assert.equal(properties['phone11.voipWakeCommissioned'],gate);
     assert.equal(properties['phone11.apnsEnvironment'],gate==='1'?'production':undefined);
     assert.match(plist,new RegExp('<key>Phone11WakeCommissioned</key>\\s*<integer>'+gate+'</integer>'));
+    assert.match(plist,new RegExp('<key>Phone11ChatNotificationsCommissioned</key>\\s*<integer>'+chat+'</integer>'));
     const entitlements=paths.filter(path=>path.endsWith('.entitlements'));
     assert.equal(entitlements.length,1,'Expected one generated app entitlement file');
     const entitlement=await readFile(join(scratch,'ios',entitlements[0]),'utf8');
     if(gate==='1')assert.match(entitlement,/<key>aps-environment<\/key>\s*<string>production<\/string>/);
-    console.log(`Real Expo iOS prebuild passed for native wake gate ${gate}; generated bootstrap, origin, gate, Podfile properties and pilot APNs entitlement verified.`);
+    console.log(`Real Expo iOS prebuild passed for native wake gate ${gate}, chat gate ${chat}; generated bootstrap, origin, gate, Podfile properties and pilot APNs entitlement verified.`);
   }
   console.log('No signing or installation performed.');
 } finally {await rm(scratch,{recursive:true,force:true});}

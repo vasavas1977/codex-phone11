@@ -15,6 +15,7 @@ async function withProfile(name,run) {
   try {
     delete process.env.PHONE11_APNS_ENVIRONMENT;
     delete process.env.PHONE11_VOIP_WAKE_COMMISSIONED;
+    delete process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED;
     Object.assign(process.env,profile(name).env);
     process.env.PHONE11_SIPRIX_LICENSE='';
     const {exp}=getConfig(root,{isModdedConfig:true});
@@ -54,6 +55,8 @@ function pod(properties,overrides={}) {
 }
 test('actual default Expo mods and evaluated pod keep native wake disabled',async()=>withProfile('preview-ios-siprix',async config=>{
   assert.equal(config.extra.phone11ApnsEnvironment,undefined);
+  assert.equal(config.extra.phone11ChatNotificationsEnabled,false);
+  assert.equal(config.ios.infoPlist.Phone11ChatNotificationsCommissioned,0);
   assert.equal(config.runtimeVersion,'1.0.0-siprix-1');
   const properties=await mod(config,'podfileProperties');
   assert.equal(properties['phone11.voipWakeCommissioned'],'0');
@@ -65,6 +68,8 @@ test('actual default Expo mods and evaluated pod keep native wake disabled',asyn
 test('resolved pilot profile generates matching production entitlement, JS config and whole-pod compile flag',async()=>withProfile('preview-ios-siprix-wake-pilot',async config=>{
   assert.equal(config.extra.phone11ApnsEnvironment,'production');
   assert.equal(config.runtimeVersion,'1.0.0-siprix-wake-pilot-1');
+  assert.equal(config.extra.phone11ChatNotificationsEnabled,false);
+  assert.equal(config.ios.infoPlist.Phone11ChatNotificationsCommissioned,0);
   assert.notEqual(profile('preview-ios-siprix-wake-pilot').channel,profile('preview-ios-siprix').channel);
   assert.equal(profile('preview-ios-siprix-wake-pilot').env.PHONE11_BUNDLE_ID,profile('preview-ios-siprix').env.PHONE11_BUNDLE_ID);
   const properties=await mod(config,'podfileProperties');
@@ -81,4 +86,23 @@ test('resolved pilot profile generates matching production entitlement, JS confi
     assert.notEqual(pod(props).status,0,'Missing or mismatched prebuild properties must prevent gate1');
   }
   for(const env of [{PHONE11_VOIP_WAKE_COMMISSIONED:'true'},{PHONE11_APNS_ENVIRONMENT:'sandbox'},{EXPO_PUBLIC_SIP_ENGINE:'pjsip'}]) assert.notEqual(pod(properties,env).status,0);
+}));
+
+test('explicit daily pilot isolates ordinary alerts and preserves production call signing',async()=>withProfile('preview-ios-siprix-daily-pilot',async config=>{
+  assert.equal(config.extra.phone11ChatNotificationsEnabled,true);
+  assert.equal(config.ios.infoPlist.Phone11ChatNotificationsCommissioned,1);
+  assert.equal(config.extra.phone11ApnsEnvironment,'production');
+  assert.equal(config.runtimeVersion,'1.0.0-siprix-daily-pilot-1');
+  assert.notEqual(profile('preview-ios-siprix-daily-pilot').channel,profile('preview-ios-siprix-wake-pilot').channel);
+  assert.equal(profile('preview-ios-siprix-daily-pilot').env.PHONE11_BUNDLE_ID,profile('preview-ios-siprix').env.PHONE11_BUNDLE_ID);
+  assert.equal((await mod(config,'entitlements'))['aps-environment'],'production');
+  assert.equal((await mod(config,'infoPlist')).Phone11WakeCommissioned,1);
+  for(const value of ['true','false','2']) {
+    process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED=value;
+    assert.throws(()=>getConfig(root,{isModdedConfig:true}),/Invalid chat notification build flag/);
+  }
+  process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED='1';
+  process.env.PHONE11_VOIP_WAKE_COMMISSIONED='0';
+  delete process.env.PHONE11_APNS_ENVIRONMENT;
+  assert.throws(()=>getConfig(root,{isModdedConfig:true}),/production incoming-call pilot/);
 }));

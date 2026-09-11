@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { startChatNotificationDispatcher } from "../chat-notifications/dispatcher";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
@@ -97,6 +98,7 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`[api] server listening on port ${port}`);
+    startChatNotificationDispatcher();
 
     // Start FreeSWITCH ESL event listener after server is up
     try {

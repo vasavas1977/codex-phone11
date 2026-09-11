@@ -1,3 +1,4 @@
+import { chatNotificationsRouter } from "./chat-notifications/router";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { integrationSecretStatus } from "./pbx/integration-auth";
@@ -281,6 +282,7 @@ export const fullRouter = router({
   pbx: pbxRouter,
   ivr: ivrRouter,
   chat: chatRouter,
+  chatNotifications: chatNotificationsRouter,
 });
 
 export type AppRouter = typeof fullRouter;

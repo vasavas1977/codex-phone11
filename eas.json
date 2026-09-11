@@ -55,7 +55,8 @@
       "channel": "siprix-trial",
       "env": {
         "EXPO_PUBLIC_SIP_ENGINE": "siprix",
-        "PHONE11_VOIP_WAKE_COMMISSIONED": "0"
+        "PHONE11_VOIP_WAKE_COMMISSIONED": "0",
+        "PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED": "0"
       }
     },
     "production": {
@@ -68,6 +69,13 @@
       "env": {
         "PHONE11_VOIP_WAKE_COMMISSIONED": "1",
         "PHONE11_APNS_ENVIRONMENT": "production"
+      }
+    },
+    "preview-ios-siprix-daily-pilot": {
+      "extends": "preview-ios-siprix-wake-pilot",
+      "channel": "siprix-daily-pilot",
+      "env": {
+        "PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED": "1"
       }
     }
   },

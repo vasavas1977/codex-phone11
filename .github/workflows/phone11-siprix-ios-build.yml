@@ -14,6 +14,7 @@ on:
         options:
           - preview-ios-siprix
           - preview-ios-siprix-wake-pilot
+          - preview-ios-siprix-daily-pilot
 
 permissions:
   contents: read
@@ -86,7 +87,7 @@ jobs:
           PHONE11_BUILD_PROFILE: ${{ inputs.build_profile || 'preview-ios-siprix' }}
         run: |
           case "$PHONE11_BUILD_PROFILE" in
-            preview-ios-siprix|preview-ios-siprix-wake-pilot) ;;
+            preview-ios-siprix|preview-ios-siprix-wake-pilot|preview-ios-siprix-daily-pilot) ;;
             *) echo 'Unsupported Phone11 build profile'; exit 1 ;;
           esac
           eas build --platform ios --profile "$PHONE11_BUILD_PROFILE" --non-interactive --wait --json > "$RUNNER_TEMP/phone11-siprix-build.json"

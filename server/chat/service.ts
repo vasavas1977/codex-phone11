@@ -1,3 +1,4 @@
+import { chatNotificationsEnabled, enqueueChatNotifications } from "../chat-notifications/repository";
 import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import type { PoolClient } from "pg";
@@ -111,8 +112,9 @@ export function createChatService(transaction = withTransaction) {
         // Conversation lock serializes sequence allocation with read markers.
         const rows = await db.query(`INSERT INTO phone11_chat_messages (id, tenant_id, conversation_id, sender_id, client_id, content)
           VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (tenant_id, conversation_id, sender_id, client_id)
-          DO UPDATE SET client_id = EXCLUDED.client_id RETURNING *`, [randomUUID(), workspace.id, id, userId, clientId, content]);
+          DO UPDATE SET client_id = EXCLUDED.client_id RETURNING *, (xmax = 0) AS newly_inserted`, [randomUUID(), workspace.id, id, userId, clientId, content]);
         if (rows.rows[0].content !== content) throw new TRPCError({ code: "CONFLICT", message: "This retry belongs to a different message. Please send it again." });
+        if (rows.rows[0].newly_inserted && chatNotificationsEnabled()) await enqueueChatNotifications(db, rows.rows[0].id);
         const name = await db.query(`SELECT name FROM users WHERE id = $1`, [userId]);
         return message({ ...rows.rows[0], sender_name: name.rows[0]?.name });
       });

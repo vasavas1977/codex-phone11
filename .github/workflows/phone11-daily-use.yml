@@ -89,6 +89,13 @@ jobs:
             tests/phone11-chat-scope-ui.test.tsx \
             tests/phone11-chat-transport.test.ts \
             tests/phone11-chat-owner.test.ts \
+            tests/phone11-chat-foreground.test.ts \
+            tests/phone11-legacy-unavailable.test.tsx \
+            tests/phone11-chat-notification-client.test.ts \
+            tests/phone11-chat-notification-component.test.ts \
+            tests/phone11-chat-notification-server.test.ts \
+            tests/phone11-chat-notification-settings.test.tsx \
+            tests/phone11-chat-notification-apns.test.ts \
             tests/phone11-wake-client.test.ts \
             tests/phone11-wake-refresh.test.ts \
             tests/phone11-voip-enrollment-lifecycle.test.ts \
@@ -199,3 +206,52 @@ jobs:
           JS
       - name: Test durable device ownership, session revocation, and token replacement
         run: pnpm exec vitest run tests/phone11-push-postgres.test.ts tests/phone11-push-auth-schema.test.ts tests/phone11-wake-postgres.test.ts
+
+  chat-notification-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_chat_notification_test
+          POSTGRES_PASSWORD: phone11_chat_notification_test
+          POSTGRES_DB: phone11_chat_notification_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_chat_notification_test -d phone11_chat_notification_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Ephemeral loopback service credentials, never a deployment secret or tenant DB.
+      PHONE11_CHAT_NOTIFICATION_TEST_DATABASE_URL: postgresql://phone11_chat_notification_test:phone11_chat_notification_test@127.0.0.1:5432/phone11_chat_notification_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the dedicated local test database
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const value = process.env.PHONE11_CHAT_NOTIFICATION_TEST_DATABASE_URL;
+          assert.ok(value, 'PostgreSQL integration tests must not silently skip');
+          const url = new URL(value);
+          assert.equal(url.protocol, 'postgresql:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '5432');
+          assert.equal(url.pathname, '/phone11_chat_notification_test');
+          assert.equal(url.username, 'phone11_chat_notification_test');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          JS
+      - name: Test notification outbox, current recipients and session revocation
+        run: pnpm exec vitest run tests/phone11-chat-notification-postgres.test.ts

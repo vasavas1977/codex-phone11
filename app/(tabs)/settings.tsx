@@ -7,6 +7,7 @@ import { useColors } from "@/hooks/use-colors";
 import { useSipAccountStore } from "@/lib/sip/account-store";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useAuth } from "@/hooks/use-auth";
+import { chatNotificationClientEnabled } from "@/lib/notifications/client";
 
 export default function SettingsScreen() {
   const colors = useColors();
@@ -50,6 +51,7 @@ export default function SettingsScreen() {
     {account && row(busy ? "Connecting…" : "Reconnect", "Refresh your phone connection", reconnect)}
     {row("Call history", "Calls placed and received on this phone", () => router.push("/(tabs)/recents"))}
     {row("Team Chat", "Conversations in your work account", () => router.push("/(tabs)/teamchat"))}
+    {chatNotificationClientEnabled() && row("Message alerts", "Choose alerts for your selected workspace", () => router.push("/notifications/preferences"))}
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <Text style={[styles.rowTitle, { color: colors.foreground }]}>Preview availability</Text>
       <Text style={[styles.detail, { color: colors.muted }]}>Keep Phone11 open to receive calls in this preview. Incoming-call notifications while the app is closed are not connected yet.</Text>
