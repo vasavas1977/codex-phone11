@@ -37,3 +37,9 @@ On 11 September the owner confirmed **connected, clear echo, and End worked**. T
 Independent exact-call server logs and CDR confirm ringing, answer at 08:21:06.275, echo execution and received BYE/NORMAL_CLEARING at 08:21:11.115, approximately 4.84 seconds after answer. PCMA/8000 media flowed: 239 packets received and 237 sent, versus zero in both directions on build 18. These packet counts corroborate media transport; the owner's clear-echo report supplies audible acceptance. The accepted 55-second safety guard and final cleanup did not end the call.
 
 The post-call physical screen returned to Ready to call and displayed phone11-test in the recent list. This passes the bounded foreground in-app Answer, clear echo and handset End test on build 19. It does not establish public-number delivery, locked/background receipt, long-call licensing, every audio route, or two-person chat.
+
+## Subsequent public-number audio failure
+
+After the bounded echo acceptance, the owner reported a real two-phone call to 02-030-3001 that connected but was silent in both directions. The caller identity was supplied privately and is excluded from this public record. This is an unresolved public-number media failure; the earlier echo result must not be described as successful two-phone audio.
+
+Read-only inspection found no matching FreeSWITCH CDR or usable per-call proxy/media-relay history for the reported interval. The live public-number pilot relays directly between the carrier and handset through the proxy/media relay, bypassing the echo server. Missing echo-server records therefore do not establish that the public call did not happen. A fresh bounded call matched to the exact caller/DID, with private signaling and relay stream-counter evidence plus handset audio diagnostics, is required to locate the failure. No routing, codec or media-security changes were made on inference alone.

@@ -61,6 +61,8 @@ The owner confirmed that build 19 connected, played clear echo and ended immedia
 
 ## Remaining production gates
 
+The owner subsequently reported a call to 02-030-3001 that connected but was silent in both directions. Public-number two-phone audio is **failing and unresolved**. The successful build 19 direct echo proves only its bounded foreground path; it does not close this separate carrier/media-relay path. A matched, monitored repeat is being prepared; see the [audio investigation record](IN-APP-ANSWER-AUDIO-20260911.md).
+
 Build 19 now has physical foreground direct incoming, in-app Answer, clear echo and immediate handset End acceptance. The earlier [build 15 checkpoint](HANDSET-20260911.md) remains historical; this short direct echo bypassed the public carrier and does not establish the remaining gates below.
 
 Incoming public-number calling, native PushKit/APNs delivery while locked/backgrounded, production Siprix licensing and long calls, two authorized chat clients, and physical audio-route/control tests remain separate acceptance gates. The commissioned background call path still requires implementation as well as provider configuration. Do not describe these as credentials-only blockers.
