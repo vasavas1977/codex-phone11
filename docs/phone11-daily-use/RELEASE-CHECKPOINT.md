@@ -1,5 +1,7 @@
 # Phone11 daily-use release checkpoint
 
+The opening implementation, verification and deployment sections record the first release on 10 September 2026. See [the current source candidate](#new-daily-use-source-candidate-11-september) for code `54923dc`; build 21 is now the latest verified installation, while the accepted direct echo remains build 19 evidence.
+
 10 September 2026. This release replaces the demo paths in the five main mobile tabs with real account, phone, directory and chat workflows. It is an internal preview, not Zoom feature parity or a production calling certificate.
 
 ## Implemented
@@ -11,7 +13,7 @@
 - Settings exposes actual connection, history, chat and sign-out actions. Unsupported SMS, video, transfer and voicemail paths have explicit unavailable states.
 - Backend media and push routes enforce owner/integration authorization. Missing providers/storage report unavailable. The retired unscoped storage-signing proxy is disabled.
 
-## Verification before deployment
+## First-release verification before deployment
 
 - 174 combined calling, account, directory, media and push regression tests passed.
 - 52 existing authentication client/UI tests passed.
@@ -22,7 +24,7 @@
 
 ## Deployment and handset evidence
 
-The first release is now deployed and installed:
+The first-release backend deployment and historical build 14 installation were verified as follows. Later handset builds are recorded below:
 
 - Source: `75fa3c940aa983cff30ed967d444c73b43cc9a53`.
 - Backend image: `sha256:baf25c98c7af79635cd81b7a1cc0d09292491d87264c75fd5f2239771a64b4a0`. Existing runtime settings, network, port and storage were preserved. The original image/Compose remain available for application rollback.
@@ -31,7 +33,7 @@ The first release is now deployed and installed:
 - Candidate and public API checks passed with the existing approved owner: actual password sign-in, canonical profile, extension 3001/tenant 1 provisioning, authorized chat list/directory, sign-out and revoked-session HTTP 401. Probe credentials and session values were not published; the probe created no conversations or messages.
 - Public workspace currently has zero conversations and zero other directory users. Two-person chat acceptance requires an explicitly authorized second account.
 - Signed iOS build **14**, EAS build `07d50ba3-7983-46b6-8e88-24ac0cba5091`, completed in [GitHub run 34470366819](https://github.com/vasavas1977/codex-phone11/actions/runs/34470366819). Exact source matched. The 16,556,558-byte IPA SHA256 is `be8f351d0681cc425fb77262bddf44874075594c23a6bfd85ec387486cc5d58b`.
-- Build 14 installed successfully in place on the existing paired iPhone. It has no configured production Siprix license and remains a trial. New physical UI/call testing is awaiting the owner's Mac unlock for iPhone Mirroring; installation does not prove audio, reconnection, or public-number receipt.
+- Build 14 installed successfully in place on the existing paired iPhone. It has no configured production Siprix license and remains a trial. At that checkpoint, physical UI/call testing awaited the owner's Mac unlock for iPhone Mirroring; installation alone did not prove audio, reconnection, or public-number receipt.
 
 Subsequent push-engineering changes are a separate candidate, not part of this deployed/installed source. The candidate adds durable session-bound device records, explicit APNs HTTP/2 delivery, and a disabled native PushKit foundation. The subsequent disabled integrated wake candidate now implements native bootstrap, SIP/CallKit correlation and scoped wake grants; see [the current candidate](NATIVE-WAKE-CANDIDATE.md). Proxy commissioning and physical wake/media acceptance remain open; provider credentials alone do not complete background calling. See [native foundation](NATIVE-PUSH-FOUNDATION.md) and [server candidate](SERVER-PUSH-CANDIDATE.md).
 
@@ -49,11 +51,11 @@ The 11 September answer-control repair is signed as **build 17**, source `b28424
 
 ### Previous installed app: build 18
 
-Build **18** is installed and independently verified on the paired iPhone. Exact source `89288f8683b70ab71428eb9d592ed92925eb019d` passed [signing workflow 34569374391](https://github.com/vasavas1977/codex-phone11/actions/runs/34569374391); EAS build `e32b0f23-b501-4bcf-97d9-997eb94a4ec8`. It keeps current incoming calls reachable from stale or wrong-type call screens, binds banner actions to their owner/call, and preserves ordered Answer diagnostics. All 112 focused tests passed. The 16,569,291-byte IPA SHA256 is `da16c2e826989c037a4db978d98850d71c0c9af4a160294743e16f2fd74acc54`.
+Build **18** was installed and independently verified on the paired iPhone, before build 19 superseded it. Exact source `89288f8683b70ab71428eb9d592ed92925eb019d` passed [signing workflow 34569374391](https://github.com/vasavas1977/codex-phone11/actions/runs/34569374391); EAS build `e32b0f23-b501-4bcf-97d9-997eb94a4ec8`. It keeps current incoming calls reachable from stale or wrong-type call screens, binds banner actions to their owner/call, and preserves ordered Answer diagnostics. All 112 focused tests passed. The 16,569,291-byte IPA SHA256 is `da16c2e826989c037a4db978d98850d71c0c9af4a160294743e16f2fd74acc54`.
 
 A new physical test on build 18 rang, connected through the in-app Answer action and ended from the handset after approximately 17 seconds. The owner reported missing or unclear echo; the exact-call server record shows zero audio packets in either direction. Review identified that in-app Answer bypassed the system answer transaction used to activate CallKit audio. The correction and 147 focused regression tests are complete and installed as build 19 below; the subsequent bounded physical echo test passed. See the [audio repair and physical evidence](IN-APP-ANSWER-AUDIO-20260911.md). This is not public-number, background, long-call or two-person-chat acceptance. The live backend remains on the first-release source.
 
-### Latest installed app: build 19
+### Previous installed app: build 19 — foreground echo accepted
 
 Build **19** routes in-app iOS Answer through the system CallKit answer transaction, preserves call/owner identity through pending actions and retries, and records bounded audio activation diagnostics. Caller labels now omit the SIP server URI. All 147 focused tests, iOS export, native and required server checks passed. Exact source `aba6ff24f6ebebd688c51dc669fd213cdae3d44b` completed [signing workflow 34577365729](https://github.com/vasavas1977/codex-phone11/actions/runs/34577365729); EAS build `05e5e98f-a61e-4532-b7d3-06c3bd68a877`. The 16,572,596-byte IPA SHA256 is `08e42e4fe9da52097b143838ca7342aeeac22674db7edbf5f200dfefbf7045d5`. Installation succeeded and independent device inventory confirmed version 1.0.0/build 19.
 
@@ -65,7 +67,7 @@ The owner subsequently reported a call to 02-030-3001 that connected but was sil
 
 Build 19 now has physical foreground direct incoming, in-app Answer, clear echo and immediate handset End acceptance. The earlier [build 15 checkpoint](HANDSET-20260911.md) remains historical; this short direct echo bypassed the public carrier and does not establish the remaining gates below.
 
-Incoming public-number calling, native PushKit/APNs delivery while locked/backgrounded, production Siprix licensing and long calls, two authorized chat clients, and physical audio-route/control tests remain separate acceptance gates. The commissioned background call path still requires implementation as well as provider configuration. Do not describe these as credentials-only blockers.
+Incoming public-number calling, native PushKit/APNs delivery while locked/backgrounded, production Siprix licensing and long calls, two authorized chat clients, and physical audio-route/control tests remain separate acceptance gates. Background calling has a disabled integrated source candidate signed and installed as build 21; approved deployment/commissioning and physical acceptance remain required. Production credential revocation may require additional engineering. These are not credentials-only blockers.
 
 The optional production license now has a native prebuild-only configuration path that excludes the value from public Expo configuration. A configured value alone is not proof that the SDK accepted a valid license or that a long call passed.
 
@@ -74,14 +76,22 @@ See [the researched gap audit](ZOOM-GAP-AUDIT.md), [chat deployment instructions
 
 ### New daily-use source candidate: 11 September
 
+The candidate code is `54923dc9583987fa5e1ee0bd5cb0407a8ff9c6c4`; later documentation commits do not change that code identity. Signing and installation for this exact source succeeded as build 21; physical call acceptance is pending. See [the signed artifact evidence](#signed-and-installed-candidate-build-21).
+
 The next candidate repairs chat draft/outbox scope, authoritative unread counts and message ordering. Every queued chat operation captures its authenticated actor; the server checks the new owner assertion and trusted-origin CORS permits that header. Deploy the server compatibility change before a browser client using the header. The server remains authority for workspace membership and message access.
 
 Background calling now has an integrated, disabled source implementation. Native bootstrap shares the existing SDK and CallKit provider; a scoped device/session grant fetches the currently assigned SIP credentials into memory, exact wake UUIDs correlate the delivered INVITE, and Answer waits for that call. PostgreSQL enforces current session/assignment authority, serializes incoming calls, retains caller-cancellation tombstones, and prevents expired credentials escaping after lock/network waits. A separate bounded busy lease supports active calls without extending credential access. Same-device token refresh retains its grant; logout and reassignment revoke it. Full SIP credential revocation still requires PBX password rotation.
 
-The native commissioning flag remains zero and server wake enablement defaults off. This source milestone does not change build 19's installation or establish public-number audio, Apple delivery, locked-device calling, long licensed calls or two-person chat. The user's public-number call connected with silence in both directions; the exact-pair passive monitor is prepared for a physical repeat. No carrier media settings were changed on inference alone.
+The native commissioning flag remains zero and server wake enablement defaults off. The candidate is now installed as build 21, but it has no new physical call acceptance. Signing/installation do not establish public-number audio, Apple delivery, locked-device calling, long licensed calls or two-person chat. The user's public-number call connected with silence in both directions; the exact-pair passive monitor is prepared for a physical repeat. No carrier media settings were changed on inference alone.
 
-Local integrated verification passed 543 tests across 42 files, nine native compilation/runtime checks, backend compilation and iOS JavaScript export. Final affected checks passed 40 HTTP/service tests, 41 real wake database tests, 56 authentication client/UI tests, ten native checks and 12 packaging/plugin checks. The disabled proxy candidate passed four static guards and exact Kamailio 5.8.4 parser checks in both gate states. Seven isolated synthetic SIP scenarios subsequently passed, including one original INVITE, duplicate suppression, UUID correlation, cancellation and actual timeout. These tests have no real media/provider endpoints. Repository-wide TypeScript still contains pre-existing diagnostics; no clean whole-repository typecheck is claimed. Signed-source/build and installation evidence must be appended after the actual workflow and device inventory succeed.
+Final local integrated verification passed 572 tests across 44 files, ten native compilation/runtime checks and 17 packaging/plugin checks, plus backend compilation, iOS JavaScript export and real isolated Expo iOS prebuild. Earlier scoped checkpoints included 543 tests across 42 files, nine native checks, 12 packaging/plugin checks, 40 HTTP/service tests, 41 real wake database tests and 56 authentication client/UI tests. These overlapping historical and scoped totals must not be added to the final integrated total. The disabled proxy candidate passed four static guards and exact Kamailio 5.8.4 parser checks in both gate states. Seven isolated synthetic SIP scenarios subsequently passed, including one original INVITE, duplicate suppression, UUID correlation, cancellation and actual timeout. These tests have no real media/provider endpoints. Repository-wide TypeScript still contains pre-existing diagnostics; no clean whole-repository typecheck is claimed. Exact-source signing, artifact identity and independent installation evidence are recorded below.
 
 Foreground enrollment maintenance now recovers after login/account changes and app return, renews near-expiry grants while idle, and retries transient failures. It runs independently of call-entry/Answer, cancels when a real call starts, and remains inert behind the native disabled gate. The 53 focused refresh/client/Answer checks passed independently. The full private wake-routing candidate also passed the actual installed Kamailio parser without a reload or call. The original public-number media issue is still awaiting the two physical phones.
 
 Build 20 reached EAS for source `9a1dc33681b845bb036f92b4e97b6a45cc1cb167` but failed during Prebuild; no IPA was produced or installed. The launch matcher incorrectly treated a later superclass method call as another launch declaration. It now matches the complete method declaration, with the actual generated Expo 54 AppDelegate as a regression fixture. All 17 plugin/packaging checks and a real isolated Expo iOS prebuild pass. The signing workflow now requires that real generation check before submitting to EAS.
+
+### Signed and installed candidate: build 21
+
+Exact code `54923dc9583987fa5e1ee0bd5cb0407a8ff9c6c4` passed [signing workflow 34593302684](https://github.com/vasavas1977/codex-phone11/actions/runs/34593302684). EAS build `6d4153f6-644a-49cf-bcf9-28c2a511fd64` reports `FINISHED`. The verified artifact is version **1.0.0**, build **21**, bundle `space.manus.phone11ai.t20260425073427`. The IPA is **16,599,251 bytes**, SHA256 `2587eff28183f2b9002292a029a9f684f1bbdc1cba535161be20a53708a5369e`. ZIP integrity and embedded provisioning-profile presence were verified. Profile presence alone does not establish commissioned Apple delivery or an enabled wake path.
+
+The native commissioning gate remains zero. Installation succeeded, and independent device app inventory confirms the expected bundle, version 1.0.0 and build 21. Build 19's accepted direct echo remains historical evidence for that version; build 21 has no physical call acceptance yet. Both-phone readiness is pending for the matched public-number test. This signed build does not deploy the backend/proxy candidate or establish public-number two-way audio, APNs delivery, locked/background calling, licensed long calls or two-person chat.
