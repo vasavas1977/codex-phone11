@@ -638,6 +638,24 @@ describe("validated native wake adoption", () => {
     runtime.user={ id:17 }; wait.resolve(binding); await task;
     expect(bridge.adoptIncomingWake).not.toHaveBeenCalled(); expect(bridge.destroy).not.toHaveBeenCalled();
   });
+  it.each(["ringing", "connected", "dialing"] as const)("preserves a %s call found during recovery inspection", async (state) => {
+    await ready();
+    snapshot.calls = [newCall({ state, direction: state === "ringing" ? "incoming" : "outgoing" })];
+    snapshot.sequence++;
+    await engine.restart();
+    expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"] ?? useSipCallStore.getState().incomingCall).toBeTruthy();
+  });
+  it("preserves a newer call event while an older idle snapshot is pending", async () => {
+    await ready();
+    const old = structuredClone(snapshot);
+    const wait = deferred<SiprixSnapshot>(); bridge.getSnapshot.mockReturnValueOnce(wait.promise);
+    const task = engine.restart();
+    emit({ type: "callIncoming", call: newCall({ state: "ringing", direction: "incoming" }) });
+    wait.resolve(old); await task;
+    expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().incomingCall?.id).toBe("11");
+  });
   it("keeps a verified wake alive on foreground restart", async () => {
     pendingWake(); await engine.initialize();
     await engine.restart();

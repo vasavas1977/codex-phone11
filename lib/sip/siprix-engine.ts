@@ -459,6 +459,13 @@ export class SiprixEngine {
       const snapshot = await this.bridge.getSnapshot();
       if (requestedRevision !== this.revision) return;
       if (this.current(session) && snapshot.nativeWake) { await this.initialize(); return; }
+      // A regular call can arrive while the recovery snapshot is in flight.
+      // Preserve both native calls not yet delivered to JS and newer JS events.
+      if (this.current(session) && (this.calls.size > 0 || snapshot.calls.some(call =>
+        call.accountId === session?.accountId && call.state !== "terminated"))) {
+        this.applySnapshot(snapshot, session!);
+        return;
+      }
     }
     const cleanup = this.destroy();
     const revision = this.revision;
