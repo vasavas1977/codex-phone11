@@ -45,8 +45,12 @@ export function createChatNotificationRepository(transaction:Transaction=withTra
     const hash=createHash('sha256').update(input.token.toLowerCase()).digest('hex');
     await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`chat-apns:${input.bundleId}:${input.environment}:${hash}`]);
     await db.query('SELECT pg_advisory_xact_lock(731104,$1)',[userId]);
+    // Retired/remapped identities are already ineligible for delivery. They must
+    // not consume all device slots when the owner signs in through recovery.
     await db.query(`DELETE FROM phone11_chat_notification_devices d WHERE user_id=$1 AND NOT EXISTS(
-      SELECT 1 FROM phone11_auth_session a WHERE a.id=d.session_id AND a."expiresAt">clock_timestamp())`,[userId]);
+      SELECT 1 FROM phone11_auth_session a JOIN phone11_auth_identity ai ON ai.auth_user_id=a."userId"
+      AND ai.legacy_user_id=d.user_id AND ai.disabled_at IS NULL
+      WHERE a.id=d.session_id AND a."expiresAt">clock_timestamp())`,[userId]);
     const count=await db.query(`SELECT count(*)::integer n FROM phone11_chat_notification_devices WHERE user_id=$1 AND NOT(tenant_id=$2 AND device_id=$3)`,[userId,input.tenantId,input.deviceId]);
     if(count.rows[0].n>=10)throw new Error('Too many notification devices');
     // Authenticated account switch removes previous owner/session bindings before

@@ -43,6 +43,23 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   await repo.register(2,'s2',device);await expect(repo.register(2,'s3',device)).rejects.toThrow();await expect(repo.register(2,'s2',{...device,tenantId:20})).rejects.toThrow();
   expect((await pool.query('SELECT count(*) n FROM phone11_chat_notification_devices')).rows[0].n).toBe('1');
  });
+ it.each([
+  "DELETE FROM phone11_auth_identity WHERE auth_user_id='auth2'",
+  "UPDATE phone11_auth_identity SET disabled_at=NOW() WHERE auth_user_id='auth2'",
+  "UPDATE phone11_auth_identity SET legacy_user_id=3 WHERE auth_user_id='auth2'",
+ ])('retired identity registrations cannot exhaust a recovered account notification quota: %s',async retire=>{
+  for(let i=0;i<10;i++)await repo.register(2,'s2',{...device,deviceId:randomUUID(),token:(i+1).toString(16).padStart(64,'0')});
+  await message();expect(await count()).toBe(10);
+  await expect(repo.register(2,'s2',device)).rejects.toThrow('Too many notification devices');
+  expect((await pool.query('SELECT count(*) n FROM phone11_chat_notification_devices')).rows[0].n).toBe('10');
+  // Identity recovery can retire the mapping while its old auth sessions still exist.
+  await pool.query(retire);
+  await pool.query(`INSERT INTO phone11_auth_identity VALUES('recovered-auth2',2,NULL);
+   INSERT INTO phone11_auth_session VALUES('recovered-s2','recovered-auth2',NOW()+INTERVAL '1 day')`);
+  await expect(repo.register(2,'recovered-s2',device)).resolves.toEqual({registered:true});
+  expect((await pool.query('SELECT session_id FROM phone11_chat_notification_devices')).rows.map(r=>r.session_id)).toEqual(['recovered-s2']);
+  expect(await count()).toBe(0);
+ });
  it('enqueues only once for concurrent same-message retries and never notifies sender',async()=>{
   await repo.register(2,'s2',device);await repo.register(1,'s1',{...device,deviceId:randomUUID(),token:'b'.repeat(64)});
   const id=randomUUID();const rows=await Promise.all([chat.send(1,10,conversation,id,'same'),chat.send(1,10,conversation,id,'same')]);expect(rows[0].id).toBe(rows[1].id);expect(await count()).toBe(1);
