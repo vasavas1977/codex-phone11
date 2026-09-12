@@ -71,7 +71,10 @@ route[PHONE11_WAKE_RESUME] {
     append_hf("X-Phone11-Wake-ID: $var(wake_uuid)\r\n");
     # Reuse the existing pilot's native/FreeSWITCH/carrier media and reply routes.
     route(PHONE11_INBOUND_OFFER);
-    route(RELAY);
+    # The existing offer route returns only after media allocation succeeds.
+    # Keep this transaction AVP unset for failed wake/lookup and early CANCEL.
+    $avp(phone11_wake_media_allocated) = 1;
+    route(PHONE11_WAKE_RELAY);
     exit;
 }
 
@@ -92,9 +95,35 @@ route[PHONE11_WAKE_END] {
 }
 
 failure_route[PHONE11_WAKE_FAILURE] {
+    route(PHONE11_WAKE_MEDIA_CLEANUP);
     $var(wake_terminal) = "ended";
     if (t_is_canceled()) { $var(wake_terminal) = "cancelled"; }
     route(PHONE11_WAKE_TERMINAL);
+}
+
+# Scoped equivalent of the accepted RELAY route. An immediate relay error
+# does not necessarily run failure_route, so release its successful offer here.
+route[PHONE11_WAKE_RELAY] {
+    if (!t_relay()) {
+        # Preserve the relay error before cleanup/HTTP calls change ser_error.
+        sl_reply_error();
+        route(PHONE11_WAKE_MEDIA_CLEANUP);
+        $var(wake_terminal) = "cancelled";
+        route(PHONE11_WAKE_TERMINAL);
+    }
+    exit;
+}
+
+route[PHONE11_WAKE_MEDIA_CLEANUP] {
+    # A local transaction timeout has no downstream final reply, so the
+    # existing reply-route cleanup cannot run. Never touch unallocated calls.
+    # Use delete explicitly: manage() treats suspended-resume routes as failure
+    # context too (Kamailio 5.8 rtpengine module section 5.8).
+    if ($avp(phone11_wake_media_allocated) == 1) {
+        rtpengine_delete();
+        $avp(phone11_wake_media_allocated) = $null;
+    }
+    return;
 }
 
 route[PHONE11_WAKE_TERMINAL] {

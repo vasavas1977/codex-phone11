@@ -26,7 +26,7 @@ test('only an initial exact-pilot INVITE enters suspension; no alternate call is
   const resume=body('PHONE11_WAKE_RESUME');
   assert.ok(resume.indexOf('t_is_canceled()')<resume.indexOf('lookup("location")'));
   assert.ok(resume.indexOf('lookup("location")')<resume.indexOf('route(PHONE11_INBOUND_OFFER)'));
-  assert.ok(resume.indexOf('route(PHONE11_INBOUND_OFFER)')<resume.indexOf('route(RELAY)'));
+  assert.ok(resume.indexOf('route(PHONE11_INBOUND_OFFER)')<resume.indexOf('route(PHONE11_WAKE_RELAY)'));
 });
 test('correlation discards spoofed headers and rejects invalid server UUID before forwarding',()=>{
   assert.ok(body('PHONE11_WAKE_START').indexOf('remove_hf("X-Phone11-Wake-ID")')<body('PHONE11_WAKE_START').indexOf('t_newtran()'));

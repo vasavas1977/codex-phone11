@@ -19,7 +19,7 @@ try {
   run(['run','-d','--name',`${prefix}-proxy`,'--network',prefix,'--network-alias','proxy','--platform','linux/amd64','--read-only','--cap-drop','ALL','--tmpfs','/var/run/kamailio:rw,nosuid,noexec,size=1m,mode=1777',
     '-v',`${root}/tests/fixtures/phone11-wake-kamailio:/proof:ro`,'-v',`${root}/infra/configs/kamailio/phone11-wake-candidate:/candidate:ro`,
     '--entrypoint','/usr/sbin/kamailio',image,'-DD','-E','-f','/proof/runtime.cfg']);
-  process.stdout.write(run(['run','--name',`${prefix}-fixture`,'--network',prefix,'--network-alias','fixture','--read-only','--cap-drop','ALL','-v',`${root}/tests/fixtures/phone11-wake-kamailio:/proof:ro`,python,'python','-B','/proof/runtime.py'],60000));
+  process.stdout.write(run(['run','--name',`${prefix}-fixture`,'--network',prefix,'--network-alias','fixture','--read-only','--cap-drop','ALL','-v',`${root}/tests/fixtures/phone11-wake-kamailio:/proof:ro`,python,'python','-B','/proof/runtime.py'],95000));
 } catch(error) {
   const logs=spawnSync('docker',['logs',`${prefix}-proxy`],{encoding:'utf8',timeout:10000,maxBuffer:2*1024*1024});
   process.stderr.write(`${logs.stdout??''}\n${logs.stderr??''}`);throw error;

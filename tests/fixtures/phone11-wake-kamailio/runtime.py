@@ -16,7 +16,49 @@ def response(request, code, reason):
         for value in values:
             if key == "To" and ";tag=" not in value: value += ";tag=fixture-callee"
             lines.append(f"{key}: {value}")
+    if code==200 and headers(request,"CSeq")==["1 INVITE"]:
+        lines.append("Contact: <sip:1001@fixture:6001>")
+        lines.extend("Record-Route: "+value for value in headers(request,"Record-Route"))
     return "\r\n".join(lines) + "\r\nContent-Length: 0\r\n\r\n"
+
+# Minimal NG control peer: actual Kamailio module serialization is exercised.
+# This does not send or receive RTP audio.
+def bencode(value):
+    if isinstance(value, str): value=value.encode()
+    if isinstance(value, bytes): return str(len(value)).encode()+b":"+value
+    if isinstance(value, dict): return b"d"+b"".join(bencode(k)+bencode(v) for k,v in sorted(value.items()))+b"e"
+    raise TypeError(value)
+
+def bdecode(data, offset=0):
+    kind=data[offset:offset+1]
+    if kind in (b"d", b"l"):
+        result={} if kind==b"d" else []; offset+=1
+        while data[offset:offset+1]!=b"e":
+            value,offset=bdecode(data,offset)
+            if kind==b"d": other,offset=bdecode(data,offset);result[value]=other
+            else: result.append(value)
+        return result,offset+1
+    if kind==b"i":
+        end=data.index(b"e",offset);return int(data[offset+1:end]),end+1
+    end=data.index(b":",offset);length=int(data[offset:end]);offset=end+1
+    return data[offset:offset+length].decode(),offset+length
+
+ng_commands=[]
+ng=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);ng.bind(("0.0.0.0",22222))
+def receive_ng():
+    while True:
+        raw,peer=ng.recvfrom(65535)
+        cookie,payload=raw.split(b" ",1)
+        try:
+            command,_=bdecode(payload);ng_commands.append(command)
+            result={"result":"pong" if command["command"]=="ping" else "ok"}
+            if command["command"]=="offer": result["sdp"]=command["sdp"]
+            ng.sendto(cookie+b" "+bencode(result),peer)
+        except Exception as error: failures.append(repr(error))
+threading.Thread(target=receive_ng,daemon=True).start()
+
+def commands(callid,command):
+    return [item for item in ng_commands if item.get("call-id")==callid and item["command"]==command]
 
 class HTTP(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
@@ -54,7 +96,18 @@ def receive_calls():
         if message.startswith("INVITE "):
             with lock: packets.append(message)
             callee.sendto(response(message,100,"Trying").encode(),peer)
-            callee.sendto(response(message,486,"Busy Here").encode(),peer)
+            if scenarios[headers(message,"Call-ID")[0]]["mode"]=="media-success":
+                callee.sendto(response(message,200,"OK").encode(),peer)
+            elif scenarios[headers(message,"Call-ID")[0]]["mode"] not in ("media-timeout", "media-cancel", "media-race"):
+                callee.sendto(response(message,486,"Busy Here").encode(),peer)
+        elif message.startswith("CANCEL "):
+            if scenarios[headers(message,"Call-ID")[0]]["mode"]=="media-timeout": continue
+            callee.sendto(response(message,200,"OK").encode(),peer)
+            original=next(p for p in packets if headers(p,"Call-ID")==headers(message,"Call-ID"))
+            if scenarios[headers(message,"Call-ID")[0]]["mode"]=="media-race":
+                callee.sendto(response(original,200,"OK").encode(),peer)
+            else:
+                callee.sendto(response(original,487,"Request Terminated").encode(),peer)
 threading.Thread(target=receive_calls,daemon=True).start()
 caller=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);caller.bind(("0.0.0.0",6000));caller.settimeout(.1)
 proxy=("proxy",15060)
@@ -88,7 +141,7 @@ for _ in range(40):
     time.sleep(.1)
 assert registered,"isolated proxy did not accept synthetic REGISTER"
 
-for mode in ["ready", "cancel", "unavailable", "invalid-json", "invalid-uuid", "invalid-types", "timeout"]:
+for mode in ["ready", "cancel", "unavailable", "invalid-json", "invalid-uuid", "invalid-types", "timeout", "media-cancel", "media-timeout", "media-success", "media-race", "media-relay-error"]:
     callid="fixture-"+mode+"-"+str(uuid.uuid4())
     item={"uuid":str(uuid.uuid4()),"offers":0,"arrived":threading.Event(),"release":threading.Event(),"mode":mode,"terminals":[]};scenarios[callid]=item
     invite=request("INVITE",callid,callid,SDP,extra="X-Phone11-Wake-ID: spoofed-caller-value\r\nX-Phone11-Wake-ID: another-spoof\r\n")
@@ -101,7 +154,15 @@ for mode in ["ready", "cancel", "unavailable", "invalid-json", "invalid-uuid", "
         wait_for(lambda:"cancelled" in item["terminals"])
         item["release"].set();time.sleep(.5)
         assert not any(headers(p,"Call-ID")==[callid] for p in packets),"late ready resumed a cancelled INVITE"
-    elif mode=="ready":
+    elif mode=="media-relay-error":
+        item["release"].set()
+        replies=responses(callid,2)
+        assert any(msg.startswith("SIP/2.0 500") for msg in replies),"immediate relay error response absent"
+        wait_for(lambda:bool(commands(callid,"delete")))
+        assert len(commands(callid,"offer"))==1,"relay-error media was not allocated"
+        assert not any(headers(p,"Call-ID")==[callid] for p in packets),"unsupported transport unexpectedly relayed"
+        wait_for(lambda:"cancelled" in item["terminals"])
+    elif mode in ("ready", "media-cancel", "media-timeout", "media-success", "media-race"):
         item["release"].set();wait_for(lambda:any(headers(p,"Call-ID")==[callid] for p in packets))
         time.sleep(.2)
         forwarded=[p for p in packets if headers(p,"Call-ID")==[callid]]
@@ -109,13 +170,26 @@ for mode in ["ready", "cancel", "unavailable", "invalid-json", "invalid-uuid", "
         assert headers(forwarded[0],"X-Phone11-Wake-ID")==[item["uuid"]],"wake UUID spoof/duplicate/mismatch"
         assert forwarded[0].split("\r\n\r\n",1)[1]==SDP,"original SDP changed"
         assert headers(forwarded[0],"From")==headers(invite,"From"),"original caller changed"
-        wait_for(lambda:"ended" in item["terminals"])
+        if mode in ("media-cancel", "media-race"):
+            caller.sendto(request("CANCEL",callid,callid).encode(),proxy)
+        if mode in ("media-success", "media-race"):
+            replies=responses(callid,1)
+            assert any(msg.startswith("SIP/2.0 200") and headers(msg,"CSeq")==["1 INVITE"] for msg in replies),"successful INVITE response absent"
+            assert not commands(callid,"delete"),"successful or racing 200 call media deleted"
+            assert "ended" not in item["terminals"],"successful call marked ended"
+        else:
+            wait_for(lambda:bool(item["terminals"]),35 if mode=="media-timeout" else 4)
+            wait_for(lambda:bool(commands(callid,"delete")))
+            assert commands(callid,"delete")[0]["from-tag"]=="caller-"+callid,"cleanup did not preserve owning tag"
+        assert len(commands(callid,"offer"))==1,"media offer duplicated"
     else:
         item["release"].set()
         replies=responses(callid,31 if mode=="timeout" else 1)
         assert any(msg.startswith("SIP/2.0 480") for msg in replies),"unavailable/invalid response did not terminate"
         assert not any(headers(p,"Call-ID")==[callid] for p in packets),"invalid response forwarded INVITE"
         wait_for(lambda:"cancelled" in item["terminals"])
+    if mode not in ("ready", "media-cancel", "media-timeout", "media-success", "media-race", "media-relay-error"):
+        assert not commands(callid,"offer") and not commands(callid,"delete"),"unallocated call touched media"
     assert not failures,failures
     print("PASS synthetic SIP "+mode,flush=True)
-print("PASS 7 isolated SIP transaction scenarios; no live endpoints",flush=True)
+print("PASS 12 isolated SIP transaction/media cleanup scenarios; no live endpoints",flush=True)
