@@ -12,6 +12,7 @@ export interface CallHistoryEntry {
   answeredAt?: number;
   endedAt?: number;
   updatedAt: number;
+  nativeCompletion?: true;
 }
 
 export function callNumber(uri: string): string {
@@ -31,7 +32,12 @@ export function mergeHistory(saved: CallHistoryEntry[], current: CallHistoryEntr
   const entries = new Map<string, CallHistoryEntry>();
   for (const entry of [...saved, ...current]) {
     const existing = entries.get(entry.id);
-    if (!existing || entry.updatedAt >= existing.updatedAt) entries.set(entry.id, entry);
+    if (!existing || (entry.nativeCompletion && !existing.nativeCompletion) || entry.updatedAt >= existing.updatedAt) {
+      // A later JS observer must not reopen an already completed native record.
+      entries.set(entry.id, existing?.nativeCompletion && existing.endedAt !== undefined && !entry.nativeCompletion
+        ? { ...entry, startedAt: existing.startedAt, answeredAt: existing.answeredAt ?? entry.answeredAt, endedAt: existing.endedAt, nativeCompletion: true }
+        : entry.nativeCompletion && existing ? { ...entry, name: entry.name ?? existing.name } : entry);
+    }
   }
   return [...entries.values()].sort((a, b) => b.startedAt - a.startedAt || b.id.localeCompare(a.id));
 }
@@ -106,3 +112,18 @@ addAuthChangeListener(() => {
   const owner = getAuthSnapshot().user?.id ?? null;
   if (owner !== useCallHistoryStore.getState().ownerUserId) void useCallHistoryStore.getState().reload();
 });
+
+/** Resolve only after the owner-specific disk write; callers may then ack native. */
+export async function importCompletedWakeCalls(entries: CallHistoryEntry[], owner: number, current: () => boolean): Promise<void> {
+  await serialize(async () => {
+    if (!current()) throw new Error("Call history owner changed");
+    const valid = decode(JSON.stringify(entries), owner);
+    if (valid.length !== entries.length || valid.some(e => !e.id.startsWith("native-wake:") || e.endedAt === undefined)) throw new Error("Invalid completed calls");
+    const saved = decode(await AsyncStorage.getItem(key(owner)), owner);
+    if (!current()) throw new Error("Call history owner changed");
+    const merged = mergeHistory(saved, valid.map(entry => ({ ...entry, nativeCompletion: true as const })));
+    await AsyncStorage.setItem(key(owner), JSON.stringify(merged));
+    if (!current()) throw new Error("Call history owner changed");
+    useCallHistoryStore.setState(state => ({ ownerUserId: owner, entries: mergeHistory(merged, state.ownerUserId === owner ? state.entries : []), error: null }));
+  });
+}

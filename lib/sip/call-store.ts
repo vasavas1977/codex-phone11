@@ -38,15 +38,17 @@ function rememberCall(call: SipCall, ended = false): SipCall {
   const owner = call.history?.ownerUserId ?? getAuthSnapshot().user?.id;
   if (!owner) return call;
   const now = Date.now();
+  const info = callInfoFromNative(call._nativeCall);
+  const nativeId = typeof info.historyId === "string" && /^native-wake:[0-9a-f-]{36}$/i.test(info.historyId) ? info.historyId : undefined;
   const history: CallHistoryEntry = {
     ...call.history,
-    id: call.history?.id ?? `${now}-${++historySequence}-${Math.random().toString(36).slice(2)}`,
+    id: call.history?.id ?? nativeId ?? `${now}-${++historySequence}-${Math.random().toString(36).slice(2)}`,
     ownerUserId: owner,
     number: callNumber(call.remoteNumber),
     name: call.remoteName,
     direction: call.direction,
-    startedAt: call.history?.startedAt ?? call.startTime?.getTime() ?? now,
-    answeredAt: call.history?.answeredAt ?? call.connectTime?.getTime(),
+    startedAt: (nativeId && Number.isFinite(info.startedAt) ? info.startedAt : undefined) ?? call.history?.startedAt ?? call.startTime?.getTime() ?? now,
+    answeredAt: (nativeId && Number.isFinite(info.answeredAt) ? info.answeredAt : undefined) ?? call.history?.answeredAt ?? call.connectTime?.getTime(),
     endedAt: call.history?.endedAt ?? (ended ? now : undefined),
     updatedAt: now,
   };

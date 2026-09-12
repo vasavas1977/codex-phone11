@@ -3,7 +3,10 @@
 #import "native-runtime.m"
 #undef main
 static int delegateRestores;
+static NSDictionary *historyBinding;
 @implementation Phone11WakeCoordinator
++ (instancetype)shared { static Phone11WakeCoordinator *v; if (!v) v=[self new]; return v; }
+- (NSDictionary *)publicBinding { return historyBinding; }
 + (void)restoreCallKitDelegate { delegateRestores++; }
 + (void)recordRegistrationState:(NSInteger)state fresh:(BOOL)fresh {}
 + (void)recordRegistrationFailureStatus:(NSNumber *)status {}
@@ -22,6 +25,8 @@ static NSMutableArray *refreshTimers;
 int main(void) {
  @autoreleasepool {
   P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  NSURL *historyURL=[NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@"-wake-history.json"]]];
+  P11WakeHistory.shared.url=historyURL;
   object_setClass(runtime, P11TestRuntime.class); refreshTimers=[NSMutableArray new];
   NSDictionary *sip = @{@"sipServer":@"invalid.example", @"sipExtension":@"test", @"sipPassword":@"fake-test-password", @"transport":@"TLS"};
   NSString *uuid = @"11111111-1111-4111-8111-111111111111";
@@ -374,6 +379,54 @@ int main(void) {
   CHECK(replaced && runtime.wakeReady && runtime.wakeContext);
   [Phone11Siprix endIncomingWake:uuid];
   [runtime shutdown];
+  // A completed native-only call remains on disk after SDK shutdown and only
+  // its freshly bound owner/tenant can read or acknowledge it.
+  historyBinding=binding;
+  dispatch_sync(P11WakeHistory.shared.queue, ^{});
+  [js readCompletedWakeCalls:binding resolver:resolve rejecter:reject];
+  dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush();
+  CHECK(!error && [result count]==1 && result[0][@"answeredAt"] && result[0][@"endedAt"]);
+  CHECK(!result[0][@"sessionBinding"] && !result[0][@"deviceId"] && !result[0][@"sipPassword"]);
+  NSDictionary *savedHistory=result[0];
+  NSString *historyId=result[0][@"id"];
+  NSMutableDictionary *wrongHistory=[binding mutableCopy]; wrongHistory[@"ownerUserId"]=@99;
+  [js readCompletedWakeCalls:wrongHistory resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_HISTORY_OWNER"]);
+  NSMutableDictionary *renewed=[binding mutableCopy]; renewed[@"sessionBinding"]=@"renewed-session"; historyBinding=renewed;
+  [js readCompletedWakeCalls:renewed resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush(); CHECK(!error && [result count]==1);
+  [js ackCompletedWakeCalls:renewed ids:@[@"native-wake:22222222-2222-4222-8222-222222222222"] resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush();
+  [js readCompletedWakeCalls:renewed resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush(); CHECK([result count]==1);
+  [js ackCompletedWakeCalls:renewed ids:@[historyId] resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush();
+  [js readCompletedWakeCalls:renewed resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush(); CHECK(!error && [result count]==0);
+  CHECK([P11HistoryNumber(@"sips:+66812345678@example.invalid") isEqual:@"+66812345678"]);
+  CHECK([P11HistoryNumber(@"sip:user:private@example.invalid") isEqual:@"Unknown"]);
+  CHECK([P11HistoryNumber(@"From: <sip:2002@example.invalid>") isEqual:@"Unknown"]);
+  CHECK([P11HistoryNumber(@"sip:2002@example.invalid\nAuthorization: private") isEqual:@"Unknown"]);
+  // Unavailable protected storage keeps the bounded RAM backlog for retry.
+  P11WakeHistory.shared.url=[historyURL URLByAppendingPathComponent:@"unavailable"];
+  [P11WakeHistory.shared append:savedHistory epoch:P11WakeHistory.shared.epoch]; dispatch_sync(P11WakeHistory.shared.queue, ^{});
+  CHECK(P11WakeHistory.shared.pending.count==1);
+  P11WakeHistory.shared.url=historyURL;
+  [js readCompletedWakeCalls:renewed resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush();
+  CHECK(!error && [result count]==1 && P11WakeHistory.shared.pending.count==0);
+  // A binding rotation while acknowledgement waits on IO cannot delete rows.
+  dispatch_semaphore_t gate=dispatch_semaphore_create(0);
+  dispatch_async(P11WakeHistory.shared.queue, ^{ dispatch_semaphore_wait(gate,DISPATCH_TIME_FOREVER); });
+  [js ackCompletedWakeCalls:renewed ids:@[historyId] resolver:resolve rejecter:reject];
+  [Phone11Siprix completedWakeBindingDidChange]; dispatch_semaphore_signal(gate);
+  dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush(); CHECK([error isEqual:@"E_HISTORY_UNAVAILABLE"]);
+  [js readCompletedWakeCalls:renewed resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush(); CHECK([result count]==1);
+  NSMutableArray *many=[NSMutableArray new];
+  for (int i=0;i<105;i++) { NSMutableDictionary *e=[savedHistory mutableCopy]; e[@"id"]=[@"native-wake:" stringByAppendingString:NSUUID.UUID.UUIDString]; [many addObject:e]; }
+  CHECK([P11WakeHistory.shared bounded:many].count==100);
+  NSMutableDictionary *old=[savedHistory mutableCopy]; old[@"startedAt"]=@1; old[@"answeredAt"]=@2; old[@"endedAt"]=@3;
+  CHECK([P11WakeHistory.shared bounded:@[old]].count==0);
+  NSUInteger loggedOutEpoch=P11WakeHistory.shared.epoch;
+  [Phone11Siprix clearCompletedWakeCalls];
+  [P11WakeHistory.shared append:savedHistory epoch:loggedOutEpoch];
+  dispatch_sync(P11WakeHistory.shared.queue, ^{});
+  [js readCompletedWakeCalls:renewed resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush(); CHECK([result count]==0);
+
+  [NSFileManager.defaultManager removeItemAtURL:historyURL error:nil];
   printf("PASS: %d native wake runtime assertions\n", assertions);
  }
  return 0;

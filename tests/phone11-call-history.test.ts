@@ -10,7 +10,7 @@ vi.mock("../lib/_core/auth", () => ({
   getAuthSnapshot: () => ({ user: mock.user }),
   addAuthChangeListener: (fn: () => void) => { mock.listeners.add(fn); return () => mock.listeners.delete(fn); },
 }));
-import { useCallHistoryStore as store, historyDuration, isMissedCall, mergeHistory, callNumber, type CallHistoryEntry } from "../lib/sip/call-history";
+import { useCallHistoryStore as store, historyDuration, isMissedCall, mergeHistory, callNumber, importCompletedWakeCalls, type CallHistoryEntry } from "../lib/sip/call-history";
 import { useSipCallStore as calls } from "../lib/sip/call-store";
 
 const row = (overrides: Partial<CallHistoryEntry> = {}): CallHistoryEntry => ({
@@ -89,5 +89,30 @@ describe("real call history", () => {
     calls.getState().setIncomingCall(native); calls.getState().updateCallState(native);
     calls.getState().terminateCall("2"); await flush();
     expect(isMissedCall(store.getState().entries[0])).toBe(true);
+  });
+});
+
+describe("native completed call import", () => {
+  const id = "native-wake:11111111-1111-4111-8111-111111111111";
+  it("merges a native-only completed call durably and retry is idempotent", async () => {
+    const native = row({ id, direction: "inbound", startedAt: 100, answeredAt: 200, endedAt: 500, updatedAt: 500 });
+    await importCompletedWakeCalls([native], 1, () => true);
+    await importCompletedWakeCalls([native], 1, () => true);
+    expect(JSON.parse(mock.data.get("phone11_call_history_v1_user_1")!)).toHaveLength(1);
+    expect(store.getState().entries[0]).toMatchObject({ id, answeredAt: 200, endedAt: 500 });
+  });
+  it("reconciles the same live wake ID using authoritative native times", async () => {
+    store.getState().upsert(row({ id, startedAt: 110, answeredAt: 220, endedAt: 600, updatedAt: 600 }));
+    await flush();
+    await importCompletedWakeCalls([row({ id, startedAt: 100, answeredAt: 200, endedAt: 500, updatedAt: 500 })], 1, () => true);
+    store.getState().upsert(row({ id, startedAt: 110, updatedAt: 900 })); await flush();
+    expect(store.getState().entries).toHaveLength(1);
+    expect(store.getState().entries[0]).toMatchObject({ startedAt: 100, answeredAt: 200, endedAt: 500 });
+  });
+  it("rejects disk failure and owner change instead of authorizing ack", async () => {
+    mock.setItem.mockRejectedValueOnce(new Error("disk unavailable"));
+    await expect(importCompletedWakeCalls([row({ id, endedAt: 2000 })], 1, () => true)).rejects.toThrow();
+    await expect(importCompletedWakeCalls([row({ id, endedAt: 2000 })], 1, () => false)).rejects.toThrow("owner changed");
+    expect(mock.data.has("phone11_call_history_v1_user_1")).toBe(false);
   });
 });

@@ -20,6 +20,103 @@ static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
   if (license.length > 0) ini.license = license;
 }
 
+// Completed wake calls outlive the native SDK; no credentials or session IDs
+// are written here. All disk IO is serialized off the call-control queue.
+static NSString *P11HistoryNumber(id uri) {
+  if (![uri isKindOfClass:NSString.class] || [uri length]>2048) return @"Unknown";
+  NSRegularExpression *sip=[NSRegularExpression regularExpressionWithPattern:@"^sips?:([+0-9A-Za-z*#_.-]{1,64})@[^\\s<>]+$" options:NSRegularExpressionCaseInsensitive error:nil];
+  NSTextCheckingResult *match=[sip firstMatchInString:uri options:0 range:NSMakeRange(0,[uri length])];
+  if (match) return [uri substringWithRange:[match rangeAtIndex:1]];
+  NSRegularExpression *plain=[NSRegularExpression regularExpressionWithPattern:@"^[+0-9*#]{1,64}$" options:0 error:nil];
+  return [plain firstMatchInString:uri options:0 range:NSMakeRange(0,[uri length])] ? uri : @"Unknown";
+}
+@interface P11WakeHistory : NSObject
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic, strong) dispatch_queue_t queue;
+@property(nonatomic, strong) NSMutableArray *pending;
+@property(atomic) NSUInteger epoch;
+@property(atomic) NSUInteger authorizationEpoch;
+@property(nonatomic) BOOL clearPending;
++ (instancetype)shared;
+- (void)append:(NSDictionary *)entry epoch:(NSUInteger)epoch;
+- (void)clear;
+- (void)perform:(NSDictionary *)scope ack:(NSArray *)ids completion:(void (^)(NSArray *, BOOL))completion;
+@end
+@implementation P11WakeHistory
++ (instancetype)shared { static P11WakeHistory *v; static dispatch_once_t once; dispatch_once(&once, ^{ v=[self new]; }); return v; }
+- (instancetype)init {
+  if ((self=[super init])) {
+    _queue=dispatch_queue_create("ai.phone11.wake-history", DISPATCH_QUEUE_SERIAL); _pending=[NSMutableArray new];
+    _url=[[[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject] URLByAppendingPathComponent:@"phone11-completed-wake-calls-v1.json"];
+  } return self;
+}
+- (BOOL)valid:(id)e {
+  if (![e isKindOfClass:NSDictionary.class] || [e count] < 8 || [e count] > 9) return NO;
+  NSSet *allowed=[NSSet setWithArray:@[@"id",@"ownerUserId",@"tenantId",@"number",@"direction",@"startedAt",@"answeredAt",@"endedAt",@"updatedAt"]];
+  for (id key in e) if (![allowed containsObject:key]) return NO;
+  if (![e[@"id"] isKindOfClass:NSString.class] || ![e[@"id"] hasPrefix:@"native-wake:"] || [e[@"id"] length]!=48 ||
+      ![[NSUUID alloc] initWithUUIDString:[e[@"id"] substringFromIndex:12]] ||
+      ![e[@"number"] isKindOfClass:NSString.class] || [e[@"number"] length]>64 || [e[@"number"] length]==0 ||
+      [e[@"number"] rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"+0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz*#_.-"] invertedSet]].location!=NSNotFound || ![e[@"direction"] isEqual:@"inbound"]) return NO;
+  for (NSString *key in @[@"ownerUserId",@"tenantId",@"startedAt",@"endedAt",@"updatedAt"]) {
+    id n=e[key]; if (![n isKindOfClass:NSNumber.class] || !isfinite([n doubleValue]) || [n doubleValue]<=0) return NO;
+  }
+  for (NSString *key in @[@"ownerUserId",@"tenantId"]) if ([e[key] doubleValue] != floor([e[key] doubleValue])) return NO;
+  if ([e[@"endedAt"] doubleValue]<[e[@"startedAt"] doubleValue]) return NO;
+  return !e[@"answeredAt"] || ([e[@"answeredAt"] isKindOfClass:NSNumber.class] &&
+    [e[@"answeredAt"] doubleValue]>=[e[@"startedAt"] doubleValue] && [e[@"answeredAt"] doubleValue]<=[e[@"endedAt"] doubleValue]);
+}
+- (NSArray *)bounded:(NSArray *)rows {
+  NSMutableDictionary *unique=[NSMutableDictionary new]; double cutoff=NSDate.date.timeIntervalSince1970*1000-30*86400000.0;
+  for (NSDictionary *e in rows) if ([self valid:e] && [e[@"endedAt"] doubleValue]>=cutoff) unique[e[@"id"]]=e;
+  NSArray *sorted=[unique.allValues sortedArrayUsingComparator:^NSComparisonResult(id a,id b){return [b[@"endedAt"] compare:a[@"endedAt"]];}];
+  return sorted.count>100 ? [sorted subarrayWithRange:NSMakeRange(0,100)] : sorted;
+}
+- (BOOL)write:(NSArray *)rows {
+  NSError *error=nil;
+  [NSFileManager.defaultManager createDirectoryAtURL:self.url.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:&error];
+  NSData *bytes=[NSJSONSerialization dataWithJSONObject:rows options:0 error:&error];
+  BOOL ok=bytes && bytes.length<=262144 && [bytes writeToURL:self.url options:NSDataWritingAtomic|NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication error:&error];
+  if (!ok) NSLog(@"Phone11Wake history_write_failed"); return ok;
+}
+- (NSArray *)load {
+  if (self.clearPending) { if (![self write:@[]]) return nil; self.clearPending=NO; }
+  if (![NSFileManager.defaultManager fileExistsAtPath:self.url.path]) return @[];
+  NSError *error=nil; NSData *data=[NSData dataWithContentsOfURL:self.url options:0 error:&error];
+  if (!data || data.length>262144) return nil;
+  id rows=[NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+  if (![rows isKindOfClass:NSArray.class]) return nil;
+  for (id row in rows) if (![self valid:row]) return nil;
+  return rows;
+}
+- (void)append:(NSDictionary *)entry epoch:(NSUInteger)epoch {
+  dispatch_async(self.queue, ^{
+    if (epoch!=self.epoch || ![self valid:entry]) return;
+    [self.pending addObject:entry]; self.pending=[[self bounded:self.pending] mutableCopy];
+    NSArray *saved=[self load]; if (!saved) { NSLog(@"Phone11Wake history_read_failed"); return; }
+    if ([self write:[self bounded:[saved arrayByAddingObjectsFromArray:self.pending]]]) [self.pending removeAllObjects];
+  });
+}
+- (void)clear { self.epoch++; dispatch_async(self.queue, ^{ [self.pending removeAllObjects]; self.clearPending=![self write:@[]]; }); }
+- (void)perform:(NSDictionary *)scope ack:(NSArray *)ids completion:(void (^)(NSArray *, BOOL))completion {
+  NSUInteger epoch=self.epoch, authorizationEpoch=self.authorizationEpoch;
+  dispatch_async(self.queue, ^{
+    NSArray *saved=[self load]; BOOL ok=saved!=nil && epoch==self.epoch && authorizationEpoch==self.authorizationEpoch;
+    NSArray *rows=ok ? [self bounded:[saved arrayByAddingObjectsFromArray:self.pending]] : @[];
+    NSMutableArray *visible=[NSMutableArray new], *kept=[NSMutableArray new];
+    for (NSDictionary *e in rows) {
+      BOOL own=[e[@"ownerUserId"] isEqual:scope[@"ownerUserId"]] && [e[@"tenantId"] isEqual:scope[@"tenantId"]];
+      if (own) [visible addObject:e];
+      if (!own || !ids || ![ids containsObject:e[@"id"]]) [kept addObject:e];
+    }
+    // Enrollment rotation/logout invalidate queued acknowledgement before deletion.
+    if (ok) ok=epoch==self.epoch && authorizationEpoch==self.authorizationEpoch && [self write:kept];
+    if (ok) [self.pending removeAllObjects];
+    dispatch_async(dispatch_get_main_queue(), ^{ completion(visible,ok && epoch==self.epoch && authorizationEpoch==self.authorizationEpoch); });
+  });
+}
+@end
+
 @interface Phone11Siprix ()
 @property(nonatomic, copy) NSString *lease;
 @property(nonatomic) BOOL observing;
@@ -226,7 +323,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
   NSMutableArray *accounts = [NSMutableArray new];
   NSMutableArray *calls = [NSMutableArray new];
   for (NSDictionary *account in self.accounts.allValues) [accounts addObject:[account copy]];
-  for (NSDictionary *call in self.calls.allValues) [calls addObject:[call copy]];
+  for (NSDictionary *call in self.calls.allValues) { NSMutableDictionary *visible=[call mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [calls addObject:visible]; }
   NSMutableDictionary *snapshot = [@{@"initialized": @(self.initialized && !self.quarantined),
            @"generation": @(self.generation), @"sequence": @(self.sequence),
            @"sdkVersion": self.sdkVersion ?: NSNull.null, @"accounts": accounts, @"calls": calls,
@@ -255,6 +352,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 - (void)emit:(NSString *)type data:(NSDictionary *)data {
   self.sequence += 1;
   NSMutableDictionary *event = [data mutableCopy];
+  if (event[@"call"]) { NSMutableDictionary *visible=[event[@"call"] mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; event[@"call"]=visible; }
   event[@"type"] = type;
   event[@"generation"] = @(self.generation);
   event[@"sequence"] = @(self.sequence);
@@ -336,6 +434,10 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     if (self.wakeContext) {
       self.wakeCallId = callId; call[@"wakeCallUUID"] = self.wakeContext[@"callUUID"];
       call[@"wakeSystemAnswered"] = @NO;
+      call[@"historyId"] = [@"native-wake:" stringByAppendingString:[self.wakeContext[@"callUUID"] lowercaseString]];
+      call[@"startedAt"] = @(P11NowMs());
+      call[@"historyOwner"] = @{ @"ownerUserId":self.wakeContext[@"ownerUserId"], @"tenantId":self.wakeContext[@"tenantId"] };
+      call[@"historyEpoch"] = @(P11WakeHistory.shared.epoch);
     }
     self.calls[callId] = call;
     [self emit:type data:@{@"call": [call copy]}];
@@ -348,9 +450,18 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
       call[@"state"] = @"proceeding";
     } else if ([type isEqualToString:@"callConnected"]) {
       call[@"state"] = [call[@"held"] boolValue] ? @"held" : @"connected";
+      if (call[@"historyId"] && !call[@"answeredAt"]) call[@"answeredAt"]=@(MAX(P11NowMs(),[call[@"startedAt"] doubleValue]));
     } else if ([type isEqualToString:@"callTerminated"]) {
       call[@"state"] = @"terminated";
       call[@"statusCode"] = data[@"statusCode"];
+      if (call[@"historyId"]) {
+        double ended=MAX(MAX(P11NowMs(),[call[@"startedAt"] doubleValue]),[call[@"answeredAt"] doubleValue]);
+        NSMutableDictionary *entry=[call[@"historyOwner"] mutableCopy];
+        NSString *number=P11HistoryNumber(call[@"remoteUri"]);
+        [entry addEntriesFromDictionary:@{@"id":call[@"historyId"],@"number":number,@"direction":@"inbound",@"startedAt":call[@"startedAt"],@"endedAt":@(ended),@"updatedAt":@(ended)}];
+        if (call[@"answeredAt"]) entry[@"answeredAt"]=call[@"answeredAt"];
+        [P11WakeHistory.shared append:entry epoch:[call[@"historyEpoch"] unsignedIntegerValue]];
+      }
       [self.calls removeObjectForKey:callId];
       [self.pendingHolds removeObject:callId];
       [self.acceptedCalls removeObject:callId];
@@ -760,6 +871,32 @@ RCT_EXPORT_MODULE(Phone11Siprix)
     [runtime emit:@"audioSession" data:@{@"audioSessionActive":@(active), @"speaker":@(P11Speaker())}];
 #endif
   });
+}
+
+ + (void)completedWakeBindingDidChange { P11WakeHistory.shared.authorizationEpoch++; }
++ (void)clearCompletedWakeCalls { [P11WakeHistory.shared clear]; }
+- (BOOL)historyAuthorized:(NSDictionary *)binding {
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+  NSDictionary *current=[Phone11WakeCoordinator.shared publicBinding];
+  return P11WakeBinding(binding) && P11SameWakeOwner(current,binding) && [current[@"expiresAt"] isEqual:binding[@"expiresAt"]];
+#else
+  return NO;
+#endif
+}
+RCT_EXPORT_METHOD(readCompletedWakeCalls:(NSDictionary *)binding resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (![self historyAuthorized:binding]) { P11Reject(reject,@"E_HISTORY_OWNER",@"Call history owner could not be verified."); return; }
+  [P11WakeHistory.shared perform:binding ack:nil completion:^(NSArray *rows,BOOL ok) {
+    if (!ok || ![self historyAuthorized:binding]) { P11Reject(reject,@"E_HISTORY_UNAVAILABLE",@"Completed call history is unavailable."); return; }
+    resolve(rows);
+  }];
+}
+RCT_EXPORT_METHOD(ackCompletedWakeCalls:(NSDictionary *)binding ids:(NSArray *)ids resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (![self historyAuthorized:binding] || ![ids isKindOfClass:NSArray.class] || ids.count>100) { P11Reject(reject,@"E_HISTORY_OWNER",@"Call history owner could not be verified."); return; }
+  for (id value in ids) if (![value isKindOfClass:NSString.class] || ![value hasPrefix:@"native-wake:"]) { P11Reject(reject,@"E_HISTORY_ID",@"Invalid completed call identifier."); return; }
+  [P11WakeHistory.shared perform:binding ack:ids completion:^(NSArray *rows,BOOL ok) {
+    if (!ok || ![self historyAuthorized:binding]) { P11Reject(reject,@"E_HISTORY_UNAVAILABLE",@"Completed call history is unavailable."); return; }
+    resolve(nil);
+  }];
 }
 
 RCT_EXPORT_METHOD(bindForegroundWakeContext:(NSDictionary *)binding sip:(NSDictionary *)config resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {

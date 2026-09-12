@@ -2,7 +2,7 @@ import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { useSipAccountStore, type SipAccount } from "./account-store";
 import { useSipCallStore } from "./call-store";
-import { callNumber } from "./call-history";
+import { callNumber, importCompletedWakeCalls } from "./call-history";
 import { useSipDiagnosticsStore } from "./diagnostics-store";
 import type {
   AccountConfig, WakeBinding, Phone11SiprixModule, SiprixAccount, SiprixCall, SiprixEvent, SiprixSnapshot,
@@ -27,7 +27,7 @@ function nativeCall(call: SiprixCall) {
     getId: () => call.callId,
     getState: () => storeStates[call.state],
     getRemoteUri: () => call.remoteUri,
-    getInfo: () => ({ state: storeStates[call.state], remoteUri: call.remoteUri }),
+    getInfo: () => ({ state: storeStates[call.state], remoteUri: call.remoteUri, historyId: call.historyId, startedAt: call.startedAt, answeredAt: call.answeredAt }),
     xferReplaces: async () => { throw unsupported("attended transfer"); },
   };
 }
@@ -137,6 +137,7 @@ export class SiprixEngine {
           await this.bridge!.restoreIncomingWakeDelegate();
           this.applySnapshot(snapshot, session);
         }
+        void this.reconcileCompletedCalls(session);
         return;
       }
       if (this.bridge) await this.cleanup();
@@ -201,6 +202,7 @@ export class SiprixEngine {
           if (started.accounts.length !== 1) throw new Error("Invalid native wake account");
           session.accountId = started.accounts[0].accountId;
           this.applySnapshot(await bridge.getSnapshot(), session);
+          void this.reconcileCompletedCalls(session);
           return;
         }
         const created = await bridge.createAccount(nativeAccount(account));
@@ -220,6 +222,7 @@ export class SiprixEngine {
           if (this.current(session) && binding && binding.ownerUserId === session.account.ownerUserId &&
               binding.tenantId === session.account.tenantId && binding.expiresAt > Date.now()) {
             await bridge.bindForegroundWakeContext(binding, nativeAccount(session.account));
+            void this.reconcileCompletedCalls(session, binding);
             if (this.current(session)) useSipDiagnosticsStore.getState().addEvent({
               level: "info", category: "engine", message: "Siprix foreground wake owner restored",
             });
@@ -307,6 +310,24 @@ export class SiprixEngine {
     const present = new Set(snapshot.calls.map(call => call.callId));
     for (const id of this.calls.keys()) if (!present.has(id)) this.endCall(id);
     for (const call of snapshot.calls) this.applyCall(call, call.state === "connected");
+  }
+
+  private async reconcileCompletedCalls(session: Session, verified?: WakeBinding): Promise<void> {
+    const bridge = this.bridge;
+    if (!bridge?.readCompletedWakeCalls || !bridge.ackCompletedWakeCalls) return;
+    try {
+      const binding = verified ?? await (await import("../push/client")).getWakeAdoptionBinding();
+      const current = () => !!binding && this.current(session) && this.bridge === bridge && binding.ownerUserId === session.account.ownerUserId &&
+        binding.tenantId === session.account.tenantId && binding.expiresAt > Date.now();
+      if (!binding || !current()) return;
+      const rows = await bridge.readCompletedWakeCalls(binding);
+      if (!current() || rows.some(row => row.ownerUserId !== binding.ownerUserId || row.tenantId !== binding.tenantId)) return;
+      if (!rows.length) return;
+      await importCompletedWakeCalls(rows, binding.ownerUserId, current);
+      if (current()) await bridge.ackCompletedWakeCalls(binding, rows.map(row => row.id));
+    } catch {
+      if (this.current(session)) useSipDiagnosticsStore.getState().addEvent({ level: "warning", category: "engine", message: "Completed call history will retry when available" });
+    }
   }
 
   private endCall(id: string): void {

@@ -7,7 +7,7 @@ const runtime = vi.hoisted(() => ({
   authListeners: new Set<() => void>(),
   listeners: new Set<(event: SiprixEvent) => void>(),
   diagnostics: vi.fn(),
-  wakeBinding: vi.fn(),
+  wakeBinding: vi.fn(), storage: new Map<string,string>(), writeHistory: vi.fn(),
   callManager: {
     initialize: vi.fn(async () => {}), displayIncomingCall: vi.fn(), reportOutgoingCall: vi.fn(),
     reportCallConnected: vi.fn(), reportCallEnded: vi.fn(), adoptIncomingCall: vi.fn(),
@@ -24,7 +24,7 @@ vi.mock("react-native", () => ({
   },
 }));
 vi.mock("expo-secure-store", () => ({}));
-vi.mock("@react-native-async-storage/async-storage", () => ({ default: {} }));
+vi.mock("@react-native-async-storage/async-storage", () => ({ default: { getItem: async (key: string) => runtime.storage.get(key) ?? null, setItem: runtime.writeHistory } }));
 vi.mock("../lib/_core/auth", () => ({
   getAuthSnapshot: () => ({ user: runtime.user }),
   addAuthChangeListener: (listener: () => void) => {
@@ -66,6 +66,8 @@ function deferred<T>() {
 
 let snapshot: SiprixSnapshot;
 const bridge = {
+  readCompletedWakeCalls: vi.fn(async () => [] as import("../modules/phone11-siprix").CompletedWakeCall[]),
+  ackCompletedWakeCalls: vi.fn(async (_binding: unknown, _ids: string[]) => {}),
   bindForegroundWakeContext: vi.fn(async () => {}),
   adoptIncomingWake: vi.fn(async () => structuredClone(snapshot)),
   restoreIncomingWakeDelegate: vi.fn(async () => {}),
@@ -111,6 +113,8 @@ async function ready() { await engine.initialize(); registered(); }
 
 beforeEach(() => {
     vi.clearAllMocks();
+    runtime.storage.clear(); runtime.writeHistory.mockReset().mockImplementation(async (key: string, value: string) => { runtime.storage.set(key,value); });
+    bridge.readCompletedWakeCalls.mockReset().mockResolvedValue([]); bridge.ackCompletedWakeCalls.mockReset().mockResolvedValue(undefined);
     runtime.wakeBinding.mockReset().mockResolvedValue(null);
     snapshot = emptySnapshot();
     runtime.platform.OS = "ios";
@@ -754,4 +758,41 @@ describe("validated native wake adoption", () => {
     expect(bridge.destroy).not.toHaveBeenCalled();
   });
 
+});
+
+describe("native-only completed call reconciliation", () => {
+  const binding = { bindingId: "binding", ownerUserId: 17, tenantId: 2, deviceId: "device", sessionBinding: "session", expiresAt: Date.now()+600000 };
+  const row = { id: "native-wake:11111111-1111-4111-8111-111111111111", ownerUserId: 17, tenantId: 2, number: "2002", direction: "inbound" as const, startedAt: 1000, answeredAt: 2000, endedAt: 5000, updatedAt: 5000 };
+  it("imports a completed cold call from an empty runtime and acks only after disk persistence", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    bridge.readCompletedWakeCalls.mockResolvedValue([row]);
+    bridge.ackCompletedWakeCalls.mockImplementation(async () => { expect(JSON.parse(runtime.storage.get("phone11_call_history_v1_user_17")!)).toEqual([expect.objectContaining({ id: row.id, endedAt: 5000 })]); });
+    await engine.initialize();
+    await vi.waitFor(() => expect(bridge.ackCompletedWakeCalls).toHaveBeenCalledWith(binding,[row.id]));
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+  });
+  it("uses the same prospective ID for a JS-observed wake and terminal import", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    await ready();
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing", wakeCallUUID: row.id.slice(12), historyId: row.id, startedAt: row.startedAt }) });
+    emit({ type: "callConnected", call: newCall({ direction: "incoming", state: "connected", wakeCallUUID: row.id.slice(12), historyId: row.id, startedAt: row.startedAt, answeredAt: row.answeredAt }) });
+    emit({ type: "callTerminated", call: newCall({ direction: "incoming", state: "terminated" }) });
+    bridge.readCompletedWakeCalls.mockResolvedValue([row]); await engine.initialize();
+    await vi.waitFor(() => expect(bridge.ackCompletedWakeCalls).toHaveBeenCalled());
+    const saved=JSON.parse(runtime.storage.get("phone11_call_history_v1_user_17")!);
+    expect(saved).toHaveLength(1); expect(saved[0]).toMatchObject({ id: row.id, startedAt: row.startedAt, answeredAt: row.answeredAt, endedAt: row.endedAt });
+  });
+  it("does not ack on failed disk writes", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    bridge.readCompletedWakeCalls.mockResolvedValue([row]); runtime.writeHistory.mockRejectedValue(new Error("unavailable"));
+    await engine.initialize(); await vi.waitFor(() => expect(runtime.writeHistory).toHaveBeenCalled());
+    expect(bridge.ackCompletedWakeCalls).not.toHaveBeenCalled();
+  });
+  it("does not import or ack data after auth changes during native read", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    const read=deferred<typeof row[]>(); bridge.readCompletedWakeCalls.mockReturnValue(read.promise);
+    await engine.initialize(); await vi.waitFor(() => expect(bridge.readCompletedWakeCalls).toHaveBeenCalled());
+    runtime.user={id:99}; read.resolve([row]); await new Promise(resolve => setTimeout(resolve,0));
+    expect(bridge.ackCompletedWakeCalls).not.toHaveBeenCalled(); expect(runtime.storage.has("phone11_call_history_v1_user_17")).toBe(false);
+  });
 });

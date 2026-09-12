@@ -109,6 +109,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
   // Never rotate an in-flight wake into a different session behind its owner.
   if (self.active && ![value[@"bindingId"] isEqual:self.active[@"bindingId"]]) return NO;
   if (![self writeEnrollment:value]) return NO;
+  [Phone11Siprix completedWakeBindingDidChange];
   return YES;
 }
 - (NSDictionary *)publicBinding {
@@ -117,6 +118,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
   return value ? [value dictionaryWithValuesForKeys:P11BindingKeys()] : nil;
 }
 - (void)clearEnrollment {
+  [Phone11Siprix clearCompletedWakeCalls];
   [self finish:CXCallEndedReasonFailed notifyServer:YES];
   ++self.generation;
   for (NSURLSessionTask *task in self.tasks) [task cancel];

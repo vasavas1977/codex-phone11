@@ -43,6 +43,7 @@ export interface Call {
   held: boolean;
   holdState: number;
   statusCode?: number;
+  historyId?: string; startedAt?: number; answeredAt?: number;
   wakeCallUUID?: string;
   wakeSystemAnswered?: boolean;
 }
@@ -75,7 +76,10 @@ export type SiprixCall = Call;
 export type SiprixSnapshot = Snapshot;
 
 /** Channel: Phone11SiprixEvent via new NativeEventEmitter(Phone11Siprix). */
+export interface CompletedWakeCall { id: string; ownerUserId: number; tenantId: number; number: string; direction: "inbound"; startedAt: number; answeredAt?: number; endedAt: number; updatedAt: number; }
 export interface Phone11SiprixModule {
+  readCompletedWakeCalls(binding: WakeBinding): Promise<CompletedWakeCall[]>;
+  ackCompletedWakeCalls(binding: WakeBinding, ids: string[]): Promise<void>;
   bindForegroundWakeContext(binding: WakeBinding, sip: AccountConfig): Promise<void>;
   adoptIncomingWake(binding: WakeBinding, sip: AccountConfig): Promise<Snapshot>;
   restoreIncomingWakeDelegate(): Promise<void>;

@@ -34,6 +34,8 @@ static void check(BOOL ok) { checks++; if (!ok) { fprintf(stderr,"FAIL wake asse
 - (void)invalidate {}
 @end
 @implementation Phone11Siprix
++ (void)clearCompletedWakeCalls {}
++ (void)completedWakeBindingDidChange {}
 + (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip receivedAt:(NSTimeInterval)receivedAt event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion {
   preparedArrival=receivedAt;
   prepared++; sdkEvent = [event copy]; sdkReady = [completion copy]; currentUUID = context[@"callUUID"];
