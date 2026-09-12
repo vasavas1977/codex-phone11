@@ -5,7 +5,7 @@ Phone11 is still an internal pilot. The working public-number foreground call is
 | Area | Current evidence | Still required |
 | --- | --- | --- |
 | Incoming public calls | Installed build 23 passed the user-confirmed two-way test; the dedicated-number PCMA setting is retained. | Repeat on the release candidate and other network states. |
-| Background calls | Native wake handling, server wake candidate and an isolated signed pilot are prepared. | Apple push setup, authenticated backend checks, commissioning, then background and locked-phone ringing, Answer, two-way speech, End and Recents. |
+| Background calls | Native wake handling, server wake candidate and an isolated signed pilot are prepared. | Activate the staged Apple key after authenticated backend checks and commissioning, then background and locked-phone ringing, Answer, two-way speech, End and Recents. |
 | Team Chat | Real scoped messages, drafts, unread counts, ordinary-alert outbox and notification enrollment are implemented. | Deploy the later alert migration/backend and verify with an authorized second participant, including locked-screen alert and tap. |
 | Alert recovery | Temporary enrollment failures retry only for the same active account/workspace; token events cannot recursively request tokens. | Real permission, offline recovery and recipient-device tests. |
 | Long calls | No production Siprix license is configured in the installed build. | Configure a valid license and accept a call longer than 60 seconds. |
@@ -19,7 +19,7 @@ The live backend remains on `75fa3c9`. Four additive call-wake tables passed a c
 
 ## Owner inputs needed to finish commissioning
 
-- Complete sign-in in the open Apple Developer page. Passwords and verification codes should stay there.
+- Apple sign-in and key creation are complete. The approved production-only, Phone11-scoped key is backed up privately and staged as a root-only inactive file on the verified Phone11 server. It is not configured in the running backend; ordinary and VoIP provider acceptance remain untested.
 - Identify the existing private Phone11 sign-in handoff file, or provide the account through the intended private sign-in flow; do not paste passwords in chat.
 - Confirm whether a paid Siprix license exists and where its private handoff is stored. The vendor documents the trial's [60-second call limit](https://www.siprix-voip.com/download/).
 - Make the two test phones and an authorized second chat participant available after provider/backend setup is ready.
