@@ -75,6 +75,7 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
     permissions: ["POST_NOTIFICATIONS", "RECORD_AUDIO", "READ_PHONE_STATE"],
+    blockedPermissions: ["android.permission.WRITE_CONTACTS"],
     intentFilters: [
       {
         action: "VIEW",
@@ -96,6 +97,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    ["expo-contacts", { contactsPermission: "Phone11 uses your contacts to show names and let you call people. Your address book stays on this device." }],
     ...(sipEngine === "siprix" ? [["./plugins/with-phone11-voip-wake.js", {
       origin: process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://api.phone11.ai",
     }] as [string, { origin: string }]] : []),

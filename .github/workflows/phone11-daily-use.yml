@@ -69,6 +69,10 @@ jobs:
             tests/phone11-current-call-banner.test.tsx \
             tests/phone11-diagnostics-persistence.test.ts \
             tests/phone11-recents-ui.test.tsx \
+            tests/phone11-call-history.test.ts \
+            tests/phone11-phone-number.test.ts \
+            tests/device-contacts.test.ts \
+            tests/device-contacts-hook.test.ts \
             tests/phone11-directory.test.ts \
             tests/phone11-directory-ui.test.tsx
       - name: Test media, push, PBX authorization, and durable chat state

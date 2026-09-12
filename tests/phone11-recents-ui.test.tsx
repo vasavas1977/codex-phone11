@@ -7,10 +7,14 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
 const mocks = vi.hoisted(() => ({
   user: { id: 1 } as { id: number } | null,
   history: {} as any,
+  contacts: [] as any[],
   calling: false,
   call: vi.fn(async () => {}),
   refresh: undefined as (() => void) | undefined,
   press: new Map<string, { run: () => unknown; disabled: boolean }>(),
+}));
+vi.mock("../hooks/use-device-contacts", () => ({
+  useDeviceContacts: () => ({ people: mocks.contacts }),
 }));
 vi.mock("react-native", () => ({
   StyleSheet: { create: (s: any) => s },
@@ -94,6 +98,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.press.clear();
   mocks.user = { id: 1 };
+  mocks.contacts = [];
   mocks.calling = false;
   mocks.history = {
     ownerUserId: 1,
@@ -142,4 +147,21 @@ it("disables both call entry buttons while a call request is pending", () => {
   renderToStaticMarkup(<RecentsScreen />);
   expect(mocks.press.get("Call สมชาย, 3002")!.disabled).toBe(true);
   expect(mocks.press.get("Call 3002")!.disabled).toBe(true);
+});
+
+it("resolves a local contact name without changing saved history or its call target", async () => {
+  mocks.history.entries[0].number = "+66825826667";
+  mocks.contacts = [
+    {
+      id: "local1",
+      name: "Local friend",
+      phones: [{ number: "0825826667", label: "Mobile", key: "+66825826667" }],
+    },
+  ];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain("Local friend");
+  expect(mocks.history.entries[0].name).toBe("สมชาย");
+  await mocks.press.get("Call Local friend, +66825826667")!.run();
+  expect(mocks.call).toHaveBeenCalledWith("+66825826667");
+  mocks.contacts = [];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain("สมชาย");
 });

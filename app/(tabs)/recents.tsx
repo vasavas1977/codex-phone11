@@ -1,3 +1,5 @@
+import { useDeviceContacts } from "@/hooks/use-device-contacts";
+import { deviceContactName } from "@/lib/phone/device-contacts";
 import { useState, useCallback } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import {
@@ -67,6 +69,7 @@ export default function RecentsScreen() {
   const [filter, setFilter] = useState<"all" | "missed">("all");
   const { user } = useAuth({ autoFetch: false });
   const history = useCallHistoryStore();
+  const deviceContacts = useDeviceContacts();
   const { placeCall: dial, calling } = usePhoneCall();
   useFocusEffect(
     useCallback(() => {
@@ -84,7 +87,7 @@ export default function RecentsScreen() {
     )
     .map((call) => ({
       id: call.id,
-      name: call.name || call.number,
+      name: deviceContactName(deviceContacts.people, call.number) || call.name || call.number,
       number: call.number,
       type: isMissedCall(call)
         ? "missed"

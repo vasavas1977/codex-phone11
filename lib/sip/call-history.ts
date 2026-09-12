@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { create } from "zustand";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
+import { internationalHistoryNumber } from "../phone/phone-number";
 
 export interface CallHistoryEntry {
   id: string;
@@ -16,7 +17,7 @@ export interface CallHistoryEntry {
 }
 
 export function callNumber(uri: string): string {
-  return uri.match(/sips?:([^@;>]+)(?:@|;|>)/i)?.[1] ?? uri;
+  return internationalHistoryNumber(uri.match(/sips?:([^@;>]+)(?:@|;|>)/i)?.[1] ?? uri);
 }
 
 export function historyDuration(entry: CallHistoryEntry): number {
@@ -51,7 +52,8 @@ function decode(raw: string | null, owner: number): CallHistoryEntry[] {
     (e.name === undefined || typeof e.name === "string") &&
     ["inbound", "outbound"].includes(e.direction) && Number.isFinite(e.startedAt) &&
     Number.isFinite(e.updatedAt) && (e.answeredAt === undefined || Number.isFinite(e.answeredAt)) &&
-    (e.endedAt === undefined || Number.isFinite(e.endedAt))));
+    (e.endedAt === undefined || Number.isFinite(e.endedAt))))
+    .map(entry => ({ ...entry, number: internationalHistoryNumber(entry.number) }));
 }
 
 interface HistoryState {
@@ -91,6 +93,7 @@ export const useCallHistoryStore = create<HistoryState>((set, get) => ({
   upsert: (entry) => {
     // Retain the owner captured when the call started, even if sign-out ends it.
     if (!Number.isSafeInteger(entry.ownerUserId) || entry.ownerUserId <= 0) return;
+    entry = { ...entry, number: internationalHistoryNumber(entry.number) };
     if (getAuthSnapshot().user?.id === entry.ownerUserId) {
       const current = get().ownerUserId === entry.ownerUserId ? get().entries : [];
       set({ ownerUserId: entry.ownerUserId, entries: mergeHistory(current, [entry]) });

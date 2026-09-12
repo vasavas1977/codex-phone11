@@ -27,6 +27,20 @@ beforeEach(async () => {
 });
 
 describe("real call history", () => {
+  it("formats existing international records without changing IDs, times or extensions", async () => {
+    mock.data.set("phone11_call_history_v1_user_1", JSON.stringify([
+      row({ number: "66825826667", endedAt: 5000 }), row({ id: "extension", number: "3001" }),
+    ]));
+    await flush();
+    expect(store.getState().entries.find(e => e.id === "a")).toEqual(row({ number: "+66825826667", endedAt: 5000 }));
+    expect(store.getState().entries.find(e => e.id === "extension")?.number).toBe("3001");
+    expect(callNumber("Caller <sips:66825826667@example.test>")).toBe("+66825826667");
+  });
+  it("saves the plus form for new calls and native completed imports", async () => {
+    store.getState().upsert(row({ number: "66825826667" })); await flush();
+    await importCompletedWakeCalls([row({ id: "native-wake:11111111-1111-4111-8111-111111111111", number: "6620303001", endedAt: 5000 })], 1, () => true);
+    expect(JSON.parse(mock.data.get("phone11_call_history_v1_user_1")!).map((e: CallHistoryEntry) => e.number).sort()).toEqual(["+6620303001", "+66825826667"]);
+  });
   it("persists and reloads without a sample list or fixed record limit", async () => {
     for (let i = 0; i < 110; i++) store.getState().upsert(row({ id: String(i), startedAt: i }));
     await flush();

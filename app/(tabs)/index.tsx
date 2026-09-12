@@ -1,3 +1,5 @@
+import { useDeviceContacts } from "@/hooks/use-device-contacts";
+import { deviceContactName } from "@/lib/phone/device-contacts";
 import { useState, useCallback } from "react";
 import { Alert, View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
@@ -63,10 +65,12 @@ export default function DialpadScreen() {
   const [input, setInput] = useState("");
   const { user } = useAuth({ autoFetch: false });
   const history = useCallHistoryStore();
+  const deviceContacts = useDeviceContacts();
   useFocusEffect(useCallback(() => { void history.reload(); }, [history.reload, user?.id]));
   const recentNumbers = (history.ownerUserId === user?.id ? history.entries : [])
     .filter((entry, index, all) => entry.ownerUserId === user?.id && all.findIndex(other => other.number === entry.number) === index)
-    .slice(0, 3);
+    .slice(0, 3)
+    .map(entry => ({ ...entry, name: deviceContactName(deviceContacts.people, entry.number) || entry.name }));
   const { placeCall, calling } = usePhoneCall();
   const { reconnectPhone } = useSip();
   const [reconnecting, setReconnecting] = useState(false);
