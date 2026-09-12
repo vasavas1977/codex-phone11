@@ -218,6 +218,15 @@ int main(void) { @autoreleasepool {
     [network recordStage:@"prepare_complete" code:1 classification:classification];
     check([[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject][@"classification"] isEqual:classification]);
   }
+  [Phone11WakeCoordinator recordRegistrationState:1 fresh:NO];
+  NSDictionary *registrationEntry=[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject];
+  check([registrationEntry[@"stage"] isEqual:@"registration_stale"] && [registrationEntry[@"code"] intValue]==1);
+  [Phone11WakeCoordinator recordRegistrationState:0 fresh:YES];
+  registrationEntry=[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject];
+  check([registrationEntry[@"stage"] isEqual:@"registration_fresh"] && [registrationEntry[@"code"] intValue]==0);
+  NSArray *beforeInvalid=[defaults arrayForKey:P11WakeDiagnosticKey];
+  [Phone11WakeCoordinator recordRegistrationState:999 fresh:YES];
+  check([[defaults arrayForKey:P11WakeDiagnosticKey] isEqual:beforeInvalid]);
   [defaults setObject:@[@{@"token":@"private-secret"}] forKey:P11WakeDiagnosticKey];
   for (int i=0;i<40;i++) [network recordStage:@"prepare_complete" code:1 classification:P11PrepareFailure(privateError)];
   NSArray *trail=[defaults arrayForKey:P11WakeDiagnosticKey];check(trail.count==32);

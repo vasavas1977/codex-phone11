@@ -46,13 +46,17 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
 @implementation Phone11WakeCoordinator
 + (instancetype)shared { static Phone11WakeCoordinator *value; static dispatch_once_t once; dispatch_once(&once, ^{ value = [self new]; }); return value; }
 + (void)restoreCallKitDelegate { if (PHONE11_VOIP_WAKE_COMMISSIONED) [[self shared] installProvider]; }
++ (void)recordRegistrationState:(NSInteger)state fresh:(BOOL)fresh {
+  if (PHONE11_VOIP_WAKE_COMMISSIONED && state >= 0 && state <= 3)
+    [[self shared] recordStage:fresh ? @"registration_fresh" : @"registration_stale" code:state classification:@"none"];
+}
 - (instancetype)init { if ((self = [super init])) self.tasks = [NSMutableSet new]; return self; }
 - (double)now { return NSDate.date.timeIntervalSince1970 * 1000; }
 - (void)scheduleAfter:(double)seconds block:(void (^)(void))block {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
 }
 - (void)recordStage:(NSString *)stage code:(NSInteger)code classification:(NSString *)classification {
-  NSArray *stages = @[@"reported",@"claim_http",@"ready_http",@"claim_rejected",@"prepare_complete",@"incoming",@"connected",@"answer_requested",@"answer_accept",@"answer_result",@"finished"];
+  NSArray *stages = @[@"registration_fresh",@"registration_stale",@"reported",@"claim_http",@"ready_http",@"claim_rejected",@"prepare_complete",@"incoming",@"connected",@"answer_requested",@"answer_accept",@"answer_result",@"finished"];
   NSArray *classes = @[@"wake_owner_missing",@"wake_owner_mismatch",@"account_config_mismatch",@"account_count_mismatch",@"runtime_sink_missing",@"none",@"transport_error",@"owner_or_config_mismatch",@"runtime_busy",@"registration_failed",@"registration_request_failed",@"expired",@"invalid_or_expired",@"runtime_setup_failed",@"other"];
   if (![stages containsObject:stage] || ![classes containsObject:classification] || code < -1 || code > 999) return;
   NSDictionary *entry = @{@"timestamp":@([self now]),@"stage":stage,@"code":@(code),@"classification":classification};

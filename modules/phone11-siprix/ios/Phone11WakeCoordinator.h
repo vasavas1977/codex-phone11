@@ -11,6 +11,7 @@
 @interface Phone11WakeCoordinator : NSObject <CXProviderDelegate, NSURLSessionTaskDelegate>
 + (instancetype)shared;
 + (void)restoreCallKitDelegate;
++ (void)recordRegistrationState:(NSInteger)state fresh:(BOOL)fresh;
 - (BOOL)saveEnrollment:(NSDictionary *)enrollment;
 - (NSDictionary *)publicBinding;
 - (void)clearEnrollment;

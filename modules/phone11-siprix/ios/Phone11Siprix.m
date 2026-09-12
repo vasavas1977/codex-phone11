@@ -53,6 +53,7 @@ static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
 @property(nonatomic, copy) NSString *wakeCallId;
 @property(nonatomic, copy) void (^wakeEvent)(NSDictionary *event);
 @property(nonatomic, copy) void (^wakeReady)(NSError *error);
+@property(nonatomic) NSUInteger wakeRegistrationBoundary;
 @property(nonatomic) BOOL wakeStartedRuntime;
 @property(nonatomic) BOOL wakeEnding;
 @property(nonatomic, copy) NSString *wakeAudioUUID;
@@ -69,6 +70,8 @@ static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
 @end
 
 @interface P11SiprixDelegate : NSObject <SiprixEventDelegate>
+@property(nonatomic) NSUInteger registrationIngress;
+- (NSUInteger)registrationBoundary;
 @property(nonatomic, weak) P11SiprixRuntime *runtime;
 @property(nonatomic) NSUInteger generation;
 @end
@@ -266,10 +269,15 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     [account removeObjectForKey:@"sipStatusCode"];
     if (data[@"sipStatusCode"]) account[@"sipStatusCode"] = data[@"sipStatusCode"];
     [self emit:type data:@{@"account": [account copy]}];
-    if (self.wakeReady && state == RegStateSuccess) {
+    BOOL fresh = [data[@"registrationIngress"] isKindOfClass:NSNumber.class] &&
+      [data[@"registrationIngress"] unsignedIntegerValue] > self.wakeRegistrationBoundary;
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+    if (self.wakeReady) [Phone11WakeCoordinator recordRegistrationState:state fresh:fresh];
+#endif
+    if (self.wakeReady && fresh && state == RegStateSuccess) {
       void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
       ready([self.wakeContext[@"expiresAt"] doubleValue] > P11NowMs() ? nil : P11WakeError(@"Incoming wake expired."));
-    } else if (self.wakeReady && state == RegStateFailed) {
+    } else if (self.wakeReady && fresh && state == RegStateFailed) {
       void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
       ready(P11WakeError(@"Incoming wake registration failed."));
     }
@@ -381,9 +389,17 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 @end
 
 @implementation P11SiprixDelegate
+- (NSUInteger)registrationBoundary { @synchronized(self) { return self.registrationIngress; } }
 - (void)post:(NSString *)type data:(NSDictionary *)data {
   // SDK callbacks may arrive on worker threads or inline in an SDK method.
   // Always enqueue so account/call IDs are recorded before callbacks are applied.
+  if ([type isEqualToString:@"registration"]) {
+    @synchronized(self) {
+      NSMutableDictionary *entry = [data mutableCopy];
+      entry[@"registrationIngress"] = @(++self.registrationIngress);
+      data = entry;
+    }
+  }
   NSUInteger generation = self.generation;
   __weak P11SiprixRuntime *runtime = self.runtime;
   dispatch_async(dispatch_get_main_queue(), ^{
@@ -519,6 +535,8 @@ RCT_EXPORT_MODULE(Phone11Siprix)
     [owner removeObjectForKey:@"callUUID"]; owner[@"expiresAt"] = grantExpiry;
     void (^arm)(Phone11Siprix *, NSString *) = ^(Phone11Siprix *bridge, NSString *accountId) {
       runtime.wakeContext = publicContext; runtime.wakeOwner = owner;
+      // Exclude callbacks already queued before this registration attempt.
+      runtime.wakeRegistrationBoundary = [runtime.delegate registrationBoundary];
       runtime.wakeEvent = event; runtime.wakeReady = completion;
       runtime.accounts[accountId][@"registrationState"] = @"registering";
       [runtime.sdk handleIncomingPush];

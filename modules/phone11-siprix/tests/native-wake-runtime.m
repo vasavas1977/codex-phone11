@@ -5,6 +5,7 @@
 static int delegateRestores;
 @implementation Phone11WakeCoordinator
 + (void)restoreCallKitDelegate { delegateRestores++; }
++ (void)recordRegistrationState:(NSInteger)state fresh:(BOOL)fresh {}
 - (void)providerDidReset:(CXProvider *)provider {}
 @end
 
@@ -34,9 +35,9 @@ int main(void) {
   [js initialize:@{} resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_WAKE_ADOPTION_REQUIRED"] && initializes==1);
   NSMutableDictionary *other=[binding mutableCopy]; other[@"sessionBinding"]=@"replacement-login";
   [js adoptIncomingWake:other sip:sip resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_WAKE_OWNER"] && shutdowns==0);
-  [runtime receive:@"registration" data:@{@"accountId":@"10", @"regState":@0} generation:runtime.generation];
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
   CHECK(readyCount==1 && !wakeError);
-  [runtime receive:@"registration" data:@{@"accountId":@"10", @"regState":@0} generation:runtime.generation]; CHECK(readyCount==1);
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush(); CHECK(readyCount==1);
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(wakeError && initializes==1);
   NSDictionary *incoming=@{@"callId":@"30", @"accountId":@"10", @"remoteUri":@"sip:test@invalid.example"};
   wakeHeader=@"wrong"; [runtime receive:@"callIncoming" data:incoming generation:runtime.generation];
@@ -89,18 +90,51 @@ int main(void) {
   runtime.sink=js;
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(runtime.wakeContext && initializes==1 && registrations==2);
   [Phone11Siprix endIncomingWake:uuid]; CHECK(!runtime.wakeContext && runtime.initialized);
+  // Real SDK ingress precedes arm, but main-queue delivery follows it.
+  for (NSNumber *stale in @[@(RegStateFailed), @(RegStateSuccess)]) {
+    int before=readyCount;
+    [sdkDelegate onAccountRegState:10 regState:stale.intValue response:@"private-response"];
+    [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+    flush(); CHECK(readyCount==before && runtime.wakeReady!=nil);
+    RegState fresh=stale.intValue==RegStateFailed ? RegStateSuccess : RegStateFailed;
+    [sdkDelegate onAccountRegState:10 regState:fresh response:@"private-response"];
+    flush(); CHECK(readyCount==before+1 && (wakeError!=nil)==(fresh==RegStateFailed));
+    [Phone11Siprix endIncomingWake:uuid];
+  }
+  // A callback from an old SDK generation is never accepted, even when fresh.
+  int generationBefore=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  runtime.delegate.generation=runtime.generation-1;
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"];
+  runtime.delegate.generation=runtime.generation;
+  flush(); CHECK(readyCount==generationBefore && runtime.wakeReady!=nil);
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"];
+  flush(); CHECK(readyCount==generationBefore+1 && !wakeError);
+  [Phone11Siprix endIncomingWake:uuid];
+  // An inline SDK callback is fresh, despite deferred delivery.
+  int before=readyCount; inlineRegistrationState=RegStateSuccess;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  inlineRegistrationState=-1; flush(); CHECK(readyCount==before+1 && !wakeError);
+  [Phone11Siprix endIncomingWake:uuid];
+  // A fresh success delivered after the wake deadline cannot authorize ready.
+  before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"];
+  NSMutableDictionary *late=[runtime.wakeContext mutableCopy]; late[@"expiresAt"]=@1; runtime.wakeContext=late;
+  flush(); CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake expired."]);
+  [Phone11Siprix endIncomingWake:uuid];
   [js destroy:resolve rejecter:reject]; CHECK(!runtime.initialized && shutdowns==1);
   CHECK(!runtime.accountConfig && !runtime.wakeOwner);
   // Immediate SDK End failure cannot retain a permanently busy wake runtime.
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
   CHECK(runtime.initialized && initializes==2);
-  [runtime receive:@"registration" data:@{@"accountId":@"10", @"regState":@0} generation:runtime.generation];
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
   [runtime receive:@"callIncoming" data:incoming generation:runtime.generation];
   sdkCode=-10; [Phone11Siprix endIncomingWake:uuid]; sdkCode=0;
   CHECK(!runtime.initialized && !runtime.wakeContext && shutdowns==2);
   // Missing callback fallback is generation/UUID scoped; a stale timer is inert.
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
-  [runtime receive:@"registration" data:@{@"accountId":@"10", @"regState":@0} generation:runtime.generation];
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
   [runtime receive:@"callIncoming" data:incoming generation:runtime.generation];
   NSUInteger oldGeneration=runtime.generation;
   [Phone11Siprix endIncomingWake:uuid]; CHECK(runtime.initialized && runtime.wakeEnding);
