@@ -530,6 +530,9 @@ RCT_EXPORT_MODULE(Phone11Siprix)
       }
     };
     if (runtime.initialized) {
+      if (!runtime.wakeOwner) {
+        completion(P11WakeError(@"Incoming wake owner missing.")); return;
+      }
       if (!P11SameWakeOwner(runtime.wakeOwner, owner)) {
         completion(P11WakeError(@"Incoming wake owner mismatch.")); return;
       }

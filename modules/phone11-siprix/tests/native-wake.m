@@ -211,7 +211,7 @@ int main(void) { @autoreleasepool {
   NSError *privateError=[NSError errorWithDomain:@"private-domain" code:123 userInfo:@{NSLocalizedDescriptionKey:@"token=private-secret"}];
   check([P11PrepareFailure(privateError) isEqual:@"other"]);
   check([P11PrepareFailure([NSError errorWithDomain:@"fake" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The foreground phone session does not match this wake."}]) isEqual:@"owner_or_config_mismatch"]);
-  NSDictionary *guardClasses=@{@"Incoming wake owner mismatch.":@"wake_owner_mismatch",@"Incoming wake account configuration mismatch.":@"account_config_mismatch",@"Incoming wake account count mismatch.":@"account_count_mismatch",@"Incoming wake runtime sink missing.":@"runtime_sink_missing"};
+  NSDictionary *guardClasses=@{@"Incoming wake owner missing.":@"wake_owner_missing",@"Incoming wake owner mismatch.":@"wake_owner_mismatch",@"Incoming wake account configuration mismatch.":@"account_config_mismatch",@"Incoming wake account count mismatch.":@"account_count_mismatch",@"Incoming wake runtime sink missing.":@"runtime_sink_missing"};
   for (NSString *description in guardClasses) {
     NSString *classification=P11PrepareFailure([NSError errorWithDomain:@"fake" code:1 userInfo:@{NSLocalizedDescriptionKey:description}]);
     check([classification isEqual:guardClasses[description]]);

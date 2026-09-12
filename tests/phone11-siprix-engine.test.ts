@@ -111,6 +111,7 @@ async function ready() { await engine.initialize(); registered(); }
 
 beforeEach(() => {
     vi.clearAllMocks();
+    runtime.wakeBinding.mockReset().mockResolvedValue(null);
     snapshot = emptySnapshot();
     runtime.platform.OS = "ios";
     runtime.modules.Phone11Siprix = bridge;
@@ -684,6 +685,67 @@ describe("validated native wake adoption", () => {
     wait.resolve({ ...emptySnapshot() }); await restart;
     expect(bridge.destroy).toHaveBeenCalledOnce();
     expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.adoptIncomingWake).toHaveBeenCalledOnce();
+  });
+
+  it("restores a current cached wake owner after native account restart", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    runtime.wakeBinding.mockResolvedValue(binding);
+    await ready(); await engine.restart();
+    expect(bridge.bindForegroundWakeContext).toHaveBeenCalledTimes(2);
+    expect(bridge.bindForegroundWakeContext).toHaveBeenLastCalledWith(binding, expect.objectContaining({ sipServer: account.domain }));
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+  });
+  it.each(["owner", "tenant", "expired", "unverified"])("does not bind a %s wake identity on a fresh account", async reason => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    runtime.wakeBinding.mockResolvedValue(reason === "unverified" ? null : {
+      ...binding, ...(reason === "owner" ? { ownerUserId: 99 } : reason === "tenant" ? { tenantId: 99 } : { expiresAt: Date.now()-1 }),
+    });
+    await ready();
+    expect(bridge.bindForegroundWakeContext).not.toHaveBeenCalled();
+    expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+  it("does not bind a resolved owner after the authentication session changes", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    const wait = deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalledOnce());
+    runtime.user = { id: 17 }; // A new login object, even for the same owner.
+    runtime.authListeners.forEach(listener => listener());
+    wait.resolve(binding); await task;
+    expect(bridge.bindForegroundWakeContext).not.toHaveBeenCalled();
+  });
+  it("preserves an incoming call when warm-owner rebinding fails", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    const wait = deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalledOnce());
+    emit({ type: "callIncoming", call: newCall({ state: "ringing", direction: "incoming" }) });
+    bridge.bindForegroundWakeContext.mockRejectedValueOnce(new Error("native owner guard rejected"));
+    wait.resolve(binding); await task;
+    expect(useSipCallStore.getState().incomingCall?.id).toBe("11");
+    expect(bridge.destroy).not.toHaveBeenCalled();
+  });
+
+  it("does not bind after phone account configuration changes during verification", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    const wait = deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalledOnce());
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2, domain: "replacement.example.test" } });
+    wait.resolve(binding); await task;
+    expect(bridge.bindForegroundWakeContext).not.toHaveBeenCalled();
+  });
+  it("cleans the old runtime when login changes during native owner binding", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    runtime.wakeBinding.mockResolvedValue(binding);
+    const wait = deferred<void>(); bridge.bindForegroundWakeContext.mockReturnValueOnce(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(bridge.bindForegroundWakeContext).toHaveBeenCalledOnce());
+    runtime.user = { id: 99 }; runtime.authListeners.forEach(listener => listener());
+    wait.resolve(); await task;
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix foreground wake owner restored" }));
   });
 
 });

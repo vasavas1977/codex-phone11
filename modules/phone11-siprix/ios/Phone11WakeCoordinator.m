@@ -6,7 +6,7 @@
 // A bounded device-local trail contains only fixed labels and numeric outcomes.
 static NSString *const P11WakeDiagnosticKey = @"ai.phone11.native.wake-diagnostics.v1";
 static NSString *P11PrepareFailure(NSError *error) {
-  NSDictionary *known = @{@"Incoming wake owner mismatch.":@"wake_owner_mismatch",
+  NSDictionary *known = @{@"Incoming wake owner missing.":@"wake_owner_missing",@"Incoming wake owner mismatch.":@"wake_owner_mismatch",
     @"Incoming wake account configuration mismatch.":@"account_config_mismatch",
     @"Incoming wake account count mismatch.":@"account_count_mismatch",
     @"Incoming wake runtime sink missing.":@"runtime_sink_missing",@"The foreground phone session does not match this wake.":@"owner_or_config_mismatch",
@@ -53,7 +53,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
 }
 - (void)recordStage:(NSString *)stage code:(NSInteger)code classification:(NSString *)classification {
   NSArray *stages = @[@"reported",@"claim_http",@"ready_http",@"claim_rejected",@"prepare_complete",@"incoming",@"connected",@"answer_requested",@"answer_accept",@"answer_result",@"finished"];
-  NSArray *classes = @[@"wake_owner_mismatch",@"account_config_mismatch",@"account_count_mismatch",@"runtime_sink_missing",@"none",@"transport_error",@"owner_or_config_mismatch",@"runtime_busy",@"registration_failed",@"registration_request_failed",@"expired",@"invalid_or_expired",@"runtime_setup_failed",@"other"];
+  NSArray *classes = @[@"wake_owner_missing",@"wake_owner_mismatch",@"account_config_mismatch",@"account_count_mismatch",@"runtime_sink_missing",@"none",@"transport_error",@"owner_or_config_mismatch",@"runtime_busy",@"registration_failed",@"registration_request_failed",@"expired",@"invalid_or_expired",@"runtime_setup_failed",@"other"];
   if (![stages containsObject:stage] || ![classes containsObject:classification] || code < -1 || code > 999) return;
   NSDictionary *entry = @{@"timestamp":@([self now]),@"stage":stage,@"code":@(code),@"classification":classification};
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;

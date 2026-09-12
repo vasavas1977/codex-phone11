@@ -64,6 +64,11 @@ int main(void) {
   CHECK(!runtime.wakeContext && [events.lastObject[@"type"] isEqual:@"terminated"]);
   [Phone11Siprix setIncomingWakeAudioSession:AVAudioSession.sharedInstance active:NO]; CHECK(deactivations==1 && !runtime.audioSessionActive);
   [Phone11Siprix setIncomingWakeAudioSession:AVAudioSession.sharedInstance active:NO]; CHECK(deactivations==1);
+  // A recreated foreground runtime can retain the same SIP account but has no
+  // verified wake owner. Credentials alone must never authorize the saved grant.
+  runtime.wakeOwner=nil;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK([wakeError.localizedDescription isEqual:@"Incoming wake owner missing."] && !runtime.wakeContext && registrations==1);
   // A foreground owner must enroll the exact config; a different session cannot resume it.
   [js bindForegroundWakeContext:binding sip:sip resolver:resolve rejecter:reject]; CHECK(!error);
   context[@"sessionBinding"]=@"replacement-login";

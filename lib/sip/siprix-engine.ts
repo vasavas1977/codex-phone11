@@ -210,6 +210,25 @@ export class SiprixEngine {
         await bridge.registerAccount(created.accountId, 300);
         if (!this.current(session)) { await this.cleanup(); return; }
         this.applySnapshot(await bridge.getSnapshot(), session);
+        if (!this.current(session)) { await this.cleanup(); return; }
+        // Native recreation clears its warm-wake owner, while secure enrollment
+        // survives. Resolve that enrollment against the current server session.
+        // Bind directly: bindWakeOwner serializes on this same lifecycle queue.
+        try {
+          const { getWakeAdoptionBinding } = await import("../push/client");
+          const binding = await getWakeAdoptionBinding(); // Existing five-second bound.
+          if (this.current(session) && binding && binding.ownerUserId === session.account.ownerUserId &&
+              binding.tenantId === session.account.tenantId && binding.expiresAt > Date.now()) {
+            await bridge.bindForegroundWakeContext(binding, nativeAccount(session.account));
+            if (this.current(session)) useSipDiagnosticsStore.getState().addEvent({
+              level: "info", category: "engine", message: "Siprix foreground wake owner restored",
+            });
+          }
+        } catch (error) {
+          // Enrollment can be absent or temporarily unavailable. Preserve the
+          // registered foreground account and any call that arrived meanwhile.
+          if (this.current(session)) this.failure("wake owner rebinding", error);
+        }
         if (!this.current(session)) await this.cleanup();
       } catch (error) {
         const relevant = this.current(session);
