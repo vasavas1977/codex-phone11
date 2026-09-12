@@ -530,9 +530,17 @@ RCT_EXPORT_MODULE(Phone11Siprix)
       }
     };
     if (runtime.initialized) {
-      if (!P11SameWakeOwner(runtime.wakeOwner, owner) ||
-          ![runtime.accountConfig isEqual:P11AccountIdentity(sip)] || runtime.accounts.count != 1 || !runtime.sink) {
-        completion(P11WakeError(@"The foreground phone session does not match this wake.")); return;
+      if (!P11SameWakeOwner(runtime.wakeOwner, owner)) {
+        completion(P11WakeError(@"Incoming wake owner mismatch.")); return;
+      }
+      if (![runtime.accountConfig isEqual:P11AccountIdentity(sip)]) {
+        completion(P11WakeError(@"Incoming wake account configuration mismatch.")); return;
+      }
+      if (runtime.accounts.count != 1) {
+        completion(P11WakeError(@"Incoming wake account count mismatch.")); return;
+      }
+      if (!runtime.sink) {
+        completion(P11WakeError(@"Incoming wake runtime sink missing.")); return;
       }
       arm(runtime.sink, runtime.accounts.allKeys.firstObject); return;
     }

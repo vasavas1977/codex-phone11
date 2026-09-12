@@ -3,6 +3,21 @@
 #import <RNCallKeep/RNCallKeep.h>
 #import <Security/Security.h>
 
+// A bounded device-local trail contains only fixed labels and numeric outcomes.
+static NSString *const P11WakeDiagnosticKey = @"ai.phone11.native.wake-diagnostics.v1";
+static NSString *P11PrepareFailure(NSError *error) {
+  NSDictionary *known = @{@"Incoming wake owner mismatch.":@"wake_owner_mismatch",
+    @"Incoming wake account configuration mismatch.":@"account_config_mismatch",
+    @"Incoming wake account count mismatch.":@"account_count_mismatch",
+    @"Incoming wake runtime sink missing.":@"runtime_sink_missing",@"The foreground phone session does not match this wake.":@"owner_or_config_mismatch",
+    @"The phone runtime is already busy.":@"runtime_busy",
+    @"Incoming wake registration failed.":@"registration_failed",
+    @"Incoming wake registration request failed.":@"registration_request_failed",
+    @"Incoming wake expired.":@"expired",
+    @"Invalid or expired incoming wake.":@"invalid_or_expired",
+    @"Could not prepare the incoming phone runtime.":@"runtime_setup_failed"};
+  return known[error.localizedDescription ?: @""] ?: @"other";
+}
 static NSString *const P11WakeKey = @"ai.phone11.native.incoming-wake.v1";
 static BOOL P11UUID(id value) { return [value isKindOfClass:NSString.class] && [[NSUUID alloc] initWithUUIDString:value] != nil; }
 static BOOL P11Positive(id value) { return [value isKindOfClass:NSNumber.class] && [value doubleValue] > 0 && [value doubleValue] == [value longLongValue]; }
@@ -35,6 +50,25 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
 - (double)now { return NSDate.date.timeIntervalSince1970 * 1000; }
 - (void)scheduleAfter:(double)seconds block:(void (^)(void))block {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
+}
+- (void)recordStage:(NSString *)stage code:(NSInteger)code classification:(NSString *)classification {
+  NSArray *stages = @[@"reported",@"claim_http",@"ready_http",@"claim_rejected",@"prepare_complete",@"incoming",@"connected",@"answer_requested",@"answer_accept",@"answer_result",@"finished"];
+  NSArray *classes = @[@"wake_owner_mismatch",@"account_config_mismatch",@"account_count_mismatch",@"runtime_sink_missing",@"none",@"transport_error",@"owner_or_config_mismatch",@"runtime_busy",@"registration_failed",@"registration_request_failed",@"expired",@"invalid_or_expired",@"runtime_setup_failed",@"other"];
+  if (![stages containsObject:stage] || ![classes containsObject:classification] || code < -1 || code > 999) return;
+  NSDictionary *entry = @{@"timestamp":@([self now]),@"stage":stage,@"code":@(code),@"classification":classification};
+  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  NSArray *saved = [defaults arrayForKey:P11WakeDiagnosticKey];
+  NSMutableArray *trail = [NSMutableArray new];
+  for (id item in saved) {
+    if (![item isKindOfClass:NSDictionary.class] || [item count] != 4) continue;
+    if (![stages containsObject:item[@"stage"]] || ![classes containsObject:item[@"classification"]] ||
+        ![item[@"timestamp"] isKindOfClass:NSNumber.class] || ![item[@"code"] isKindOfClass:NSNumber.class]) continue;
+    [trail addObject:item];
+  }
+  [trail addObject:entry];
+  while (trail.count > 32) [trail removeObjectAtIndex:0];
+  [defaults setObject:trail forKey:P11WakeDiagnosticKey];
+  NSLog(@"Phone11Wake stage=%@ code=%ld classification=%@",stage,(long)code,classification);
 }
 - (NSDictionary *)readEnrollment {
   CFTypeRef data = NULL;
@@ -114,6 +148,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
   // requirement. No keychain read, JS bridge or network precedes this call.
   void (^reported)(NSError *) = ^(NSError *error) {
     completion();
+    [self recordStage:@"reported" code:error ? 1 : 0 classification:@"none"];
     if (duplicate) return;
     if (error) {
       // Do not end a UUID that CallKit rejected as already present.
@@ -133,18 +168,20 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
       if (![self isCurrent:generation]) return;
       BOOL identity = YES;
       for (NSString *key in @[@"bindingId", @"ownerUserId", @"tenantId", @"deviceId", @"sessionBinding"]) if (![response[key] isEqual:enrollment[key]]) identity = NO;
-      if (!identity || ![@[@"pending", @"ready"] containsObject:response[@"status"] ?: @""] || ![response[@"sip"] isKindOfClass:NSDictionary.class]) { [self finish:CXCallEndedReasonFailed notifyServer:YES]; return; }
+      if (!identity || ![@[@"pending", @"ready"] containsObject:response[@"status"] ?: @""] || ![response[@"sip"] isKindOfClass:NSDictionary.class]) { [self recordStage:@"claim_rejected" code:0 classification:@"none"]; [self finish:CXCallEndedReasonFailed notifyServer:YES]; return; }
       NSMutableDictionary *context = [[enrollment dictionaryWithValuesForKeys:P11BindingKeys()] mutableCopy];
       [context addEntriesFromDictionary:self.active]; context[@"v"] = @1; context[@"grantExpiresAt"] = enrollment[@"expiresAt"];
       [Phone11Siprix prepareIncomingWake:context sip:response[@"sip"] event:^(NSDictionary *event) {
         if (![self isCurrent:generation] || ![event[@"callUUID"] isKindOfClass:NSString.class] || [event[@"callUUID"] caseInsensitiveCompare:self.active[@"callUUID"]] != NSOrderedSame) return;
         NSString *type = event[@"type"];
+        if ([type isEqual:@"incoming"] || [type isEqual:@"connected"]) [self recordStage:type code:0 classification:@"none"];
         if ([type isEqual:@"incoming"]) { self.incoming = YES; [self acceptIfReady]; }
         else if ([type isEqual:@"connected"]) { self.connected = YES; [self.answer fulfill]; self.answer = nil; [self heartbeat:generation]; }
         else if ([type isEqual:@"terminated"]) [self finish:CXCallEndedReasonRemoteEnded notifyServer:YES];
         else if ([type isEqual:@"failed"]) [self finish:CXCallEndedReasonFailed notifyServer:YES];
       } completion:^(NSError *error) {
         if (![self isCurrent:generation]) return;
+        [self recordStage:@"prepare_complete" code:error ? 1 : 0 classification:error ? P11PrepareFailure(error) : @"none"];
         if (error) { [self finish:CXCallEndedReasonFailed notifyServer:YES]; return; }
         if (self.wakeAudioActive) [Phone11Siprix setIncomingWakeAudioSession:AVAudioSession.sharedInstance active:YES];
         [self request:@"ready" completion:^(NSDictionary *ready) {
@@ -213,6 +250,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
       [self.tasks removeObject:task];
       if (![self isCurrent:generation]) return;
       NSInteger status = [(NSHTTPURLResponse *)response statusCode];
+      if ([operation isEqual:@"claim"] || [operation isEqual:@"ready"]) [self recordStage:[operation stringByAppendingString:@"_http"] code:error ? -1 : status classification:error ? @"transport_error" : @"none"];
       if (!error && (status == 401 || status == 403)) { [self writeEnrollment:nil]; completion(@{@"authorizationRejected":@YES}); return; }
       NSDictionary *body = !error && status == 200 && data.length <= 32768 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
       if (![body isKindOfClass:NSDictionary.class] || ![body[@"v"] isEqual:@1] || ![body[@"callUUID"] isEqual:self.active[@"callUUID"]] || ![body[@"bindingId"] isEqual:self.active[@"bindingId"]]) body = nil;
@@ -225,12 +263,15 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
 - (void)acceptIfReady {
   if (!self.answer || !self.incoming || self.accepting || !self.active || self.connected) return;
   self.accepting = YES; NSUInteger generation = self.generation;
+  [self recordStage:@"answer_accept" code:0 classification:@"none"];
   [Phone11Siprix answerIncomingWake:self.active[@"callUUID"] completion:^(NSError *error) {
+    if ([self isCurrent:generation]) [self recordStage:@"answer_result" code:error ? 1 : 0 classification:error ? @"other" : @"none"];
     if ([self isCurrent:generation] && error) [self finish:CXCallEndedReasonFailed notifyServer:YES];
   }];
 }
 - (void)finish:(CXCallEndedReason)reason notifyServer:(BOOL)notify {
   if (!self.active) return;
+  [self recordStage:@"finished" code:reason classification:@"none"];
   NSString *uuid = self.active[@"callUUID"];
   // An End can arrive after reporting but before the report-completion callback.
   // Resolve only the same device binding so that early rejection can cancel the
@@ -249,6 +290,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
 }
 - (void)provider:(CXProvider *)provider performAnswerCallAction:(CXAnswerCallAction *)action {
   if (![self owns:action.callUUID]) { [(id<CXProviderDelegate>)self.callKeep provider:provider performAnswerCallAction:action]; return; }
+  [self recordStage:@"answer_requested" code:0 classification:@"none"];
   if (self.connected) { [action fulfill]; return; }
   if (self.answer) { [action fail]; return; }
   NSError *error = nil;

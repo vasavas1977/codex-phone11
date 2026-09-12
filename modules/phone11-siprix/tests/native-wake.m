@@ -205,5 +205,29 @@ int main(void) { @autoreleasepool {
   [network request:@"claim" completion:^(NSDictionary *body) { check(body==nil); }]; check(networkStarts==1);
   network.connected=YES; [network request:@"ready" completion:^(NSDictionary *body) {}]; check(networkStarts==2 && capturedRequest.timeoutInterval==5);
   __block BOOL redirectCalled=NO; [network URLSession:nil task:nil willPerformHTTPRedirection:nil newRequest:[NSURLRequest new] completionHandler:^(NSURLRequest *request){ redirectCalled=YES;check(request==nil); }];check(redirectCalled);
+  // Diagnostics are fixed-schema, bounded, and never persist raw error text.
+  NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+  [defaults removeObjectForKey:P11WakeDiagnosticKey];
+  NSError *privateError=[NSError errorWithDomain:@"private-domain" code:123 userInfo:@{NSLocalizedDescriptionKey:@"token=private-secret"}];
+  check([P11PrepareFailure(privateError) isEqual:@"other"]);
+  check([P11PrepareFailure([NSError errorWithDomain:@"fake" code:1 userInfo:@{NSLocalizedDescriptionKey:@"The foreground phone session does not match this wake."}]) isEqual:@"owner_or_config_mismatch"]);
+  NSDictionary *guardClasses=@{@"Incoming wake owner mismatch.":@"wake_owner_mismatch",@"Incoming wake account configuration mismatch.":@"account_config_mismatch",@"Incoming wake account count mismatch.":@"account_count_mismatch",@"Incoming wake runtime sink missing.":@"runtime_sink_missing"};
+  for (NSString *description in guardClasses) {
+    NSString *classification=P11PrepareFailure([NSError errorWithDomain:@"fake" code:1 userInfo:@{NSLocalizedDescriptionKey:description}]);
+    check([classification isEqual:guardClasses[description]]);
+    [network recordStage:@"prepare_complete" code:1 classification:classification];
+    check([[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject][@"classification"] isEqual:classification]);
+  }
+  [defaults setObject:@[@{@"token":@"private-secret"}] forKey:P11WakeDiagnosticKey];
+  for (int i=0;i<40;i++) [network recordStage:@"prepare_complete" code:1 classification:P11PrepareFailure(privateError)];
+  NSArray *trail=[defaults arrayForKey:P11WakeDiagnosticKey];check(trail.count==32);
+  NSData *safe=[NSJSONSerialization dataWithJSONObject:trail options:0 error:nil];
+  NSString *encoded=[[NSString alloc] initWithData:safe encoding:NSUTF8StringEncoding];
+  check([encoded rangeOfString:@"private-secret"].location==NSNotFound);
+  for (NSDictionary *entry in trail) check(entry.count==4 && entry[@"timestamp"] && entry[@"stage"] && entry[@"code"] && entry[@"classification"]);
+  [network recordStage:@"token=private-secret" code:1 classification:@"other"];
+  [network recordStage:@"prepare_complete" code:1 classification:@"private-secret"];
+  check([[defaults arrayForKey:P11WakeDiagnosticKey] isEqual:trail]);
+  [defaults removeObjectForKey:P11WakeDiagnosticKey];
   printf("PASS: %d native wake assertions\n",checks);
 } return 0; }

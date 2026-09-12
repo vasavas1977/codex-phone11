@@ -68,7 +68,20 @@ int main(void) {
   [js bindForegroundWakeContext:binding sip:sip resolver:resolve rejecter:reject]; CHECK(!error);
   context[@"sessionBinding"]=@"replacement-login";
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(wakeError && initializes==1);
+  CHECK([wakeError.localizedDescription isEqual:@"Incoming wake owner mismatch."]);
   context[@"sessionBinding"]=binding[@"sessionBinding"];
+  // Guard reasons are fixed labels; the same rejected states never register.
+  NSMutableDictionary *differentSip=[sip mutableCopy]; differentSip[@"sipPassword"]=@"different-private-test-password";
+  [Phone11Siprix prepareIncomingWake:context sip:differentSip event:event completion:ready];
+  CHECK([wakeError.localizedDescription isEqual:@"Incoming wake account configuration mismatch."] && !runtime.wakeContext && registrations==1);
+  runtime.accounts[@"99"]=[NSMutableDictionary new];
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK([wakeError.localizedDescription isEqual:@"Incoming wake account count mismatch."] && !runtime.wakeContext && registrations==1);
+  [runtime.accounts removeObjectForKey:@"99"];
+  runtime.sink=nil;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK([wakeError.localizedDescription isEqual:@"Incoming wake runtime sink missing."] && !runtime.wakeContext && registrations==1);
+  runtime.sink=js;
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(runtime.wakeContext && initializes==1 && registrations==2);
   [Phone11Siprix endIncomingWake:uuid]; CHECK(!runtime.wakeContext && runtime.initialized);
   [js destroy:resolve rejecter:reject]; CHECK(!runtime.initialized && shutdowns==1);
