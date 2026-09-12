@@ -101,7 +101,7 @@ describe("automatic foreground phone registration", () => {
     state.hasLiveCall = false; controller.changed(); await flush();
     expect(restart).toHaveBeenCalledOnce();
   });
-  it("refreshes a stale registered contact after foregrounding but waits for any live call to finish", async () => {
+  it("preserves a healthy registered runtime across foregrounding and call completion", async () => {
     state.registrationState = "registered";
     controller.start(); await flush();
     controller.setActive(false);
@@ -109,7 +109,9 @@ describe("automatic foreground phone registration", () => {
     controller.setActive(true); await flush();
     expect(restart).not.toHaveBeenCalled();
     state.hasLiveCall = false; controller.changed(); await flush();
-    expect(restart).toHaveBeenCalledOnce();
+    expect(restart).not.toHaveBeenCalled();
+    expect(initialize).not.toHaveBeenCalled();
+    expect(loadAccount).toHaveBeenCalledTimes(2);
   });
   it("pauses retries in background and reconnects on foreground", async () => {
     controller.setActive(false);
@@ -165,4 +167,26 @@ describe("automatic foreground phone registration", () => {
     await vi.advanceTimersByTimeAsync(120_000);
     expect(restart).not.toHaveBeenCalled();
   });
+  it("rehydrates on repeated healthy resumes without native restart", async () => {
+    state.registrationState = "registered"; controller.start(); await flush();
+    for (let i=0; i<3; i++) { controller.setActive(false); controller.setActive(true); await flush(); }
+    expect(loadAccount).toHaveBeenCalledTimes(4);
+    expect(initialize).not.toHaveBeenCalled(); expect(restart).not.toHaveBeenCalled();
+    state.registrationState = "network_error"; controller.changed(); await flush();
+    expect(restart).toHaveBeenCalledOnce();
+  });
+  it("recovers when secure rehydration invalidates the formerly healthy account", async () => {
+    state.registrationState = "registered"; controller.start(); await flush();
+    controller.setActive(false);
+    loadAccount.mockImplementationOnce(async () => { state.account={...account,domain:"changed.example.test"};state.registrationState="unregistered"; });
+    controller.setActive(true); await flush();
+    expect(initialize).toHaveBeenCalledOnce();
+  });
+  it("does not preserve a logged-out owner while resume hydration is pending", async () => {
+    state.registrationState = "registered"; controller.start(); await flush(); controller.setActive(false);
+    let finish!: () => void;loadAccount.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    controller.setActive(true); await flush();state.userId=undefined;controller.changed();finish();await flush();
+    expect(initialize).not.toHaveBeenCalled();expect(restart).not.toHaveBeenCalled();
+  });
+
 });

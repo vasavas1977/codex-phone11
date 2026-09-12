@@ -748,4 +748,10 @@ describe("validated native wake adoption", () => {
     expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix foreground wake owner restored" }));
   });
 
+  it("records only a fixed diagnostic when wake verification is unavailable", async () => {
+    runtime.wakeBinding.mockResolvedValue(null);await ready();
+    expect(runtime.diagnostics).toHaveBeenCalledWith({ level:"warning",category:"engine",message:"Siprix wake owner verification unavailable" });
+    expect(bridge.destroy).not.toHaveBeenCalled();
+  });
+
 });

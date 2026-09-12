@@ -93,7 +93,9 @@ export function createRegistrationLifecycle(deps: Dependencies, initiallyActive:
         // Retry secure hydration after unlocking, even for the same signed-in owner.
         loadedUserId = undefined;
         retryAt = 0;
-        refreshOnResume = true;
+        // A healthy native runtime owns the warm-wake identity. Foregrounding
+        // alone must not destroy it; hydration still invalidates changed accounts.
+        refreshOnResume = deps.snapshot().registrationState !== "registered";
       }
       wake();
     },

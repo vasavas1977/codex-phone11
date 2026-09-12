@@ -223,6 +223,10 @@ export class SiprixEngine {
             if (this.current(session)) useSipDiagnosticsStore.getState().addEvent({
               level: "info", category: "engine", message: "Siprix foreground wake owner restored",
             });
+          } else if (this.current(session) && !binding) {
+            useSipDiagnosticsStore.getState().addEvent({
+              level: "warning", category: "engine", message: "Siprix wake owner verification unavailable",
+            });
           }
         } catch (error) {
           // Enrollment can be absent or temporarily unavailable. Preserve the
