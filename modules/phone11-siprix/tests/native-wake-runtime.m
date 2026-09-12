@@ -115,7 +115,7 @@ int main(void) {
     [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
     flush(); CHECK(readyCount==before && runtime.wakeReady!=nil);
     RegState fresh=stale.intValue==RegStateFailed ? RegStateSuccess : RegStateFailed;
-    [sdkDelegate onAccountRegState:10 regState:fresh response:@"private-response"];
+    [sdkDelegate onAccountRegState:10 regState:fresh response:@"403 Forbidden"];
     flush(); CHECK(readyCount==before+1 && (wakeError!=nil)==(fresh==RegStateFailed));
     [Phone11Siprix endIncomingWake:uuid];
   }
@@ -134,11 +134,17 @@ int main(void) {
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
   pushRegistrationState=-1; flush(); CHECK(readyCount==before+1 && !wakeError && registrations==registersBefore);
   [Phone11Siprix endIncomingWake:uuid];
-  // A genuine fresh failure from push recovery remains terminal without a retry.
+  // An unclassified push-recovery failure waits for one bounded refresh.
   before=readyCount; pushRegistrationState=RegStateFailed;
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
   pushRegistrationState=-1; flush();
-  CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake registration failed."] && registrations==registersBefore);
+  CHECK(readyCount==before && runtime.wakeReady && registrations==registersBefore);
+  dispatch_block_t recoveryTimer=refreshTimers.lastObject; recoveryTimer(); flush();
+  CHECK(registrations==registersBefore+1 && readyCount==before);
+  [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"unclassified"]; flush();
+  recoveryTimer(); flush(); CHECK(registrations==registersBefore+1 && readyCount==before);
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+  CHECK(readyCount==before+1 && !wakeError); registersBefore=registrations;
   [Phone11Siprix endIncomingWake:uuid];
   // A fresh success delivered after the wake deadline cannot authorize ready.
   before=readyCount;
@@ -289,7 +295,7 @@ int main(void) {
   for (NSNumber *state in @[@(RegStateInProgress),@(RegStateRemoved),@(RegStateFailed)]) {
     pushAt=NSProcessInfo.processInfo.systemUptime;
     [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
-    [sdkDelegate onAccountRegState:10 regState:state.intValue response:@"private"];
+    [sdkDelegate onAccountRegState:10 regState:state.intValue response:@"403 Forbidden"];
     before=readyCount; refreshBefore=registrations;
     [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:pushAt event:event completion:ready];
     flush();
@@ -426,6 +432,57 @@ int main(void) {
   dispatch_sync(P11WakeHistory.shared.queue, ^{});
   [js readCompletedWakeCalls:renewed resolver:resolve rejecter:reject]; dispatch_sync(P11WakeHistory.shared.queue, ^{}); flush(); CHECK([result count]==0);
 
+  // Retry policy is status-bounded and shares one refresh across cold/warm setup.
+  for (NSString *status in @[@"unknown",@"408 Request Timeout",@"503 Service Unavailable",@"401 Unauthorized",@"403 Forbidden",@"407 Proxy Authentication Required",@"404 Not Found",@"500 Server Internal Error",@"401 Custom Reason",@"403 Custom Reason",@"500 Custom Reason"]) {
+    [runtime shutdown]; context[@"expiresAt"]=@(P11NowMs()+30000);
+    before=readyCount; refreshBefore=registrations;
+    [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+    CHECK(registrations==refreshBefore+1);
+    timer=refreshTimers.lastObject;
+    // Timer can elapse before a cold registration failure; continuation persists.
+    timer(); flush(); CHECK(registrations==refreshBefore+1 && readyCount==before);
+    [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:status]; flush();
+    BOOL retryable=[status isEqual:@"unknown"] || [status hasPrefix:@"408"] || [status hasPrefix:@"503"];
+    CHECK(registrations==refreshBefore+(retryable ? 2 : 1));
+    CHECK(readyCount==before+(retryable ? 0 : 1));
+    if (retryable) {
+      [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"unknown"]; flush();
+      timer(); flush(); CHECK(registrations==refreshBefore+2 && readyCount==before);
+      [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+      CHECK(readyCount==before+1 && !wakeError);
+    }
+    [Phone11Siprix endIncomingWake:uuid];
+  }
+  // A current in-progress response consumes no retry. A later transient failure
+  // may consume the same delayed budget, but cancellation invalidates it.
+  [runtime shutdown]; [js initialize:@{} resolver:resolve rejecter:reject];
+  [js createAccount:sip resolver:resolve rejecter:reject];
+  [js bindForegroundWakeContext:binding sip:sip resolver:resolve rejecter:reject];
+  before=readyCount; refreshBefore=registrations;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  [sdkDelegate onAccountRegState:10 regState:RegStateInProgress response:@"pending"]; flush();
+  timer=refreshTimers.lastObject; timer(); flush(); CHECK(registrations==refreshBefore);
+  [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"unknown"]; flush();
+  CHECK(registrations==refreshBefore+1 && readyCount==before);
+  [Phone11Siprix endIncomingWake:uuid]; timer(); flush(); CHECK(registrations==refreshBefore+1);
+
+  for (NSString *finish in @[@"auth",@"expired"]) {
+    before=readyCount; refreshBefore=registrations;
+    [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+    [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"unknown"]; flush();
+    timer=refreshTimers.lastObject; timer(); flush(); CHECK(registrations==refreshBefore+1 && readyCount==before);
+    if ([finish isEqual:@"auth"]) {
+      [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"403 Forbidden"]; flush();
+      CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake registration failed."]);
+    } else {
+      NSMutableDictionary *expired=[runtime.wakeContext mutableCopy]; expired[@"expiresAt"]=@1; runtime.wakeContext=expired;
+      [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"unknown"]; flush();
+      timer(); flush(); CHECK(registrations==refreshBefore+1 && readyCount==before);
+      [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+      CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake expired."]);
+    }
+    [Phone11Siprix endIncomingWake:uuid];
+  }
   [NSFileManager.defaultManager removeItemAtURL:historyURL error:nil];
   printf("PASS: %d native wake runtime assertions\n", assertions);
  }

@@ -371,7 +371,10 @@ int main(void) {
     CHECK([P11StatusCode(@"SIP/2.0 401 Unauthorized\r\nAuthorization: private") intValue] == 401);
     CHECK([P11StatusCode(@"408 Request Timeout") intValue] == 408);
     CHECK(P11StatusCode(@"private password 401") == nil);
-    CHECK(P11StatusCode(@"401 Unauthorized; private") == nil);
+    CHECK([P11StatusCode(@"401 Unauthorized; private") intValue] == 401);
+    CHECK(P11StatusCode(@"4011 private") == nil);
+    CHECK(P11StatusCode(@"099 private") == nil);
+    CHECK(P11StatusCode(@"４０１ private") == nil);
     CHECK(P11StatusCode(@"SIP/2.0 4011") == nil);
     CHECK(P11StatusCode(@"SIP/2.0 999 Bad") == nil);
     printf("PASS: %d native bridge assertions (mock SDK; no iOS runtime or SIP traffic)\n", assertions);

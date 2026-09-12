@@ -150,6 +150,7 @@ static NSString *P11HistoryNumber(id uri) {
 @property(nonatomic, copy) NSString *wakeCallId;
 @property(nonatomic, copy) void (^wakeEvent)(NSDictionary *event);
 @property(nonatomic, copy) void (^wakeReady)(NSError *error);
+@property(nonatomic) BOOL wakeRetryableRegistrationFailure;
 @property(nonatomic) NSUInteger wakeRegistrationBoundary;
 @property(nonatomic) NSTimeInterval wakeReceivedAt;
 @property(nonatomic, copy) dispatch_block_t pendingWakeRefresh;
@@ -211,21 +212,13 @@ static NSString *P11ID(NSInteger value) {
 
 static NSNumber *P11StatusCode(NSString *response) {
   if (![response isKindOfClass:NSString.class] || response.length > 4096) return nil;
-  static NSDictionary *standard;
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    standard = @{@"200 OK": @200, @"401 Unauthorized": @401, @"403 Forbidden": @403,
-      @"404 Not Found": @404, @"407 Proxy Authentication Required": @407,
-      @"408 Request Timeout": @408, @"423 Interval Too Brief": @423,
-      @"480 Temporarily Unavailable": @480, @"500 Server Internal Error": @500,
-      @"503 Service Unavailable": @503, @"504 Server Time-out": @504};
-  });
-  NSNumber *known = standard[response];
-  if (known) return known;
-  if (![response hasPrefix:@"SIP/2.0 "] || response.length < 11) return nil;
-  NSString *digits = [response substringWithRange:NSMakeRange(8, 3)];
-  if ([digits rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location != NSNotFound) return nil;
-  if (response.length > 11 && [response characterAtIndex:11] != ' ') return nil;
+  NSUInteger offset = [response hasPrefix:@"SIP/2.0 "] ? 8 : 0;
+  if (response.length < offset+4 || [response characterAtIndex:offset+3] != ' ') return nil;
+  NSString *digits = [response substringWithRange:NSMakeRange(offset, 3)];
+  for (NSUInteger i=0; i<3; i++) {
+    unichar digit=[digits characterAtIndex:i];
+    if (digit<'0' || digit>'9') return nil;
+  }
   int code = digits.intValue;
   return code >= 100 && code <= 699 ? @(code) : nil;
 }
@@ -405,8 +398,15 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
       void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
       ready([self.wakeContext[@"expiresAt"] doubleValue] > P11NowMs() ? nil : P11WakeError(@"Incoming wake expired."));
     } else if (self.wakeReady && fresh && state == RegStateFailed) {
+      // Missing status is unclassified, not proof of a transport error. Permit
+      // only the existing one-shot refresh budget; never complete ready here.
+      NSNumber *status = data[@"sipStatusCode"];
+      BOOL retryable = !status || status.integerValue == 408 || status.integerValue == 503;
+      self.wakeRetryableRegistrationFailure = retryable;
+      if (!retryable) {
       void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
       ready(P11WakeError(@"Incoming wake registration failed."));
+      }
     }
     dispatch_block_t pendingRefresh = self.pendingWakeRefresh;
     if (pendingRefresh) pendingRefresh();
@@ -706,12 +706,13 @@ RCT_EXPORT_MODULE(Phone11Siprix)
       runtime.wakeRegistrationBoundary = [runtime.delegate registrationBoundary];
       runtime.wakeReceivedAt = isfinite(receivedAt) && receivedAt > 0 && receivedAt <= NSProcessInfo.processInfo.systemUptime ? receivedAt : 0;
       runtime.wakeEvent = event; runtime.wakeReady = completion;
+      runtime.wakeRetryableRegistrationFailure = NO;
       runtime.accounts[accountId][@"registrationState"] = @"registering";
       [runtime.sdk handleIncomingPush];
       // Give SDK push recovery its first opportunity. The one-shot fallback
       // delay exceeds its documented <1s refresh suppression window; it is not
       // proof that SDK recovery has become quiescent.
-      if (!needsInitialRegistration) {
+      {
         NSUInteger generation = runtime.generation; NSString *lease = runtime.lease;
         dispatch_async(dispatch_get_main_queue(), ^{
           NSDictionary *proof = runtime.registrationProof;
@@ -738,10 +739,11 @@ RCT_EXPORT_MODULE(Phone11Siprix)
           // The worker may have assigned ingress but not enqueued delivery yet.
           // Keep one continuation; the latest callback resumes it without a loop.
           if (runtime.processedRegistrationIngress != [runtime.delegate registrationBoundary]) return;
-          runtime.pendingWakeRefresh = nil;
+          if (needsInitialRegistration && !runtime.wakeRetryableRegistrationFailure) return;
           if ([proof[@"state"] integerValue] == RegStateInProgress &&
               ([proof[@"serial"] unsignedIntegerValue] > runtime.wakeRegistrationBoundary ||
                (runtime.wakeReceivedAt > 0 && [proof[@"at"] doubleValue] >= runtime.wakeReceivedAt))) return;
+          runtime.pendingWakeRefresh = nil;
           refreshIssued = YES;
           int result = [runtime.sdk accountRegister:accountId.intValue expireTime:300];
           [Phone11WakeCoordinator recordRefreshResult:result];
@@ -760,7 +762,7 @@ RCT_EXPORT_MODULE(Phone11Siprix)
             attemptRefresh();
           });
         }];
-        return;
+        if (!needsInitialRegistration) return;
       }
       int code = [runtime.sdk accountRegister:accountId.intValue expireTime:300];
       if (code != kErrorCodeEOK) {
