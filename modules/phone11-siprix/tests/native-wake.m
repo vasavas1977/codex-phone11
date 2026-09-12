@@ -3,7 +3,7 @@
 // The fake implements the real facade; this declaration also permits the test
 // to run while the SDK facade is being integrated in its separate source lane.
 @interface Phone11Siprix (WakeTestContract)
-+ (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion;
++ (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip receivedAt:(NSTimeInterval)receivedAt event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion;
 + (void)answerIncomingWake:(NSString *)uuid completion:(void (^)(NSError *))completion;
 + (void)endIncomingWake:(NSString *)uuid;
 + (void)setIncomingWakeAudioSession:(AVAudioSession *)session active:(BOOL)active;
@@ -14,6 +14,7 @@
 NSString *const AVAudioSessionCategoryPlayAndRecord=@"playAndRecord";
 NSString *const AVAudioSessionModeVoiceChat=@"voiceChat";
 static int checks, reports, ends, prepared, accepted, ordinaryAnswers, audioForwarded;
+static NSTimeInterval preparedArrival;
 static BOOL audioError;
 static BOOL delayReport, reportError;
 static void (^reported)(NSError *);
@@ -33,7 +34,8 @@ static void check(BOOL ok) { checks++; if (!ok) { fprintf(stderr,"FAIL wake asse
 - (void)invalidate {}
 @end
 @implementation Phone11Siprix
-+ (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion {
++ (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip receivedAt:(NSTimeInterval)receivedAt event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion {
+  preparedArrival=receivedAt;
   prepared++; sdkEvent = [event copy]; sdkReady = [completion copy]; currentUUID = context[@"callUUID"];
   check(context[@"grant"] == nil && context[@"sipPassword"] == nil && context[@"grantExpiresAt"] != nil);
 }
@@ -136,7 +138,7 @@ int main(void) { @autoreleasepool {
   sdkReady(nil); check([v.requests containsObject:@"ready"]);
   sdkEvent(@{@"type":@"incoming",@"callUUID":currentUUID}); check(accepted==1 && !a.testFulfilled);
   sdkEvent(@{@"type":@"connected",@"callUUID":currentUUID}); check(a.testFulfilled && v.connected);
-  int before=prepared; [v receivePayload:payload() completion:^{}]; check(prepared==before && v.connected);
+  int before=prepared; NSTimeInterval originalArrival=preparedArrival; [v receivePayload:payload() completion:^{}]; check(prepared==before && v.connected && preparedArrival==originalArrival);
   CXAnswerCallAction *other=[CXAnswerCallAction new]; other.callUUID=NSUUID.UUID;
   [v provider:v.provider performAnswerCallAction:other]; check(other.testFulfilled && ordinaryAnswers==1);
   [v provider:v.provider didActivateAudioSession:nil]; check(audioForwarded==1);
@@ -229,6 +231,9 @@ int main(void) { @autoreleasepool {
   check([registrationEntry[@"stage"] isEqual:@"registration_sip_status"] && [registrationEntry[@"code"] intValue]==403);
   [Phone11WakeCoordinator recordRegistrationFailureStatus:nil];
   check([[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject][@"code"] intValue]==-1);
+  [Phone11WakeCoordinator recordRefreshResult:-10];
+  registrationEntry=[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject];
+  check([registrationEntry[@"stage"] isEqual:@"refresh_requested"] && [registrationEntry[@"code"] intValue]==-10);
   NSArray *beforeInvalid=[defaults arrayForKey:P11WakeDiagnosticKey];
   [Phone11WakeCoordinator recordRegistrationState:999 fresh:YES];
   check([[defaults arrayForKey:P11WakeDiagnosticKey] isEqual:beforeInvalid]);

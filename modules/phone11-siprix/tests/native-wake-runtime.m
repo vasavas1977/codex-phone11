@@ -7,12 +7,22 @@ static int delegateRestores;
 + (void)restoreCallKitDelegate { delegateRestores++; }
 + (void)recordRegistrationState:(NSInteger)state fresh:(BOOL)fresh {}
 + (void)recordRegistrationFailureStatus:(NSNumber *)status {}
++ (void)recordRefreshResult:(NSInteger)code {}
 - (void)providerDidReset:(CXProvider *)provider {}
 @end
 
+#import <objc/runtime.h>
+static NSMutableArray *refreshTimers;
+@interface P11TestRuntime : P11SiprixRuntime @end
+@implementation P11TestRuntime
+- (void)scheduleWakeRefreshAfter:(double)delay block:(dispatch_block_t)block {
+  CHECK(delay==1.1); [refreshTimers addObject:[block copy]];
+}
+@end
 int main(void) {
  @autoreleasepool {
   P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  object_setClass(runtime, P11TestRuntime.class); refreshTimers=[NSMutableArray new];
   NSDictionary *sip = @{@"sipServer":@"invalid.example", @"sipExtension":@"test", @"sipPassword":@"fake-test-password", @"transport":@"TLS"};
   NSString *uuid = @"11111111-1111-4111-8111-111111111111";
   NSMutableDictionary *binding = [@{@"bindingId":@"binding-test", @"ownerUserId":@17, @"tenantId":@2, @"deviceId":@"device-test", @"sessionBinding":@"session-test", @"expiresAt":@(P11NowMs()+600000)} mutableCopy];
@@ -246,6 +256,124 @@ int main(void) {
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
   CHECK(wakeError && initializes==beforeInit && runtime.quarantined);
   shutdownCode=0; [runtime shutdown]; CHECK(!runtime.initialized && !runtime.quarantined);
+  // Exercise the actual push/claim gap using native-only monotonic ingress.
+  [js initialize:@{} resolver:resolve rejecter:reject];
+  [js createAccount:sip resolver:resolve rejecter:reject];
+  [js bindForegroundWakeContext:binding sip:sip resolver:resolve rejecter:reject];
+  NSTimeInterval pushAt=NSProcessInfo.processInfo.systemUptime;
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+  before=readyCount; int refreshBefore=registrations;
+  [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:pushAt event:event completion:ready];
+  flush(); CHECK(readyCount==before+1 && !wakeError);
+  dispatch_block_t timer=refreshTimers.lastObject; timer(); flush();
+  CHECK(registrations==refreshBefore);
+  [Phone11Siprix endIncomingWake:uuid];
+  // Pre-push success is never sufficient; one delayed refresh must get a real
+  // success callback, and an SDK return of zero alone cannot complete ready.
+  pushAt=NSProcessInfo.processInfo.systemUptime;
+  before=readyCount; refreshBefore=registrations;
+  [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:pushAt event:event completion:ready];
+  flush(); CHECK(readyCount==before);
+  timer=refreshTimers.lastObject; timer(); flush();
+  CHECK(registrations==refreshBefore+1 && readyCount==before);
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+  CHECK(readyCount==before+1 && !wakeError);
+  [Phone11Siprix endIncomingWake:uuid];
+  // Newer states invalidate post-push success; in-progress waits for its own
+  // completion, removed can refresh, and a genuine failure stays fatal.
+  for (NSNumber *state in @[@(RegStateInProgress),@(RegStateRemoved),@(RegStateFailed)]) {
+    pushAt=NSProcessInfo.processInfo.systemUptime;
+    [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+    [sdkDelegate onAccountRegState:10 regState:state.intValue response:@"private"];
+    before=readyCount; refreshBefore=registrations;
+    [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:pushAt event:event completion:ready];
+    flush();
+    CHECK(readyCount==before+(state.intValue==RegStateFailed ? 1 : 0));
+    timer=refreshTimers.lastObject; timer(); flush();
+    CHECK(registrations==refreshBefore+(state.intValue==RegStateRemoved ? 1 : 0));
+    [Phone11Siprix endIncomingWake:uuid];
+  }
+  // Timer expiry/cancellation/adoption and SDK request errors are bounded.
+  for (NSString *mode in @[@"expired",@"cancelled",@"adopted",@"request_error"]) {
+    before=readyCount; refreshBefore=registrations;
+    [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:NSProcessInfo.processInfo.systemUptime event:event completion:ready];
+    timer=refreshTimers.lastObject;
+    if ([mode isEqual:@"expired"]) { NSMutableDictionary *c=[runtime.wakeContext mutableCopy]; c[@"expiresAt"]=@1; runtime.wakeContext=c; }
+    if ([mode isEqual:@"cancelled"]) [Phone11Siprix endIncomingWake:uuid];
+    if ([mode isEqual:@"adopted"]) { runtime.wakeBridge=js; Phone11Siprix *otherJS=[Phone11Siprix new]; [otherJS adoptIncomingWake:binding sip:sip resolver:resolve rejecter:reject]; CHECK(!error); runtime.wakeBridge=otherJS; }
+    if ([mode isEqual:@"request_error"]) registrationCode=-10;
+    timer(); flush(); registrationCode=0;
+    CHECK(registrations==refreshBefore+([mode isEqual:@"request_error"] ? 1 : 0));
+    if ([mode isEqual:@"request_error"]) CHECK([wakeError.localizedDescription isEqual:@"Incoming wake registration request failed."]);
+    [Phone11Siprix endIncomingWake:uuid];
+    if ([mode isEqual:@"adopted"]) { [runtime shutdown]; [js initialize:@{} resolver:resolve rejecter:reject]; [js createAccount:sip resolver:resolve rejecter:reject]; [js bindForegroundWakeContext:binding sip:sip resolver:resolve rejecter:reject]; }
+  }
+  // A proof for an old owner/account/lease, or with a newer ingress still
+  // unprocessed, cannot satisfy the deferred claim-gap completion.
+  for (NSString *invalid in @[@"owner",@"account",@"lease",@"unprocessed"]) {
+    pushAt=NSProcessInfo.processInfo.systemUptime;
+    [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+    NSMutableDictionary *proof=[runtime.registrationProof mutableCopy];
+    if ([invalid isEqual:@"owner"]) { NSMutableDictionary *o=[runtime.wakeOwner mutableCopy]; o[@"sessionBinding"]=@"old-session"; proof[@"owner"]=o; }
+    if ([invalid isEqual:@"account"]) proof[@"accountId"]=@"99";
+    if ([invalid isEqual:@"lease"]) proof[@"lease"]=@"old-lease";
+    if ([invalid isEqual:@"unprocessed"]) runtime.delegate.registrationIngress++;
+    runtime.registrationProof=proof;
+    before=readyCount;
+    [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:pushAt event:event completion:ready];
+    flush(); CHECK(readyCount==before && runtime.wakeReady);
+    [Phone11Siprix endIncomingWake:uuid];
+  }
+  // Older delivery cannot overwrite a newer failed/in-progress proof.
+  pushAt=NSProcessInfo.processInfo.systemUptime;
+  NSUInteger latest=[runtime.delegate registrationBoundary]+2;
+  NSDictionary *(^registrationData)(NSUInteger, NSInteger) = ^NSDictionary *(NSUInteger serial, NSInteger state) {
+    return @{@"accountId":@"10",@"regState":@(state),@"registrationIngress":@(serial),
+      @"registrationAt":@(NSProcessInfo.processInfo.systemUptime),@"registrationLease":runtime.lease,
+      @"registrationOwner":runtime.wakeOwner};
+  };
+  runtime.delegate.registrationIngress=latest;
+  [runtime receive:@"registration" data:registrationData(latest,RegStateInProgress) generation:runtime.generation];
+  [runtime receive:@"registration" data:registrationData(latest-1,RegStateSuccess) generation:runtime.generation];
+  CHECK([runtime.registrationProof[@"state"] intValue]==RegStateInProgress);
+  before=readyCount; refreshBefore=registrations;
+  [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:pushAt event:event completion:ready];
+  timer=refreshTimers.lastObject; timer(); flush(); CHECK(readyCount==before && registrations==refreshBefore);
+  [Phone11Siprix endIncomingWake:uuid];
+  // Ingress assigned on a worker can precede enqueueing. The timer retains one
+  // continuation, and a subsequently drained Removed event issues one refresh.
+  [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:NSProcessInfo.processInfo.systemUptime event:event completion:ready];
+  timer=refreshTimers.lastObject; refreshBefore=registrations;
+  NSUInteger withheld=++runtime.delegate.registrationIngress;
+  timer(); flush(); CHECK(registrations==refreshBefore && runtime.pendingWakeRefresh);
+  [runtime receive:@"registration" data:registrationData(withheld,RegStateRemoved) generation:runtime.generation];
+  CHECK(registrations==refreshBefore+1 && !runtime.pendingWakeRefresh && runtime.wakeReady);
+  timer(); flush(); CHECK(registrations==refreshBefore+1);
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush(); CHECK(!wakeError && !runtime.wakeReady);
+  [Phone11Siprix endIncomingWake:uuid];
+  // A saved timer cannot refresh a successor with the same public UUID.
+  [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:NSProcessInfo.processInfo.systemUptime event:event completion:ready];
+  timer=refreshTimers.lastObject; [Phone11Siprix endIncomingWake:uuid];
+  [runtime shutdown]; [js initialize:@{} resolver:resolve rejecter:reject];
+  [js createAccount:sip resolver:resolve rejecter:reject]; [js bindForegroundWakeContext:binding sip:sip resolver:resolve rejecter:reject];
+  [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:NSProcessInfo.processInfo.systemUptime event:event completion:ready];
+  refreshBefore=registrations; timer(); flush(); CHECK(registrations==refreshBefore && runtime.wakeReady);
+  [Phone11Siprix endIncomingWake:uuid];
+  // JS emission can synchronously replace the runtime during registration.
+  [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:NSProcessInfo.processInfo.systemUptime event:event completion:ready];
+  js.observing=YES; __block BOOL replaced=NO;
+  testEmitHook=^(id value) {
+    if (!replaced && [value[@"type"] isEqual:@"registration"]) {
+      replaced=YES; [Phone11Siprix endIncomingWake:uuid]; [runtime shutdown];
+      [js initialize:@{} resolver:resolve rejecter:reject]; [js createAccount:sip resolver:resolve rejecter:reject];
+      [js bindForegroundWakeContext:binding sip:sip resolver:resolve rejecter:reject];
+      [Phone11Siprix prepareIncomingWake:context sip:sip receivedAt:NSProcessInfo.processInfo.systemUptime event:event completion:ready];
+    }
+  };
+  [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush(); testEmitHook=nil;
+  CHECK(replaced && runtime.wakeReady && runtime.wakeContext);
+  [Phone11Siprix endIncomingWake:uuid];
+  [runtime shutdown];
   printf("PASS: %d native wake runtime assertions\n", assertions);
  }
  return 0;

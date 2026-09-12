@@ -50,6 +50,9 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
   if (PHONE11_VOIP_WAKE_COMMISSIONED && state >= 0 && state <= 3)
     [[self shared] recordStage:fresh ? @"registration_fresh" : @"registration_stale" code:state classification:@"none"];
 }
++ (void)recordRefreshResult:(NSInteger)code {
+  if (PHONE11_VOIP_WAKE_COMMISSIONED) [[self shared] recordStage:@"refresh_requested" code:MAX(-999, MIN(999, code)) classification:@"none"];
+}
 + (void)recordRegistrationFailureStatus:(NSNumber *)status {
   NSInteger code = [status isKindOfClass:NSNumber.class] && status.integerValue >= 100 && status.integerValue <= 699 ? status.integerValue : -1;
   if (PHONE11_VOIP_WAKE_COMMISSIONED) [[self shared] recordStage:@"registration_sip_status" code:code classification:@"none"];
@@ -60,9 +63,9 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
 }
 - (void)recordStage:(NSString *)stage code:(NSInteger)code classification:(NSString *)classification {
-  NSArray *stages = @[@"registration_sip_status",@"registration_fresh",@"registration_stale",@"reported",@"claim_http",@"ready_http",@"claim_rejected",@"prepare_complete",@"incoming",@"connected",@"answer_requested",@"answer_accept",@"answer_result",@"finished"];
+  NSArray *stages = @[@"refresh_requested",@"registration_sip_status",@"registration_fresh",@"registration_stale",@"reported",@"claim_http",@"ready_http",@"claim_rejected",@"prepare_complete",@"incoming",@"connected",@"answer_requested",@"answer_accept",@"answer_result",@"finished"];
   NSArray *classes = @[@"wake_owner_missing",@"wake_owner_mismatch",@"account_config_mismatch",@"account_count_mismatch",@"runtime_sink_missing",@"none",@"transport_error",@"owner_or_config_mismatch",@"runtime_busy",@"registration_failed",@"registration_request_failed",@"expired",@"invalid_or_expired",@"runtime_setup_failed",@"other"];
-  if (![stages containsObject:stage] || ![classes containsObject:classification] || code < -1 || code > 999) return;
+  if (![stages containsObject:stage] || ![classes containsObject:classification] || code < ([stage isEqual:@"refresh_requested"] ? -999 : -1) || code > 999) return;
   NSDictionary *entry = @{@"timestamp":@([self now]),@"stage":stage,@"code":@(code),@"classification":classification};
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
   NSArray *saved = [defaults arrayForKey:P11WakeDiagnosticKey];
@@ -133,6 +136,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
 - (BOOL)isCurrent:(NSUInteger)generation { return self.active && self.generation == generation; }
 - (BOOL)owns:(NSUUID *)uuid { return [uuid.UUIDString.lowercaseString isEqual:[self.active[@"callUUID"] lowercaseString]]; }
 - (void)receivePayload:(NSDictionary *)payload completion:(void (^)(void))completion {
+  NSTimeInterval receivedAt = NSProcessInfo.processInfo.systemUptime;
   [self installProvider];
   BOOL shape = PHONE11_VOIP_WAKE_COMMISSIONED && [payload isKindOfClass:NSDictionary.class] && [payload[@"v"] isEqual:@1] &&
       P11UUID(payload[@"callUUID"]) && P11UUID(payload[@"bindingId"]) && P11Positive(payload[@"expiresAt"]) &&
@@ -179,7 +183,7 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
       if (!identity || ![@[@"pending", @"ready"] containsObject:response[@"status"] ?: @""] || ![response[@"sip"] isKindOfClass:NSDictionary.class]) { [self recordStage:@"claim_rejected" code:0 classification:@"none"]; [self finish:CXCallEndedReasonFailed notifyServer:YES]; return; }
       NSMutableDictionary *context = [[enrollment dictionaryWithValuesForKeys:P11BindingKeys()] mutableCopy];
       [context addEntriesFromDictionary:self.active]; context[@"v"] = @1; context[@"grantExpiresAt"] = enrollment[@"expiresAt"];
-      [Phone11Siprix prepareIncomingWake:context sip:response[@"sip"] event:^(NSDictionary *event) {
+      [Phone11Siprix prepareIncomingWake:context sip:response[@"sip"] receivedAt:receivedAt event:^(NSDictionary *event) {
         if (![self isCurrent:generation] || ![event[@"callUUID"] isKindOfClass:NSString.class] || [event[@"callUUID"] caseInsensitiveCompare:self.active[@"callUUID"]] != NSOrderedSame) return;
         NSString *type = event[@"type"];
         if ([type isEqual:@"incoming"] || [type isEqual:@"connected"]) [self recordStage:type code:0 classification:@"none"];

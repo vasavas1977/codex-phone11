@@ -54,6 +54,10 @@ static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
 @property(nonatomic, copy) void (^wakeEvent)(NSDictionary *event);
 @property(nonatomic, copy) void (^wakeReady)(NSError *error);
 @property(nonatomic) NSUInteger wakeRegistrationBoundary;
+@property(nonatomic) NSTimeInterval wakeReceivedAt;
+@property(nonatomic, copy) dispatch_block_t pendingWakeRefresh;
+@property(nonatomic, copy) NSDictionary *registrationProof;
+@property(nonatomic) NSUInteger processedRegistrationIngress;
 @property(nonatomic) BOOL wakeStartedRuntime;
 @property(nonatomic) BOOL wakeEnding;
 @property(nonatomic, copy) NSString *wakeAudioUUID;
@@ -61,6 +65,7 @@ static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
 @property(nonatomic) NSUInteger wakeAudioGeneration;
 + (instancetype)shared;
 - (NSDictionary *)snapshot;
+- (void)scheduleWakeRefreshAfter:(double)delay block:(dispatch_block_t)block;
 - (void)emit:(NSString *)type data:(NSDictionary *)data;
 - (void)receive:(NSString *)type data:(NSDictionary *)data generation:(NSUInteger)generation;
 - (int)shutdown;
@@ -71,6 +76,8 @@ static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
 
 @interface P11SiprixDelegate : NSObject <SiprixEventDelegate>
 @property(nonatomic) NSUInteger registrationIngress;
+@property(atomic, copy) NSString *registrationLease;
+@property(atomic, copy) NSDictionary *registrationOwner;
 - (NSUInteger)registrationBoundary;
 @property(nonatomic, weak) P11SiprixRuntime *runtime;
 @property(nonatomic) NSUInteger generation;
@@ -228,6 +235,9 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
   if (self.wakeContext) snapshot[@"nativeWake"] = self.wakeContext;
   return snapshot;
 }
+- (void)scheduleWakeRefreshAfter:(double)delay block:(dispatch_block_t)block {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
+}
 - (void)wakeNotify:(NSString *)type {
   if (self.wakeEvent && self.wakeContext) self.wakeEvent(@{@"type":type, @"callUUID":self.wakeContext[@"callUUID"]});
 }
@@ -235,6 +245,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
   void (^event)(NSDictionary *) = self.wakeEvent;
   void (^ready)(NSError *) = self.wakeReady;
   NSString *uuid = self.wakeContext[@"callUUID"];
+  self.wakeReceivedAt = 0; self.pendingWakeRefresh = nil;
   self.wakeEvent = nil; self.wakeReady = nil; self.wakeContext = nil; self.wakeCallId = nil;
   self.wakeBridge = nil; self.wakeStartedRuntime = NO; self.wakeEnding = NO;
   if (ready) ready(P11WakeError(@"Incoming wake ended before registration completed."));
@@ -257,6 +268,9 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
   if ([type isEqualToString:@"registration"]) {
     NSMutableDictionary *account = self.accounts[data[@"accountId"]];
     if (!account) return;
+    NSUInteger ingress = [data[@"registrationIngress"] unsignedIntegerValue];
+    if (ingress <= self.processedRegistrationIngress) return;
+    self.processedRegistrationIngress = ingress;
     NSInteger state = [data[@"regState"] integerValue];
     switch (state) {
       case RegStateSuccess: account[@"registrationState"] = @"registered"; break;
@@ -268,22 +282,36 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     account[@"regState"] = @(state);
     [account removeObjectForKey:@"sipStatusCode"];
     if (data[@"sipStatusCode"]) account[@"sipStatusCode"] = data[@"sipStatusCode"];
+    self.registrationProof = @{ @"accountId":data[@"accountId"], @"state":@(state), @"serial":@(ingress),
+      @"at":data[@"registrationAt"] ?: @0, @"lease":data[@"registrationLease"] ?: @"",
+      @"owner":data[@"registrationOwner"] ?: @{} };
+    NSUInteger registrationGeneration = self.generation;
+    NSString *registrationLease = self.lease;
+    NSString *registrationUUID = self.wakeContext[@"callUUID"];
     [self emit:type data:@{@"account": [account copy]}];
+    if (self.generation != registrationGeneration || ![self.lease isEqual:registrationLease] ||
+        ![self.wakeContext[@"callUUID"] isEqual:registrationUUID]) return;
     BOOL fresh = [data[@"registrationIngress"] isKindOfClass:NSNumber.class] &&
-      [data[@"registrationIngress"] unsignedIntegerValue] > self.wakeRegistrationBoundary;
+      [data[@"registrationLease"] isEqual:self.lease] && P11SameWakeOwner(data[@"registrationOwner"], self.wakeOwner) &&
+      ([data[@"registrationIngress"] unsignedIntegerValue] > self.wakeRegistrationBoundary ||
+       (self.wakeReceivedAt > 0 && [data[@"registrationAt"] doubleValue] >= self.wakeReceivedAt &&
+        [data[@"registrationLease"] isEqual:self.lease] &&
+        P11SameWakeOwner(data[@"registrationOwner"], self.wakeOwner)));
 #if PHONE11_VOIP_WAKE_COMMISSIONED
     if (self.wakeReady) {
       [Phone11WakeCoordinator recordRegistrationState:state fresh:fresh];
       if (fresh && state == RegStateFailed) [Phone11WakeCoordinator recordRegistrationFailureStatus:data[@"sipStatusCode"]];
     }
 #endif
-    if (self.wakeReady && fresh && state == RegStateSuccess) {
+    if (self.wakeReady && fresh && state == RegStateSuccess && ingress == [self.delegate registrationBoundary]) {
       void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
       ready([self.wakeContext[@"expiresAt"] doubleValue] > P11NowMs() ? nil : P11WakeError(@"Incoming wake expired."));
     } else if (self.wakeReady && fresh && state == RegStateFailed) {
       void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
       ready(P11WakeError(@"Incoming wake registration failed."));
     }
+    dispatch_block_t pendingRefresh = self.pendingWakeRefresh;
+    if (pendingRefresh) pendingRefresh();
   } else if ([type isEqualToString:@"callIncoming"]) {
     if (call) return;
     if ([self.retiredCallIDs containsObject:callId]) {
@@ -377,6 +405,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 
 - (int)shutdown {
   self.generation += 1;
+  self.registrationProof = nil; self.processedRegistrationIngress = 0;
   [self clearWake:YES];
   self.wakeOwner = nil; self.accountConfig = nil; self.wakeAudioUUID = nil; self.wakeAudioOwner = nil;
   if (self.audioSessionActive) {
@@ -416,6 +445,9 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     @synchronized(self) {
       NSMutableDictionary *entry = [data mutableCopy];
       entry[@"registrationIngress"] = @(++self.registrationIngress);
+      entry[@"registrationAt"] = @(NSProcessInfo.processInfo.systemUptime);
+      entry[@"registrationLease"] = self.registrationLease ?: @"";
+      entry[@"registrationOwner"] = self.registrationOwner ?: @{};
       data = entry;
     }
   }
@@ -530,6 +562,10 @@ RCT_EXPORT_MODULE(Phone11Siprix)
 // the existing RNCallKeep provider's call UUID before invoking these methods.
 + (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip
                      event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion {
+  [self prepareIncomingWake:context sip:sip receivedAt:0 event:event completion:completion];
+}
++ (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip receivedAt:(NSTimeInterval)receivedAt
+                     event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion {
   P11OnMain(^{
 #if !PHONE11_VOIP_WAKE_COMMISSIONED
     completion(P11WakeError(@"Background calling is not commissioned."));
@@ -553,15 +589,68 @@ RCT_EXPORT_MODULE(Phone11Siprix)
     NSMutableDictionary *owner = [publicContext mutableCopy];
     [owner removeObjectForKey:@"callUUID"]; owner[@"expiresAt"] = grantExpiry;
     void (^arm)(NSString *, BOOL) = ^(NSString *accountId, BOOL needsInitialRegistration) {
-      runtime.wakeContext = publicContext; runtime.wakeOwner = owner;
+      runtime.wakeContext = publicContext; runtime.wakeOwner = owner; runtime.delegate.registrationOwner = owner;
+      NSDictionary *armedContext = runtime.wakeContext;
       // Exclude callbacks already queued before this registration attempt.
       runtime.wakeRegistrationBoundary = [runtime.delegate registrationBoundary];
+      runtime.wakeReceivedAt = isfinite(receivedAt) && receivedAt > 0 && receivedAt <= NSProcessInfo.processInfo.systemUptime ? receivedAt : 0;
       runtime.wakeEvent = event; runtime.wakeReady = completion;
       runtime.accounts[accountId][@"registrationState"] = @"registering";
       [runtime.sdk handleIncomingPush];
-      // The SDK push handler restores existing registrations. A second warm
-      // register overlaps that recovery; only a new expireTime=0 account needs it.
-      if (!needsInitialRegistration) return;
+      // Give SDK push recovery its first opportunity. The one-shot fallback
+      // delay exceeds its documented <1s refresh suppression window; it is not
+      // proof that SDK recovery has become quiescent.
+      if (!needsInitialRegistration) {
+        NSUInteger generation = runtime.generation; NSString *lease = runtime.lease;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          NSDictionary *proof = runtime.registrationProof;
+          if (!runtime.wakeReady || runtime.generation != generation || ![runtime.lease isEqual:lease] ||
+              runtime.wakeContext != armedContext || runtime.wakeReceivedAt <= 0 ||
+              ![proof[@"accountId"] isEqual:accountId] || ![proof[@"lease"] isEqual:lease] ||
+              !P11SameWakeOwner(proof[@"owner"], owner) || [proof[@"state"] integerValue] != RegStateSuccess ||
+              [proof[@"at"] doubleValue] < runtime.wakeReceivedAt ||
+              [proof[@"serial"] unsignedIntegerValue] != [runtime.delegate registrationBoundary]) return;
+          void (^ready)(NSError *) = runtime.wakeReady; runtime.wakeReady = nil;
+          ready([runtime.wakeContext[@"expiresAt"] doubleValue] > P11NowMs() ? nil : P11WakeError(@"Incoming wake expired."));
+        });
+        __block BOOL refreshIssued = NO;
+        dispatch_block_t attemptRefresh = ^{
+          if (runtime.generation != generation || ![runtime.lease isEqual:lease] ||
+              runtime.wakeContext != armedContext) return;
+          NSDictionary *proof = runtime.registrationProof;
+          if (refreshIssued || !runtime.wakeReady || !runtime.initialized || runtime.quarantined ||
+              [runtime.wakeContext[@"expiresAt"] doubleValue] <= P11NowMs() ||
+              !P11SameWakeOwner(runtime.wakeOwner, owner) || runtime.accounts.count != 1 ||
+              !runtime.accounts[accountId] || ![runtime.accountConfig isEqual:P11AccountIdentity(sip)]) {
+            runtime.pendingWakeRefresh = nil; return;
+          }
+          // The worker may have assigned ingress but not enqueued delivery yet.
+          // Keep one continuation; the latest callback resumes it without a loop.
+          if (runtime.processedRegistrationIngress != [runtime.delegate registrationBoundary]) return;
+          runtime.pendingWakeRefresh = nil;
+          if ([proof[@"state"] integerValue] == RegStateInProgress &&
+              ([proof[@"serial"] unsignedIntegerValue] > runtime.wakeRegistrationBoundary ||
+               (runtime.wakeReceivedAt > 0 && [proof[@"at"] doubleValue] >= runtime.wakeReceivedAt))) return;
+          refreshIssued = YES;
+          int result = [runtime.sdk accountRegister:accountId.intValue expireTime:300];
+          [Phone11WakeCoordinator recordRefreshResult:result];
+          if (runtime.generation != generation || ![runtime.lease isEqual:lease] || runtime.wakeContext != armedContext) return;
+          if (result != kErrorCodeEOK) {
+            void (^ready)(NSError *) = runtime.wakeReady; runtime.wakeReady = nil;
+            if (ready) ready(P11WakeError(@"Incoming wake registration request failed."));
+            if (runtime.generation == generation && [runtime.lease isEqual:lease] && runtime.wakeContext == armedContext)
+              [self endIncomingWake:uuid];
+          }
+        };
+        [runtime scheduleWakeRefreshAfter:1.1 block:^{
+          dispatch_async(dispatch_get_main_queue(), ^{
+            if (runtime.generation != generation || ![runtime.lease isEqual:lease] || runtime.wakeContext != armedContext) return;
+            runtime.pendingWakeRefresh = attemptRefresh;
+            attemptRefresh();
+          });
+        }];
+        return;
+      }
       int code = [runtime.sdk accountRegister:accountId.intValue expireTime:300];
       if (code != kErrorCodeEOK) {
         void (^ready)(NSError *) = runtime.wakeReady; runtime.wakeReady = nil;
@@ -684,7 +773,7 @@ RCT_EXPORT_METHOD(bindForegroundWakeContext:(NSDictionary *)binding sip:(NSDicti
   }
   NSMutableDictionary *owner = [NSMutableDictionary new];
   for (NSString *key in @[@"bindingId", @"ownerUserId", @"tenantId", @"deviceId", @"sessionBinding", @"expiresAt"]) owner[key] = binding[key];
-  runtime.wakeOwner = owner; resolve(nil);
+  runtime.wakeOwner = owner; runtime.delegate.registrationOwner = owner; resolve(nil);
 #endif
 }
 
@@ -700,7 +789,7 @@ RCT_EXPORT_METHOD(adoptIncomingWake:(NSDictionary *)binding sip:(NSDictionary *)
   if (runtime.sink && runtime.sink != runtime.wakeBridge && runtime.sink != self) {
     P11Reject(reject, @"E_RUNTIME_IN_USE", @"Another JavaScript bridge owns this phone runtime."); return;
   }
-  runtime.lease = self.lease; runtime.sink = self; runtime.wakeBridge = nil;
+  runtime.lease = self.lease; runtime.delegate.registrationLease = self.lease; runtime.sink = self; runtime.wakeBridge = nil;
   runtime.wakeStartedRuntime = NO;
   resolve([runtime snapshot]);
 #endif
@@ -736,6 +825,7 @@ RCT_EXPORT_METHOD(initialize:(NSDictionary *)options resolver:(RCTPromiseResolve
   runtime.delegate = [P11SiprixDelegate new];
   runtime.delegate.runtime = runtime;
   runtime.delegate.generation = runtime.generation;
+  runtime.delegate.registrationLease = runtime.lease;
   SiprixIniData *ini = [SiprixIniData new];
   P11ApplyBuildLicense(ini, [NSBundle.mainBundle objectForInfoDictionaryKey:@"Phone11SiprixLicense"]);
   ini.logLevelFile = @(LogLevelNoLog);

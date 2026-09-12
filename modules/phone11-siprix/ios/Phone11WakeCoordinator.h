@@ -12,6 +12,7 @@
 + (instancetype)shared;
 + (void)restoreCallKitDelegate;
 + (void)recordRegistrationState:(NSInteger)state fresh:(BOOL)fresh;
++ (void)recordRefreshResult:(NSInteger)code;
 + (void)recordRegistrationFailureStatus:(NSNumber *)status;
 - (BOOL)saveEnrollment:(NSDictionary *)enrollment;
 - (NSDictionary *)publicBinding;
