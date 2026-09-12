@@ -44,6 +44,9 @@ loadmodule "usrloc.so"
 loadmodule "registrar.so"
 loadmodule "jansson.so"
 loadmodule "dialog.so"
+loadmodule "rtpengine.so"
+# Parser-only endpoint; the disposable container has no network access.
+modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:22222")
 include_file "/candidate/modules.inc"
 request_route {
 #!ifdef WITH_PHONE11_WAKE_CANDIDATE
