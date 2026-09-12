@@ -42,6 +42,8 @@ NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
 
 static int sdkCode, initCode, shutdownCode, initializes, shutdowns, registrations;
 static int inlineRegistrationState = -1;
+static int pushRegistrationState = -1;
+static int registrationCode;
 static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, deactivations;
 static int nextAccount = 10, nextCall = 20;
 static BOOL sdkInitialized, speakerOK = YES, callKitEnabled;
@@ -63,7 +65,10 @@ static id<SiprixEventDelegate> sdkDelegate;
 - (int)unInitialize { shutdowns++; if (!shutdownCode) sdkInitialized = NO; return shutdownCode; }
 - (BOOL)isInitialized { return sdkInitialized; }
 - (NSString *)version { return mockVersion; }
-- (void)handleIncomingPush { incomingPushes++; }
+- (void)handleIncomingPush {
+  incomingPushes++;
+  if (pushRegistrationState >= 0) [sdkDelegate onAccountRegState:10 regState:(RegState)pushRegistrationState response:@"private non-SIP response"];
+}
 - (NSString *)callGetSipHeader:(int)callId hdrName:(NSString *)hdrName { headerReads++; if (![hdrName isEqual:@"X-Phone11-Wake-ID"]) abort(); return wakeHeader; }
 - (void)enableCallKit:(BOOL)enabled { callKitEnabled = enabled; }
 - (int)accountAdd:(SiprixAccData *)data {
@@ -74,6 +79,7 @@ static id<SiprixEventDelegate> sdkDelegate;
 }
 - (int)accountRegister:(int)accId expireTime:(int)expireTime {
   registrations++;
+  if (registrationCode) return registrationCode;
   if (!sdkCode && inlineRegistrationState >= 0) {
     [sdkDelegate onAccountRegState:accId regState:(RegState)inlineRegistrationState
                          response:inlineRegistrationState == RegStateSuccess ? @"200 OK" : @"403 Forbidden"];

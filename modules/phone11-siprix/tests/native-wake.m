@@ -224,6 +224,11 @@ int main(void) { @autoreleasepool {
   [Phone11WakeCoordinator recordRegistrationState:0 fresh:YES];
   registrationEntry=[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject];
   check([registrationEntry[@"stage"] isEqual:@"registration_fresh"] && [registrationEntry[@"code"] intValue]==0);
+  [Phone11WakeCoordinator recordRegistrationFailureStatus:@403];
+  registrationEntry=[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject];
+  check([registrationEntry[@"stage"] isEqual:@"registration_sip_status"] && [registrationEntry[@"code"] intValue]==403);
+  [Phone11WakeCoordinator recordRegistrationFailureStatus:nil];
+  check([[[defaults arrayForKey:P11WakeDiagnosticKey] lastObject][@"code"] intValue]==-1);
   NSArray *beforeInvalid=[defaults arrayForKey:P11WakeDiagnosticKey];
   [Phone11WakeCoordinator recordRegistrationState:999 fresh:YES];
   check([[defaults arrayForKey:P11WakeDiagnosticKey] isEqual:beforeInvalid]);

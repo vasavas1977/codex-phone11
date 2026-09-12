@@ -272,7 +272,10 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     BOOL fresh = [data[@"registrationIngress"] isKindOfClass:NSNumber.class] &&
       [data[@"registrationIngress"] unsignedIntegerValue] > self.wakeRegistrationBoundary;
 #if PHONE11_VOIP_WAKE_COMMISSIONED
-    if (self.wakeReady) [Phone11WakeCoordinator recordRegistrationState:state fresh:fresh];
+    if (self.wakeReady) {
+      [Phone11WakeCoordinator recordRegistrationState:state fresh:fresh];
+      if (fresh && state == RegStateFailed) [Phone11WakeCoordinator recordRegistrationFailureStatus:data[@"sipStatusCode"]];
+    }
 #endif
     if (self.wakeReady && fresh && state == RegStateSuccess) {
       void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
@@ -533,13 +536,16 @@ RCT_EXPORT_MODULE(Phone11Siprix)
     for (NSString *key in @[@"v", @"callUUID", @"bindingId", @"ownerUserId", @"tenantId", @"deviceId", @"sessionBinding", @"expiresAt", @"grantExpiresAt"]) publicContext[key] = context[key];
     NSMutableDictionary *owner = [publicContext mutableCopy];
     [owner removeObjectForKey:@"callUUID"]; owner[@"expiresAt"] = grantExpiry;
-    void (^arm)(Phone11Siprix *, NSString *) = ^(Phone11Siprix *bridge, NSString *accountId) {
+    void (^arm)(NSString *, BOOL) = ^(NSString *accountId, BOOL needsInitialRegistration) {
       runtime.wakeContext = publicContext; runtime.wakeOwner = owner;
       // Exclude callbacks already queued before this registration attempt.
       runtime.wakeRegistrationBoundary = [runtime.delegate registrationBoundary];
       runtime.wakeEvent = event; runtime.wakeReady = completion;
       runtime.accounts[accountId][@"registrationState"] = @"registering";
       [runtime.sdk handleIncomingPush];
+      // The SDK push handler restores existing registrations. A second warm
+      // register overlaps that recovery; only a new expireTime=0 account needs it.
+      if (!needsInitialRegistration) return;
       int code = [runtime.sdk accountRegister:accountId.intValue expireTime:300];
       if (code != kErrorCodeEOK) {
         void (^ready)(NSError *) = runtime.wakeReady; runtime.wakeReady = nil;
@@ -563,7 +569,7 @@ RCT_EXPORT_MODULE(Phone11Siprix)
       if (!runtime.sink) {
         completion(P11WakeError(@"Incoming wake runtime sink missing.")); return;
       }
-      arm(runtime.sink, runtime.accounts.allKeys.firstObject); return;
+      arm(runtime.accounts.allKeys.firstObject, NO); return;
     }
     Phone11Siprix *bridge = [Phone11Siprix new];
     // The bridge owns no second SDK; all work uses P11SiprixRuntime.shared.
@@ -575,7 +581,7 @@ RCT_EXPORT_MODULE(Phone11Siprix)
       runtime.wakeBridge = bridge;
       [bridge createAccount:sip resolver:^(id account) {
         runtime.wakeStartedRuntime = YES;
-        arm(bridge, account[@"accountId"]);
+        arm(account[@"accountId"], YES);
       } rejecter:failure];
     } rejecter:failure];
 #endif

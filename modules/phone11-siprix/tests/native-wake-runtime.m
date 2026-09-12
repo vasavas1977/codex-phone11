@@ -6,6 +6,7 @@ static int delegateRestores;
 @implementation Phone11WakeCoordinator
 + (void)restoreCallKitDelegate { delegateRestores++; }
 + (void)recordRegistrationState:(NSInteger)state fresh:(BOOL)fresh {}
++ (void)recordRegistrationFailureStatus:(NSNumber *)status {}
 - (void)providerDidReset:(CXProvider *)provider {}
 @end
 
@@ -88,7 +89,9 @@ int main(void) {
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
   CHECK([wakeError.localizedDescription isEqual:@"Incoming wake runtime sink missing."] && !runtime.wakeContext && registrations==1);
   runtime.sink=js;
-  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(runtime.wakeContext && initializes==1 && registrations==2);
+  int pendingBefore=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(runtime.wakeContext && initializes==1 && registrations==1);
+  flush(); CHECK(readyCount==pendingBefore && runtime.wakeReady!=nil);
   [Phone11Siprix endIncomingWake:uuid]; CHECK(!runtime.wakeContext && runtime.initialized);
   // Real SDK ingress precedes arm, but main-queue delivery follows it.
   for (NSNumber *stale in @[@(RegStateFailed), @(RegStateSuccess)]) {
@@ -112,9 +115,15 @@ int main(void) {
   flush(); CHECK(readyCount==generationBefore+1 && !wakeError);
   [Phone11Siprix endIncomingWake:uuid];
   // An inline SDK callback is fresh, despite deferred delivery.
-  int before=readyCount; inlineRegistrationState=RegStateSuccess;
+  int before=readyCount; int registersBefore=registrations; pushRegistrationState=RegStateSuccess;
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
-  inlineRegistrationState=-1; flush(); CHECK(readyCount==before+1 && !wakeError);
+  pushRegistrationState=-1; flush(); CHECK(readyCount==before+1 && !wakeError && registrations==registersBefore);
+  [Phone11Siprix endIncomingWake:uuid];
+  // A genuine fresh failure from push recovery remains terminal without a retry.
+  before=readyCount; pushRegistrationState=RegStateFailed;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  pushRegistrationState=-1; flush();
+  CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake registration failed."] && registrations==registersBefore);
   [Phone11Siprix endIncomingWake:uuid];
   // A fresh success delivered after the wake deadline cannot authorize ready.
   before=readyCount;
@@ -127,7 +136,7 @@ int main(void) {
   CHECK(!runtime.accountConfig && !runtime.wakeOwner);
   // Immediate SDK End failure cannot retain a permanently busy wake runtime.
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
-  CHECK(runtime.initialized && initializes==2);
+  CHECK(runtime.initialized && initializes==2 && registrations==registersBefore+1);
   [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
   [runtime receive:@"callIncoming" data:incoming generation:runtime.generation];
   sdkCode=-10; [Phone11Siprix endIncomingWake:uuid]; sdkCode=0;
@@ -143,6 +152,11 @@ int main(void) {
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
   [runtime cleanupWake:uuid generation:oldGeneration]; CHECK(runtime.initialized && shutdowns==3);
   [Phone11Siprix endIncomingWake:uuid]; CHECK(!runtime.initialized);
+  // Cold registration request errors still fail and release the new runtime.
+  registrationCode=-10; before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  registrationCode=0;
+  CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake registration request failed."] && !runtime.initialized);
   context[@"expiresAt"]=@(P11NowMs()+60000);
   int count=initializes; [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(wakeError && initializes==count);
   printf("PASS: %d native wake runtime assertions\n", assertions);
