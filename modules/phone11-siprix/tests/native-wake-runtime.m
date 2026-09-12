@@ -159,6 +159,93 @@ int main(void) {
   CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake registration request failed."] && !runtime.initialized);
   context[@"expiresAt"]=@(P11NowMs()+60000);
   int count=initializes; [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready]; CHECK(wakeError && initializes==count);
+  // Cold calls release their native-only runtime after termination, allowing
+  // both another native wake and later foreground initialization without adoption.
+  context[@"expiresAt"]=@(P11NowMs()+30000);
+  __weak Phone11Siprix *nativeOwner;
+  NSUInteger nativeGeneration=0;
+  for (int attempt=0; attempt<2; attempt++) {
+    @autoreleasepool {
+      before=readyCount;
+      [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+      CHECK(runtime.wakeContext && runtime.wakeBridge && runtime.sink==runtime.wakeBridge);
+      CHECK(runtime.generation>nativeGeneration); nativeGeneration=runtime.generation;
+      nativeOwner=runtime.wakeBridge;
+      [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+      CHECK(readyCount==before+1 && !wakeError);
+      NSString *callId=attempt==0 ? @"41" : @"42";
+      [runtime receive:@"callIncoming" data:@{@"callId":callId,@"accountId":@"10",@"remoteUri":@"sip:test@invalid.example"} generation:runtime.generation];
+      [Phone11Siprix answerIncomingWake:uuid completion:ready]; CHECK(!wakeError);
+      [runtime receive:@"callConnected" data:@{@"callId":callId} generation:runtime.generation];
+      [runtime receive:@"callTerminated" data:@{@"callId":callId,@"statusCode":@200} generation:runtime.generation];
+      CHECK(!runtime.wakeContext && !runtime.initialized && !runtime.wakeBridge && runtime.calls.count==0);
+    }
+    CHECK(!nativeOwner && !runtime.sink && !runtime.wakeOwner);
+  }
+  [js initialize:@{} resolver:resolve rejecter:reject];
+  CHECK(!error && runtime.initialized && runtime.sink==js);
+  [js destroy:resolve rejecter:reject]; CHECK(!runtime.initialized);
+  void (^startNativeCall)(void (^)(NSDictionary *)) = ^(void (^notify)(NSDictionary *)) {
+    [Phone11Siprix prepareIncomingWake:context sip:sip event:notify completion:ready];
+    [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"]; flush();
+    [runtime receive:@"callIncoming" data:incoming generation:runtime.generation];
+    [Phone11Siprix answerIncomingWake:uuid completion:ready];
+    [runtime receive:@"callConnected" data:@{@"callId":@"30"} generation:runtime.generation];
+  };
+  // Same-generation authenticated adoption during notification preserves JS.
+  @autoreleasepool {
+    startNativeCall(^(NSDictionary *value) {
+      if ([value[@"type"] isEqual:@"terminated"]) [js adoptIncomingWake:binding sip:sip resolver:resolve rejecter:reject];
+    });
+    nativeOwner=runtime.wakeBridge; nativeGeneration=runtime.generation;
+    [runtime receive:@"callTerminated" data:@{@"callId":@"30",@"statusCode":@200} generation:runtime.generation];
+    CHECK(!error && runtime.initialized && runtime.sink==js && !runtime.wakeContext && runtime.generation==nativeGeneration);
+  }
+  CHECK(!nativeOwner && !runtime.wakeBridge);
+  [js destroy:resolve rejecter:reject];
+  // Adoption during the earlier JS event emission is protected as well.
+  startNativeCall(event); runtime.wakeBridge.observing=YES;
+  nativeGeneration=runtime.generation;
+  testEmitHook=^(id value) {
+    if ([value[@"type"] isEqual:@"callTerminated"]) [js adoptIncomingWake:binding sip:sip resolver:resolve rejecter:reject];
+  };
+  [runtime receive:@"callTerminated" data:@{@"callId":@"30",@"statusCode":@200} generation:runtime.generation];
+  testEmitHook=nil;
+  CHECK(!error && runtime.initialized && runtime.sink==js && runtime.generation==nativeGeneration && !runtime.wakeContext);
+  [js destroy:resolve rejecter:reject];
+  // Coordinator-style synchronous End followed by a replacement wake must not
+  // let the old terminal callback clear or shut down its successor.
+  startNativeCall(^(NSDictionary *value) {
+    if ([value[@"type"] isEqual:@"terminated"]) {
+      [Phone11Siprix endIncomingWake:uuid];
+      [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+    }
+  });
+  nativeGeneration=runtime.generation;
+  [runtime receive:@"callTerminated" data:@{@"callId":@"30",@"statusCode":@200} generation:runtime.generation];
+  CHECK(runtime.initialized && runtime.generation>nativeGeneration && runtime.wakeContext && runtime.wakeBridge);
+  [Phone11Siprix endIncomingWake:uuid]; CHECK(!runtime.initialized);
+  // Even an early terminal event can settle a pending prepare completion that
+  // starts a replacement runtime. The outer cleanup must leave it intact.
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:^(NSError *failure) {
+    if (failure) {
+      [runtime shutdown];
+      [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+    }
+  }];
+  [runtime receive:@"callIncoming" data:incoming generation:runtime.generation];
+  nativeGeneration=runtime.generation;
+  [runtime receive:@"callTerminated" data:@{@"callId":@"30",@"statusCode":@200} generation:runtime.generation];
+  CHECK(runtime.initialized && runtime.generation>nativeGeneration && runtime.wakeContext && runtime.wakeBridge);
+  [Phone11Siprix endIncomingWake:uuid];
+  // Failed shutdown quarantines the only SDK and cannot create a second owner.
+  startNativeCall(event); shutdownCode=-10;
+  [runtime receive:@"callTerminated" data:@{@"callId":@"30",@"statusCode":@200} generation:runtime.generation];
+  CHECK(runtime.quarantined && !runtime.wakeOwner && !runtime.wakeBridge);
+  int beforeInit=initializes;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK(wakeError && initializes==beforeInit && runtime.quarantined);
+  shutdownCode=0; [runtime shutdown]; CHECK(!runtime.initialized && !runtime.quarantined);
   printf("PASS: %d native wake runtime assertions\n", assertions);
  }
  return 0;

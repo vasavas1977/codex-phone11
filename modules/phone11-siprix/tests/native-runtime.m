@@ -22,12 +22,13 @@ NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
   return session;
 }
 @end
+static void (^testEmitHook)(id);
 @implementation RCTEventEmitter
 - (instancetype)init {
   if ((self = [super init])) self.testEvents = [NSMutableArray new];
   return self;
 }
-- (void)sendEventWithName:(NSString *)name body:(id)body { [self.testEvents addObject:body]; }
+- (void)sendEventWithName:(NSString *)name body:(id)body { [self.testEvents addObject:body]; if (testEmitHook) testEmitHook(body); }
 - (void)invalidate {}
 @end
 

@@ -334,10 +334,26 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
       call[@"state"] = state == HoldStateNone ? @"connected" : @"held";
       [self.pendingHolds removeObject:callId];
     }
+    // Snapshot before either callback: notification can synchronously adopt,
+    // clean up, or replace the runtime without necessarily changing generation.
+    BOOL nativeOwned = self.wakeStartedRuntime && self.wakeBridge && self.sink == self.wakeBridge;
+    NSUInteger endedGeneration = self.generation;
+    NSString *endedUUID = self.wakeContext[@"callUUID"];
+    NSString *endedLease = self.lease;
     [self emit:type data:@{@"call": [call copy]}];
-    if ([self.wakeCallId isEqualToString:callId]) {
+    if (self.generation == endedGeneration && [self.wakeContext[@"callUUID"] isEqual:endedUUID] && [self.wakeCallId isEqualToString:callId]) {
       if ([type isEqualToString:@"callConnected"]) [self wakeNotify:@"connected"];
-      if ([type isEqualToString:@"callTerminated"]) { [self wakeNotify:@"terminated"]; [self clearWake:NO]; }
+      if ([type isEqualToString:@"callTerminated"]) {
+        [self wakeNotify:@"terminated"];
+        if (self.generation == endedGeneration && [self.wakeContext[@"callUUID"] isEqual:endedUUID]) {
+          // Only the unadopted native owner ends with its completed cold call.
+          BOOL endNativeRuntime = nativeOwned && self.wakeStartedRuntime &&
+            self.wakeBridge && self.sink == self.wakeBridge && [self.lease isEqual:endedLease];
+          [self clearWake:NO];
+          if (endNativeRuntime && self.generation == endedGeneration &&
+              [self.lease isEqual:endedLease] && !self.wakeContext) [self shutdown];
+        }
+      }
     }
   } else if ([type isEqualToString:@"devicesAudioChanged"]) {
     [self emit:type data:@{@"audioSessionActive": @(self.audioSessionActive), @"speaker": @(P11Speaker())}];
