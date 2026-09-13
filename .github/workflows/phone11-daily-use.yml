@@ -127,6 +127,13 @@ jobs:
         run: node ops/scripts/check-phone11-wake-kamailio.mjs --image ghcr.io/kamailio/kamailio-ci@sha256:8eebac744905d360d04bd871ee46a3de0908aa30989649c00fd590914cb35fa0
       - name: Test held INVITE, cancellation and timeout with isolated SIP endpoints
         run: node ops/scripts/test-phone11-wake-kamailio.mjs
+      - name: Test isolated recording anchor routing and FreeSWITCH guards
+        run: |
+          docker build -t phone11-recording-anchor-test tests/fixtures/phone11-recording-anchor
+          docker run --rm --network none -v "$PWD:/work:ro" phone11-recording-anchor-test \
+            python3 tests/fixtures/phone11-recording-anchor/run.py
+          docker run --rm --network none -v "$PWD:/work:ro" phone11-recording-anchor-test \
+            python3 tests/fixtures/phone11-recording-anchor/xml-check.py
       - name: Compile backend with esbuild
         run: pnpm run build:backend
 
