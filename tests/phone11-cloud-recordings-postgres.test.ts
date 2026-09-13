@@ -9,24 +9,36 @@ const pool=new Pool({host:socket??'/nonexistent',user:'phone11_test',database:'p
 const repo=createCloudRecordingRepository(pool,()=>true);
 describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
  beforeAll(async()=>{
-  await pool.query(`CREATE TABLE users(id INTEGER PRIMARY KEY);CREATE TABLE tenants(id INTEGER PRIMARY KEY,status TEXT);
-   CREATE TABLE tenant_memberships(user_id INTEGER,tenant_id INTEGER,role TEXT,status TEXT);
-   CREATE TABLE extensions(id INTEGER PRIMARY KEY,tenant_id INTEGER,status TEXT,deleted_at TIMESTAMPTZ);
-   CREATE TABLE user_extensions(user_id INTEGER,extension_id INTEGER);
-   CREATE TABLE call_records(id SERIAL PRIMARY KEY,call_uuid TEXT,tenant_id INTEGER,direction TEXT,from_number TEXT,to_number TEXT,started_at TIMESTAMPTZ,ended_at TIMESTAMPTZ,recording_url TEXT);
-   CREATE TABLE call_legs(id SERIAL PRIMARY KEY,call_record_id INTEGER,tenant_id INTEGER,extension_id INTEGER,sip_call_id TEXT);
-   CREATE TABLE phone11_wake_bindings(id UUID,tenant_id INTEGER,extension_id INTEGER);
-   CREATE TABLE phone11_wake_calls(id UUID,binding_id UUID,sip_call_id TEXT);`);
+  await pool.query(await readFile(new URL('./fixtures/phone11-cloud-recording-baseline.sql',import.meta.url),'utf8'));
+  const prerequisites=await readFile(new URL('../server/cloud-recordings/prerequisites.sql',import.meta.url),'utf8');
+  await pool.query(prerequisites);await pool.query(prerequisites);
+  expect((await pool.query('SELECT count(*)::int AS n FROM tenant_memberships')).rows[0].n).toBe(0);
   const sql=await readFile(new URL('../server/cloud-recordings/migration.sql',import.meta.url),'utf8');await pool.query(sql);await pool.query(sql);
  });
  beforeEach(async()=>{await pool.query(`TRUNCATE users,tenants,extensions,tenant_memberships,user_extensions,call_records,call_legs,phone11_wake_bindings,phone11_wake_calls CASCADE;
-  INSERT INTO users VALUES(1),(2),(3);INSERT INTO tenants VALUES(10,'active'),(20,'active');
-  INSERT INTO tenant_memberships VALUES(1,10,'owner','active'),(2,10,'user','active'),(3,20,'owner','active');
-  INSERT INTO extensions VALUES(11,10,'active',NULL),(21,20,'active',NULL);INSERT INTO user_extensions VALUES(2,11),(3,21);
+  INSERT INTO users(id,"openId") VALUES(1,'test-1'),(2,'test-2'),(3,'test-3');INSERT INTO tenants(id,name,status) VALUES(10,'Test A','active'),(20,'Test B','active');
+  INSERT INTO tenant_memberships(user_id,tenant_id,role,status) VALUES(1,10,'owner','active'),(2,10,'user','active'),(3,20,'owner','active');
+  INSERT INTO extensions(id,tenant_id,status,deleted_at,extension_number) VALUES(11,10,'active',NULL,'3001'),(21,20,'active',NULL,'3002');INSERT INTO user_extensions(user_id,extension_id) VALUES(2,11),(3,21);
   INSERT INTO call_records(id,call_uuid,tenant_id,direction,from_number,to_number,started_at,ended_at,recording_url) VALUES(1,'call1',10,'inbound','+66123456789','3001',now(),now(),'/private/test.wav');
-  INSERT INTO call_legs(call_record_id,tenant_id,extension_id,sip_call_id) VALUES(1,10,11,'sip-test');`);});
+  INSERT INTO call_legs(call_record_id,tenant_id,extension_id,sip_call_id,leg_uuid,started_at) VALUES(1,10,11,'sip-test','leg1',now());`);});
  afterAll(()=>pool.end());
  async function ready(){await repo.updatePolicy(1,{tenantId:10,mode:'automatic',aiEnabled:true,retentionDays:30});expect(await repo.registerCall('call1')).toBe(true);const capture=(await repo.reserveCapture('call1'))!;expect(capture).toBeTruthy();expect(await repo.markCapturing('call1',capture.captureToken)).toBe(true);expect(await repo.recordingStored('call1','/private/test.wav',capture.captureToken)).toBe(true);}
+ it('prerequisite replay preserves existing identities and creates no membership grants',async()=>{
+  await pool.query("DELETE FROM tenant_memberships; UPDATE users SET role='admin' WHERE id=1");
+  const before=(await pool.query('SELECT * FROM users ORDER BY id')).rows;
+  await pool.query(await readFile(new URL('../server/cloud-recordings/prerequisites.sql',import.meta.url),'utf8'));
+  expect((await pool.query('SELECT * FROM users ORDER BY id')).rows).toEqual(before);
+  expect((await pool.query('SELECT count(*)::int AS n FROM tenant_memberships')).rows[0].n).toBe(0);
+  await expect(repo.updatePolicy(1,{tenantId:10,mode:'automatic',aiEnabled:false,retentionDays:30})).rejects.toMatchObject({code:'FORBIDDEN'});
+ });
+ it('CDR parent and complete leg insert contract works and rejects cross-tenant parent links',async()=>{
+  const parent=await pool.query(`INSERT INTO call_records(id,tenant_id,call_uuid,direction,from_number,to_number,disposition,started_at,answered_at,ended_at,total_duration_seconds,total_billable_seconds,recording_url,metadata)
+   VALUES(100,10,'cdr-contract','inbound','+66123456789','3001','answered',now(),now(),now(),30,25,NULL,'{}') ON CONFLICT(call_uuid) DO UPDATE SET ended_at=EXCLUDED.ended_at RETURNING id`);
+  const id=parent.rows[0].id;
+  await pool.query(`INSERT INTO call_legs(call_record_id,leg_uuid,tenant_id,from_uri,to_uri,started_at,ringing_at,answered_at,ended_at,duration_seconds,billable_seconds,pdd_ms,codec,codec_read,codec_write,hangup_cause,hangup_disposition,sip_response_code,sip_call_id,metadata)
+   VALUES($1,'cdr-leg',10,'sip:a','sip:b',now(),now(),now(),now(),30,25,100,'PCMA','PCMA','PCMA','NORMAL_CLEARING','answered',200,'cdr-sip','{}')`,[id]);
+  await expect(pool.query(`INSERT INTO call_legs(call_record_id,tenant_id,leg_uuid,started_at) VALUES($1,20,'foreign',now())`,[id])).rejects.toMatchObject({code:'23503'});
+ });
  it('defaults off and requires current tenant admin, never global role',async()=>{
   expect(await repo.getPolicy(2,10)).toMatchObject({mode:'off',aiEnabled:false});
   await expect(repo.updatePolicy(2,{tenantId:10,mode:'automatic',aiEnabled:true,retentionDays:30})).rejects.toMatchObject({code:'FORBIDDEN'});
@@ -40,7 +52,7 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
  it('expired lease can be reclaimed; former worker cannot finish',async()=>{await ready();const a=(await repo.claimJob('a'))!;await pool.query("UPDATE phone11_recording_jobs SET lease_until=now()-interval '1 second'");const b=(await repo.claimJob('b'))!;expect(b.leaseToken).not.toBe(a.leaseToken);expect(await repo.finishJob(a,null)).toBe(false);expect(await repo.finishJob(b,null)).toBe(true);});
  it('three failed attempts end permanently and do not fake a summary',async()=>{await ready();for(let i=0;i<3;i++){const j=(await repo.claimJob('a'))!;expect(j).toBeTruthy();await repo.finishJob(j,null);await pool.query("UPDATE phone11_recording_jobs SET available_at=now()-interval '1 second'");}expect(await repo.claimJob('a')).toBeNull();expect(await repo.detail(2,'call1')).toMatchObject({summaryStatus:'failed'});expect((await repo.detail(2,'call1')).summary).toBeUndefined();});
  it('retention expiry blocks list, detail and claim',async()=>{await ready();await pool.query("UPDATE phone11_cloud_recordings SET expires_at=now()-interval '1 second'");expect((await repo.list(2)).items).toHaveLength(0);expect(await repo.claimJob('a')).toBeNull();});
- it('same exact SIP identity supplies native history link without number matching',async()=>{await pool.query(`INSERT INTO phone11_wake_bindings VALUES('00000000-0000-4000-8000-000000000001',10,11);INSERT INTO phone11_wake_calls VALUES('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001','sip-test')`);await repo.registerCall('call1');expect((await repo.detail(2,'call1')).nativeHistoryId).toBe('native-wake:00000000-0000-4000-8000-000000000002');});
+ it('same exact SIP identity supplies native history link without number matching',async()=>{await pool.query(`INSERT INTO phone11_auth_session VALUES('test-session') ON CONFLICT DO NOTHING; INSERT INTO phone11_wake_bindings(id,session_id,session_binding,user_id,tenant_id,extension_id,device_id,push_revision,grant_hash,expires_at) VALUES('00000000-0000-4000-8000-000000000001','test-session','00000000-0000-4000-8000-000000000003',2,10,11,'test-device','00000000-0000-4000-8000-000000000004',repeat('a',64),now()+interval '1 day');INSERT INTO phone11_wake_calls(id,binding_id,sip_call_id,sip_uri,state,expires_at) VALUES('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001','sip-test','sip:test@example.invalid','pending',now()+interval '1 minute')`);await repo.registerCall('call1');expect((await repo.detail(2,'call1')).nativeHistoryId).toBe('native-wake:00000000-0000-4000-8000-000000000002');});
  it('manual capture needs assigned actor and token; policyoff cancels pendingcapture',async()=>{
   await repo.updatePolicy(1,{tenantId:10,mode:'manual',aiEnabled:false,retentionDays:30});await repo.registerCall('call1');
   expect(await repo.reserveCapture('call1')).toBeNull();expect(await repo.reserveCapture('call1',1)).toBeNull();
