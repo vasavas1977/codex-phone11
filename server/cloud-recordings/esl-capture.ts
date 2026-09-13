@@ -1,5 +1,5 @@
 import { connect, type Socket } from 'node:net';
-import type { CaptureLease, CaptureTransport } from './capture';
+import { RECORDING_MAX_SECONDS, type CaptureLease, type CaptureTransport } from './capture';
 export interface EslFrame { headers: Record<string,string>; body: string }
 /** Bounded ESL framing, including frames split across TCP packets. */
 export class EslFrames {
@@ -47,6 +47,40 @@ export function createEslCaptureTransport(config:EslConfig):CaptureTransport & {
   });
  }
  return {
+  async startRecording(lease, seconds, onStopped){
+   if(seconds!==RECORDING_MAX_SECONDS || !/^[0-9a-f-]{36}$/i.test(lease.channelUuid) || !/^[0-9a-f-]{36}$/i.test(lease.token)
+    || !Number.isSafeInteger(lease.tenantId) || lease.tenantId<=0
+    || lease.path!==`/var/lib/freeswitch/recordings/phone11/${lease.tenantId}/${lease.token}.wav`)throw new Error('Invalid bounded recording');
+   // This connection survives the start ACK. An autonomous native limit stop is
+   // observed without issuing a second stop command or waiting for call hangup.
+   await new Promise<void>((resolve,reject)=>{
+    const socket=connect({host:config.host,port:config.port}),parser=new EslFrames();
+    let phase='auth',accepted=false,ended=false,closed=false;
+    let timer:ReturnType<typeof setTimeout>;
+    const close=()=>{if(closed)return;closed=true;clearTimeout(timer);socket.destroy();};
+    const fail=()=>{close();if(!accepted)reject(new Error('Recording start observation failed'));};
+    const complete=()=>{if(!accepted||!ended||closed)return;close();void onStopped().catch(()=>{/* Durable completion lease permits retry. */});};
+    const send=(command:string)=>socket.write(command+'\n\n');
+    timer=setTimeout(fail,limit);
+    socket.on('error',fail);socket.on('end',fail);
+    socket.on('data',chunk=>{try{for(const frame of parser.push(chunk)){
+     if(closed)return;
+     if(phase==='auth'&&frame.headers['content-type']==='auth/request'){phase='authReply';send('auth '+config.password);continue;}
+     if(phase==='authReply'){
+      if(frame.headers['reply-text']!=='+OK accepted')throw new Error();phase='subscribe';send('event json RECORD_STOP');continue;
+     }
+     if(phase==='subscribe'&&frame.headers['content-type']==='command/reply'){
+      if(!frame.headers['reply-text']?.startsWith('+OK'))throw new Error();phase='start';send(`api uuid_record ${lease.channelUuid} start ${lease.path} ${seconds}`);continue;
+     }
+     if(phase==='start'&&frame.headers['content-type']==='api/response'){
+      if(!frame.body.startsWith('+OK'))throw new Error();accepted=true;phase='watch';clearTimeout(timer);
+      timer=setTimeout(close,(seconds+60)*1000);timer.unref();resolve();complete();continue;
+     }
+     const e=event(frame);
+     if((phase==='start'||phase==='watch')&&e['Event-Name']==='RECORD_STOP'&&e['Unique-ID']===lease.channelUuid&&e['Record-File-Path']===lease.path){ended=true;complete();}
+    }}catch{fail();}});
+   });
+  },
   async waitForRecordStop(){
    return session<{channelUuid:string;path:string}>((send,frame)=>{
     if(frame.headers['content-type']==='authenticated'){send('event json RECORD_STOP');return;}

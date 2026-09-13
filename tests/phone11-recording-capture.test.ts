@@ -4,17 +4,33 @@ const id='11111111-1111-4111-8111-111111111111';
 function fixture(){
  const lease:CaptureLease={channelUuid:id,callUuid:'trusted-call',tenantId:2,extensionId:3,token:'22222222-2222-4222-8222-222222222222',path:'/var/lib/freeswitch/recordings/phone11/2/22222222-2222-4222-8222-222222222222.wav'};
  const ledger={reserve:vi.fn(async()=>lease),permitted:vi.fn(async()=>true),started:vi.fn(async()=>{}),failed:vi.fn(async()=>{}),complete:vi.fn(async()=>lease),uploaded:vi.fn(async()=>{}),cleaned:vi.fn(async()=>{}),releaseCompletion:vi.fn(async()=>{}),active:vi.fn(async()=>lease)};
- const transport={api:vi.fn(async(_command:string)=>'+OK'),announceBoth:vi.fn(async()=>{})};const upload={prepareCapture:vi.fn(async()=>{}),putCompleted:vi.fn(async()=> 'stored-key'),discardCompleted:vi.fn(async()=>{})};
+ const transport={api:vi.fn(async(_command:string)=>'+OK'),announceBoth:vi.fn(async()=>{}),startRecording:vi.fn(async(_lease:CaptureLease,_seconds:number,_stopped:()=>Promise<void>)=>{})};const upload={prepareCapture:vi.fn(async()=>{}),putCompleted:vi.fn(async()=> 'stored-key'),discardCompleted:vi.fn(async()=>{})};
  return {lease,ledger,transport,upload,enabled:()=>true};
 }
 describe('trusted PBX recording capture',()=>{
  it('does not issue commands while disabled',async()=>{const d=fixture();expect(await createRecordingCapture({...d,enabled:()=>false}).start(id,{kind:'automatic'})).toBe(false);expect(d.ledger.reserve).not.toHaveBeenCalled();});
  it('requires durable policy authorization',async()=>{const d=fixture();d.ledger.reserve.mockResolvedValue(null as any);expect(await createRecordingCapture(d).start(id,{kind:'automatic'})).toBe(false);expect(d.transport.api).not.toHaveBeenCalled();});
- it('announces before starting both directions on one exact session',async()=>{const d=fixture();expect(await createRecordingCapture(d).start(id,{kind:'automatic'})).toBe(true);expect(d.transport.announceBoth.mock.invocationCallOrder[0]).toBeLessThan(d.transport.api.mock.invocationCallOrder[0]);expect(d.transport.api.mock.calls.map(c=>c[0])).toEqual([`uuid_setvar ${id} RECORD_STEREO true`,`uuid_setvar ${id} RECORD_READ_ONLY false`,`uuid_setvar ${id} RECORD_WRITE_ONLY false`,`uuid_record ${id} start ${d.lease.path}`]);});
+ it('announces before starting both directions on one exact session',async()=>{const d=fixture();expect(await createRecordingCapture(d).start(id,{kind:'automatic'})).toBe(true);expect(d.transport.announceBoth.mock.invocationCallOrder[0]).toBeLessThan(d.transport.api.mock.invocationCallOrder[0]);expect(d.transport.api.mock.calls.map(c=>c[0])).toEqual([`uuid_setvar ${id} RECORD_STEREO true`,`uuid_setvar ${id} RECORD_READ_ONLY false`,`uuid_setvar ${id} RECORD_WRITE_ONLY false`,`uuid_setvar ${id} record_sample_rate 16000`,`uuid_setvar ${id} RECORD_HANGUP_ON_ERROR false`]);});
  it('revoked policy after announcement prevents recording',async()=>{const d=fixture();d.ledger.permitted.mockResolvedValue(false);expect(await createRecordingCapture(d).start(id,{kind:'manual',actorUserId:7})).toBe(false);expect(d.transport.api).not.toHaveBeenCalled();});
  it('announcement failure prevents recording',async()=>{const d=fixture();d.transport.announceBoth.mockRejectedValue(new Error());expect(await createRecordingCapture(d).start(id,{kind:'automatic'})).toBe(false);expect(d.transport.api).not.toHaveBeenCalled();});
  it('rejects arbitrary path or session identity before commands',async()=>{const d=fixture();d.lease.path='/etc/passwd';await expect(createRecordingCapture(d).start(id,{kind:'automatic'})).rejects.toThrow();expect(d.transport.api).not.toHaveBeenCalled();});
  it('stop ACK does not upload and works after gateoff',async()=>{const d=fixture();expect(await createRecordingCapture({...d,enabled:()=>false}).stop(id,7)).toBe(true);expect(d.upload.putCompleted).not.toHaveBeenCalled();});
  it('ready upload resumes cleanup without reupload after crash',async()=>{const d=fixture();d.lease.storageKey='already-stored';d.upload.discardCompleted.mockRejectedValueOnce(new Error('disk unavailable'));const a=createRecordingCapture(d);await expect(a.recordingStopped(id,d.lease.path)).rejects.toThrow();expect(d.ledger.cleaned).not.toHaveBeenCalled();expect(await a.recordingStopped(id,d.lease.path)).toBe(true);expect(d.upload.putCompleted).not.toHaveBeenCalled();expect(d.ledger.cleaned).toHaveBeenCalledWith(d.lease);});
  it('completed upload preserves token and retries only through ledger',async()=>{const d=fixture();const a=createRecordingCapture(d);d.upload.putCompleted.mockRejectedValueOnce(new Error('unavailable'));await expect(a.recordingStopped(id,d.lease.path)).rejects.toThrow();expect(d.ledger.releaseCompletion).toHaveBeenCalledWith(d.lease);expect(await a.recordingStopped(id,d.lease.path)).toBe(true);expect(d.ledger.uploaded).toHaveBeenCalledWith(d.lease,'stored-key');d.ledger.complete.mockResolvedValue(null as any);expect(await a.recordingStopped(id,d.lease.path)).toBe(false);expect(d.upload.putCompleted).toHaveBeenCalledTimes(2);});
+ it('native limit stop uploads while call remains connected, after durable start',async()=>{
+  const d=fixture();let stopped!:()=>Promise<void>;
+  d.transport.startRecording.mockImplementation(async(_lease,seconds,callback)=>{expect(seconds).toBe(1200);stopped=callback;});
+  expect(await createRecordingCapture(d).start(id,{kind:'automatic'})).toBe(true);
+  await stopped();expect(d.upload.putCompleted).toHaveBeenCalledWith(d.lease);
+  expect(d.transport.api.mock.calls.every(([c])=>!c.includes('stop')&&!c.includes('kill'))).toBe(true);
+  expect(d.ledger.started.mock.invocationCallOrder[0]).toBeLessThan(d.ledger.complete.mock.invocationCallOrder[0]);
+ });
+ it('failed durable start cannot authorize early stopped callback upload',async()=>{
+  const d=fixture();let completion!:Promise<void>;
+  d.transport.startRecording.mockImplementation(async(_lease,_seconds,callback)=>{completion=callback();});
+  d.ledger.started.mockRejectedValue(new Error('database unavailable'));
+  expect(await createRecordingCapture(d).start(id,{kind:'automatic'})).toBe(false);
+  await completion;expect(d.upload.putCompleted).not.toHaveBeenCalled();
+ });
+
 });

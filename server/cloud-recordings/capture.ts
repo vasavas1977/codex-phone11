@@ -25,8 +25,19 @@ export interface CaptureLedger {
   releaseCompletion(lease: CaptureLease): Promise<void>;
   active(channelUuid: string, actorUserId: number): Promise<CaptureLease | null>;
 }
+/** Native duration protection only, not an aggregate storage quota.
+ * Confirm actual PCM16/stereo/16kHz output on the commissioned FreeSWITCH build
+ * before relying on the ~76.8MB estimate. Missing stop events after reconnect
+ * retain durable reconciliation until channel end; unattended readiness needs
+ * separate free-space/quota and real media acceptance.
+ * https://developer.signalwire.com/freeswitch/media-and-codecs/audio-files/
+ */
+export const RECORDING_MAX_SECONDS = 1200;
+export const RECORDING_SAMPLE_RATE = 16000;
 export interface CaptureTransport {
   api(command: string): Promise<string>;
+  /** Subscribe before starting; retain exact stop observation after start ACK. */
+  startRecording(lease: CaptureLease, limitSeconds: number, onStopped: () => Promise<void>): Promise<void>;
   /** Must resolve only after authenticated PLAYBACK_STOP on BOTH exact legs.
    * A +OK enqueue response is not announcement completion. */
   announceBoth(lease: CaptureLease): Promise<void>;
@@ -69,8 +80,20 @@ export function createRecordingCapture(deps: { ledger: CaptureLedger; transport:
         await api(`uuid_setvar ${channelUuid} RECORD_STEREO true`);
         await api(`uuid_setvar ${channelUuid} RECORD_READ_ONLY false`);
         await api(`uuid_setvar ${channelUuid} RECORD_WRITE_ONLY false`);
-        await api(`uuid_record ${channelUuid} start ${lease.path}`);
-        await deps.ledger.started(lease);
+        await api(`uuid_setvar ${channelUuid} record_sample_rate ${RECORDING_SAMPLE_RATE}`);
+        await api(`uuid_setvar ${channelUuid} RECORD_HANGUP_ON_ERROR false`);
+        // Native timer ends only recording, even if this process becomes unavailable.
+        // PCM16 stereo at 16kHz uses ~76.8MB for 20min; this is not a disk quota.
+        let releaseStarted!: () => void;
+        const started = new Promise<void>(resolve => { releaseStarted = resolve; });
+        let persisted = false;
+        try {
+          await deps.transport.startRecording(lease, RECORDING_MAX_SECONDS, async () => {
+            await started;
+            if (persisted) await finishRecording(channelUuid, lease.path);
+          });
+          await deps.ledger.started(lease); persisted = true;
+        } finally { releaseStarted(); }
         return true;
       } catch {
         // A command timeout may still have attached the recorder. Best-effort
@@ -90,7 +113,9 @@ export function createRecordingCapture(deps: { ledger: CaptureLedger; transport:
       await api(`uuid_record ${channelUuid} stop ${lease.path}`);
       return true; // Upload waits for actual RECORD_STOP, never this command ACK.
     },
-    async recordingStopped(channelUuid: string, path: string): Promise<boolean> {
+    recordingStopped: finishRecording,
+  };
+  async function finishRecording(channelUuid: string, path: string): Promise<boolean> {
       if (!uuid.test(channelUuid)) return false;
       const lease = await deps.ledger.complete(channelUuid, path);
       if (!lease) return false;
@@ -103,6 +128,6 @@ export function createRecordingCapture(deps: { ledger: CaptureLedger; transport:
         await deps.ledger.cleaned(lease);
         return true;
       } catch (error) { await deps.ledger.releaseCompletion(lease); throw error; }
-    },
-  };
+
+}
 }

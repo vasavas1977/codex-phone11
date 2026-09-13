@@ -11,4 +11,26 @@ describe('authenticated recording ESL',()=>{
  it('rejects interrupted announcement and requires command acceptance after early events',async()=>{for(const bad of ['break','missing','rejected']){const f=await fixture((c,s)=>{if(c==='event json PLAYBACK_STOP')s.write('Content-Type: command/reply\nReply-Text: +OK\n\n');else if(c.startsWith('api uuid_getvar'))frame(s,'api/response',peer);else{for(const channel of [id,peer])frame(s,'text/event-json',JSON.stringify({'Event-Name':'PLAYBACK_STOP','Unique-ID':channel,'Playback-File-Path':announcement,...(bad==='missing'?{}:{'Playback-Status':bad==='break'?'break':'done'})}));frame(s,'api/response','-ERR rejected');}});try{await expect(createEslCaptureTransport({host:'127.0.0.1',port:f.port,password:'fixture',announcementPath:announcement}).announceBoth({channelUuid:id,callUuid:'call',tenantId:1,extensionId:1,token:'t',path:'/var/lib/freeswitch/recordings/phone11/1/t.wav'})).rejects.toThrow();}finally{await f.close();}}});
  it('subscribes before stop and waits for exact completed recording',async()=>{let subscribed=false;const file=`/var/lib/freeswitch/recordings/phone11/1/${peer}.wav`;const f=await fixture((c,s)=>{if(c==='event json RECORD_STOP'){subscribed=true;s.write('Content-Type: command/reply\nReply-Text: +OK\n\n');}else{expect(subscribed).toBe(true);frame(s,'api/response','+OK');frame(s,'text/event-json',JSON.stringify({'Event-Name':'RECORD_STOP','Unique-ID':id,'Record-File-Path':file}));}});try{expect(await createEslCaptureTransport({host:'127.0.0.1',port:f.port,password:'fixture',announcementPath:announcement}).api(`uuid_record ${id} stop ${file}`)).toBe('+OK recording stopped');}finally{await f.close();}});
  it('waits for both exact playback completions, not enqueue ACK',async()=>{const f=await fixture((c,s)=>{if(c==='event json PLAYBACK_STOP')s.write('Content-Type: command/reply\nReply-Text: +OK\n\n');else if(c.startsWith('api uuid_getvar'))frame(s,'api/response',peer);else{frame(s,'api/response','+OK');for(const channel of [id,peer])frame(s,'text/event-json',JSON.stringify({'Event-Name':'PLAYBACK_STOP','Unique-ID':channel,'Playback-File-Path':announcement,'Playback-Status':'done'}));}});try{await createEslCaptureTransport({host:'127.0.0.1',port:f.port,password:'fixture',announcementPath:announcement}).announceBoth({channelUuid:id,callUuid:'call',tenantId:1,extensionId:1,token:'t',path:'/var/lib/freeswitch/recordings/phone11/1/t.wav'});}finally{await f.close();}});
+ it('subscribes before bounded start and observes cap stop without hanging up',async()=>{
+  const file=`/var/lib/freeswitch/recordings/phone11/1/${peer}.wav`;let subscribed=false;let socket!:Socket;
+  let finish!:()=>void;const stopped=new Promise<void>(resolve=>{finish=resolve;});let count=0;
+  const f=await fixture((c,s)=>{socket=s;if(c==='event json RECORD_STOP'){subscribed=true;s.write('Content-Type: command/reply\nReply-Text: +OK\n\n');}
+   else{expect(subscribed).toBe(true);expect(c).toBe(`api uuid_record ${id} start ${file} 1200`);frame(s,'api/response','+OK');}});
+  try{const t=createEslCaptureTransport({host:'127.0.0.1',port:f.port,password:'fixture',announcementPath:announcement});
+   await t.startRecording({channelUuid:id,callUuid:id,tenantId:1,extensionId:1,token:peer,path:file},1200,async()=>{count++;finish();});
+   expect(count).toBe(0);
+   frame(socket,'text/event-json',JSON.stringify({'Event-Name':'RECORD_STOP','Unique-ID':peer,'Record-File-Path':file}));
+   frame(socket,'text/event-json',JSON.stringify({'Event-Name':'RECORD_STOP','Unique-ID':id,'Record-File-Path':file}));
+   await stopped;expect(count).toBe(1);
+  }finally{await f.close();}
+ });
+ it('rejected bounded start never delivers early stop as completion',async()=>{
+  const file=`/var/lib/freeswitch/recordings/phone11/1/${peer}.wav`;let count=0;
+  const f=await fixture((c,s)=>{if(c==='event json RECORD_STOP')s.write('Content-Type: command/reply\nReply-Text: +OK\n\n');
+   else{frame(s,'text/event-json',JSON.stringify({'Event-Name':'RECORD_STOP','Unique-ID':id,'Record-File-Path':file}));frame(s,'api/response','-ERR failed');}});
+  try{await expect(createEslCaptureTransport({host:'127.0.0.1',port:f.port,password:'fixture',announcementPath:announcement})
+   .startRecording({channelUuid:id,callUuid:id,tenantId:1,extensionId:1,token:peer,path:file},1200,async()=>{count++;})).rejects.toThrow();expect(count).toBe(0);
+  }finally{await f.close();}
+ });
+
 });
