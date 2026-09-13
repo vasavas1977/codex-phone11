@@ -73,6 +73,11 @@ vi.mock("../lib/sip/sip-provider", () => ({
 vi.mock("../lib/sip/call-store", () => ({
   useSipCallStore: (select: any) => select(mocks.state),
 }));
+// Recording has separate component tests; keep these media-control tests
+// independent of its native authentication and Expo dependencies.
+vi.mock("../components/cloud-recordings/active-call-recording-controls", () => ({
+  ActiveCallRecordingControls: () => null,
+}));
 import ActiveCallScreen from "../app/call/active";
 beforeEach(() => {
   vi.clearAllMocks();
