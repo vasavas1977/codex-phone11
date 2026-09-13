@@ -6,12 +6,13 @@ const mocks = vi.hoisted(() => ({
   setMuted: vi.fn(), terminate: vi.fn(), diagnostic: vi.fn(),
   alert: vi.fn(), appState: { currentState: "active", addEventListener: () => ({ remove: vi.fn() }) },
   owner: { id: 1 } as { id: number } | null,
+  activeCalls: {} as Record<string, { isMuted: boolean }>,
   incoming: null as { id: string; status: string } | null,
 }));
 vi.mock("react-native", () => ({ Alert: { alert: mocks.alert }, Platform: { OS: "ios" }, AppState: mocks.appState }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: mocks.owner }) }));
 vi.mock("../lib/sip/engine", () => ({ sipEngine: mocks.engine }));
-vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ setMuted: mocks.setMuted, activeCalls: {}, incomingCall: mocks.incoming, terminateCall: mocks.terminate }) } }));
+vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ setMuted: mocks.setMuted, activeCalls: mocks.activeCalls, incomingCall: mocks.incoming, terminateCall: mocks.terminate }) } }));
 vi.mock("../lib/sip/diagnostics-store", () => ({ formatSipError: String, useSipDiagnosticsStore: { getState: () => ({ addEvent: mocks.diagnostic }) } }));
 
 // NativeCallManager loads CallKeep with CommonJS require; inject that package's cached export.
@@ -25,7 +26,7 @@ beforeEach(() => {
   nativeCallManager.destroy();
   vi.clearAllMocks();
   mocks.handlers.clear();
-  mocks.owner = { id: 1 }; mocks.incoming = null; mocks.appState.currentState = "active";
+  mocks.owner = { id: 1 }; mocks.incoming = null; mocks.activeCalls = {}; mocks.appState.currentState = "active";
   vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
 });
 it("initializes one CallKit provider for simultaneous callers", async () => {
@@ -370,4 +371,28 @@ it("does not apply a late mute result after the mapped call ends", async () => {
   const pending = mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted: true });
   nativeCallManager.reportCallEnded("322"); finish(); await pending;
   expect(mocks.setMuted).not.toHaveBeenCalled();
+});
+
+it.each([true, false])("does not replay a confirmed app mute state %s from CallKit", async muted => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("323", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  mocks.activeCalls["323"] = { isMuted: muted };
+  await mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted });
+  expect(mocks.engine.setMute).not.toHaveBeenCalled();
+  expect(mocks.setMuted).not.toHaveBeenCalled();
+  expect(mocks.alert).not.toHaveBeenCalled();
+});
+it.each([true, false])("still applies a different system mute state %s", async muted => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("324", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  mocks.activeCalls["324"] = { isMuted: !muted };
+  await mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted });
+  expect(mocks.engine.setMute).toHaveBeenCalledWith("324", muted);
+  expect(mocks.setMuted).toHaveBeenCalledWith("324", muted);
+});
+it("rejects malformed mute values instead of coercing them into a microphone command", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("325", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  await mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted: "false" });
+  expect(mocks.engine.setMute).not.toHaveBeenCalled();
 });

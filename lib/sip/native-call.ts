@@ -703,7 +703,14 @@ class NativeCallManager {
       "didPerformSetMutedCallAction",
       async ({ callUUID, muted }: any) => {
         const sipCallId = uuidToCallId.get(callUUID);
-        if (!sipCallId) return;
+        if (!sipCallId || typeof muted !== "boolean") return;
+
+        // App controls already apply the SDK change before syncing CallKit.
+        // Its echo must not repeat callMuteMic: Siprix returns ECallAlredyMuted
+        // (-1048) for an already-applied state. Genuine system UI changes still
+        // reach the SDK, because they differ from the last confirmed state.
+        const confirmed = useSipCallStore.getState().activeCalls[sipCallId];
+        if (confirmed && confirmed.isMuted === muted) return;
 
         try {
           await sipEngine.setMute(sipCallId, muted);
