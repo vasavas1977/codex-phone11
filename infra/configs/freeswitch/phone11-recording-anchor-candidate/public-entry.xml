@@ -1,0 +1,10 @@
+<!-- Install only inside dialplan/public after isolated/live configuration review. -->
+<include>
+  <extension name="phone11-recording-anchor-entry">
+    <condition field="destination_number" expression="^phone11-recording-3001$"/>
+    <condition field="${network_addr}:${sip_h_X-Phone11-Recording-Anchor}" expression="^10[.]0[.]1[.]69:ingress-v1$">
+      <action application="transfer" data="phone11-recording-3001 XML phone11_recording_anchor"/>
+      <anti-action application="hangup" data="CALL_REJECTED"/>
+    </condition>
+  </extension>
+</include>
