@@ -1,3 +1,4 @@
+import { persistRouteCdr } from './route-cdr';
 import { bindIncomingChannel } from './correlation';
 import { getPool } from '../pbx/db';
 import { createCaptureLedger } from './capture-ledger';
@@ -52,7 +53,7 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
        const dump=await transport.api(`uuid_dump ${id}`);const fields:Record<string,string>={};
        for(const line of dump.split('\n')){const at=line.indexOf(':');if(at>0)fields[line.slice(0,at)]=line.slice(at+1).trim();}
        const sip=fields.variable_sip_call_id;
-       if(sip)await bindIncomingChannel(id,sip,fields['Caller-Caller-ID-Number']??'');
+       if(sip){await bindIncomingChannel(id,sip,fields['Caller-Caller-ID-Number']??'');if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED==='true')await persistRouteCdr(db,id,fields);}
       }catch{/* Unmapped channels remain excluded. */}
      }
     }
