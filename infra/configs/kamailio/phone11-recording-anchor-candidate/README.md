@@ -9,6 +9,7 @@ existing route; no prefix or fuzzy-number matching is used.
 Required private Kamailio definitions:
 
 - `WITH_PHONE11_RECORDING_ANCHOR`
+- `PHONE11_ANCHOR_FLAG` (independently verified unused transaction flag; fixture uses 29)
 - `PHONE11_ANCHOR_CARRIER_IP` (verified carrier IP)
 - `PHONE11_ANCHOR_FS_IP` (verified FS source IP)
 - `PHONE11_ANCHOR_FS_PORT` (`5080` after verification)
@@ -16,11 +17,16 @@ Required private Kamailio definitions:
 
 Include routes.inc and insert `route(PHONE11_RECORDING_ANCHOR)` after existing
 initial Record-Route setup and before the current pilot initial INVITE branch.
-Keep existing matching CANCEL/transaction handling before this hook.
+Keep existing matching CANCEL/transaction handling before this hook. After
+`t_lookup_cancel("1")` succeeds, invoke `route(PHONE11_RECORDING_ANCHOR_CANCEL)`
+before the normal CANCEL relay. Never invoke it for an unmatched CANCEL.
 Inside the existing validated `is_known_dlg()` / `loose_route()` block, insert
 `route(PHONE11_RECORDING_ANCHOR_DIALOG)` BEFORE all generic media handling.
-It bypasses RTPengine only for the dedicated A dialog, which never allocates it.
-All other dialogs continue unchanged. Do not install only the initial hook.
+It manages the dedicated A-leg RTPengine session with direction-aware offers and
+answers, and deletes it on BYE, initial CANCEL, or failed initial setup. Failed or
+cancelled re-INVITEs do not delete an established call. Other dialogs remain
+unchanged. Offerless initial and in-dialog INVITEs are explicitly rejected with
+488; delayed-offer renegotiation is not implemented. All three hooks are required; do not install only the initial hook.
 
 FS source candidates are in `../../freeswitch/phone11-recording-anchor-candidate`.
 Install public-entry.xml before general outbound rules, and context.xml as a
@@ -32,9 +38,11 @@ FS socket with the marker and fixed extension; it enters the existing wake flow.
 That new leg's SIP Call-ID is the wake link and recording identity. Do not carry
 an A-leg wake identity across the bridge.
 
-Media paths: carrier RTP ↔ FS; FS ↔ existing RTPengine FS-origin priv/pub path ↔
-Phone11. Re-INVITEs on the A leg stay untouched, consistent with its initial SDP.
-Existing FS-origin RTPengine behavior applies to the B leg. Config checks do not
+Media paths: carrier plain RTP ↔ RTPengine pub/private ↔ FS; FS ↔ existing
+RTPengine FS-origin priv/pub path ↔ Phone11 SRTP. A-leg initial and in-dialog
+media use explicit RTP/AVP, SDES/DTLS off, and PCMA/telephone-event. The carrier
+uses existing RTPengine public ports; no FreeSWITCH public port exposure or
+security-group change is needed. Existing FS-origin behavior applies to the B leg. Config checks do not
 prove packet reachability or two-way audio; a supervised call must verify both,
 announcement, hangup, repeat incoming calls, and actual recording before release.
 
