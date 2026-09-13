@@ -30,6 +30,10 @@ for method,cseq in [('ACK',1),('INVITE',2),('BYE',3)]:
  for value in values(msg,'Record-Route'):packet+='Route: '+value+'\r\n'
  packet+='Content-Length: 0\r\n\r\n';carrier.sendto(packet.encode(),('127.0.0.1',5060))
  receive(fs,method+' sip:phone11-recording-3001@')
+# Preserve every exact currently accepted DID spelling, without broadening it.
+for number in ['6620303001','+6620303001']:
+ exact=invite(carrier,number);forwarded=receive(fs,'Call-ID: '+exact)
+ assert forwarded.startswith('INVITE sip:phone11-recording-3001@')
 # FS originates B leg: a different exact SIP identity reaches wake/device.
 b=invite(fs,'3001','returned-v1');msg=receive(device,'INVITE sip:3001@');assert f'Call-ID: {b}' in msg;assert b!=a;assert 'X-Fixture-Wake-Flow: reached' in msg;assert 'Recording-Anchor:' not in msg
 # A pre-answer CANCEL follows the existing matching transaction path.
@@ -50,6 +54,6 @@ carrier.sendto(cancel.encode(),('127.0.0.1',5060));receive(fs,'CANCEL sip:phone1
 invite(fs,'020303001','returned-v1');receive(fs,'403 Invalid recording route')
 invite(carrier,'3001','returned-v1');receive(carrier,'403 Invalid recording route')
 # Normal/emergency/outbound traffic continues the pre-existing route.
-for number in ['191','1669','3002','0891234567']:
+for number in ['191','1669','3002','0891234567','0203030010','66203030010','+66203030010','20303001','+020303001','06620303001']:
  invite(carrier,number);receive(carrier,'404 Existing route unchanged')
 print('PASS: carrier-to-FS, downstream wake boundary, loop/spoof refusal, nonpilot preservation')

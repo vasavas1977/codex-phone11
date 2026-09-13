@@ -14,7 +14,7 @@ route[PHONE11_RECORDING_ANCHOR] {
         exit;
     }
     # No catch-all routing: all other traffic continues through its existing path.
-    if ($si != PHONE11_ANCHOR_CARRIER_IP || $rU != PHONE11_ANCHOR_DID) { return; }
+    if ($si != PHONE11_ANCHOR_CARRIER_IP || !($rU =~ "^(\\+?6620303001|020303001)$")) { return; }
     dlg_manage();
     $dlg_var(phone11_recording_anchor_a) = "1";
     # This leg terminates at FS; wake is performed on the new FS-to-phone leg.

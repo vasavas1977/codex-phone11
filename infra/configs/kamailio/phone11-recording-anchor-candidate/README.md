@@ -1,14 +1,15 @@
 # Disabled recording-anchor candidate
 
 No existing deployed configuration includes these files. This candidate affects
-only an explicitly configured carrier source and exact pilot DID. Other number
-formats remain on the existing route; do not broaden the DID match implicitly.
+only an explicitly configured carrier source and the existing pilot DID allowlist:
+`020303001`, `6620303001`, and `+6620303001`. This is the same anchored exact
+allowlist as the existing trusted pilot route. All other forms stay on their
+existing route; no prefix or fuzzy-number matching is used.
 
 Required private Kamailio definitions:
 
 - `WITH_PHONE11_RECORDING_ANCHOR`
 - `PHONE11_ANCHOR_CARRIER_IP` (verified carrier IP)
-- `PHONE11_ANCHOR_DID` (verified inbound Request-URI user, e.g. `020303001`)
 - `PHONE11_ANCHOR_FS_IP` (verified FS source IP)
 - `PHONE11_ANCHOR_FS_PORT` (`5080` after verification)
 - `PHONE11_ANCHOR_FS_URI` (`sip:phone11-recording-3001@10.0.1.69:5080`)
