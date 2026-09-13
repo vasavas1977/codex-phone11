@@ -27,7 +27,7 @@ function event(frame:EslFrame):Record<string,string>{
 /** One bounded authenticated connection per operation: no shared command/event races. */
 export function createEslCaptureTransport(config:EslConfig):CaptureTransport & { waitForRecordStop(): Promise<{channelUuid:string;path:string}> } {
  if(!config.password || /[\r\n]/.test(config.password) || !Number.isInteger(config.port) || config.port<1 || config.port>65535
-  || !/^\/opt\/phone11ai\/prompts\/[a-zA-Z0-9_-]+\.wav$/.test(config.announcementPath))throw new Error('Invalid capture transport configuration');
+  || !/^\/(?:opt\/phone11ai\/prompts|var\/lib\/freeswitch\/recordings\/phone11-prompts)\/[a-zA-Z0-9_-]+\.wav$/.test(config.announcementPath))throw new Error('Invalid capture transport configuration');
  const limit=Math.min(30000,Math.max(1000,config.timeoutMs??15000));
  async function session<T>(operation:(send:(s:string)=>void,frame:EslFrame)=>T|undefined):Promise<T>{
   return new Promise((resolve,reject)=>{
