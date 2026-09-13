@@ -16,7 +16,19 @@ export async function findOwnedRecording(userId: number, callUuid: string): Prom
            AND e.status = 'active' AND e.deleted_at IS NULL
        ) LIMIT 1`, [userId, callUuid],
     );
-    return result.rows[0] ?? null;
+    const record = result.rows[0] ?? null;
+    if (!record) return null;
+    // Legacy recordings retain their existing authorization. Once a cloud row
+    // exists, its retention also gate every media request.
+    const schema = await query("SELECT to_regclass('public.phone11_cloud_recordings') AS name");
+    if (schema.rows[0]?.name) {
+      const cloud = await query(`SELECT r.expires_at>clock_timestamp() AND r.recording_status='ready'
+        AS allowed FROM phone11_cloud_recordings r
+        LEFT JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id
+        WHERE r.call_uuid=$1 AND r.tenant_id=$2`, [callUuid,record.tenant_id]);
+      if (cloud.rows.length && cloud.rows[0].allowed !== true) return null;
+    }
+    return record;
   } catch (error) {
     if ((error as { code?: string })?.code === "42P01") {
       throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Call recording storage is not available on this server" });

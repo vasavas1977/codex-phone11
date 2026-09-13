@@ -1,3 +1,5 @@
+import { createCloudRecordingRepository } from "../cloud-recordings/repository";
+import { trustedRecordingRoute } from "../cloud-recordings/correlation";
 /**
  * CDR Processor Module
  * 
@@ -153,6 +155,8 @@ function tsExpr(epoch: number, stamp: string | null): { sql: string; val: any } 
  */
 export async function processCdr(cdr: any): Promise<{ callRecordId: number; callLegId: number }> {
   const parsed = parseCdrData(cdr);
+  const recordingRoute = await trustedRecordingRoute(parsed.callUuid,parsed.sipCallId);
+  if (recordingRoute && recordingRoute.tenantId !== parsed.tenantId) throw new Error("Trusted call tenant mismatch");
 
   const result = await withTransaction(async (client) => {
     // 1. Upsert call_record (parent)
@@ -188,7 +192,7 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         endedAt,                   // $9 → ended_at
         parsed.duration,           // $10 → total_duration_seconds
         parsed.billSeconds,        // $11 → total_billable_seconds
-        parsed.recordingPath,      // $12 → recording_url
+        process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" ? null : parsed.recordingPath, // Cloud media only comes from authenticated storage.
         JSON.stringify({           // $13 → metadata
           caller_name: parsed.callerName,
           hangup_cause: parsed.hangupCause,
@@ -241,9 +245,15 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
       ]
     );
     const callLegId = legResult.rows[0].id;
+    if(recordingRoute) await client.query("UPDATE call_legs SET extension_id=$2 WHERE id=$1 AND tenant_id=$3",[callLegId,recordingRoute.extensionId,recordingRoute.tenantId]);
 
     return { callRecordId, callLegId };
   });
+
+  if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" && recordingRoute) {
+    try { await createCloudRecordingRepository().registerCall(parsed.callUuid); }
+    catch { /* CDR already committed; recording reconciliation retries separately. */ }
+  }
 
   // 3. Insert call_events OUTSIDE the transaction (fire-and-forget)
   // call_events is partitioned and may fail if partition doesn't exist.

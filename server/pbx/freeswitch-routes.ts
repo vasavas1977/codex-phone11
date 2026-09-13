@@ -1,3 +1,4 @@
+import { bindAuthenticatedOutbound } from "../cloud-recordings/correlation";
 /**
  * FreeSWITCH REST Callback Routes
  * 
@@ -208,6 +209,8 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
         }
       }
 
+      // Optional recording metadata must not disturb ordinary call routing.
+      try { await bindAuthenticatedOutbound(req.body, normalized.e164); } catch { /* Capture remains unavailable without trusted metadata. */ }
       return res.type("xml").send(pstnDialplanXml(normalized.e164, callerIdNumber));
     }
 

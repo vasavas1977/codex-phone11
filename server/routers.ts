@@ -1,3 +1,4 @@
+import { cloudRecordingsRouter } from "./cloud-recordings/router";
 import { chatNotificationsRouter } from "./chat-notifications/router";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
@@ -36,6 +37,7 @@ import {
 } from "./push-gateway";
 
 export const appRouter = router({
+  cloudRecordings: cloudRecordingsRouter,
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),

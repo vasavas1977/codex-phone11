@@ -1,0 +1,9 @@
+import { describe,it,expect,vi } from 'vitest';
+import { createCaptureLedger } from '../server/cloud-recordings/capture-ledger';
+const id='11111111-1111-4111-8111-111111111111',token='22222222-2222-4222-8222-222222222222';
+describe('persistent recording capture ledger',()=>{
+ it('refuses missing pre-answer trusted route before reserving policy',async()=>{const reserveCapture=vi.fn();const ledger=createCaptureLedger({query:vi.fn(async()=>({rows:[]}))}as any,{reserveCapture}as any);expect(await ledger.reserve(id,{kind:'automatic'})).toBeNull();expect(reserveCapture).not.toHaveBeenCalled();});
+ it('passes manual actor to repository and uses canonical tenant paths',async()=>{const reserveCapture=vi.fn(async()=>({captureToken:token,tenantId:8,extensionId:9}));const ledger=createCaptureLedger({query:vi.fn(async()=>({rows:[{call_uuid:id}]}))}as any,{reserveCapture}as any);const l=await ledger.reserve(id,{kind:'manual',actorUserId:7});expect(reserveCapture).toHaveBeenCalledWith(id,7);expect(l?.path).toBe(`/var/lib/freeswitch/recordings/phone11/8/${token}.wav`);});
+ it('completion uses atomic lease and exact token/tenant with persisted route',async()=>{const query=vi.fn(async()=>({rows:[]}));const ledger=createCaptureLedger({query}as any,{}as any);expect(await ledger.complete(id,`/var/lib/freeswitch/recordings/phone11/8/${token}.wav`)).toBeNull();const [sql,args]=query.mock.calls[0] as any;expect(sql).toContain('capture_upload_lease_until<clock_timestamp()');expect(sql).toContain('phone11_recording_routes');expect(args.slice(0,3)).toEqual([id,8,token]);});
+ it('never uploads unconfirmed stop on retry scan',async()=>{const query=vi.fn(async()=>({rows:[]}));await createCaptureLedger({query}as any,{}as any).pendingUploads();expect((query.mock.calls[0] as any)[0]).toContain('capture_stopped_at IS NOT NULL');});
+});

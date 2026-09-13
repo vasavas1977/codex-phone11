@@ -136,6 +136,12 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
           [randomUUID(),b.id,sipCallId,sipUri,b.expires_at]);
         try { await authenticate(client,b.id,undefined,{id:b.session_id,userId:b.user_id}); }
         catch(error) { if(error instanceof WakeError && error.status===403) throw new WakeError(404); throw error; }
+        // Optional capture correlation is persisted inside the authenticated offer
+        // transaction, before wake pruning can remove the SIP identity.
+        if (process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true") {
+          await client.query(`INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id)
+            VALUES($1,$2,$3,$4,$5) ON CONFLICT(wake_uuid) DO NOTHING`,[inserted.rows[0].id,b.id,b.tenant_id,b.extension_id,sipCallId]);
+        }
         return { call: call(inserted.rows[0]), created: true };
       });
     },

@@ -1,0 +1,279 @@
+import { beforeEach, expect, it, vi } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { createRequire } from "node:module";
+const { renderToStaticMarkup } = createRequire(import.meta.url)(
+  "react-dom/server",
+) as { renderToStaticMarkup(node: ReactNode): string };
+const mocks = vi.hoisted(() => ({
+  cloud: {} as any,
+  push: vi.fn(),
+  back: vi.fn(),
+  replace: vi.fn(),
+  playback: vi.fn(),
+  identity: { id: 1 } as any,
+  start: vi.fn(),
+  stop: vi.fn(),
+  press: new Map<string, () => unknown>(),
+}));
+vi.mock("react-native", () => ({
+  AppState: { currentState: "active" },
+  View: ({ children }: any) => createElement("div", null, children),
+  ScrollView: ({ children }: any) => createElement("div", null, children),
+  Text: ({ children }: any) => createElement("span", null, children),
+  TouchableOpacity: ({ children, disabled, onPress }: any) => {
+    const label = children?.props?.children;
+    if (typeof label === "string") mocks.press.set(label, onPress);
+    return createElement("button", { disabled }, children);
+  },
+}));
+vi.mock("expo-router", () => ({
+  useRouter: () => ({
+    push: mocks.push,
+    back: mocks.back,
+    replace: mocks.replace,
+    canGoBack: () => true,
+  }),
+  useLocalSearchParams: () => ({
+    callUuid: "11111111-1111-4111-8111-111111111111",
+  }),
+}));
+vi.mock("@react-navigation/native", () => ({ useFocusEffect: vi.fn() }));
+vi.mock("expo-audio", () => ({
+  useAudioPlayer: mocks.playback,
+  useAudioPlayerStatus: () => ({ isLoaded: false }),
+}));
+vi.mock("../hooks/use-cloud-recordings", () => ({
+  useCloudRecordings: () => mocks.cloud,
+}));
+vi.mock("../hooks/use-colors", () => ({
+  useColors: () => ({ foreground: "black", primary: "blue", muted: "gray" }),
+}));
+vi.mock("../components/screen-container", () => ({
+  ScreenContainer: ({ children }: any) => createElement("div", null, children),
+}));
+vi.mock("../lib/sip/call-store", () => ({
+  useSipCallStore: (select: any) =>
+    select({ incomingCall: null, activeCalls: {} }),
+}));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: mocks.identity }),
+}));
+vi.mock("../lib/trpc", () => ({
+  createTRPCClient: () => ({
+    cloudRecordings: {
+      startCapture: { mutate: mocks.start },
+      stopCapture: { mutate: mocks.stop },
+    },
+  }),
+}));
+vi.mock("../constants/oauth", () => ({
+  getApiBaseUrl: () => "https://api.phone11.ai",
+}));
+import {
+  CallHistoryRow,
+  RecordingPanel,
+  PlaybackControls,
+} from "../components/cloud-recordings/call-history-view";
+import { CaptureControls } from "../components/cloud-recordings/capture-controls";
+import Detail from "../app/call-recording/[callUuid]";
+import { playbackURL } from "../lib/cloud-recordings/presentation";
+const item = {
+  callUuid: "11111111-1111-4111-8111-111111111111",
+  number: "3001",
+  startedAt: 1000,
+  recordingStatus: "pending",
+  summaryStatus: "queued",
+  nativeHistoryId: "native-wake:exact",
+};
+beforeEach(() => {
+  mocks.cloud = { items: [item], loading: false, reload: vi.fn() };
+  mocks.playback.mockClear();
+  mocks.press.clear();
+  mocks.identity = { id: 1 };
+  mocks.start.mockReset();
+  mocks.stop.mockReset();
+});
+it("shows real pending statuses without creating playback", () => {
+  mocks.cloud.detail = item;
+  const html = renderToStaticMarkup(createElement(Detail));
+  expect(html).toContain("Recording pending");
+  expect(html).toContain("Your summary is being prepared.");
+  expect(html).not.toContain("Play recording");
+  expect(mocks.playback).not.toHaveBeenCalled();
+});
+it("renders server summary and transcript only when provided", () => {
+  mocks.cloud.detail = {
+    ...item,
+    summaryStatus: "ready",
+    summary: {
+      summary: "Agreed next steps",
+      actionItems: ["Send proposal"],
+      language: "en",
+    },
+    transcript: "Call transcript",
+  };
+  const html = renderToStaticMarkup(createElement(Detail));
+  expect(html).toContain("Send proposal");
+  expect(html).not.toContain("Call transcript");
+  const transcriptHTML = renderToStaticMarkup(
+    createElement(RecordingPanel, {
+      summaryStatus: "ready",
+      transcript: "Call transcript",
+      activeTab: "transcription",
+      onTabChange: vi.fn(),
+      onViewFull: vi.fn(),
+    }),
+  );
+  expect(transcriptHTML).toContain("Call transcript");
+  expect(transcriptHTML).toContain("View full transcription");
+});
+it("shows unavailable server state without fake records", () => {
+  mocks.cloud = {
+    items: [],
+    error: "Could not load cloud recordings",
+    reload: vi.fn(),
+  };
+  const html = renderToStaticMarkup(createElement(Detail));
+  expect(html).toContain("Could not load");
+  expect(html).not.toContain("Play recording");
+});
+it("only permits authenticated same-origin exact call playback path", () => {
+  const id = item.callUuid;
+  expect(
+    playbackURL("https://api.phone11.ai", id, `/api/recordings/play/${id}`),
+  ).toBe(`https://api.phone11.ai/api/recordings/play/${id}`);
+  for (const path of [
+    "https://other.test/file",
+    "//other.test/file",
+    "/api/recordings/play/other",
+    `/api/recordings/play/${id}?token=secret`,
+  ])
+    expect(playbackURL("https://api.phone11.ai", id, path)).toBeNull();
+  expect(
+    playbackURL("http://api.phone11.ai", id, `/api/recordings/play/${id}`),
+  ).toBeNull();
+});
+
+it("shows manual controls only when server explicitly permits them", () => {
+  mocks.cloud.detail = {
+    ...item,
+    manualControls: { canStart: false, canStop: false },
+  };
+  let html = renderToStaticMarkup(createElement(Detail));
+  expect(html).not.toContain("Start recording");
+  expect(html).not.toContain("Stop recording");
+  mocks.cloud.detail.manualControls = { canStart: true, canStop: false };
+  html = renderToStaticMarkup(createElement(Detail));
+  expect(html).toContain("Start recording");
+  expect(html).not.toContain("Stop recording");
+});
+it("manual capture sends only exact UUID and drops a result after account change", async () => {
+  let resolve!: (value: any) => void;
+  mocks.start.mockImplementation(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const refresh = vi.fn(async () => {});
+  renderToStaticMarkup(
+    createElement(CaptureControls, {
+      callUuid: item.callUuid,
+      controls: { canStart: true, canStop: false },
+      refresh,
+    }),
+  );
+  mocks.press.get("Start recording")!();
+  mocks.press.get("Start recording")!();
+  expect(mocks.start).toHaveBeenCalledTimes(1);
+  expect(mocks.start).toHaveBeenCalledWith({ callUuid: item.callUuid });
+  mocks.identity = { id: 2 };
+  resolve({ started: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(refresh).not.toHaveBeenCalled();
+});
+it("manual stop refreshes authoritative status without inventing a ready recording", async () => {
+  mocks.stop.mockResolvedValue({ stopped: true });
+  const refresh = vi.fn(async () => {});
+  renderToStaticMarkup(
+    createElement(CaptureControls, {
+      callUuid: item.callUuid,
+      controls: { canStart: false, canStop: true },
+      refresh,
+    }),
+  );
+  mocks.press.get("Stop recording")!();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(mocks.stop).toHaveBeenCalledWith({ callUuid: item.callUuid });
+  expect(refresh).toHaveBeenCalledTimes(1);
+});
+
+it("keeps ready indicators small and hides content when collapsed", () => {
+  const call = {
+    id: "1",
+    name: "คุณสมชาย",
+    number: "+66825826667",
+    direction: "incoming" as const,
+    time: "09:30",
+    duration: "2:04",
+  };
+  let html = renderToStaticMarkup(
+    createElement(
+      CallHistoryRow,
+      { call, expanded: false, onToggle: vi.fn(), onCall: vi.fn() },
+      "private-inline-content",
+    ),
+  );
+  expect(html).not.toContain("private-inline-content");
+  expect(html).not.toContain("● Recording");
+  expect(html).not.toContain("✦ AI summary");
+  html = renderToStaticMarkup(
+    createElement(
+      CallHistoryRow,
+      {
+        call: { ...call, recordingReady: true, summaryReady: true },
+        expanded: true,
+        onToggle: vi.fn(),
+        onCall: vi.fn(),
+      },
+      "inline-content",
+    ),
+  );
+  expect(html).toContain("inline-content");
+  expect(html).toContain("● Recording");
+  expect(html).toContain("✦ AI summary");
+});
+it("ready without returned summary never claims AI is off", () => {
+  const html = renderToStaticMarkup(
+    createElement(RecordingPanel, {
+      summaryStatus: "ready",
+      activeTab: "summary",
+      onTabChange: vi.fn(),
+    }),
+  );
+  expect(html).toContain("Summary unavailable");
+  expect(html).not.toContain("AI summary is off");
+});
+
+it("full call detail offers a working explicit Back control", () => {
+  mocks.cloud.detail = item;
+  renderToStaticMarkup(createElement(Detail));
+  mocks.press.get("‹ Back")!();
+  expect(mocks.back).toHaveBeenCalled();
+});
+it("full transcription link preserves the chosen tab", () => {
+  const view = vi.fn();
+  renderToStaticMarkup(
+    createElement(RecordingPanel, {
+      summaryStatus: "ready",
+      transcript: "ข้อความภาษาไทย",
+      activeTab: "transcription",
+      onTabChange: vi.fn(),
+      onViewFull: view,
+    }),
+  );
+  mocks.press.get("View full transcription")!();
+  expect(view).toHaveBeenCalledWith("transcription");
+});

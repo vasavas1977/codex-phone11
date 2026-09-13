@@ -79,6 +79,19 @@ jobs:
         run: |
           pnpm exec vitest run \
             tests/phone11-media-security.test.ts \
+            tests/phone11-recording-gemini.test.ts \
+            tests/phone11-recording-worker.test.ts \
+            tests/phone11-recording-capture.test.ts \
+            tests/phone11-recording-esl.test.ts \
+            tests/phone11-recording-spool.test.ts \
+            tests/phone11-recording-ledger.test.ts \
+            tests/phone11-recording-service.test.ts \
+            tests/phone11-recording-correlation.test.ts \
+            tests/phone11-cloud-playback.test.ts \
+            tests/phone11-cloud-playback-focus.test.tsx \
+            tests/phone11-cloud-polling.test.ts \
+            tests/phone11-cloud-recording-ui.test.tsx \
+            tests/phone11-cloud-recording-auth.test.ts \
             tests/phone11-storage-proxy.test.ts \
             tests/phone11-push-security.test.ts \
             tests/phone11-push-session.test.ts \
@@ -113,6 +126,27 @@ jobs:
         run: node ops/scripts/test-phone11-wake-kamailio.mjs
       - name: Compile backend with esbuild
         run: pnpm run build:backend
+
+  cloud-recording-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install isolated database test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+      - name: Test recording policies, ownership, job leases and retention
+        run: node scripts/test-phone11-cloud-recordings.mjs
 
   chat-postgres-tests:
     runs-on: ubuntu-24.04

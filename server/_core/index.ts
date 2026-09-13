@@ -1,5 +1,7 @@
+import { startRecordingCaptureService } from "../cloud-recordings/capture-service";
 import "dotenv/config";
 import { startChatNotificationDispatcher } from "../chat-notifications/dispatcher";
+import { startRecordingAnalysisWorker, startRecordingRetentionWorker } from "../cloud-recordings/worker";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
@@ -35,6 +37,9 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  let stopRecordingAnalysis = () => {};
+  let stopRecordingRetention = () => {};
+  let stopRecordingCapture = () => {};
   const app = express();
   const server = createServer(app);
 
@@ -99,6 +104,9 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`[api] server listening on port ${port}`);
     startChatNotificationDispatcher();
+    stopRecordingAnalysis = startRecordingAnalysisWorker();
+    stopRecordingRetention = startRecordingRetentionWorker();
+    stopRecordingCapture = startRecordingCaptureService();
 
     // Start FreeSWITCH ESL event listener after server is up
     try {
@@ -110,6 +118,9 @@ async function startServer() {
 
   // Graceful shutdown
   process.on("SIGTERM", () => {
+    stopRecordingAnalysis();
+    stopRecordingRetention();
+    stopRecordingCapture();
     console.log("[api] SIGTERM received, shutting down...");
     fsEventListener.stop();
     wsManager.shutdown();

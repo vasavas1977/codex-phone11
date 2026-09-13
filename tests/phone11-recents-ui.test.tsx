@@ -7,6 +7,7 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
 const mocks = vi.hoisted(() => ({
   user: { id: 1 } as { id: number } | null,
   history: {} as any,
+  cloud: { items: [] as any[], reload: vi.fn() },
   contacts: [] as any[],
   calling: false,
   call: vi.fn(async () => {}),
@@ -15,6 +16,10 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../hooks/use-device-contacts", () => ({
   useDeviceContacts: () => ({ people: mocks.contacts }),
+}));
+vi.mock("expo-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("../hooks/use-cloud-recordings", () => ({
+  useCloudRecordings: () => mocks.cloud,
 }));
 vi.mock("react-native", () => ({
   StyleSheet: { create: (s: any) => s },
@@ -53,6 +58,9 @@ vi.mock("react-native", () => ({
       children,
     );
   },
+}));
+vi.mock("../components/cloud-recordings/live-recording-panel", () => ({
+  LiveRecordingPanel: () => null,
 }));
 vi.mock("@react-navigation/native", () => ({ useFocusEffect: vi.fn() }));
 vi.mock("expo-haptics", () => ({
@@ -99,6 +107,7 @@ beforeEach(() => {
   mocks.press.clear();
   mocks.user = { id: 1 };
   mocks.contacts = [];
+  mocks.cloud.items = [];
   mocks.calling = false;
   mocks.history = {
     ownerUserId: 1,
@@ -108,12 +117,13 @@ beforeEach(() => {
     reload: vi.fn(),
   };
 });
-it("routes both the saved call row and phone button through the guarded call hook", async () => {
+it("expands a row without dialing; only its explicit call button places a call", async () => {
   renderToStaticMarkup(<RecentsScreen />);
-  await mocks.press.get("Call สมชาย, 3002")!.run();
+  await mocks.press.get("Details for สมชาย")!.run();
+  expect(mocks.call).not.toHaveBeenCalled();
   await mocks.press.get("Call 3002")!.run();
   expect(mocks.call).toHaveBeenNthCalledWith(1, "3002");
-  expect(mocks.call).toHaveBeenNthCalledWith(2, "3002");
+  expect(mocks.call).toHaveBeenCalledTimes(1);
 });
 it("hides a previous owner's history after sign-out", () => {
   mocks.user = null;
@@ -142,10 +152,10 @@ it("shows loading and error feedback and supports a real refresh", () => {
   mocks.refresh!();
   expect(mocks.history.reload).toHaveBeenCalledOnce();
 });
-it("disables both call entry buttons while a call request is pending", () => {
+it("disables callback while keeping call details accessible during a pending request", () => {
   mocks.calling = true;
   renderToStaticMarkup(<RecentsScreen />);
-  expect(mocks.press.get("Call สมชาย, 3002")!.disabled).toBe(true);
+  expect(mocks.press.get("Details for สมชาย")!.disabled).not.toBe(true);
   expect(mocks.press.get("Call 3002")!.disabled).toBe(true);
 });
 
@@ -160,8 +170,29 @@ it("resolves a local contact name without changing saved history or its call tar
   ];
   expect(renderToStaticMarkup(<RecentsScreen />)).toContain("Local friend");
   expect(mocks.history.entries[0].name).toBe("สมชาย");
-  await mocks.press.get("Call Local friend, +66825826667")!.run();
+  await mocks.press.get("Call +66825826667")!.run();
   expect(mocks.call).toHaveBeenCalledWith("+66825826667");
   mocks.contacts = [];
+  mocks.cloud.items = [];
   expect(renderToStaticMarkup(<RecentsScreen />)).toContain("สมชาย");
+});
+
+it("joins cloud recording controls only by exact server-provided history ID", () => {
+  mocks.cloud.items = [
+    {
+      callUuid: "11111111-1111-4111-8111-111111111111",
+      nativeHistoryId: "saved-1",
+      number: "3002",
+      startedAt: 1000,
+      recordingStatus: "ready",
+      summaryStatus: "queued",
+    },
+  ];
+  let html = renderToStaticMarkup(createElement(RecentsScreen));
+  expect(html.match(/● Recording/g)).toHaveLength(1);
+  expect(html.match(/aria-label="Details for/g)).toHaveLength(1);
+  mocks.cloud.items[0].nativeHistoryId = "other-id";
+  html = renderToStaticMarkup(createElement(RecentsScreen));
+  expect(html.match(/aria-label="Details for/g)).toHaveLength(2);
+  expect(html.match(/● Recording/g)).toHaveLength(1);
 });

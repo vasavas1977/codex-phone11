@@ -1,0 +1,115 @@
+import { bindIncomingChannel } from './correlation';
+import { getPool } from '../pbx/db';
+import { createCaptureLedger } from './capture-ledger';
+import { createRecordingCapture } from './capture';
+import { createEslCaptureTransport,type EslConfig } from './esl-capture';
+import { createCaptureSpool } from './capture-spool';
+/** Explicitly started service; imports never connect to PBX or enable recording.
+ * Polling exact persisted channel IDs reconciles ESL event loss without guessing
+ * call identity from telephone numbers, timestamps or caller-provided tenants.
+ */
+export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirectory:string;uploadEndpoint:string;integrationSecret:string}) {
+ const db=getPool(),ledger=createCaptureLedger(db),transport=createEslCaptureTransport(config.esl);
+ const spool=createCaptureSpool({directory:config.spoolDirectory,endpoint:config.uploadEndpoint,integrationSecret:config.integrationSecret});
+ const capture=createRecordingCapture({ledger,transport,upload:spool});
+ let running=false;
+ return {
+  async capabilities(channelUuid:string,actorUserId:number){
+   const none={canStart:false,canStop:false};
+   if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true'||!/^[0-9a-f-]{36}$/i.test(channelUuid)||!Number.isSafeInteger(actorUserId)||actorUserId<=0)return none;
+   const found=await db.query(`SELECT r.recording_status,p.mode FROM phone11_cloud_recordings r
+    JOIN phone11_recording_routes rr ON rr.channel_uuid::text=r.call_uuid AND rr.tenant_id=r.tenant_id AND rr.extension_id=r.extension_id
+    JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id JOIN user_extensions ue ON ue.extension_id=r.extension_id
+    JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id JOIN tenants t ON t.id=r.tenant_id
+    WHERE r.call_uuid=$1 AND ue.user_id=$2 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active' AND r.expires_at>clock_timestamp()`,[channelUuid,actorUserId]);
+   if(found.rows.length!==1)return none;
+   try{if((await transport.api(`uuid_exists ${channelUuid}`)).trim()!=='true')return none;
+    if(found.rows[0].recording_status==='recording')return {canStart:false,canStop:true};
+    const peer=(await transport.api(`uuid_getvar ${channelUuid} signal_bond`)).trim();
+    return {canStart:found.rows[0].mode!=='off'&&['off','failed'].includes(found.rows[0].recording_status)&&/^[0-9a-f-]{36}$/i.test(peer)&&peer!==channelUuid,canStop:false};
+   }catch{return none;}
+  },
+  /** Server-authenticated actor only; ledger verifies exact assigned extension. */
+  manualStart:(channelUuid:string,actorUserId:number)=>capture.start(channelUuid,{kind:'manual',actorUserId}),
+  async manualStop(id:string,actor:number){
+   const lease=await ledger.active(id,actor);if(!lease)return false;
+   if(!await capture.stop(id,actor))return false;
+   // Authenticated transport waits for exact RECORD_STOP, not only command ACK.
+   await capture.recordingStopped(id,lease.path);return true;
+  },
+  onAuthenticatedRecordStop:capture.recordingStopped,
+  async tick(){
+   if(running)return;
+   running=true;
+   try{
+    // Authenticated ESL supplies exact live UUID and SIP identity. Bounded fields
+    // stay in memory; no raw channel dumps or caller numbers are logged.
+    const channels=JSON.parse(await transport.api('show channels as json'));
+    if(Array.isArray(channels.rows)&&channels.rows.length<=100){
+     for(const row of channels.rows.slice(0,20)){
+      const id=row.uuid;if(typeof id!=='string'||!/^[0-9a-f-]{36}$/i.test(id))continue;
+      try{
+       const dump=await transport.api(`uuid_dump ${id}`);const fields:Record<string,string>={};
+       for(const line of dump.split('\n')){const at=line.indexOf(':');if(at>0)fields[line.slice(0,at)]=line.slice(at+1).trim();}
+       const sip=fields.variable_sip_call_id;
+       if(sip)await bindIncomingChannel(id,sip,fields['Caller-Caller-ID-Number']??'');
+      }catch{/* Unmapped channels remain excluded. */}
+     }
+    }
+    const rows=await db.query(`SELECT r.call_uuid,r.tenant_id,r.extension_id,r.capture_token,r.capture_stopped_at,r.recording_status,p.mode,(r.expires_at<=clock_timestamp()) AS expired,(r.capture_pending_until<clock_timestamp()) AS pending_expired FROM phone11_cloud_recordings r
+     JOIN phone11_recording_routes rr ON rr.channel_uuid::text=r.call_uuid AND rr.tenant_id=r.tenant_id AND rr.extension_id=r.extension_id
+     JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id
+     WHERE r.recording_status IN ('recording','pending') OR (r.expires_at>clock_timestamp() AND r.recording_status='off' AND p.mode='automatic') ORDER BY r.started_at LIMIT 20`);
+    for(const r of rows.rows){
+     if(!/^[0-9a-f-]{36}$/i.test(r.call_uuid))continue;
+     try{
+      const exists=(await transport.api(`uuid_exists ${r.call_uuid}`)).trim();
+      if(r.recording_status==='recording'&&r.capture_stopped_at&&(r.mode==='off'||r.expired||process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true')){
+       const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};await spool.discardCompleted(lease);await ledger.failed(lease,'policy_revoked');continue;
+      }
+      if(r.recording_status==='pending'&&r.pending_expired){
+       if(exists==='true')await transport.api(`uuid_record ${r.call_uuid} stop /var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`);
+       if(exists==='false'||exists==='true'){const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};await spool.discardCompleted(lease);await ledger.failed(lease,'capture_failed');}
+      }else if(r.recording_status==='recording'&&exists==='true'&&(r.mode==='off'||r.expired||process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true')){
+       await transport.api(`uuid_record ${r.call_uuid} stop /var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`);
+       const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};await spool.discardCompleted(lease);await ledger.failed(lease,'policy_revoked');
+      }else if(r.recording_status==='recording'&&exists==='false'){
+       // Verified channel absence means its attached media recorder has ended.
+       if(r.expired||r.mode==='off'||process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true'){
+        const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};
+        await spool.discardCompleted(lease);await ledger.failed(lease,'policy_revoked');continue;
+       }
+       await capture.recordingStopped(r.call_uuid,`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`);
+      }else if(r.recording_status==='off'&&exists==='true'){
+       const peer=(await transport.api(`uuid_getvar ${r.call_uuid} signal_bond`)).trim();
+       if(/^[0-9a-f-]{36}$/i.test(peer)&&peer!==r.call_uuid)await capture.start(r.call_uuid,{kind:'automatic'});
+      }
+     }catch{/* Durable state is retained; next bounded tick reconciles. */}
+    }
+    for(const job of await ledger.pendingUploads()){
+     try{await capture.recordingStopped(job.channelUuid,job.path);}catch{/* Durable lease release permits retry. */}
+    }
+   }finally{running=false;}
+  },
+ };
+}
+
+let service:ReturnType<typeof createRecordingCaptureService>|undefined;
+export function configuredRecordingCapture(cleanupOnly=false){
+ if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true'&&!cleanupOnly)return null;
+ if(!service){
+  const host=process.env.PHONE11_RECORDING_ESL_HOST,password=process.env.PHONE11_RECORDING_ESL_PASSWORD;
+  const announcementPath=process.env.PHONE11_RECORDING_ANNOUNCEMENT_PATH,spoolDirectory=process.env.PHONE11_RECORDING_SPOOL_PATH;
+  const uploadEndpoint=process.env.PHONE11_RECORDING_UPLOAD_URL,integrationSecret=process.env.FS_SHARED_SECRET;
+  if(!host||!password||!announcementPath||!spoolDirectory||!uploadEndpoint||!integrationSecret){if(cleanupOnly&&process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true')return null;throw new Error('Recording capture is not configured');}
+  service=createRecordingCaptureService({esl:{host,password,port:Number(process.env.PHONE11_RECORDING_ESL_PORT??8021),announcementPath},spoolDirectory,uploadEndpoint,integrationSecret});
+ }
+ return service;
+}
+export function startRecordingCaptureService():()=>void {
+ let instance:ReturnType<typeof createRecordingCaptureService>|null;
+ try{instance=configuredRecordingCapture(true);}catch{console.warn('[Recordings] Capture configuration unavailable');return ()=>{};}
+ if(!instance)return ()=>{};
+ let stopped=false;const tick=()=>{if(!stopped)void instance!.tick().catch(()=>console.warn('[Recordings] Capture reconciliation unavailable'));};
+ const timer=setInterval(tick,2000);timer.unref();tick();return ()=>{stopped=true;clearInterval(timer);};
+}

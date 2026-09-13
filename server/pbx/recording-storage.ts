@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { ingestStoredRecording } from "../cloud-recordings/ingestion";
 /** Authenticated recording storage. Unsupported voicemail storage fails closed. */
 import { Router, raw, type Request, type Response } from "express";
 import { query } from "./db";
@@ -12,7 +14,7 @@ const MAX_RECORDING_SIZE = 100 * 1024 * 1024;
 const validUuid = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 const validTenant = (value: number) => Number.isSafeInteger(value) && value > 0;
 
-export async function storeRecording(tenantId: number, callUuid: string, fileBuffer: Buffer, format = "wav") {
+export async function storeRecording(tenantId: number, callUuid: string, fileBuffer: Buffer, format = "wav", idempotent = false) {
   if (!validTenant(tenantId) || !validUuid(callUuid) || format !== "wav" || !fileBuffer.length || fileBuffer.length > MAX_RECORDING_SIZE) {
     throw new Error("Invalid recording upload");
   }
@@ -24,7 +26,14 @@ export async function storeRecording(tenantId: number, callUuid: string, fileBuf
   if (!realDir.startsWith(path.join(base, String(tenantId)) + path.sep)) throw new Error("Invalid recording directory");
   const filePath = path.join(realDir, `${callUuid}.wav`);
   // Exclusive creation prevents overwriting a recording or following an existing symlink.
-  await fs.promises.writeFile(filePath, fileBuffer, { flag: "wx", mode: 0o600 });
+  try { await fs.promises.writeFile(filePath, fileBuffer, { flag: "wx", mode: 0o600 }); }
+  catch(error) {
+    if(!idempotent || (error as NodeJS.ErrnoException).code!=="EEXIST")throw error;
+    const handle=await fs.promises.open(filePath,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+    try {const st=await handle.stat();if(!st.isFile()||st.size!==fileBuffer.length)throw new Error("Recording identity mismatch");
+      const bytes=await handle.readFile();if(!createHash('sha256').update(bytes).digest().equals(createHash('sha256').update(fileBuffer).digest()))throw new Error("Recording identity mismatch");
+    }finally{await handle.close();}
+  }
   return { filePath, fileSize: fileBuffer.length };
 }
 
@@ -54,9 +63,31 @@ storageRouter.post("/upload", verifyFsAuth, raw({ type: ["audio/wav", "audio/x-w
   try {
     const call = await query("SELECT id FROM call_records WHERE call_uuid = $1 AND tenant_id = $2", [callUuid, tenantId]);
     if (!call.rows.length) { res.status(404).json({ error: "Call not found" }); return; }
-    const stored = await storeRecording(tenantId, callUuid, req.body);
+    let stored: {filePath:string;fileSize:number};
+    const captureToken = typeof req.query.capture_token === "string" ? req.query.capture_token : "";
+    if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true") {
+      if(!/^[a-f0-9-]{36}$/i.test(captureToken)){res.status(409).json({error:"Capture authorization required"});return;}
+      const authorized=await query(`SELECT r.storage_key,r.recording_status FROM phone11_cloud_recordings r
+       JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id WHERE r.call_uuid=$1 AND r.tenant_id=$2
+       AND r.capture_token=$3 AND r.recording_status IN ('recording','ready') AND r.expires_at>clock_timestamp() AND p.mode<>'off'`,[callUuid,tenantId,captureToken]);
+      if(authorized.rows.length!==1){res.status(409).json({error:"Capture authorization unavailable"});return;}
+    }
+    const existing=await query("SELECT recording_url FROM call_records WHERE call_uuid=$1 AND tenant_id=$2",[callUuid,tenantId]);
+    if(captureToken && existing.rows[0]?.recording_url) {
+      const base=await fs.promises.realpath(RECORDINGS_BASE);
+      const filePath=await fs.promises.realpath(existing.rows[0].recording_url);
+      if(!filePath.startsWith(path.join(base,String(tenantId))+path.sep))throw new Error("Invalid recording path");
+      const stat=await fs.promises.stat(filePath);if(!stat.isFile()||stat.size!==req.body.length||stat.size>MAX_RECORDING_SIZE)throw new Error("Recording identity mismatch");
+      const bytes=await fs.promises.readFile(filePath);
+      if(createHash('sha256').update(bytes).digest('hex')!==createHash('sha256').update(req.body).digest('hex'))throw new Error("Recording identity mismatch");
+      stored={filePath,fileSize:bytes.length};
+    } else { stored = await storeRecording(tenantId, callUuid, req.body, "wav", Boolean(captureToken)); }
     await query("UPDATE call_records SET recording_url = $1 WHERE call_uuid = $2 AND tenant_id = $3", [stored.filePath, callUuid, tenantId]);
-    res.json({ ok: true, size: stored.fileSize });
+    // AI metadata is a separate gated pipeline. An unavailable job database must
+    // never turn a successfully stored recording into an unsafe overwrite retry.
+    let analysisQueued = false;
+    try { analysisQueued = await ingestStoredRecording(callUuid, stored.filePath, typeof req.query.capture_token === "string" ? req.query.capture_token : ""); } catch { /* Reconciliation can retry metadata separately. */ }
+    res.json({ ok: true, size: stored.fileSize, analysisQueued, ...(captureToken ? {storageKey:stored.filePath} : {}) });
   } catch {
     res.status(503).json({ error: "Recording storage is unavailable" });
   }
