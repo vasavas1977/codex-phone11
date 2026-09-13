@@ -88,6 +88,7 @@ jobs:
             tests/phone11-recording-spool.test.ts \
             tests/phone11-recording-ledger.test.ts \
             tests/phone11-recording-service.test.ts \
+            tests/phone11-recording-channel-dump.test.ts \
             tests/phone11-recording-correlation.test.ts \
             tests/phone11-cloud-playback.test.ts \
             tests/phone11-cloud-playback-focus.test.tsx \

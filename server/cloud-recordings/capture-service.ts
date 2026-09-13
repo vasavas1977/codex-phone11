@@ -5,6 +5,22 @@ import { createCaptureLedger } from './capture-ledger';
 import { createRecordingCapture } from './capture';
 import { createEslCaptureTransport,type EslConfig } from './esl-capture';
 import { createCaptureSpool } from './capture-spool';
+/** Default uuid_dump text is URL encoded and cannot preserve literal %HH.
+ * JSON serializes the original values. Decode JSON only, never URI-decode SIP IDs. */
+export function parseRecordingChannelDump(body:string,channelUuid:string):Record<string,string>{
+ if(body.length>512*1024)throw new Error('Invalid recording channel snapshot');
+ const parsed:unknown=JSON.parse(body);
+ if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Invalid recording channel snapshot');
+ const data=parsed as Record<string,unknown>,fields:Record<string,string>={};
+ for(const key of ['Unique-ID','variable_sip_call_id','Caller-Channel-Created-Time','variable_start_epoch','Caller-Caller-ID-Number']){
+  if(!Object.prototype.hasOwnProperty.call(data,key))continue;
+  const value=data[key];
+  if(typeof value!=='string'||value.length>512||/[\x00-\x1f\x7f]/.test(value))throw new Error('Invalid recording channel snapshot');
+  fields[key]=value;
+ }
+ if(fields['Unique-ID']!==channelUuid||!fields.variable_sip_call_id||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(channelUuid))throw new Error('Invalid recording channel snapshot');
+ return fields;
+}
 /** Explicitly started service; imports never connect to PBX or enable recording.
  * Polling exact persisted channel IDs reconciles ESL event loss without guessing
  * call identity from telephone numbers, timestamps or caller-provided tenants.
@@ -50,8 +66,7 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
      for(const row of channels.rows.slice(0,20)){
       const id=row.uuid;if(typeof id!=='string'||!/^[0-9a-f-]{36}$/i.test(id))continue;
       try{
-       const dump=await transport.api(`uuid_dump ${id}`);const fields:Record<string,string>={};
-       for(const line of dump.split('\n')){const at=line.indexOf(':');if(at>0)fields[line.slice(0,at)]=line.slice(at+1).trim();}
+       const fields=parseRecordingChannelDump(await transport.api(`uuid_dump ${id} json`),id);
        const sip=fields.variable_sip_call_id;
        if(sip){await bindIncomingChannel(id,sip,fields['Caller-Caller-ID-Number']??'');if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED==='true')await persistRouteCdr(db,id,fields);}
       }catch{/* Unmapped channels remain excluded. */}
