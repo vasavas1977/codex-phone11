@@ -565,6 +565,9 @@ describe("Siprix native adapter", () => {
     await engine.makeCall("2002");
     await engine.setMute("11", true);
     expect(bridge.setMute).toHaveBeenCalledWith("11", true);
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: true },
+    }));
     await engine.setSpeaker("11", true);
     expect(bridge.setSpeaker).toHaveBeenCalledWith(true);
     expect(useSipCallStore.getState().activeCalls["11"].isSpeaker).toBe(true);
@@ -573,6 +576,9 @@ describe("Siprix native adapter", () => {
     await expect(engine.sendDtmf("11", "bad data")).rejects.toThrow("Invalid DTMF");
     bridge.setMute.mockRejectedValueOnce(Object.assign(new Error(account.password), { code: "E_SIPRIX_-123" }));
     await expect(engine.setMute("11", false)).rejects.toThrow("E_SIPRIX_-123");
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({
+      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: false },
+    }));
     expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
   });
 

@@ -46,7 +46,8 @@ static int inlineRegistrationState = -1;
 static int pushRegistrationState = -1;
 static int registrationCode;
 static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, deactivations;
-static int nextAccount = 10, nextCall = 20;
+static int nextAccount = 10, nextCall = 20, lastMuteCall;
+static BOOL lastMuteValue;
 static BOOL sdkInitialized, speakerOK = YES, callKitEnabled;
 static HoldState mockHold = HoldStateNone;
 static NSString *wakeHeader;
@@ -93,7 +94,7 @@ static id<SiprixEventDelegate> sdkDelegate;
 - (int)callAccept:(int)callId withVideo:(BOOL)video { accepts++; return sdkCode; }
 - (int)callReject:(int)callId statusCode:(int)statusCode { rejects++; return sdkCode; }
 - (int)callBye:(int)callId { byes++; return sdkCode; }
-- (int)callMuteMic:(int)callId mute:(BOOL)mute { mutes++; return sdkCode; }
+- (int)callMuteMic:(int)callId mute:(BOOL)mute { mutes++; lastMuteCall = callId; lastMuteValue = mute; return sdkCode; }
 - (int)callGetHoldState:(int)callId holdState:(SiprixHoldData *)data { data.holdState = mockHold; return sdkCode; }
 - (int)callHold:(int)callId { holds++; return sdkCode; }
 - (int)callSendDtmf:(int)callId dtmfs:(NSString *)digits durationMs:(int)duration intertoneGapMs:(int)gap method:(DtmfMethod)method {
@@ -230,6 +231,18 @@ int main(void) {
     sdkCode = 0;
     [bridge setMute:callId muted:YES resolver:resolve rejecter:reject];
     CHECK(!error && [bridge.testEvents.lastObject[@"call"][@"muted"] boolValue]);
+    CHECK(lastMuteCall == callId.intValue && lastMuteValue);
+    sdkCode = -33;
+    [bridge setMute:callId muted:NO resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-33"] && [P11SiprixRuntime.shared.calls[callId][@"muted"] boolValue]);
+    sdkCode = 0;
+    [bridge setMute:callId muted:NO resolver:resolve rejecter:reject];
+    CHECK(!error && !lastMuteValue && lastMuteCall == callId.intValue);
+    CHECK(![bridge.testEvents.lastObject[@"call"][@"muted"] boolValue]);
+    int beforeInvalidMute = mutes;
+    [bridge setMute:@"999999" muted:YES resolver:resolve rejecter:reject];
+    CHECK(error && mutes == beforeInvalidMute);
+
     mockHold = HoldStateRemote;
     [bridge setHold:callId held:NO resolver:resolve rejecter:reject];
     CHECK(!error && holds == 0);

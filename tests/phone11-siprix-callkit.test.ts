@@ -2,8 +2,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (data?: any) => unknown>(),
   keep: { setup: vi.fn(async (_options?: any) => {}), startCall: vi.fn(), answerIncomingCall: vi.fn(), displayIncomingCall: vi.fn(), reportConnectedOutgoingCallWithUUID: vi.fn(), setCurrentCallActive: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn(), reportEndCallWithUUID: vi.fn() },
-  engine: { handleNativeAudioSession: vi.fn(async (_active: boolean) => {}), answerCall: vi.fn(async (_id: string) => {}), hangupCall: vi.fn(async (_id: string) => {}) },
-  terminate: vi.fn(), diagnostic: vi.fn(),
+  engine: { setMute: vi.fn(async (_id: string, _muted: boolean) => {}), handleNativeAudioSession: vi.fn(async (_active: boolean) => {}), answerCall: vi.fn(async (_id: string) => {}), hangupCall: vi.fn(async (_id: string) => {}) },
+  setMuted: vi.fn(), terminate: vi.fn(), diagnostic: vi.fn(),
   alert: vi.fn(), appState: { currentState: "active", addEventListener: () => ({ remove: vi.fn() }) },
   owner: { id: 1 } as { id: number } | null,
   incoming: null as { id: string; status: string } | null,
@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("react-native", () => ({ Alert: { alert: mocks.alert }, Platform: { OS: "ios" }, AppState: mocks.appState }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: mocks.owner }) }));
 vi.mock("../lib/sip/engine", () => ({ sipEngine: mocks.engine }));
-vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ activeCalls: {}, incomingCall: mocks.incoming, terminateCall: mocks.terminate }) } }));
+vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ setMuted: mocks.setMuted, activeCalls: {}, incomingCall: mocks.incoming, terminateCall: mocks.terminate }) } }));
 vi.mock("../lib/sip/diagnostics-store", () => ({ formatSipError: String, useSipDiagnosticsStore: { getState: () => ({ addEvent: mocks.diagnostic }) } }));
 
 // NativeCallManager loads CallKeep with CommonJS require; inject that package's cached export.
@@ -340,4 +340,34 @@ it("rejects a waiting wake answer on native termination without a second system 
   nativeCallManager.reportCallEnded("wake-1");
   await expect(requested).rejects.toThrow("ended");
   expect(mocks.keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+});
+
+it("applies native microphone changes to the exact mapped call only after SDK acceptance", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("320", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  await mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted: true });
+  await mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted: false });
+  expect(mocks.engine.setMute.mock.calls).toEqual([["320", true], ["320", false]]);
+  expect(mocks.setMuted.mock.calls).toEqual([["320", true], ["320", false]]);
+  await mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID: "unknown", muted: true });
+  expect(mocks.engine.setMute).toHaveBeenCalledTimes(2);
+});
+it("handles native microphone failure without falsely updating mute or exposing SDK text", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("321", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  mocks.engine.setMute.mockRejectedValueOnce(new Error("private SDK response"));
+  await expect(mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted: true })).resolves.toBeUndefined();
+  expect(mocks.setMuted).not.toHaveBeenCalled();
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "CallKit microphone mute failed" }));
+  expect(mocks.alert).toHaveBeenCalledWith("Could not change microphone", expect.any(String));
+  expect(JSON.stringify([mocks.alert.mock.calls, mocks.diagnostic.mock.calls])).not.toContain("private SDK");
+});
+it("does not apply a late mute result after the mapped call ends", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("322", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  let finish!: () => void;
+  mocks.engine.setMute.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  const pending = mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted: true });
+  nativeCallManager.reportCallEnded("322"); finish(); await pending;
+  expect(mocks.setMuted).not.toHaveBeenCalled();
 });

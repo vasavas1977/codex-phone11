@@ -434,7 +434,13 @@ export class SiprixEngine {
     return this.command(callId, "hangup", bridge => bridge.hangupCall(callId));
   }
   setMute(callId: string, muted: boolean): Promise<void> {
-    return this.command(callId, "mute", bridge => bridge.setMute(callId, muted));
+    return this.command(callId, "mute", async bridge => {
+      await bridge.setMute(callId, muted);
+      useSipDiagnosticsStore.getState().addEvent({
+        level: "info", category: "media", message: "Siprix microphone mute command accepted",
+        context: { callId, muted },
+      });
+    });
   }
   setHold(callId: string, held: boolean): Promise<void> {
     return this.command(callId, "hold", bridge => bridge.setHold(callId, held));

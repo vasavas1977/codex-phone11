@@ -705,9 +705,20 @@ class NativeCallManager {
         const sipCallId = uuidToCallId.get(callUUID);
         if (!sipCallId) return;
 
-        console.log(`[NativeCall] Mute toggled: ${muted}`);
-        await sipEngine.setMute(sipCallId, muted);
-        useSipCallStore.getState().setMuted(sipCallId, muted);
+        try {
+          await sipEngine.setMute(sipCallId, muted);
+          // The action may finish after the call has ended or been replaced.
+          if (uuidToCallId.get(callUUID) === sipCallId) {
+            useSipCallStore.getState().setMuted(sipCallId, muted);
+          }
+        } catch {
+          addNativeCallDiagnostic("error", "CallKit microphone mute failed", {
+            callId: sipCallId, context: { muted },
+          });
+          if (uuidToCallId.get(callUUID) === sipCallId && AppState.currentState === "active") {
+            Alert.alert("Could not change microphone", "Your microphone setting did not change. Try Mute again in Phone11.");
+          }
+        }
       }
     );
 

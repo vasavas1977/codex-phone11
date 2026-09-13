@@ -11,6 +11,7 @@ import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 
+import { ActiveCallRecordingControls } from "@/components/cloud-recordings/active-call-recording-controls";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
@@ -127,6 +128,16 @@ export default function ActiveCallScreen() {
         },
       ]}
     >
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel="Minimize call and open Recents"
+        accessibilityHint="Your call will continue. Tap the call banner to return."
+        style={styles.minimizeButton}
+        onPress={() => router.replace("/(tabs)/recents")}
+      >
+        <Text style={styles.minimizeLabel}>‹ Recents</Text>
+        <Text style={styles.minimizeHint}>Call continues</Text>
+      </TouchableOpacity>
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
@@ -172,6 +183,10 @@ export default function ActiveCallScreen() {
               ))}
             </View>
           </View>
+        )}
+
+        {controlsReady && (
+          <ActiveCallRecordingControls nativeHistoryId={call?.history?.id} />
         )}
 
         {/* Controls */}
@@ -289,6 +304,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  minimizeButton: { minHeight: 48, paddingHorizontal: 24, paddingVertical: 8, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  minimizeLabel: { color: "#FFFFFF", fontSize: 17, fontWeight: "600" },
+  minimizeHint: { color: "#B4BAC6", fontSize: 13 },
   scroll: { flex: 1 },
   scrollContent: { paddingTop: 16, paddingBottom: 20, gap: 24 },
   endFooter: { alignItems: "center", paddingTop: 12, gap: 8, flexShrink: 0 },
