@@ -44,6 +44,16 @@ Local artifact: `/tmp/phone11-mute-build41.ipa`; verification result:
 The launch request was rejected because the iPhone was locked. User unlock/open
 was requested; physical mute acceptance is still pending.
 
+Final handset acceptance passed on build 41. Server call legs became active at
+11:16:56 UTC and both ended by 11:17:52. The user confirmed Mute and Unmute
+worked during recording. Persisted handset diagnostics independently show call
+201 requested, dispatched and accepted Mute at 11:17:27.147-194 UTC, then
+requested, dispatched and accepted Unmute at 11:17:32.743-791 UTC. There were
+no rejected stages. FreeSWITCH returned to zero active channels. The newest
+cloud record is `ready`, its capture stop is persisted, and summary status is
+`ready`. This establishes the scoped recorded-call control path on this device;
+it does not by itself prove every network, Bluetooth or cold-launch scenario.
+
 Acceptance on the signed build: answer a call, start recording, tap Mute and
 verify the caller cannot hear the Phone11 microphone, then Unmute and verify
 speech returns. End explicitly. Inspect saved tap/command stages and recording
