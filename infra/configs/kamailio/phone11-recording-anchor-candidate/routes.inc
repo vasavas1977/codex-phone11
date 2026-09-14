@@ -10,6 +10,14 @@ route[PHONE11_RECORDING_ANCHOR] {
             sl_send_reply("403", "Invalid recording route"); exit;
         }
         remove_hf("X-Phone11-Recording-Anchor");
+        # FreeSWITCH can address this leg through its private socket/port. Set
+        # the canonical pilot URI before the existing pilot route's wake hook;
+        # the route's exact source/header gate above remains authoritative.
+#!ifdef PHONE11_WAKE_PILOT_URI
+        $ru = PHONE11_WAKE_PILOT_URI;
+#!else
+        $ru = "sip:3001@sip.phone11.ai";
+#!endif
         route(PHONE11_INBOUND_PILOT);
         exit;
     }
