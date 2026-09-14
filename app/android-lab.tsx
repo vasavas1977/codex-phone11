@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { NativeEventEmitter, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { Redirect, router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { isPhone11AndroidLab } from "@/constants/phone11-build";
 import { useColors } from "@/hooks/use-colors";
 import type { Phone11SiprixModule, Snapshot } from "../modules/phone11-siprix";
 
 export default function AndroidLab() {
- if (process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB !== "1" || Platform.OS !== "android") return <Redirect href="/" />;
+ if (!isPhone11AndroidLab() || Platform.OS !== "android") return <Redirect href="/" />;
  return <Lab />;
 }
 function Lab() {

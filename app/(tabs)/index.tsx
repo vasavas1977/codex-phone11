@@ -8,6 +8,7 @@ import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { isPhone11AndroidLab } from "@/constants/phone11-build";
 import { useColors } from "@/hooks/use-colors";
 import { usePhoneCall } from "@/hooks/use-phone-call";
 import { useSip } from "@/lib/sip/sip-provider";
@@ -100,7 +101,7 @@ export default function DialpadScreen() {
 
   return (
     <ScreenContainer>
-      {process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1" && <TouchableOpacity accessibilityLabel="Open Android lab" onPress={() => router.push("/android-lab" as never)}><Text style={{ color: colors.primary, padding: 12 }}>Android lab diagnostics</Text></TouchableOpacity>}
+      {isPhone11AndroidLab() && <TouchableOpacity accessibilityLabel="Open Android lab" onPress={() => router.push("/android-lab" as never)}><Text style={{ color: colors.primary, padding: 12 }}>Android lab diagnostics</Text></TouchableOpacity>}
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}> 

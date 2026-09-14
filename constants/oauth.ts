@@ -1,13 +1,14 @@
 import { Platform } from "react-native";
+import { isPhone11AndroidLab, phone11ConfiguredApiBaseUrl } from "./phone11-build";
 
 // Keep this module path for existing API consumers; sign-in is owned by Phone11.
-export const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? "";
+export const API_BASE_URL = phone11ConfiguredApiBaseUrl();
 export const SIGN_IN_ROUTE = "/auth/sign-in" as const;
 export const SESSION_TOKEN_KEY = "phone11_session_token";
 export const USER_INFO_KEY = "phone11_user_info";
 
 export function getApiBaseUrl(): string {
-  if (process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1") return "http://10.0.2.2:18080";
+  if (isPhone11AndroidLab()) return "http://10.0.2.2:18080";
   if (API_BASE_URL) return API_BASE_URL.replace(/\/+$/, "");
   if (Platform.OS !== "web") return "https://api.phone11.ai";
 

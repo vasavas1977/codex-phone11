@@ -149,6 +149,10 @@ const config: ExpoConfig = {
   },
   extra: {
     phone11ChatNotificationsEnabled: chatNotificationsEnabled,
+    phone11AndroidLab: androidLab,
+    phone11ApiBaseUrl: androidLab
+      ? "http://10.0.2.2:18080"
+      : (process.env.EXPO_PUBLIC_API_BASE_URL ?? ""),
     ...(wakeSettings.environment ? { phone11ApnsEnvironment: wakeSettings.environment } : {}),
     eas: {
       projectId: "e354ffd3-485c-49f1-9e6f-aebe571d8dfb",

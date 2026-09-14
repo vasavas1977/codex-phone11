@@ -1,4 +1,5 @@
 import { NativeEventEmitter, NativeModules, Platform } from "react-native";
+import { isPhone11AndroidLab } from "@/constants/phone11-build";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { useSipAccountStore, type SipAccount } from "./account-store";
 import { useSipCallStore } from "./call-store";
@@ -129,7 +130,7 @@ export class SiprixEngine {
         useSipAccountStore.getState().setRegistrationState("unregistered", "Sign in and sync your Phone11 extension");
         return;
       }
-      if (Platform.OS !== "ios" && !(Platform.OS === "android" && process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1")) {
+      if (Platform.OS !== "ios" && !(Platform.OS === "android" && isPhone11AndroidLab())) {
         const error = unsupported(`${Platform.OS}; no PJSIP fallback is enabled in this build`);
         useSipAccountStore.getState().setRegistrationState("failed", error.message);
         throw error;

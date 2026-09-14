@@ -6,6 +6,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
+import { isPhone11AndroidLab } from "@/constants/phone11-build";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { createRegistrationLifecycle } from "./registration-lifecycle";
 import { createVoipEnrollmentLifecycle } from "../push/enrollment-lifecycle";
@@ -102,7 +103,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        if (!(Platform.OS === "android" && process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1")) {
+        if (!(Platform.OS === "android" && isPhone11AndroidLab())) {
           await nativeCallManager.initialize();
           await registerVoipPush();
         }
