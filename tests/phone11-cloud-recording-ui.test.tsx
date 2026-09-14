@@ -142,7 +142,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("resolves sanitized handset names on the full call-detail screen", () => {
+it("keeps generic speaker labels without a trusted identity map", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -177,10 +177,40 @@ it("resolves sanitized handset names on the full call-detail screen", () => {
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Somchai Contact");
-  expect(html).toContain("Vasavas");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
+  expect(html).not.toContain("Somchai Contact");
+  expect(html).not.toContain("Vasavas");
   expect(html).not.toContain("SERVER CALLER ID");
   expect(html).not.toContain("Server Extension");
+});
+
+it("uses participant names only when the caller supplies a trusted identity map", () => {
+  mocks.cloud.detail = {
+    ...item,
+    direction: "inbound",
+    summaryStatus: "ready",
+    transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+    participantNames: {
+      speaker1: "Untrusted server caller ID",
+      speaker2: "Untrusted server extension",
+    },
+  };
+  const html = renderToStaticMarkup(
+    createElement(LiveRecordingPanel, {
+      callUuid: item.callUuid,
+      full: true,
+      initialTab: "transcription",
+      trustedSpeakerNames: {
+        speaker1: "Verified participant one",
+        speaker2: "Verified participant two",
+      },
+    }),
+  );
+  expect(html).toContain("Verified participant one");
+  expect(html).toContain("Verified participant two");
+  expect(html).not.toContain("Untrusted server caller ID");
+  expect(html).not.toContain("Untrusted server extension");
 });
 it("shows unavailable server state without fake records", () => {
   mocks.cloud = {

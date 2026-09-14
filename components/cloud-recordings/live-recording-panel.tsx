@@ -3,33 +3,29 @@ import { useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useCloudRecordings } from "@/hooks/use-cloud-recordings";
-import { useDeviceContacts } from "@/hooks/use-device-contacts";
-import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { useSipCallStore } from "@/lib/sip/call-store";
-import { deviceContactName } from "@/lib/phone/device-contacts";
 import { recordingLabels } from "@/lib/cloud-recordings/presentation";
 import { RecordingPanel } from "./call-history-view";
 import { Playback } from "./cloud-playback";
 import { CaptureControls } from "./capture-controls";
-import {
-  mergeTranscriptSpeakerNames,
-  type TranscriptSpeakerNames,
-} from "@/lib/cloud-recordings/transcript";
+import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
 export function LiveRecordingPanel({
   callUuid,
   full = false,
   initialTab = "summary",
-  speakerNames,
+  trustedSpeakerNames,
 }: {
   callUuid: string;
   full?: boolean;
   initialTab?: "summary" | "transcription";
-  speakerNames?: TranscriptSpeakerNames;
+  /**
+   * Only pass names when the recording pipeline provides a verified mapping
+   * from each diarized speaker label to a participant identity.
+   */
+  trustedSpeakerNames?: TranscriptSpeakerNames;
 }) {
   const cloud = useCloudRecordings(callUuid);
-  const contacts = useDeviceContacts();
-  const { user } = useAuth({ autoFetch: false });
   const colors = useColors();
   const router = useRouter();
   const [tab, setTab] = useState<"summary" | "transcription">(initialTab);
@@ -59,16 +55,6 @@ export function LiveRecordingPanel({
         </TouchableOpacity>
       </View>
     );
-  const remoteName = deviceContactName(contacts.people, detail.number);
-  const localName = user?.name?.trim() || undefined;
-  const handsetNames: TranscriptSpeakerNames = {
-    speaker1: detail.direction === "inbound" ? remoteName : localName,
-    speaker2: detail.direction === "inbound" ? localName : remoteName,
-  };
-  const preferredNames = mergeTranscriptSpeakerNames(
-    speakerNames,
-    handsetNames,
-  );
   return (
     <View>
       {full && (
@@ -95,10 +81,7 @@ export function LiveRecordingPanel({
         summaryStatus={detail.summaryStatus}
         summary={detail.summary}
         transcript={detail.transcript}
-        speakerNames={mergeTranscriptSpeakerNames(
-          preferredNames,
-          detail.participantNames,
-        )}
+        speakerNames={trustedSpeakerNames}
         notice={
           cloud.error ||
           (busy

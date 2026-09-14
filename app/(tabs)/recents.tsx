@@ -21,11 +21,9 @@ import {
   isMissedCall,
 } from "@/lib/sip/call-history";
 import type { CloudRecording } from "@/shared/cloud-recordings";
-import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
 type Row = HistoryRowCall & {
   startedAt: number;
   recording?: CloudRecording;
-  speakerNames?: TranscriptSpeakerNames;
 };
 const time = (ms: number) =>
   new Date(ms).toLocaleTimeString(undefined, {
@@ -76,7 +74,6 @@ export default function RecentsScreen() {
     );
     const contactName = deviceContactName(contacts.people, call.number);
     const remoteName = contactName || call.name;
-    const localName = user?.name?.trim() || undefined;
     return {
       id: call.id,
       name: remoteName || call.number,
@@ -99,10 +96,6 @@ export default function RecentsScreen() {
       recording,
       recordingReady: recording?.recordingStatus === "ready",
       summaryReady: recording?.summaryStatus === "ready",
-      speakerNames: {
-        speaker1: call.direction === "inbound" ? remoteName : localName,
-        speaker2: call.direction === "inbound" ? localName : remoteName,
-      },
     };
   });
   if (user && filter === "all")
@@ -111,7 +104,6 @@ export default function RecentsScreen() {
         continue;
       const number = internationalHistoryNumber(recording.number);
       const remoteName = deviceContactName(contacts.people, number);
-      const localName = user?.name?.trim() || undefined;
       rows.push({
         id: `cloud:${recording.callUuid}`,
         name: remoteName || number,
@@ -123,12 +115,6 @@ export default function RecentsScreen() {
         recording,
         recordingReady: recording.recordingStatus === "ready",
         summaryReady: recording.summaryStatus === "ready",
-        speakerNames: {
-          speaker1:
-            recording.direction === "inbound" ? remoteName : localName,
-          speaker2:
-            recording.direction === "inbound" ? localName : remoteName,
-        },
       });
     }
   const visible = rows
@@ -266,7 +252,6 @@ export default function RecentsScreen() {
               {item.recording ? (
                 <LiveRecordingPanel
                   callUuid={item.recording.callUuid}
-                  speakerNames={item.speakerNames}
                 />
               ) : (
                 <Text
