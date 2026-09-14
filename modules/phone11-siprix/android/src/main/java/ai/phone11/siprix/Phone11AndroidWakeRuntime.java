@@ -6,6 +6,9 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 
+import com.google.firebase.FirebaseApp;
+import com.google.firebase.FirebaseOptions;
+
 /** Process entry point shared by the future FCM adapter and the notification service. */
 public final class Phone11AndroidWakeRuntime {
   static final String META_COMMISSIONED = "ai.phone11.androidWakeCommissioned";
@@ -50,13 +53,22 @@ public final class Phone11AndroidWakeRuntime {
   }
 
   public Phone11PendingWakeStore.Decision receive(Bundle data, long now) {
+    return receive(wake(data), now);
+  }
+
+  public Phone11PendingWakeStore.Decision receive(Phone11PendingWakeStore.Wake wake, long now) {
     if (!commissioned()) return Phone11PendingWakeStore.Decision.REJECTED_LOGGED_OUT;
-    return store.receive(wake(data), now);
+    return store.receive(wake, now);
   }
 
   public Phone11PendingWakeStore.Decision cancel(Bundle data, long now) {
     if (!commissioned()) return Phone11PendingWakeStore.Decision.REJECTED_LOGGED_OUT;
     return store.cancel(wake(data), now);
+  }
+
+  public Phone11PendingWakeStore.Decision complete(String callUUID, long now) {
+    if (!commissioned()) return Phone11PendingWakeStore.Decision.REJECTED_LOGGED_OUT;
+    return store.complete(callUUID, now);
   }
 
   public void logout() { store.logout(); }
@@ -84,9 +96,18 @@ public final class Phone11AndroidWakeRuntime {
       if (!LAB_PACKAGE.equals(context.getPackageName()) || !"staging".equals(environment)) {
         return Status.UNSUPPORTED_MISCONFIGURED;
       }
+      try {
+        FirebaseOptions options = FirebaseApp.getInstance().getOptions();
+        if (empty(options.getApplicationId()) || empty(options.getGcmSenderId())
+            || empty(options.getProjectId())) return Status.UNSUPPORTED_MISCONFIGURED;
+      } catch (IllegalStateException unavailable) {
+        return Status.UNSUPPORTED_MISCONFIGURED;
+      }
       return Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS;
     } catch (PackageManager.NameNotFoundException error) {
       return Status.UNSUPPORTED_MISCONFIGURED;
     }
   }
+
+  private static boolean empty(String value) { return value == null || value.trim().isEmpty(); }
 }

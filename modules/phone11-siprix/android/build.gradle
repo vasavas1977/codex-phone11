@@ -10,5 +10,9 @@ android {
 }
 dependencies {
   implementation 'com.facebook.react:react-android'
+  // The provider adapter compiles without the Google Services Gradle plugin or
+  // google-services.json; its manifest component remains disabled by default.
+  implementation 'com.google.firebase:firebase-messaging:24.0.1'
+  implementation 'host.exp.exponent:expo.modules.notifications:0.32.15'
   compileOnly files('../vendor/android/siprix_voip_sdk.aar')
 }

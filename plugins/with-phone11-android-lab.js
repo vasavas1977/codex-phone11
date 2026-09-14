@@ -66,6 +66,18 @@ function configureLabManifest(manifest,settings=labSipSettings('ai.phone11.mobil
   'android:name':'ai.phone11.siprix.Phone11IncomingCallService','android:enabled':wake.gate==='1'?'true':'false',
   'android:exported':'false','android:stopWithTask':'false',
  }});
+ application.service=replaceNamedEntry(application.service,'ai.phone11.siprix.Phone11FirebaseMessagingService',{
+  $:{'android:name':'ai.phone11.siprix.Phone11FirebaseMessagingService','android:enabled':wake.gate==='1'?'true':'false',
+   'android:exported':'false'},
+  'intent-filter':[{$:{},action:[{$:{'android:name':'com.google.firebase.MESSAGING_EVENT'}}]}],
+ });
+ // FCM resolves one MESSAGING_EVENT owner. The commissioned service subclasses
+ // Expo's service and forwards non-Phone11 messages, preserving generic alerts.
+ application.service=replaceNamedEntry(application.service,'expo.modules.notifications.service.ExpoFirebaseMessagingService',{
+  $:{'android:name':'expo.modules.notifications.service.ExpoFirebaseMessagingService',
+   'android:enabled':wake.gate==='1'?'false':'true','android:exported':'false'},
+  'intent-filter':[{$:{'android:priority':'-1'},action:[{$:{'android:name':'com.google.firebase.MESSAGING_EVENT'}}]}],
+ });
  manifest['uses-permission']=replaceNamedEntry(
   manifest['uses-permission'],
   'android.permission.CAMERA',
