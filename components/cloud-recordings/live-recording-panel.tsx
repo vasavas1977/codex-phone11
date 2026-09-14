@@ -9,22 +9,37 @@ import { recordingLabels } from "@/lib/cloud-recordings/presentation";
 import { RecordingPanel } from "./call-history-view";
 import { Playback } from "./cloud-playback";
 import { CaptureControls } from "./capture-controls";
+import { RecordingSummaryActions } from "./summary-actions";
+import { createTRPCClient } from "@/lib/trpc";
+import { getAuthSnapshot } from "@/lib/_core/auth";
+import type { RecordingSummaryContent } from "@/lib/cloud-recordings/summary-actions";
 import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
 export function LiveRecordingPanel({
   callUuid,
   full = false,
   initialTab = "summary",
-  speakerNames,
+  trustedSpeakerNames,
+  contactName,
 }: {
   callUuid: string;
   full?: boolean;
   initialTab?: "summary" | "transcription";
-  speakerNames?: TranscriptSpeakerNames;
+  /**
+   * Only pass names when the recording pipeline provides a verified mapping
+   * from each diarized speaker label to a participant identity.
+   */
+  trustedSpeakerNames?: TranscriptSpeakerNames;
+  contactName?: string;
 }) {
   const cloud = useCloudRecordings(callUuid);
   const colors = useColors();
   const router = useRouter();
   const [tab, setTab] = useState<"summary" | "transcription">(initialTab);
+  const [translation, setTranslation] = useState<{
+    owner: number;
+    callUuid: string;
+    content: RecordingSummaryContent;
+  }>();
   const busy = useSipCallStore(
     (state) =>
       Boolean(state.incomingCall) ||
@@ -33,6 +48,10 @@ export function LiveRecordingPanel({
       ),
   );
   const detail = cloud.detail;
+  const translated =
+    translation?.owner === cloud.owner && translation?.callUuid === callUuid
+      ? translation.content
+      : undefined;
   if (!detail)
     return (
       <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
@@ -51,6 +70,11 @@ export function LiveRecordingPanel({
         </TouchableOpacity>
       </View>
     );
+  const summaryNeedsRefresh =
+    detail.summaryStatus === "queued" ||
+    detail.summaryStatus === "processing" ||
+    detail.summaryStatus === "failed" ||
+    (detail.summaryStatus === "ready" && !detail.summary);
   return (
     <View>
       {full && (
@@ -71,24 +95,31 @@ export function LiveRecordingPanel({
       )}
       <RecordingPanel
         colors={colors}
+        dateLabel={new Date(detail.startedAt).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        })}
         full={full}
         activeTab={tab}
         onTabChange={setTab}
         summaryStatus={detail.summaryStatus}
-        summary={detail.summary}
-        transcript={detail.transcript}
-        speakerNames={
-          speakerNames || detail.participantNames
-            ? { ...speakerNames, ...detail.participantNames }
-            : undefined
-        }
+        summary={translated ?? detail.summary}
+        transcript={translated?.transcript ?? detail.transcript}
+        speakerNames={trustedSpeakerNames}
         notice={
           cloud.error ||
           (busy
             ? "Playback is paused while you are on a call."
-            : detail.recordingStatus !== "ready"
-              ? recordingLabels[detail.recordingStatus]
-              : undefined)
+            : detail.recordingFinalizing
+              ? "Saving recording…"
+              : detail.recordingStatus !== "ready"
+                ? detail.recordingStatus === "failed" &&
+                  detail.manualControls?.canStart
+                  ? "Recording off"
+                  : recordingLabels[detail.recordingStatus]
+                : undefined)
         }
         player={
           detail.recordingStatus === "ready" && detail.playbackPath && !busy ? (
@@ -109,6 +140,40 @@ export function LiveRecordingPanel({
             />
           ) : undefined
         }
+        actions={
+          detail.summaryStatus === "ready" && detail.summary && cloud.owner ? (
+            <RecordingSummaryActions
+              key={`${cloud.owner}:${callUuid}`}
+              ownerId={cloud.owner}
+              callUuid={callUuid}
+              title={`Call with ${contactName || internationalHistoryNumber(detail.number)}`}
+              startedAt={detail.startedAt}
+              summary={detail.summary}
+              transcript={detail.transcript}
+              speakerNames={trustedSpeakerNames}
+              colors={colors}
+              onContentChange={(content, language) =>
+                setTranslation(
+                  language === "original"
+                    ? undefined
+                    : { owner: cloud.owner!, callUuid, content },
+                )
+              }
+              onTranslate={async (targetLanguage) => {
+                const identity = getAuthSnapshot().user;
+                if (!identity || identity.id !== cloud.owner)
+                  throw new Error("Sign in required");
+                const result =
+                  await createTRPCClient().cloudRecordings.tools.translate.mutate(
+                    { callUuid, targetLanguage },
+                  );
+                if (getAuthSnapshot().user !== identity)
+                  throw new Error("Account changed");
+                return result;
+              }}
+            />
+          ) : undefined
+        }
         onViewFull={(nextTab) =>
           router.push({
             pathname: "/call-recording/[callUuid]",
@@ -116,6 +181,23 @@ export function LiveRecordingPanel({
           })
         }
       />
+      {summaryNeedsRefresh && (
+        <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Refresh AI summary status"
+            disabled={cloud.loading}
+            style={{ minHeight: 48, justifyContent: "center" }}
+            onPress={() => void cloud.reload()}
+          >
+            <Text
+              style={{ color: cloud.loading ? colors.muted : colors.primary }}
+            >
+              {cloud.loading ? "Refreshing AI status…" : "Refresh AI status"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }

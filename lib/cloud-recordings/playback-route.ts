@@ -1,35 +1,122 @@
-import { NativeModules, Platform } from "react-native";
+import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import { setAudioModeAsync } from "expo-audio";
 
-const nativeRoute = () =>
-  NativeModules.Phone11Siprix?.setRecordingPlaybackSpeaker as
-    | undefined
-    | ((speaker: boolean) => Promise<void>);
-export const supportsPlaybackSpeaker = () =>
-  (Platform.OS === "ios" && Boolean(nativeRoute())) ||
-  Platform.OS === "android";
-
-export async function configurePlaybackRoute(speaker: boolean): Promise<void> {
-  if (Platform.OS === "ios" && nativeRoute()) {
-    // Expo's earpiece flag is Android-only. The native method checks incoming
-    // wakes/calls on the main queue before touching the shared AVAudioSession.
-    await nativeRoute()!(speaker);
-    return;
-  }
-  await setAudioModeAsync({
-    playsInSilentMode: true,
-    allowsRecording: false,
-    interruptionMode: "doNotMix",
-    interruptionModeAndroid: "doNotMix",
-    shouldPlayInBackground: false,
-    // Expo Audio implements this flag natively on Android. Invert the
-    // product-facing speaker choice so both playback routes are explicit.
-    shouldRouteThroughEarpiece: Platform.OS === "android" ? !speaker : false,
-  });
+export type PlaybackAudioRoute = "speaker" | "earpiece";
+export type EffectivePlaybackAudioRoute =
+  | PlaybackAudioRoute
+  | "external"
+  | "unknown";
+export interface PlaybackAudioRouteStatus {
+  route: EffectivePlaybackAudioRoute;
+  label: string;
 }
 
-export async function releasePlaybackRoute(): Promise<void> {
-  // Native guard refuses a reset when a call has taken ownership. Do not
-  // deactivate the process-wide audio session from an unmount cleanup.
-  if (Platform.OS === "ios" && nativeRoute()) await nativeRoute()!(false);
+interface NativePlaybackRouteBridge {
+  getPlaybackAudioRoute?(): Promise<unknown>;
+  setPlaybackAudioRoute?(route: PlaybackAudioRoute): Promise<unknown>;
+  resetPlaybackAudioRoute?(): Promise<unknown>;
+}
+
+const bridge = NativeModules.Phone11Siprix as
+  | NativePlaybackRouteBridge
+  | undefined;
+const labels: Record<EffectivePlaybackAudioRoute, string> = {
+  speaker: "Speaker",
+  earpiece: "Earpiece",
+  external: "Connected audio",
+  unknown: "Audio output",
+};
+const externalLabels = new Set([
+  "AirPlay",
+  "Bluetooth",
+  "Connected audio",
+  "HDMI",
+  "Headphones",
+  "USB audio",
+]);
+
+export const normalizePlaybackAudioRoute = (
+  value: unknown,
+): PlaybackAudioRouteStatus => {
+  if (!value || typeof value !== "object")
+    return { route: "unknown", label: labels.unknown };
+  const raw = value as { route?: unknown; label?: unknown };
+  const route =
+    raw.route === "speaker" ||
+    raw.route === "earpiece" ||
+    raw.route === "external"
+      ? raw.route
+      : "unknown";
+  const label =
+    route === "external" &&
+    typeof raw.label === "string" &&
+    externalLabels.has(raw.label)
+      ? raw.label
+      : labels[route];
+  return { route, label };
+};
+
+export const playbackAudioMode = (route: PlaybackAudioRoute) => ({
+  allowsRecording: route === "earpiece",
+  interruptionMode: "doNotMix" as const,
+  interruptionModeAndroid: "doNotMix" as const,
+  playsInSilentMode: true,
+  shouldPlayInBackground: false,
+  shouldRouteThroughEarpiece: route === "earpiece",
+});
+
+/** The iOS bridge applies and verifies the AVAudioSession route on its main queue. */
+export async function setPlaybackAudioRoute(
+  route: PlaybackAudioRoute,
+  canChangeRoute: () => boolean,
+) {
+  if (!canChangeRoute()) throw new Error("CALL_AUDIO_ACTIVE");
+  if (Platform.OS === "ios") {
+    if (!bridge?.setPlaybackAudioRoute)
+      throw new Error("PLAYBACK_ROUTE_UNAVAILABLE");
+    return normalizePlaybackAudioRoute(
+      await bridge.setPlaybackAudioRoute(route),
+    );
+  }
+  await setAudioModeAsync(playbackAudioMode(route));
+  return { route, label: labels[route] } satisfies PlaybackAudioRouteStatus;
+}
+
+/** Restore normal media playback only after this screen actually changed it. */
+export async function resetPlaybackAudioRoute(canChangeRoute: () => boolean) {
+  if (!canChangeRoute()) return false;
+  if (Platform.OS === "ios") {
+    if (!bridge?.resetPlaybackAudioRoute) return false;
+    await bridge.resetPlaybackAudioRoute();
+    return true;
+  }
+  await setAudioModeAsync(playbackAudioMode("speaker"));
+  return canChangeRoute();
+}
+
+export async function readPlaybackAudioRoute() {
+  if (Platform.OS !== "ios" || !bridge?.getPlaybackAudioRoute)
+    return {
+      route: "unknown",
+      label: labels.unknown,
+    } satisfies PlaybackAudioRouteStatus;
+  return normalizePlaybackAudioRoute(await bridge.getPlaybackAudioRoute());
+}
+
+export function subscribeToPlaybackAudioRoute(
+  listener: (status: PlaybackAudioRouteStatus) => void,
+) {
+  if (Platform.OS !== "ios" || !bridge) return () => {};
+  const subscription = new NativeEventEmitter(bridge as never).addListener(
+    "Phone11SiprixEvent",
+    (event: unknown) => {
+      if (
+        event &&
+        typeof event === "object" &&
+        (event as { type?: unknown }).type === "playbackAudioRoute"
+      )
+        listener(normalizePlaybackAudioRoute(event));
+    },
+  );
+  return () => subscription.remove();
 }

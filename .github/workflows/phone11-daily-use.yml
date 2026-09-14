@@ -75,6 +75,9 @@ jobs:
             tests/phone11-active-call-recording.test.tsx \
             tests/phone11-diagnostics-persistence.test.ts \
             tests/phone11-recents-ui.test.tsx \
+            tests/phone11-call-actions.test.tsx \
+            tests/phone11-call-action-state.test.ts \
+            tests/phone11-hidden-calls.test.tsx \
             tests/phone11-call-history.test.ts \
             tests/phone11-phone-number.test.ts \
             tests/device-contacts.test.ts \
@@ -96,6 +99,13 @@ jobs:
             tests/phone11-recording-correlation.test.ts \
             tests/phone11-cloud-playback.test.ts \
             tests/phone11-cloud-playback-focus.test.tsx \
+            tests/phone11-playback-controls.test.tsx \
+            tests/phone11-playback-route.test.ts \
+            tests/phone11-summary-actions.test.ts \
+            tests/phone11-summary-actions-ui.test.tsx \
+            tests/phone11-summary-tools-auth.test.ts \
+            tests/phone11-summary-translation.test.ts \
+            tests/phone11-recording-personal-metadata.test.ts \
             tests/phone11-cloud-polling.test.ts \
             tests/phone11-cloud-recording-ui.test.tsx \
             tests/phone11-cloud-recording-auth.test.ts \

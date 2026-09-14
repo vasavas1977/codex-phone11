@@ -1,190 +1,117 @@
-import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
-import { createPlaybackController } from "../lib/cloud-recordings/playback-controller";
+import { beforeEach, expect, it, vi } from "vitest";
+
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup(node: ReactNode): string };
-const m = vi.hoisted(() => ({
-  scrubber: {} as any,
-  native: vi.fn(),
-  mode: vi.fn(),
-  os: "ios",
+const ui = vi.hoisted(() => ({
+  buttons: new Map<string, any>(),
+  timeline: undefined as any,
 }));
+
 vi.mock("react-native", () => ({
-  Platform: {
-    get OS() {
-      return m.os;
-    },
-  },
-  NativeModules: {
-    Phone11Siprix: {
-      setRecordingPlaybackSpeaker: (speaker: boolean) => m.native(speaker),
-    },
-  },
-  View: ({ children, ...props }: any) => {
-    if (props.accessibilityRole === "adjustable") m.scrubber = props;
+  Platform: { OS: "web" },
+  View: ({ children, accessibilityRole, ...props }: any) => {
+    if (accessibilityRole === "adjustable") ui.timeline = props;
     return createElement("div", null, children);
   },
+  Text: ({ children }: any) => createElement("span", null, children),
+  TouchableOpacity: ({ children, accessibilityLabel, ...props }: any) => {
+    ui.buttons.set(accessibilityLabel, props);
+    return createElement("button", null, children);
+  },
 }));
-vi.mock("expo-audio", () => ({
-  setAudioModeAsync: (...args: any[]) => m.mode(...args),
-}));
+
 import {
-  PlaybackScrubber,
-  scrubPosition,
-} from "../components/cloud-recordings/playback-scrubber";
-import {
-  configurePlaybackRoute,
-  supportsPlaybackSpeaker,
-} from "../lib/cloud-recordings/playback-route";
+  clampPlaybackSeconds,
+  formatPlaybackTime,
+  PlaybackControls,
+  playbackSecondsForTrack,
+} from "../components/cloud-recordings/playback-controls";
+
 beforeEach(() => {
-  vi.clearAllMocks();
-  m.os = "ios";
+  ui.buttons.clear();
+  ui.timeline = undefined;
 });
-function setup() {
-  let allowed = true;
-  const player = {
-    play: vi.fn(),
-    pause: vi.fn(),
-    seekTo: vi.fn(async () => {}),
-    volume: 0.2,
-    muted: true,
-  };
-  const configure = vi.fn(async (_speaker: boolean) => {}),
-    failed = vi.fn();
-  return {
-    player,
-    configure,
-    failed,
-    deny: () => {
-      allowed = false;
-    },
-    controller: createPlaybackController({
-      player,
-      configure,
-      failed,
-      allowed: () => allowed,
-    }),
-  };
-}
-it("prepares media output, unmutes, and replays completed recordings from zero", async () => {
-  const t = setup();
-  await t.controller.play(true, true);
-  expect(t.configure).toHaveBeenCalledWith(true);
-  expect(t.player.seekTo).toHaveBeenCalledWith(0);
-  expect(t.player.volume).toBe(1);
-  expect(t.player.muted).toBe(false);
-  expect(t.player.play).toHaveBeenCalledOnce();
+
+it("formats and bounds elapsed, remaining, and track positions", () => {
+  expect(formatPlaybackTime(65.9)).toBe("1:05");
+  expect(clampPlaybackSeconds(-2, 90)).toBe(0);
+  expect(clampPlaybackSeconds(95, 90)).toBe(90);
+  expect(playbackSecondsForTrack(50, 200, 120)).toBe(30);
+  expect(playbackSecondsForTrack(300, 200, 120)).toBe(120);
 });
-it.each(["call", "blur", "pause"])(
-  "a %s during asynchronous route setup cannot restart audio",
-  async (reason) => {
-    const t = setup();
-    let finish!: () => void;
-    t.configure.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    const done = t.controller.play(true, false);
-    await Promise.resolve();
-    if (reason === "call") t.deny();
-    else if (reason === "blur") t.controller.dispose();
-    else t.controller.pause();
-    finish();
-    await done;
-    expect(t.player.play).not.toHaveBeenCalled();
-  },
-);
-it("does not touch the session when an incoming call already owns audio", async () => {
-  const t = setup();
-  t.deny();
-  await t.controller.play(false, false);
-  expect(t.configure).not.toHaveBeenCalled();
-});
-it("reports route errors and never claims playback started", async () => {
-  const t = setup();
-  t.configure.mockRejectedValue(new Error("route failed"));
-  await t.controller.play(true, false);
-  expect(t.failed).toHaveBeenCalledOnce();
-  expect(t.player.play).not.toHaveBeenCalled();
-});
-it("serializes rapid route selections and plays only the newest selection", async () => {
-  const t = setup();
-  const first = t.controller.play(false, false),
-    second = t.controller.play(true, false);
-  await Promise.all([first, second]);
-  expect(t.configure).toHaveBeenCalledTimes(1);
-  expect(t.configure).toHaveBeenCalledWith(true);
-  expect(t.player.play).toHaveBeenCalledOnce();
-});
-it("uses native iOS call-guarded media routing instead of an Android-only flag", async () => {
-  expect(supportsPlaybackSpeaker()).toBe(true);
-  await configurePlaybackRoute(true);
-  expect(m.native).toHaveBeenCalledWith(true);
-  expect(m.mode).not.toHaveBeenCalled();
-});
-it.each([
-  [false, true],
-  [true, false],
-] as const)(
-  "maps Android speaker %s to earpiece routing %s",
-  async (speaker, shouldRouteThroughEarpiece) => {
-    m.os = "android";
-    expect(supportsPlaybackSpeaker()).toBe(true);
-    await configurePlaybackRoute(speaker);
-    expect(m.mode).toHaveBeenCalledWith(
-      expect.objectContaining({
-        shouldRouteThroughEarpiece,
-        interruptionModeAndroid: "doNotMix",
-      }),
-    );
-  },
-);
-function scrub(loaded = true) {
+
+it("supports tap or drag seeking and accessible fifteen-second seeking", () => {
   const seek = vi.fn();
-  renderToStaticMarkup(
-    createElement(PlaybackScrubber, {
-      loaded,
+  const html = renderToStaticMarkup(
+    createElement(PlaybackControls, {
       currentTime: 30,
-      duration: 100,
+      duration: 120,
+      playing: false,
+      loaded: true,
+      route: "earpiece",
+      output: { route: "earpiece", label: "Earpiece" },
+      onToggle: vi.fn(),
       onSeek: seek,
-      primary: "blue",
-      border: "gray",
+      onRouteChange: vi.fn(),
     }),
   );
-  m.scrubber.onLayout({ nativeEvent: { layout: { width: 200 } } });
-  return seek;
-}
-it("previews dragging and commits one clamped seek on release", () => {
-  const seek = scrub();
-  expect(m.scrubber.onStartShouldSetResponder()).toBe(true);
-  m.scrubber.onResponderGrant({ nativeEvent: { pageX: 120, locationX: 20 } });
-  m.scrubber.onResponderMove({ nativeEvent: { pageX: 240 } });
-  expect(seek).not.toHaveBeenCalled();
-  m.scrubber.onResponderRelease();
-  expect(seek).toHaveBeenCalledTimes(1);
-  expect(seek).toHaveBeenCalledWith(70);
-});
-it("cancels interrupted gestures and disables unknown/loading playback", () => {
-  const seek = scrub();
-  m.scrubber.onResponderGrant({ nativeEvent: { pageX: 120, locationX: 20 } });
-  m.scrubber.onResponderTerminate();
-  m.scrubber.onResponderRelease();
-  expect(seek).not.toHaveBeenCalled();
-  scrub(false);
-  expect(m.scrubber.onStartShouldSetResponder()).toBe(false);
-});
-it("supports screen-reader seeking and clamps gesture endpoints", () => {
-  const seek = scrub();
-  m.scrubber.onAccessibilityAction({
+
+  expect(html).toContain("0:30");
+  expect(html).toContain("−1:30");
+  expect(html).not.toContain("Output:");
+  expect(ui.timeline["aria-valuemin"]).toBe(0);
+  expect(ui.timeline["aria-valuemax"]).toBe(120);
+  expect(ui.timeline["aria-valuenow"]).toBe(30);
+  ui.timeline.onLayout({ nativeEvent: { layout: { width: 200 } } });
+  ui.timeline.onResponderRelease({ nativeEvent: { locationX: 100 } });
+  expect(seek).toHaveBeenCalledWith(60);
+  ui.timeline.onAccessibilityAction({
     nativeEvent: { actionName: "increment" },
   });
-  expect(seek).toHaveBeenCalledWith(45);
-  expect(scrubPosition(-20, 200, 100)).toBe(0);
-  expect(scrubPosition(500, 200, 100)).toBe(100);
-  expect(scrubPosition(1, 0, 100)).toBe(0);
-  expect(scrubPosition(NaN, 200, 100)).toBe(0);
+  expect(seek).toHaveBeenLastCalledWith(45);
+  ui.timeline.onKeyDown({ key: "End", preventDefault: vi.fn() });
+  expect(seek).toHaveBeenLastCalledWith(120);
+  ui.buttons.get("Back 15 seconds").onPress();
+  expect(seek).toHaveBeenLastCalledWith(15);
+});
+
+it("exposes one speaker toggle, defaults to earpiece, and reports external audio", () => {
+  const change = vi.fn();
+  renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 0,
+      duration: 0,
+      playing: false,
+      loaded: false,
+      route: "earpiece",
+      output: { route: "earpiece", label: "Earpiece" },
+      onToggle: vi.fn(),
+      onSeek: vi.fn(),
+      onRouteChange: change,
+    }),
+  );
+  expect(ui.buttons.get("Play through speaker").disabled).toBe(true);
+  expect(ui.buttons.has("Play through earpiece")).toBe(false);
+
+  ui.buttons.clear();
+  const html = renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 1,
+      duration: 10,
+      playing: false,
+      loaded: true,
+      route: "earpiece",
+      output: { route: "external", label: "Bluetooth" },
+      onToggle: vi.fn(),
+      onSeek: vi.fn(),
+      onRouteChange: change,
+    }),
+  );
+  ui.buttons.get("Play through speaker").onPress();
+  expect(change).toHaveBeenCalledWith("speaker");
+  expect(html).toContain("Connected to ");
+  expect(html).toContain("Bluetooth");
 });

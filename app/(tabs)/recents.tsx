@@ -21,11 +21,18 @@ import {
   isMissedCall,
 } from "@/lib/sip/call-history";
 import type { CloudRecording } from "@/shared/cloud-recordings";
-import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
+import { CallActionsSheet } from "@/components/cloud-recordings/call-actions-sheet";
+import { useCallFavorites } from "@/hooks/use-call-favorites";
+import { useHiddenCalls } from "@/hooks/use-hidden-calls";
+import {
+  uniqueDeviceContactId,
+  resolveExistingDirectChat,
+} from "@/lib/phone/call-actions";
+import { useChatStore } from "@/lib/chat/store";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 type Row = HistoryRowCall & {
   startedAt: number;
   recording?: CloudRecording;
-  speakerNames?: TranscriptSpeakerNames;
 };
 const time = (ms: number) =>
   new Date(ms).toLocaleTimeString(undefined, {
@@ -55,15 +62,26 @@ export default function RecentsScreen() {
   const { user } = useAuth({ autoFetch: false });
   const history = useCallHistoryStore();
   const contacts = useDeviceContacts();
+  const favorites = useCallFavorites(user?.id);
+  const hidden = useHiddenCalls(user?.id);
+  const chat = useChatStore();
   const { placeCall, calling } = usePhoneCall();
-  const [filter, setFilter] = useState<"all" | "missed">("all");
+  const [filter, setFilter] = useState<"all" | "missed" | "starred" | "hidden">(
+    "all",
+  );
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [actionId, setActionId] = useState<string | null>(null);
+  const reloadHistory = history.reload;
+  const reloadCloud = cloud.reload;
   useFocusEffect(
     useCallback(() => {
-      void history.reload();
-      void cloud.reload();
-      return () => setExpanded(null);
-    }, [history.reload, cloud.reload, user?.id]),
+      void reloadHistory();
+      void reloadCloud();
+      return () => {
+        setExpanded(null);
+        setActionId(null);
+      };
+    }, [reloadHistory, reloadCloud, user?.id]),
   );
   const local =
     history.ownerUserId === user?.id
@@ -76,7 +94,6 @@ export default function RecentsScreen() {
     );
     const contactName = deviceContactName(contacts.people, call.number);
     const remoteName = contactName || call.name;
-    const localName = user?.name?.trim() || undefined;
     return {
       id: call.id,
       name: remoteName || call.number,
@@ -99,19 +116,14 @@ export default function RecentsScreen() {
       recording,
       recordingReady: recording?.recordingStatus === "ready",
       summaryReady: recording?.summaryStatus === "ready",
-      speakerNames: {
-        speaker1: call.direction === "inbound" ? remoteName : localName,
-        speaker2: call.direction === "inbound" ? localName : remoteName,
-      },
     };
   });
-  if (user && filter === "all")
+  if (user && filter !== "missed")
     for (const recording of cloud.items) {
       if (recording.nativeHistoryId && ids.has(recording.nativeHistoryId))
         continue;
       const number = internationalHistoryNumber(recording.number);
       const remoteName = deviceContactName(contacts.people, number);
-      const localName = user?.name?.trim() || undefined;
       rows.push({
         id: `cloud:${recording.callUuid}`,
         name: remoteName || number,
@@ -123,17 +135,52 @@ export default function RecentsScreen() {
         recording,
         recordingReady: recording.recordingStatus === "ready",
         summaryReady: recording.summaryStatus === "ready",
-        speakerNames: {
-          speaker1:
-            recording.direction === "inbound" ? remoteName : localName,
-          speaker2:
-            recording.direction === "inbound" ? localName : remoteName,
-        },
       });
     }
-  const visible = rows
-    .filter((row) => filter === "all" || row.direction === "missed")
+  const isHidden = (row: Row) =>
+    hidden.ids.includes(row.id) ||
+    Boolean(
+      row.recording && hidden.ids.includes(`cloud:${row.recording.callUuid}`),
+    );
+  const visible = (hidden.ready ? rows : [])
+    .filter((row) => (filter === "hidden" ? isHidden(row) : !isHidden(row)))
+    .filter((row) =>
+      filter === "missed"
+        ? row.direction === "missed"
+        : filter === "starred"
+          ? favorites.starred(row.number)
+          : true,
+    )
     .sort((a, b) => b.startedAt - a.startedAt);
+  const actionCall = actionId
+    ? rows.find((row) => row.id === actionId)
+    : undefined;
+  const chatTarget =
+    actionCall && user && chat.userId === user.id && chat.workspace
+      ? resolveExistingDirectChat({
+          number: actionCall.number,
+          ownerUserId: user.id,
+          workspaceId: chat.workspace.id,
+          people: chat.people,
+          channels: chat.channels,
+        })
+      : undefined;
+  const openActions = (id: string) => {
+    setActionId(id);
+    if (!user || getAuthSnapshot().user?.id !== user.id) return;
+    chat.setUser(user.id);
+    void useChatStore
+      .getState()
+      .loadChannels()
+      .then(() => {
+        if (
+          getAuthSnapshot().user?.id === user.id &&
+          useChatStore.getState().userId === user.id
+        )
+          return useChatStore.getState().loadDirectory();
+      })
+      .catch(() => {});
+  };
   return (
     <ScreenContainer>
       <View
@@ -171,7 +218,7 @@ export default function RecentsScreen() {
           </TouchableOpacity>
         </View>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          {(["all", "missed"] as const).map((value) => (
+          {(["all", "missed", "starred"] as const).map((value) => (
             <TouchableOpacity
               key={value}
               accessibilityRole="button"
@@ -194,22 +241,53 @@ export default function RecentsScreen() {
                   color: filter === value ? "white" : colors.muted,
                 }}
               >
-                {value === "all" ? "All" : "Missed"}
+                {value === "all"
+                  ? "All"
+                  : value === "missed"
+                    ? "Missed"
+                    : "Starred"}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
+        {hidden.ids.length > 0 && (
+          <View
+            style={{ flexDirection: "row", justifyContent: "space-between" }}
+          >
+            <TouchableOpacity
+              accessibilityRole="button"
+              onPress={() => setFilter(filter === "hidden" ? "all" : "hidden")}
+              style={{ minHeight: 44, justifyContent: "center" }}
+            >
+              <Text style={{ color: colors.primary }}>Hidden calls</Text>
+            </TouchableOpacity>
+            {filter === "hidden" && (
+              <TouchableOpacity
+                accessibilityRole="button"
+                onPress={() => {
+                  void hidden
+                    .restoreAll()
+                    .then(() => setFilter("all"))
+                    .catch(() => {});
+                }}
+                style={{ minHeight: 44, justifyContent: "center" }}
+              >
+                <Text style={{ color: colors.primary }}>Restore all</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </View>
       <FlatList
         data={visible}
         keyExtractor={(item) => item.id}
-        refreshing={history.loading}
+        refreshing={history.loading || cloud.loading}
         onRefresh={() => {
           void history.reload();
           void cloud.reload();
         }}
         ListHeaderComponent={
-          history.error || cloud.error ? (
+          history.error || cloud.error || hidden.error || favorites.error ? (
             <Text
               style={{
                 paddingHorizontal: 20,
@@ -218,7 +296,7 @@ export default function RecentsScreen() {
                 lineHeight: 22,
               }}
             >
-              {history.error || cloud.error}
+              {history.error || cloud.error || hidden.error || favorites.error}
             </Text>
           ) : null
         }
@@ -228,7 +306,7 @@ export default function RecentsScreen() {
           >
             {!user
               ? "Sign in to see your calls"
-              : history.loading
+              : history.loading || !hidden.ready
                 ? "Loading calls..."
                 : filter === "missed"
                   ? "No missed calls"
@@ -255,6 +333,7 @@ export default function RecentsScreen() {
             )}
             <CallHistoryRow
               call={item}
+              starred={favorites.starred(item.number)}
               colors={colors}
               expanded={expanded === item.id}
               calling={calling}
@@ -262,11 +341,12 @@ export default function RecentsScreen() {
                 setExpanded(expanded === item.id ? null : item.id)
               }
               onCall={() => void placeCall(item.number)}
+              onMore={() => openActions(item.id)}
             >
               {item.recording ? (
                 <LiveRecordingPanel
                   callUuid={item.recording.callUuid}
-                  speakerNames={item.speakerNames}
+                  contactName={item.name}
                 />
               ) : (
                 <Text
@@ -284,6 +364,91 @@ export default function RecentsScreen() {
           </View>
         )}
       />
+      {actionCall && user && (
+        <CallActionsSheet
+          visible
+          call={{
+            ...actionCall,
+            ownerUserId: user.id,
+            occurredAtLabel: new Date(actionCall.startedAt).toLocaleString(),
+            deviceContactId: uniqueDeviceContactId(
+              contacts.people,
+              actionCall.number,
+            ),
+          }}
+          starred={favorites.starred(actionCall.number)}
+          calling={calling}
+          onCall={() => {
+            setActionId(null);
+            void placeCall(actionCall.number);
+          }}
+          onToggleStar={async () => {
+            await favorites.toggle(actionCall.number);
+          }}
+          onDeleteHistory={async () => {
+            await hidden.hide(actionCall.id);
+            if (actionCall.recording)
+              await hidden.hide(`cloud:${actionCall.recording.callUuid}`);
+            setActionId(null);
+            setExpanded(null);
+          }}
+          onClose={() => setActionId(null)}
+          onChat={
+            chatTarget
+              ? () => {
+                  setActionId(null);
+                  router.push({
+                    pathname: "/chat/[id]",
+                    params: {
+                      id: chatTarget.conversationId,
+                      tenantId: String(chatTarget.workspaceId),
+                    },
+                  });
+                }
+              : undefined
+          }
+          extraActions={
+            actionCall.recording
+              ? [
+                  {
+                    id: "copy-transcript",
+                    label: "Copy transcript",
+                    icon: "doc.on.clipboard",
+                    onPress: async () => {
+                      const identity = getAuthSnapshot().user;
+                      if (!identity || identity.id !== user.id)
+                        throw new Error("Account changed");
+                      const { createTRPCClient } = await import("@/lib/trpc");
+                      const Clipboard = await import("expo-clipboard");
+                      const detail =
+                        await createTRPCClient().cloudRecordings.detail.query({
+                          callUuid: actionCall.recording!.callUuid,
+                        });
+                      if (getAuthSnapshot().user !== identity)
+                        throw new Error("Account changed");
+                      if (!detail.transcript)
+                        throw new Error("Transcription is not ready yet");
+                      if (!(await Clipboard.setStringAsync(detail.transcript)))
+                        throw new Error("Could not copy transcript");
+                    },
+                  },
+                  {
+                    id: "summary",
+                    label: "Summary and transcription",
+                    icon: "doc.text.fill",
+                    onPress: () => {
+                      setActionId(null);
+                      router.push({
+                        pathname: "/call-recording/[callUuid]",
+                        params: { callUuid: actionCall.recording!.callUuid },
+                      });
+                    },
+                  },
+                ]
+              : undefined
+          }
+        />
+      )}
     </ScreenContainer>
   );
 }
