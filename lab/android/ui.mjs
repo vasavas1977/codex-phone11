@@ -14,8 +14,22 @@ export function parseNodes(xml){return [...xml.matchAll(/<node\b((?:[^>"']|"[^"]
 let observedNodes=[],observedAt=0;
 export function nodes(){shell('uiautomator','dump','/sdcard/phone11-lab-ui.xml');observedNodes=parseNodes(shell('cat','/sdcard/phone11-lab-ui.xml'));observedAt=Date.now();return observedNodes;}
 export function state(){const n=nodes().find(n=>n['content-desc']?.startsWith('lab-state:'));if(!n)throw new Error('Lab state is not visible');return JSON.parse(n['content-desc'].slice(10));}
-export function tap(label){const match=n=>n['content-desc']===label||n.text===label;const n=(Date.now()-observedAt<3000?observedNodes.find(match):null)||nodes().find(match);if(!n)throw new Error('Control not visible: '+label);const b=n.bounds.match(/\d+/g).map(Number);shell('input','tap',String(Math.floor((b[0]+b[2])/2)),String(Math.floor((b[1]+b[3])/2)));observedNodes=[];observedAt=0;}
+export function dismissKeyboard(){
+ const shown=()=>/\bmInputShown=true\b/.test(shell('dumpsys','input_method'));
+ if(!shown())return;
+ shell('input','keyevent','KEYCODE_BACK');observedNodes=[];observedAt=0;
+ for(let i=0;i<10;i++)if(!shown())return;
+ throw new Error('Keyboard still obscures lab controls');
+}
+export function tap(label){if(label!=='Lab password')dismissKeyboard();const match=n=>n['content-desc']===label||n.text===label;const n=(Date.now()-observedAt<3000?observedNodes.find(match):null)||nodes().find(match);if(!n)throw new Error('Control not visible: '+label);const b=n.bounds.match(/\d+/g).map(Number);shell('input','tap',String(Math.floor((b[0]+b[2])/2)),String(Math.floor((b[1]+b[3])/2)));observedNodes=[];observedAt=0;}
 export async function waitFor(predicate,timeout=20000){const end=Date.now()+timeout;let latest;while(Date.now()<end){latest=state();if(predicate(latest))return latest;await new Promise(r=>setTimeout(r,250));}throw new Error('Deadline exceeded: '+JSON.stringify(latest));}
-export function enterPassword(secret){if(!/^[a-fA-F0-9]{16,128}$/.test(secret))throw new Error('Unexpected synthetic password format');tap('Lab password');execFileSync(adb,['-s',serial,'shell'],{input:`input text ${secret}\ninput keyevent 4\nexit\n`,encoding:'utf8',timeout:10000,stdio:['pipe','pipe','pipe']});}
+export function enterPassword(secret){
+ if(!/^[a-fA-F0-9]{16,128}$/.test(secret))throw new Error('Unexpected synthetic password format');
+ tap('Lab password');shell('input','keycombination','KEYCODE_CTRL_LEFT','KEYCODE_A');shell('input','keyevent','KEYCODE_DEL');
+ const input=nodes().find(n=>n['content-desc']==='Lab password');
+ if(!input||!['','Per-run synthetic password'].includes(input.text))throw new Error('Synthetic password field did not clear');
+ execFileSync(adb,['-s',serial,'shell'],{input:`input text ${secret}\nexit\n`,encoding:'utf8',timeout:10000,stdio:['pipe','pipe','pipe']});
+ dismissKeyboard();observedNodes=[];observedAt=0;
+}
 export function screenshot(file){fs.writeFileSync(file,execFileSync(adb,['-s',serial,'exec-out','screencap','-p'],{timeout:15000}));}
 export function openLab(){return shell('am','start','-W','-a','android.intent.action.VIEW','-d','phone11://android-lab','ai.phone11.mobile.lab');}

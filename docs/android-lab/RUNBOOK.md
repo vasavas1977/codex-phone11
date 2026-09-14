@@ -31,6 +31,9 @@ pnpm lab:up
 pnpm lab:android:build
 pnpm lab:android:install
 pnpm lab:test:sip
+LAB_MEDIA_HOST_MIC_DISABLED=1 pnpm lab:test:media
+LAB_EXPECTED_APK_SHA256="$(node -p 'require("./.lab/apk.json").sha256')" pnpm lab:test:errors
+LAB_EXPECTED_APK_SHA256="$(node -p 'require("./.lab/apk.json").sha256')" pnpm lab:test:network
 pnpm lab:test:push:live
 pnpm lab:report
 pnpm lab:down
@@ -39,6 +42,8 @@ pnpm lab:down
 `lab:setup` downloads only the pinned official Siprix AAR and validates its checksum. `lab:android:build` rejects inherited `.env`, strips inherited public build variables, uses a distinct lab ID, bundles JavaScript into the release APK (signed only by local debug key), checks native libraries, and saves APK identity to `.lab/apk.json`. This APK is for sideloading in the lab, not store submission.
 
 `lab:test:sip` exercises actual installed native calls through UI automation. It opens the lab route, requests microphone through the visible Android permission dialog, enters a transient synthetic password into a secure input, and observes SDK state plus PBX evidence. Diagnostic attempts are separate from the20 individual repeatability samples. Original failures are retained. See `lab/android/FIXTURE.md` for fixture controls and namespace-local network protection.
+
+Run device harnesses sequentially. Set `LAB_MEDIA_HOST_MIC_DISABLED=1` only for the dedicated emulator started with disabled host input. Media capture uses a generated tone and an independent PBX receive recording; it refuses to clear an unexported existing capture. Error checks deliberately revoke microphone permission on the lab package and recover through the visible Android dialog. Neither permission changes nor captures target an ordinary Phone11 installation. Separate per-case ledgers retain first failures and cap diagnostic attempts.
 
 `lab:test:push:contract` runs synthetic existing authenticated wake-contract tests. `lab:test:push:live` currently exits2/BLOCKED: no native Android authenticated FCM receiver/service, matching test Firebase app/sender, or verified pending-call delivery adapter is available. A token file alone cannot unblock that implementation gate. No local broadcast is labeled FCM.
 

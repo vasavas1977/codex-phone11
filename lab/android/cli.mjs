@@ -4,6 +4,7 @@ import path from 'node:path';
 import {execFileSync,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {sha256,explicitEmulator,aggregate,renderReport,junit,sanitize} from './core.mjs';
+import {collectAttempts} from './results.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 process.chdir(root);
 const out=path.join(root,'.lab');fs.mkdirSync(out,{recursive:true,mode:0o700});
@@ -50,7 +51,7 @@ async function main(){switch(process.argv[2]){
   const name=`${process.argv[2]}-${Date.now()}.log`;fs.writeFileSync(path.join(out,name),(result.stdout||'')+(result.stderr||''));console.log(result.stdout);process.exitCode=result.status??1;break;
  }
  case 'report':{
-  const attempts=fs.existsSync(path.join(out,'attempts.json'))?JSON.parse(fs.readFileSync(path.join(out,'attempts.json'))):[];
+  const attempts=collectAttempts(out);
   const fixture=fs.existsSync(path.join(out,'fixture.json'))?JSON.parse(fs.readFileSync(path.join(out,'fixture.json'))):null;
   const secrets=fixture?Object.values(fixture.accounts).map(a=>a.password):[];
   const report=sanitize(aggregate(attempts),secrets);fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(sanitize(report),null,2));fs.writeFileSync(path.join(out,'report.html'),renderReport(report));fs.writeFileSync(path.join(out,'junit.xml'),junit(report));console.log(JSON.stringify({status:report.status,counts:report.counts,path:path.join(out,'report.html')},null,2));break;

@@ -9,7 +9,7 @@ Remote inventory contained daily-use, incoming-controls, mobile-pjsip, owned-aut
 
 Declared app versions: Expo54.0.29, React Native0.81.5, TypeScript5.9.3. Package declares pnpm9.12.0; this host's pnpm wrapper actually used11.19.0 for the offline frozen-lockfile install. No lockfile change or lifecycle script execution was needed. This tool-version difference is recorded rather than hidden.
 
-Resolved prebuild: original production ID `ai.phone11.mobile`; dedicated Android ID `ai.phone11.mobile.lab`; minimum24, compile/target36, build tools36.0.0, NDK27.1.12297006; primary AVD API35 Google APIs ARM64. SDK inventory and image revision are in doctor evidence. The emulator booted under Hypervisor.Framework. No physical Android phone was used.
+Resolved prebuild: default application ID `ai.phone11.mobile`; dedicated Android ID `ai.phone11.mobile.lab`; minimum24, compile/target36, build tools36.0.0, NDK27.1.12297006; primary AVD API35 Google APIs ARM64. The existing iOS daily-pilot EAS profile inherits the separate bundle override `space.manus.phone11ai.t20260425073427`; that identity is preserved. SDK inventory and image revision are in doctor evidence. The emulator booted under Hypervisor.Framework. No physical Android phone was used.
 
 ## Ownership
 

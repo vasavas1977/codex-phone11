@@ -26,3 +26,9 @@ A separate read-only backend investigation measured the latest recording as 51-s
 - `git diff --check` passes.
 
 No deployment, signed build, real call, or handset listening test was performed by this subtask. A new signed iOS build is required for the speaker capability. On that build verify playback after an ended call, silent-switch playback, dragging while paused/playing, speaker/headset transitions, incoming-call interruption, and navigation/sign-out interruption. Judge audibility on the physical handset. Android media behavior requires emulator and physical-device proof separately.
+
+## Signed candidate gate
+
+Read-only local signing inspection found an Apple Development identity and a wildcard development profile without `aps-environment`. It cannot produce the matching push-enabled daily-pilot candidate. No credentials were created or downloaded, no cloud build was started, and installed Build39 was left unchanged.
+
+The existing reviewed EAS profile is `preview-ios-siprix-daily-pilot`, with internal distribution, automatic build-number increment, bundle override `space.manus.phone11ai.t20260425073427`, and production APNs inherited through the wake-pilot profile. After owner approval for the external build, use that existing profile and verify the resulting entitlements and native bridge before installation. Do not substitute a wildcard/no-push development build or submit to a store.

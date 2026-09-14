@@ -32,7 +32,8 @@ jobs:
           node-version: '22.23.1'
       - run: corepack enable && corepack prepare pnpm@9.12.0 --activate
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: node --test lab/android/core.test.mjs lab/android/pbx/fixture.test.mjs
+      - run: node --test lab/android/core.test.mjs lab/android/results.test.mjs lab/android/pbx/fixture.test.mjs
+      - run: node lab/android/media-test.mjs --self-test && node lab/android/error-test.mjs --self-test && node lab/android/network-test.mjs --self-test
       - run: pnpm exec vitest run tests/phone11-siprix-engine.test.ts tests/phone11-siprix-selection.test.ts tests/phone11-wake-service.test.ts tests/phone11-wake-client.test.ts
       - run: node --test tests/phone11-siprix-packaging.test.mjs tests/phone11-android-lab-config.test.mjs
       - run: pnpm exec vitest run tests/phone11-playback-controls.test.tsx tests/phone11-cloud-playback-focus.test.tsx tests/phone11-recording-gemini.test.ts tests/phone11-recording-worker.test.ts

@@ -30,6 +30,7 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
    else p.resolve(v);
   }catch(LabMedia.Failure e){p.reject(e.code,"Synthetic lab media operation failed");}
    catch(SdkError e){p.reject("E_SIPRIX_"+e.code,"Siprix command failed");}
+   catch(MicrophonePermission e){p.reject("E_MICROPHONE_PERMISSION","Allow microphone access using the Microphone control before calling");}
    catch(SecurityException e){p.reject("E_LAB_SCOPE","Only the isolated Phone11 lab is allowed");}
    catch(UnsupportedOperationException e){p.reject("E_UNSUPPORTED","Not implemented for Android lab: "+e.getMessage());}
    catch(Exception e){p.reject("E_STATE","Invalid Android lab state or arguments");}
@@ -37,7 +38,8 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  }
  private static void ok(int code) { if(code!=SiprixCore.kOK) throw new SdkError(code); }
  private static class SdkError extends RuntimeException { final int code; SdkError(int n){code=n;} }
- private void microphone() {if(getReactApplicationContext().checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED) throw new SecurityException();}
+ private static class MicrophonePermission extends RuntimeException {}
+ private void microphone() {if(getReactApplicationContext().checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED) throw new MicrophonePermission();}
  private static Map<String,Object> map(Object... kv) { Map<String,Object> m=new LinkedHashMap<>();for(int i=0;i<kv.length;i+=2)m.put((String)kv[i],kv[i+1]);return m; }
  @ReactMethod public void initialize(ReadableMap options,Promise p){perform(p,()->{
   if(!getReactApplicationContext().getPackageName().equals("ai.phone11.mobile.lab")) throw new SecurityException();
