@@ -1,14 +1,15 @@
 import { beforeEach,describe,it,expect,vi } from 'vitest';
-const mocks=vi.hoisted(()=>({query:vi.fn(),api:vi.fn(),failed:vi.fn(),pendingUploads:vi.fn(),active:vi.fn(),discard:vi.fn(),complete:vi.fn(),uploaded:vi.fn(),cleaned:vi.fn(),releaseCompletion:vi.fn(),putCompleted:vi.fn()}));
+const mocks=vi.hoisted(()=>({query:vi.fn(),api:vi.fn(),failed:vi.fn(),pendingUploads:vi.fn(),active:vi.fn(),discard:vi.fn(),complete:vi.fn(),uploaded:vi.fn(),cleaned:vi.fn(),releaseCompletion:vi.fn(),putCompleted:vi.fn(),openFile:vi.fn()}));
 vi.mock('../server/pbx/db',()=>({getPool:()=>({query:mocks.query})}));
 vi.mock('../server/cloud-recordings/correlation',()=>({bindIncomingChannel:vi.fn()}));
 vi.mock('../server/cloud-recordings/capture-ledger',()=>({createCaptureLedger:()=>({failed:mocks.failed,pendingUploads:mocks.pendingUploads,active:mocks.active,complete:mocks.complete,uploaded:mocks.uploaded,cleaned:mocks.cleaned,releaseCompletion:mocks.releaseCompletion})}));
 vi.mock('../server/cloud-recordings/esl-capture',()=>({createEslCaptureTransport:()=>({api:mocks.api})}));
 vi.mock('../server/cloud-recordings/capture-spool',()=>({createCaptureSpool:()=>({discardCompleted:mocks.discard,putCompleted:mocks.putCompleted})}));
+vi.mock('node:fs',()=>({constants:{O_RDONLY:0,O_NOFOLLOW:0},promises:{open:mocks.openFile}}));
 import {createRecordingCaptureService} from '../server/cloud-recordings/capture-service';
 const id='11111111-1111-4111-8111-111111111111',token='22222222-2222-4222-8222-222222222222';
 function service(){return createRecordingCaptureService({esl:{host:'fixture',port:1,password:'fixture',announcementPath:'/opt/phone11ai/prompts/a.wav'},spoolDirectory:'/unused',uploadEndpoint:'https://invalid/api/recordings/upload',integrationSecret:'fixture'});}
-beforeEach(()=>{vi.clearAllMocks();process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED='true';mocks.pendingUploads.mockResolvedValue([]);mocks.api.mockImplementation(async(c:string)=>c==='show channels as json'?'{"rows":[]}':c.startsWith('uuid_exists')?'true':'+OK');});
+beforeEach(()=>{vi.clearAllMocks();mocks.openFile.mockReset();mocks.openFile.mockRejectedValue(Object.assign(new Error('missing'),{code:'ENOENT'}));process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED='true';mocks.pendingUploads.mockResolvedValue([]);mocks.api.mockImplementation(async(c:string)=>c==='show channels as json'?'{"rows":[]}':c.startsWith('uuid_exists')?'true':'+OK');});
 describe('capture reconciliation safeguards',()=>{
  it('checks manual stop actor in ledger before command',async()=>{mocks.active.mockResolvedValue(null);expect(await service().manualStop(id,7)).toBe(false);expect(mocks.active).toHaveBeenCalledWith(id,7);expect(mocks.api).not.toHaveBeenCalled();});
  it('cleanup tick stops existing recorder with global capture disabled',async()=>{process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED='false';mocks.query.mockResolvedValue({rows:[{call_uuid:id,tenant_id:2,extension_id:3,capture_token:token,recording_status:'recording',mode:'automatic',expired:false}]});await service().tick();expect(mocks.api).toHaveBeenCalledWith(`uuid_record ${id} stop /var/lib/freeswitch/recordings/phone11/2/${token}.wav`);expect(mocks.discard).toHaveBeenCalled();});
@@ -28,6 +29,35 @@ describe('capture reconciliation safeguards',()=>{
   expect(mocks.complete).toHaveBeenCalledTimes(2);expect(mocks.complete).toHaveBeenLastCalledWith(id,path);
   expect(mocks.uploaded).toHaveBeenCalledWith(lease,'stored-key');expect(mocks.discard).toHaveBeenCalledWith(lease);expect(mocks.cleaned).toHaveBeenCalledWith(lease);
   expect(mocks.uploaded.mock.invocationCallOrder[0]).toBeLessThan(mocks.discard.mock.invocationCallOrder[0]);
+ });
+
+ it('releases an old fileless capture after the stop grace period',async()=>{
+  vi.useFakeTimers();vi.setSystemTime(new Date('2026-09-14T03:00:00.000Z'));
+  const path=`/var/lib/freeswitch/recordings/phone11/2/${token}.wav`;
+  mocks.complete.mockRejectedValue(new Error('recording file not ready'));
+  mocks.api.mockImplementation(async(c:string)=>c==='show channels as json'?'{"rows":[]}':c.startsWith('uuid_exists')?'false':'+OK');
+  mocks.query.mockResolvedValue({rows:[{call_uuid:id,tenant_id:2,extension_id:3,capture_token:token,capture_stopped_at:'2026-09-14T02:58:00.000Z',recording_status:'recording',mode:'automatic',expired:false}]});
+  await service().tick();
+  expect(mocks.complete).toHaveBeenCalledWith(id,path);
+  expect(mocks.openFile).toHaveBeenCalledTimes(2);
+  expect(mocks.discard).toHaveBeenCalledWith(expect.objectContaining({channelUuid:id,token,path}));
+  expect(mocks.failed).toHaveBeenCalledWith(expect.objectContaining({channelUuid:id,token,path}),'capture_failed');
+  vi.useRealTimers();
+ });
+
+ it('keeps a spooled WAV lease eligible for retry during fileless cleanup',async()=>{
+  vi.useFakeTimers();vi.setSystemTime(new Date('2026-09-14T03:00:00.000Z'));
+  const path=`/var/lib/freeswitch/recordings/phone11/2/${token}.wav`;
+  mocks.complete.mockRejectedValue(new Error('recording file not ready'));
+  mocks.api.mockImplementation(async(c:string)=>c==='show channels as json'?'{"rows":[]}':c.startsWith('uuid_exists')?'false':'+OK');
+  const file={stat:vi.fn(async()=>({isFile:()=>true,size:128})),close:vi.fn(async()=>{})};
+  mocks.openFile.mockRejectedValueOnce(Object.assign(new Error('missing'),{code:'ENOENT'})).mockResolvedValueOnce(file);
+  mocks.query.mockResolvedValue({rows:[{call_uuid:id,tenant_id:2,extension_id:3,capture_token:token,capture_stopped_at:'2026-09-14T02:58:00.000Z',recording_status:'recording',mode:'automatic',expired:false}]});
+  await service().tick();
+  expect(mocks.openFile).toHaveBeenCalledTimes(2);
+  expect(mocks.discard).not.toHaveBeenCalled();expect(mocks.failed).not.toHaveBeenCalled();
+  expect(file.close).toHaveBeenCalled();
+  vi.useRealTimers();
  });
 
 });
