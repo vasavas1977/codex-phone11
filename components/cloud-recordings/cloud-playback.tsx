@@ -77,6 +77,7 @@ export function Playback({
   const resumeAfterScrub = useRef(false);
   const controller = useRef<{
     play(route: PlaybackAudioRoute, restart: boolean): Promise<void>;
+    isPending(): boolean;
     pause(): void;
     dispose(): void;
   } | null>(null);
@@ -241,15 +242,16 @@ export function Playback({
       routeError={routeError}
       error={error ? "Playback unavailable. Refresh and try again." : undefined}
       onToggle={() => {
+        const playback = controller.current;
         if (callBusy()) {
-          controller.current?.pause();
+          playback?.pause();
           return;
         }
-        if (status.playing) {
-          controller.current?.pause();
+        if (status.playing || playback?.isPending()) {
+          playback?.pause();
           return;
         }
-        return controller.current?.play(
+        return playback?.play(
           route,
           Boolean(
             status.didJustFinish ||

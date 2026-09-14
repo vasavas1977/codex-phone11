@@ -6,7 +6,7 @@ function setup() {
   const player = {
     play: vi.fn(),
     pause: vi.fn(),
-    seekTo: vi.fn(async () => {}),
+    seekTo: vi.fn(async (_seconds: number) => {}),
     volume: 0.2,
     muted: true,
   };
@@ -53,12 +53,14 @@ it.each(["call", "blur", "pause"] as const)(
     );
     const done = playback.controller.play("earpiece", false);
     await Promise.resolve();
+    expect(playback.controller.isPending()).toBe(true);
     if (reason === "call") playback.deny();
     else if (reason === "blur") playback.controller.dispose();
     else playback.controller.pause();
     finish();
     await done;
     expect(playback.player.play).not.toHaveBeenCalled();
+    expect(playback.controller.isPending()).toBe(false);
   },
 );
 
