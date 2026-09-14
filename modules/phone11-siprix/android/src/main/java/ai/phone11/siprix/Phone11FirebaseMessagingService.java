@@ -11,18 +11,35 @@ import expo.modules.notifications.service.ExpoFirebaseMessagingService;
  * It accepts only a fresh data-only wake owned by the persisted login binding.
  */
 public final class Phone11FirebaseMessagingService extends ExpoFirebaseMessagingService {
+  private void recordIngress(long receivedAt, boolean envelopeShapeValid,
+      Phone11FirebaseDiagnostic.ReceiptReason reason) {
+    try {
+      new Phone11FirebaseDiagnosticStore(this).recordIngress(receivedAt, envelopeShapeValid, reason);
+      Phone11SiprixModule.publishFirebaseDiagnosticChanged();
+    } catch (RuntimeException ignored) {}
+  }
+
   @Override public void onMessageReceived(RemoteMessage message) {
     if (message == null) return;
     if (!Phone11FcmWakeEnvelope.isPhone11(message.getData())) {
       super.onMessageReceived(message);
       return;
     }
-    if (message.getNotification() != null) return;
-    Phone11PendingWakeStore.Wake wake = Phone11FcmWakeEnvelope.parse(message.getData());
-    if (wake == null) return;
-
     Phone11AndroidWakeRuntime runtime = Phone11AndroidWakeRuntime.get(this);
-    Phone11PendingWakeStore.Decision decision = runtime.receive(wake, System.currentTimeMillis());
+    if (runtime.status() != Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS) return;
+    long receivedAt = System.currentTimeMillis();
+    if (message.getNotification() != null) {
+      recordIngress(receivedAt, false, Phone11FirebaseDiagnostic.ReceiptReason.NOT_DATA_ONLY);
+      return;
+    }
+    Phone11PendingWakeStore.Wake wake = Phone11FcmWakeEnvelope.parse(message.getData());
+    if (wake == null) {
+      recordIngress(receivedAt, false, Phone11FirebaseDiagnostic.ReceiptReason.INVALID_ENVELOPE);
+      return;
+    }
+
+    Phone11PendingWakeStore.Decision decision = runtime.receive(wake, receivedAt);
+    recordIngress(receivedAt, true, Phone11FirebaseDiagnostic.ReceiptReason.from(decision));
     // Only the first accepted provider delivery reaches presentation ownership.
     // Replays, tombstones, old bindings, logout and corrupt state stop here.
     if (decision != Phone11PendingWakeStore.Decision.ACCEPTED) return;

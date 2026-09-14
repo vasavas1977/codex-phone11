@@ -53,6 +53,38 @@ public final class FirebaseDiagnosticTest {
     check(!missing.tokenPresent);
     check(missing.tokenHash == null);
 
+    Phone11FirebaseDiagnostic.IngressReceipt invalid = Phone11FirebaseDiagnostic.nextIngress(
+        null, now, false, Phone11FirebaseDiagnostic.ReceiptReason.INVALID_ENVELOPE);
+    check(invalid.receiptCount == 1);
+    check(invalid.receivedAt == now);
+    check(!invalid.envelopeShapeValid);
+    check("rejected".equals(invalid.decision));
+    check("envelope_shape_invalid".equals(invalid.reason));
+
+    Phone11FirebaseDiagnostic.IngressReceipt accepted = Phone11FirebaseDiagnostic.nextIngress(
+        invalid, now + 1, true, Phone11FirebaseDiagnostic.ReceiptReason.from(
+            Phone11PendingWakeStore.Decision.ACCEPTED));
+    check(accepted.receiptCount == 2);
+    check(accepted.envelopeShapeValid);
+    check("accepted".equals(accepted.decision));
+    check("accepted".equals(accepted.reason));
+    Map<String, Object> ingressValue = accepted.publicValue();
+    check(ingressValue.size() == 5);
+    check(!ingressValue.containsKey("callUUID") && !ingressValue.containsKey("bindingId"));
+    check(!ingressValue.containsKey("token") && !ingressValue.containsKey("tokenHash"));
+
+    Phone11FirebaseDiagnostic.IngressReceipt capped = Phone11FirebaseDiagnostic.nextIngress(
+        new Phone11FirebaseDiagnostic.IngressReceipt(Phone11FirebaseDiagnostic.MAX_RECEIPT_COUNT,
+            now, true, "accepted", "accepted"),
+        now + 2, true, Phone11FirebaseDiagnostic.ReceiptReason.DUPLICATE);
+    check(capped.receiptCount == Phone11FirebaseDiagnostic.MAX_RECEIPT_COUNT);
+    check("ignored".equals(capped.decision));
+    check("duplicate".equals(capped.reason));
+
+    check(Phone11FirebaseDiagnostic.restoreIngress(2, now, true, "accepted", "accepted") != null);
+    check(Phone11FirebaseDiagnostic.restoreIngress(0, now, true, "accepted", "accepted") == null);
+    check(Phone11FirebaseDiagnostic.restoreIngress(2, now, true, "accepted", "unknown") == null);
+
     System.out.println("PASS: " + assertions + " sanitized Firebase diagnostic assertions");
   }
 }

@@ -36,6 +36,14 @@ export interface FirebaseDiagnostic {
   tokenHash: string | null;
   reason: string;
   checkedAt: number;
+  ingress: FirebaseIngressDiagnostic | null;
+}
+export interface FirebaseIngressDiagnostic {
+  receiptCount: number;
+  receivedAt: number;
+  envelopeShapeValid: boolean;
+  decision: "accepted" | "ignored" | "rejected";
+  reason: string;
 }
 
 export interface Call {

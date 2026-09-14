@@ -21,11 +21,14 @@ function Lab() {
  const refresh=async()=>{if(bridge)setState(await bridge.getSnapshot());};
  useEffect(()=>{
   if(!bridge){setError("E_NATIVE_MODULE_MISSING");return;}
-  void refresh();void bridge.getFirebaseDiagnostic().then(setFirebaseDiagnostic).catch(e=>setFirebaseDiagnostic({status:"blocked",tokenPresent:false,tokenHash:null,reason:String((e as {code?:string}).code||"firebase_diagnostic_unavailable"),checkedAt:Date.now()}));
+  const refreshFirebase=()=>bridge.getFirebaseDiagnostic().then(setFirebaseDiagnostic).catch(e=>setFirebaseDiagnostic({status:"blocked",tokenPresent:false,tokenHash:null,reason:String((e as {code?:string}).code||"firebase_diagnostic_unavailable"),checkedAt:Date.now(),ingress:null}));
+  void refresh();void refreshFirebase();
   const sub=new NativeEventEmitter(bridge as never).addListener("Phone11SiprixEvent",e=>{
    setEvents(old=>[...old.slice(-39),{type:e.type,state:e.call?.state,sequence:e.sequence,generation:e.generation,callId:e.call?.callId,statusCode:e.call?.statusCode}]);
    if(e.type==="callTerminated")setEnded(n=>n+1);void refresh();
-  });return()=>sub.remove();
+  });
+  const diagnosticSub=new NativeEventEmitter(bridge as never).addListener("Phone11FirebaseDiagnosticChanged",()=>void refreshFirebase());
+  return()=>{sub.remove();diagnosticSub.remove();};
  },[]);
  async function run(action:()=>Promise<unknown>){if(busyRef.current)return;busyRef.current=true;setBusy(true);setError("");try{await action();await refresh();}catch(e){setError(String((e as {code?:string}).code||"E_COMMAND"));}finally{busyRef.current=false;setBusy(false);}}
  const call=state?.calls[0];const account=state?.accounts[0];
@@ -34,12 +37,15 @@ function Lab() {
  const firebaseLabel=firebaseDiagnostic?.status==="available"
   ? `Firebase: token ready • ID ${firebaseDiagnostic.tokenHash}`
   : firebaseDiagnostic?.status==="blocked"?`Firebase: blocked • ${firebaseDiagnostic.reason}`:"Firebase: not commissioned";
+ const ingress=firebaseDiagnostic?.ingress;
+ const ingressLabel=ingress?`FCM receipt: ${ingress.receiptCount} • ${ingress.envelopeShapeValid?"valid shape":"invalid shape"} • ${ingress.decision}/${ingress.reason}`:"FCM receipt: none";
  return <ScreenContainer><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:20,gap:8}}>
   <Text style={{fontSize:26,fontWeight:"700",color:colors.foreground}}>Phone11 Android Lab</Text>
   <Text style={{color:colors.muted}}>Isolated synthetic calls • real Siprix • no production accounts</Text>
   <View accessible accessibilityLabel={`lab-state:${observed}`} testID="lab-state">
    <Text style={{color:colors.foreground,fontSize:12}}>SDK: {state?.sdkVersion??"not initialized"}{"\n"}Registration: {account?.registrationState??"none"} • Call: {call?.state??"none"}{"\n"}Completed: {ended} • {error||"No command error"}</Text>
    <Text style={{color:colors.foreground,fontSize:12}}>{firebaseLabel}</Text>
+   <Text style={{color:colors.foreground,fontSize:12}}>{ingressLabel}</Text>
   </View>
   {button("Initialize",()=>bridge!.initialize({}))}
   {button("Microphone",()=>PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO))}

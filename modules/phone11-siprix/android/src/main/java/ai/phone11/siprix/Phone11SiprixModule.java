@@ -97,11 +97,25 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
     .emit("Phone11VoipTokenChanged",Arguments.makeNativeMap(map("changed",true)));
   });
  }
+ static void publishFirebaseDiagnosticChanged(){
+  final Runtime current;
+  synchronized(Phone11SiprixModule.class){current=runtime;}
+  if(current==null||!current.context.hasActiveReactInstance())return;
+  current.main.post(()->{
+   if(!current.context.hasActiveReactInstance())return;
+   current.context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+    .emit("Phone11FirebaseDiagnosticChanged",Arguments.makeNativeMap(map("changed",true)));
+  });
+ }
  private static boolean validProviderToken(String token){return token!=null&&!token.trim().isEmpty()&&token.length()<=4096;}
  private void resolveFirebaseDiagnostic(Promise p,Phone11FirebaseDiagnostic.Result result){
   try{
-   new Phone11FirebaseDiagnosticStore(getReactApplicationContext().getApplicationContext()).replace(result);
-   p.resolve(Arguments.makeNativeMap(result.publicValue()));
+   Phone11FirebaseDiagnosticStore store=new Phone11FirebaseDiagnosticStore(getReactApplicationContext().getApplicationContext());
+   store.replace(result);
+   Map<String,Object> value=result.publicValue();
+   Phone11FirebaseDiagnostic.IngressReceipt ingress=store.readIngress();
+   value.put("ingress",ingress==null?null:ingress.publicValue());
+   p.resolve(Arguments.makeNativeMap(value));
   }catch(RuntimeException failure){p.reject("FIREBASE_DIAGNOSTIC_UNAVAILABLE","Firebase diagnostic persistence is unavailable");}
  }
  @ReactMethod public void getFirebaseDiagnostic(Promise p){rt.main.post(()->{
@@ -109,10 +123,12 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
   Phone11AndroidWakeRuntime.Status status=Phone11AndroidWakeRuntime.get(getReactApplicationContext()).status();
   long checkedAt=System.currentTimeMillis();
   if(status==Phone11AndroidWakeRuntime.Status.UNSUPPORTED_UNCOMMISSIONED){
-   resolveFirebaseDiagnostic(p,Phone11FirebaseDiagnostic.unavailable(checkedAt));return;
+   Map<String,Object> value=Phone11FirebaseDiagnostic.unavailable(checkedAt).publicValue();value.put("ingress",null);
+   p.resolve(Arguments.makeNativeMap(value));return;
   }
   if(status!=Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS){
-   resolveFirebaseDiagnostic(p,Phone11FirebaseDiagnostic.misconfigured(checkedAt));return;
+   Map<String,Object> value=Phone11FirebaseDiagnostic.misconfigured(checkedAt).publicValue();value.put("ingress",null);
+   p.resolve(Arguments.makeNativeMap(value));return;
   }
   FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task->rt.main.post(()->{
    if(!rt.lease.owns(owner)){p.reject("E_STALE_BRIDGE","React bridge ownership has changed");return;}
