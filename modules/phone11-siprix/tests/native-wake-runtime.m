@@ -48,6 +48,12 @@ int main(void) {
   int categoriesDuringPendingWake=playbackCategories;
   [js setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
   CHECK([error isEqual:@"E_CALL_AUDIO_ACTIVE"] && playbackCategories==categoriesDuringPendingWake);
+  Phone11AudioRoutePickerManager *pickerManager=[Phone11AudioRoutePickerManager new];
+  P11AudioRoutePickerView *picker=(P11AudioRoutePickerView *)[pickerManager view];
+  UIEvent *pickerTouch=[UIEvent new]; pickerTouch.type=UIEventTypeTouches;
+  CGPoint insidePicker={0,0};
+  CHECK([picker hitTest:insidePicker withEvent:pickerTouch]==nil && playbackCategories==categoriesDuringPendingWake);
+  CHECK(![picker accessibilityActivate] && playbackCategories==categoriesDuringPendingWake);
   [js getSnapshot:resolve rejecter:reject];
   CHECK(result[@"nativeWake"] && [result[@"calls"] count]==0);
   [js destroy:resolve rejecter:reject]; CHECK([error isEqual:@"E_WAKE_ADOPTION_REQUIRED"] && shutdowns==0);
@@ -84,6 +90,9 @@ int main(void) {
   CHECK(!runtime.wakeContext && [events.lastObject[@"type"] isEqual:@"terminated"]);
   [Phone11Siprix setIncomingWakeAudioSession:AVAudioSession.sharedInstance active:NO]; CHECK(deactivations==1 && !runtime.audioSessionActive);
   [Phone11Siprix setIncomingWakeAudioSession:AVAudioSession.sharedInstance active:NO]; CHECK(deactivations==1);
+  int categoriesAfterWake=playbackCategories;
+  CHECK([picker hitTest:insidePicker withEvent:pickerTouch]==picker && playbackCategories==categoriesAfterWake+1);
+  [js resetPlaybackAudioRoute:resolve rejecter:reject]; CHECK(!error && !runtime.playbackRouteActive);
   // A recreated foreground runtime can retain the same SIP account but has no
   // verified wake owner. Credentials alone must never authorize the saved grant.
   runtime.wakeOwner=nil;

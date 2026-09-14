@@ -16,16 +16,35 @@ NSString *const AVAudioSessionPortHDMI = @"HDMI";
 NSString *const AVAudioSessionCategoryPlayAndRecord = @"playAndRecord";
 NSString *const AVAudioSessionCategoryPlayback = @"playback";
 NSString *const AVAudioSessionModeVoiceChat = @"voiceChat";
+NSString *const AVAudioSessionModeDefault = @"default";
 NSString *const AVAudioSessionModeSpokenAudio = @"spokenAudio";
 NSString *const AVAudioSessionRouteChangeNotification = @"routeChange";
 static int playbackCategories, playbackOverrides, playbackActivations;
+static NSString *lastPlaybackMode;
+static AVAudioSessionCategoryOptions lastPlaybackOptions;
+@implementation UIEvent
+@end
+@implementation UIColor
++ (instancetype)clearColor { static UIColor *color; if (!color) color=[UIColor new]; return color; }
+@end
 @implementation UIView
+- (instancetype)initWithFrame:(CGRect)frame { return [self init]; }
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { return point.x < 0 ? nil : self; }
+- (BOOL)accessibilityActivate { return YES; }
+@end
+@implementation AVRoutePickerView
+@end
+@implementation RCTViewManager
+- (UIView *)view { return [UIView new]; }
 @end
 @implementation AVAudioSessionPortDescription
 @end
 @implementation AVAudioSessionRouteDescription
 @end
 @implementation AVAudioSession
+@synthesize category = _category;
+@synthesize mode = _mode;
+@synthesize categoryOptions = _categoryOptions;
 + (instancetype)sharedInstance {
   static AVAudioSession *session;
   static dispatch_once_t once;
@@ -37,7 +56,13 @@ static int playbackCategories, playbackOverrides, playbackActivations;
   return session;
 }
 - (BOOL)setCategory:(NSString *)category mode:(NSString *)mode options:(AVAudioSessionCategoryOptions)options error:(NSError **)error {
-  playbackCategories++; return YES;
+  playbackCategories++;
+  lastPlaybackMode = mode;
+  lastPlaybackOptions = options;
+  _category = category;
+  _mode = mode;
+  _categoryOptions = options;
+  return YES;
 }
 - (BOOL)overrideOutputAudioPort:(AVAudioSessionPortOverride)portOverride error:(NSError **)error {
   playbackOverrides++;
@@ -206,10 +231,51 @@ int main(void) {
     AVAudioSession.sharedInstance.currentRoute.outputs = @[bluetooth];
     [bridge getPlaybackAudioRoute:resolve rejecter:reject];
     CHECK([result[@"route"] isEqual:@"external"] && [result[@"label"] isEqual:@"Bluetooth"]);
+    [bridge setPlaybackAudioRoute:@"system" resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"route"] isEqual:@"external"] && playbackOverrides == 1);
+    CHECK([lastPlaybackMode isEqual:AVAudioSessionModeDefault]);
+    CHECK((lastPlaybackOptions & AVAudioSessionCategoryOptionAllowBluetooth) != 0);
+    CHECK((lastPlaybackOptions & AVAudioSessionCategoryOptionAllowBluetoothA2DP) != 0);
+    int categoriesDuringSystemRoute = playbackCategories;
+    [bridge setPlaybackAudioRoute:@"system" resolver:resolve rejecter:reject];
+    CHECK(!error && playbackCategories == categoriesDuringSystemRoute && playbackOverrides == 1);
+    // A call/wake can change AVAudioSession without traversing the JS playback
+    // API. The next picker request must detect and repair that stale session.
+    [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayAndRecord
+                                          mode:AVAudioSessionModeVoiceChat
+                                       options:AVAudioSessionCategoryOptionAllowBluetooth
+                                         error:nil];
+    int categoriesAfterForeignSession = playbackCategories;
+    [bridge setPlaybackAudioRoute:@"system" resolver:resolve rejecter:reject];
+    CHECK(!error && playbackCategories == categoriesAfterForeignSession + 1);
+    CHECK([lastPlaybackMode isEqual:AVAudioSessionModeDefault] &&
+          (lastPlaybackOptions & AVAudioSessionCategoryOptionAllowBluetoothA2DP) != 0);
     [bridge setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
     CHECK(!error && [result[@"route"] isEqual:@"speaker"] && playbackOverrides == 2);
     [bridge resetPlaybackAudioRoute:resolve rejecter:reject];
-    CHECK(!error && !P11SiprixRuntime.shared.playbackRouteActive && playbackCategories == categoriesBeforePlayback + 3);
+    CHECK(!error && !P11SiprixRuntime.shared.playbackRouteActive && playbackCategories == categoriesBeforePlayback + 6);
+    Phone11AudioRoutePickerManager *pickerManager = [Phone11AudioRoutePickerManager new];
+    P11AudioRoutePickerView *picker = (P11AudioRoutePickerView *)[pickerManager view];
+    CHECK([picker isKindOfClass:P11AudioRoutePickerView.class]);
+    CHECK(picker.delegate == picker && !picker.prioritizesVideoDevices);
+    picker.disabled = YES;
+    UIEvent *touch = [UIEvent new]; touch.type = UIEventTypeTouches;
+    CGPoint insidePicker = {0, 0};
+    CGPoint outsidePicker = {-1, 0};
+    int categoriesBeforeDisabledPicker = playbackCategories;
+    CHECK([picker hitTest:insidePicker withEvent:touch] == nil && playbackCategories == categoriesBeforeDisabledPicker);
+    picker.disabled = NO;
+    CHECK([picker hitTest:outsidePicker withEvent:touch] == nil && playbackCategories == categoriesBeforeDisabledPicker);
+    AVAudioSession.sharedInstance.currentRoute.outputs = @[bluetooth];
+    __block NSDictionary *pickerOpened;
+    picker.onPickerOpened = ^(NSDictionary *event) { pickerOpened = event; };
+    CHECK([picker hitTest:insidePicker withEvent:touch] == picker && playbackOverrides == 3);
+    int categoriesDuringPicker = playbackCategories;
+    CHECK([picker accessibilityActivate] && playbackCategories == categoriesDuringPicker);
+    [picker routePickerViewWillBeginPresentingRoutes:picker];
+    CHECK([pickerOpened[@"route"] isEqual:@"external"] && [pickerOpened[@"label"] isEqual:@"Bluetooth"]);
+    [bridge resetPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK(!error && !P11SiprixRuntime.shared.playbackRouteActive);
     [bridge createAccount:config resolver:resolve rejecter:reject];
     CHECK(!error && [result[@"id"] isEqualToString:@"10"] && [result[@"registrationState"] isEqualToString:@"unregistered"]);
     CHECK(!result[@"sipPassword"] && !result[@"sipAuthId"]);
@@ -278,6 +344,7 @@ int main(void) {
     int categoriesDuringCall = playbackCategories;
     [bridge setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
     CHECK([error isEqual:@"E_CALL_AUDIO_ACTIVE"] && playbackCategories == categoriesDuringCall);
+    CHECK([picker hitTest:insidePicker withEvent:touch] == nil && playbackCategories == categoriesDuringCall);
     // Even when the SDK calls its delegate inside callInvite, delivery is
     // queued until after the returned call has its correlation identity.
     flush();

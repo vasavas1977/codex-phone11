@@ -38,6 +38,6 @@ Pod::Spec.new do |s|
   # The parent packaging workstream stages the two EXACT pinned frameworks here.
   # Deliberately no download, sample code, CallKit provider, or PJSIP dependency.
   s.vendored_frameworks = 'vendor/siprix.xcframework', 'vendor/siprixMedia.xcframework'
-  s.frameworks = 'AVFoundation', 'AudioToolbox', 'CoreMedia', 'UIKit', 'PushKit'
+  s.frameworks = 'AVFoundation', 'AVKit', 'AudioToolbox', 'CoreMedia', 'UIKit', 'PushKit'
   s.libraries = 'c++'
 end

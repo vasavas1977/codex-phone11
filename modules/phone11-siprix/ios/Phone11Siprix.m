@@ -1,5 +1,7 @@
 #import "Phone11Siprix.h"
 #import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
+#import <React/RCTViewManager.h>
 #import <siprix/Siprix.h>
 #import <limits.h>
 #import <math.h>
@@ -136,6 +138,7 @@ static NSString *P11HistoryNumber(id uri) {
 @property(nonatomic) BOOL quarantined;
 @property(nonatomic) BOOL audioSessionActive;
 @property(nonatomic) BOOL playbackRouteActive;
+@property(nonatomic) BOOL playbackSystemPickerActive;
 @property(nonatomic) BOOL trialNotified;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableDictionary *> *accounts;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableDictionary *> *calls;
@@ -306,6 +309,72 @@ static BOOL P11HasLiveCall(P11SiprixRuntime *runtime) {
   return runtime.audioSessionActive || runtime.calls.count > 0 ||
     runtime.wakeContext != nil || runtime.wakeAudioUUID != nil;
 }
+
+static BOOL P11PrepareSystemRoutePicker(P11SiprixRuntime *runtime) {
+  if (P11HasLiveCall(runtime)) return NO;
+  AVAudioSession *session = AVAudioSession.sharedInstance;
+  NSError *error = nil;
+  AVAudioSessionCategoryOptions routeOptions = AVAudioSessionCategoryOptionAllowBluetooth |
+    AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+  BOOL hasSystemPickerSession = runtime.playbackSystemPickerActive &&
+    [session.category isEqualToString:AVAudioSessionCategoryPlayAndRecord] &&
+    [session.mode isEqualToString:AVAudioSessionModeDefault] &&
+    (session.categoryOptions & routeOptions) == routeOptions;
+  if (!hasSystemPickerSession &&
+      ![session setCategory:AVAudioSessionCategoryPlayAndRecord
+                       mode:AVAudioSessionModeDefault
+                    options:routeOptions
+                      error:&error]) return NO;
+  if (![session setActive:YES error:&error] || P11HasLiveCall(runtime)) return NO;
+  // Preserve the current receiver, speaker, or external route. The system
+  // picker is the only owner of the user's next selection.
+  runtime.playbackRouteActive = YES;
+  runtime.playbackSystemPickerActive = YES;
+  [runtime emit:@"playbackAudioRoute" data:P11PlaybackAudioRoute()];
+  return YES;
+}
+
+@interface P11AudioRoutePickerView : AVRoutePickerView <AVRoutePickerViewDelegate>
+@property(nonatomic) BOOL disabled;
+@property(nonatomic, copy) RCTDirectEventBlock onPickerOpened;
+@end
+
+@implementation P11AudioRoutePickerView
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    self.delegate = self;
+    self.prioritizesVideoDevices = NO;
+    self.tintColor = UIColor.clearColor;
+    self.activeTintColor = UIColor.clearColor;
+  }
+  return self;
+}
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+  UIView *hit = [super hitTest:point withEvent:event];
+  if (!hit) return nil;
+  if (self.disabled || P11HasLiveCall(P11SiprixRuntime.shared)) return nil;
+  if (event.type == UIEventTypeTouches &&
+      !P11PrepareSystemRoutePicker(P11SiprixRuntime.shared)) return nil;
+  return hit;
+}
+- (BOOL)accessibilityActivate {
+  if (self.disabled || !P11PrepareSystemRoutePicker(P11SiprixRuntime.shared)) return NO;
+  return [super accessibilityActivate];
+}
+- (void)routePickerViewWillBeginPresentingRoutes:(AVRoutePickerView *)routePickerView {
+  if (P11HasLiveCall(P11SiprixRuntime.shared)) return;
+  if (self.onPickerOpened) self.onPickerOpened(P11PlaybackAudioRoute());
+}
+@end
+
+@interface Phone11AudioRoutePickerManager : RCTViewManager
+@end
+@implementation Phone11AudioRoutePickerManager
+RCT_EXPORT_MODULE(Phone11AudioRoutePickerView)
+- (UIView *)view { return [[P11AudioRoutePickerView alloc] initWithFrame:(CGRect){0}]; }
+RCT_EXPORT_VIEW_PROPERTY(disabled, BOOL)
+RCT_EXPORT_VIEW_PROPERTY(onPickerOpened, RCTDirectEventBlock)
+@end
 
 static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSString *direction,
                                      NSString *state, NSString *remote) {
@@ -541,6 +610,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 - (int)shutdown {
   self.generation += 1;
   self.registrationProof = nil; self.processedRegistrationIngress = 0;
+  self.playbackRouteActive = NO; self.playbackSystemPickerActive = NO;
   [self clearWake:YES];
   self.wakeOwner = nil; self.accountConfig = nil; self.wakeAudioUUID = nil; self.wakeAudioOwner = nil;
   if (self.audioSessionActive) {
@@ -894,6 +964,8 @@ RCT_EXPORT_MODULE(Phone11Siprix)
     P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
     if (!runtime.initialized || runtime.quarantined || session != AVAudioSession.sharedInstance) return;
     if (active) {
+      runtime.playbackRouteActive = NO;
+      runtime.playbackSystemPickerActive = NO;
       if (!runtime.wakeContext) return;
       runtime.wakeAudioUUID = runtime.wakeContext[@"callUUID"];
       runtime.wakeAudioOwner = runtime.wakeOwner; runtime.wakeAudioGeneration = runtime.generation;
@@ -1270,12 +1342,19 @@ RCT_EXPORT_METHOD(getPlaybackAudioRoute:(RCTPromiseResolveBlock)resolve rejecter
 }
 
 RCT_EXPORT_METHOD(setPlaybackAudioRoute:(NSString *)route resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
-  if (![route isEqualToString:@"speaker"] && ![route isEqualToString:@"earpiece"]) {
-    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Playback route must be speaker or earpiece."); return;
+  if (![route isEqualToString:@"speaker"] && ![route isEqualToString:@"earpiece"] && ![route isEqualToString:@"system"]) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Playback route must be speaker, earpiece, or system."); return;
   }
   P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
   if (P11HasLiveCall(runtime)) {
     P11Reject(reject, @"E_CALL_AUDIO_ACTIVE", @"Phone11 call audio owns the audio session."); return;
+  }
+  if ([route isEqualToString:@"system"]) {
+    if (!P11PrepareSystemRoutePicker(runtime)) {
+      P11Reject(reject, @"E_PLAYBACK_AUDIO_ROUTE", @"Playback audio route could not be prepared."); return;
+    }
+    resolve(P11PlaybackAudioRoute());
+    return;
   }
   AVAudioSession *session = AVAudioSession.sharedInstance;
   NSError *error = nil;
@@ -1283,17 +1362,19 @@ RCT_EXPORT_METHOD(setPlaybackAudioRoute:(NSString *)route resolver:(RCTPromiseRe
   if (![session setCategory:AVAudioSessionCategoryPlayAndRecord mode:AVAudioSessionModeVoiceChat options:options error:&error]) {
     P11Reject(reject, @"E_PLAYBACK_AUDIO_ROUTE", @"Playback audio route could not be prepared."); return;
   }
-  AVAudioSessionPortOverride override = [route isEqualToString:@"speaker"] ? AVAudioSessionPortOverrideSpeaker : AVAudioSessionPortOverrideNone;
-  if (![session overrideOutputAudioPort:override error:&error] || ![session setActive:YES error:&error]) {
+  if (![session overrideOutputAudioPort:[route isEqualToString:@"speaker"] ? AVAudioSessionPortOverrideSpeaker : AVAudioSessionPortOverrideNone error:&error] ||
+      ![session setActive:YES error:&error]) {
     P11Reject(reject, @"E_PLAYBACK_AUDIO_ROUTE", @"Playback audio route could not be changed."); return;
   }
   // Re-check after native session work. Calls are delivered on this same main
   // queue, so no later playback command can cross a processed call boundary.
   if (P11HasLiveCall(runtime)) {
     runtime.playbackRouteActive = NO;
+    runtime.playbackSystemPickerActive = NO;
     P11Reject(reject, @"E_CALL_AUDIO_ACTIVE", @"Phone11 call audio owns the audio session."); return;
   }
   runtime.playbackRouteActive = YES;
+  runtime.playbackSystemPickerActive = NO;
   NSDictionary *status = P11PlaybackAudioRoute();
   [runtime emit:@"playbackAudioRoute" data:status];
   resolve(status);
@@ -1309,12 +1390,16 @@ RCT_EXPORT_METHOD(resetPlaybackAudioRoute:(RCTPromiseResolveBlock)resolve reject
     P11Reject(reject, @"E_PLAYBACK_AUDIO_ROUTE", @"Playback audio session could not be restored."); return;
   }
   runtime.playbackRouteActive = NO;
+  runtime.playbackSystemPickerActive = NO;
   resolve(P11PlaybackAudioRoute());
 }
 
 RCT_EXPORT_METHOD(handleNativeAudioSession:(BOOL)active resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime) return;
-  if (active) runtime.playbackRouteActive = NO;
+  if (active) {
+    runtime.playbackRouteActive = NO;
+    runtime.playbackSystemPickerActive = NO;
+  }
   if (active && !runtime.wakeContext) { runtime.wakeAudioUUID = nil; runtime.wakeAudioOwner = nil; }
   if (runtime.audioSessionActive == active) { resolve(nil); return; }
   if (active) [runtime.sdk activateSession:AVAudioSession.sharedInstance];
