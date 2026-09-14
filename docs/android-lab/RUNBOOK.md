@@ -47,7 +47,7 @@ The commissioned Expo/Gradle staging path is fail-closed and cannot prebuild wit
 
 Run device harnesses sequentially. Set `LAB_MEDIA_HOST_MIC_DISABLED=1` only for the dedicated emulator started with disabled host input. Media capture uses a generated tone and an independent PBX receive recording; it refuses to clear an unexported existing capture. Error checks deliberately revoke microphone permission on the lab package and recover through the visible Android dialog. Neither permission changes nor captures target an ordinary Phone11 installation. Separate per-case ledgers retain first failures and cap diagnostic attempts.
 
-`lab:test:push:contract` runs the authenticated wake-contract tests. `lab:test:push:live` currently exits2/BLOCKED because no isolated staging Firebase provider or test-device delivery evidence has been commissioned. Source support and a configuration file alone cannot establish live delivery. No local broadcast is labeled FCM.
+`lab:test:push:contract` runs the authenticated wake-contract tests. `lab:test:push:live` runs the strict [real-FCM preflight](FCM-LIVE-HARNESS.md), writes truthful L3 blockers into the normal report input and exits2 while staging inputs are absent. A token file alone cannot unblock that gate. No local broadcast is labeled FCM.
 
 `lab:report` includes all62 matrix rows, not just executed tests. JSON, HTML, and JUnit separate logic, native runtime, SIP, real push and physical device results. Missing coverage cannot produce full PASS. Generated files and per-run credentials are under ignored, private `.lab/`. Review redaction before sharing raw runtime artifacts.
 

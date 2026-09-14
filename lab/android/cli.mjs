@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {Buffer} from 'node:buffer';
 import {execFileSync,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {sha256,explicitEmulator,aggregate,renderReport,junit,sanitize} from './core.mjs';
@@ -59,7 +60,10 @@ async function main(){switch(process.argv[2]){
  case 'up':case 'down':{console.log(run(process.execPath,['lab/android/fixture.mjs',process.argv[2]],{timeout:300000}));break;}
  case 'sip':{console.log(run(process.execPath,['lab/android/sip-test.mjs'],{timeout:1200000}));break;}
  case 'push-live':{
-  console.log('BLOCKED L3: no lab Firebase client/sender, Android native authenticated wake receiver, or tested pending-call delivery adapter. No push sent. L0 mocks are separate.');process.exitCode=2;break;
+  const args=['lab/android/push-live.mjs',...(process.argv.includes('--execute')?['--execute']:[])];
+  const result=spawnSync(process.execPath,args,{cwd:root,encoding:'utf8',timeout:180000,env:process.env});
+  if(result.stdout)process.stdout.write(result.stdout);if(result.stderr)process.stderr.write(result.stderr);
+  process.exitCode=result.status??1;break;
  }
  default:throw new Error('Unknown lab command');
 }}
