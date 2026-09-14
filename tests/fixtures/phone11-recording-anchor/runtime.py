@@ -41,14 +41,16 @@ def commands(callid,command):
 
 
 SDP="v=0\r\no=fixture 1 1 IN IP4 192.0.2.1\r\ns=fixture\r\nc=IN IP4 192.0.2.1\r\nt=0 0\r\nm=audio 9000 RTP/AVP 8\r\na=rtpmap:8 PCMA/8000\r\n"
+SECURE_SDP="v=0\r\no=phone 1 1 IN IP4 192.0.2.2\r\ns=fixture\r\nc=IN IP4 192.0.2.2\r\nt=0 0\r\nm=audio 9002 RTP/SAVP 8\r\na=rtpmap:8 PCMA/8000\r\na=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:dGVzdC1vbmx5LWtleS1tYXRlcmlhbA==\r\n"
 
 def sock(ip,port):
  s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind((ip,port));s.settimeout(3);return s
 carrier=sock('127.0.0.2',6000);fs=sock('127.0.0.1',5080);device=sock('127.0.0.1',6001)
-def invite(s,dest,marker=None):
+def invite(s,dest,marker=None,extra_headers=()):
  ip,port=s.getsockname();cid=str(uuid.uuid4())+'@fixture'
  msg=f'INVITE sip:{dest}@127.0.0.1 SIP/2.0\r\nVia: SIP/2.0/UDP {ip}:{port};branch=z9hG4bK{uuid.uuid4().hex}\r\nFrom: <sip:caller@fixture>;tag=test\r\nTo: <sip:{dest}@fixture>\r\nCall-ID: {cid}\r\nCSeq: 1 INVITE\r\nMax-Forwards: 70\r\nContact: <sip:caller@{ip}:{port}>\r\n'
  if marker:msg+=f'X-Phone11-Recording-Anchor: {marker}\r\n'
+ for header in extra_headers:msg+=header+'\r\n'
  msg+=f'Content-Type: application/sdp\r\nContent-Length: {len(SDP)}\r\n\r\n'+SDP;s.sendto(msg.encode(),('127.0.0.1',5060));return cid
 
 def receive(s,contains):
@@ -59,6 +61,13 @@ def receive(s,contains):
 a=invite(carrier,'020303001');msg=receive(fs,'INVITE sip:phone11-recording-3001@');assert f'Call-ID: {a}' in msg;assert 'ingress-v1' in msg
 # Complete the anchored A dialog using the real proxy's Record-Route.
 def values(packet,key):return re.findall(r'^'+re.escape(key)+r': (.+)\r$',packet,re.M|re.I)
+def answer(invite_packet,sock,sdp,tag):
+ reply='SIP/2.0 200 OK\r\n'
+ for key in ['Via','From','To','Call-ID','CSeq','Record-Route']:
+  for value in values(invite_packet,key):reply+=key+': '+value+(';tag='+tag if key=='To' else '')+'\r\n'
+ reply+=f'Contact: <sip:3001@{sock.getsockname()[0]}:{sock.getsockname()[1]}>\r\n'
+ reply+=f'Content-Type: application/sdp\r\nContent-Length: {len(sdp)}\r\n\r\n'+sdp
+ sock.sendto(reply.encode(),('127.0.0.1',5060))
 reply='SIP/2.0 200 OK\r\n'
 for key in ['Via','From','To','Call-ID','CSeq','Record-Route']:
  for value in values(msg,key):reply+=key+': '+value+(';tag=anchored-fs' if key=='To' else '')+'\r\n'
@@ -98,6 +107,10 @@ for number in ['6620303001','+6620303001']:
  assert forwarded.startswith('INVITE sip:phone11-recording-3001@')
 # FS originates B leg: a different exact SIP identity reaches wake/device.
 b=invite(fs,'3001','returned-v1');msg=receive(device,'INVITE sip:3001@');assert f'Call-ID: {b}' in msg;assert b!=a;assert 'X-Fixture-Wake-Flow: reached' in msg;assert 'Recording-Anchor:' not in msg
+answer(msg,device,SECURE_SDP,'phone-origin-answer');receive(fs,'200 OK')
+# Exercise the reverse offer-leg branch used when the handset originated the offer.
+b_reverse=invite(fs,'3001','returned-v1',['X-Fixture-Phone-Offer: yes']);reverse_msg=receive(device,'INVITE sip:3001@');assert f'Call-ID: {b_reverse}' in reverse_msg
+answer(reverse_msg,device,SECURE_SDP,'phone-reverse-answer');receive(fs,'200 OK')
 # A pre-answer CANCEL follows the existing matching transaction path.
 c=invite(carrier,'020303001');pending=receive(fs,'Call-ID: '+c)
 ring='SIP/2.0 180 Ringing\r\n'
@@ -134,5 +147,14 @@ assert commands(a,'answer')[0]['direction']==['priv','pub']
 assert commands(a,'offer')[0]['direction']==['pub','priv']
 assert any(item['direction']==['priv','pub'] for item in commands(a,'offer'))
 assert any(item['direction']==['pub','priv'] for item in commands(a,'answer'))
+for call,direction in [(b,['pub','priv']),(b_reverse,['priv','pub'])]:
+ answers=commands(call,'answer');assert len(answers)==1,answers
+ item=answers[0]
+ assert item['direction']==direction,item
+ assert item['transport-protocol']=='RTP/AVP',item
+ assert item['ICE']=='remove',item
+ assert item['DTLS']=='off',item
+ assert item['SDES']==['off'],item
+ assert item['address-family']=='IP4',item
 assert not failures,failures
-print('PASS: carrier-to-FS, downstream wake boundary, loop/spoof refusal, nonpilot preservation')
+print('PASS: carrier-to-FS, downstream wake boundary, secure phone-answer translation, loop/spoof refusal, nonpilot preservation')

@@ -38,11 +38,24 @@ FS socket with the marker and fixed extension; it enters the existing wake flow.
 That new leg's SIP Call-ID is the wake link and recording identity. Do not carry
 an A-leg wake identity across the bridge.
 
+The existing `PHONE11_INBOUND_REPLY` route must call
+`route(PHONE11_RECORDING_ANCHOR_INBOUND_REPLY)` inside its 1xx/2xx SDP guard,
+before its public-origin answer handling. The existing inbound offer route must
+set `$dlg_var(phone11_inbound_origin)` to `freeswitch`, and set
+`$avp(phone11_inbound_offer_leg)` to `origin` for an offer from the carrier or
+the exact FreeSWITCH socket and to `phone` for the reverse direction. The helper
+then translates a handset `RTP/SAVP` answer to `RTP/AVP` with DTLS and SDES off
+for both direction branches. This hook is required: configuring the returned
+FreeSWITCH bridge for mandatory SRTP moves the security boundary into
+FreeSWITCH and must not be used with this candidate.
+
 Media paths: carrier plain RTP ↔ RTPengine pub/private ↔ FS; FS ↔ existing
 RTPengine FS-origin priv/pub path ↔ Phone11 SRTP. A-leg initial and in-dialog
-media use explicit RTP/AVP, SDES/DTLS off, and PCMA/telephone-event. The carrier
+media use explicit RTP/AVP, SDES/DTLS off, and PCMA/telephone-event. The returned
+B-leg reply also uses explicit RTP/AVP with SDES/DTLS off before reaching
+FreeSWITCH. The carrier
 uses existing RTPengine public ports; no FreeSWITCH public port exposure or
-security-group change is needed. Existing FS-origin behavior applies to the B leg. Config checks do not
+security-group change is needed. Config checks do not
 prove packet reachability or two-way audio; a supervised call must verify both,
 announcement, hangup, repeat incoming calls, and actual recording before release.
 
