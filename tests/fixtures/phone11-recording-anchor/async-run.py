@@ -14,8 +14,20 @@ exec(prelude,globals())
 with open('/tmp/async-kamailio.log','w+') as log:
  p=subprocess.Popen(['kamailio','-DD','-E','-f','/work/tests/fixtures/phone11-recording-anchor/async-runtime.cfg'],stdout=log,stderr=log)
  try:
-  time.sleep(6)
-  if p.poll() is not None: raise RuntimeError('Kamailio stopped')
+  # Emulated x86_64 startup varies; wait for a real SIP response, not a sleep.
+  probe=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+  probe.bind(('127.0.0.1',0));probe.settimeout(0.2)
+  port=probe.getsockname()[1]
+  request=f'OPTIONS sip:fixture@127.0.0.1 SIP/2.0\r\nVia: SIP/2.0/UDP 127.0.0.1:{port};branch=z9hG4bKready\r\nFrom: <sip:probe@fixture>;tag=ready\r\nTo: <sip:fixture@localhost>\r\nCall-ID: readiness@fixture\r\nCSeq: 1 OPTIONS\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n'
+  deadline=time.monotonic()+20
+  while True:
+   if p.poll() is not None: raise RuntimeError('Kamailio stopped')
+   assert time.monotonic()<deadline,'Kamailio SIP listener did not become ready'
+   probe.sendto(request.encode(),('127.0.0.1',5060))
+   try:
+    if b'404 Existing route unchanged' in probe.recv(65535):break
+   except socket.timeout:pass
+  probe.close()
   exec('SDP='+scenario,globals())
   for attempt in range(32):
    cid=invite(fs,'3001','returned-v1')
