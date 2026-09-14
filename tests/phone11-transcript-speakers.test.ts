@@ -76,5 +76,32 @@ describe("Phone11 transcript speaker labels", () => {
     const names = { speaker1: "Alex", speaker2: "alex" };
     expect(transcriptSpeakerLabel("speaker1", names)).toBe("Alex");
     expect(transcriptSpeakerLabel("speaker2", names)).toBe("Speaker 2");
+    expect(transcriptTurns("Alex: First\nalex: Second", names)).toEqual([
+      {
+        speaker: "unknown",
+        text: "Alex: First\nalex: Second",
+      },
+    ]);
+    expect(
+      transcriptTurns("Speaker 1: First\nSpeaker 2: Second", names),
+    ).toEqual([
+      { speaker: "speaker1", text: "First" },
+      { speaker: "speaker2", text: "Second" },
+    ]);
+  });
+
+  it("treats missing or placeholder participant names as fallbacks", () => {
+    expect(
+      mergeTranscriptSpeakerNames(
+        { speaker1: "Unknown", speaker2: "+66 81 234 5678" },
+        { speaker1: "Somchai" },
+      ),
+    ).toEqual({ speaker1: "Somchai" });
+    expect(
+      transcriptSpeakerLabel("speaker2", {
+        speaker1: "Somchai",
+        speaker2: "Unknown",
+      }),
+    ).toBe("Speaker 2");
   });
 });

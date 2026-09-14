@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   identity: { id: 1 } as any,
   start: vi.fn(),
   stop: vi.fn(),
+  contacts: { people: [] } as any,
   press: new Map<string, () => unknown>(),
 }));
 vi.mock("react-native", () => ({
@@ -44,6 +45,12 @@ vi.mock("expo-audio", () => ({
 }));
 vi.mock("../hooks/use-cloud-recordings", () => ({
   useCloudRecordings: () => mocks.cloud,
+}));
+vi.mock("../hooks/use-device-contacts", () => ({
+  useDeviceContacts: () => mocks.contacts,
+}));
+vi.mock("../hooks/use-auth", () => ({
+  useAuth: () => ({ user: mocks.identity }),
 }));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({ foreground: "black", primary: "blue", muted: "gray" }),
@@ -78,6 +85,7 @@ import {
   CaptureControls,
   recordingChangeMessage,
 } from "../components/cloud-recordings/capture-controls";
+import { LiveRecordingPanel } from "../components/cloud-recordings/live-recording-panel";
 import Detail from "../app/call-recording/[callUuid]";
 import { playbackURL } from "../lib/cloud-recordings/presentation";
 const item = {
@@ -95,6 +103,7 @@ beforeEach(() => {
   mocks.identity = { id: 1 };
   mocks.start.mockReset();
   mocks.stop.mockReset();
+  mocks.contacts = { people: [] };
 });
 it("shows real pending statuses without creating playback", () => {
   mocks.cloud.detail = item;
@@ -132,6 +141,46 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Somchai");
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
+});
+it("resolves sanitized handset names on the full call-detail screen", () => {
+  mocks.identity = { id: 1, name: "Vasavas" };
+  mocks.contacts = {
+    people: [
+      {
+        id: "contact-1",
+        name: "Somchai Contact",
+        phones: [
+          {
+            number: "+66812345678",
+            label: "Mobile",
+            key: "+66812345678",
+          },
+        ],
+      },
+    ],
+  };
+  mocks.cloud.detail = {
+    ...item,
+    number: "+66812345678",
+    direction: "inbound",
+    summaryStatus: "ready",
+    transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+    participantNames: {
+      speaker1: "SERVER CALLER ID",
+      speaker2: "Server Extension",
+    },
+  };
+  const html = renderToStaticMarkup(
+    createElement(LiveRecordingPanel, {
+      callUuid: item.callUuid,
+      full: true,
+      initialTab: "transcription",
+    }),
+  );
+  expect(html).toContain("Somchai Contact");
+  expect(html).toContain("Vasavas");
+  expect(html).not.toContain("SERVER CALLER ID");
+  expect(html).not.toContain("Server Extension");
 });
 it("shows unavailable server state without fake records", () => {
   mocks.cloud = {

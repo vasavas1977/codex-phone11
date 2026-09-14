@@ -17,10 +17,24 @@ export type TranscriptTurn = {
 
 const cleanName = (value: string | undefined) => {
   const name = value?.replace(/\s+/gu, " ").trim();
-  return name && name.length <= 80 && !/^\+?[0-9 ()-]+$/.test(name)
+  return name &&
+    name.length <= 80 &&
+    !/^\+?[0-9 ()-]+$/.test(name) &&
+    name.toLocaleLowerCase() !== "unknown"
     ? name
     : undefined;
 };
+
+function duplicateParticipantNames(names: TranscriptSpeakerNames) {
+  const speaker1 = cleanName(names.speaker1);
+  const speaker2 = cleanName(names.speaker2);
+  return Boolean(
+    speaker1 &&
+      speaker2 &&
+      speaker1.localeCompare(speaker2, undefined, { sensitivity: "accent" }) ===
+        0,
+  );
+}
 
 /**
  * Prefer names resolved on the handset (signed-in user and device contacts),
@@ -42,7 +56,11 @@ export function mergeTranscriptSpeakerNames(
 }
 
 function namedPrefix(line: string, names: TranscriptSpeakerNames) {
-  const entries: Array<["speaker1" | "speaker2", string | undefined]> = [
+  // A legacy name-prefixed transcript cannot distinguish two participants with
+  // the same display name. Keep it unassigned instead of attributing every
+  // matching line to Speaker 1.
+  if (duplicateParticipantNames(names)) return null;
+  const entries: ["speaker1" | "speaker2", string | undefined][] = [
     ["speaker1", cleanName(names.speaker1)],
     ["speaker2", cleanName(names.speaker2)],
   ];
@@ -56,6 +74,7 @@ function namedPrefix(line: string, names: TranscriptSpeakerNames) {
 }
 
 function standaloneName(line: string, names: TranscriptSpeakerNames) {
+  if (duplicateParticipantNames(names)) return null;
   const normalized = line.trim().toLocaleLowerCase();
   if (!normalized) return null;
   for (const [speaker, name] of [
@@ -141,10 +160,7 @@ export function transcriptSpeakerLabel(
 ) {
   const speaker1 = cleanName(names.speaker1);
   const speaker2 = cleanName(names.speaker2);
-  const duplicateNames =
-    speaker1 &&
-    speaker2 &&
-    speaker1.localeCompare(speaker2, undefined, { sensitivity: "accent" }) === 0;
+  const duplicateNames = duplicateParticipantNames(names);
   if (speaker === "speaker1") return speaker1 ?? "Speaker 1";
   if (speaker === "speaker2")
     return !duplicateNames && speaker2 ? speaker2 : "Speaker 2";
