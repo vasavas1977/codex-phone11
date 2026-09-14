@@ -46,6 +46,8 @@ describe("minimal Phone11 FCM staging Cloud Run service",()=>{
   const root=path.resolve(__dirname,"..");const docker=readFileSync(path.join(root,"infra/cloud-run/phone11-fcm-staging/Dockerfile"),"utf8"),deploy=readFileSync(path.join(root,"infra/cloud-run/phone11-fcm-staging/deploy.sh"),"utf8");
   expect(docker).toContain("server/lab-fcm-cloud-run.ts");expect(docker).not.toContain("server/_core/index.ts");expect(docker).toContain('CMD ["node","dist/lab-fcm-cloud-run.mjs"]');
   expect(deploy).toContain('EXPECTED_PROJECT="phone11-stage-20260914"');expect(deploy).toContain("@sha256:");expect(deploy).toContain("--no-allow-unauthenticated");expect(deploy).toContain("--set-secrets=");
+  expect(deploy).toContain('--add-cloudsql-instances="$EXPECTED_CLOUDSQL_INSTANCE"');expect(deploy).toContain("PHONE11_CLOUDSQL_IAM_DB_AUTH=1");
+  expect(deploy).not.toContain("DATABASE_URL=phone11-stage-database-url");
   expect(deploy).not.toContain("--allow-unauthenticated");expect(deploy).not.toMatch(/gcloud projects create|gcloud services enable/);
  });
 
