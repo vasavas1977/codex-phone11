@@ -3,6 +3,18 @@ import { AppState, Text, TouchableOpacity, View } from "react-native";
 import { createTRPCClient } from "@/lib/trpc";
 import * as Auth from "@/lib/_core/auth";
 import { useColors } from "@/hooks/use-colors";
+export function recordingChangeMessage(
+  action: "start" | "stop",
+  accepted: boolean,
+  statusRefreshFailed = false,
+) {
+  if (statusRefreshFailed && accepted)
+    return "Recording change accepted. Status is still updating; please refresh again.";
+  if (!accepted) return "Recording could not be changed. Please refresh and try again.";
+  return action === "start"
+    ? "Recording requested. Refreshing status…"
+    : "Recording stop requested. Refreshing status…";
+}
 export function CaptureControls({
   callUuid,
   controls,
@@ -51,25 +63,29 @@ export function CaptureControls({
       generation.current === revision &&
       Auth.getAuthSnapshot().user === identity;
     try {
-      const api = createTRPCClient().cloudRecordings;
-      const accepted =
-        action === "start"
-          ? (await api.startCapture.mutate({ callUuid })).started
-          : (await api.stopCapture.mutate({ callUuid })).stopped;
+      let accepted = false;
+      try {
+        const api = createTRPCClient().cloudRecordings;
+        accepted =
+          action === "start"
+            ? (await api.startCapture.mutate({ callUuid })).started
+            : (await api.stopCapture.mutate({ callUuid })).stopped;
+        if (!current()) return;
+        setMessage(recordingChangeMessage(action, accepted));
+      } catch {
+        if (current())
+          setMessage(
+            "Recording could not be changed. Please refresh and try again.",
+          );
+        return;
+      }
       if (!current()) return;
-      setMessage(
-        accepted
-          ? action === "start"
-            ? "Recording requested. Refreshing status…"
-            : "Recording stop requested. Refreshing status…"
-          : "Recording could not be changed. Please refresh and try again.",
-      );
-      await refresh();
-    } catch {
-      if (current())
-        setMessage(
-          "Recording could not be changed. Please refresh and try again.",
-        );
+      try {
+        await refresh();
+      } catch {
+        if (current() && accepted)
+          setMessage(recordingChangeMessage(action, true, true));
+      }
     } finally {
       if (current()) {
         inFlight.current = false;

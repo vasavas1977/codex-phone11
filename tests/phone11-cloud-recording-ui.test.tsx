@@ -74,7 +74,10 @@ import {
   RecordingPanel,
   PlaybackControls,
 } from "../components/cloud-recordings/call-history-view";
-import { CaptureControls } from "../components/cloud-recordings/capture-controls";
+import {
+  CaptureControls,
+  recordingChangeMessage,
+} from "../components/cloud-recordings/capture-controls";
 import Detail from "../app/call-recording/[callUuid]";
 import { playbackURL } from "../lib/cloud-recordings/presentation";
 const item = {
@@ -208,6 +211,12 @@ it("manual stop refreshes authoritative status without inventing a ready recordi
   await Promise.resolve();
   expect(mocks.stop).toHaveBeenCalledWith({ callUuid: item.callUuid });
   expect(refresh).toHaveBeenCalledTimes(1);
+});
+it("keeps an accepted stop successful when status refresh temporarily fails", () => {
+  const message = recordingChangeMessage("stop", true, true);
+  expect(message).toContain("accepted");
+  expect(message).toContain("refresh again");
+  expect(message).not.toContain("could not be changed");
 });
 
 it("keeps ready indicators small and hides content when collapsed", () => {
