@@ -114,6 +114,18 @@ route[PHONE11_WAKE_RELAY] {
     exit;
 }
 
+# Replace the existing inbound reply route's unconditional 3xx-6xx
+# rtpengine_delete() with this helper. A rejected location branch does not mean
+# the other device registrations failed. Their RTPengine session is shared.
+# Use the wake transaction flag, not mutable dialog or allocation state,
+# because an unsuccessful fork must never delete another branch's media.
+route[PHONE11_WAKE_REPLY_MEDIA_CLEANUP] {
+    if (isflagset(PHONE11_WAKE_FLAG)) { return; }
+    # Preserve the existing cleanup behavior for traffic outside the wake path.
+    rtpengine_delete();
+    return;
+}
+
 route[PHONE11_WAKE_MEDIA_CLEANUP] {
     # A local transaction timeout has no downstream final reply, so the
     # existing reply-route cleanup cannot run. Never touch unallocated calls.

@@ -67,3 +67,30 @@ The first run may pull this public image; no registry login or live server acces
 The runtime runner creates a unique `--internal` Docker network with an isolated proxy and synthetic Python HTTP/SIP endpoints, publishes no host ports, and removes only its own containers/network afterward. It pins the Python fixture to `python@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834`. Its SIP registry exists only in container memory; no real database, subscriber, provider or backend is contacted. Fixtures are in `tests/fixtures/phone11-wake-kamailio/`.
 
 The runtime tests caught and fixed a behavior that syntax checks did not detect: Kamailio `$var` cannot retain null, and mixed numeric/string comparison prevented the unavailable path from returning a final response. The candidate now initializes safe values and validates response fields without unsafe numeric coercion. Both parser modes and the four static checks passed again after that correction.
+
+## Fork-safe reply cleanup
+
+The inbound reply hook must not delete a wake call's shared RTPengine session when one registrar contact returns 3xx–6xx. Another contact can still answer, or may already have answered. Replace that unconditional deletion in `PHONE11_INBOUND_REPLY` with:
+
+```kamailio
+if (t_check_status("[3-6][0-9][0-9]")) {
+#!ifdef WITH_PHONE11_WAKE_CANDIDATE
+    route(PHONE11_WAKE_REPLY_MEDIA_CLEANUP);
+#!else
+    rtpengine_delete();
+#!endif
+}
+```
+
+The helper uses the transaction's `PHONE11_WAKE_FLAG`, set before HTTP suspension. Non-wake calls retain their old reply cleanup. For wake calls, keep the existing `PHONE11_WAKE_FAILURE` route and its allocation-guarded cleanup so a failure of every branch releases media once. Existing BYE and matched CANCEL cleanup remain necessary. Do not replace this flag with a dialog variable or clear it on an individual failed branch.
+
+The isolated 5.8.4 tests reproduce an unsuccessful registration branch returning 486 before the other branch answers. The unsafe handler serializes NG delete with Call-ID/from-tag and no branch/to-tag. The following successful answer then receives `Unknown call-id`; a `drop` inside named `onreply_route` does not suppress that final 200, so unmodified handset SDP reaches FreeSWITCH. The guarded helper preserves media for 486→200 and 200→487 ordering, and still deletes exactly once when both contacts fail. These tests use real Kamailio SIP/HTTP transactions and a deterministic NG responder; they establish routing and serialization, not real audio quality or RTPengine media conversion.
+
+```sh
+docker build --platform linux/amd64 -t phone11-async-fixture:5.8.4 -f tests/fixtures/phone11-recording-anchor/Async.Dockerfile .
+docker run --rm --network none --platform linux/amd64 -v "$PWD:/work:ro" phone11-async-fixture:5.8.4 python3 /work/tests/fixtures/phone11-recording-anchor/async-run.py
+docker run --rm --network none --platform linux/amd64 -v "$PWD:/work:ro" phone11-async-fixture:5.8.4 python3 /work/tests/fixtures/phone11-recording-anchor/fork-run.py --baseline
+docker run --rm --network none --platform linux/amd64 -v "$PWD:/work:ro" phone11-async-fixture:5.8.4 python3 /work/tests/fixtures/phone11-recording-anchor/fork-run.py
+```
+
+The repeated async test verifies 32 consecutive transactions across four SIP and four HTTP workers, including reply-route registration after resume, retained dialog origin, and retained transaction offer-leg AVP. No production addresses or sockets are used.
