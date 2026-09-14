@@ -135,7 +135,11 @@ try {
   ensure(inspected.Config.Labels['com.phone11.android-lab.owner'] === fixture.owner && inspected.Config.Labels['com.phone11.android-lab.run'] === fixture.runId, 'Fixture Docker ownership mismatch');
   pbx('pjsip set history clear'); ensure(pbx('pjsip set history on').includes('enabled'), 'PBX SIP history unavailable'); historyEnabled = true;
   // Keep the already foreground lab screen. Only open its deep link when absent.
-  try { state(); } catch { openLab(); await waitFor(() => true); }
+  try { state(); }
+  catch {
+    openLab();
+    await waitFor(value => typeof value.initialized === 'boolean');
+  }
   if (state().initialized) { tap('Destroy'); await waitFor(value => !value.initialized); }
   tap('Initialize'); runtimeSdk = String((await waitFor(value => value.initialized)).sdk || 'not-reported');
   tap('Microphone'); try { tap('While using the app'); } catch {}
