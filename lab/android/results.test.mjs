@@ -54,6 +54,28 @@ test('includes every ledger, normalizes reserved rows and accepts baseline no-mu
   assert.equal(rows.find(r => r.test_id === 'MEDIA-01').mode, 'real');
 });
 
+test('keeps error attempts scoped to the exact APK candidate', t => {
+  const { lab, write } = fixture(t);
+  const apk = 'a'.repeat(64);
+  write(`error-attempts/${apk.slice(0, 12)}/LIFE-01/attempt-1.json`, standard('LIFE-01', { apk_sha256: apk }));
+  const [row] = collectAttempts(lab);
+  assert.equal(row.result, 'PASS');
+  assert.equal(row.source_ledgers[0], 'error-attempts/aaaaaaaaaaaa/LIFE-01/attempt-1.json');
+  write(`error-attempts/${apk.slice(0, 12)}/LIFE-01/attempt-1.json`, standard('LIFE-01', { apk_sha256: 'b'.repeat(64) }));
+  assert.throws(() => collectAttempts(lab), /APK attempt namespace mismatch/);
+});
+
+test('accepts a reserved per-APK attempt that never reached device execution', t => {
+  const { lab, write } = fixture(t);
+  write('error-attempts/aaaaaaaaaaaa/SIP-11/attempt-1.json', {
+    test_id: 'SIP-11', run_id: 'preflight', attempt: 1, result: 'NOT_RUN',
+    reason: 'Reserved before device preflight', execution_started: false,
+  });
+  const [row] = collectAttempts(lab);
+  assert.equal(row.result, 'NOT_RUN');
+  assert.equal(row.execution_started, false);
+});
+
 test('keeps separately named SIP campaigns without consuming an earlier attempt budget', t => {
   const { lab, write } = fixture(t);
   write('attempts.json', [standard('SIP-01', { run_id: 'original', attempt: 3 })]);

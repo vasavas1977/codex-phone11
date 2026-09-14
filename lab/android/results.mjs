@@ -121,20 +121,32 @@ export function collectAttempts(labDirectory = '.lab') {
   for (const source of [...campaignLedgers, 'baseline-attempts.json']) {
     for (const raw of read(source, true)) normalize(raw, source);
   }
+  function readAttemptDirectory(directory, testId, apkPrefix = null) {
+    const testDirectory = path.join(root, directory, ...(apkPrefix ? [apkPrefix] : []), testId);
+    const relativeDirectory = [directory, ...(apkPrefix ? [apkPrefix] : []), testId].join('/');
+    for (const file of fs.readdirSync(testDirectory).sort()) {
+      const match = /^attempt-([1-3])\.json$/.exec(file);
+      if (!match) { if (/^attempt-.*\.json$/.test(file)) throw new Error('Invalid attempt filename'); continue; }
+      const source = `${relativeDirectory}/${file}`;
+      for (const raw of read(source, false)) {
+        if (raw.test_id !== testId || raw.attempt !== Number(match[1])) throw new Error(`Attempt identity mismatch: ${source}`);
+        if (apkPrefix && raw.apk_sha256 !== undefined && (typeof raw.apk_sha256 !== 'string' || !raw.apk_sha256.startsWith(apkPrefix))) throw new Error(`APK attempt namespace mismatch: ${source}`);
+        if (apkPrefix && (raw.execution_started || raw.result !== 'NOT_RUN') && typeof raw.apk_sha256 !== 'string') throw new Error(`APK identity missing from executed attempt: ${source}`);
+        normalize(raw, source);
+      }
+    }
+  }
   for (const directory of ['error-attempts', 'network-attempts']) {
     const full = path.join(root, directory);
     if (!fs.existsSync(full)) continue;
     for (const entry of fs.readdirSync(full, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (!entry.isDirectory()) continue;
-      if (!specs.has(entry.name)) throw new Error(`Unknown matrix ID directory: ${entry.name}`);
-      for (const file of fs.readdirSync(path.join(full, entry.name)).sort()) {
-        const match = /^attempt-([1-3])\.json$/.exec(file);
-        if (!match) { if (/^attempt-.*\.json$/.test(file)) throw new Error('Invalid attempt filename'); continue; }
-        const source = `${directory}/${entry.name}/${file}`;
-        for (const raw of read(source, false)) {
-          if (raw.test_id !== entry.name || raw.attempt !== Number(match[1])) throw new Error(`Attempt identity mismatch: ${source}`);
-          normalize(raw, source);
-        }
+      if (specs.has(entry.name)) { readAttemptDirectory(directory, entry.name); continue; }
+      if (directory !== 'error-attempts' || !/^[a-f0-9]{12}$/.test(entry.name)) throw new Error(`Unknown matrix ID directory: ${entry.name}`);
+      const candidate = path.join(full, entry.name);
+      for (const testEntry of fs.readdirSync(candidate, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!testEntry.isDirectory() || !specs.has(testEntry.name)) throw new Error(`Unknown matrix ID directory: ${entry.name}/${testEntry.name}`);
+        readAttemptDirectory(directory, testEntry.name, entry.name);
       }
     }
   }

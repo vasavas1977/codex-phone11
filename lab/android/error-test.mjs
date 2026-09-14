@@ -30,7 +30,13 @@ const nextAttempt = (names, previous = []) => {
   check(next <= 3, 'Three attempts already recorded; earlier failures must be preserved');
   return next;
 };
+const attemptDirectory = (apkSha256, id) => {
+  check(/^[a-f0-9]{64}$/.test(apkSha256 || ''), 'Invalid APK hash for attempt namespace');
+  check(supported.includes(id), 'Unsupported test attempt namespace');
+  return `.lab/error-attempts/${apkSha256.slice(0, 12)}/${id}`;
+};
 const safeSnapshot = value => Object.fromEntries(['initialized', 'sdk', 'generation', 'sequence', 'registration', 'call', 'callCount', 'muted', 'held', 'ended', 'error', 'events'].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+const uniqueTransactions = messages => new Set(messages.map(message => `${message.direction}:${message.dialog}:${message.cseq}:${message.method}:${message.status ?? 'request'}`));
 
 async function main() {
   if (process.argv.includes('--self-test')) {
@@ -44,7 +50,11 @@ async function main() {
     assert.throws(() => nextAttempt(['attempt-1.json', 'attempt-2.json', 'attempt-3.json']));
     assert.equal(safeSnapshot({ call: 'none', password: 'private' }).password, undefined);
     assert.equal(nextAttempt([], [{ attempt: 2, result: 'FAIL' }]), 3);
-    console.log('9 offline harness assertions passed; no ADB, emulator, PBX, or fixture mutation');
+    assert.equal(attemptDirectory('a'.repeat(64), 'LIFE-01'), '.lab/error-attempts/aaaaaaaaaaaa/LIFE-01');
+    assert.throws(() => attemptDirectory('bad', 'LIFE-01'));
+    assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }]).size, 1);
+    assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'one', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'two', cseq: 1, method: 'INVITE', status: null }]).size, 2);
+    console.log('13 offline harness assertions passed; no ADB, emulator, PBX, or fixture mutation');
     return;
   }
   if (!process.argv.includes('--execute')) {
@@ -208,8 +218,10 @@ async function main() {
     }
     fs.mkdirSync(directory, { mode: 0o700 });
     for (const id of ids) {
-      const base = `.lab/error-attempts/${id}`; fs.mkdirSync(base, { recursive: true, mode: 0o700 });
-      const number = nextAttempt(fs.readdirSync(base), priorGlobal.filter(row => row.test_id === id)); const file = `${base}/attempt-${number}.json`;
+      // Attempts are bounded per exact APK. Legacy candidates remain immutable in
+      // their existing directories and cannot consume a new candidate's budget.
+      const base = attemptDirectory(expected, id); fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+      const number = nextAttempt(fs.readdirSync(base), priorGlobal.filter(entry => entry.test_id === id && entry.apk_sha256 === expected)); const file = `${base}/attempt-${number}.json`;
       fs.writeFileSync(file, JSON.stringify({ test_id: id, attempt: number, run_id: runId, result: 'NOT_RUN', reason: 'Reserved before device preflight', execution_started: false }), { flag: 'wx', mode: 0o600 });
       attempts.set(id, { number, file });
     }
@@ -265,22 +277,30 @@ async function main() {
         const active = await callTone(); const processBefore = processIdentity(); const activityBefore = activityIdentity();
         // Do not ask Activity Manager to wait for two full draws: that can consume
         // the fixture's bounded20-second call and test call expiry instead of recreation.
+        const launchStarted = Date.now();
         const launch = execFileSync(adb, ['-s', ui.serial, 'shell', 'am', 'start', '-R', '2', '-a', 'android.intent.action.VIEW', '-d', 'phone11://android-lab', pkg],
           { cwd: root, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'pipe'] });
         proof((launch.match(/^Starting:/gm) || []).length === 2, 'Android did not accept both repeated activity launches');
-        const after = await wait(value => value.call === 'connected', 10000);
-        const processAfter = processIdentity(); const activityAfter = activityIdentity(); const peer = channels();
+        // Check the independent PBX immediately. Accessibility snapshots are
+        // intentionally slower and may outlive the fixture's20-second call cap.
+        const activityAfter = activityIdentity(); const processAfter = processIdentity(); const peerAfterRelaunch = channels();
+        check(peerAfterRelaunch.length === 1 && peerAfterRelaunch[0].state === 'Up', 'Activity relaunch duplicated or lost the bounded PBX call');
+        const after = await wait(value => value.generation === active.generation && (value.call === 'connected' || value.call === 'none'), 10000);
+        const peerAfterControls = channels();
         row.observations.push({ activityRecreation: { activityBefore, activityAfter, processBefore, processAfter,
           activityChanged: activityBefore.token !== activityAfter.token, sameTask: activityBefore.taskId === activityAfter.taskId,
           sameProcess: processBefore.pid === processAfter.pid && processBefore.startTicks === processAfter.startTicks,
           nativeGenerationBefore: active.generation, nativeGenerationAfter: after.generation, callBefore: active.call,
-          callAfter: after.call, callCountAfter: after.callCount }, pbxAfterRelaunch: peer });
-        check(after.callCount === 1 && peer.length === 1 && peer[0].state === 'Up', 'Activity relaunch duplicated or lost native/PBX call state');
+          callAfterControlsReturn: after.call, callCountAfterControlsReturn: after.callCount,
+          relaunchElapsedMs: Date.now() - launchStarted }, pbxImmediatelyAfterRelaunch: peerAfterRelaunch, pbxAfterControlsReturn: peerAfterControls });
+        check(after.callCount <= 1, 'Activity relaunch duplicated native call state');
+        if (after.call === 'connected') check(after.callCount === 1 && peerAfterControls.length === 1, 'Connected native/PBX state diverged after controls returned');
+        else await noChannels();
         await endOwnedCall();
         proof(activityBefore.token !== activityAfter.token, 'Activity token did not change; recreation was not proven');
         proof(processBefore.pid === processAfter.pid && processBefore.startTicks === processAfter.startTicks, 'Process changed; this is not same-process activity recreation evidence');
         proof(active.generation === after.generation, 'Native runtime generation changed across activity recreation');
-        return ['Android -R finished and relaunched MainActivity; ActivityRecord token changed', 'PID and process starttime stayed constant', 'One connected native call and one PBX channel survived with the same generation; controls returned and cleanup completed'];
+        return ['Android -R finished and relaunched MainActivity; ActivityRecord token changed', 'PID and process starttime stayed constant', `One connected native call and one PBX channel survived the relaunch with the same generation; controls returned with call=${after.call} and cleanup completed`];
       });
       if (id === 'LIFE-02') await scenario(id, async () => {
         await visiblePermissionRecovery(); await resetAndRegister(); await wait(value => value.registration === 'registered');
@@ -348,15 +368,17 @@ async function main() {
         ownedCall = true; tapBurst('Call tone'); const connected = await wait(value => value.call === 'connected', 8000);
         let messages = trace(sipMark); let peer = channels();
         check(peer.length === 1 && peer[0].state === 'Up', 'Rapid duplicate dial did not yield exactly one connected PBX call');
-        check(messages.filter(message => message.direction === 'RX' && message.method === 'INVITE' && message.status === null).length === 1, 'Rapid duplicate dial emitted more than one INVITE');
+        let matching = messages.filter(message => message.direction === 'RX' && message.method === 'INVITE' && message.status === null);
+        check(uniqueTransactions(matching).size === 1, 'Rapid duplicate dial emitted more than one unique INVITE transaction');
         check(eventCount(connected, 'callDialing', before.sequence) === 1 && connected.callCount === 1, 'Rapid duplicate dial created duplicated native call state');
-        row.observations.push({ rapidDial: { beforeSequence: before.sequence, after: connected, sip: messages, pbx: peer } });
+        row.observations.push({ rapidDial: { beforeSequence: before.sequence, after: connected, sip: messages, pbx: peer, invitePackets: matching.length, uniqueInviteTransactions: uniqueTransactions(matching).size } });
 
         const endedBefore = connected.ended; sipMark = mark(); tapBurst('Hang up'); const idle = await wait(value => value.call === 'none', 8000);
         messages = trace(sipMark); await noChannels(); ownedCall = false;
-        check(messages.filter(message => message.direction === 'RX' && message.method === 'BYE' && message.status === null).length === 1, 'Rapid duplicate hangup emitted more than one BYE');
+        matching = messages.filter(message => message.direction === 'RX' && message.method === 'BYE' && message.status === null);
+        check(uniqueTransactions(matching).size === 1, 'Rapid duplicate hangup emitted more than one unique BYE transaction');
         check(idle.ended === endedBefore + 1 && eventCount(idle, 'callTerminated', connected.sequence) === 1, 'Rapid duplicate hangup produced missing or duplicated termination');
-        row.observations.push({ rapidHangup: { beforeSequence: connected.sequence, after: idle, sip: messages } });
+        row.observations.push({ rapidHangup: { beforeSequence: connected.sequence, after: idle, sip: messages, byePackets: matching.length, uniqueByeTransactions: uniqueTransactions(matching).size } });
 
         before = safeSnapshot(ui.state()); sipMark = mark();
         execFileSync(process.execPath, ['lab/android/fixture.mjs', 'incoming'], { cwd: root, encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -366,10 +388,10 @@ async function main() {
         check(peer.length === 1 && peer[0].state === 'Up', 'Rapid duplicate answer did not yield exactly one connected PBX call');
         check(eventCount(answered, 'callIncoming', before.sequence) === 1 && eventCount(answered, 'callConnected', ringing.sequence) === 1 && answered.callCount === 1, 'Rapid duplicate answer corrupted native call state');
         const inviteResponses = messages.filter(message => message.direction === 'RX' && message.method === 'INVITE' && message.status === 200);
-        check(inviteResponses.length === 1, 'Rapid duplicate answer emitted missing or duplicate final INVITE responses');
-        row.observations.push({ rapidAnswer: { beforeSequence: before.sequence, ringingSequence: ringing.sequence, after: answered, sip: messages, pbx: peer } });
+        check(uniqueTransactions(inviteResponses).size === 1, 'Rapid duplicate answer emitted missing or multiple unique final INVITE responses');
+        row.observations.push({ rapidAnswer: { beforeSequence: before.sequence, ringingSequence: ringing.sequence, after: answered, sip: messages, pbx: peer, finalInviteResponsePackets: inviteResponses.length, uniqueFinalInviteResponses: uniqueTransactions(inviteResponses).size } });
         await endOwnedCall();
-        return ['Two rapid dial taps produced one native call, one INVITE and one PBX channel', 'Two rapid hangup taps produced one BYE and one native termination', 'Two rapid answer taps produced one connected native call and one final INVITE response; cleanup completed'];
+        return ['Two rapid dial taps produced one native call, one unique INVITE transaction and one PBX channel', 'Two rapid hangup taps produced one unique BYE transaction and one native termination', 'Two rapid answer taps produced one connected native call and one unique final INVITE response transaction; cleanup completed'];
       });
     }
   } finally {
