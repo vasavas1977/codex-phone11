@@ -31,7 +31,18 @@ Initial signed workflow 34834300259 stopped before signing because an old test
 expected Mute to scroll; all other initial native/database jobs passed. Updated
 workflow 34834490638 builds exact source
 `8c2c6e9fc0c4181114933b1f3ecba28d7a5d9f9f` with profile
-`preview-ios-siprix-daily-pilot`. Installation and handset acceptance pending.
+`preview-ios-siprix-daily-pilot`. Workflow finished successfully, producing
+EAS build `8c97c7c9-0130-45ef-9af2-cef8889c5e73`, Phone11 1.0.0 build 41.
+
+Build 41 installed at 10:55:02 UTC; device app inventory confirms version 41.
+Before installation FreeSWITCH had zero active channels. Bundle identity,
+code signature, Siprix linkage, production APNs, background VoIP and the new
+tap/command diagnostic markers in the compiled JS bundle all verified.
+IPA SHA-256: `8ee8ab7620978267aced7ba11bb1d0fd15f9603d3c54b00ee84d053315faa7c2`.
+Local artifact: `/tmp/phone11-mute-build41.ipa`; verification result:
+`/tmp/phone11-mute-build41-verification.json`. No uninstall was performed.
+The launch request was rejected because the iPhone was locked. User unlock/open
+was requested; physical mute acceptance is still pending.
 
 Acceptance on the signed build: answer a call, start recording, tap Mute and
 verify the caller cannot hear the Phone11 microphone, then Unmute and verify
