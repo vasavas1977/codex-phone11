@@ -2,11 +2,13 @@ import { configuredRecordingCapture } from "./capture-service";
 import { z } from "zod";
 import { protectedProcedure, router } from "../_core/trpc";
 import { createCloudRecordingRepository } from "./repository";
+import { cloudRecordingSummaryToolsRouter } from "./summary-tools-router";
 const tenantId=z.number().int().positive();
 const callUuid=z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/);
 // Construct lazily: importing router never starts a DB connection or migration.
 const repo=()=>createCloudRecordingRepository();
 export const cloudRecordingsRouter=router({
+ tools:cloudRecordingSummaryToolsRouter,
  startCapture:protectedProcedure.input(z.object({callUuid:z.string().uuid()})).mutation(async({ctx,input})=>({started:await configuredRecordingCapture()?.manualStart(input.callUuid,ctx.user.id)??false})),
  stopCapture:protectedProcedure.input(z.object({callUuid:z.string().uuid()})).mutation(async({ctx,input})=>({stopped:await configuredRecordingCapture()?.manualStop(input.callUuid,ctx.user.id)??false})),
  list:protectedProcedure.input(z.object({tenantId:tenantId.optional(),limit:z.number().int().min(1).max(100).optional()}).optional()).query(({ctx,input})=>repo().list(ctx.user.id,input)),
