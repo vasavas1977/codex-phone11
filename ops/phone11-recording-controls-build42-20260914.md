@@ -124,3 +124,24 @@ and polling tests successfully. This source also includes the generic-speaker
 fail-safe `f8638c1`. A replacement signed iPhone build was requested after review.
 The older signed Build 43 / source `c2309c9` was verified but deliberately not
 installed because it predates these app corrections.
+
+## Installed replacement Build 44
+
+- Reviewed app source: `7c98708d296aa0dee1c6ff881e72cb50210f8e8b`.
+- Signed workflow `34855633508`: native, all five daily-use jobs, and build passed.
+- EAS build: `4909e3cb-9444-427b-becd-b7365417e2d9`, finished.
+- Version: `1.0.0 (44)`; bundle `space.manus.phone11ai.t20260425073427`.
+- IPA SHA256: `25c69278ecb14d2b541f2a00db7e1bf21426b0188277931627a3201fa62e34c9`.
+- Strict/deep signature verification, embedded app metadata, production push
+  entitlement, valid Ad Hoc profile, and target-device inclusion passed.
+- Fresh idle check at 2026-09-14 14:37:53 UTC found zero calls, active captures,
+  and processing jobs, with the backend healthy.
+- Installation began at 14:38:15 UTC and succeeded. Independent installed-app
+  inventory confirmed Build 44. Launch succeeded at 14:38:42 UTC and process
+  inventory confirmed Phone11 running.
+
+Both summaries are server-ready; the user-facing Recents visibility check has
+been requested and remains unconfirmed. No new physical call or voice-to-person
+attribution is claimed by this build installation. The UI changes use shared
+React Native code; a new Android package and Android handset acceptance were
+not performed in this repair.
