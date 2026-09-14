@@ -46,3 +46,51 @@ Pending acceptance: fresh incoming call, two-way audio for 30 seconds, explicit
 hangup, repeat locked-screen incoming, Hold/resume, then recording Start/Stop
 and playback/summary/transcript. No successful physical call using the final
 configuration has yet been confirmed.
+
+## Follow-up: failed registration fork deletes the shared media session
+
+The 09:33:07 call connected at the server and ended normally at 09:33:33 UTC.
+The next three attempts failed at Answer. RTPengine received correctly configured
+answer commands but returned `Unknown call-id`; in the last attempt, those
+errors preceded FreeSWITCH's rejection. The reply callback was running.
+
+Two contacts for the same handset instance were registered simultaneously, from
+Wi-Fi and cellular. An isolated actual Kamailio 5.8.4 reproduction established:
+a failed fork's 486 triggers the old reply-route `rtpengine_delete()`, whose NG
+command contains Call-ID and From-tag but no To-tag. It removes the shared
+session before another fork answers. A subsequent failed answer conversion
+forwards raw secure SDP to FreeSWITCH, which rejects it. Named reply-route
+`drop` does not suppress final responses in standard Kamailio 5.8.
+
+The bounded repair skips per-branch deletion for transactions carrying
+`PHONE11_WAKE_FLAG`. Whole-transaction failure still uses
+`PHONE11_WAKE_MEDIA_CLEANUP`; validated BYE cleanup is unchanged. Caller CANCEL
+still finishes through aggregate failure. Non-wake reply behavior is preserved.
+The flag is set before transaction creation and restored by TM on reply workers.
+The isolated regression verifies preservation when one fork fails and one
+answers, and exactly one cleanup when all forks fail.
+
+Live apply at 09:47:40 UTC changed only that negative-reply guard. Parser passed
+and FreeSWITCH had zero channels before the edit and before restart. Backup:
+`kamailio.cfg.pre-fork-cleanup-20260914T094740Z`. At 09:48:15 UTC all four
+calling/backend containers were running, Kamailio RPC responded, and there were
+zero active channels. Registration table was empty after restart; requested
+the user reopen Phone11 before a supervised test.
+
+Separately, API health now reports `8ec2923d7003be8bfe78eac2fd9d5a457c065fb3`
+and backend container start time 09:44:09 UTC. This task did not deploy that
+backend change. The parallel Android task has been notified to coordinate and
+avoid further live changes during the handset test. Do not attribute this
+backend state to the scoped Kamailio repair.
+
+Physical acceptance of the fork fix remains pending; source and isolated
+signaling tests do not prove two-way handset audio or daily-use readiness.
+
+Source repair and regression commit: `e9e1389`. Five static checks passed;
+the exact Kamailio 5.8.4 runtime preserved state across 32 asynchronous repeats.
+Fork tests use an NG media stub to verify command lifetime and forwarding of
+returned SDP; actual SDP translation was covered separately by the real
+RTPengine fixture above. The parallel Android task confirmed its backend
+deployment changes only allowlisted AI failure diagnostics in four recording
+worker modules, with no credentials, migrations, or telephony configuration
+changes, and has paused live mutations during this call test.
