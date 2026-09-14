@@ -12,6 +12,8 @@ if (chatCommissioned === "1" && (wakeSettings.gate !== "1" || wakeSettings.envir
 }
 const chatNotificationsEnabled = chatCommissioned === "1";
 
+const androidLab = process.env.PHONE11_ANDROID_LAB === "1";
+if (androidLab && (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix" || process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB !== "1")) throw new Error("Lab requires matching native/JS Siprix lab flags");
 const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
 const sipEngine = process.env.EXPO_PUBLIC_SIP_ENGINE ?? "pjsip";
 if (!["siprix", "pjsip"].includes(sipEngine)) throw new Error("Invalid SIP engine selection");
@@ -38,11 +40,11 @@ const env = {
   logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/107568382/ToqVlgyTUoXePKRa.png",
   scheme: "phone11",
   iosBundleId: bundleId,
-  androidPackage: bundleId,
+  androidPackage: androidLab ? "ai.phone11.mobile.lab" : bundleId,
 };
 
 const config: ExpoConfig = {
-  name: env.appName,
+  name: androidLab ? "Phone11 Lab" : env.appName,
   slug: env.appSlug,
   version: "1.0.0",
   runtimeVersion: `1.0.0-${sipEngine}${chatNotificationsEnabled ? "-daily-pilot" : wakeSettings.gate === "1" ? "-wake-pilot" : ""}-1`,
@@ -96,9 +98,10 @@ const config: ExpoConfig = {
     favicon: "./assets/images/favicon.png",
   },
   plugins: [
+    ...(androidLab ? ["./plugins/with-phone11-android-lab.js"] : []),
     "expo-router",
     ["expo-contacts", { contactsPermission: "Phone11 uses your contacts to show names and let you call people. Your address book stays on this device." }],
-    ...(sipEngine === "siprix" ? [["./plugins/with-phone11-voip-wake.js", {
+    ...(sipEngine === "siprix" && !androidLab ? [["./plugins/with-phone11-voip-wake.js", {
       origin: process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://api.phone11.ai",
     }] as [string, { origin: string }]] : []),
     [
@@ -130,7 +133,7 @@ const config: ExpoConfig = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["armeabi-v7a", "arm64-v8a"],
+          buildArchs: androidLab ? ["arm64-v8a"] : ["armeabi-v7a", "arm64-v8a"],
           minSdkVersion: 24,
         },
         ios: {
@@ -152,7 +155,7 @@ const config: ExpoConfig = {
     },
     buildInfo: {
       sipEngine,
-      sipSdkVersion: sipEngine === "siprix" ? "1.0.40-trial" : "react-native-pjsip-2.7.4",
+      sipSdkVersion: androidLab ? "1.1.0-trial" : sipEngine === "siprix" ? "1.0.40-trial" : "react-native-pjsip-2.7.4",
       easBuildId: process.env.EAS_BUILD_ID ?? "local",
       easBuildProfile: process.env.EAS_BUILD_PROFILE ?? "unknown",
       gitCommitHash: process.env.EAS_BUILD_GIT_COMMIT_HASH ?? process.env.GITHUB_SHA ?? "unknown",

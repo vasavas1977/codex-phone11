@@ -1,4 +1,12 @@
-# Phone11 Siprix iOS Trial Bridge
+# Phone11 Siprix Native Bridge
+
+The existing iOS implementation uses Siprix 1.0.40. A separate Android lab adapter
+uses the checksum-pinned 1.1.0 AAR in `lab/android/sdk-lock.json`; enable it only
+with the paired lab flags described in `docs/android-lab/RUNBOOK.md`.
+It accepts only the isolated lab account/server and synthetic destinations.
+Android FCM, background call service, production accounts, and physical audio
+acceptance remain open gates. See `docs/android-lab/PARITY.md` for shared UI and
+platform-specific status. The lifecycle and packaging details below describe iOS.
 
 Native module: `NativeModules.Phone11Siprix`. Event channel: `Phone11SiprixEvent`.
 The authoritative JS contract is `index.d.ts`. All exported operations return

@@ -25,6 +25,32 @@ describe("Gemini call analysis boundary", () => {
     expect(body.systemInstruction.parts[0].text).toContain("Speaker 1:");
     expect(body.systemInstruction.parts[0].text).toContain("Speaker 2:");
   });
+  it.each([[429, "provider_rate_limited"], [503, "provider_unavailable"], [403, "provider_rejected"]])("classifies HTTP %s without retaining the provider response", async (status, code) => {
+    const f = fixture();
+    f.request.mockImplementationOnce(async () => new Response("private provider details", { status: Number(status) }));
+    await expect(analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options)).rejects.toMatchObject({ code, stage: "upload_start" });
+  });
+  it("keeps generation failures distinct and cleans up uploaded audio", async () => {
+    const f = fixture(); const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (url, init) => String(url).includes(":generateContent")
+      ? new Response("private provider details", { status: 429 }) : original(url, init));
+    await expect(analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options)).rejects.toMatchObject({ code: "provider_rate_limited", stage: "generate" });
+    expect(f.calls.at(-1)).toContain("DELETE");
+  });
+  it("classifies malformed generated JSON as invalid_result instead of a transport failure", async () => {
+    const f = fixture(); const original = f.request.getMockImplementation()!;
+    f.request.mockImplementation(async (url, init) => String(url).includes(":generateContent")
+      ? Response.json({ candidates: [{ finishReason: "STOP", content: { parts: [{ text: "private incomplete JSON" }] } }] }) : original(url, init));
+    await expect(analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options)).rejects.toMatchObject({ code: "invalid_result", stage: "parse" });
+    expect(f.calls.at(-1)).toContain("DELETE");
+  });
+  it("distinguishes an expired deadline from a transport error", async () => {
+    const signal = AbortSignal.abort(); const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(signal);
+    const f = fixture(); f.request.mockRejectedValue(new Error("private transport details"));
+    try {
+      await expect(analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options)).rejects.toMatchObject({ code: "provider_timeout", stage: "upload_start" });
+    } finally { timeout.mockRestore(); }
+  });
   it("requires explicit credentials and model before uploading", async () => {
     const f = fixture();
     await expect(analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, { ...f.options, apiKey: "" })).rejects.toMatchObject({ code: "not_configured" });

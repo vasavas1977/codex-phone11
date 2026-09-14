@@ -1211,6 +1211,25 @@ RCT_EXPORT_METHOD(sendDtmf:(NSString *)callId digits:(NSString *)digits resolver
           operation:@"callSendDtmf" reject:reject]) resolve(nil);
 }
 
+// Recording playback owns media audio only while no native call/wake owns it.
+// Keep this on methodQueue (main), alongside Siprix callbacks and CallKit state.
+RCT_EXPORT_METHOD(setRecordingPlaybackSpeaker:(BOOL)speaker resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.calls.count || runtime.wakeContext || runtime.audioSessionActive) {
+    P11Reject(reject, @"E_CALL_ACTIVE", @"Recording playback is unavailable during a call."); return;
+  }
+  AVAudioSession *session = AVAudioSession.sharedInstance;
+  NSError *error = nil;
+  // Media mode clears a stale voice-chat/receiver route. An explicit speaker
+  // choice uses the category required by Apple's speaker override API.
+  NSString *category = speaker ? AVAudioSessionCategoryPlayAndRecord : AVAudioSessionCategoryPlayback;
+  if (![session setCategory:category mode:AVAudioSessionModeDefault options:0 error:&error] ||
+      (speaker && ![session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&error])) {
+    P11Reject(reject, @"E_PLAYBACK_ROUTE", @"Unable to change recording audio output."); return;
+  }
+  resolve(nil);
+}
+
 RCT_EXPORT_METHOD(setSpeaker:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime) return;
   if (!runtime.audioSessionActive) {

@@ -9,8 +9,15 @@ const m = vi.hoisted(() => ({
   identity: { id: 1 },
   player: { pause: vi.fn(), replace: vi.fn(), play: vi.fn(), seekTo: vi.fn() },
   token: vi.fn(async () => "token"),
+  audioOptions: undefined as unknown,
+  callListener: undefined as undefined | (() => void),
+  busy: false,
+  controls: {} as any,
+  configure: vi.fn(async (_speaker: boolean) => {}),
 }));
 vi.mock("react-native", () => ({
+  NativeModules: {},
+  Platform: { OS: "ios" },
   View: ({ children }: any) => createElement("div", null, children),
   Text: ({ children }: any) => createElement("span", null, children),
   TouchableOpacity: ({ children }: any) =>
@@ -22,7 +29,10 @@ vi.mock("@react-navigation/native", () => ({
   },
 }));
 vi.mock("expo-audio", () => ({
-  useAudioPlayer: () => m.player,
+  useAudioPlayer: (_source: unknown, options: unknown) => {
+    m.audioOptions = options;
+    return m.player;
+  },
   useAudioPlayerStatus: () => ({
     currentTime: 0,
     duration: 100,
@@ -51,9 +61,26 @@ vi.mock("../constants/oauth", () => ({
 }));
 vi.mock("../lib/sip/call-store", () => ({
   useSipCallStore: {
-    getState: () => ({ incomingCall: null, activeCalls: {} }),
-    subscribe: () => vi.fn(),
+    getState: () => ({
+      incomingCall: m.busy ? { id: "incoming" } : null,
+      activeCalls: {},
+    }),
+    subscribe: (listener: () => void) => {
+      m.callListener = listener;
+      return vi.fn();
+    },
   },
+}));
+vi.mock("../components/cloud-recordings/call-history-view", () => ({
+  PlaybackControls: (props: unknown) => {
+    m.controls = props;
+    return null;
+  },
+}));
+vi.mock("../lib/cloud-recordings/playback-route", () => ({
+  configurePlaybackRoute: (speaker: boolean) => m.configure(speaker),
+  supportsPlaybackSpeaker: () => false,
+  releasePlaybackRoute: vi.fn(async () => {}),
 }));
 import { Playback } from "../components/cloud-recordings/cloud-playback";
 const props = {
@@ -63,6 +90,9 @@ const props = {
 beforeEach(() => {
   vi.clearAllMocks();
   m.focus = undefined;
+  m.busy = false;
+  m.callListener = undefined;
+  m.configure.mockResolvedValue(undefined);
   m.token.mockResolvedValue("token");
 });
 it("a mounted screen loads only on focus and clears audio on blur without autoplaying on return", async () => {
@@ -99,4 +129,47 @@ it("a late credential result after navigation blur cannot restore hidden playbac
   await Promise.resolve();
   expect(m.player.replace).toHaveBeenCalledTimes(1);
   expect(m.player.replace).toHaveBeenLastCalledWith(null);
+});
+
+it("disables Expo delayed deactivation and revokes recording playback when an incoming call arrives", async () => {
+  renderToStaticMarkup(createElement(Playback, props));
+  expect(m.audioOptions).toMatchObject({ keepAudioSessionActive: true });
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  m.controls.onToggle();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(m.player.play).toHaveBeenCalledOnce();
+  m.busy = true;
+  m.callListener!();
+  expect(m.player.pause).toHaveBeenCalled();
+  expect(m.player.replace).toHaveBeenLastCalledWith(null);
+  m.controls.onToggle();
+  expect(m.player.play).toHaveBeenCalledTimes(1);
+  blur();
+});
+it("an incoming call during route preparation cancels the focused player's pending start", async () => {
+  let finish!: () => void;
+  m.configure.mockImplementation(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  m.controls.onToggle();
+  await Promise.resolve();
+  m.busy = true;
+  m.callListener!();
+  finish();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(m.player.play).not.toHaveBeenCalled();
+  expect(m.player.replace).toHaveBeenLastCalledWith(null);
+  blur();
 });

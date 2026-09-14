@@ -1,0 +1,498 @@
+[
+  {
+    "id": "BASE-01",
+    "package": "P0",
+    "level": "L0",
+    "scenario": "Repository and authoritative base",
+    "acceptance": "Record git status, selected branch/SHA and newer-work check. Preserve all unrelated work.",
+    "required": true
+  },
+  {
+    "id": "BASE-02",
+    "package": "P0",
+    "level": "L0",
+    "scenario": "Production isolation",
+    "acceptance": "Show lab config contains no live trunks or customer credentials; unknown destinations are denied.",
+    "required": true
+  },
+  {
+    "id": "BASE-03",
+    "package": "P0",
+    "level": "L0",
+    "scenario": "Runner diagnosis",
+    "acceptance": "Report acceleration, tools, image/ABI, SIP/media reachability and audio capabilities without exposing secrets.",
+    "required": true
+  },
+  {
+    "id": "BUILD-01",
+    "package": "P1",
+    "level": "L1",
+    "scenario": "Native compile and APK identity",
+    "acceptance": "Build actual Android lab APK; record application ID, manifest, SHA-256 and native libraries.",
+    "required": true
+  },
+  {
+    "id": "BUILD-02",
+    "package": "P1",
+    "level": "L1",
+    "scenario": "Real Siprix load",
+    "acceptance": "Install on explicit emulator; actual native runtime reports the pinned Android SDK version; no fake fallback.",
+    "required": true
+  },
+  {
+    "id": "BUILD-03",
+    "package": "P1",
+    "level": "L1",
+    "scenario": "Single engine and ownership",
+    "acceptance": "No competing SIP runtime, Telecom owner or duplicated call notification in lab variant.",
+    "required": true
+  },
+  {
+    "id": "BUILD-04",
+    "package": "P1",
+    "level": "L1",
+    "scenario": "No Metro dependency",
+    "acceptance": "Self-contained APK opens with Metro absent; core state is not supplied by a dev-server session.",
+    "required": true
+  },
+  {
+    "id": "BUILD-05",
+    "package": "P1",
+    "level": "L0",
+    "scenario": "Existing paths preserved",
+    "acceptance": "Shared contract tests and relevant source/config regressions pass; separately disclose unrun iOS runtime tests.",
+    "required": true
+  },
+  {
+    "id": "BRIDGE-01",
+    "package": "P1",
+    "level": "L0",
+    "scenario": "Callbacks and snapshots",
+    "acceptance": "Registration and call state follow vendor callbacks; snapshots reconcile missed listeners.",
+    "required": true
+  },
+  {
+    "id": "BRIDGE-02",
+    "package": "P1",
+    "level": "L0",
+    "scenario": "Stale events and cleanup",
+    "acceptance": "Reject old generations/account context; failed destruction is not falsely reported successful.",
+    "required": true
+  },
+  {
+    "id": "BRIDGE-03",
+    "package": "P1",
+    "level": "L0",
+    "scenario": "Unsupported operations",
+    "acceptance": "Unsupported platform features reject explicitly; no successful no-op methods.",
+    "required": true
+  },
+  {
+    "id": "SIP-01",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Registration success",
+    "acceptance": "Actual REGISTER result and SDK callback correlate; UI agrees with native state.",
+    "required": true
+  },
+  {
+    "id": "SIP-02",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Bad credentials",
+    "acceptance": "No false registered state, password leak or infinite retry; actionable sanitized failure.",
+    "required": true
+  },
+  {
+    "id": "SIP-03",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Unreachable server and recovery",
+    "acceptance": "Bounded timeout, truthful state, recovery after approved lab connectivity returns.",
+    "required": true
+  },
+  {
+    "id": "SIP-04",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Outgoing answered call",
+    "acceptance": "20 proposed primary-image attempts; correct dialing/ringing/connected/terminated transitions.",
+    "required": true
+  },
+  {
+    "id": "SIP-05",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Foreground incoming answer",
+    "acceptance": "20 proposed primary-image attempts; real INVITE, one call surface, answer reaches peer.",
+    "required": true
+  },
+  {
+    "id": "SIP-06",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Incoming reject",
+    "acceptance": "Rejection terminates the actual peer call; no lingering service/notification/history error.",
+    "required": true
+  },
+  {
+    "id": "SIP-07",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Caller cancel before answer",
+    "acceptance": "Correct canceled/missed outcome; no ghost ringing after cancellation.",
+    "required": true
+  },
+  {
+    "id": "SIP-08",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "No answer and timeout",
+    "acceptance": "Call and pending resources expire; exactly one appropriate history record.",
+    "required": true
+  },
+  {
+    "id": "SIP-09",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Hangup from each endpoint",
+    "acceptance": "Local and remote termination synchronize; later calls work without app restart.",
+    "required": true
+  },
+  {
+    "id": "SIP-10",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Second call while active",
+    "acceptance": "Documented single-call/busy policy; no second phantom active session.",
+    "required": true
+  },
+  {
+    "id": "SIP-11",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Rapid and duplicate UI actions",
+    "acceptance": "Answer/hangup/dial duplication remains idempotent and does not corrupt call state.",
+    "required": true
+  },
+  {
+    "id": "SIP-12",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Ringback and early media",
+    "acceptance": "Where supported, distinguish 180 without SDP from early media; otherwise record unsupported fixture detail.",
+    "required": true
+  },
+  {
+    "id": "CTRL-01",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Mute and unmute",
+    "acceptance": "Native state and peer-observed audio agree; command-only proof is insufficient for the audio assertion.",
+    "required": true
+  },
+  {
+    "id": "CTRL-02",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Hold and resume",
+    "acceptance": "Hold callbacks/state and resumed media agree; a pending hold command cannot corrupt state.",
+    "required": true
+  },
+  {
+    "id": "CTRL-03",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "DTMF",
+    "acceptance": "Receiving fixture observes expected digits in order, not only a UI event.",
+    "required": true
+  },
+  {
+    "id": "CTRL-04",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Speaker request",
+    "acceptance": "Record requested versus observed virtual route; do not claim physical earpiece/acoustic validation.",
+    "required": true
+  },
+  {
+    "id": "MEDIA-01",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Uplink known audio",
+    "acceptance": "Synthetic known input reaches the peer through a verified actual app media path.",
+    "required": true
+  },
+  {
+    "id": "MEDIA-02",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Downlink known audio",
+    "acceptance": "Known peer signal observed after valid client decode/output; RTP count alone does not pass.",
+    "required": true
+  },
+  {
+    "id": "MEDIA-03",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Two-way human host-audio check",
+    "acceptance": "Optional computer microphone/desktop-peer check is labeled manual; permissions and evidence recorded.",
+    "required": false
+  },
+  {
+    "id": "MEDIA-04",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "One-way media fault detection",
+    "acceptance": "Deliberately block one lab media direction; report fails that assertion instead of passing on SIP success.",
+    "required": true
+  },
+  {
+    "id": "LIFE-01",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Activity recreation",
+    "acceptance": "Call state survives supported recreation; no duplicate runtime, lost controls or fabricated connection.",
+    "required": true
+  },
+  {
+    "id": "LIFE-02",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Home/background",
+    "acceptance": "Record lifecycle transition separately from process death; foreground-only polling does not keep it alive.",
+    "required": true
+  },
+  {
+    "id": "LIFE-03",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Task removal",
+    "acceptance": "Observe actual native/process/service state; distinguish removal from force-stop.",
+    "required": true
+  },
+  {
+    "id": "LIFE-04",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Verified process-death incoming call",
+    "acceptance": "With process truly absent and not force-stopped, real push/call path starts without React UI or Metro.",
+    "required": true
+  },
+  {
+    "id": "LIFE-05",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Force-stop negative and relaunch",
+    "acceptance": "No attempt to bypass stopped state; explicit relaunch restores eligible message/call handling.",
+    "required": true
+  },
+  {
+    "id": "NET-01",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Network loss during registration",
+    "acceptance": "Bounded retries and truthful registration; recovery does not create duplicate accounts.",
+    "required": true
+  },
+  {
+    "id": "NET-02",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Network loss during call",
+    "acceptance": "Observe documented disconnect/recovery; no silent stuck connected badge after timeout.",
+    "required": true
+  },
+  {
+    "id": "NET-03",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "TLS rejection",
+    "acceptance": "When TLS is supported, invalid/untrusted certificate fails; no permissive production trust bypass.",
+    "required": true
+  },
+  {
+    "id": "AUTH-01",
+    "package": "P2",
+    "level": "L2",
+    "scenario": "Logout/account change",
+    "acceptance": "Calls/registrations/credentials cleaned according to policy; stale callbacks cannot attach to new user.",
+    "required": true
+  },
+  {
+    "id": "WAKE-01",
+    "package": "P3",
+    "level": "L0",
+    "scenario": "Synthetic payload validation",
+    "acceptance": "Malformed, expired, duplicate and wrong-binding payloads are rejected or deduplicated as designed.",
+    "required": true
+  },
+  {
+    "id": "WAKE-02",
+    "package": "P3",
+    "level": "L0",
+    "scenario": "Contract ownership",
+    "acceptance": "User/tenant/device/session binding checks use actual contract; no ad hoc accept-all fixture logic in app.",
+    "required": true
+  },
+  {
+    "id": "PUSH-01",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Real FCM background call",
+    "acceptance": "20 proposed eligible calls; correlate pending-call creation, push, native wake, INVITE and ring/answer.",
+    "required": true
+  },
+  {
+    "id": "PUSH-02",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Real FCM locked call",
+    "acceptance": "20 proposed eligible calls; observe real lock state and permission-appropriate incoming-call surface.",
+    "required": true
+  },
+  {
+    "id": "PUSH-03",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Real FCM forced-Doze call",
+    "acceptance": "20 proposed eligible calls; prove idle entry and no hidden keep-alive; report every miss and timing.",
+    "required": true
+  },
+  {
+    "id": "PUSH-04",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Duplicate wake and INVITE",
+    "acceptance": "One visible call/session only; repeated messages cannot create duplicate history or answer.",
+    "required": true
+  },
+  {
+    "id": "PUSH-05",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Cancel while waking",
+    "acceptance": "Cancel before readiness and during answer race yields truthful terminated state with no ghost ring.",
+    "required": true
+  },
+  {
+    "id": "PUSH-06",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Expired or delayed wake",
+    "acceptance": "Expired/canceled pending call never becomes a fresh call after connectivity returns.",
+    "required": true
+  },
+  {
+    "id": "PUSH-07",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Destination identifier rotation",
+    "acceptance": "Client and server agree on updated registration identifier; old binding is safely retired.",
+    "required": true
+  },
+  {
+    "id": "PUSH-08",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Logout/wrong owner at delivery",
+    "acceptance": "No call or sensitive history becomes visible to a logged-out or different user/tenant/device.",
+    "required": true
+  },
+  {
+    "id": "PUSH-09",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Push service/network unavailable",
+    "acceptance": "Bounded failure and meaningful pending-call expiry; no claim of guaranteed wake.",
+    "required": true
+  },
+  {
+    "id": "PERM-01",
+    "package": "P3",
+    "level": "L1",
+    "scenario": "Microphone denied",
+    "acceptance": "No crash, unauthorized capture or false audible-call success; clear supported recovery.",
+    "required": true
+  },
+  {
+    "id": "PERM-02",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Notifications denied/channel disabled",
+    "acceptance": "Observe supported behavior accurately; respect settings rather than grant permissions silently.",
+    "required": true
+  },
+  {
+    "id": "PERM-03",
+    "package": "P3",
+    "level": "L3",
+    "scenario": "Full-screen intent denied",
+    "acceptance": "Supported notification/action fallback; no forced background activity workaround.",
+    "required": true
+  },
+  {
+    "id": "PERM-04",
+    "package": "P3",
+    "level": "L1",
+    "scenario": "Service/audio restrictions",
+    "acceptance": "Merged manifest and observed service start/audio capture comply with tested target SDK ownership.",
+    "required": true
+  },
+  {
+    "id": "REPORT-01",
+    "package": "P4",
+    "level": "L0",
+    "scenario": "Truthful aggregation",
+    "acceptance": "Zero tests, missing evidence, failed audio and blocked required push cannot appear as full PASS.",
+    "required": true
+  },
+  {
+    "id": "REPORT-02",
+    "package": "P4",
+    "level": "L0",
+    "scenario": "Artifact redaction",
+    "acceptance": "No passwords, authorization headers, push destinations or customer data in shareable artifacts.",
+    "required": true
+  },
+  {
+    "id": "REPORT-03",
+    "package": "P4",
+    "level": "L0",
+    "scenario": "Reproduction and cleanup",
+    "acceptance": "Fresh approved runner can execute runbook; cleanup restores only this run resources and emulator state.",
+    "required": true
+  },
+  {
+    "id": "REPORT-04",
+    "package": "P4",
+    "level": "L0",
+    "scenario": "CI trust boundary",
+    "acceptance": "Offline PR checks have no live secrets; approved runtime jobs do not run untrusted code on trusted hosts.",
+    "required": true
+  },
+  {
+    "id": "HW-01",
+    "package": "P5",
+    "level": "L4",
+    "scenario": "OEM background/overnight behavior",
+    "acceptance": "Deferred: execute actual target handset/firmware cases before broad device reliability claim.",
+    "required": false
+  },
+  {
+    "id": "HW-02",
+    "package": "P5",
+    "level": "L4",
+    "scenario": "Physical audio/accessories",
+    "acceptance": "Deferred: wired/Bluetooth/headset/earpiece/speaker/acoustic and audio-focus interaction tests.",
+    "required": false
+  },
+  {
+    "id": "HW-03",
+    "package": "P5",
+    "level": "L4",
+    "scenario": "Real cellular/Wi-Fi transitions",
+    "acceptance": "Deferred: validate real mobile-network changes, device-specific power behavior and SIM interaction.",
+    "required": false
+  }
+]

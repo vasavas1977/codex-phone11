@@ -19,7 +19,7 @@ const storeStates = {
 } as const;
 
 function unsupported(feature: string): Error {
-  return new Error(`Siprix iOS voice trial does not support ${feature}`);
+  return new Error(`Siprix voice trial does not support ${feature}`);
 }
 
 function nativeCall(call: SiprixCall) {
@@ -125,7 +125,7 @@ export class SiprixEngine {
         useSipAccountStore.getState().setRegistrationState("unregistered", "Sign in and sync your Phone11 extension");
         return;
       }
-      if (Platform.OS !== "ios") {
+      if (Platform.OS !== "ios" && !(Platform.OS === "android" && process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1")) {
         const error = unsupported(`${Platform.OS}; no PJSIP fallback is enabled in this build`);
         useSipAccountStore.getState().setRegistrationState("failed", error.message);
         throw error;
@@ -144,7 +144,7 @@ export class SiprixEngine {
       if (revision !== this.revision) return;
       const bridge = NativeModules.Phone11Siprix as Phone11SiprixModule | undefined;
       if (!bridge) {
-        const error = new Error("Phone11Siprix native module is missing; install a Siprix-enabled iOS build");
+        const error = new Error("Phone11Siprix native module is missing; install a Siprix-enabled native build");
         useSipAccountStore.getState().setRegistrationState("failed", error.message);
         throw error;
       }
@@ -188,10 +188,12 @@ export class SiprixEngine {
           level: "info", category: "engine", message: "Siprix native engine initialized",
           context: { engine: "siprix", sdkVersion: started.sdkVersion ?? "unknown", generation: started.generation },
         });
-        const { nativeCallManager } = await import("./native-call");
-        await nativeCallManager.initialize();
-        if (!this.current(session)) { await this.cleanup(); return; }
-        this.callManager = nativeCallManager;
+        if (Platform.OS === "ios") {
+          const { nativeCallManager } = await import("./native-call");
+          await nativeCallManager.initialize();
+          if (!this.current(session)) { await this.cleanup(); return; }
+          this.callManager = nativeCallManager;
+        }
         if (adopted) await bridge.restoreIncomingWakeDelegate();
         if (!this.current(session)) { await this.cleanup(); return; }
         const listener = new NativeEventEmitter(bridge as never).addListener(
@@ -275,7 +277,7 @@ export class SiprixEngine {
     this.sequence = event.sequence;
     if (event.type === "registration" && "account" in event) {
       this.registration(event.account);
-    } else if (["callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted"].includes(event.type) && "call" in event) {
+    } else if (["callDialing", "callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted"].includes(event.type) && "call" in event) {
       this.applyCall(event.call, event.type === "callConnected");
     } else if (event.type === "network" && "networkState" in event && event.networkState === 0) {
       this.networkLost = true;

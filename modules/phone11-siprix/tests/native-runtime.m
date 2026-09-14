@@ -4,6 +4,12 @@
 #include <stdlib.h>
 
 NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
+NSString *const AVAudioSessionCategoryPlayAndRecord = @"playAndRecord";
+NSString *const AVAudioSessionCategoryPlayback = @"playback";
+NSString *const AVAudioSessionModeDefault = @"default";
+static int mediaRoutes = 0, speakerRoutes = 0;
+static BOOL mediaRouteFailure = NO;
+static NSString *lastMediaCategory, *lastMediaMode;
 @implementation UIView
 @end
 @implementation AVAudioSessionPortDescription
@@ -11,6 +17,12 @@ NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
 @implementation AVAudioSessionRouteDescription
 @end
 @implementation AVAudioSession
+- (BOOL)setCategory:(NSString *)category mode:(NSString *)mode options:(AVAudioSessionCategoryOptions)options error:(NSError **)error {
+  mediaRoutes++; lastMediaCategory = category; lastMediaMode = mode; return !mediaRouteFailure;
+}
+- (BOOL)overrideOutputAudioPort:(AVAudioSessionPortOverride)port error:(NSError **)error {
+  speakerRoutes++; return !mediaRouteFailure;
+}
 + (instancetype)sharedInstance {
   static AVAudioSession *session;
   static dispatch_once_t once;
@@ -138,6 +150,23 @@ int main(void) {
     NSDictionary *config = @{@"sipServer": @"invalid.example", @"sipExtension": @"test", @"sipPassword": @"test-only-secret", @"transport": @"TLS"};
     Phone11Siprix *bridge = [Phone11Siprix new];
     [bridge startObserving];
+    [bridge setRecordingPlaybackSpeaker:NO resolver:resolve rejecter:reject];
+    CHECK(!error && mediaRoutes == 1 && [lastMediaCategory isEqualToString:@"playback"] && [lastMediaMode isEqualToString:@"default"]);
+    [bridge setRecordingPlaybackSpeaker:YES resolver:resolve rejecter:reject];
+    CHECK(!error && mediaRoutes == 2 && speakerRoutes == 1 && [lastMediaCategory isEqualToString:@"playAndRecord"]);
+    mediaRouteFailure = YES;
+    [bridge setRecordingPlaybackSpeaker:NO resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_PLAYBACK_ROUTE"]);
+    mediaRouteFailure = NO;
+    P11SiprixRuntime.shared.wakeContext = @{@"callUUID": @"pending"};
+    [bridge setRecordingPlaybackSpeaker:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_ACTIVE"] && mediaRoutes == 3);
+    P11SiprixRuntime.shared.wakeContext = nil;
+    P11SiprixRuntime.shared.audioSessionActive = YES;
+    [bridge setRecordingPlaybackSpeaker:NO resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_ACTIVE"] && mediaRoutes == 3);
+    P11SiprixRuntime.shared.audioSessionActive = NO;
+
     [bridge getSnapshot:resolve rejecter:reject];
     CHECK(![result[@"initialized"] boolValue]);
     [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
@@ -214,6 +243,10 @@ int main(void) {
     [bridge makeCall:@"10" destination:@"sip:123:private@invalid.example;password=secret" resolver:resolve rejecter:reject];
     CHECK(!error && [result[@"remoteUri"] isEqualToString:@"sip:123@invalid.example"]);
     NSString *callId = result[@"id"];
+    [bridge setRecordingPlaybackSpeaker:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_ACTIVE"] && mediaRoutes == 3);
+    result = P11SiprixRuntime.shared.calls[callId];
+
     CHECK([result[@"state"] isEqualToString:@"dialing"]);
     [bridge makeCall:@"10" destination:@"456" resolver:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_CALL_ACTIVE"]);

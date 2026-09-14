@@ -1,0 +1,14 @@
+apply plugin: 'com.android.library'
+android {
+  namespace 'ai.phone11.siprix'
+  compileSdkVersion rootProject.ext.compileSdkVersion
+  defaultConfig { minSdkVersion 24 }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+}
+dependencies {
+  implementation 'com.facebook.react:react-android'
+  compileOnly files('../vendor/android/siprix_voip_sdk.aar')
+}

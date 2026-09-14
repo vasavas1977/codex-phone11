@@ -102,8 +102,10 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        await nativeCallManager.initialize();
-        await registerVoipPush();
+        if (!(Platform.OS === "android" && process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1")) {
+          await nativeCallManager.initialize();
+          await registerVoipPush();
+        }
         nativeStackInitialized.current = true;
       })().catch((error) => {
         nativeStackInitPromise.current = null;

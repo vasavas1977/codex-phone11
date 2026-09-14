@@ -100,6 +100,7 @@ export default function DialpadScreen() {
 
   return (
     <ScreenContainer>
+      {process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1" && <TouchableOpacity accessibilityLabel="Open Android lab" onPress={() => router.push("/android-lab" as never)}><Text style={{ color: colors.primary, padding: 12 }}>Android lab diagnostics</Text></TouchableOpacity>}
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}> 

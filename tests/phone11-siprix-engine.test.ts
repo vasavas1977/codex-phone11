@@ -113,6 +113,8 @@ async function ready() { await engine.initialize(); registered(); }
 
 beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_LAB", "0");
     runtime.storage.clear(); runtime.writeHistory.mockReset().mockImplementation(async (key: string, value: string) => { runtime.storage.set(key,value); });
     bridge.readCompletedWakeCalls.mockReset().mockResolvedValue([]); bridge.ackCompletedWakeCalls.mockReset().mockResolvedValue(undefined);
     runtime.wakeBinding.mockReset().mockResolvedValue(null);
@@ -269,6 +271,23 @@ describe("Siprix native adapter", () => {
     runtime.platform.OS = platform;
     await expect(engine.initialize()).rejects.toThrow("no PJSIP fallback");
     expect(bridge.initialize).not.toHaveBeenCalled();
+  });
+
+  it("runs the shared engine on explicit Android lab without initializing CallKeep", async () => {
+    runtime.platform.OS = "android";
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_LAB", "1");
+    await engine.initialize();
+    registered();
+    expect(bridge.initialize).toHaveBeenCalledOnce();
+    expect(runtime.callManager.initialize).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+
+  it("keeps Android lab native module absence fatal without fallback", async () => {
+    runtime.platform.OS = "android";
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_LAB", "1");
+    delete runtime.modules.Phone11Siprix;
+    await expect(engine.initialize()).rejects.toThrow("native module is missing");
   });
 
   it("rejects a missing native module clearly", async () => {

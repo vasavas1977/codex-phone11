@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/siprix/SampleJava",
+  "revision": "80d198ed6179b45ff8cd8dad9b8086976b4197a0",
+  "path": "app/libs/siprix_voip_sdk.aar",
+  "sha256": "3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198",
+  "version": "1.1.0",
+  "build": "20260905_1222",
+  "trialCallLimitSeconds": 60,
+  "maxConnectedSeconds": 20,
+  "abis": ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"],
+  "systemImage": "system-images;android-35;google_apis;arm64-v8a"
+}

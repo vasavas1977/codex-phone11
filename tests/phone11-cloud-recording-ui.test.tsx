@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   press: new Map<string, () => unknown>(),
 }));
 vi.mock("react-native", () => ({
+  NativeModules: {},
+  Platform: { OS: "ios" },
   AppState: { currentState: "active" },
   View: ({ children }: any) => createElement("div", null, children),
   ScrollView: ({ children }: any) => createElement("div", null, children),

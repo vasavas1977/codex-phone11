@@ -1,3 +1,4 @@
+import { PlaybackScrubber } from "./playback-scrubber";
 import type { ReactNode } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import {
@@ -184,6 +185,8 @@ export function PlaybackControls({
   onToggle,
   onSeek,
   error,
+  speaker,
+  onSpeakerChange,
   colors = lightRecordingColors,
 }: {
   currentTime: number;
@@ -193,6 +196,8 @@ export function PlaybackControls({
   onToggle(): void;
   onSeek(seconds: number): void;
   error?: string;
+  speaker?: boolean;
+  onSpeakerChange?(speaker: boolean): void;
   colors?: RecordingColors;
 }) {
   const time = (n: number) =>
@@ -205,24 +210,14 @@ export function PlaybackControls({
         </Text>
       ) : (
         <>
-          <View
-            accessible
-            accessibilityLabel={`${time(currentTime)} of ${time(duration)}`}
-            style={{
-              height: 3,
-              borderRadius: 2,
-              backgroundColor: colors.border,
-              overflow: "hidden",
-            }}
-          >
-            <View
-              style={{
-                height: 3,
-                width: `${duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0}%`,
-                backgroundColor: colors.primary,
-              }}
-            />
-          </View>
+          <PlaybackScrubber
+            currentTime={currentTime}
+            duration={duration}
+            loaded={loaded}
+            onSeek={onSeek}
+            primary={colors.primary}
+            border={colors.border}
+          />
           <View
             style={{ flexDirection: "row", justifyContent: "space-between" }}
           >
@@ -290,6 +285,34 @@ export function PlaybackControls({
               <Text style={{ color: colors.primary }}>+15s</Text>
             </TouchableOpacity>
           </View>
+          {onSpeakerChange && (
+            <TouchableOpacity
+              accessibilityRole="switch"
+              accessibilityLabel="Play recording on speaker"
+              accessibilityState={{
+                checked: Boolean(speaker),
+                disabled: !loaded,
+              }}
+              disabled={!loaded}
+              onPress={() => onSpeakerChange(!speaker)}
+              style={{
+                minHeight: 44,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ color: colors.primary }}>
+                {speaker ? "Speaker on" : "Play on speaker"}
+              </Text>
+            </TouchableOpacity>
+          )}
+          <Text
+            style={{ color: colors.muted, fontSize: 12, textAlign: "center" }}
+          >
+            {speaker
+              ? "Using the phone speaker. Adjust volume with the side buttons."
+              : "Using device audio. Adjust volume with the side buttons."}
+          </Text>
         </>
       )}
     </View>

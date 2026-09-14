@@ -63,7 +63,7 @@ export interface Snapshot {
 
 type EventData =
   | { type: 'registration'; account: Account }
-  | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted'; call: Call }
+  | { type: 'callDialing' | 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted'; call: Call }
   | { type: 'devicesAudioChanged' | 'audioSession'; audioSessionActive: boolean; speaker: boolean }
   | { type: 'trial' }
   | { type: 'network'; networkState: number }

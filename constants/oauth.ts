@@ -7,6 +7,7 @@ export const SESSION_TOKEN_KEY = "phone11_session_token";
 export const USER_INFO_KEY = "phone11_user_info";
 
 export function getApiBaseUrl(): string {
+  if (process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB === "1") return "http://10.0.2.2:18080";
   if (API_BASE_URL) return API_BASE_URL.replace(/\/+$/, "");
   if (Platform.OS !== "web") return "https://api.phone11.ai";
 

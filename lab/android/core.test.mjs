@@ -1,0 +1,12 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';
+import {aggregate,explicitEmulator,safeDestination,safeAttempt,sanitize,validateAttempt,renderReport} from './core.mjs';
+test('zero tests cannot pass',()=>assert.equal(aggregate([]).status,'PARTIAL'));
+test('missing required coverage cannot pass',()=>assert.equal(aggregate([{test_id:'BUILD-01',result:'PASS'}]).status,'PARTIAL'));
+test('diagnostic pass preserves first failure',()=>assert.equal(aggregate([{test_id:'SIP-04',result:'FAIL'},{test_id:'SIP-04',result:'PASS'}]).rows.find(r=>r.id==='SIP-04').result,'FAIL'));
+test('only explicit online emulators',()=>{assert.equal(explicitEmulator('emulator-5580','emulator-5580\tdevice'),'emulator-5580');for(const x of ['',undefined,'R123456','emulator-5582'])assert.throws(()=>explicitEmulator(x,'emulator-5580\tdevice'));});
+test('deny external destinations including SIP URIs',()=>{assert.equal(safeDestination('7101'),'7101');for(const x of ['023033001','911','112','+6620303001','7101@evil.invalid','sip:7102@evil.invalid'])assert.throws(()=>safeDestination(x));});
+test('bounded attempts',()=>{assert.equal(safeAttempt(3),3);for(const v of [0,4,-1,1.1])assert.throws(()=>safeAttempt(v));});
+test('redacts nested secrets and supplied runtime values',()=>assert.deepEqual(sanitize({password:'hidden',nested:{token:'hidden',sessionBinding:'hidden'},message:'Bearer abc_123 and synthetic-secret'},['synthetic-secret']),{password:'[REDACTED]',nested:{token:'[REDACTED]',sessionBinding:'[REDACTED]'},message:'[REDACTED AUTH] and [REDACTED]'}));
+test('fake evidence cannot pass real gate',()=>assert.throws(()=>validateAttempt({test_id:'PUSH-01',evidence_level:'L3',attempt:1,mode:'fake',result:'PASS',artifacts:['fake'],assertions:['fake']})));
+test('PASS without evidence rejected',()=>assert.throws(()=>validateAttempt({test_id:'REPORT-01',evidence_level:'L0',attempt:1,mode:'fake',result:'PASS',artifacts:[],assertions:[]})));
+test('HTML escapes evidence strings',()=>{const r=aggregate([{test_id:'BASE-01',attempt:1,result:'FAIL',reason:'<script>bad</script>',artifacts:[]}]);assert.ok(!renderReport(r).includes('<script>'));});

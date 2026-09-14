@@ -10,8 +10,10 @@ const resultSchema = z.object({
   }).strict(),
 }).strict();
 export type RecordingAnalysis = z.infer<typeof resultSchema>;
+export type RecordingAnalysisFailureCode = "not_configured" | "invalid_audio" | "provider_failed" | "provider_rate_limited" | "provider_unavailable" | "provider_rejected" | "provider_timeout" | "invalid_result";
+export type RecordingAnalysisStage = "configuration" | "upload_start" | "upload" | "processing" | "generate" | "parse";
 export class RecordingAnalysisError extends Error {
-  constructor(public readonly code: "not_configured" | "invalid_audio" | "provider_failed" | "invalid_result") {
+  constructor(public readonly code: RecordingAnalysisFailureCode, public readonly stage: RecordingAnalysisStage = "configuration") {
     super(`Recording analysis ${code}`);
   }
 }
@@ -36,11 +38,16 @@ export async function analyzeRecordingAudio(
   const wait = options.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const signal = AbortSignal.timeout(90_000);
   let fileName: string | undefined;
+  let stage: RecordingAnalysisStage = "upload_start";
+  const providerError = (status: number) => new RecordingAnalysisError(
+    status === 429 ? "provider_rate_limited" : status >= 500 ? "provider_unavailable" : "provider_rejected", stage,
+  );
   const json = async (response: Response) => {
-    if (!response.ok) throw new RecordingAnalysisError("provider_failed");
+    if (!response.ok) throw providerError(response.status);
     const text = await response.text();
-    if (text.length > 1_000_000) throw new RecordingAnalysisError("invalid_result");
-    return JSON.parse(text);
+    if (text.length > 1_000_000) throw new RecordingAnalysisError("invalid_result", stage);
+    try { return JSON.parse(text); }
+    catch { throw new RecordingAnalysisError("invalid_result", stage); }
   };
   try {
     const started = await request(`${origin}/upload/v1beta/files`, {
@@ -50,24 +57,27 @@ export async function analyzeRecordingAudio(
         "X-Goog-Upload-Header-Content-Type": input.mimeType },
       body: JSON.stringify({ file: { display_name: "Phone11 call audio" } }),
     });
-    if (!started.ok) throw new RecordingAnalysisError("provider_failed");
+    if (!started.ok) throw providerError(started.status);
     const uploadUrl = new URL(started.headers.get("x-goog-upload-url") ?? "invalid:");
     if (uploadUrl.origin !== origin || !uploadUrl.pathname.startsWith("/upload/") || uploadUrl.username || uploadUrl.password) {
-      throw new RecordingAnalysisError("provider_failed");
+      throw new RecordingAnalysisError("provider_failed", stage);
     }
+    stage = "upload";
     const uploaded = await json(await request(uploadUrl, { method: "POST", signal, redirect: "error",
       headers: { "x-goog-api-key": key, "Content-Type": input.mimeType, "X-Goog-Upload-Offset": "0",
         "X-Goog-Upload-Command": "upload, finalize" }, body: new Uint8Array(input.bytes) }));
     let file = uploaded.file;
-    if (!/^files\/[a-zA-Z0-9_-]+$/.test(file?.name ?? "")) throw new RecordingAnalysisError("provider_failed");
+    if (!/^files\/[a-zA-Z0-9_-]+$/.test(file?.name ?? "")) throw new RecordingAnalysisError("provider_failed", stage);
     fileName = file.name;
+    stage = "processing";
     for (let n = 0; file.state === "PROCESSING" && n < 15; n++) {
       await wait(1000);
       file = await json(await request(`${origin}/v1beta/${fileName}`, { signal, redirect: "error", headers: { "x-goog-api-key": key } }));
     }
     if (file.state !== "ACTIVE" || file.name !== fileName || file.uri !== `${origin}/v1beta/${fileName}`) {
-      throw new RecordingAnalysisError("provider_failed");
+      throw new RecordingAnalysisError("provider_failed", stage);
     }
+    stage = "generate";
     const response = await json(await request(`${origin}/v1beta/models/${model}:generateContent`, {
       method: "POST", signal, redirect: "error", headers: { "x-goog-api-key": key, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -82,16 +92,20 @@ export async function analyzeRecordingAudio(
         } },
       }),
     }));
+    stage = "parse";
     const candidate = response.candidates?.[0];
-    if (candidate?.finishReason !== "STOP") throw new RecordingAnalysisError("invalid_result");
+    if (candidate?.finishReason !== "STOP") throw new RecordingAnalysisError("invalid_result", stage);
     const text = candidate.content?.parts?.filter((part: { thought?: boolean }) => !part.thought)
       .map((part: { text?: string }) => part.text ?? "").join("");
-    const parsed = resultSchema.safeParse(JSON.parse(text ?? ""));
-    if (!parsed.success) throw new RecordingAnalysisError("invalid_result");
+    let decoded: unknown;
+    try { decoded = JSON.parse(text ?? ""); }
+    catch { throw new RecordingAnalysisError("invalid_result", stage); }
+    const parsed = resultSchema.safeParse(decoded);
+    if (!parsed.success) throw new RecordingAnalysisError("invalid_result", stage);
     return parsed.data;
   } catch (error) {
     if (error instanceof RecordingAnalysisError) throw error;
-    throw new RecordingAnalysisError("provider_failed");
+    throw new RecordingAnalysisError(signal.aborted ? "provider_timeout" : "provider_failed", stage);
   } finally {
     if (fileName) {
       // Cleanup is independent of the analysis deadline. Google file storage is not our archive.
