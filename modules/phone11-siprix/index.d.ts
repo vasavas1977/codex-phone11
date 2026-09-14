@@ -78,6 +78,13 @@ export type SiprixSnapshot = Snapshot;
 /** Channel: Phone11SiprixEvent via new NativeEventEmitter(Phone11Siprix). */
 export interface CompletedWakeCall { id: string; ownerUserId: number; tenantId: number; number: string; direction: "inbound"; startedAt: number; answeredAt?: number; endedAt: number; updatedAt: number; }
 export interface Phone11SiprixModule {
+  getCapabilities(): Promise<{ registrationAvailable: boolean; closedAppCalling: false; reason: string }>;
+  start(): Promise<string | null>;
+  currentToken(): Promise<string | null>;
+  createDeviceId(): Promise<string>;
+  stop(): Promise<void>;
+  saveWakeEnrollment(value: WakeBinding & { grant: string }): Promise<void>;
+  getWakeBinding(): Promise<WakeBinding | null>;
   readCompletedWakeCalls(binding: WakeBinding): Promise<CompletedWakeCall[]>;
   ackCompletedWakeCalls(binding: WakeBinding, ids: string[]): Promise<void>;
   bindForegroundWakeContext(binding: WakeBinding, sip: AccountConfig): Promise<void>;

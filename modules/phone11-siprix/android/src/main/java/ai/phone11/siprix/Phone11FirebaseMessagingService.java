@@ -39,5 +39,6 @@ public final class Phone11FirebaseMessagingService extends ExpoFirebaseMessaging
   /** Preserve the existing generic notification token lifecycle without logging it here. */
   @Override public void onNewToken(String token) {
     super.onNewToken(token);
+    Phone11SiprixModule.publishFirebaseToken(token);
   }
 }

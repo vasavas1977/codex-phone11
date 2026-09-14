@@ -24,6 +24,9 @@ public final class Phone11AndroidWakeRuntime {
 
   private final Status status;
   private final Phone11PendingWakeStore store;
+  private final Phone11WakeEnrollmentStore enrollment;
+  private boolean tokenUpdatesStarted;
+  private long tokenRevision;
 
   public static synchronized Phone11AndroidWakeRuntime get(Context context) {
     if (instance == null) instance = new Phone11AndroidWakeRuntime(context.getApplicationContext());
@@ -42,7 +45,9 @@ public final class Phone11AndroidWakeRuntime {
         if (!preferences.edit().remove("state").commit()) throw new IllegalStateException("wake persistence failed");
       }
     });
-    if (status != Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS) store.logout();
+    enrollment = new Phone11WakeEnrollmentStore(
+        new Phone11EncryptedWakeEnrollmentPersistence(context));
+    if (status != Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS) logout();
   }
 
   public Status status() { return status; }
@@ -50,6 +55,40 @@ public final class Phone11AndroidWakeRuntime {
   public Phone11PendingWakeStore.Decision bind(Phone11PendingWakeStore.Binding binding, long now) {
     if (!commissioned()) return Phone11PendingWakeStore.Decision.REJECTED_LOGGED_OUT;
     return store.bind(binding, now);
+  }
+
+  public synchronized Phone11PendingWakeStore.Decision saveEnrollment(
+      Phone11WakeEnrollmentStore.Enrollment value, long now) {
+    if (!commissioned()) return Phone11PendingWakeStore.Decision.REJECTED_LOGGED_OUT;
+    if (!Phone11WakeEnrollmentStore.valid(value, now)) {
+      return Phone11PendingWakeStore.Decision.REJECTED_MALFORMED;
+    }
+    Phone11PendingWakeStore.Snapshot current = store.snapshot();
+    if ("pending".equals(current.callState) && !value.bindingId.equals(current.bindingId)) {
+      return Phone11PendingWakeStore.Decision.REJECTED_BUSY;
+    }
+    Phone11PendingWakeStore.Decision decision = store.bind(new Phone11PendingWakeStore.Binding(
+        value.bindingId, value.ownerUserId, value.tenantId, value.deviceId,
+        value.sessionBinding, value.expiresAt), now);
+    if (decision != Phone11PendingWakeStore.Decision.ACCEPTED) return decision;
+    try {
+      if (!enrollment.save(value, now)) throw new IllegalStateException("invalid enrollment");
+      return decision;
+    } catch (RuntimeException failure) {
+      store.logout(); enrollment.clear();
+      throw failure;
+    }
+  }
+
+  public synchronized Phone11WakeEnrollmentStore.Binding wakeBinding(long now) {
+    if (!commissioned()) return null;
+    Phone11WakeEnrollmentStore.Binding value = enrollment.publicBinding(now);
+    Phone11PendingWakeStore.Snapshot persisted = store.snapshot();
+    if (value == null || !persisted.bound || !value.bindingId.equals(persisted.bindingId)) {
+      store.logout(); enrollment.clear();
+      return null;
+    }
+    return value;
   }
 
   public Phone11PendingWakeStore.Decision receive(Bundle data, long now) {
@@ -71,7 +110,30 @@ public final class Phone11AndroidWakeRuntime {
     return store.complete(callUUID, now);
   }
 
-  public void logout() { store.logout(); }
+  public synchronized void logout() {
+    tokenUpdatesStarted = false; ++tokenRevision;
+    store.logout(); enrollment.clear();
+  }
+
+  public synchronized long startTokenUpdates() {
+    if (!commissioned()) throw new IllegalStateException("wake enrollment unavailable");
+    tokenUpdatesStarted = true;
+    return ++tokenRevision;
+  }
+
+  public synchronized long currentTokenRevision() { return tokenRevision; }
+
+  public synchronized boolean ownsTokenRequest(long revision, boolean mustBeStarted) {
+    return commissioned() && revision == tokenRevision && (!mustBeStarted || tokenUpdatesStarted);
+  }
+
+  public synchronized boolean acceptsTokenRefresh() {
+    return commissioned() && tokenUpdatesStarted;
+  }
+
+  public synchronized void stopTokenUpdates() {
+    tokenUpdatesStarted = false; ++tokenRevision;
+  }
 
   public Phone11PendingWakeStore.Snapshot snapshot() { return store.snapshot(); }
 

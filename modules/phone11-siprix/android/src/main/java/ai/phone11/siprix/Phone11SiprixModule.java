@@ -8,6 +8,7 @@ import android.os.Handler;
 import android.os.Looper;
 import com.facebook.react.bridge.*;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
+import com.google.firebase.messaging.FirebaseMessaging;
 import com.siprix.*;
 import java.util.*;
 
@@ -32,6 +33,7 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
    if(v instanceof Map) p.resolve(Arguments.makeNativeMap((Map<String,Object>)v));
    else p.resolve(v);
   }catch(LabMedia.Failure e){p.reject(e.code,"Synthetic lab media operation failed");}
+   catch(WakeEnrollmentFailure e){p.reject("WAKE_ENROLLMENT_UNAVAILABLE","Incoming call setup is unavailable");}
    catch(SdkError e){p.reject("E_SIPRIX_"+e.code,"Siprix command failed");}
    catch(MicrophonePermission e){p.reject("E_MICROPHONE_PERMISSION","Allow microphone access using the Microphone control before calling");}
    catch(SecurityException e){p.reject("E_LAB_SCOPE","Only the isolated Phone11 lab is allowed");}
@@ -42,6 +44,7 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  private static void ok(int code) { if(code!=SiprixCore.kOK) throw new SdkError(code); }
  private static class SdkError extends RuntimeException { final int code; SdkError(int n){code=n;} }
  private static class MicrophonePermission extends RuntimeException {}
+ private static class WakeEnrollmentFailure extends RuntimeException {}
  private void microphone() {if(getReactApplicationContext().checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED) throw new MicrophonePermission();}
  private AndroidSipScope configuredScope() throws PackageManager.NameNotFoundException {
   String packageName=getReactApplicationContext().getPackageName();
@@ -53,12 +56,83 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  }
  private static String text(Bundle values,String key){Object value=values.get(key);return value==null?null:String.valueOf(value);}
  private static Map<String,Object> map(Object... kv) { Map<String,Object> m=new LinkedHashMap<>();for(int i=0;i<kv.length;i+=2)m.put((String)kv[i],kv[i+1]);return m; }
+ private static final Set<String> WAKE_ENROLLMENT_KEYS=new HashSet<>(Arrays.asList(
+  "bindingId","ownerUserId","tenantId","deviceId","sessionBinding","expiresAt","grant"));
+ private static long positiveInteger(ReadableMap value,String key){
+  if(!value.hasKey(key)||value.isNull(key)||value.getType(key)!=ReadableType.Number)throw new IllegalArgumentException();
+  double number=value.getDouble(key);if(!Double.isFinite(number)||number<=0||number!=Math.rint(number)||number>9007199254740991d)throw new IllegalArgumentException();
+  return (long)number;
+ }
+ private static String requiredString(ReadableMap value,String key){
+  if(!value.hasKey(key)||value.isNull(key)||value.getType(key)!=ReadableType.String)throw new IllegalArgumentException();
+  return value.getString(key);
+ }
+ private static Phone11WakeEnrollmentStore.Enrollment wakeEnrollment(ReadableMap value){
+  if(value==null)throw new IllegalArgumentException();
+  ReadableMapKeySetIterator keys=value.keySetIterator();int count=0;
+  while(keys.hasNextKey()){if(!WAKE_ENROLLMENT_KEYS.contains(keys.nextKey()))throw new IllegalArgumentException();count++;}
+  if(count!=WAKE_ENROLLMENT_KEYS.size())throw new IllegalArgumentException();
+  return new Phone11WakeEnrollmentStore.Enrollment(requiredString(value,"bindingId"),
+   positiveInteger(value,"ownerUserId"),positiveInteger(value,"tenantId"),requiredString(value,"deviceId"),
+   requiredString(value,"sessionBinding"),positiveInteger(value,"expiresAt"),requiredString(value,"grant"));
+ }
+ private static Map<String,Object> wakeBinding(Phone11WakeEnrollmentStore.Binding value){
+  return map("bindingId",value.bindingId,"ownerUserId",(double)value.ownerUserId,"tenantId",(double)value.tenantId,
+   "deviceId",value.deviceId,"sessionBinding",value.sessionBinding,"expiresAt",(double)value.expiresAt);
+ }
  static Phone11SipEngineAdoption.Decision offerIncomingWake(Phone11PendingWakeStore.Snapshot wake,long now){return wakeAdoption.adopt(wake,now);}
  static Phone11SipEngineAdoption.Decision answerIncomingWake(String callUUID,String bindingId,long now){return wakeAdoption.answer(callUUID,bindingId,now);}
  static Phone11SipEngineAdoption.Decision declineIncomingWake(String callUUID,String bindingId,long now){return wakeAdoption.decline(callUUID,bindingId,now);}
  static Phone11SipEngineAdoption.Decision cancelIncomingWake(String callUUID,String bindingId,long now){return wakeAdoption.cancel(callUUID,bindingId,now);}
  static Phone11SipEngineAdoption.Decision cleanupExpiredIncomingWake(long now){return wakeAdoption.cleanupExpired(now);}
  static void logoutIncomingWake(){wakeAdoption.logout();}
+ static void publishFirebaseToken(String token){
+  final Runtime current;
+  synchronized(Phone11SiprixModule.class){current=runtime;}
+  if(current==null||!current.context.hasActiveReactInstance()||!validProviderToken(token)
+    ||!Phone11AndroidWakeRuntime.get(current.context).acceptsTokenRefresh())return;
+  current.main.post(()->{
+   if(!current.context.hasActiveReactInstance()||!Phone11AndroidWakeRuntime.get(current.context).acceptsTokenRefresh())return;
+   current.context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+    .emit("Phone11VoipTokenChanged",Arguments.makeNativeMap(map("changed",true)));
+  });
+ }
+ private static boolean validProviderToken(String token){return token!=null&&!token.trim().isEmpty()&&token.length()<=4096;}
+ private void providerToken(Promise p,boolean start){
+  Phone11AndroidWakeRuntime wake=Phone11AndroidWakeRuntime.get(getReactApplicationContext());
+  if(wake.status()!=Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS){p.reject("NOT_COMMISSIONED","Background calling is not commissioned");return;}
+  final long revision=start?wake.startTokenUpdates():wake.currentTokenRevision();
+  FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task->rt.main.post(()->{
+   if(!rt.lease.owns(owner)||!wake.ownsTokenRequest(revision,start)){p.reject("E_STALE_BRIDGE","React bridge ownership has changed");return;}
+   String token=task.isSuccessful()?task.getResult():null;
+   if(!validProviderToken(token)){p.reject("WAKE_TOKEN_UNAVAILABLE","Incoming call device token is unavailable");return;}
+   p.resolve(token);
+  }));
+ }
+ @ReactMethod public void getCapabilities(Promise p){perform(p,()->{
+  Phone11AndroidWakeRuntime.Status status=Phone11AndroidWakeRuntime.get(getReactApplicationContext()).status();
+  boolean available=status==Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS;
+  return map("registrationAvailable",available,"closedAppCalling",false,"reason",available?"android_wake_enrollment_available":
+   status==Phone11AndroidWakeRuntime.Status.UNSUPPORTED_UNCOMMISSIONED?"native_wake_not_commissioned":"android_wake_misconfigured");
+ });}
+ @ReactMethod public void createDeviceId(Promise p){perform(p,()->UUID.randomUUID().toString());}
+ @ReactMethod public void start(Promise p){providerToken(p,true);}
+ @ReactMethod public void currentToken(Promise p){providerToken(p,false);}
+ @ReactMethod public void saveWakeEnrollment(ReadableMap value,Promise p){perform(p,()->{
+  Phone11WakeEnrollmentStore.Enrollment candidate;
+  try{candidate=wakeEnrollment(value);}catch(RuntimeException invalid){throw new WakeEnrollmentFailure();}
+  Phone11PendingWakeStore.Decision decision=Phone11AndroidWakeRuntime.get(getReactApplicationContext())
+   .saveEnrollment(candidate,System.currentTimeMillis());
+  if(decision!=Phone11PendingWakeStore.Decision.ACCEPTED)throw new WakeEnrollmentFailure();return null;
+ });}
+ @ReactMethod public void getWakeBinding(Promise p){perform(p,()->{
+  Phone11WakeEnrollmentStore.Binding value=Phone11AndroidWakeRuntime.get(getReactApplicationContext())
+   .wakeBinding(System.currentTimeMillis());
+  return value==null?null:wakeBinding(value);
+ });}
+ @ReactMethod public void stop(Promise p){perform(p,()->{
+  Phone11AndroidWakeRuntime.get(getReactApplicationContext()).logout();wakeAdoption.logout();return null;
+ });}
  @ReactMethod public void initialize(ReadableMap options,Promise p){perform(p,()->{
   if(!rt.initialized){
    rt.scope=configuredScope();

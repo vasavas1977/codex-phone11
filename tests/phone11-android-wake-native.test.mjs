@@ -94,3 +94,38 @@ test('pure JVM persisted wake contract covers replay expiry cancellation rotatio
   assert.equal(run.status,0,run.error?.message??run.stderr);assert.match(run.stdout,/PASS: 21 persisted Android wake assertions/);
  }finally{rmSync(out,{recursive:true,force:true});}
 });
+
+test('pure JVM wake enrollment validates identity expiry rotation and public grant exclusion',()=>{
+ const root=path.resolve(new URL('..',import.meta.url).pathname);const out=mkdtempSync(path.join(tmpdir(),'phone11-enrollment-jvm-'));
+ try{
+  const source=path.join(root,'modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/Phone11WakeEnrollmentStore.java');
+  const contract=path.join(root,'lab/android/java-tests/WakeEnrollmentStoreTest.java');
+  const compile=spawnSync('javac',['-d',out,source,contract],{encoding:'utf8',timeout:120000});
+  assert.equal(compile.status,0,compile.error?.message??compile.stderr);
+  const run=spawnSync('java',['-ea','-cp',out,'ai.phone11.siprix.WakeEnrollmentStoreTest'],{encoding:'utf8',timeout:120000});
+  assert.equal(run.status,0,run.error?.message??run.stderr);
+  assert.match(run.stdout,/PASS: 23 Android wake enrollment assertions/);
+ }finally{rmSync(out,{recursive:true,force:true});}
+});
+
+test('Android enrollment bridge uses provider token storage and encrypted grant persistence only',()=>{
+ const root=path.resolve(new URL('..',import.meta.url).pathname);const fs=require('node:fs');
+ const module=fs.readFileSync(path.join(root,
+  'modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/Phone11SiprixModule.java'),'utf8');
+ const service=fs.readFileSync(path.join(root,
+  'modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/Phone11FirebaseMessagingService.java'),'utf8');
+ const encrypted=fs.readFileSync(path.join(root,
+  'modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/Phone11EncryptedWakeEnrollmentPersistence.java'),'utf8');
+ const wrapper=fs.readFileSync(path.join(root,'lib/push/native-voip.ts'),'utf8');
+ for(const method of ['getCapabilities','start','currentToken','createDeviceId','saveWakeEnrollment','getWakeBinding','stop'])
+  assert.match(module,new RegExp(`void ${method}\\(`));
+ assert.match(module,/FirebaseMessaging\.getInstance\(\)\.getToken\(\)/);
+ assert.match(module,/Phone11VoipTokenChanged/);
+ assert.doesNotMatch(module,/Phone11VoipToken[^C]/);
+ assert.match(service,/publishFirebaseToken\(token\)/);
+ assert.match(encrypted,/AndroidKeyStore/);assert.match(encrypted,/AES\/GCM\/NoPadding/);
+ assert.doesNotMatch(module,/SharedPreferences|putString\([^\n]*token|\b(Log\.|System\.out)/i);
+ assert.doesNotMatch(service,/\b(Log\.|System\.out|putString\([^\n]*token)/i);
+ assert.match(wrapper,/Platform\.OS === "android" \? NativeModules\.Phone11Siprix/);
+ assert.match(wrapper,/getCurrentNativeVoipToken/);
+});
