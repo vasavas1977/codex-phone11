@@ -11,6 +11,7 @@ const ui = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({
+  ActivityIndicator: () => createElement("span", { "data-loading": true }),
   Platform: { OS: "web" },
   View: ({ children, accessibilityRole, ...props }: any) => {
     if (accessibilityRole === "adjustable") ui.timeline = props;
@@ -21,6 +22,10 @@ vi.mock("react-native", () => ({
     ui.buttons.set(accessibilityLabel, props);
     return createElement("button", null, children);
   },
+}));
+vi.mock("../components/ui/icon-symbol", () => ({
+  IconSymbol: ({ name }: { name: string }) =>
+    createElement("i", { "data-icon": name }),
 }));
 
 import {
@@ -61,6 +66,14 @@ it("supports tap or drag seeking and accessible fifteen-second seeking", () => {
 
   expect(html).toContain("0:30");
   expect(html).toContain("−1:30");
+  expect(html).toContain('data-icon="play.fill"');
+  expect(html).toContain('data-icon="backward.fill"');
+  expect(html).toContain('data-icon="forward.fill"');
+  expect(html).toContain('data-icon="speaker.slash.fill"');
+  expect(html).toContain("Speaker");
+  expect(html).not.toContain(">Play<");
+  expect(html).not.toContain("−15s");
+  expect(html).not.toContain("+15s");
   expect(html).not.toContain("Output:");
   expect(ui.timeline["aria-valuemin"]).toBe(0);
   expect(ui.timeline["aria-valuemax"]).toBe(120);
@@ -80,7 +93,7 @@ it("supports tap or drag seeking and accessible fifteen-second seeking", () => {
 
 it("exposes one speaker toggle, defaults to earpiece, and reports external audio", () => {
   const change = vi.fn();
-  renderToStaticMarkup(
+  const loadingHtml = renderToStaticMarkup(
     createElement(PlaybackControls, {
       currentTime: 0,
       duration: 0,
@@ -95,6 +108,7 @@ it("exposes one speaker toggle, defaults to earpiece, and reports external audio
   );
   expect(ui.buttons.get("Play through speaker").disabled).toBe(true);
   expect(ui.buttons.has("Play through earpiece")).toBe(false);
+  expect(loadingHtml).toContain('data-loading="true"');
 
   ui.buttons.clear();
   const html = renderToStaticMarkup(
@@ -114,4 +128,24 @@ it("exposes one speaker toggle, defaults to earpiece, and reports external audio
   expect(change).toHaveBeenCalledWith("speaker");
   expect(html).toContain("Connected to ");
   expect(html).toContain("Bluetooth");
+
+  ui.buttons.clear();
+  const speakerHtml = renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 1,
+      duration: 10,
+      playing: true,
+      loaded: true,
+      route: "speaker",
+      output: { route: "speaker", label: "Speaker" },
+      onToggle: vi.fn(),
+      onSeek: vi.fn(),
+      onRouteChange: change,
+    }),
+  );
+  expect(speakerHtml).toContain('data-icon="pause.fill"');
+  expect(speakerHtml).toContain('data-icon="speaker.wave.3.fill"');
+  expect(ui.buttons.get("Turn speaker off").accessibilityState.selected).toBe(
+    true,
+  );
 });

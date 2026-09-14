@@ -20,11 +20,27 @@ Reference images were normalized from 1320×2868 to 440×956 for visual comparis
 
 No remaining blocking visual or interaction finding in this reviewed scope. Native routing and system sheets require handset acceptance separately.
 
+## Icon refinement
+
+The user requested an even simpler player after reviewing the first preview.
+Play/Pause now uses a triangle/pause icon; double-arrow icons retain the same
+15-second skip behavior. Speaker keeps one short label, an outlined off state,
+and a blue selected state. Accessible labels explain the skip interval and
+output action. The loading state uses a spinner.
+
+Verified the updated shared component at 320×740 and 440×956 with no horizontal
+overflow. Preview interactions confirmed forward/back 15 seconds, play/pause,
+and Speaker on/off. All touch targets remain at least 44 points. The preview
+uses synthetic state and does not establish physical audio routing.
+
 ## Evidence
 
 - `docs/phone11-daily-use/recents-design-qa-20260915/minimal-player.png`
 - `docs/phone11-daily-use/recents-design-qa-20260915/minimal-summary-menu.png`
 - `docs/phone11-daily-use/recents-design-qa-20260915/minimal-call-menu.png`
 - `docs/phone11-daily-use/recents-design-qa-20260915/minimal-small-phone.png`
+- `docs/phone11-daily-use/recents-design-qa-20260915/icon-player.png`
+- `docs/phone11-daily-use/recents-design-qa-20260915/icon-player-small.png`
+- `docs/phone11-daily-use/recents-design-qa-20260915/icon-player-speaker.png`
 
 Preview: `http://127.0.0.1:8087/dev/recents-preview`. It is development-only and uses synthetic content, with no actual call or recording API requests.

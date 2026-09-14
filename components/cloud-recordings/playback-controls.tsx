@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   type GestureResponderEvent,
   Platform,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { IconSymbol } from "@/components/ui/icon-symbol";
 import type {
   PlaybackAudioRoute,
   PlaybackAudioRouteStatus,
@@ -231,66 +233,95 @@ export function PlaybackControls({
             style={{
               flexDirection: "row",
               alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
+              justifyContent: "space-between",
+              alignSelf: "center",
+              width: "100%",
+              maxWidth: 320,
+              gap: 4,
             }}
           >
             <TouchableOpacity
               accessibilityRole="button"
               accessibilityLabel="Back 15 seconds"
+              accessibilityHint="Moves playback back 15 seconds"
+              accessibilityState={{ disabled: !loaded }}
               disabled={!loaded}
               onPress={() => adjust(-15)}
               style={{
-                minHeight: 48,
-                minWidth: 48,
+                height: 44,
+                width: 44,
                 justifyContent: "center",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: loaded ? colors.primary : colors.muted }}>
-                −15s
-              </Text>
+              <IconSymbol
+                name="backward.fill"
+                size={26}
+                color={loaded ? colors.primary : colors.muted}
+              />
             </TouchableOpacity>
             <TouchableOpacity
               accessibilityRole="button"
               accessibilityLabel={
                 playing ? "Pause recording" : "Play recording"
               }
+              accessibilityHint={
+                playing
+                  ? "Pauses recording playback"
+                  : "Starts recording playback"
+              }
+              accessibilityState={{ disabled: !loaded }}
               disabled={!loaded}
               onPress={onToggle}
               style={{
-                minHeight: 48,
-                minWidth: 72,
+                height: 48,
+                width: 48,
                 justifyContent: "center",
                 alignItems: "center",
                 backgroundColor: loaded ? colors.primary : colors.border,
                 borderRadius: 24,
               }}
             >
-              <Text style={{ color: "white", fontWeight: "600" }}>
-                {!loaded ? "Loading" : playing ? "Pause" : "Play"}
-              </Text>
+              {!loaded ? (
+                <ActivityIndicator size="small" color={colors.muted} />
+              ) : (
+                <IconSymbol
+                  name={playing ? "pause.fill" : "play.fill"}
+                  size={24}
+                  color="white"
+                  style={!playing ? { marginLeft: 2 } : undefined}
+                />
+              )}
             </TouchableOpacity>
             <TouchableOpacity
               accessibilityRole="button"
               accessibilityLabel="Forward 15 seconds"
+              accessibilityHint="Moves playback forward 15 seconds"
+              accessibilityState={{ disabled: !loaded }}
               disabled={!loaded}
               onPress={() => adjust(15)}
               style={{
-                minHeight: 48,
-                minWidth: 48,
+                height: 44,
+                width: 44,
                 justifyContent: "center",
                 alignItems: "center",
               }}
             >
-              <Text style={{ color: loaded ? colors.primary : colors.muted }}>
-                +15s
-              </Text>
+              <IconSymbol
+                name="forward.fill"
+                size={26}
+                color={loaded ? colors.primary : colors.muted}
+              />
             </TouchableOpacity>
             <TouchableOpacity
               accessibilityRole="button"
               accessibilityLabel={
                 speakerSelected ? "Turn speaker off" : "Play through speaker"
+              }
+              accessibilityHint={
+                speakerSelected
+                  ? "Returns recording audio to the earpiece"
+                  : "Routes recording audio through the loudspeaker"
               }
               accessibilityState={{
                 selected: speakerSelected,
@@ -301,10 +332,14 @@ export function PlaybackControls({
                 onRouteChange(speakerSelected ? "earpiece" : "speaker")
               }
               style={{
-                minHeight: 44,
-                minWidth: 78,
-                paddingHorizontal: 12,
+                height: 44,
+                minWidth: 104,
+                paddingHorizontal: 10,
                 borderRadius: 22,
+                borderWidth: 1,
+                borderColor: speakerSelected ? colors.primary : colors.border,
+                flexDirection: "row",
+                gap: 6,
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor: speakerSelected
@@ -312,6 +347,13 @@ export function PlaybackControls({
                   : colors.surface,
               }}
             >
+              <IconSymbol
+                name={
+                  speakerSelected ? "speaker.wave.3.fill" : "speaker.slash.fill"
+                }
+                size={18}
+                color={speakerSelected ? "white" : colors.foreground}
+              />
               <Text
                 style={{
                   color: speakerSelected ? "white" : colors.foreground,

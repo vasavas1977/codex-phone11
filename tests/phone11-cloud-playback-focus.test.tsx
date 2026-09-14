@@ -44,6 +44,7 @@ const m = vi.hoisted(() => ({
   token: vi.fn(async () => "token"),
 }));
 vi.mock("react-native", () => ({
+  ActivityIndicator: () => createElement("span", null),
   Platform: { OS: "ios" },
   NativeModules: { Phone11Siprix: m.nativeRoute },
   NativeEventEmitter: class {
@@ -58,6 +59,10 @@ vi.mock("react-native", () => ({
     m.buttons.set(accessibilityLabel, props);
     return createElement("button", null, children);
   },
+}));
+vi.mock("../components/ui/icon-symbol", () => ({
+  IconSymbol: ({ name }: { name: string }) =>
+    createElement("i", { "data-icon": name }),
 }));
 vi.mock("@react-navigation/native", () => ({
   useFocusEffect: (effect: () => () => void) => {
