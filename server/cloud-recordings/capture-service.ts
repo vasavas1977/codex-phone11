@@ -6,6 +6,7 @@ import { createRecordingCapture } from './capture';
 import { createEslCaptureTransport,type EslConfig } from './esl-capture';
 import { createCaptureSpool } from './capture-spool';
 import { constants, promises as fs } from 'node:fs';
+import { join } from 'node:path';
 const STOP_FINALIZATION_GRACE_MS=60_000;
 async function captureFileExists(path:string):Promise<boolean>{
  try{const file=await fs.open(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{const stat=await file.stat();return stat.isFile()&&stat.size>=44;}finally{await file.close();}}
@@ -107,7 +108,8 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
         // channel. Keep retrying when a private WAV exists, but release an old
         // file-less lease so the user can retry instead of seeing “recording”.
         const stopped=Date.parse(String(r.capture_stopped_at??''));
-        if(Number.isFinite(stopped)&&Date.now()-stopped>=STOP_FINALIZATION_GRACE_MS&&!await captureFileExists(path)){
+        const spoolPath=join(config.spoolDirectory,r.capture_token+'.wav');
+        if(Number.isFinite(stopped)&&Date.now()-stopped>=STOP_FINALIZATION_GRACE_MS&&!await captureFileExists(path)&&!await captureFileExists(spoolPath)){
          const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path};
          await spool.discardCompleted(lease);await ledger.failed(lease,'capture_failed');
         }
