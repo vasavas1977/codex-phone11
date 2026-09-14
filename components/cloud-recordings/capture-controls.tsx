@@ -28,16 +28,19 @@ export function CaptureControls({
   const generation = useRef(0);
   const inFlight = useRef(false);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [message, setMessage] = useState("");
   useEffect(() => {
     generation.current++;
     inFlight.current = false;
     setBusy(false);
+    setStopping(false);
     setMessage("");
     const unsubscribe = Auth.addAuthChangeListener(() => {
       generation.current++;
       inFlight.current = false;
       setBusy(false);
+      setStopping(false);
       setMessage("");
     });
     return () => {
@@ -45,6 +48,39 @@ export function CaptureControls({
       unsubscribe();
     };
   }, [callUuid]);
+  useEffect(() => {
+    if (stopping && !controls.canStop) {
+      setStopping(false);
+      setMessage("");
+    }
+  }, [controls.canStop, stopping]);
+  useEffect(() => {
+    if (!stopping || !controls.canStop || AppState.currentState !== "active")
+      return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + 2 * 60_000;
+    const poll = async () => {
+      if (disposed) return;
+      try {
+        await refresh();
+      } catch {
+        // The accepted stop remains authoritative; the next poll or manual
+        // refresh can observe the finalized server state.
+      }
+      if (
+        !disposed &&
+        Date.now() < deadline &&
+        AppState.currentState === "active"
+      )
+        timer = setTimeout(poll, 2_000);
+    };
+    timer = setTimeout(poll, 2_000);
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [controls.canStop, refresh, stopping]);
   const change = async (action: "start" | "stop") => {
     const identity = Auth.getAuthSnapshot().user;
     if (
@@ -71,7 +107,10 @@ export function CaptureControls({
             ? (await api.startCapture.mutate({ callUuid })).started
             : (await api.stopCapture.mutate({ callUuid })).stopped;
         if (!current()) return;
-        setMessage(recordingChangeMessage(action, accepted));
+        if (action === "stop" && accepted) {
+          setStopping(true);
+          setMessage("Recording stop accepted. Finalizing…");
+        } else setMessage(recordingChangeMessage(action, accepted));
       } catch {
         if (current())
           setMessage(
@@ -84,7 +123,11 @@ export function CaptureControls({
         await refresh();
       } catch {
         if (current() && accepted)
-          setMessage(recordingChangeMessage(action, true, true));
+          setMessage(
+            action === "stop"
+              ? "Recording stop accepted. Finalizing… Please refresh again."
+              : recordingChangeMessage(action, true, true),
+          );
       }
     } finally {
       if (current()) {
@@ -105,7 +148,21 @@ export function CaptureControls({
           <Text style={{ color: colors.primary }}>Start recording</Text>
         </TouchableOpacity>
       )}
-      {controls.canStop && (
+      {controls.canStop && stopping && (
+        <View style={{ gap: 4 }}>
+          <Text style={{ color: colors.muted }}>
+            {message || "Recording stop accepted. Finalizing…"}
+          </Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            onPress={() => void refresh()}
+            style={{ minHeight: 44, justifyContent: "center" }}
+          >
+            <Text style={{ color: colors.primary }}>Refresh recording status</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {controls.canStop && !stopping && (
         <TouchableOpacity
           accessibilityRole="button"
           disabled={busy}
