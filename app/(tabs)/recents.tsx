@@ -189,7 +189,7 @@ export default function RecentsScreen() {
       <FlatList
         data={visible}
         keyExtractor={(item) => item.id}
-        refreshing={history.loading}
+        refreshing={history.loading || cloud.loading}
         onRefresh={() => {
           void history.reload();
           void cloud.reload();

@@ -55,6 +55,11 @@ export function LiveRecordingPanel({
         </TouchableOpacity>
       </View>
     );
+  const summaryNeedsRefresh =
+    detail.summaryStatus === "queued" ||
+    detail.summaryStatus === "processing" ||
+    detail.summaryStatus === "failed" ||
+    (detail.summaryStatus === "ready" && !detail.summary);
   return (
     <View>
       {full && (
@@ -121,6 +126,23 @@ export function LiveRecordingPanel({
           })
         }
       />
+      {summaryNeedsRefresh && (
+        <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Refresh AI summary status"
+            disabled={cloud.loading}
+            style={{ minHeight: 48, justifyContent: "center" }}
+            onPress={() => void cloud.reload()}
+          >
+            <Text
+              style={{ color: cloud.loading ? colors.muted : colors.primary }}
+            >
+              {cloud.loading ? "Refreshing AI status…" : "Refresh AI status"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }

@@ -1,19 +1,21 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { startRecordingPoll } from "../lib/cloud-recordings/polling";
 afterEach(() => vi.useRealTimers());
-it("polls only pending foreground work and stops at fixed deadline and unmount", () => {
+it("polls active foreground work and keeps one fixed fifteen-minute budget", () => {
   vi.useFakeTimers();
   let active = true,
-    pending = true;
+    interval: number | undefined = 10_000;
   let notify = () => {};
   const refresh = vi.fn();
+  const unsubscribe = vi.fn();
   const dispose = startRecordingPoll({
     active: () => active,
-    pending: () => pending,
+    intervalMs: () => interval,
+    shouldRefresh: () => interval !== undefined,
     refresh,
     subscribe: (f) => {
       notify = f;
-      return vi.fn();
+      return unsubscribe;
     },
   });
   vi.advanceTimersByTime(10000);
@@ -26,25 +28,73 @@ it("polls only pending foreground work and stops at fixed deadline and unmount",
   notify();
   vi.advanceTimersByTime(10000);
   expect(refresh).toHaveBeenCalledTimes(2);
-  pending = false;
+  interval = undefined;
+  notify();
   vi.advanceTimersByTime(10000);
   expect(refresh).toHaveBeenCalledTimes(2);
-  pending = true;
-  vi.advanceTimersByTime(300000);
+  interval = 10_000;
+  notify();
+  vi.advanceTimersByTime(849_999);
   const count = refresh.mock.calls.length;
-  expect(count).toBeLessThan(30);
-  vi.advanceTimersByTime(60000);
+  expect(count).toBeGreaterThan(2);
+  notify();
+  vi.advanceTimersByTime(60_000);
   expect(refresh).toHaveBeenCalledTimes(count);
   dispose();
+  expect(unsubscribe).toHaveBeenCalledOnce();
   vi.advanceTimersByTime(60000);
   expect(refresh).toHaveBeenCalledTimes(count);
+});
+it("recovers a first-load failed result without remounting, then stops after ready", () => {
+  vi.useFakeTimers();
+  let status: "loading" | "failed" | "ready" = "loading";
+  const refresh = vi.fn(() => {
+    status = "ready";
+  });
+  const dispose = startRecordingPoll({
+    active: () => true,
+    intervalMs: () =>
+      status === "loading" ? 1_000 : status === "failed" ? 60_000 : undefined,
+    shouldRefresh: () => status === "failed",
+    refresh,
+    subscribe: () => vi.fn(),
+  });
+  status = "failed";
+  vi.advanceTimersByTime(1_000);
+  expect(refresh).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(59_999);
+  expect(refresh).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1);
+  expect(refresh).toHaveBeenCalledOnce();
+  vi.advanceTimersByTime(15 * 60_000);
+  expect(refresh).toHaveBeenCalledOnce();
+  dispose();
+});
+it("waits for an in-flight detail request without replacing it, then starts polling", () => {
+  vi.useFakeTimers();
+  let loading = true;
+  const refresh = vi.fn();
+  const dispose = startRecordingPoll({
+    active: () => true,
+    intervalMs: () => (loading ? 1_000 : 10_000),
+    shouldRefresh: () => !loading,
+    refresh,
+    subscribe: () => vi.fn(),
+  });
+  vi.advanceTimersByTime(1_000);
+  expect(refresh).not.toHaveBeenCalled();
+  loading = false;
+  vi.advanceTimersByTime(11_000);
+  expect(refresh).toHaveBeenCalledOnce();
+  dispose();
 });
 it("never polls an initially background or logged out screen", () => {
   vi.useFakeTimers();
   const refresh = vi.fn();
   const dispose = startRecordingPoll({
     active: () => false,
-    pending: () => true,
+    intervalMs: () => 10_000,
+    shouldRefresh: () => true,
     refresh,
     subscribe: () => vi.fn(),
   });

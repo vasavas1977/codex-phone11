@@ -113,6 +113,21 @@ it("shows real pending statuses without creating playback", () => {
   expect(html).not.toContain("Play recording");
   expect(mocks.playback).not.toHaveBeenCalled();
 });
+it("offers a manual AI refresh for failed or stale detail", async () => {
+  mocks.cloud.detail = {
+    ...item,
+    recordingStatus: "ready",
+    summaryStatus: "failed",
+  };
+  let html = renderToStaticMarkup(createElement(Detail));
+  expect(html).toContain("Summary unavailable");
+  expect(html).toContain("Refresh AI status");
+  await mocks.press.get("Refresh AI status")?.();
+  expect(mocks.cloud.reload).toHaveBeenCalledOnce();
+  mocks.cloud.loading = true;
+  html = renderToStaticMarkup(createElement(Detail));
+  expect(html).toContain("Refreshing AI status");
+});
 it("renders server summary and transcript only when provided", () => {
   mocks.cloud.detail = {
     ...item,

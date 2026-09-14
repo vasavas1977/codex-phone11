@@ -32,6 +32,7 @@ export function isMissingCloudProcedure(
 /** Memory only. Every auth transition invalidates in-flight results. */
 export function useCloudRecordings(callUuid?: string) {
   const { user } = useAuth({ autoFetch: false });
+  const ownerId = user?.id;
   const generation = useRef(0);
   const [state, setState] = useState<{
     owner?: number;
@@ -50,7 +51,7 @@ export function useCloudRecordings(callUuid?: string) {
         ? { ...previous, loading: true, error: undefined }
         : { items: [], loading: !!identity },
     );
-    if (!identity) return;
+    if (!identity || identity.id !== ownerId) return;
     const current = () =>
       AppState.currentState === "active" &&
       revision === generation.current &&
@@ -84,12 +85,19 @@ export function useCloudRecordings(callUuid?: string) {
             "Could not load cloud recordings. Your call history is still available.",
         });
     }
-  }, [callUuid, user]);
+  }, [callUuid, ownerId]);
   useEffect(() => {
     void reload();
     const unsubscribe = Auth.addAuthChangeListener(() => {
       generation.current++;
       setState({ items: [], loading: false });
+      const nextOwnerId = Auth.getAuthSnapshot().user?.id;
+      if (
+        ownerId !== undefined &&
+        nextOwnerId === ownerId &&
+        AppState.currentState === "active"
+      )
+        void reload();
     });
     const app = AppState.addEventListener("change", (state) => {
       if (state === "active") void reload();
@@ -108,19 +116,35 @@ export function useCloudRecordings(callUuid?: string) {
   latest.current = state;
   useEffect(() => {
     if (!callUuid) return;
-    const identity = Auth.getAuthSnapshot().user;
+    const identityId = Auth.getAuthSnapshot().user?.id;
     return startRecordingPoll({
       active: () =>
         AppState.currentState === "active" &&
-        !!identity &&
-        Auth.getAuthSnapshot().user === identity,
-      pending: () => {
+        identityId !== undefined &&
+        identityId === ownerId &&
+        Auth.getAuthSnapshot().user?.id === identityId,
+      intervalMs: () => {
         const current = latest.current;
+        // Keep reevaluating while the initial request is in flight; do not
+        // cancel or replace that request with another poll.
+        if (current.loading || !current.detail) return 1_000;
+        if (
+          ["pending", "recording"].includes(current.detail.recordingStatus) ||
+          ["queued", "processing"].includes(current.detail.summaryStatus)
+        )
+          return 10_000;
+        // A bounded, lower-frequency check lets an operational retry replace a
+        // stale terminal failure without turning detail screens into pollers.
+        return current.detail.summaryStatus === "failed" ? 60_000 : undefined;
+      },
+      shouldRefresh: () => {
+        const current = latest.current;
+        if (current.loading || !current.detail) return false;
         return (
-          !current.loading &&
-          !!current.detail &&
-          (["pending", "recording"].includes(current.detail.recordingStatus) ||
-            ["queued", "processing"].includes(current.detail.summaryStatus))
+          ["pending", "recording"].includes(current.detail.recordingStatus) ||
+          ["queued", "processing", "failed"].includes(
+            current.detail.summaryStatus,
+          )
         );
       },
       refresh: () => void reload(),
@@ -141,7 +165,7 @@ export function useCloudRecordings(callUuid?: string) {
     });
   }, [callUuid, reload]);
   return {
-    ...(state.owner === user?.id &&
+    ...(state.owner === ownerId &&
     (!callUuid || !state.detail || state.detail.callUuid === callUuid)
       ? state
       : { items: [], loading: state.loading }),

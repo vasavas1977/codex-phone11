@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   calling: false,
   call: vi.fn(async () => {}),
   refresh: undefined as (() => void) | undefined,
+  refreshing: false,
   press: new Map<string, { run: () => unknown; disabled: boolean }>(),
 }));
 vi.mock("../hooks/use-device-contacts", () => ({
@@ -31,8 +32,10 @@ vi.mock("react-native", () => ({
     ListEmptyComponent,
     ListHeaderComponent,
     onRefresh,
+    refreshing,
   }: any) => {
     mocks.refresh = onRefresh;
+    mocks.refreshing = refreshing;
     return createElement(
       "div",
       null,
@@ -108,6 +111,7 @@ beforeEach(() => {
   mocks.user = { id: 1 };
   mocks.contacts = [];
   mocks.cloud.items = [];
+  mocks.cloud.loading = false;
   mocks.calling = false;
   mocks.history = {
     ownerUserId: 1,
@@ -151,6 +155,14 @@ it("shows loading and error feedback and supports a real refresh", () => {
   );
   mocks.refresh!();
   expect(mocks.history.reload).toHaveBeenCalledOnce();
+});
+it("keeps the refresh indicator visible until cloud metadata finishes", () => {
+  mocks.cloud.loading = true;
+  renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.refreshing).toBe(true);
+  mocks.cloud.loading = false;
+  renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.refreshing).toBe(false);
 });
 it("disables callback while keeping call details accessible during a pending request", () => {
   mocks.calling = true;
