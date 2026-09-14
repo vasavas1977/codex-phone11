@@ -66,6 +66,10 @@ function sameAccount(snapshot: SipAccount, account: SipAccount | null): boolean 
   return account !== null && accountFields.every(field => snapshot[field] === account[field]);
 }
 
+type CommandStage = "requested" | "precondition_rejected" | "sdk_requested" | "sdk_failed" | "accepted" | "session_changed";
+type CommandReason = "revision_changed" | "session_unavailable" | "call_unavailable" | "sdk_rejected" | "session_changed_after_sdk";
+type CommandAudit = (stage: CommandStage, reason?: CommandReason) => void;
+
 export class SiprixEngine {
   private bridge: Phone11SiprixModule | null = null;
   private session: Session | null = null;
@@ -404,16 +408,35 @@ export class SiprixEngine {
     return session;
   }
 
-  private command(callId: string, operation: string, invoke: (bridge: Phone11SiprixModule) => Promise<void>): Promise<void> {
+  private command(callId: string, operation: string, invoke: (bridge: Phone11SiprixModule) => Promise<void>, audit?: CommandAudit): Promise<void> {
     const revision = this.revision;
+    audit?.("requested");
     return this.serialize(async () => {
-      if (revision !== this.revision) throw new Error("Siprix phone session changed");
-      const session = this.requireSession();
-      if (!this.calls.has(callId)) throw new Error("Siprix call is no longer available");
+      if (revision !== this.revision) {
+        audit?.("precondition_rejected", "revision_changed");
+        throw new Error("Siprix phone session changed");
+      }
+      let session: Session;
+      try { session = this.requireSession(); }
+      catch (error) {
+        audit?.("precondition_rejected", "session_unavailable");
+        throw error;
+      }
+      if (!this.calls.has(callId)) {
+        audit?.("precondition_rejected", "call_unavailable");
+        throw new Error("Siprix call is no longer available");
+      }
+      let sdkAccepted = false;
       try {
+        audit?.("sdk_requested");
         await invoke(this.bridge!);
+        sdkAccepted = true;
         if (!this.current(session)) throw new Error("Siprix phone session changed");
-      } catch (error) { throw this.failure(operation, error); }
+        audit?.("accepted");
+      } catch (error) {
+        audit?.(sdkAccepted ? "session_changed" : "sdk_failed", sdkAccepted ? "session_changed_after_sdk" : "sdk_rejected");
+        throw this.failure(operation, error);
+      }
     });
   }
 
@@ -436,11 +459,20 @@ export class SiprixEngine {
     return this.command(callId, "hangup", bridge => bridge.hangupCall(callId));
   }
   setMute(callId: string, muted: boolean): Promise<void> {
-    return this.command(callId, "mute", async bridge => {
-      await bridge.setMute(callId, muted);
+    const messages: Record<CommandStage, string> = {
+      requested: "Siprix microphone mute requested",
+      precondition_rejected: "Siprix microphone mute rejected before SDK",
+      sdk_requested: "Siprix microphone mute sent to SDK",
+      sdk_failed: "Siprix microphone mute SDK command failed",
+      accepted: "Siprix microphone mute command accepted",
+      session_changed: "Siprix microphone mute session changed after SDK",
+    };
+    return this.command(callId, "mute", bridge => bridge.setMute(callId, muted), (stage, reason) => {
+      // Record only fixed reason codes and a bounded native ID. Session/account
+      // data and arbitrary SDK error messages must never enter diagnostics.
       useSipDiagnosticsStore.getState().addEvent({
-        level: "info", category: "media", message: "Siprix microphone mute command accepted",
-        context: { callId, muted },
+        level: reason ? "error" : "info", category: "media", message: messages[stage],
+        context: { ...(/^\d{1,10}$/.test(callId) ? { callId } : {}), muted, stage, ...(reason ? { reason } : {}) },
       });
     });
   }

@@ -585,7 +585,7 @@ describe("Siprix native adapter", () => {
     await engine.setMute("11", true);
     expect(bridge.setMute).toHaveBeenCalledWith("11", true);
     expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
-      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: true },
+      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: true, stage: "accepted" },
     }));
     await engine.setSpeaker("11", true);
     expect(bridge.setSpeaker).toHaveBeenCalledWith(true);
@@ -596,8 +596,69 @@ describe("Siprix native adapter", () => {
     bridge.setMute.mockRejectedValueOnce(Object.assign(new Error(account.password), { code: "E_SIPRIX_-123" }));
     await expect(engine.setMute("11", false)).rejects.toThrow("E_SIPRIX_-123");
     expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({
-      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: false },
+      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: false, stage: "accepted" },
     }));
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+  });
+
+  it("records an unavailable-session mute rejection without invoking the SDK", async () => {
+    await expect(engine.setMute("11", true)).rejects.toThrow("authenticated phone session");
+    expect(bridge.setMute).not.toHaveBeenCalled();
+    expect(runtime.diagnostics.mock.calls.map(([event]) => event.context?.stage)).toEqual(["requested", "precondition_rejected"]);
+    expect(runtime.diagnostics).toHaveBeenLastCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "precondition_rejected", reason: "session_unavailable" },
+    }));
+  });
+
+  it("records stale and malformed call rejections without SDK actions or private text", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    runtime.diagnostics.mockClear();
+    await expect(engine.setMute("11", true)).rejects.toThrow("no longer available");
+    await expect(engine.setMute(account.password, false)).rejects.toThrow("no longer available");
+    expect(bridge.setMute).not.toHaveBeenCalled();
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "precondition_rejected", reason: "call_unavailable" },
+    }));
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+    expect(runtime.diagnostics.mock.calls.some(([event]) => event.context?.stage === "accepted")).toBe(false);
+  });
+
+  it("records a queued mute invalidated by session revision before invoking the SDK", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    runtime.diagnostics.mockClear();
+    const mute = engine.setMute("11", true);
+    const stopped = engine.destroy();
+    await expect(mute).rejects.toThrow("session changed");
+    await stopped;
+    expect(bridge.setMute).not.toHaveBeenCalled();
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "precondition_rejected", reason: "revision_changed" },
+    }));
+  });
+
+  it("distinguishes SDK failure and late session change from accepted mute", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    bridge.setMute.mockRejectedValueOnce(new Error(account.password));
+    await expect(engine.setMute("11", true)).rejects.toThrow("mute failed");
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "sdk_failed", reason: "sdk_rejected" },
+    }));
+    const pending = deferred<void>();
+    bridge.setMute.mockReturnValueOnce(pending.promise);
+    const mute = engine.setMute("11", true);
+    await vi.waitFor(() => expect(bridge.setMute).toHaveBeenCalledTimes(2));
+    const stopped = engine.destroy();
+    pending.resolve();
+    await expect(mute).rejects.toThrow("mute failed");
+    await stopped;
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "session_changed", reason: "session_changed_after_sdk" },
+    }));
+    expect(runtime.diagnostics.mock.calls.some(([event]) => event.context?.stage === "accepted")).toBe(false);
     expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
   });
 
