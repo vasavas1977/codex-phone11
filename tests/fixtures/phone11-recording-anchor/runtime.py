@@ -64,7 +64,7 @@ def values(packet,key):return re.findall(r'^'+re.escape(key)+r': (.+)\r$',packet
 def answer(invite_packet,sock,sdp,tag):
  reply='SIP/2.0 200 OK\r\n'
  for key in ['Via','From','To','Call-ID','CSeq','Record-Route']:
-  for value in values(invite_packet,key):reply+=key+': '+value+(';tag='+tag if key=='To' else '')+'\r\n'
+  for value in values(invite_packet,key):reply+=key+': '+value+(';tag='+tag if key=='To' and tag else '')+'\r\n'
  reply+=f'Contact: <sip:3001@{sock.getsockname()[0]}:{sock.getsockname()[1]}>\r\n'
  reply+=f'Content-Type: application/sdp\r\nContent-Length: {len(sdp)}\r\n\r\n'+sdp
  sock.sendto(reply.encode(),('127.0.0.1',5060))
@@ -108,9 +108,14 @@ for number in ['6620303001','+6620303001']:
 # FS originates B leg: a different exact SIP identity reaches wake/device.
 b=invite(fs,'3001','returned-v1');msg=receive(device,'INVITE sip:3001@');assert f'Call-ID: {b}' in msg;assert b!=a;assert 'X-Fixture-Wake-Flow: reached' in msg;assert 'Recording-Anchor:' not in msg
 answer(msg,device,SECURE_SDP,'phone-origin-answer');receive(fs,'200 OK')
-# Exercise the reverse offer-leg branch used when the handset originated the offer.
-b_reverse=invite(fs,'3001','returned-v1',['X-Fixture-Phone-Offer: yes']);reverse_msg=receive(device,'INVITE sip:3001@');assert f'Call-ID: {b_reverse}' in reverse_msg
-answer(reverse_msg,device,SECURE_SDP,'phone-reverse-answer');receive(fs,'200 OK')
+# Real reverse SIP direction: handset re-INVITE, then plain FS answer to handset.
+reverse=f'INVITE sip:caller@127.0.0.1:5080 SIP/2.0\r\nVia: SIP/2.0/UDP 127.0.0.1:6001;branch=z9hG4bK{uuid.uuid4().hex}\r\n'
+reverse+='From: '+values(msg,'To')[0]+';tag=phone-origin-answer\r\nTo: '+values(msg,'From')[0]+'\r\n'
+reverse+=f'Call-ID: {b}\r\nCSeq: 2 INVITE\r\nMax-Forwards: 70\r\n'
+for value in values(msg,'Record-Route'):reverse+='Route: '+value+'\r\n'
+reverse+=f'Content-Type: application/sdp\r\nContent-Length: {len(SECURE_SDP)}\r\n\r\n'+SECURE_SDP
+device.sendto(reverse.encode(),('127.0.0.1',5060));reverse_msg=receive(fs,'INVITE sip:caller@')
+answer(reverse_msg,fs,SDP,'');receive(device,'200 OK')
 # A pre-answer CANCEL follows the existing matching transaction path.
 c=invite(carrier,'020303001');pending=receive(fs,'Call-ID: '+c)
 ring='SIP/2.0 180 Ringing\r\n'
@@ -147,14 +152,13 @@ assert commands(a,'answer')[0]['direction']==['priv','pub']
 assert commands(a,'offer')[0]['direction']==['pub','priv']
 assert any(item['direction']==['priv','pub'] for item in commands(a,'offer'))
 assert any(item['direction']==['pub','priv'] for item in commands(a,'answer'))
-for call,direction in [(b,['pub','priv']),(b_reverse,['priv','pub'])]:
- answers=commands(call,'answer');assert len(answers)==1,answers
- item=answers[0]
+answers=commands(b,'answer');assert len(answers)==2,answers
+for item,direction,transport,sdes in [(answers[0],['pub','priv'],'RTP/AVP',['off']),(answers[1],['priv','pub'],'RTP/SAVP',['only-AES_CM_128_HMAC_SHA1_80'])]:
  assert item['direction']==direction,item
- assert item['transport-protocol']=='RTP/AVP',item
+ assert item['transport-protocol']==transport,item
  assert item['ICE']=='remove',item
  assert item['DTLS']=='off',item
- assert item['SDES']==['off'],item
+ assert item['SDES']==sdes,item
  assert item['address-family']=='IP4',item
 assert not failures,failures
 print('PASS: carrier-to-FS, downstream wake boundary, secure phone-answer translation, loop/spoof refusal, nonpilot preservation')

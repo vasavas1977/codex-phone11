@@ -83,12 +83,14 @@ route[PHONE11_RECORDING_ANCHOR_ANSWER] {
 # guard and before its public-origin answer handling. FreeSWITCH sends this
 # returned B leg as plain RTP. The phone may answer with SDES-SRTP, so the
 # reply must be translated back to RTP/AVP before it reaches FreeSWITCH.
+# A handset-originated re-INVITE reverses the answer destination: preserve
+# SDES-SRTP toward the handset when FreeSWITCH answers with plain RTP.
 route[PHONE11_RECORDING_ANCHOR_INBOUND_REPLY] {
     if ($dlg_var(phone11_inbound_origin) != "freeswitch") { return; }
     if ($avp(phone11_inbound_offer_leg) == "origin") {
         $var(anchor_media) = rtpengine_answer("replace-origin replace-session-connection ICE=remove DTLS=off SDES=off rtcp-mux-demux transport-protocol=RTP/AVP direction=pub direction=priv address-family=IP4");
     } else {
-        $var(anchor_media) = rtpengine_answer("replace-origin replace-session-connection ICE=remove DTLS=off SDES=off rtcp-mux-demux transport-protocol=RTP/AVP direction=priv direction=pub address-family=IP4");
+        $var(anchor_media) = rtpengine_answer("replace-origin replace-session-connection ICE=remove DTLS=off SDES-only-AES_CM_128_HMAC_SHA1_80 rtcp-mux-demux transport-protocol=RTP/SAVP direction=priv direction=pub address-family=IP4");
     }
     if ($var(anchor_media) < 0) { drop; }
     # Do not let PHONE11_INBOUND_REPLY run its public-origin answer a second time.
