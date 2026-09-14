@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("@expo/vector-icons/MaterialIcons", () => ({ default: () => null }));
 vi.mock("../components/cloud-recordings/summary-actions", () => ({
   RecordingSummaryActions: () => null,
 }));
