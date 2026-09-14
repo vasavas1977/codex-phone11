@@ -29,6 +29,8 @@ pnpm lab:android:build:staging
 
 The command restores and checksum-verifies the pinned Siprix SDK, starts from the same scrubbed environment as the ordinary lab build, restores only the explicitly supplied staging variables listed above, and validates them before Expo prebuild can consume the Firebase file. It regenerates React Native's environment-sensitive autolinking graph before Gradle, verifies the final APK package, retains the APK and a credential-free identity record under private `.lab/` paths, and does not send FCM traffic. `pnpm lab:test:push:live` remains blocked until the isolated provider and a test device are deliberately commissioned and delivery evidence is captured.
 
+After installing that exact staging APK on the dedicated emulator, `LAB_EMULATOR_SERIAL=emulator-5580 pnpm lab:test:push:device` writes `.lab/push-live/device-evidence.json`. The collector binds the installed APK hash to `.lab/staging-apk.json`, checks the AVD/API/ABI and Play services, reads only the three public Firebase resource IDs, verifies both commissioned services and release-like flags, and emits the exact schema consumed by the live-push gate. It never reads or writes a provider token or Firebase API key.
+
 The read-only [Firebase staging inventory](FIREBASE-STAGING-INVENTORY-2026-09-14.md) found no current project/file pair that meets this contract. Do not reuse the nearby production or legacy candidates to make the gate pass.
 
 ## Uncommissioned path
