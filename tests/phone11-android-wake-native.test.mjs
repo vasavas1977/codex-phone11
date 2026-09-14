@@ -91,6 +91,7 @@ test('manifest has one non-exported notification service which is disabled until
  assert.equal(named(app.service,'ai.phone11.siprix.Phone11IncomingCallService')[0].$['android:enabled'],'true');
  assert.equal(named(app.service,'ai.phone11.siprix.Phone11FirebaseMessagingService').length,1);
  assert.equal(named(app.service,'ai.phone11.siprix.Phone11FirebaseMessagingService')[0].$['android:enabled'],'true');
+ assert.equal(named(app.service,'ai.phone11.siprix.Phone11FirebaseMessagingService')[0].$['tools:replace'],'android:enabled');
  assert.equal(named(app.service,'expo.modules.notifications.service.ExpoFirebaseMessagingService')[0].$['android:enabled'],'false');
  assert.equal(named(app['meta-data'],'ai.phone11.androidWakeCommissioned')[0].$['android:value'],'true');
  assert.equal(named(app['meta-data'],'ai.phone11.androidWakeEnvironment')[0].$['android:value'],'staging');
