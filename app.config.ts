@@ -4,7 +4,7 @@ import type { ExpoConfig } from "expo/config";
 import { withInfoPlist } from "expo/config-plugins";
 
 const { wakeBuildSettings } = require("./plugins/with-phone11-voip-wake.js");
-const { labSipSettings } = require("./plugins/with-phone11-android-lab.js");
+const { androidWakeBuildSettings, labSipSettings } = require("./plugins/with-phone11-android-lab.js");
 const wakeSettings = wakeBuildSettings();
 const chatCommissioned = process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED ?? "0";
 if (!["0", "1"].includes(chatCommissioned)) throw new Error("Invalid chat notification build flag");
@@ -46,6 +46,9 @@ const env = {
     : bundleId,
 };
 const androidSip = androidLab ? labSipSettings(env.androidPackage) : undefined;
+const androidWakeSettings = androidLab
+  ? androidWakeBuildSettings(process.env, { packageName: env.androidPackage, projectRoot: process.cwd() })
+  : undefined;
 
 const config: ExpoConfig = {
   name: androidLab ? "Phone11 Lab" : env.appName,
@@ -80,6 +83,7 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
+    ...(androidWakeSettings?.firebase ? { googleServicesFile: androidWakeSettings.firebase.googleServicesFile } : {}),
     permissions: ["POST_NOTIFICATIONS", "RECORD_AUDIO", "READ_PHONE_STATE"],
     blockedPermissions: ["android.permission.WRITE_CONTACTS"],
     intentFilters: [
@@ -161,7 +165,7 @@ const config: ExpoConfig = {
       destinations: androidSip.destinations,
     } } : {}),
     phone11ApiBaseUrl: androidLab
-      ? "http://10.0.2.2:18080"
+      ? (androidWakeSettings?.apiBaseUrl ?? "http://10.0.2.2:18080")
       : (process.env.EXPO_PUBLIC_API_BASE_URL ?? ""),
     ...(wakeSettings.environment ? { phone11ApnsEnvironment: wakeSettings.environment } : {}),
     eas: {

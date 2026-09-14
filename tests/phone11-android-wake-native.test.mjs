@@ -1,27 +1,71 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,realpathSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 const require=createRequire(import.meta.url);
 const {androidWakeBuildSettings,configureLabManifest,labSipSettings}=require('../plugins/with-phone11-android-lab.js');
-
-const commissioned={PHONE11_ANDROID_WAKE_COMMISSIONED:'1',PHONE11_ANDROID_WAKE_ENVIRONMENT:'staging',
- PHONE11_ANDROID_LAB:'1',EXPO_PUBLIC_PHONE11_ANDROID_LAB:'1',EXPO_PUBLIC_SIP_ENGINE:'siprix'};
+const stagingPackage='ai.phone11.mobile.staging';
+const senderId='123456789012';
+const appId=`1:${senderId}:android:0123456789abcdef`;
+const firebaseDocument=(changes={})=>({
+ project_info:{project_number:senderId,project_id:'phone11-staging-lab',...(changes.project_info??{})},
+ client:[{client_info:{mobilesdk_app_id:appId,android_client_info:{package_name:stagingPackage},
+  ...(changes.client_info??{})}}],
+ ...changes.root,
+});
+const commissioned=file=>({PHONE11_ANDROID_WAKE_COMMISSIONED:'1',PHONE11_ANDROID_FIREBASE_COMMISSIONED:'1',
+ PHONE11_ANDROID_WAKE_ENVIRONMENT:'staging',PHONE11_ANDROID_LAB:'1',PHONE11_ANDROID_LAB_PACKAGE:stagingPackage,
+ EXPO_PUBLIC_PHONE11_ANDROID_LAB:'1',EXPO_PUBLIC_SIP_ENGINE:'siprix',
+ EXPO_PUBLIC_API_BASE_URL:'https://api.staging.phone11.invalid',PHONE11_ANDROID_SIP_HOST:'sip.staging.phone11.invalid',
+ PHONE11_ANDROID_FIREBASE_PROJECT_ID:'phone11-staging-lab',PHONE11_ANDROID_FIREBASE_SENDER_ID:senderId,
+ PHONE11_ANDROID_FIREBASE_APP_ID:appId,PHONE11_ANDROID_GOOGLE_SERVICES_FILE:file});
 
 test('Android wake defaults to an explicit uncommissioned state and rejects partial gates',()=>{
- assert.deepEqual(androidWakeBuildSettings({}),{gate:'0',environment:undefined});
- assert.deepEqual(androidWakeBuildSettings(commissioned),{gate:'1',environment:'staging'});
+ assert.deepEqual(androidWakeBuildSettings({}),{gate:'0',firebaseGate:'0',environment:undefined,firebase:undefined,apiBaseUrl:undefined});
  for(const env of [
   {PHONE11_ANDROID_WAKE_COMMISSIONED:'true'},
+  {PHONE11_ANDROID_FIREBASE_COMMISSIONED:'1'},
+  {PHONE11_ANDROID_WAKE_COMMISSIONED:'1'},
   {PHONE11_ANDROID_WAKE_ENVIRONMENT:'staging'},
-  {...commissioned,PHONE11_ANDROID_LAB:'0'},
-  {...commissioned,EXPO_PUBLIC_PHONE11_ANDROID_LAB:'0'},
-  {...commissioned,EXPO_PUBLIC_SIP_ENGINE:'pjsip'},
-  {...commissioned,PHONE11_ANDROID_WAKE_ENVIRONMENT:'production'},
+  {PHONE11_ANDROID_FIREBASE_PROJECT_ID:'phone11-staging-lab'},
  ])assert.throws(()=>androidWakeBuildSettings(env));
+});
+
+test('commissioned Android wake validates isolated Firebase identity and staging endpoints',()=>{
+ const dir=mkdtempSync(path.join(tmpdir(),'phone11-firebase-config-'));const file=path.join(dir,'google-services.json');
+ try{
+  writeFileSync(file,JSON.stringify(firebaseDocument()));
+  const source=commissioned(file);
+  const settings=androidWakeBuildSettings(source,{packageName:stagingPackage,projectRoot:dir});
+  assert.equal(settings.gate,'1');assert.equal(settings.firebaseGate,'1');assert.equal(settings.environment,'staging');
+  assert.equal(settings.apiBaseUrl,source.EXPO_PUBLIC_API_BASE_URL);
+  assert.deepEqual(settings.firebase,{projectId:'phone11-staging-lab',senderId,appId,googleServicesFile:realpathSync(file)});
+  for(const [change,options={}] of [
+   [{PHONE11_ANDROID_LAB:'0'}],[{EXPO_PUBLIC_PHONE11_ANDROID_LAB:'0'}],[{EXPO_PUBLIC_SIP_ENGINE:'pjsip'}],
+   [{PHONE11_ANDROID_WAKE_ENVIRONMENT:'production'}],[{EXPO_PUBLIC_API_BASE_URL:'https://api.phone11.ai'}],
+   [{EXPO_PUBLIC_API_BASE_URL:'http://api.staging.phone11.invalid'}],[{PHONE11_ANDROID_SIP_HOST:'sip.phone11.ai'}],
+   [{PHONE11_ANDROID_FIREBASE_PROJECT_ID:'phone11-production'}],[{PHONE11_ANDROID_FIREBASE_PROJECT_ID:'your-project-staging'}],
+   [{PHONE11_ANDROID_FIREBASE_SENDER_ID:'000000000000'}],[{PHONE11_ANDROID_FIREBASE_APP_ID:`1:999999999999:android:0123456789abcdef`}],
+   [{PHONE11_ANDROID_GOOGLE_SERVICES_FILE:'missing.json'}],
+   [{},{packageName:'ai.phone11.mobile'}],[{},{packageName:'ai.phone11.mobile.lab'}],
+  ])assert.throws(()=>androidWakeBuildSettings({...source,...change},{packageName:options.packageName??stagingPackage,projectRoot:dir}));
+
+  for(const document of [
+   firebaseDocument({project_info:{project_id:'other-staging-project'}}),
+   firebaseDocument({project_info:{project_number:'987654321098'}}),
+   firebaseDocument({client_info:{mobilesdk_app_id:`1:${senderId}:android:fedcba9876543210`}}),
+   firebaseDocument({client_info:{android_client_info:{package_name:'ai.phone11.mobile'}}}),
+   {...firebaseDocument(),client:[...firebaseDocument().client,...firebaseDocument().client]},
+  ]){
+   writeFileSync(file,JSON.stringify(document));
+   assert.throws(()=>androidWakeBuildSettings(source,{packageName:stagingPackage,projectRoot:dir}));
+  }
+  writeFileSync(file,'not json');
+  assert.throws(()=>androidWakeBuildSettings(source,{packageName:stagingPackage,projectRoot:dir}));
+ }finally{rmSync(dir,{recursive:true,force:true});}
 });
 
 function manifest(){return {$:{},application:[{$:{},'meta-data':[],service:[]}],'uses-permission':[]};}
@@ -42,7 +86,7 @@ test('manifest has one non-exported notification service which is disabled until
  assert.equal(named(app.service,'expo.modules.notifications.service.ExpoFirebaseMessagingService')[0].$['android:enabled'],'true');
  assert.equal(named(app['meta-data'],'ai.phone11.androidWakeCommissioned')[0].$['android:value'],'false');
  assert.equal(named(app['meta-data'],'ai.phone11.androidWakeEnvironment').length,0);
- configureLabManifest(value,settings,androidWakeBuildSettings(commissioned));
+ configureLabManifest(value,settings,{gate:'1',environment:'staging'});
  assert.equal(named(app.service,'ai.phone11.siprix.Phone11IncomingCallService').length,1);
  assert.equal(named(app.service,'ai.phone11.siprix.Phone11IncomingCallService')[0].$['android:enabled'],'true');
  assert.equal(named(app.service,'ai.phone11.siprix.Phone11FirebaseMessagingService').length,1);
