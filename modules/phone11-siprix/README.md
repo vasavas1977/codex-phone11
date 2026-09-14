@@ -33,11 +33,22 @@ later in-app recovery without crashing the service. Logout, authenticated
 cancellation, expiry, answer, and decline clear the owned notification in a
 deterministic path; mismatched stale actions cannot clear another call.
 
+The disabled service can adopt one incoming call from the process-owned Siprix
+engine only after that engine is already initialized, exactly one account is
+registered, exactly one SDK call is ringing, and the persisted authenticated
+wake is still pending. Adoption never creates a second SDK core or an account.
+Notification answer and decline commands carry both the call and binding IDs
+and reach only the adopted SDK call; SDK failure preserves ownership for safe
+retry. SDK generation replacement, unregistration, termination, cancellation,
+expiry, and logout release the native owner. A cold process with no existing
+registered engine fails closed and leaves the in-app recovery path available.
+
 Full-screen presentation is implemented behind Android's permission and
 platform capability checks. `android.permission.USE_FULL_SCREEN_INTENT` is
 deliberately absent from the current lab manifest, so Android 10 and later use
 the heads-up notification path. This source contract is not locked-screen,
-Doze, process-death, Firebase-delivery, call-answer, or physical-audio evidence.
+Doze, process-death, Firebase-delivery, provider call-answer, or physical-audio
+evidence.
 
 Native module: `NativeModules.Phone11Siprix`. Event channel: `Phone11SiprixEvent`.
 The authoritative JS contract is `index.d.ts`. All exported operations return

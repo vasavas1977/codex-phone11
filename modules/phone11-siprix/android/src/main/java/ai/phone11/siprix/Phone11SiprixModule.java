@@ -14,6 +14,7 @@ import java.util.*;
 /** Lab-only adapter. One process-owned SDK; all commands/state changes run on main. */
 public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  private static Runtime runtime;
+ private static final Phone11SipEngineAdoption wakeAdoption=new Phone11SipEngineAdoption();
  private final Runtime rt;
  private final BridgeLease.Ticket owner;
  public Phone11SiprixModule(ReactApplicationContext context) {
@@ -52,6 +53,12 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  }
  private static String text(Bundle values,String key){Object value=values.get(key);return value==null?null:String.valueOf(value);}
  private static Map<String,Object> map(Object... kv) { Map<String,Object> m=new LinkedHashMap<>();for(int i=0;i<kv.length;i+=2)m.put((String)kv[i],kv[i+1]);return m; }
+ static Phone11SipEngineAdoption.Decision offerIncomingWake(Phone11PendingWakeStore.Snapshot wake,long now){return wakeAdoption.adopt(wake,now);}
+ static Phone11SipEngineAdoption.Decision answerIncomingWake(String callUUID,String bindingId,long now){return wakeAdoption.answer(callUUID,bindingId,now);}
+ static Phone11SipEngineAdoption.Decision declineIncomingWake(String callUUID,String bindingId,long now){return wakeAdoption.decline(callUUID,bindingId,now);}
+ static Phone11SipEngineAdoption.Decision cancelIncomingWake(String callUUID,String bindingId,long now){return wakeAdoption.cancel(callUUID,bindingId,now);}
+ static Phone11SipEngineAdoption.Decision cleanupExpiredIncomingWake(long now){return wakeAdoption.cleanupExpired(now);}
+ static void logoutIncomingWake(){wakeAdoption.logout();}
  @ReactMethod public void initialize(ReadableMap options,Promise p){perform(p,()->{
   if(!rt.initialized){
    rt.scope=configuredScope();
@@ -62,6 +69,7 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
    ini.setTlsVerifyServer(true);ini.setSingleCallMode(true);ini.setUseProximity(false);ini.setUseTelState(false);
    ini.setRecordStereo(true);ini.setUnregOnDestroy(true);ini.setBrandName("Phone11 Lab");
    ok(rt.core.initialize(ini));rt.initialized=true;rt.sequence=0;
+   wakeAdoption.attach(generation,rt.wakeCommands(generation));
   }
   return rt.snapshot();
  });}
@@ -85,8 +93,8 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
   Map<String,Object> a=map("id",""+out.value,"accountId",""+out.value,"registrationState","unregistered");rt.accounts.put(out.value,a);return a;
  });}
  @ReactMethod public void registerAccount(String id,int expires,Promise p){perform(p,()->{int n=rt.account(id);if(expires<30||expires>600)throw new IllegalArgumentException();ok(rt.core.accountRegister(n,expires));return null;});}
- @ReactMethod public void unregisterAccount(String id,Promise p){perform(p,()->{ok(rt.core.accountUnregister(rt.account(id)));return null;});}
- @ReactMethod public void deleteAccount(String id,Promise p){perform(p,()->{int n=rt.account(id);if(!rt.calls.isEmpty())throw new IllegalStateException();ok(rt.core.accountDelete(n));rt.accounts.remove(n);return null;});}
+ @ReactMethod public void unregisterAccount(String id,Promise p){perform(p,()->{int n=rt.account(id);ok(rt.core.accountUnregister(n));wakeAdoption.accountRegistration(rt.generation,n,false);return null;});}
+ @ReactMethod public void deleteAccount(String id,Promise p){perform(p,()->{int n=rt.account(id);if(!rt.calls.isEmpty())throw new IllegalStateException();ok(rt.core.accountDelete(n));rt.accounts.remove(n);wakeAdoption.accountRegistration(rt.generation,n,false);return null;});}
  @ReactMethod public void makeCall(String account,String destination,Promise p){perform(p,()->{
   microphone();int n=rt.account(account);if(!rt.calls.isEmpty())throw new IllegalStateException();
   String target=rt.scope.destination(destination);
@@ -132,7 +140,7 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
   final Map<Integer,Map<String,Object>> accounts=new LinkedHashMap<>(),calls=new LinkedHashMap<>();
   final Set<Integer> answerPending=new HashSet<>(),endPending=new HashSet<>(),holdPending=new HashSet<>();
   Runtime(ReactApplicationContext c){context=c;}
-  void destroy(){if(initialized){ok(core.unInitialize());if(media!=null)media.onCoreDestroyed();core.setModelListener(null);initialized=false;scope=null;++generation;sequence=0;accounts.clear();calls.clear();answerPending.clear();endPending.clear();holdPending.clear();}}
+  void destroy(){if(initialized){long endedGeneration=generation;wakeAdoption.detach(endedGeneration);ok(core.unInitialize());if(media!=null)media.onCoreDestroyed();core.setModelListener(null);initialized=false;scope=null;++generation;sequence=0;accounts.clear();calls.clear();answerPending.clear();endPending.clear();holdPending.clear();}}
   void ready(){if(!initialized||scope==null)throw new IllegalStateException();}
   int account(String s){ready();int id=Integer.parseInt(s);if(!accounts.containsKey(id))throw new IllegalStateException();return id;}
   int call(String s){ready();int id=Integer.parseInt(s);if(!calls.containsKey(id))throw new IllegalStateException();return id;}
@@ -146,21 +154,34 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
    if(context.hasActiveReactInstance())context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit("Phone11SiprixEvent",Arguments.makeNativeMap(e));}
   Map<String,Object> newCall(int id,int acc,String direction,String remote){return map("id",""+id,"callId",""+id,"accountId",""+acc,"direction",direction,"state",direction.equals("incoming")?"ringing":"dialing","remoteUri",remote,
    "hasVideo",false,"muted",false,"held",false,"holdState",0,"historyId",UUID.randomUUID().toString(),"startedAt",(double)System.currentTimeMillis());}
+  Phone11SipEngineAdoption.Commands wakeCommands(final long commandGeneration){return new Phone11SipEngineAdoption.Commands(){
+   public boolean answer(int id){
+    if(!initialized||generation!=commandGeneration||!calls.containsKey(id)||answerPending.contains(id)
+      ||context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)return false;
+    int code=core.callAccept(id,false);if(code!=SiprixCore.kOK)return false;answerPending.add(id);return true;
+   }
+   public boolean decline(int id){
+    if(!initialized||generation!=commandGeneration||!calls.containsKey(id)||endPending.contains(id))return false;
+    Map<String,Object> call=calls.get(id);if(!"incoming".equals(call.get("direction"))||!"ringing".equals(call.get("state")))return false;
+    int code=core.callReject(id,486);if(code!=SiprixCore.kOK)return false;endPending.add(id);return true;
+   }
+  };}
   void callback(long g,Runnable r){main.post(()->{if(initialized&&g==generation)r.run();});}
   void change(int id,String state,String type){Map<String,Object> c=calls.get(id);if(c==null)return;c.put("state",state);event(type,"call",new LinkedHashMap<>(c));}
   ISiprixModelListener listener(final long g){return new ISiprixModelListener(){
    public void onTrialModeNotified(){callback(g,()->{trial=true;event("trial",null,null);});}
    public void onDevicesAudioChanged(){callback(g,()->audioEvent());}
    public void onAccountRegState(int id,AccData.RegState state,String response){callback(g,()->{Map<String,Object>a=accounts.get(id);if(a==null)return;
-    a.put("regState",state.getValue());a.put("registrationState",state==AccData.RegState.SUCCESS?"registered":state==AccData.RegState.FAILED?"failed":state==AccData.RegState.INPROGRES?"registering":"unregistered");event("registration","account",new LinkedHashMap<>(a));});}
+    a.put("regState",state.getValue());a.put("registrationState",state==AccData.RegState.SUCCESS?"registered":state==AccData.RegState.FAILED?"failed":state==AccData.RegState.INPROGRES?"registering":"unregistered");wakeAdoption.accountRegistration(g,id,state==AccData.RegState.SUCCESS);event("registration","account",new LinkedHashMap<>(a));});}
    public void onNetworkState(String name,SiprixCore.NetworkState s){callback(g,()->event("network","networkState",s.getValue()));}
    public void onCallIncoming(int id,int acc,boolean video,String from,String to){callback(g,()->{
     if(calls.containsKey(id))return;
     if(!accounts.containsKey(acc)||!calls.isEmpty()||video){int err=core.callReject(id,486);if(err!=0)event("error","code",err);return;}
-    Map<String,Object> c=newCall(id,acc,"incoming",from);calls.put(id,c);event("callIncoming","call",new LinkedHashMap<>(c));
+    Map<String,Object> c=newCall(id,acc,"incoming",from);calls.put(id,c);wakeAdoption.incoming(g,acc,id);
+    wakeAdoption.adopt(Phone11AndroidWakeRuntime.get(context).snapshot(),System.currentTimeMillis());event("callIncoming","call",new LinkedHashMap<>(c));
    });}
    public void onCallConnected(int id,String from,String to,boolean video){callback(g,()->{Map<String,Object>c=calls.get(id);if(!LabScope.connected(c,System.currentTimeMillis()))return;answerPending.remove(id);change(id,"connected","callConnected");});}
-   public void onCallTerminated(int id,int status){callback(g,()->{if(media!=null)media.onCallTerminated(id,g);Map<String,Object>c=calls.get(id);if(c==null)return;c.put("statusCode",status);change(id,"terminated","callTerminated");calls.remove(id);answerPending.remove(id);endPending.remove(id);holdPending.remove(id);});}
+   public void onCallTerminated(int id,int status){callback(g,()->{wakeAdoption.terminated(g,id);if(media!=null)media.onCallTerminated(id,g);Map<String,Object>c=calls.get(id);if(c==null)return;c.put("statusCode",status);change(id,"terminated","callTerminated");calls.remove(id);answerPending.remove(id);endPending.remove(id);holdPending.remove(id);});}
    public void onCallProceeding(int id,String response){callback(g,()->change(id,"proceeding","callProceeding"));}
    public void onCallHeld(int id,SiprixCore.HoldState state){callback(g,()->{Map<String,Object>c=calls.get(id);if(c==null)return;c.put("holdState",state.getValue());c.put("held",state.isLocal());holdPending.remove(id);change(id,state.isLocal()?"held":"connected","callHeld");});}
    public void onCallDtmfReceived(int id,int tone){callback(g,()->{if(calls.containsKey(id)){Map<String,Object>e=map("type","dtmf","generation",(double)generation,"sequence",(double)++sequence,"callId",""+id,"tone",tone);if(context.hasActiveReactInstance())context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit("Phone11SiprixEvent",Arguments.makeNativeMap(e));}});}

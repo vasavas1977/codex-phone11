@@ -35,43 +35,61 @@ public final class Phone11IncomingCallService extends Service {
     Phone11AndroidWakeRuntime runtime = Phone11AndroidWakeRuntime.get(this);
     NotificationManager notifications = getSystemService(NotificationManager.class);
     if (runtime.status() != Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS) {
+      Phone11SiprixModule.logoutIncomingWake();
       cancel(notifications);
       stopSelf(startId);
       return START_NOT_STICKY;
     }
+    long now = System.currentTimeMillis();
+    if (Phone11SiprixModule.cleanupExpiredIncomingWake(now)
+        == Phone11SipEngineAdoption.Decision.CLEARED) cancel(notifications);
     String action = intent == null ? null : intent.getAction();
     if (ACTION_LOGOUT.equals(action)) {
+      Phone11SiprixModule.logoutIncomingWake();
       runtime.logout();
       cancel(notifications);
     } else if (ACTION_CANCEL.equals(action)) {
+      String callUUID = intent.getStringExtra("callUUID");
+      String bindingId = intent.getStringExtra("bindingId");
       Phone11PendingWakeStore.Decision decision = runtime.cancel(
-          intent.getExtras(), System.currentTimeMillis());
-      if (Phone11IncomingCallNoticeOwner.clearsNotice(decision)) cancel(notifications);
+          intent.getExtras(), now);
+      if (Phone11IncomingCallNoticeOwner.clearsNotice(decision)) {
+        Phone11SiprixModule.cancelIncomingWake(callUUID, bindingId, now);
+        cancel(notifications);
+      }
     } else if (ACTION_WAKE.equals(action)) {
       Phone11PendingWakeStore.Decision decision = runtime.receive(
-          intent.getExtras(), System.currentTimeMillis());
+          intent.getExtras(), now);
       if (decision == Phone11PendingWakeStore.Decision.ACCEPTED
           || decision == Phone11PendingWakeStore.Decision.DUPLICATE) {
         Phone11PendingWakeStore.Snapshot snapshot = runtime.snapshot();
         if (Phone11IncomingCallNoticeOwner.ownsPending(
             snapshot, snapshot.callUUID, snapshot.bindingId) && notifications != null) {
+          Phone11SiprixModule.offerIncomingWake(snapshot, now);
           notifySafely(notifications, incomingNotification(notifications, snapshot));
         }
       }
     } else if (ACTION_ANSWER.equals(action)) {
       if (owns(runtime, intent)) {
         String callUUID = intent.getStringExtra(EXTRA_CALL_UUID);
-        Phone11PendingWakeStore.Decision decision = runtime.complete(
-            callUUID, System.currentTimeMillis());
-        if (Phone11IncomingCallNoticeOwner.clearsNotice(decision)) {
+        String bindingId = intent.getStringExtra(EXTRA_BINDING_ID);
+        Phone11SiprixModule.offerIncomingWake(runtime.snapshot(), now);
+        if (Phone11SiprixModule.answerIncomingWake(callUUID, bindingId, now)
+            == Phone11SipEngineAdoption.Decision.ANSWERED
+            && Phone11IncomingCallNoticeOwner.clearsNotice(runtime.complete(callUUID, now))) {
           cancel(notifications);
         }
       }
     } else if (ACTION_DECLINE.equals(action)) {
       if (owns(runtime, intent)) {
-        Phone11PendingWakeStore.Decision decision = runtime.complete(
-            intent.getStringExtra(EXTRA_CALL_UUID), System.currentTimeMillis());
-        if (Phone11IncomingCallNoticeOwner.clearsNotice(decision)) cancel(notifications);
+        String callUUID = intent.getStringExtra(EXTRA_CALL_UUID);
+        String bindingId = intent.getStringExtra(EXTRA_BINDING_ID);
+        Phone11SiprixModule.offerIncomingWake(runtime.snapshot(), now);
+        if (Phone11SiprixModule.declineIncomingWake(callUUID, bindingId, now)
+            == Phone11SipEngineAdoption.Decision.DECLINED
+            && Phone11IncomingCallNoticeOwner.clearsNotice(runtime.complete(callUUID, now))) {
+          cancel(notifications);
+        }
       }
     }
     stopSelf(startId);
