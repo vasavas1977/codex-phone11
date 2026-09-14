@@ -7,7 +7,7 @@ test('PJSIP release defaults unchanged',()=>{const d=config('0','pjsip').depende
 test('Android bridge rejects wake and CallKit operations explicitly',()=>{const s=fs.readFileSync('modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/Phone11SiprixModule.java','utf8');for(const name of ['bindForegroundWakeContext','adoptIncomingWake','restoreIncomingWakeDelegate','handleNativeAudioSession'])assert.match(s,new RegExp(name+'[^\\n]+E_UNSUPPORTED'));});
 test('exact vendor artifact pin and unchanged iOS pin',()=>{const lock=JSON.parse(fs.readFileSync('lab/android/sdk-lock.json'));assert.match(lock.sha256,/^[a-f0-9]{64}$/);assert.equal(lock.trialCallLimitSeconds,60);assert.ok(lock.maxConnectedSeconds<lock.trialCallLimitSeconds);const ios=fs.readFileSync('scripts/stage-siprix-sdk.mjs','utf8');assert.ok(ios.includes('53ae99e16531f64cf6e7832ed9e5d126a7e2d4ce'));});
 test('lab manifest customization remains singular across repeated prebuilds',()=>{
- const {configureLabManifest}=require('../plugins/with-phone11-android-lab.js');
+ const {configureLabManifest,labSipSettings}=require('../plugins/with-phone11-android-lab.js');
  const manifest={$:{},application:[{$:{},'meta-data':[
   {$:{'android:name':'unrelated','android:value':'kept'}},
   {$:{'android:name':'com.siprix.SkipPermissionRequest','android:value':'false'}},
@@ -17,13 +17,33 @@ test('lab manifest customization remains singular across repeated prebuilds',()=
   {$:{'android:name':'android.permission.CAMERA'}},
   {$:{'android:name':'android.permission.CAMERA','tools:node':'remove'}},
  ]};
- configureLabManifest(manifest);
- configureLabManifest(manifest);
+ const settings=labSipSettings('ai.phone11.staging',{
+  PHONE11_ANDROID_SIP_HOST:'sip.staging.example',PHONE11_ANDROID_SIP_PORT:'16060',
+  PHONE11_ANDROID_SIP_ACCOUNT_EXTENSIONS:'8201',PHONE11_ANDROID_SIP_DESTINATIONS:'8202,8290',
+ });
+ configureLabManifest(manifest,settings);
+ configureLabManifest(manifest,settings);
  const named=(entries,name)=>entries.filter(entry=>entry.$['android:name']===name);
  assert.equal(named(manifest.application[0]['meta-data'],'com.siprix.SkipPermissionRequest').length,1);
  assert.equal(named(manifest['uses-permission'],'android.permission.CAMERA').length,1);
  assert.equal(named(manifest.application[0]['meta-data'],'unrelated').length,1);
  assert.equal(named(manifest['uses-permission'],'android.permission.RECORD_AUDIO').length,1);
  assert.equal(named(manifest.application[0]['meta-data'],'com.siprix.SkipPermissionRequest')[0].$['android:value'],'true');
+ assert.equal(named(manifest.application[0]['meta-data'],'ai.phone11.siprix.PACKAGE')[0].$['android:value'],'ai.phone11.staging');
+ assert.equal(named(manifest.application[0]['meta-data'],'ai.phone11.siprix.SIP_HOST')[0].$['android:value'],'sip.staging.example');
+ assert.equal(named(manifest.application[0]['meta-data'],'ai.phone11.siprix.SIP_PORT')[0].$['android:value'],'16060');
+ assert.equal(named(manifest.application[0]['meta-data'],'ai.phone11.siprix.ACCOUNT_EXTENSIONS')[0].$['android:value'],'8201');
+ assert.equal(named(manifest.application[0]['meta-data'],'ai.phone11.siprix.DESTINATIONS')[0].$['android:value'],'8202,8290');
  assert.equal(named(manifest['uses-permission'],'android.permission.CAMERA')[0].$['tools:node'],'remove');
+});
+test('Android SIP build settings reject endpoint or allowlist drift',()=>{
+ const {labSipSettings}=require('../plugins/with-phone11-android-lab.js');
+ for(const source of [
+  {PHONE11_ANDROID_SIP_HOST:'https://sip.example'},
+  {PHONE11_ANDROID_SIP_PORT:'0'},
+  {PHONE11_ANDROID_SIP_ACCOUNT_EXTENSIONS:'8201,8201'},
+  {PHONE11_ANDROID_SIP_DESTINATIONS:'8202'},
+  {PHONE11_ANDROID_SIP_DESTINATIONS:'8202,911\r\n'},
+ ])assert.throws(()=>labSipSettings('ai.phone11.staging',source));
+ assert.throws(()=>labSipSettings('ai-phone11-staging',{}));
 });

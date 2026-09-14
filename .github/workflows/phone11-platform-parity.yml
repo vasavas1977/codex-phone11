@@ -35,15 +35,18 @@ jobs:
       - run: node --test lab/android/core.test.mjs lab/android/results.test.mjs lab/android/pbx/fixture.test.mjs
       - run: node lab/android/media-test.mjs --self-test && node lab/android/error-test.mjs --self-test && node lab/android/network-test.mjs --self-test
       - run: pnpm exec vitest run tests/phone11-siprix-engine.test.ts tests/phone11-siprix-selection.test.ts tests/phone11-wake-service.test.ts tests/phone11-wake-client.test.ts
-      - run: node --test tests/phone11-siprix-packaging.test.mjs tests/phone11-android-lab-config.test.mjs
+      - run: node --test tests/phone11-siprix-packaging.test.mjs tests/phone11-android-lab-config.test.mjs tests/phone11-android-wake-native.test.mjs
       - run: pnpm exec vitest run tests/phone11-playback-controls.test.tsx tests/phone11-cloud-playback-focus.test.tsx tests/phone11-recording-gemini.test.ts tests/phone11-recording-worker.test.ts
       - run: python3 lab/android/media-analyze.py --self-test
       - run: |
           mkdir -p /tmp/phone11-native-guards
-          javac -d /tmp/phone11-native-guards modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/LabScope.java lab/android/java-tests/LabScopeTest.java
+          javac -d /tmp/phone11-native-guards modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/LabScope.java modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/AndroidSipScope.java lab/android/java-tests/LabScopeTest.java lab/android/java-tests/AndroidSipScopeTest.java
           java -ea -cp /tmp/phone11-native-guards LabScopeTest
+          java -ea -cp /tmp/phone11-native-guards AndroidSipScopeTest
           javac -d /tmp/phone11-native-guards modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/BridgeLease.java lab/android/java-tests/BridgeLeaseTest.java
           java -ea -cp /tmp/phone11-native-guards BridgeLeaseTest
+          javac -d /tmp/phone11-native-guards modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/Phone11PendingWakeStore.java lab/android/java-tests/PendingWakeStoreTest.java
+          java -ea -cp /tmp/phone11-native-guards ai.phone11.siprix.PendingWakeStoreTest
           mkdir -p /tmp/phone11-media-lifecycle
           javac -d /tmp/phone11-media-lifecycle lab/android/java-tests/stubs/android/content/Context.java lab/android/java-tests/stubs/android/os/*.java lab/android/java-tests/stubs/com/siprix/SiprixCore.java modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/LabMedia.java lab/android/java-tests/MediaLifecycleTest.java
           java -cp /tmp/phone11-media-lifecycle ai.phone11.siprix.MediaLifecycleTest
