@@ -40,13 +40,13 @@ const secret=(value:unknown)=>typeof value==="string"&&value.length>=32&&value.l
 function stagingOrigin(value:unknown){try{const url=new URL(String(value));if(url.protocol!=="https:"||url.username||url.password||url.pathname!=="/"||url.search||url.hash||!stage.test(url.hostname)||placeholder.test(url.hostname))throw new Error();return url.origin;}catch{throw new LabFcmError(503);}}
 function stagingSip(value:unknown){const match=/^sip:[A-Za-z0-9_.+-]{1,128}@([A-Za-z0-9.-]{1,253})$/.exec(String(value));if(!match||!stage.test(match[1])||placeholder.test(match[1]))throw new LabFcmError(503);return String(value);}
 
-export function readLabFcmConfig(source:NodeJS.ProcessEnv=process.env,now=Date.now()):LabFcmConfig{
+function parseLabFcmConfig(source:NodeJS.ProcessEnv,now:number,allowExpired:boolean):LabFcmConfig{
  if(source.PHONE11_LAB_FCM_SCENARIO_ENABLED!=="1"||source.PHONE11_LAB_FCM_ENVIRONMENT!=="staging")throw new LabFcmError(404,"Lab route unavailable");
  const expiresAt=Number(source.PHONE11_LAB_FCM_EXECUTION_EXPIRES_AT),allowed=new Set((source.PHONE11_LAB_FCM_CASES??"").split(",").filter(Boolean));
  const app=/^1:(\d{6,20}):android:[a-f0-9]{16,64}$/i.exec(source.PHONE11_LAB_FCM_APP_ID??"");
  if(source.PHONE11_LAB_FCM_PACKAGE!==identity.packageName||source.PHONE11_LAB_FCM_PROJECT_ID!==identity.projectId||source.FCM_PROJECT_ID!==identity.projectId||
   source.PHONE11_LAB_FCM_SENDER_ID!==identity.senderId||source.PHONE11_LAB_FCM_APP_ID!==identity.appId||app?.[1]!==identity.senderId||
-  !uuid.safeParse(source.PHONE11_LAB_FCM_EXECUTION_ID).success||!Number.isSafeInteger(expiresAt)||expiresAt<=now||expiresAt>now+3_600_000||
+  !uuid.safeParse(source.PHONE11_LAB_FCM_EXECUTION_ID).success||!Number.isSafeInteger(expiresAt)||expiresAt<=0||(!allowExpired&&expiresAt<=now)||expiresAt>now+3_600_000||
   !hex64.safeParse(source.PHONE11_LAB_FCM_APK_SHA256).success||!hex40.safeParse(source.PHONE11_BUILD_SHA).success||
   !uuid.safeParse(source.PHONE11_LAB_FCM_BINDING_ID).success||source.PHONE11_WAKE_ENABLED!=="1"||
   allowed.size<1||[...allowed].some(value=>!caseSet.has(value))||!secret(source.PHONE11_LAB_FCM_TRIGGER_SECRET)||!secret(source.PHONE11_LAB_SIP_DRIVER_SECRET))throw new LabFcmError(503);
@@ -54,6 +54,12 @@ export function readLabFcmConfig(source:NodeJS.ProcessEnv=process.env,now=Date.n
   bindingId:source.PHONE11_LAB_FCM_BINDING_ID!,pilotSipUri:stagingSip(source.PHONE11_WAKE_PILOT_SIP_URI),allowed,
   publicOrigin:stagingOrigin(source.PHONE11_LAB_FCM_PUBLIC_ORIGIN),driverOrigin:stagingOrigin(source.PHONE11_LAB_SIP_DRIVER_ORIGIN)};
 }
+
+/** Startup validates immutable commissioning while allowing a completed execution to stay healthy. */
+export function readLabFcmStartupConfig(source:NodeJS.ProcessEnv=process.env,now=Date.now()):LabFcmConfig{return parseLabFcmConfig(source,now,true);}
+
+/** Request-time validation rejects an expired or excessively long lab execution. */
+export function readLabFcmConfig(source:NodeJS.ProcessEnv=process.env,now=Date.now()):LabFcmConfig{return parseLabFcmConfig(source,now,false);}
 
 type SafeReadiness={bindingId:string;bindingExpiresAt:number;platform:"ios"|"android";tokenType:"voip"|"fcm";packageName:string};
 type Driver={start:(input:{executionId:string;testId:CaseId;correlationId:string;targetSipUri:string})=>Promise<unknown>;evidence:(input:{executionId:string;testId:CaseId;correlationId:string})=>Promise<unknown>};

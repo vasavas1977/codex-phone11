@@ -16,6 +16,19 @@ describe("minimal Phone11 FCM staging Cloud Run service",()=>{
  it("refuses to construct without the existing fail-closed staging gates",()=>{
   expect(()=>createLabFcmCloudRunApp({source:{...source,PHONE11_LAB_FCM_SCENARIO_ENABLED:"0"},now})).toThrow();
   expect(()=>createLabFcmCloudRunApp({source:{...source,PHONE11_LAB_FCM_PROJECT_ID:"phone11-prod"},now})).toThrow();
+  expect(()=>createLabFcmCloudRunApp({source:{...source,PHONE11_LAB_FCM_TRIGGER_SECRET:"short"},now})).toThrow();
+  expect(()=>createLabFcmCloudRunApp({source:{...source,PHONE11_LAB_FCM_EXECUTION_EXPIRES_AT:String(now+3_600_001)},now})).toThrow();
+ });
+
+ it("cold-starts after execution expiry but keeps lab routes expired",async()=>{
+  const expired={...source,PHONE11_LAB_FCM_EXECUTION_EXPIRES_AT:String(Date.now()-1)};
+  const server=createServer(createLabFcmCloudRunApp({source:expired}));await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
+  try{const address=server.address();if(!address||typeof address==="string")throw new Error("missing address");const origin=`http://127.0.0.1:${address.port}`;
+   const health=await fetch(origin+"/health");expect(health.status).toBe(200);expect(await health.json()).toMatchObject({ok:true,build:commit});
+   const headers={"x-phone11-lab-secret":source.PHONE11_LAB_FCM_TRIGGER_SECRET!,"x-phone11-execution-id":executionId};
+   const attestation=await fetch(origin+"/api/phone11/lab/wake-evidence",{headers});expect(attestation.status).toBe(503);expect(await attestation.json()).toEqual({error:"Lab staging service unavailable"});
+   const scenario=await fetch(origin+"/api/phone11/lab/fcm-scenario",{method:"POST",headers:{...headers,"content-type":"application/json"},body:"{}"});expect(scenario.status).toBe(503);expect(await scenario.json()).toEqual({error:"Lab staging service unavailable"});
+  }finally{await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
  });
 
  it("exposes only health and the two registered lab paths",async()=>{
