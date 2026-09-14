@@ -9,14 +9,17 @@ import { recordingLabels } from "@/lib/cloud-recordings/presentation";
 import { RecordingPanel } from "./call-history-view";
 import { Playback } from "./cloud-playback";
 import { CaptureControls } from "./capture-controls";
+import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
 export function LiveRecordingPanel({
   callUuid,
   full = false,
   initialTab = "summary",
+  speakerNames,
 }: {
   callUuid: string;
   full?: boolean;
   initialTab?: "summary" | "transcription";
+  speakerNames?: TranscriptSpeakerNames;
 }) {
   const cloud = useCloudRecordings(callUuid);
   const colors = useColors();
@@ -74,6 +77,11 @@ export function LiveRecordingPanel({
         summaryStatus={detail.summaryStatus}
         summary={detail.summary}
         transcript={detail.transcript}
+        speakerNames={
+          speakerNames || detail.participantNames
+            ? { ...speakerNames, ...detail.participantNames }
+            : undefined
+        }
         notice={
           cloud.error ||
           (busy

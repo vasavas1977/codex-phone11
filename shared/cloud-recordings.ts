@@ -8,6 +8,7 @@ export interface CloudRecording {
 }
 export interface CloudRecordingDetail extends CloudRecording {
   playbackPath?: string; transcript?: string;
+  participantNames?: { speaker1?: string; speaker2?: string };
   manualControls?: {canStart:boolean;canStop:boolean};
   summary?: { summary: string; actionItems: string[]; language: string };
 }

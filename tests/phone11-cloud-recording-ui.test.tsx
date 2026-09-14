@@ -121,13 +121,16 @@ it("renders server summary and transcript only when provided", () => {
   const transcriptHTML = renderToStaticMarkup(
     createElement(RecordingPanel, {
       summaryStatus: "ready",
-      transcript: "Call transcript",
+      transcript: "Speaker 1: Call transcript\nSpeaker 2: Reply transcript",
+      speakerNames: { speaker1: "Somchai", speaker2: "Vasavas" },
       activeTab: "transcription",
       onTabChange: vi.fn(),
       onViewFull: vi.fn(),
     }),
   );
   expect(transcriptHTML).toContain("Call transcript");
+  expect(transcriptHTML).toContain("Somchai");
+  expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
 it("shows unavailable server state without fake records", () => {

@@ -1,5 +1,10 @@
 import type { ReactNode } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
+import {
+  transcriptSpeakerLabel,
+  transcriptTurns,
+  type TranscriptSpeakerNames,
+} from "@/lib/cloud-recordings/transcript";
 export interface RecordingColors {
   foreground: string;
   muted: string;
@@ -294,6 +299,7 @@ export function RecordingPanel({
   summaryStatus,
   summary,
   transcript,
+  speakerNames,
   activeTab,
   onTabChange,
   onViewFull,
@@ -306,6 +312,7 @@ export function RecordingPanel({
   summaryStatus: "off" | "queued" | "processing" | "ready" | "failed";
   summary?: { summary: string; actionItems: string[] };
   transcript?: string;
+  speakerNames?: TranscriptSpeakerNames;
   activeTab: "summary" | "transcription";
   onTabChange(tab: "summary" | "transcription"): void;
   onViewFull?(tab?: "summary" | "transcription"): void;
@@ -316,6 +323,8 @@ export function RecordingPanel({
   colors?: RecordingColors;
 }) {
   const pending = summaryStatus === "queued" || summaryStatus === "processing";
+  const turns = transcript ? transcriptTurns(transcript, speakerNames) : [];
+  const visibleTurns = full ? turns : turns.slice(0, 4);
   return (
     <View style={{ paddingHorizontal: 20, paddingBottom: 20, gap: 16 }}>
       {player}
@@ -439,20 +448,49 @@ export function RecordingPanel({
         )
       ) : (
         <View style={{ gap: 12 }}>
-          <Text
-            selectable
-            numberOfLines={full ? undefined : 12}
-            style={{
-              fontSize: 16,
-              lineHeight: 28,
-              color: transcript ? colors.foreground : colors.muted,
-            }}
-          >
-            {transcript ||
-              (pending
+          {transcript ? (
+            visibleTurns.map((turn, index) => (
+              <View
+                key={`${turn.speaker}-${index}`}
+                style={{
+                  gap: 4,
+                  paddingBottom: 8,
+                  borderBottomWidth: index === visibleTurns.length - 1 ? 0 : 1,
+                  borderBottomColor: colors.border,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 13,
+                    fontWeight: "600",
+                    color:
+                      turn.speaker === "speaker2"
+                        ? colors.primary
+                        : colors.muted,
+                  }}
+                >
+                  {transcriptSpeakerLabel(turn.speaker, speakerNames)}
+                </Text>
+                <Text
+                  selectable
+                  numberOfLines={full ? undefined : index === 0 ? 12 : 4}
+                  style={{
+                    fontSize: 16,
+                    lineHeight: 28,
+                    color: colors.foreground,
+                  }}
+                >
+                  {turn.text}
+                </Text>
+              </View>
+            ))
+          ) : (
+            <Text style={{ color: colors.muted, lineHeight: 24 }}>
+              {pending
                 ? "Transcription is being prepared."
-                : "No transcription available.")}
-          </Text>
+                : "No transcription available."}
+            </Text>
+          )}
           {!full && transcript && onViewFull && (
             <TouchableOpacity
               accessibilityRole="button"
