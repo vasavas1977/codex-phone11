@@ -1,17 +1,26 @@
 # Phone11 Mobile Branch Deploy Status
 
-- Time UTC: 2026-05-17T15:35:24+00:00
-- Workflow commit: c32b1e10bdb9b7a1dd1c5899483645569c3f17f2
-- Branch: codex/phone11-mobile-pjsip-20260506
-- EC2 host: 43.209.112.208
+- Time UTC: 2026-09-14T11:40:19+00:00
+- Workflow commit: 00d976712521f892f4ba9cace7d3843fbacd41eb
+- Branch: codex/phone11-daily-use-20260910
+- EC2 host: 43.210.122.111
 - Pilot user id: 1
-- Runtime DB host: phone11ai-production-postgres.cdk2qyg0ire3.ap-southeast-7.rds.amazonaws.com
-- Runtime DB region: ap-southeast-7
 - Result: failure
-- Exit code: 41
+- Exit code: 1
 
 ## Sanitized output
 ```text
-ERROR: RDS master secret is not available; skipping deploy to avoid the known phone11ai DB password failure.
-Set PHONE11_RDS_MASTER_SECRET_ARN or PHONE11_RDS_MASTER_SECRET_JSON, then rerun this workflow.
+=== Phone11 mobile branch backend deployment ===
+Host: ip-10-0-1-69
+Time: 2026-09-14T11:40:18+00:00
+GitHub SHA: 00d976712521f892f4ba9cace7d3843fbacd41eb
+Deploy checkout: /opt/phone11ai/codex-phone11-deploy
+Live project path: /opt/phone11ai/cloudphone11
+Pilot user id: 1
+Using runtime env path: /opt/phone11ai/codex-phone11-deploy/.env
+--- Aligning Postgres role password with runtime env ---
+ALTER ROLE
+Database role password aligned.
+--- Validating compose config ---
+error while interpolating services.backend.environment.PHONE11_TRUSTED_PROXY_CIDRS: required variable PHONE11_TRUSTED_PROXY_CIDRS is missing a value: Set exact trusted reverse-proxy addresses
 ```
