@@ -8,6 +8,7 @@ const m = vi.hoisted(() => ({
   focus: undefined as undefined | (() => () => void),
   identity: { id: 1 },
   busy: false,
+  platform: "ios",
   buttons: new Map<string, any>(),
   controls: undefined as any,
   player: {
@@ -40,13 +41,50 @@ const m = vi.hoisted(() => ({
       route: "speaker",
       label: "Speaker",
     })),
+    getPlaybackAudioOutputs: vi.fn(async () => ({
+      outputs: [
+        { id: "android:2", kind: "phone", label: "Phone", selected: false },
+        {
+          id: "android:4",
+          kind: "speaker",
+          label: "Speaker",
+          selected: false,
+        },
+        {
+          id: "android:9",
+          kind: "bluetooth",
+          label: "Bluetooth audio",
+          selected: true,
+        },
+      ],
+      selectedId: "android:9",
+    })),
+    selectPlaybackAudioOutput: vi.fn(async (id: string) => ({
+      outputs: [
+        {
+          id,
+          kind: "bluetooth",
+          label: "Bluetooth audio",
+          selected: true,
+        },
+      ],
+      selectedId: id,
+    })),
+    resetPlaybackAudioOutput: vi.fn(async () => ({
+      outputs: [],
+      selectedId: null,
+    })),
   },
   routeListener: undefined as undefined | ((event: unknown) => void),
   token: vi.fn(async () => "token"),
 }));
 vi.mock("react-native", () => ({
   ActivityIndicator: () => createElement("span", null),
-  Platform: { OS: "ios" },
+  Platform: {
+    get OS() {
+      return m.platform;
+    },
+  },
   NativeModules: { Phone11Siprix: m.nativeRoute },
   NativeEventEmitter: class {
     addListener(_name: string, listener: (event: unknown) => void) {
@@ -130,6 +168,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.focus = undefined;
   m.busy = false;
+  m.platform = "ios";
   m.buttons.clear();
   m.controls = undefined;
   m.routeListener = undefined;
@@ -153,6 +192,28 @@ beforeEach(() => {
       label: route === "speaker" ? "Speaker" : "Earpiece",
     }),
   );
+});
+
+it("selects an actual Android output and preserves it for Play", async () => {
+  m.platform = "android";
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  await m.controls.onOutputSelect({
+    id: "android:9",
+    label: "Bluetooth audio",
+    selected: true,
+  });
+  expect(m.nativeRoute.selectPlaybackAudioOutput).toHaveBeenCalledWith(
+    "android:9",
+  );
+  await m.controls.onToggle();
+  expect(m.nativeRoute.getPlaybackAudioOutputs).toHaveBeenCalled();
+  expect(m.player.play).toHaveBeenCalledOnce();
+  blur();
+  expect(m.nativeRoute.resetPlaybackAudioOutput).toHaveBeenCalled();
 });
 
 it("shows the earpiece preference before routing, while preserving external outputs", () => {

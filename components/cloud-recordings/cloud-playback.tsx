@@ -8,10 +8,15 @@ import * as Auth from "@/lib/_core/auth";
 import { getApiBaseUrl } from "@/constants/oauth";
 import {
   normalizePlaybackAudioRoute,
+  playbackAudioOutputStatus,
+  readPlaybackAudioOutputs,
   readPlaybackAudioRoute,
   resetPlaybackAudioRoute,
+  selectPlaybackAudioOutput,
   setPlaybackAudioRoute,
+  subscribeToPlaybackAudioOutputs,
   subscribeToPlaybackAudioRoute,
+  type PlaybackAudioOutput,
   type PlaybackAudioRoute,
   type PlaybackAudioRouteStatus,
 } from "@/lib/cloud-recordings/playback-route";
@@ -71,6 +76,9 @@ export function Playback({
     [output, setOutput] = useState<PlaybackAudioRouteStatus>(earpieceOutput),
     [routeChanging, setRouteChanging] = useState(false),
     [routeError, setRouteError] = useState<string>();
+  const [availableOutputs, setAvailableOutputs] = useState<
+    readonly PlaybackAudioOutput[]
+  >([]);
   const routeChangeInFlight = useRef<symbol | null>(null);
   const routeIntent = useRef(0);
   const focusGeneration = useRef(0);
@@ -158,6 +166,68 @@ export function Playback({
     },
     [player],
   );
+  const applyOutput = useCallback(
+    async (selectedOutput: Pick<PlaybackAudioOutput, "id">) => {
+      const generation = focusGeneration.current;
+      if (
+        routeChangeInFlight.current ||
+        !playbackAuthorized.current ||
+        callBusy()
+      ) {
+        player.pause();
+        return false;
+      }
+      const operation = Symbol("output");
+      const intent = ++routeIntent.current;
+      routeChangeInFlight.current = operation;
+      setRouteChanging(true);
+      setRouteError(undefined);
+      try {
+        const inventory = await selectPlaybackAudioOutput(
+          selectedOutput.id,
+          () => !callBusy(),
+        );
+        if (
+          focusGeneration.current !== generation ||
+          routeIntent.current !== intent ||
+          !playbackAuthorized.current ||
+          callBusy()
+        ) {
+          if (!callBusy() && !routeApplied.current)
+            await resetPlaybackAudioRoute(() => !callBusy()).catch(() => {});
+          return false;
+        }
+        const effectiveOutput = playbackAudioOutputStatus(inventory);
+        if (effectiveOutput.route === "unknown")
+          throw new Error("PLAYBACK_ROUTE_UNAVAILABLE");
+        routeApplied.current = true;
+        routePreference.current = "system";
+        setRoute("system");
+        setOutput(effectiveOutput);
+        setAvailableOutputs(inventory.outputs);
+        return true;
+      } catch {
+        if (
+          focusGeneration.current === generation &&
+          routeIntent.current === intent
+        ) {
+          player.pause();
+          setRouteError(
+            callBusy()
+              ? "Playback stopped because a call is active."
+              : "Audio output could not be selected.",
+          );
+        }
+        return false;
+      } finally {
+        if (routeChangeInFlight.current === operation) {
+          routeChangeInFlight.current = null;
+          setRouteChanging(false);
+        }
+      }
+    },
+    [player],
+  );
   useFocusEffect(
     useCallback(() => {
       const generation = ++focusGeneration.current;
@@ -170,6 +240,7 @@ export function Playback({
       setError(false);
       setRoute("earpiece");
       setOutput(earpieceOutput);
+      setAvailableOutputs([]);
       setRouteError(undefined);
       const unsubscribeRoute = subscribeToPlaybackAudioRoute((nextOutput) => {
         if (
@@ -186,6 +257,26 @@ export function Playback({
           );
         }
       });
+      const unsubscribeOutputs = subscribeToPlaybackAudioOutputs(
+        (inventory) => {
+          if (
+            focusGeneration.current === generation &&
+            playbackAuthorized.current &&
+            !callBusy()
+          )
+            setAvailableOutputs(inventory.outputs);
+        },
+      );
+      void readPlaybackAudioOutputs()
+        .then((inventory) => {
+          if (
+            focusGeneration.current === generation &&
+            routeIntent.current === initialIntent &&
+            !callBusy()
+          )
+            setAvailableOutputs(inventory.outputs);
+        })
+        .catch(() => {});
       void readPlaybackAudioRoute()
         .then((nextOutput) => {
           if (
@@ -259,6 +350,7 @@ export function Playback({
         playback.dispose();
         if (controller.current === playback) controller.current = null;
         unsubscribeRoute();
+        unsubscribeOutputs();
         session.dispose();
         if (routeApplied.current) {
           routeApplied.current = false;
@@ -289,6 +381,9 @@ export function Playback({
       output={output}
       routeChanging={routeChanging}
       routeError={routeError}
+      availableOutputs={availableOutputs.filter(
+        (candidate) => candidate.kind === "bluetooth",
+      )}
       error={error ? "Playback unavailable. Refresh and try again." : undefined}
       onToggle={() => {
         const playback = controller.current;
@@ -304,7 +399,7 @@ export function Playback({
           routePreference.current,
           Boolean(
             status.didJustFinish ||
-              (status.duration > 0 && status.currentTime >= status.duration),
+            (status.duration > 0 && status.currentTime >= status.duration),
           ),
         );
       }}
@@ -326,6 +421,7 @@ export function Playback({
         resumeAfterScrub.current = false;
       }}
       onRouteChange={(nextRoute) => void applyRoute(nextRoute)}
+      onOutputSelect={applyOutput}
       onOutputPickerOpened={(selectedOutput) => {
         if (!playbackAuthorized.current || callBusy()) {
           controller.current?.pause();
