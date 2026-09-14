@@ -1,6 +1,6 @@
 # Phone11 Android staging cloud runtime commissioning
 
-Verified through `2026-09-14T23:00:20+0700`. Every cloud command named project
+Verified through `2026-09-14T23:08:00+0700`. Every cloud command named project
 `phone11-stage-20260914` explicitly. This record contains public resource
 metadata and sanitized test results only. It contains no access token, refresh
 token, API key, service-account key, secret value, FCM registration token,
@@ -51,6 +51,11 @@ the three staging secret resources used by the service:
 `phone11-stage-database-url`. No secret value was printed or written to this
 record.
 
+The first trigger and driver secret versions were disabled after their trailing
+line endings made them unsuitable for HTTP headers. Active version 2 for each
+contains a header-safe random value, and the running revision resolves only the
+active `latest` versions.
+
 For keyless operator access, `user:vasavas1977@gmail.com` has
 `roles/iam.serviceAccountTokenCreator` on this service-account resource. No
 JSON key was created or downloaded.
@@ -94,7 +99,7 @@ delivery, answer, connected media or call-history reconciliation.
 | Immutable image digest       | `sha256:58ef2a8052c45584917a4940851fac4cabd0db7611ca9c0b7b25d6135c88e676` |
 | Cloud Run service            | `phone11-fcm-staging-lab`                                                 |
 | Region                       | `asia-southeast1`                                                         |
-| Ready revision               | `phone11-fcm-staging-lab-00002-lkt`                                       |
+| Ready revision               | `phone11-fcm-staging-lab-00003-5wd`                                       |
 | Runtime service account      | `phone11-fcm-lab@phone11-stage-20260914.iam.gserviceaccount.com`          |
 | Authenticated `/health`      | HTTP `200` with the exact source commit                                   |
 | Anonymous `/health`          | HTTP `403`                                                                |
@@ -113,7 +118,10 @@ Android enrollment or matching live binding. The configured SIP-driver origin
 is also unreachable from Cloud Run; the real SIP driver remains local to the
 virtual lab.
 
-These conditions cause scenario attestation and triggering to fail closed.
+These conditions cause scenario attestation and triggering to fail closed. An
+authenticated attestation request against the ready revision returned the
+generic HTTP `503` staging-unavailable response, confirming that the route does
+not accept the fabricated binding while `/health` remains available.
 There is no full L3 result yet: no real PBX-triggered FCM wake, background or
 locked-device incoming notification, SIP INVITE adoption, answer, connected
 audio, termination or history reconciliation has been proven by this cloud
