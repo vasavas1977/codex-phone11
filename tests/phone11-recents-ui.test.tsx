@@ -94,6 +94,7 @@ vi.mock("../components/screen-container", () => ({
   ScreenContainer: ({ children }: any) => createElement("main", null, children),
 }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("@expo/vector-icons/MaterialIcons", () => ({ default: () => null }));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
     primary: "#008877",
