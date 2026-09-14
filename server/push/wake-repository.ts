@@ -109,6 +109,18 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
     async resolve(bindingId: string, sessionId: string, userId: number) {
       return transaction(async client => binding(await authenticate(client,bindingId,undefined,{id:sessionId,userId})));
     },
+    /** Sanitized readiness for the explicitly configured isolated staging binding. */
+    async labReadiness(bindingId: string, sipUri: string) {
+      return transaction(async client => {
+        const rows=await client.query(`SELECT b.id,b.expires_at,p.platform,p.token_type,p.bundle_id
+          FROM phone11_wake_bindings b ${liveBinding}
+          WHERE b.id=$1 AND p.sip_uri=$2 AND b.expires_at>clock_timestamp()`,[bindingId,sipUri]);
+        if(rows.rows.length!==1)return null;
+        const row=rows.rows[0];
+        return {bindingId:row.id as string,bindingExpiresAt:new Date(row.expires_at).getTime(),
+          platform:row.platform as WakePlatform,tokenType:row.token_type as "voip"|"fcm",packageName:row.bundle_id as string};
+      });
+    },
     async revoke(bindingId: string, sessionId: string, userId: number) {
       await transaction(client => client.query("DELETE FROM phone11_wake_bindings WHERE id=$1 AND session_id=$2 AND user_id=$3", [bindingId,sessionId,userId]));
     },

@@ -16,6 +16,7 @@ import { storageRouter } from "../pbx/recording-storage";
 import { wsManager } from "../pbx/websocket";
 import { fsEventListener } from "../pbx/fs-event-listener";
 import { registerWakeRoutes } from "../push/wake-routes";
+import { registerLabFcmRoutes } from "../push/lab-fcm-routes";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -49,6 +50,7 @@ async function startServer() {
   registerAuthRoutes(app);
   // Wake requests have their own small body limit and fail closed until commissioned.
   registerWakeRoutes(app);
+  registerLabFcmRoutes(app);
 
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
