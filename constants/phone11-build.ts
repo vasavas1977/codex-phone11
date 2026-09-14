@@ -7,6 +7,7 @@ function extra(): Phone11Extra {
   try {
     // Lazy loading keeps the build flag usable in native release bundles while
     // allowing isolated logic tests to run without an Expo native runtime.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const constants = require("expo-constants").default as {
       expoConfig?: { extra?: Phone11Extra };
     };

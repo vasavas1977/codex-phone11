@@ -10,9 +10,9 @@ Status: **PARTIAL**, by design. The complete 62-case matrix reports every unexec
 - Selected base: `71f4b683d572585c8d07c561649a543acfe87d40` on `codex/phone11-daily-use-20260910`. Live remote inventory and fetch showed this was newer than the supplied baseline and contained the iOS Build39 recording finalization work.
 - Worktree: `/Users/vasavas16macbookpro/Documents/Codex/phone11-android-virtual-lab-20260914`
 - Branch: `codex/phone11-android-virtual-lab-20260914`
-- Final APK source commit: `c8102b747066f188e925d06499488373d02da80e`
+- Final APK source commit: `bec452ce46d0f652989744016ebfc5f87813fd2b`
 - APK: `android/app/build/outputs/apk/release/app-release.apk`
-- APK SHA-256: `eeba6448a2e5992b022dadd7558895e11f07a61ab6a19b648f153c60183d0585`
+- APK SHA-256: `08136e73b0905431d70a121fc6ea357dc2aabf7fc4dfb1f31349215adb092f1c`
 - Android application ID: `ai.phone11.mobile.lab`; version `1.0.0` / code `1`; minimum SDK24; target/compile SDK36; ARM64 only.
 - Actual emulator: `Phone11_Lab_API35`, API35 Google APIs ARM64, serial `emulator-5580`.
 - Actual native runtime: `Phone11Lab 1.1.0 from 20260905_1222` from pinned Siprix AAR SHA-256 `3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198`.
@@ -25,7 +25,9 @@ The branch adds the Android Siprix adapter inside the existing Phone11 native mo
 
 The native adapter provides callback-driven initialization, accounts, registration, outgoing/incoming calls, answer/reject/hangup, mute, hold, DTMF, routing, snapshots, generation/sequence filtering, bridge ownership leases and bounded synthetic media capture. Unsupported Android wake/CallKit operations reject explicitly. An isolated Asterisk fixture binds only loopback host ports, has no trunks, uses generated credentials and allows only extensions7101,7102,7190 and7191 with20-second call limits.
 
-Recording playback changes are shared across iOS and Android: the progress control is draggable and accessible, replay/seek is clamped, player volume and mute state are corrected, and late playback operations are canceled on blur, sign-out or an active call. iOS adds a guarded recording speaker option and protects Siprix/CallKit audio-session ownership. Android receives shared seeking and playback fixes; an Android-specific recording speaker/earpiece selector remains a declared parity gap.
+Recording playback changes are shared across iOS and Android: the progress control is draggable and accessible, replay/seek is clamped, player volume and mute state are corrected, and late playback operations are canceled on blur, sign-out or an active call. Android now exposes explicit speaker/earpiece playback selection through Expo Audio's native Android route. Emulator and physical acoustic listening remain separate acceptance gates.
+
+The refreshed Android candidate also keeps Mute, Hold, Speaker and Keypad controls outside the scrolling recording region, records bounded mute command stages, keeps the isolated API/build flag in the standalone Expo runtime, and makes repeated native prebuilds idempotent for the lab manifest. The isolated build cannot silently fall back to the production API.
 
 The AI investigation adds safe failure category and stage persistence for future failures. It does not store raw provider responses, transcript content or credentials.
 
@@ -37,7 +39,7 @@ The final matrix counts are:
 |---|---:|---:|---:|---:|
 | L0 logic/contracts | 9 | 0 | 2 | 2 |
 | L1 real native APK | 5 | 0 | 1 | 0 |
-| L2 real isolated SIP/media | 9 | 3 | 6 | 9 |
+| L2 real isolated SIP/media | 9 | 3 | 7 | 8 |
 | L3 real Firebase wake | 0 | 0 | 13 | 0 |
 | L4 physical device | 0 | 0 | 3 | 0 |
 
@@ -47,6 +49,8 @@ Verified runtime outcomes:
 
 - SIP-04:20/20 outgoing calls passed with ordered native dialing, proceeding, connected and terminated callbacks plus correlated PBX INVITE200/BYE200.
 - SIP-05:20/20 foreground incoming calls passed with one incoming callback, answer at the PBX, one termination and no remaining channel.
+- The refreshed exact-APK campaign `.lab/sip-1789383622451/` repeated SIP-01, SIP-04, SIP-05, SIP-09, SIP-10 and CTRL-03 successfully on commit `bec452c`. Native mute/unmute callbacks and snapshot state also agreed; CTRL-01 remains blocked only for peer-observed microphone audio.
+- Two preserved preflight runs made no SIP attempt because the rebuilt standalone app initially lost its lab runtime flag and then exposed its state only as visual text. Runtime config now carries the lab flag and loopback API through Expo Constants, and the state container is machine-readable again. The successful campaign followed on the exact corrected APK.
 - SIP-02 and SIP-03 passed bad-credential rejection, unreachable registration after43.138 seconds, and correct-registration recovery.
 - SIP-09/SIP-10/CTRL-03 passed local and remote hangup, a subsequent call without restart, actual second-call busy rejection, and PBX-received DTMF `123#`.
 - MEDIA-01/MEDIA-02 later passed: the SDK recording decoded a440Hz downlink tone and a2.9-second DTMF-1 synthetic transmit signal on empirically identified stereo channels; the independent PBX receive capture detected the uplink signal.
@@ -55,13 +59,13 @@ Verified runtime outcomes:
 - LIFE-02 passed: HOME/background was observed, no ADB/UI polling occurred for three seconds, PID/start time/generation stayed the same, the call remained connected, and cleanup completed.
 - The actual SDK loaded from a self-contained release APK without Metro. The APK contains the bundled JS plus ARM64 Siprix, SiprixMedia, React Native and Hermes libraries, contains no PJSIP native library, and reports call state through the Siprix native callback stream.
 
-Automated checks passed:36 Node lab/config/packaging tests,198 focused shared Vitest tests,5 bridge-lease assertions,18 destination/state native-guard assertions, and6 media-watchdog JVM scenarios. The backend bundle also completed. Repository-wide TypeScript still has the same235 baseline diagnostics in unrelated transfer/marketing code; changed files introduced no additional diagnostics in the recorded comparison.
+Refresh verification passed:25 Node lab/report/config tests and194 focused Vitest checks covering the Siprix engine, wake contract, playback, call controls, Recents and transcript rendering. The existing5 bridge-lease assertions,18 destination/state native-guard assertions, and6 media-watchdog JVM scenarios remain passing evidence from the unchanged native adapter. Android prebuild and release merged-manifest processing passed with one Siprix permission metadata entry and no camera permission. Repository-wide TypeScript still has the same235 baseline diagnostics in unrelated transfer/marketing code; changed files introduced no diagnostics in the recorded comparison. Focused lint reported zero errors.
 
 ## Open gates
 
 - L3 remains blocked: there is no matching lab Firebase client/sender, authenticated Android native wake receiver/service, or verified pending-call delivery adapter. No fake notification or local broadcast was counted as Firebase evidence.
 - Android authenticated Phone11 UCC sign-in/backend acceptance, process death/Doze/locked-screen incoming calls, notification/full-screen/foreground-service ownership and logout isolation remain open.
-- Physical Android handset audio, microphone, earpiece, speaker, wired/Bluetooth accessories, mobile-network changes and OEM power behavior remain L4.
+- Android speaker/earpiece recording route selection is implemented and contract-tested. Physical handset audio, microphone, earpiece, speaker, wired/Bluetooth accessories, mobile-network changes and OEM power behavior remain L4.
 - Reject/cancel product-history reconciliation and decoded media after hold/resume remain blocked even though their signaling samples passed.
 - The original `SOURCES.md` mentioned by the supplied documents was not supplied or found. `docs/android-lab/SOURCES.md` records the verified repository and vendor sources used instead.
 
@@ -92,7 +96,7 @@ pnpm lab:test:push:contract
 pnpm lab:up
 pnpm lab:android:build
 pnpm lab:android:install
-pnpm lab:test:sip
+LAB_SIP_CAMPAIGN=bec452c pnpm lab:test:sip
 LAB_MEDIA_HOST_MIC_DISABLED=1 pnpm lab:test:media
 LAB_EXPECTED_APK_SHA256="$(node -p 'require("./.lab/apk.json").sha256')" pnpm lab:test:errors
 LAB_EXPECTED_APK_SHA256="$(node -p 'require("./.lab/apk.json").sha256')" pnpm lab:test:network
@@ -108,6 +112,7 @@ pnpm lab:down
 - Final report: `.lab/report.html`, `.lab/report.json`, `.lab/junit.xml`
 - Final APK identity/native load: `.lab/apk.json`, `.lab/final-updated-native-proof.json`, `.lab/final-updated-sdk.png`, `.lab/final-apk-badging.txt`, `.lab/final-apk-manifest.txt`, `.lab/final-apk-inventory.txt`
 - 40-call campaign: `.lab/sip-1789368207834/`
+- Refreshed 40-call exact-APK campaign plus mute-state check: `.lab/sip-1789383622451/`, `.lab/attempts-3ac0c31.json`
 - Preserved initial SIP failure and repair: `.lab/sip-1789367584943/`, `.lab/network-repair.json`
 - Network outage: `.lab/network-1789369786972/`
 - Positive media: `.lab/media-1789369455402-4994a875/`
