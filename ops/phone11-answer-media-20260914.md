@@ -94,3 +94,22 @@ RTPengine fixture above. The parallel Android task confirmed its backend
 deployment changes only allowlisted AI failure diagnostics in four recording
 worker modules, with no credentials, migrations, or telephony configuration
 changes, and has paused live mutations during this call test.
+
+## Handset result and mute follow-up
+
+The user confirmed both parties could hear on the later call, then reported
+that in-app Mute seemed unavailable while recording. Physical diagnostics show
+native call 202 connected at 10:29:23 UTC and an app End request at 10:30:14.
+The server recording for `e38e0f93-c059-47a0-95e7-fc329c3180a3` is ready;
+capture ran from 10:29:28.527 until 10:30:14.381 UTC. The server ended normally.
+AI summary is failed and remains a separate follow-up. An earlier attempt
+ended with ORIGINATOR_CANCEL at 10:29:16; do not count both attempts as passes.
+
+The copied phone diagnostic trail contains no accepted Mute command or Mute
+error during the confirmed call. Native review found no recording-dependent
+mute override, and exact SDK header compilation plus 149 native assertions
+passed. Server capture changes do not issue microphone controls to the app.
+The user has been asked whether the button changes to Unmute, does nothing or
+errors, or only the saved recording contains their voice. Root cause of this
+new report is unconfirmed; no speculative mute implementation change applied.
+This one successful call does not establish repeated locked-screen acceptance.
