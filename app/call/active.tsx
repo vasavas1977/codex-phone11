@@ -112,7 +112,7 @@ export default function ActiveCallScreen() {
   const handleMute = () => {
     useSipDiagnosticsStore.getState().addEvent({
       level: "info", category: "media", message: "In-app microphone control tapped",
-      context: { callId, muted: !muted, controlsReady },
+      context: { ...(callId && /^\d{1,10}$/.test(callId) ? { callId } : {}), muted: !muted, controlsReady },
     });
     return callId && control(() => setMute(callId, !muted));
   };
