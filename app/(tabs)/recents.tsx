@@ -81,7 +81,7 @@ export default function RecentsScreen() {
         setExpanded(null);
         setActionId(null);
       };
-    }, [reloadHistory, reloadCloud, user?.id]),
+    }, [reloadHistory, reloadCloud]),
   );
   const local =
     history.ownerUserId === user?.id

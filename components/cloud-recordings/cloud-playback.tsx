@@ -15,6 +15,7 @@ import {
   type PlaybackAudioRouteStatus,
 } from "@/lib/cloud-recordings/playback-route";
 import { PlaybackControls } from "./playback-controls";
+import { createPlaybackController } from "@/lib/cloud-recordings/playback-controller";
 const earpieceOutput: PlaybackAudioRouteStatus = {
   route: "earpiece",
   label: "Earpiece",
@@ -74,6 +75,11 @@ export function Playback({
   const playbackAuthorized = useRef(false);
   const routeApplied = useRef(false);
   const resumeAfterScrub = useRef(false);
+  const controller = useRef<{
+    play(route: PlaybackAudioRoute, restart: boolean): Promise<void>;
+    pause(): void;
+    dispose(): void;
+  } | null>(null);
   const failPlayback = useCallback(
     () =>
       revokePlaybackAuthorization(
@@ -157,6 +163,16 @@ export function Playback({
             );
         })
         .catch(() => {});
+      const playback = createPlaybackController<PlaybackAudioRoute>({
+        player,
+        allowed: () =>
+          focusGeneration.current === generation &&
+          playbackAuthorized.current &&
+          !callBusy(),
+        configure: applyRoute,
+        failed: failPlayback,
+      });
+      controller.current = playback;
       const session = beginPlaybackSession({
         player,
         base: getApiBaseUrl(),
@@ -166,9 +182,13 @@ export function Playback({
         token: Auth.getSessionToken,
         canPlay: () => !callBusy(),
         subscribe: (listener) => {
-          const auth = Auth.addAuthChangeListener(listener);
+          const invalidate = () => {
+            playback.dispose();
+            listener();
+          };
+          const auth = Auth.addAuthChangeListener(invalidate);
           const calls = useSipCallStore.subscribe(() => {
-            if (callBusy()) listener();
+            if (callBusy()) invalidate();
           });
           return () => {
             auth();
@@ -186,6 +206,8 @@ export function Playback({
       return () => {
         ++focusGeneration.current;
         playbackAuthorized.current = false;
+        playback.dispose();
+        if (controller.current === playback) controller.current = null;
         unsubscribeRoute();
         session.dispose();
         if (routeApplied.current) {
@@ -193,7 +215,7 @@ export function Playback({
           void resetPlaybackAudioRoute(() => !callBusy()).catch(() => {});
         }
       };
-    }, [callUuid, failPlayback, path, player]),
+    }, [applyRoute, callUuid, failPlayback, path, player]),
   );
   useEffect(() => {
     if (status.playbackState === "failed" || status.playbackState === "error")
@@ -218,28 +240,30 @@ export function Playback({
       routeChanging={routeChanging}
       routeError={routeError}
       error={error ? "Playback unavailable. Refresh and try again." : undefined}
-      onToggle={async () => {
+      onToggle={() => {
         if (callBusy()) {
-          player.pause();
+          controller.current?.pause();
           return;
         }
         if (status.playing) {
-          player.pause();
+          controller.current?.pause();
           return;
         }
-        if (
-          (await applyRoute(route)) &&
-          playbackAuthorized.current &&
-          !callBusy()
-        )
-          player.play();
+        return controller.current?.play(
+          route,
+          Boolean(
+            status.didJustFinish ||
+              (status.duration > 0 && status.currentTime >= status.duration),
+          ),
+        );
       }}
       onSeek={(seconds) => {
-        if (!callBusy()) return player.seekTo(seconds);
+        if (!callBusy())
+          return player.seekTo(seconds).catch(() => failPlayback());
       }}
       onScrubStart={() => {
         resumeAfterScrub.current = status.playing;
-        if (status.playing) player.pause();
+        if (status.playing) controller.current?.pause();
       }}
       onScrubEnd={() => {
         if (
