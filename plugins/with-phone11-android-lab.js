@@ -67,8 +67,8 @@ function configureLabManifest(manifest,settings=labSipSettings('ai.phone11.mobil
   'android:exported':'false','android:stopWithTask':'false',
  }});
  application.service=replaceNamedEntry(application.service,'ai.phone11.siprix.Phone11FirebaseMessagingService',{
-  $:{'android:name':'ai.phone11.siprix.Phone11FirebaseMessagingService','android:enabled':wake.gate==='1'?'true':'false',
-   'android:exported':'false'},
+ $:{'android:name':'ai.phone11.siprix.Phone11FirebaseMessagingService','android:enabled':wake.gate==='1'?'true':'false',
+   'android:exported':'false','tools:ignore':'Instantiatable'},
   'intent-filter':[{$:{},action:[{$:{'android:name':'com.google.firebase.MESSAGING_EVENT'}}]}],
  });
  // FCM resolves one MESSAGING_EVENT owner. The commissioned service subclasses

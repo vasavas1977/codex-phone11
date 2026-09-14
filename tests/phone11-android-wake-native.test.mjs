@@ -37,6 +37,7 @@ test('manifest has one non-exported notification service which is disabled until
  const fcm=named(app.service,'ai.phone11.siprix.Phone11FirebaseMessagingService');
  assert.equal(fcm.length,1);assert.equal(fcm[0].$['android:exported'],'false');
  assert.equal(fcm[0].$['android:enabled'],'false');
+ assert.equal(fcm[0].$['tools:ignore'],'Instantiatable');
  assert.equal(fcm[0]['intent-filter'][0].action[0].$['android:name'],'com.google.firebase.MESSAGING_EVENT');
  assert.equal(named(app.service,'expo.modules.notifications.service.ExpoFirebaseMessagingService')[0].$['android:enabled'],'true');
  assert.equal(named(app['meta-data'],'ai.phone11.androidWakeCommissioned')[0].$['android:value'],'false');
