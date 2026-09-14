@@ -338,11 +338,17 @@ async function getNextPilotExtensionNumber(db: ReturnType<typeof getPool>): Prom
 /**
  * Get phone configuration for a logged-in user.
  */
-export async function getPhoneConfig(userId: number, openId: string): Promise<PhoneConfig> {
+export async function getPhoneConfig(
+  userId: number,
+  openId: string,
+  options: { bootstrapSchema?: boolean; allowOwnerFallback?: boolean } = {},
+): Promise<PhoneConfig> {
   const db = getPool();
 
   try {
-    await ensurePhoneProvisioningSchema(db);
+    if (options.bootstrapSchema !== false) {
+      await ensurePhoneProvisioningSchema(db);
+    }
 
     const assignedResult = await db.query(`
       SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan,
@@ -383,7 +389,8 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       );
     }
 
-    const isOwner = process.env.OWNER_OPEN_ID && openId === process.env.OWNER_OPEN_ID;
+    const isOwner = options.allowOwnerFallback !== false
+      && process.env.OWNER_OPEN_ID && openId === process.env.OWNER_OPEN_ID;
 
     if (isOwner) {
       const ownerExt = await db.query(`
