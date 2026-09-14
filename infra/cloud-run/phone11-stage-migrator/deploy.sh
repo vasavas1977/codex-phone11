@@ -6,6 +6,7 @@ EXPECTED_REGION=asia-southeast1
 EXPECTED_JOB=phone11-stage-migrator
 EXPECTED_ACCOUNT=phone11-stage-migrator@phone11-stage-20260914.iam.gserviceaccount.com
 EXPECTED_INSTANCE=phone11-stage-20260914:asia-southeast1:phone11-stage-wake-pg
+EXPECTED_AUTH_ORIGIN=https://phone11-android-staging-api-413228367517.asia-southeast1.run.app
 IMAGE="${PHONE11_STAGE_MIGRATOR_IMAGE:-}"
 ENV_FILE="${PHONE11_STAGE_MIGRATOR_ENV_FILE:-}"
 fail(){ echo "Phone11 staging migrator deployment refused: $1" >&2; exit 2; }
@@ -27,7 +28,7 @@ grep -Fqx 'PHONE11_CLOUDSQL_IAM_DB_AUTH=1' "$ENV_FILE" || fail "IAM database aut
 grep -Fqx 'PHONE11_STAGE_PILOT_EXTENSION=7101' "$ENV_FILE" || fail "extension mismatch"
 grep -Fqx 'PHONE11_STAGE_PILOT_DOMAIN=sip.stage.phone11.test' "$ENV_FILE" || fail "SIP domain mismatch"
 grep -Eq '^PHONE11_STAGE_PILOT_EMAIL=[^[:space:]]+@[^[:space:]]+$' "$ENV_FILE" || fail "pilot email is required"
-grep -Eq '^PHONE11_AUTH_BASE_URL=https://(api\.stage\.phone11\.ai|phone11-android-staging-api-[a-z0-9]+-as\.a\.run\.app)$' "$ENV_FILE" || fail "exact auth origin is required"
+grep -Fqx "PHONE11_AUTH_BASE_URL=$EXPECTED_AUTH_ORIGIN" "$ENV_FILE" || fail "deterministic Android staging API auth origin is required"
 grep -Eq '^PHONE11_STAGE_MIGRATOR_PHASE=(canonical-plan|canonical-apply|auth-plan|auth-apply|push-plan|push-apply|identity-apply|grants-plan|grants-apply)$' "$ENV_FILE" || fail "migration phase is invalid"
 if grep -Eq '^[A-Za-z0-9_]*(SECRET|TOKEN|PASSWORD|DATABASE_URL|CONNECTION_STRING|GOOGLE_APPLICATION_CREDENTIALS)[A-Za-z0-9_]*=' "$ENV_FILE"; then fail "secrets, passwords, connection URLs and key paths are forbidden in the environment file"; fi
 

@@ -29,7 +29,8 @@ const source: NodeJS.ProcessEnv = {
   PHONE11_ANDROID_STAGING_API_SERVICE: "phone11-android-staging-api",
   PHONE11_ANDROID_STAGING_API_RUNTIME_SERVICE_ACCOUNT:
     "phone11-android-api@phone11-stage-20260914.iam.gserviceaccount.com",
-  PHONE11_ANDROID_STAGING_API_PUBLIC_ORIGIN: "https://api.stage.phone11.ai",
+  PHONE11_ANDROID_STAGING_API_PUBLIC_ORIGIN:
+    "https://phone11-android-staging-api-413228367517.asia-southeast1.run.app",
   PHONE11_ANDROID_STAGING_PACKAGE: "ai.phone11.mobile.staging",
   PHONE11_ANDROID_FIREBASE_PROJECT_ID: "phone11-stage-20260914",
   PHONE11_ANDROID_FIREBASE_SENDER_ID: "413228367517",
@@ -47,7 +48,8 @@ const source: NodeJS.ProcessEnv = {
   PHONE11_WAKE_ENABLED: "1",
   PHONE11_WAKE_PILOT_SIP_URI: "sip:7101@sip.stage.phone11.test",
   SIP_DOMAIN: "sip.stage.phone11.test",
-  PHONE11_AUTH_BASE_URL: "https://api.stage.phone11.ai",
+  PHONE11_AUTH_BASE_URL:
+    "https://phone11-android-staging-api-413228367517.asia-southeast1.run.app",
   PHONE11_AUTH_SECRET: "s".repeat(48),
   PHONE11_BUILD_SHA: commit,
 };
@@ -61,18 +63,22 @@ afterEach(() => {
 describe("isolated authenticated Android staging API", () => {
   it("accepts only the exact staging, Cloud SQL IAM, Firebase and runtime identity", () => {
     expect(readAndroidStagingApiConfig(source)).toMatchObject({
-      publicOrigin: "https://api.stage.phone11.ai",
+      publicOrigin:
+        "https://phone11-android-staging-api-413228367517.asia-southeast1.run.app",
       sourceCommit: commit,
     });
-    expect(
-      readAndroidStagingApiConfig({
-        ...source,
-        PHONE11_ANDROID_STAGING_API_PUBLIC_ORIGIN:
-          "https://phone11-android-staging-api-iwfx6x7hba-as.a.run.app",
-        PHONE11_AUTH_BASE_URL:
-          "https://phone11-android-staging-api-iwfx6x7hba-as.a.run.app",
-      }).publicOrigin,
-    ).toBe("https://phone11-android-staging-api-iwfx6x7hba-as.a.run.app");
+    for (const guessedOrigin of [
+      "https://phone11-android-staging-api-iwfx6x7hba-as.a.run.app",
+      "https://api.stage.phone11.ai",
+    ]) {
+      expect(() =>
+        readAndroidStagingApiConfig({
+          ...source,
+          PHONE11_ANDROID_STAGING_API_PUBLIC_ORIGIN: guessedOrigin,
+          PHONE11_AUTH_BASE_URL: guessedOrigin,
+        }),
+      ).toThrow("requires its exact HTTPS staging origin");
+    }
     const changes: [string, NodeJS.ProcessEnv][] = [
       [
         "production project",
@@ -225,6 +231,14 @@ describe("isolated authenticated Android staging API", () => {
     expect(deploy).toContain(
       'EXPECTED_ACCOUNT="phone11-android-api@phone11-stage-20260914.iam.gserviceaccount.com"',
     );
+    expect(deploy).toContain(
+      'EXPECTED_PUBLIC_ORIGIN="https://phone11-android-staging-api-413228367517.asia-southeast1.run.app"',
+    );
+    expect(deploy).toContain(
+      '[ "$PUBLIC_ORIGIN" = "$EXPECTED_PUBLIC_ORIGIN" ]',
+    );
+    expect(deploy).not.toContain("iwfx6x7hba");
+    expect(deploy).not.toContain("api.stage.phone11.ai");
     expect(deploy).toContain('--add-cloudsql-instances="$EXPECTED_INSTANCE"');
     expect(deploy).toContain("--allow-unauthenticated");
     expect(deploy).toContain(

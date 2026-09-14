@@ -8,6 +8,7 @@ EXPECTED_ACCOUNT="phone11-android-api@phone11-stage-20260914.iam.gserviceaccount
 EXPECTED_DB_USER="phone11-android-api@phone11-stage-20260914.iam"
 EXPECTED_INSTANCE="phone11-stage-20260914:asia-southeast1:phone11-stage-wake-pg"
 EXPECTED_DATABASE="phone11_wake_stage"
+EXPECTED_PUBLIC_ORIGIN="https://phone11-android-staging-api-413228367517.asia-southeast1.run.app"
 TARGET_PROJECT="${PHONE11_ANDROID_API_CLOUDRUN_PROJECT:-}"
 TARGET_IMAGE="${PHONE11_ANDROID_API_CLOUDRUN_IMAGE:-}"
 TARGET_ACCOUNT="${PHONE11_ANDROID_API_CLOUDRUN_SERVICE_ACCOUNT:-}"
@@ -52,8 +53,9 @@ grep -Fqx 'SIP_DOMAIN=sip.stage.phone11.test' "$ENV_FILE" || fail "SIP domain mi
 if grep -Eq '^[A-Za-z0-9_]*(SECRET|TOKEN|PASSWORD|GRANT|DATABASE_URL|CONNECTION_STRING)[A-Za-z0-9_]*=' "$ENV_FILE"; then fail "secrets and database credentials are forbidden in the environment file"; fi
 PUBLIC_ORIGIN="$(sed -n 's/^PHONE11_ANDROID_STAGING_API_PUBLIC_ORIGIN=//p' "$ENV_FILE")"
 AUTH_BASE_URL="$(sed -n 's/^PHONE11_AUTH_BASE_URL=//p' "$ENV_FILE")"
-[ "$PUBLIC_ORIGIN" = "$AUTH_BASE_URL" ] || fail "auth origin must match the Android API origin"
-echo "$PUBLIC_ORIGIN" | grep -Eq '^https://(api\.stage\.phone11\.ai|phone11-android-staging-api-[a-z0-9]+-as\.a\.run\.app)$' || fail "exact HTTPS staging origin is required"
+[ "$PUBLIC_ORIGIN" = "$EXPECTED_PUBLIC_ORIGIN" ] || fail "deterministic Cloud Run origin is required"
+[ "$AUTH_BASE_URL" = "$EXPECTED_PUBLIC_ORIGIN" ] || fail "auth origin must match the deterministic Cloud Run origin"
+grep -Fqx "PHONE11_AUTH_TRUSTED_ORIGINS=$EXPECTED_PUBLIC_ORIGIN" "$ENV_FILE" || fail "trusted origin must be only the deterministic Cloud Run origin"
 
 command -v gcloud >/dev/null 2>&1 || fail "gcloud is unavailable"
 ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null)"

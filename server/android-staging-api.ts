@@ -26,6 +26,8 @@ const EXPECTED = {
   firebaseSenderId: "413228367517",
   firebaseAppId: "1:413228367517:android:f41353883923fc15911e74",
   sipUri: "sip:7101@sip.stage.phone11.test",
+  publicOrigin:
+    "https://phone11-android-staging-api-413228367517.asia-southeast1.run.app",
 } as const;
 
 export type AndroidStagingApiConfig = {
@@ -86,15 +88,10 @@ export function readAndroidStagingApiConfig(
   const origin = new URL(
     source.PHONE11_ANDROID_STAGING_API_PUBLIC_ORIGIN || "",
   );
-  const validHostname =
-    origin.hostname === "api.stage.phone11.ai" ||
-    /^phone11-android-staging-api-[a-z0-9]+-as\.a\.run\.app$/.test(
-      origin.hostname,
-    );
   if (
     origin.protocol !== "https:" ||
     origin.origin !== origin.href.replace(/\/$/, "") ||
-    !validHostname ||
+    origin.origin !== EXPECTED.publicOrigin ||
     origin.username ||
     origin.password ||
     origin.search ||

@@ -59,8 +59,11 @@ PG_SSL=disable
 PHONE11_STAGE_PILOT_EXTENSION=7101
 PHONE11_STAGE_PILOT_DOMAIN=sip.stage.phone11.test
 PHONE11_STAGE_PILOT_EMAIL=<operator-approved-synthetic-email>
-PHONE11_AUTH_BASE_URL=<exact-final-android-staging-api-origin>
+PHONE11_AUTH_BASE_URL=https://phone11-android-staging-api-413228367517.asia-southeast1.run.app
 ```
+
+The auth origin is Cloud Run's deterministic project-number URL. Do not copy
+the non-deterministic hash suffix from another Cloud Run service.
 
 Set these shell inputs to run the guarded deployment check:
 
