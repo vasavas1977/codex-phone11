@@ -17,6 +17,7 @@ import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore } from "@/lib/sip/call-store";
 import { resolveCurrentCall } from "@/lib/sip/current-call";
+import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 
 export default function ActiveCallScreen() {
   const colors = useColors();
@@ -108,7 +109,13 @@ export default function ActiveCallScreen() {
       );
     }
   };
-  const handleMute = () => callId && control(() => setMute(callId, !muted));
+  const handleMute = () => {
+    useSipDiagnosticsStore.getState().addEvent({
+      level: "info", category: "media", message: "In-app microphone control tapped",
+      context: { callId, muted: !muted, controlsReady },
+    });
+    return callId && control(() => setMute(callId, !muted));
+  };
   const handleHold = () => callId && control(() => setHold(callId, !held));
   const handleSpeaker = () =>
     callId && control(() => setSpeaker(callId, !speaker));
@@ -142,6 +149,7 @@ export default function ActiveCallScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {/* Caller Info */}
         <View style={styles.callerSection}>
@@ -188,8 +196,9 @@ export default function ActiveCallScreen() {
         {controlsReady && (
           <ActiveCallRecordingControls nativeHistoryId={call?.history?.id} />
         )}
+      </ScrollView>
 
-        {/* Controls */}
+        {/* Keep microphone controls outside the moving recording/scroll area. */}
         <View style={styles.controls}>
           <View style={styles.controlRow}>
             <TouchableOpacity
@@ -276,9 +285,8 @@ export default function ActiveCallScreen() {
             </TouchableOpacity>
           </View>
         </View>
-      </ScrollView>
 
-      {/* End stays visible while the caller, keypad and media controls scroll. */}
+      {/* Essential controls stay visible while call details and recording scroll. */}
       <View style={styles.endFooter}>
         <TouchableOpacity
           accessibilityRole="button"
@@ -362,7 +370,9 @@ const styles = StyleSheet.create({
   },
   controls: {
     paddingHorizontal: 24,
-    gap: 20,
+    paddingTop: 8,
+    flexShrink: 0,
+    gap: 12,
     alignItems: "center",
   },
   controlRow: {
