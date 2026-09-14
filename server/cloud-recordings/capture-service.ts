@@ -5,6 +5,12 @@ import { createCaptureLedger } from './capture-ledger';
 import { createRecordingCapture } from './capture';
 import { createEslCaptureTransport,type EslConfig } from './esl-capture';
 import { createCaptureSpool } from './capture-spool';
+import { constants, promises as fs } from 'node:fs';
+const STOP_FINALIZATION_GRACE_MS=60_000;
+async function captureFileExists(path:string):Promise<boolean>{
+ try{const file=await fs.open(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{const stat=await file.stat();return stat.isFile()&&stat.size>=44;}finally{await file.close();}}
+ catch{return false;}
+}
 /** Default uuid_dump text is URL encoded and cannot preserve literal %HH.
  * JSON serializes the original values. Decode JSON only, never URI-decode SIP IDs. */
 export function parseRecordingChannelDump(body:string,channelUuid:string):Record<string,string>{
@@ -95,7 +101,17 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
         const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};
         await spool.discardCompleted(lease);await ledger.failed(lease,'policy_revoked');continue;
        }
-       await capture.recordingStopped(r.call_uuid,`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`);
+       const path=`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`;
+       try{await capture.recordingStopped(r.call_uuid,path);}catch{
+        // A stop event can arrive while FreeSWITCH is tearing down a failed
+        // channel. Keep retrying when a private WAV exists, but release an old
+        // file-less lease so the user can retry instead of seeing “recording”.
+        const stopped=Date.parse(String(r.capture_stopped_at??''));
+        if(Number.isFinite(stopped)&&Date.now()-stopped>=STOP_FINALIZATION_GRACE_MS&&!await captureFileExists(path)){
+         const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path};
+         await spool.discardCompleted(lease);await ledger.failed(lease,'capture_failed');
+        }
+       }
       }else if(r.recording_status==='off'&&exists==='true'){
        const peer=(await transport.api(`uuid_getvar ${r.call_uuid} signal_bond`)).trim();
        if(/^[0-9a-f-]{36}$/i.test(peer)&&peer!==r.call_uuid)await capture.start(r.call_uuid,{kind:'automatic'});
