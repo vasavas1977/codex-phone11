@@ -35,6 +35,10 @@ async function main(){switch(process.argv[2]){
   const env=build.env,stamp=new Date().toISOString().replace(/[:.]/g,'-');const log=fs.openSync(path.join(out,`build-${staging?'staging-':''}${stamp}.log`),'wx',0o600);
   try{
    run('pnpm',['exec','expo','prebuild','--platform','android','--no-install'],{env,stdio:['ignore',log,log],timeout:180000});
+   // Environment-driven autolinking is not tracked as a Gradle input. Clear
+   // caches made by another SIP-engine selection before assembling this APK.
+   for(const generated of [path.join(root,'android/build/generated/autolinking'),path.join(root,'android/app/build/generated/autolinking')])
+    fs.rmSync(generated,{recursive:true,force:true});
    run('./gradlew',[':app:assembleRelease','--no-daemon','--max-workers=2','-PreactNativeArchitectures=arm64-v8a','-Dorg.gradle.internal.http.connectionTimeout=15000','-Dorg.gradle.internal.http.socketTimeout=30000'],{cwd:path.join(root,'android'),env,stdio:['ignore',log,log],timeout:1800000});
   }finally{fs.closeSync(log);}
   const apk='android/app/build/outputs/apk/release/app-release.apk';

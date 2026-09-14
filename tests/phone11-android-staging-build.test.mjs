@@ -55,5 +55,8 @@ test('CLI keeps staging artifacts separate and verifies the final APK package wi
  const source=fs.readFileSync(path.join(path.resolve(new URL('..',import.meta.url).pathname),'lab/android/cli.mjs'),'utf8');
  assert.match(source,/staging-apk\.json/);assert.match(source,/Phone11-Android-Staging/);
  assert.match(source,/manifest','application-id'/);assert.match(source,/commissionedStagingEnv\(process\.env,labEnv\(\),root\)/);
+ assert.match(source,/build\/generated\/autolinking/);
  assert.doesNotMatch(source,/console\.log\([^\n]*(FIREBASE|GOOGLE_SERVICES|process\.env)/);
+ const scripts=JSON.parse(fs.readFileSync(path.join(path.resolve(new URL('..',import.meta.url).pathname),'package.json'),'utf8')).scripts;
+ assert.equal(scripts['lab:android:build:staging'],'node lab/android/cli.mjs setup && node lab/android/cli.mjs build-staging');
 });
