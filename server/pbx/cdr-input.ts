@@ -1,7 +1,7 @@
 import { SaxesParser } from "saxes";
 import type { RequestHandler } from "express";
 import { integrationSecretStatus } from "./integration-auth";
-import { trustedRecordingRoute } from "../cloud-recordings/correlation";
+import { trustedCdrRecordingRoute } from "../cloud-recordings/correlation";
 import { query } from "./db";
 
 export class CdrInputError extends Error {
@@ -95,7 +95,7 @@ export function parseCdrBody(body: unknown): { variables: Record<string, string>
 }
 
 export async function resolveCdrTenant(cdr: { variables: Record<string, string> }): Promise<void> {
-  const route = await trustedRecordingRoute(cdr.variables.uuid, cdr.variables.sip_call_id);
+  const route = await trustedCdrRecordingRoute(cdr.variables.uuid, cdr.variables.sip_call_id);
   const explicit = cdr.variables.tenant_id;
   const tenantId = explicit === undefined || explicit === "" ? route?.tenantId : Number(explicit);
   if (!Number.isSafeInteger(tenantId) || !tenantId || tenantId <= 0) throw new CdrInputError(400, "An explicit or trusted channel tenant is required");

@@ -5,7 +5,7 @@ const db = vi.hoisted(() => ({ query: vi.fn(), cdr: vi.fn(), route: vi.fn() }));
 vi.mock("../server/pbx/db", () => ({ query: db.query }));
 vi.mock("../server/pbx/redis", () => ({ cacheGetOrSet: vi.fn(), invalidateCache: vi.fn(), rateLimitCheck: vi.fn() }));
 vi.mock("../server/pbx/cdr-processor", () => ({ processCdr: db.cdr }));
-vi.mock("../server/cloud-recordings/correlation", () => ({ trustedRecordingRoute: db.route, bindAuthenticatedOutbound: vi.fn() }));
+vi.mock("../server/cloud-recordings/correlation", () => ({ trustedCdrRecordingRoute: db.route, bindAuthenticatedOutbound: vi.fn() }));
 import { freeswitchRouter, freeswitchCdrRouter } from "../server/pbx/freeswitch-routes";
 import { parseCdrBody } from "../server/pbx/cdr-input";
 const secret = "test-integration-secret-0123456789";

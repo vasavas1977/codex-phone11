@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 const db = vi.hoisted(() => ({ query: vi.fn(), transaction: vi.fn(), client: { query: vi.fn() }, route: vi.fn() }));
 vi.mock("../server/pbx/db", () => ({ query: db.query, withTransaction: db.transaction }));
-vi.mock("../server/cloud-recordings/correlation", () => ({ trustedRecordingRoute: db.route }));
+vi.mock("../server/cloud-recordings/correlation", () => ({ trustedCdrRecordingRoute: db.route }));
 vi.mock("../server/cloud-recordings/repository", () => ({ createCloudRecordingRepository: vi.fn() }));
 import { processCdr } from "../server/pbx/cdr-processor";
 const uuid = "10000000-0000-4000-8000-000000000001";
@@ -9,7 +9,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   db.transaction.mockImplementation(fn => fn(db.client));
   db.route.mockResolvedValue(null);
-  db.client.query.mockResolvedValue({ rows: [{ id: 1 }] });
+  db.client.query.mockImplementation(async (sql: string) => ({ rows: sql.startsWith("SELECT id, call_record_id") ? [] : [{ id: 1 }] }));
 });
 it("never defaults direct processor calls to tenant 1", async () => {
   await expect(processCdr({ variables: { uuid } })).rejects.toThrow("Explicit CDR tenant required");
