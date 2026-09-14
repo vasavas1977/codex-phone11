@@ -46,6 +46,7 @@
     "lab:test:network": "node lab/android/network-test.mjs --execute",
     "lab:test:push:contract": "node lab/android/cli.mjs push-contract",
     "lab:test:push:device": "node lab/android/device-evidence.mjs",
+    "lab:android:sip-driver": "node lab/android/real-sip-driver.mjs",
     "lab:test:push:live": "node lab/android/cli.mjs push-live",
     "lab:report": "node lab/android/cli.mjs report",
     "lab:down": "node lab/android/cli.mjs down",
