@@ -10,7 +10,7 @@ import { registerAuthRoutes, phone11Cors } from "./auth-routes";
 import { registerStorageProxy } from "./storageProxy";
 import { fullRouter } from "../routers";
 import { createContext } from "./context";
-import { freeswitchRouter } from "../pbx/freeswitch-routes";
+import { freeswitchRouter, freeswitchCdrRouter } from "../pbx/freeswitch-routes";
 import { kamailioRouter } from "../pbx/kamailio-routes";
 import { storageRouter } from "../pbx/recording-storage";
 import { wsManager } from "../pbx/websocket";
@@ -50,6 +50,7 @@ async function startServer() {
   // Wake requests have their own small body limit and fail closed until commissioned.
   registerWakeRoutes(app);
 
+  app.use("/api/freeswitch/cdr", freeswitchCdrRouter);
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 

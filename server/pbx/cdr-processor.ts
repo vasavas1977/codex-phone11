@@ -107,7 +107,7 @@ function parseCdrData(cdr: any) {
   const writeCodec = vars.write_codec || null;
 
   // Tenant info
-  const tenantId = parseInt(vars.tenant_id || "1");
+  const tenantId = Number(vars.tenant_id);
 
   // SIP call ID
   const sipCallId = vars.sip_call_id || null;
@@ -155,6 +155,7 @@ function tsExpr(epoch: number, stamp: string | null): { sql: string; val: any } 
  */
 export async function processCdr(cdr: any): Promise<{ callRecordId: number; callLegId: number }> {
   const parsed = parseCdrData(cdr);
+  if (!Number.isSafeInteger(parsed.tenantId) || parsed.tenantId <= 0) throw new Error("Explicit CDR tenant required");
   const recordingRoute = await trustedRecordingRoute(parsed.callUuid,parsed.sipCallId);
   if (recordingRoute && recordingRoute.tenantId !== parsed.tenantId) throw new Error("Trusted call tenant mismatch");
 
@@ -175,10 +176,13 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (call_uuid) DO UPDATE SET
          disposition = EXCLUDED.disposition,
+         answered_at = COALESCE(EXCLUDED.answered_at, call_records.answered_at),
+         metadata = call_records.metadata || EXCLUDED.metadata,
          ended_at = EXCLUDED.ended_at,
          total_duration_seconds = EXCLUDED.total_duration_seconds,
          total_billable_seconds = EXCLUDED.total_billable_seconds,
          recording_url = COALESCE(EXCLUDED.recording_url, call_records.recording_url)
+       WHERE call_records.tenant_id = EXCLUDED.tenant_id
        RETURNING id`,
       [
         parsed.tenantId,           // $1
@@ -194,12 +198,15 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.billSeconds,        // $11 → total_billable_seconds
         process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" ? null : parsed.recordingPath, // Cloud media only comes from authenticated storage.
         JSON.stringify({           // $13 → metadata
+          completion: endedAt ? "complete" : "unknown",
+          source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,
           hangup_cause: parsed.hangupCause,
           sip_response_code: parsed.sipResponseCode,
         }),
       ]
     );
+    if (!recordResult.rows.length) throw new Error("Call tenant collision");
     const callRecordId = recordResult.rows[0].id;
 
     // 2. Insert call_leg
@@ -239,6 +246,8 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.sipResponseCode,    // $18 → sip_response_code
         parsed.sipCallId,          // $19 → sip_call_id
         JSON.stringify({           // $20 → metadata
+          completion: endedAt ? "complete" : "unknown",
+          source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,
           raw_direction: parsed.direction,
         }),
