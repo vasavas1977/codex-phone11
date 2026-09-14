@@ -37,6 +37,7 @@
     "lab:setup": "node lab/android/cli.mjs setup",
     "lab:up": "node lab/android/cli.mjs up",
     "lab:android:build": "node lab/android/cli.mjs build",
+    "lab:android:build:staging": "node lab/android/cli.mjs build-staging",
     "lab:android:install": "node lab/android/cli.mjs install",
     "lab:test:logic": "node lab/android/cli.mjs logic",
     "lab:test:sip": "node lab/android/cli.mjs sip",

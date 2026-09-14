@@ -4,7 +4,7 @@ The commissioned build is an isolated staging path. It does not create a Firebas
 
 ## Build contract
 
-The commissioned Expo/Gradle build accepts only an explicit, internally consistent configuration:
+`pnpm lab:android:build:staging` accepts only an explicit, internally consistent configuration:
 
 | Setting | Required value or rule |
 | --- | --- |
@@ -25,11 +25,10 @@ Keep the real Firebase file and values in the approved private build environment
 
 ```sh
 pnpm lab:setup
-pnpm prebuild:android
-(cd android && ./gradlew :app:assembleRelease --no-daemon)
+pnpm lab:android:build:staging
 ```
 
-App configuration validates the listed Android staging inputs before Expo prebuild can consume the Firebase file. The build does not send FCM traffic. `pnpm lab:test:push:live` remains blocked until the isolated provider and a test device are deliberately commissioned and delivery evidence is captured.
+The command starts from the same scrubbed environment as the ordinary lab build, restores only the explicitly supplied staging variables listed above, and validates them before Expo prebuild can consume the Firebase file. It verifies the final APK package, retains the APK and a credential-free identity record under private `.lab/` paths, and does not send FCM traffic. `pnpm lab:test:push:live` remains blocked until the isolated provider and a test device are deliberately commissioned and delivery evidence is captured.
 
 The read-only [Firebase staging inventory](FIREBASE-STAGING-INVENTORY-2026-09-14.md) found no current project/file pair that meets this contract. Do not reuse the nearby production or legacy candidates to make the gate pass.
 

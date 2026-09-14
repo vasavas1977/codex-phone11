@@ -6,6 +6,7 @@ import {execFileSync,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {sha256,explicitEmulator,aggregate,renderReport,junit,sanitize} from './core.mjs';
 import {collectAttempts} from './results.mjs';
+import {commissionedStagingEnv} from './staging-build-env.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 process.chdir(root);
 const out=path.join(root,'.lab');fs.mkdirSync(out,{recursive:true,mode:0o700});
@@ -26,10 +27,12 @@ async function main(){switch(process.argv[2]){
   if(!fs.existsSync(dest)||sha256(fs.readFileSync(dest))!==lock.sha256){const response=await fetch(`https://raw.githubusercontent.com/siprix/SampleJava/${lock.revision}/${lock.path}`,{signal:AbortSignal.timeout(180000)});if(!response.ok)throw new Error('SDK fetch failed');const data=Buffer.from(await response.arrayBuffer());if(sha256(data)!==lock.sha256)throw new Error('SDK checksum mismatch');fs.mkdirSync(path.dirname(dest),{recursive:true});fs.writeFileSync(dest,data);}
   console.log('Pinned Siprix Android AAR verified. Tool installation is explicit; see runbook.');break;
  }
- case 'build':{
+ case 'build':case 'build-staging':{
   if(fs.existsSync('.env'))throw new Error('Refusing lab build with an inherited .env file');
   const aar='modules/phone11-siprix/vendor/android/siprix_voip_sdk.aar';if(!fs.existsSync(aar)||sha256(fs.readFileSync(aar))!==lock.sha256)throw new Error('Run lab:setup first');
-  const env=labEnv();const stamp=new Date().toISOString().replace(/[:.]/g,'-');const log=fs.openSync(path.join(out,`build-${stamp}.log`),'wx',0o600);
+  const staging=process.argv[2]==='build-staging';
+  const build=staging?commissionedStagingEnv(process.env,labEnv(),root):{env:labEnv(),packageName:'ai.phone11.mobile.lab'};
+  const env=build.env,stamp=new Date().toISOString().replace(/[:.]/g,'-');const log=fs.openSync(path.join(out,`build-${staging?'staging-':''}${stamp}.log`),'wx',0o600);
   try{
    run('pnpm',['exec','expo','prebuild','--platform','android','--no-install'],{env,stdio:['ignore',log,log],timeout:180000});
    run('./gradlew',[':app:assembleRelease','--no-daemon','--max-workers=2','-PreactNativeArchitectures=arm64-v8a','-Dorg.gradle.internal.http.connectionTimeout=15000','-Dorg.gradle.internal.http.socketTimeout=30000'],{cwd:path.join(root,'android'),env,stdio:['ignore',log,log],timeout:1800000});
@@ -40,7 +43,14 @@ async function main(){switch(process.argv[2]){
   const abis=new Set([...inventory.matchAll(/lib\/([^/\s]+)\/[^\s]+\.so/g)].map(m=>m[1]));
   if(abis.size!==1||!abis.has('arm64-v8a'))throw new Error('Lab APK must contain only the complete ARM64 ABI');
   for(const name of ['lib/arm64-v8a/libreactnative.so','lib/arm64-v8a/libhermes.so'])if(!inventory.includes(name))throw new Error('Incomplete React Native ABI');
-  const identity={apk:path.join(root,apk),sha256:sha256(fs.readFileSync(apk)),commit:run('git',['rev-parse','HEAD']).trim(),sourceDirty:!!run('git',['status','--porcelain']).trim(),sdk:lock,at:new Date().toISOString()};fs.writeFileSync(path.join(out,'apk.json'),JSON.stringify(identity,null,2));console.log(JSON.stringify(identity,null,2));break;
+  const commit=run('git',['rev-parse','HEAD']).trim();let retainedApk=path.join(root,apk),identityFile=path.join(out,'apk.json');
+  if(staging){
+   const analyzer=path.join(sdk,'cmdline-tools/latest/bin/apkanalyzer');
+   if(run(analyzer,['manifest','application-id',apk]).trim()!==build.packageName)throw new Error('Staging APK package identity mismatch');
+   retainedApk=path.join(out,`Phone11-Android-Staging-1.0.0-${commit.slice(0,7)}.apk`);fs.copyFileSync(apk,retainedApk);fs.chmodSync(retainedApk,0o600);
+   identityFile=path.join(out,'staging-apk.json');
+  }
+  const identity={apk:retainedApk,sha256:sha256(fs.readFileSync(retainedApk)),commit,sourceDirty:!!run('git',['status','--porcelain']).trim(),sdk:lock,at:new Date().toISOString(),...(staging?{packageName:build.packageName}: {})};fs.writeFileSync(identityFile,JSON.stringify(identity,null,2),{mode:0o600});console.log(JSON.stringify(identity,null,2));break;
  }
  case 'install':{
   const serial=device(),id=JSON.parse(fs.readFileSync(path.join(out,'apk.json')));if(sha256(fs.readFileSync(id.apk))!==id.sha256)throw new Error('APK hash changed');
