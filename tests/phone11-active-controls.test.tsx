@@ -73,6 +73,9 @@ vi.mock("../lib/sip/sip-provider", () => ({
 vi.mock("../lib/sip/call-store", () => ({
   useSipCallStore: (select: any) => select(mocks.state),
 }));
+vi.mock("../lib/sip/diagnostics-store", () => ({
+  useSipDiagnosticsStore: { getState: () => ({ addEvent: vi.fn() }) },
+}));
 // Recording has separate component tests; keep these media-control tests
 // independent of its native authentication and Expo dependencies.
 vi.mock("../components/cloud-recordings/active-call-recording-controls", () => ({
@@ -151,10 +154,11 @@ it("excludes unsupported transfer and video controls from a live call", () => {
   expect(html).toContain("End call");
 });
 
-it("keeps End call outside the scrolling media controls", () => {
+it("keeps microphone, hold, speaker and End outside scrolling call details", () => {
   const html = renderToStaticMarkup(<ActiveCallScreen />);
   const scrollEnd = html.indexOf("</section>");
   expect(scrollEnd).toBeGreaterThan(0);
-  expect(html.indexOf('aria-label="Mute microphone"')).toBeLessThan(scrollEnd);
-  expect(html.indexOf('aria-label="End call"')).toBeGreaterThan(scrollEnd);
+  for (const label of ["Mute microphone", "Hold call", "Use speaker", "End call"]) {
+    expect(html.indexOf(`aria-label="${label}"`)).toBeGreaterThan(scrollEnd);
+  }
 });
