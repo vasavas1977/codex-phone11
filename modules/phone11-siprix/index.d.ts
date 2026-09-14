@@ -85,6 +85,7 @@ type EventData =
   | { type: 'registration'; account: Account }
   | { type: 'callDialing' | 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted'; call: Call }
   | { type: 'devicesAudioChanged' | 'audioSession'; audioSessionActive: boolean; speaker: boolean }
+  | ({ type: 'playbackAudioOutputsChanged' } & PlaybackAudioOutputs)
   | { type: 'trial' }
   | { type: 'network'; networkState: number }
   | { type: 'dtmf'; callId: string; tone: number }
@@ -94,6 +95,18 @@ export type SiprixEvent = EventData & { generation: number; sequence: number };
 export type SiprixAccount = Account;
 export type SiprixCall = Call;
 export type SiprixSnapshot = Snapshot;
+
+export interface PlaybackAudioOutput {
+  /** Session-scoped Android AudioDeviceInfo identifier; never a device name. */
+  id: string;
+  kind: "phone" | "speaker" | "bluetooth";
+  label: "Phone" | "Speaker" | `Bluetooth audio${string}`;
+  selected: boolean;
+}
+export interface PlaybackAudioOutputs {
+  outputs: PlaybackAudioOutput[];
+  selectedId: string | null;
+}
 
 /** Channel: Phone11SiprixEvent via new NativeEventEmitter(Phone11Siprix). */
 export interface CompletedWakeCall { id: string; ownerUserId: number; tenantId: number; number: string; direction: "inbound"; startedAt: number; answeredAt?: number; endedAt: number; updatedAt: number; }
@@ -124,6 +137,9 @@ export interface Phone11SiprixModule {
   setHold(callId: string, held: boolean): Promise<void>;
   sendDtmf(callId: string, digits: string): Promise<void>;
   setSpeaker(enabled: boolean): Promise<void>;
+  getPlaybackAudioOutputs(): Promise<PlaybackAudioOutputs>;
+  selectPlaybackAudioOutput(outputId: string): Promise<PlaybackAudioOutputs>;
+  resetPlaybackAudioOutput(): Promise<PlaybackAudioOutputs>;
   handleNativeAudioSession(active: boolean): Promise<void>;
   destroy(): Promise<void>;
   addListener(eventName: string): void;
