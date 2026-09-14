@@ -48,6 +48,7 @@
     "lab:test:push:device": "node lab/android/device-evidence.mjs",
     "lab:android:fcm:one-shot": "node lab/android/one-shot-fcm-send.mjs",
     "lab:android:sip-driver": "node lab/android/real-sip-driver.mjs",
+    "lab:android:sip-runner": "node lab/android/reverse-pull-runner.mjs",
     "lab:test:push:live": "node lab/android/cli.mjs push-live",
     "lab:report": "node lab/android/cli.mjs report",
     "lab:down": "node lab/android/cli.mjs down",

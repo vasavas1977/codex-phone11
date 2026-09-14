@@ -7,6 +7,7 @@ EXPECTED_SERVICE="phone11-fcm-staging-lab"
 EXPECTED_CLOUDSQL_INSTANCE="phone11-stage-20260914:asia-southeast1:phone11-stage-wake-pg"
 EXPECTED_DB_USER="phone11-fcm-lab@phone11-stage-20260914.iam"
 EXPECTED_DB_NAME="phone11_wake_stage"
+EXPECTED_RUNNER_ACCOUNT="phone11-sip-runner@phone11-stage-20260914.iam.gserviceaccount.com"
 TARGET_PROJECT="${PHONE11_LAB_CLOUDRUN_PROJECT:-}"
 TARGET_IMAGE="${PHONE11_LAB_CLOUDRUN_IMAGE:-}"
 TARGET_ACCOUNT="${PHONE11_LAB_CLOUDRUN_SERVICE_ACCOUNT:-}"
@@ -23,7 +24,7 @@ while IFS= read -r LINE||[ -n "$LINE" ];do
  case "$LINE" in ""|'#'*)continue;;esac
  KEY="${LINE%%=*}"
  case "$KEY" in
-  PHONE11_LAB_FCM_SCENARIO_ENABLED|PHONE11_LAB_FCM_ENVIRONMENT|PHONE11_LAB_FCM_PACKAGE|PHONE11_LAB_FCM_PROJECT_ID|PHONE11_LAB_FCM_SENDER_ID|PHONE11_LAB_FCM_APP_ID|PHONE11_LAB_FCM_APK_SHA256|PHONE11_LAB_FCM_EXECUTION_ID|PHONE11_LAB_FCM_EXECUTION_EXPIRES_AT|PHONE11_LAB_FCM_BINDING_ID|PHONE11_LAB_FCM_CASES|PHONE11_LAB_FCM_PUBLIC_ORIGIN|PHONE11_LAB_SIP_DRIVER_ORIGIN|PHONE11_WAKE_ENABLED|PHONE11_WAKE_PILOT_SIP_URI|FCM_PROJECT_ID|PHONE11_BUILD_SHA|PHONE11_CLOUDSQL_IAM_DB_AUTH|PHONE11_CLOUDSQL_INSTANCE|PG_HOST|PG_USER|PG_DATABASE|PG_SSL);;
+  PHONE11_LAB_FCM_SCENARIO_ENABLED|PHONE11_LAB_FCM_ENVIRONMENT|PHONE11_LAB_FCM_PACKAGE|PHONE11_LAB_FCM_PROJECT_ID|PHONE11_LAB_FCM_SENDER_ID|PHONE11_LAB_FCM_APP_ID|PHONE11_LAB_FCM_APK_SHA256|PHONE11_LAB_FCM_EXECUTION_ID|PHONE11_LAB_FCM_EXECUTION_EXPIRES_AT|PHONE11_LAB_FCM_BINDING_ID|PHONE11_LAB_FCM_CASES|PHONE11_LAB_FCM_PUBLIC_ORIGIN|PHONE11_LAB_SIP_DRIVER_TRANSPORT|PHONE11_WAKE_ENABLED|PHONE11_WAKE_PILOT_SIP_URI|FCM_PROJECT_ID|PHONE11_BUILD_SHA|PHONE11_CLOUDSQL_IAM_DB_AUTH|PHONE11_CLOUDSQL_INSTANCE|PG_HOST|PG_USER|PG_DATABASE|PG_SSL);;
   *)fail "environment file contains an unsupported key";;
  esac
 done < "$ENV_FILE"
@@ -35,6 +36,8 @@ grep -Fqx 'PHONE11_LAB_FCM_SENDER_ID=413228367517' "$ENV_FILE"||fail "Firebase s
 grep -Fqx 'PHONE11_LAB_FCM_APP_ID=1:413228367517:android:f41353883923fc15911e74' "$ENV_FILE"||fail "Firebase app mismatch"
 grep -Fqx 'FCM_PROJECT_ID=phone11-stage-20260914' "$ENV_FILE"||fail "provider project mismatch"
 grep -Fqx 'PHONE11_WAKE_ENABLED=1' "$ENV_FILE"||fail "wake gate is missing"
+grep -Fqx 'PHONE11_LAB_SIP_DRIVER_TRANSPORT=reverse_pull' "$ENV_FILE"||fail "private reverse-pull SIP transport is required"
+if grep -q '^PHONE11_LAB_SIP_DRIVER_ORIGIN=' "$ENV_FILE";then fail "public SIP-driver origins are forbidden";fi
 grep -Fqx 'PHONE11_CLOUDSQL_IAM_DB_AUTH=1' "$ENV_FILE"||fail "Cloud SQL IAM database authentication is required"
 grep -Fqx "PHONE11_CLOUDSQL_INSTANCE=$EXPECTED_CLOUDSQL_INSTANCE" "$ENV_FILE"||fail "Cloud SQL instance mismatch"
 grep -Fqx "PG_HOST=/cloudsql/$EXPECTED_CLOUDSQL_INSTANCE" "$ENV_FILE"||fail "Cloud SQL Unix socket mismatch"
@@ -49,6 +52,12 @@ ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null)"
 for NAME in phone11-lab-fcm-trigger phone11-lab-sip-driver;do
  gcloud secrets describe "$NAME" --project="$EXPECTED_PROJECT" --format='value(name)' >/dev/null 2>&1||fail "required Secret Manager resource is unavailable"
 done
+gcloud iam service-accounts describe "$EXPECTED_RUNNER_ACCOUNT" --project="$EXPECTED_PROJECT" --format='value(email)' 2>/dev/null \
+ |grep -Fqx "$EXPECTED_RUNNER_ACCOUNT"||fail "keyless SIP runner service account is unavailable"
+if [ -n "$(gcloud iam service-accounts keys list --iam-account="$EXPECTED_RUNNER_ACCOUNT" --managed-by=user --format='value(name)' 2>/dev/null)" ];then fail "SIP runner service account must remain keyless";fi
+gcloud run services get-iam-policy "$EXPECTED_SERVICE" --project="$EXPECTED_PROJECT" --region="$EXPECTED_REGION" --flatten='bindings[].members' \
+ --filter="bindings.role=roles/run.invoker AND bindings.members=serviceAccount:$EXPECTED_RUNNER_ACCOUNT" --format='value(bindings.role)' 2>/dev/null \
+ |grep -Fqx 'roles/run.invoker'||fail "SIP runner is not the private Cloud Run invoker"
 INSTANCE_JSON="$(gcloud sql instances describe phone11-stage-wake-pg --project="$EXPECTED_PROJECT" --format=json 2>/dev/null)"||fail "isolated Cloud SQL instance is unavailable"
 printf '%s' "$INSTANCE_JSON"|node -e '
 let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const x=JSON.parse(s),ip=x.settings?.ipConfiguration,ok=x.connectionName==="phone11-stage-20260914:asia-southeast1:phone11-stage-wake-pg"&&x.region==="asia-southeast1"&&x.databaseVersion==="POSTGRES_16"&&x.settings?.tier==="db-f1-micro"&&x.settings?.availabilityType==="ZONAL"&&x.settings?.dataDiskType==="PD_HDD"&&Number(x.settings?.dataDiskSizeGb)===10&&x.settings?.storageAutoResize===false&&x.settings?.deletionProtectionEnabled===true&&x.settings?.backupConfiguration?.enabled===false&&ip?.sslMode==="ENCRYPTED_ONLY"&&(ip?.authorizedNetworks?.length??0)===0&&x.ipAddresses?.some(a=>a.type==="PRIMARY")&&x.settings?.connectorEnforcement==="REQUIRED"&&x.settings?.databaseFlags?.some(f=>f.name==="cloudsql.iam_authentication"&&f.value==="on");if(!ok)process.exit(1)})' \

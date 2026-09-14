@@ -25,8 +25,8 @@ deny-by-default dialplan.
 
 ## Recommended connection
 
-For the first staging L3 run, add a reverse-pull transport to the existing
-private Cloud Run service. The local driver runner should make outbound HTTPS
+The first staging L3 run uses a reverse-pull transport through the existing
+private Cloud Run service. The local driver runner makes outbound HTTPS
 requests to a small authenticated lease endpoint on Cloud Run, receive one
 strict scenario envelope, execute it against the loopback fixture, and return
 the existing hashed receipt and evidence. This avoids a public driver hostname,
@@ -36,14 +36,14 @@ instances must remain one, and the runner must use a short-lived Google ID
 token plus the existing execution ID and driver secret. A five-second lease and
 the current one-hour execution expiry keep failure bounded.
 
-The next implementation should make the transport explicit, for example
-`PHONE11_LAB_SIP_DRIVER_TRANSPORT=reverse_pull`, and expose only lease, receipt,
-and evidence-upload routes under the existing lab namespace. The service must
-reject an action until one current runner heartbeat is present. It should keep
-the current direct-HTTPS transport disabled unless a separately approved,
-identity-gated tunnel is commissioned. In-memory rendezvous is sufficient for
-one bounded run because the runner keeps the sole Cloud Run instance active;
-it is not durable test infrastructure.
+The repository now implements this as
+`PHONE11_LAB_SIP_DRIVER_TRANSPORT=reverse_pull`. It exposes only lease and
+completion routes under the existing lab namespace; the completion accepts
+either the strict receipt or strict evidence for the leased operation. The
+service rejects an action until a current runner poll is present and keeps the
+direct-HTTPS transport disabled. In-memory rendezvous is sufficient for one
+bounded run because the runner keeps the sole Cloud Run instance active; it is
+not durable test infrastructure.
 
 A named Cloudflare Tunnel protected by Cloudflare Access is a workable second
 choice. It would keep the Mac behind an outbound tunnel, but the current
@@ -61,13 +61,13 @@ on application secrets.
 - Grant a dedicated keyless runner identity `roles/run.invoker` on only the
   staging Cloud Run service, and allow the lab operator to mint its short-lived
   ID token. No service-account key is needed.
-- Implement and deploy the reverse-pull endpoints and runner, then commission a
-  fresh execution ID, expiry, binding ID, APK hash, allowed case, and matching
-  driver secret.
+- Deploy the reverse-pull build, then commission a fresh execution ID, expiry,
+  binding ID, APK hash, allowed case, and matching driver secret.
 - Replace the placeholder staging database URL with an isolated database and a
   real authenticated Android FCM binding. This is a separate wake-attestation
   gate from driver reachability.
 
-The backend now rejects HTTPS origins under `.test`, `.invalid`, `.example`,
-and `.localhost`. A future deployment therefore cannot start an action-capable
-revision with the currently unreachable reserved driver hostname.
+The backend now rejects public Cloud Run origins under `.test`, `.invalid`,
+`.example`, and `.localhost`, requires `reverse_pull`, and rejects every
+configured driver origin. A future deployment therefore cannot start an
+action-capable revision with the currently unreachable reserved hostname.

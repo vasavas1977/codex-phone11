@@ -21,3 +21,29 @@ Required runtime variables are:
 - `PHONE11_LAB_SIP_DRIVER_PORT`
 
 Keep the secret outside source and logs. Start the owned fixture first and do not run another fixture call campaign concurrently.
+
+## Private Cloud Run transport
+
+`pnpm lab:android:sip-runner` runs the driver without opening a listener. The
+runner polls the IAM-private staging Cloud Run service over outbound HTTPS,
+leases one exact correlation, calls the same locally validated driver service,
+and uploads its strict receipt or evidence. Cloud Run accepts a completion only
+for the current lease UUID, operation, execution, case and correlation. It
+keeps ownership of the correlation until `cleanup_completed` is observed or a
+bounded timeout expires, so another call cannot overlap the owned fixture.
+
+In addition to the driver variables above, the runner requires:
+
+- `PHONE11_LAB_SIP_DRIVER_TRANSPORT=reverse_pull`
+- `PHONE11_LAB_SIP_REVERSE_PULL_ENABLED=1`
+- `PHONE11_LAB_SIP_REVERSE_PULL_ENVIRONMENT=staging`
+- `PHONE11_LAB_FCM_PUBLIC_ORIGIN` set to the exact private staging Cloud Run URL
+- `PHONE11_LAB_SIP_RUNNER_SERVICE_ACCOUNT=phone11-sip-runner@phone11-stage-20260914.iam.gserviceaccount.com`
+
+The operator must be allowed to impersonate that keyless account, and that
+account must have `roles/run.invoker` only on `phone11-fcm-staging-lab`. The
+runner mints a short-lived identity token for the exact Cloud Run audience and
+never prints it. The application also requires the driver secret and execution
+ID on every lease and completion. An empty lease is harmless and never touches
+Docker; fixture ownership and the real 7101 PBX contact are checked inside the
+existing driver immediately before a start operation.

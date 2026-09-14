@@ -1,6 +1,7 @@
 import express,{type Express,type NextFunction,type Request,type Response} from "express";
 import {z} from "zod";
 import {integrationSecretStatus} from "../pbx/integration-auth";
+import {createLabSipReversePullBroker,ReversePullError} from "./lab-sip-reverse-pull";
 import {wakeRepository} from "./wake-repository";
 
 const identity={packageName:"ai.phone11.mobile.staging",projectId:"phone11-stage-20260914",
@@ -33,7 +34,7 @@ const evidenceEventSchema=z.object({event:z.string().regex(/^[a-z][a-z0-9_]{1,63
 const driverEvidenceSchema=z.object({source:z.literal("real_fcm_v1"),executionId:uuid,testId:z.enum(cases),correlationId:uuid,events:z.array(evidenceEventSchema).min(1).max(128)}).strict();
 
 export class LabFcmError extends Error{constructor(public readonly status:number,message="Lab staging service unavailable"){super(message);}}
-export type LabFcmConfig={executionId:string;expiresAt:number;apkSha256:string;sourceCommit:string;bindingId:string;pilotSipUri:string;allowed:Set<string>;publicOrigin:string;driverOrigin:string};
+export type LabFcmConfig={executionId:string;expiresAt:number;apkSha256:string;sourceCommit:string;bindingId:string;pilotSipUri:string;allowed:Set<string>;publicOrigin:string;driverTransport:"reverse_pull"};
 const stage=/(^|[.-])(staging|stage|sandbox|nonprod)([.-]|$)/i;
 const placeholder=/(example|placeholder|changeme|replace[-_]?me|your[-_]|dummy|sample)/i;
 const specialUseHostname=/(^|\.)(test|invalid|example|localhost)$/i;
@@ -50,10 +51,11 @@ function parseLabFcmConfig(source:NodeJS.ProcessEnv,now:number,allowExpired:bool
   !uuid.safeParse(source.PHONE11_LAB_FCM_EXECUTION_ID).success||!Number.isSafeInteger(expiresAt)||expiresAt<=0||(!allowExpired&&expiresAt<=now)||expiresAt>now+3_600_000||
   !hex64.safeParse(source.PHONE11_LAB_FCM_APK_SHA256).success||!hex40.safeParse(source.PHONE11_BUILD_SHA).success||
   !uuid.safeParse(source.PHONE11_LAB_FCM_BINDING_ID).success||source.PHONE11_WAKE_ENABLED!=="1"||
+  source.PHONE11_LAB_SIP_DRIVER_TRANSPORT!=="reverse_pull"||source.PHONE11_LAB_SIP_DRIVER_ORIGIN!==undefined||
   allowed.size<1||[...allowed].some(value=>!caseSet.has(value))||!secret(source.PHONE11_LAB_FCM_TRIGGER_SECRET)||!secret(source.PHONE11_LAB_SIP_DRIVER_SECRET))throw new LabFcmError(503);
  return {executionId:source.PHONE11_LAB_FCM_EXECUTION_ID!,expiresAt,apkSha256:source.PHONE11_LAB_FCM_APK_SHA256!.toLowerCase(),sourceCommit:source.PHONE11_BUILD_SHA!.toLowerCase(),
   bindingId:source.PHONE11_LAB_FCM_BINDING_ID!,pilotSipUri:stagingSip(source.PHONE11_WAKE_PILOT_SIP_URI),allowed,
-  publicOrigin:stagingOrigin(source.PHONE11_LAB_FCM_PUBLIC_ORIGIN),driverOrigin:stagingOrigin(source.PHONE11_LAB_SIP_DRIVER_ORIGIN)};
+  publicOrigin:stagingOrigin(source.PHONE11_LAB_FCM_PUBLIC_ORIGIN),driverTransport:"reverse_pull"};
 }
 
 /** Startup validates immutable commissioning while allowing a completed execution to stay healthy. */
@@ -65,31 +67,28 @@ export function readLabFcmConfig(source:NodeJS.ProcessEnv=process.env,now=Date.n
 type SafeReadiness={bindingId:string;bindingExpiresAt:number;platform:"ios"|"android";tokenType:"voip"|"fcm";packageName:string};
 type Driver={start:(input:{executionId:string;testId:CaseId;correlationId:string;targetSipUri:string})=>Promise<unknown>;evidence:(input:{executionId:string;testId:CaseId;correlationId:string})=>Promise<unknown>};
 const bounded=async<T>(run:(signal:AbortSignal)=>Promise<T>)=>{const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);try{return await run(controller.signal);}catch{throw new LabFcmError(503);}finally{clearTimeout(timer);}};
-const json=async(response:globalThis.Response)=>{if(!response.ok)throw new LabFcmError(503);try{return await response.json();}catch{throw new LabFcmError(503);}};
-function httpDriver(config:LabFcmConfig):Driver{
- const headers=()=>({"content-type":"application/json","x-phone11-lab-driver-secret":process.env.PHONE11_LAB_SIP_DRIVER_SECRET!,"x-phone11-execution-id":config.executionId});
- const call=(pathname:string,init:RequestInit)=>bounded(signal=>fetch(config.driverOrigin+pathname,{...init,headers:{...headers(),...init.headers},signal}).then(json));
- return {start:input=>call("/v1/phone11/real-sip-scenario",{method:"POST",body:JSON.stringify({v:1,...input})}),
-  evidence:input=>call(`/v1/phone11/real-sip-evidence?${new URLSearchParams(input)}`,{method:"GET"})};
-}
 async function providerProject():Promise<{projectId:string;serviceAccount:boolean}>{
  try{const {GoogleAuth}=await import("google-auth-library");const auth=new GoogleAuth({scopes:["https://www.googleapis.com/auth/firebase.messaging"]});
   const [projectId,credentials]=await bounded(()=>Promise.all([auth.getProjectId(),auth.getCredentials()]));
   return {projectId,serviceAccount:typeof credentials.client_email==="string"&&credentials.client_email.endsWith(".iam.gserviceaccount.com")};
  }catch{return {projectId:"",serviceAccount:false};}
 }
-type Dependencies={source?:()=>NodeJS.ProcessEnv;now?:()=>number;readiness?:(bindingId:string,sipUri:string)=>Promise<SafeReadiness|null>;provider?:()=>Promise<{projectId:string;serviceAccount:boolean}>;driver?:(config:LabFcmConfig)=>Driver;secretStatus?:(name:string,value:unknown)=>"ok"|"unavailable"|"forbidden"};
+type ReverseBroker=ReturnType<typeof createLabSipReversePullBroker>;
+type Dependencies={source?:()=>NodeJS.ProcessEnv;now?:()=>number;readiness?:(bindingId:string,sipUri:string)=>Promise<SafeReadiness|null>;provider?:()=>Promise<{projectId:string;serviceAccount:boolean}>;driver?:(config:LabFcmConfig)=>Driver;broker?:ReverseBroker;secretStatus?:(name:string,value:unknown)=>"ok"|"unavailable"|"forbidden"};
 type Receipt=z.infer<typeof driverReceiptSchema>;
 type Ledger={executionId:string;testId:CaseId;receipt:Receipt};
 
 export function createLabFcmService(deps:Dependencies={}){
  const source=deps.source??(()=>process.env),now=deps.now??Date.now,readiness=deps.readiness??((binding,sip)=>wakeRepository.labReadiness(binding,sip));
- const provider=deps.provider??providerProject,driverFactory=deps.driver??httpDriver,secretStatus=deps.secretStatus??integrationSecretStatus;
+ const provider=deps.provider??providerProject,broker=deps.broker??createLabSipReversePullBroker({now}),driverFactory=deps.driver??(value=>broker.driver(value) as Driver),secretStatus=deps.secretStatus??integrationSecretStatus;
  const ledger=new Map<string,Ledger>(),inflight=new Map<string,{executionId:string;testId:CaseId;promise:Promise<Receipt>}>();
  const config=()=>readLabFcmConfig(source(),now());
  const authorize=(headers:Request["headers"])=>{const value=config();const auth=secretStatus("PHONE11_LAB_FCM_TRIGGER_SECRET",headers["x-phone11-lab-secret"]);
   if(auth==="unavailable")throw new LabFcmError(503);if(auth!=="ok")throw new LabFcmError(403,"Forbidden");
   if(headers["x-phone11-execution-id"]!==value.executionId)throw new LabFcmError(403,"Forbidden");return value;};
+ const authorizeRunner=(headers:Request["headers"])=>{const value=config(),auth=secretStatus("PHONE11_LAB_SIP_DRIVER_SECRET",headers["x-phone11-lab-driver-secret"]);
+  if(auth==="unavailable")throw new LabFcmError(503);if(auth!=="ok"||headers["x-phone11-execution-id"]!==value.executionId)throw new LabFcmError(403,"Forbidden");return value;};
+ const reverse=<T>(run:()=>T):T=>{try{return run();}catch(error){if(error instanceof ReversePullError)throw new LabFcmError(error.status,error.status===403?"Forbidden":error.status===400?"Invalid lab request":error.status===409?"Scenario conflict":undefined);throw error;}};
  const prune=(cutoff:number)=>{for(const [key,value]of ledger)if(value.receipt.startedAtMs<cutoff)ledger.delete(key);};
  return {
   async attestation(headers:Request["headers"]){const value=authorize(headers),[enrollment,credentials]=await Promise.all([readiness(value.bindingId,value.pilotSipUri),provider()]);
@@ -120,14 +119,18 @@ export function createLabFcmService(deps:Dependencies={}){
    return {source:"real_fcm_v1" as const,simulated:false as const,localBroadcast:false as const,testId:request.testId,executionId:request.executionId,correlationId:request.correlationId,
     apkSha256:value.apkSha256,packageName:identity.packageName,projectId:identity.projectId,senderId:identity.senderId,events:observed.data.events};
   },
+  async runnerLease(headers:Request["headers"]){const value=authorizeRunner(headers);return reverse(()=>broker.lease(value));},
+  async runnerComplete(headers:Request["headers"],input:unknown){const value=authorizeRunner(headers);return reverse(()=>broker.complete(value,input));},
  };
 }
 export const labFcmService=createLabFcmService();
 
-export function registerLabFcmRoutes(app:Express,service:ReturnType<typeof createLabFcmService>=labFcmService){
+export function registerLabFcmRoutes(app:Express,service:ReturnType<typeof createLabFcmService>=labFcmService,options:{reversePull?:boolean}={}){
  const base="/api/phone11/lab";app.use(base,(_req:Request,res:Response,next:NextFunction)=>{res.setHeader("Cache-Control","no-store");next();},express.json({limit:"8kb"}),
   (error:unknown,_req:Request,res:Response,_next:NextFunction)=>res.status((error as {status?:number})?.status===413?413:400).json({error:"Invalid lab request"}));
- const failure=(res:Response,error:unknown)=>{const status=error instanceof LabFcmError?error.status:503;const message=status===403?"Forbidden":status===404?error instanceof LabFcmError?error.message:"Lab route unavailable":status===400?"Invalid lab request":status===409?"Scenario conflict":"Lab staging service unavailable";res.status(status).json({error:message});};
+ const failure=(res:Response,error:unknown)=>{const status=error instanceof LabFcmError||error instanceof ReversePullError?error.status:503;const message=status===403?"Forbidden":status===404?error instanceof LabFcmError?error.message:"Lab route unavailable":status===400?"Invalid lab request":status===409?"Scenario conflict":"Lab staging service unavailable";res.status(status).json({error:message});};
  app.get(`${base}/wake-evidence`,async(req,res)=>{try{if(Object.keys(req.query).length===0)res.json(await service.attestation(req.headers));else res.json(await service.evidence(req.headers,req.query));}catch(error){failure(res,error);}});
  app.post(`${base}/fcm-scenario`,async(req,res)=>{try{res.status(202).json(await service.trigger(req.headers,req.body));}catch(error){failure(res,error);}});
+ if(options.reversePull){app.get(`${base}/sip-driver/lease`,async(req,res)=>{try{const lease=await service.runnerLease(req.headers);if(!lease)res.status(204).end();else res.json(lease);}catch(error){failure(res,error);}});
+  app.post(`${base}/sip-driver/complete`,async(req,res)=>{try{res.status(202).json(await service.runnerComplete(req.headers,req.body));}catch(error){failure(res,error);}});}
 }

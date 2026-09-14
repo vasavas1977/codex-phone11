@@ -12,7 +12,7 @@ export function createLabFcmCloudRunApp(options:Options={}):Express{
  const config=readLabFcmStartupConfig(source,options.now??Date.now());
  const app=express();app.disable("x-powered-by");app.set("trust proxy",false);
  app.get("/health",(_req,res)=>{res.setHeader("Cache-Control","no-store");res.json({ok:true,service:"phone11-fcm-staging-lab",environment:"staging",projectId:"phone11-stage-20260914",build:config.sourceCommit});});
- registerLabFcmRoutes(app,options.service??createLabFcmService({source:()=>source}));
+ registerLabFcmRoutes(app,options.service??createLabFcmService({source:()=>source}),{reversePull:true});
  app.use((_req,res)=>{res.setHeader("Cache-Control","no-store");res.status(404).json({error:"Not found"});});
  return app;
 }
