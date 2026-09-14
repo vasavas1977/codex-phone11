@@ -105,8 +105,11 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
 
         if (!(Platform.OS === "android" && isPhone11AndroidLab())) {
           await nativeCallManager.initialize();
-          await registerVoipPush();
         }
+        // Android lab packages do not link CallKeep. The commissioned staging
+        // package still owns an FCM adapter, so let its native capability gate
+        // authenticated enrollment while the ordinary lab returns unavailable.
+        await registerVoipPush();
         nativeStackInitialized.current = true;
       })().catch((error) => {
         nativeStackInitPromise.current = null;
@@ -186,14 +189,15 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
           !!phone.account?.enabled && phone.account.ownerUserId === auth.user?.id,
         busy: !!calls.incomingCall || Object.values(calls.activeCalls).some(call => call.status !== "disconnected") };
     };
-    const canRefresh = () => Platform.OS === "ios" && AppState.currentState === "active" && snapshot().ready && !snapshot().busy;
+    const mobileWakePlatform = Platform.OS === "ios" || Platform.OS === "android";
+    const canRefresh = () => mobileWakePlatform && AppState.currentState === "active" && snapshot().ready && !snapshot().busy;
     const maintenance = createVoipEnrollmentLifecycle({ snapshot,
       refresh: async signal => { const { refreshPhoneVoipEnrollment } = await import("../push/client"); await refreshPhoneVoipEnrollment(signal, canRefresh); },
-    }, Platform.OS === "ios" && AppState.currentState === "active");
+    }, mobileWakePlatform && AppState.currentState === "active");
     const unsubAuth = addAuthChangeListener(maintenance.changed);
     const unsubAccount = useSipAccountStore.subscribe(maintenance.changed);
     const unsubCalls = useSipCallStore.subscribe(maintenance.changed);
-    const appState = AppState.addEventListener("change", state => maintenance.setActive(Platform.OS === "ios" && state === "active"));
+    const appState = AppState.addEventListener("change", state => maintenance.setActive(mobileWakePlatform && state === "active"));
     maintenance.start();
     return () => { maintenance.dispose(); unsubAuth(); unsubAccount(); unsubCalls(); appState.remove(); };
   }, []);

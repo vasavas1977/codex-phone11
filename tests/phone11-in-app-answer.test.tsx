@@ -67,6 +67,13 @@ it("preserves non-iOS Siprix engine handling without reporting legacy connection
   await renderProvider().answerCall("201", false);
   expect(m.sdkAnswer).toHaveBeenCalledWith("201", false); expect(m.connected).not.toHaveBeenCalled(); expect(m.systemAnswer).not.toHaveBeenCalled();
 });
+it("starts commissioned Android push enrollment without linking Android system call controls", async () => {
+  m.platform.OS = "android"; vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_LAB", "1");
+  await renderProvider().answerCall("201", false);
+  expect(m.nativeInit).not.toHaveBeenCalled();
+  expect(m.pushInit).toHaveBeenCalledOnce();
+  expect(m.sdkAnswer).toHaveBeenCalledWith("201", false);
+});
 it("rejects Siprix video before opening system controls or accepting the SDK", async () => {
   await expect(renderProvider().answerCall("201", true)).rejects.toThrow("does not support video calls");
   expect(m.systemAnswer).not.toHaveBeenCalled(); expect(m.sdkAnswer).not.toHaveBeenCalled(); expect(m.nativeInit).not.toHaveBeenCalled();

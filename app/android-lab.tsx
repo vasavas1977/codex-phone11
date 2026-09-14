@@ -21,7 +21,7 @@ function Lab() {
  const refresh=async()=>{if(bridge)setState(await bridge.getSnapshot());};
  useEffect(()=>{
   if(!bridge){setError("E_NATIVE_MODULE_MISSING");return;}
-  const refreshFirebase=()=>bridge.getFirebaseDiagnostic().then(setFirebaseDiagnostic).catch(e=>setFirebaseDiagnostic({status:"blocked",tokenPresent:false,tokenHash:null,reason:String((e as {code?:string}).code||"firebase_diagnostic_unavailable"),checkedAt:Date.now(),ingress:null}));
+  const refreshFirebase=()=>bridge.getFirebaseDiagnostic().then(setFirebaseDiagnostic).catch(e=>setFirebaseDiagnostic({status:"blocked",tokenPresent:false,tokenHash:null,reason:String((e as {code?:string}).code||"firebase_diagnostic_unavailable"),checkedAt:Date.now(),enrollment:{status:"not_bound",expiresAt:null},ingress:null}));
   void refresh();void refreshFirebase();
   const sub=new NativeEventEmitter(bridge as never).addListener("Phone11SiprixEvent",e=>{
    setEvents(old=>[...old.slice(-39),{type:e.type,state:e.call?.state,sequence:e.sequence,generation:e.generation,callId:e.call?.callId,statusCode:e.call?.statusCode}]);
@@ -39,12 +39,17 @@ function Lab() {
   : firebaseDiagnostic?.status==="blocked"?`Firebase: blocked • ${firebaseDiagnostic.reason}`:"Firebase: not commissioned";
  const ingress=firebaseDiagnostic?.ingress;
  const ingressLabel=ingress?`FCM receipt: ${ingress.receiptCount} • ${ingress.envelopeShapeValid?"valid shape":"invalid shape"} • ${ingress.decision}/${ingress.reason}`:"FCM receipt: none";
+ const enrollment=firebaseDiagnostic?.enrollment;
+ const enrollmentLabel=enrollment?.status==="bound"
+  ? `Wake enrollment: bound • expires ${new Date(enrollment.expiresAt!).toISOString()}`
+  : "Wake enrollment: not bound";
  return <ScreenContainer><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:20,gap:8}}>
   <Text style={{fontSize:26,fontWeight:"700",color:colors.foreground}}>Phone11 Android Lab</Text>
   <Text style={{color:colors.muted}}>Isolated synthetic calls • real Siprix • no production accounts</Text>
   <View accessible accessibilityLabel={`lab-state:${observed}`} testID="lab-state">
    <Text style={{color:colors.foreground,fontSize:12}}>SDK: {state?.sdkVersion??"not initialized"}{"\n"}Registration: {account?.registrationState??"none"} • Call: {call?.state??"none"}{"\n"}Completed: {ended} • {error||"No command error"}</Text>
    <Text style={{color:colors.foreground,fontSize:12}}>{firebaseLabel}</Text>
+   <Text style={{color:colors.foreground,fontSize:12}}>{enrollmentLabel}</Text>
    <Text style={{color:colors.foreground,fontSize:12}}>{ingressLabel}</Text>
   </View>
   {button("Initialize",()=>bridge!.initialize({}))}

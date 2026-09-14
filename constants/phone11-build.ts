@@ -33,9 +33,9 @@ export function isPhone11AndroidLab(runtime = extra()): boolean {
 }
 
 export function phone11ConfiguredApiBaseUrl(runtime = extra()): string {
-  if (isPhone11AndroidLab(runtime)) return "http://10.0.2.2:18080";
-  const configured =
-    process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || runtime.phone11ApiBaseUrl;
+  const configured = runtime.phone11ApiBaseUrl?.trim() ||
+    process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+  if (isPhone11AndroidLab(runtime) && !configured) return "http://10.0.2.2:18080";
   return typeof configured === "string" ? configured.replace(/\/+$/, "") : "";
 }
 

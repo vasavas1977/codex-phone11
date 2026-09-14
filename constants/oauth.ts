@@ -8,8 +8,8 @@ export const SESSION_TOKEN_KEY = "phone11_session_token";
 export const USER_INFO_KEY = "phone11_user_info";
 
 export function getApiBaseUrl(): string {
-  if (isPhone11AndroidLab()) return "http://10.0.2.2:18080";
   if (API_BASE_URL) return API_BASE_URL.replace(/\/+$/, "");
+  if (isPhone11AndroidLab()) return "http://10.0.2.2:18080";
   if (Platform.OS !== "web") return "https://api.phone11.ai";
 
   if (typeof window !== "undefined" && window.location) {

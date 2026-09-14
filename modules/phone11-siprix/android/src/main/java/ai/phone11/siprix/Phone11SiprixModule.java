@@ -113,21 +113,27 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
    Phone11FirebaseDiagnosticStore store=new Phone11FirebaseDiagnosticStore(getReactApplicationContext().getApplicationContext());
    store.replace(result);
    Map<String,Object> value=result.publicValue();
+   value.put("enrollment",wakeEnrollmentDiagnostic());
    Phone11FirebaseDiagnostic.IngressReceipt ingress=store.readIngress();
    value.put("ingress",ingress==null?null:ingress.publicValue());
    p.resolve(Arguments.makeNativeMap(value));
-  }catch(RuntimeException failure){p.reject("FIREBASE_DIAGNOSTIC_UNAVAILABLE","Firebase diagnostic persistence is unavailable");}
+ }catch(RuntimeException failure){p.reject("FIREBASE_DIAGNOSTIC_UNAVAILABLE","Firebase diagnostic persistence is unavailable");}
+ }
+ private Map<String,Object> wakeEnrollmentDiagnostic(){
+  Phone11WakeEnrollmentStore.Binding binding=Phone11AndroidWakeRuntime.get(getReactApplicationContext())
+   .wakeBinding(System.currentTimeMillis());
+  return map("status",binding==null?"not_bound":"bound","expiresAt",binding==null?null:(double)binding.expiresAt);
  }
  @ReactMethod public void getFirebaseDiagnostic(Promise p){rt.main.post(()->{
   if(!rt.lease.owns(owner)){p.reject("E_STALE_BRIDGE","React bridge ownership has changed");return;}
   Phone11AndroidWakeRuntime.Status status=Phone11AndroidWakeRuntime.get(getReactApplicationContext()).status();
   long checkedAt=System.currentTimeMillis();
   if(status==Phone11AndroidWakeRuntime.Status.UNSUPPORTED_UNCOMMISSIONED){
-   Map<String,Object> value=Phone11FirebaseDiagnostic.unavailable(checkedAt).publicValue();value.put("ingress",null);
+   Map<String,Object> value=Phone11FirebaseDiagnostic.unavailable(checkedAt).publicValue();value.put("enrollment",map("status","not_bound","expiresAt",null));value.put("ingress",null);
    p.resolve(Arguments.makeNativeMap(value));return;
   }
   if(status!=Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS){
-   Map<String,Object> value=Phone11FirebaseDiagnostic.misconfigured(checkedAt).publicValue();value.put("ingress",null);
+   Map<String,Object> value=Phone11FirebaseDiagnostic.misconfigured(checkedAt).publicValue();value.put("enrollment",map("status","not_bound","expiresAt",null));value.put("ingress",null);
    p.resolve(Arguments.makeNativeMap(value));return;
   }
   FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task->rt.main.post(()->{

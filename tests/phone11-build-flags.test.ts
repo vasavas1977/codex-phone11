@@ -53,3 +53,13 @@ it("uses the configured non-lab API without a trailing slash", () => {
   expect(isPhone11AndroidLab(runtime.extra)).toBe(false);
   expect(phone11ConfiguredApiBaseUrl(runtime.extra)).toBe("https://staging.phone11.example");
 });
+
+it("uses the commissioned Android lab HTTPS API instead of the offline emulator fallback", () => {
+  vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_LAB", "1");
+  vi.stubEnv("EXPO_PUBLIC_API_BASE_URL", "http://10.0.2.2:18080");
+  runtime.extra = {
+    phone11AndroidLab: true,
+    phone11ApiBaseUrl: "https://api.staging.phone11.invalid/",
+  };
+  expect(phone11ConfiguredApiBaseUrl(runtime.extra)).toBe("https://api.staging.phone11.invalid");
+});

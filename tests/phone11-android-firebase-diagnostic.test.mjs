@@ -64,6 +64,18 @@ test('lab UI renders only sanitized diagnostic fields and explicit gate state',(
  assert.match(source,/Firebase: blocked/);
  assert.match(source,/Firebase: not commissioned/);
  assert.match(source,/FCM receipt:/);
+ assert.match(source,/Wake enrollment: bound/);
  assert.match(source,/Phone11FirebaseDiagnosticChanged/);
  assert.doesNotMatch(source,/bridge\.(start|currentToken)\(\)/);
+});
+
+test('lab enrollment diagnostic exposes only presence and expiry',()=>{
+ const module=readFileSync(path.join(nativeDir,'Phone11SiprixModule.java'),'utf8');
+ const start=module.indexOf('Map<String,Object> wakeEnrollmentDiagnostic()');
+ const end=module.indexOf('@ReactMethod public void getFirebaseDiagnostic',start);
+ assert.notEqual(start,-1);assert.notEqual(end,-1);
+ const diagnostic=module.slice(start,end);
+ assert.match(diagnostic,/"status".*"not_bound".*"bound"/s);
+ assert.match(diagnostic,/"expiresAt"/);
+ assert.doesNotMatch(diagnostic,/bindingId|sessionBinding|deviceId|ownerUserId|tenantId|grant|token/);
 });

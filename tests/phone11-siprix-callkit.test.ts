@@ -8,26 +8,35 @@ const mocks = vi.hoisted(() => ({
   owner: { id: 1 } as { id: number } | null,
   activeCalls: {} as Record<string, { isMuted: boolean }>,
   incoming: null as { id: string; status: string } | null,
+  platform: { OS: "ios" }, pushRegister: vi.fn(async () => null),
 }));
-vi.mock("react-native", () => ({ Alert: { alert: mocks.alert }, Platform: { OS: "ios" }, AppState: mocks.appState }));
+vi.mock("react-native", () => ({ Alert: { alert: mocks.alert }, Platform: mocks.platform, AppState: mocks.appState }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: mocks.owner }) }));
 vi.mock("../lib/sip/engine", () => ({ sipEngine: mocks.engine }));
 vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ setMuted: mocks.setMuted, activeCalls: mocks.activeCalls, incomingCall: mocks.incoming, terminateCall: mocks.terminate }) } }));
 vi.mock("../lib/sip/diagnostics-store", () => ({ formatSipError: String, useSipDiagnosticsStore: { getState: () => ({ addEvent: mocks.diagnostic }) } }));
+vi.mock("../lib/push/client", () => ({ registerPhoneVoipPush: mocks.pushRegister }));
 
 // NativeCallManager loads CallKeep with CommonJS require; inject that package's cached export.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const key = require.resolve("react-native-callkeep");
 require.cache[key] = { id: key, filename: key, loaded: true, exports: { default: { ...mocks.keep, addEventListener: (event: string, handler: any) => mocks.handlers.set(event, handler) } } } as any;
-import { nativeCallManager } from "../lib/sip/native-call";
+import { nativeCallManager, registerVoipPush } from "../lib/sip/native-call";
 
 beforeEach(() => {
   nativeCallManager.destroy();
   vi.clearAllMocks();
   mocks.handlers.clear();
   mocks.owner = { id: 1 }; mocks.incoming = null; mocks.activeCalls = {}; mocks.appState.currentState = "active";
+  mocks.platform.OS = "ios";
   vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+});
+it("starts the authenticated wake client on Android and iOS only", async () => {
+  mocks.platform.OS = "android"; await registerVoipPush();
+  mocks.platform.OS = "ios"; await registerVoipPush();
+  mocks.platform.OS = "web"; await registerVoipPush();
+  expect(mocks.pushRegister).toHaveBeenCalledTimes(2);
 });
 it("initializes one CallKit provider for simultaneous callers", async () => {
   await Promise.all([nativeCallManager.initialize(), nativeCallManager.initialize()]);

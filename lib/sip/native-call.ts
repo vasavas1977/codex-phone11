@@ -869,7 +869,7 @@ export const nativeCallManager = new NativeCallManager();
 
 /** Register an authenticated device only when native wake is commissioned. */
 export async function registerVoipPush(): Promise<string | null> {
-  if (Platform.OS !== "ios") return null;
+  if (Platform.OS !== "ios" && Platform.OS !== "android") return null;
   try {
     const { registerPhoneVoipPush } = await import("../push/client");
     return await registerPhoneVoipPush();

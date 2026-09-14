@@ -36,7 +36,12 @@ export interface FirebaseDiagnostic {
   tokenHash: string | null;
   reason: string;
   checkedAt: number;
+  enrollment: FirebaseEnrollmentDiagnostic;
   ingress: FirebaseIngressDiagnostic | null;
+}
+export interface FirebaseEnrollmentDiagnostic {
+  status: "bound" | "not_bound";
+  expiresAt: number | null;
 }
 export interface FirebaseIngressDiagnostic {
   receiptCount: number;
