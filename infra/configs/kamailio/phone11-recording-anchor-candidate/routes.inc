@@ -3,9 +3,11 @@
 #!ifdef WITH_PHONE11_RECORDING_ANCHOR
 route[PHONE11_RECORDING_ANCHOR] {
     if (!is_method("INVITE") || has_totag()) { return; }
-    # A returned leg may only arrive from the exact private FS socket.
+    # A returned leg may only arrive from the exact private FS socket. The
+    # FreeSWITCH external profile sends this leg from 5060; the ingress leg
+    # remains anchored to the separate private destination port (5080).
     if (is_present_hf("X-Phone11-Recording-Anchor")) {
-        if ($si != PHONE11_ANCHOR_FS_IP || $sp != PHONE11_ANCHOR_FS_PORT ||
+        if ($si != PHONE11_ANCHOR_FS_IP || $sp != 5060 ||
             $rU != "3001" || $hdr(X-Phone11-Recording-Anchor) != "returned-v1") {
             sl_send_reply("403", "Invalid recording route"); exit;
         }
