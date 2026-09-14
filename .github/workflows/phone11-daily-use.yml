@@ -104,6 +104,7 @@ jobs:
             tests/phone11-cloud-playback.test.ts \
             tests/phone11-cloud-playback-focus.test.tsx \
             tests/phone11-playback-controls.test.tsx \
+            tests/phone11-playback-controller.test.ts \
             tests/phone11-playback-route.test.ts \
             tests/phone11-summary-actions.test.ts \
             tests/phone11-summary-actions-ui.test.tsx \

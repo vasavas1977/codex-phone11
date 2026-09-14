@@ -9,7 +9,22 @@ const m = vi.hoisted(() => ({
   identity: { id: 1 },
   busy: false,
   buttons: new Map<string, any>(),
-  player: { pause: vi.fn(), replace: vi.fn(), play: vi.fn(), seekTo: vi.fn() },
+  player: {
+    pause: vi.fn(),
+    replace: vi.fn(),
+    play: vi.fn(),
+    seekTo: vi.fn(async (_seconds: number) => {}),
+    volume: 1,
+    muted: false,
+  },
+  status: {
+    currentTime: 0,
+    duration: 100,
+    playing: false,
+    isLoaded: true,
+    didJustFinish: false,
+    playbackState: "ready",
+  },
   setAudioMode: vi.fn(async (_mode: unknown) => {}),
   nativeRoute: {
     getPlaybackAudioRoute: vi.fn(async () => ({
@@ -52,12 +67,7 @@ vi.mock("@react-navigation/native", () => ({
 vi.mock("expo-audio", () => ({
   useAudioPlayer: () => m.player,
   setAudioModeAsync: (mode: unknown) => m.setAudioMode(mode),
-  useAudioPlayerStatus: () => ({
-    currentTime: 0,
-    duration: 100,
-    playing: false,
-    isLoaded: true,
-  }),
+  useAudioPlayerStatus: () => m.status,
 }));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
@@ -103,6 +113,21 @@ beforeEach(() => {
   m.buttons.clear();
   m.routeListener = undefined;
   m.token.mockResolvedValue("token");
+  m.status.currentTime = 0;
+  m.status.duration = 100;
+  m.status.playing = false;
+  m.status.isLoaded = true;
+  m.status.didJustFinish = false;
+  m.status.playbackState = "ready";
+  m.player.volume = 1;
+  m.player.muted = false;
+  m.player.seekTo.mockResolvedValue(undefined);
+  m.nativeRoute.setPlaybackAudioRoute.mockImplementation(
+    async (route: string) => ({
+      route,
+      label: route === "speaker" ? "Speaker" : "Earpiece",
+    }),
+  );
 });
 
 it("shows the earpiece preference before routing, while preserving external outputs", () => {
@@ -153,6 +178,56 @@ it("changes the native media route only while no Phone11 call is active", async 
   await m.buttons.get("Play through speaker").onPress();
   expect(m.nativeRoute.setPlaybackAudioRoute).not.toHaveBeenCalled();
   expect(m.player.pause).toHaveBeenCalled();
+  blur();
+});
+
+it("a second Play tap cancels pending route setup before audio starts", async () => {
+  let finish!: () => void;
+  m.nativeRoute.setPlaybackAudioRoute.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ route: "earpiece", label: "Earpiece" });
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const firstTap = m.buttons.get("Play recording").onPress();
+  await Promise.resolve();
+  m.buttons.get("Play recording").onPress();
+  finish();
+  await firstTap;
+  expect(m.player.pause).toHaveBeenCalled();
+  expect(m.player.play).not.toHaveBeenCalled();
+  blur();
+});
+
+it("the Play wrapper restarts completed playback audibly", async () => {
+  m.status.currentTime = 100;
+  m.status.didJustFinish = true;
+  m.player.volume = 0.2;
+  m.player.muted = true;
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.buttons.get("Play recording").onPress();
+  expect(m.player.seekTo).toHaveBeenCalledWith(0);
+  expect(m.player.volume).toBe(1);
+  expect(m.player.muted).toBe(false);
+  expect(m.player.play).toHaveBeenCalledOnce();
+  blur();
+});
+
+it("fails closed when a playback seek is rejected", async () => {
+  m.player.seekTo.mockRejectedValueOnce(new Error("seek failed"));
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.buttons.get("Forward 15 seconds").onPress();
+  expect(m.player.replace).toHaveBeenLastCalledWith(null);
   blur();
 });
 it("a mounted screen loads only on focus and clears audio on blur without autoplaying on return", async () => {
