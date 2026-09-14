@@ -30,6 +30,13 @@ export interface WakeBinding {
   bindingId: string; ownerUserId: number; tenantId: number; deviceId: string; sessionBinding: string; expiresAt: number;
 }
 export interface NativeWake extends WakeBinding { v: 1; callUUID: string; grantExpiresAt: number; }
+export interface FirebaseDiagnostic {
+  status: "available" | "blocked" | "unavailable";
+  tokenPresent: boolean;
+  tokenHash: string | null;
+  reason: string;
+  checkedAt: number;
+}
 
 export interface Call {
   id: string;
@@ -79,6 +86,7 @@ export type SiprixSnapshot = Snapshot;
 export interface CompletedWakeCall { id: string; ownerUserId: number; tenantId: number; number: string; direction: "inbound"; startedAt: number; answeredAt?: number; endedAt: number; updatedAt: number; }
 export interface Phone11SiprixModule {
   getCapabilities(): Promise<{ registrationAvailable: boolean; closedAppCalling: false; reason: string }>;
+  getFirebaseDiagnostic(): Promise<FirebaseDiagnostic>;
   start(): Promise<string | null>;
   currentToken(): Promise<string | null>;
   createDeviceId(): Promise<string>;

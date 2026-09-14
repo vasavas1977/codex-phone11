@@ -98,6 +98,28 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
   });
  }
  private static boolean validProviderToken(String token){return token!=null&&!token.trim().isEmpty()&&token.length()<=4096;}
+ private void resolveFirebaseDiagnostic(Promise p,Phone11FirebaseDiagnostic.Result result){
+  try{
+   new Phone11FirebaseDiagnosticStore(getReactApplicationContext().getApplicationContext()).replace(result);
+   p.resolve(Arguments.makeNativeMap(result.publicValue()));
+  }catch(RuntimeException failure){p.reject("FIREBASE_DIAGNOSTIC_UNAVAILABLE","Firebase diagnostic persistence is unavailable");}
+ }
+ @ReactMethod public void getFirebaseDiagnostic(Promise p){rt.main.post(()->{
+  if(!rt.lease.owns(owner)){p.reject("E_STALE_BRIDGE","React bridge ownership has changed");return;}
+  Phone11AndroidWakeRuntime.Status status=Phone11AndroidWakeRuntime.get(getReactApplicationContext()).status();
+  long checkedAt=System.currentTimeMillis();
+  if(status==Phone11AndroidWakeRuntime.Status.UNSUPPORTED_UNCOMMISSIONED){
+   resolveFirebaseDiagnostic(p,Phone11FirebaseDiagnostic.unavailable(checkedAt));return;
+  }
+  if(status!=Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS){
+   resolveFirebaseDiagnostic(p,Phone11FirebaseDiagnostic.misconfigured(checkedAt));return;
+  }
+  FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task->rt.main.post(()->{
+   if(!rt.lease.owns(owner)){p.reject("E_STALE_BRIDGE","React bridge ownership has changed");return;}
+   String providerValue=task.isSuccessful()?task.getResult():null;
+   resolveFirebaseDiagnostic(p,Phone11FirebaseDiagnostic.fromProviderValue(providerValue,System.currentTimeMillis()));
+  }));
+ });}
  private void providerToken(Promise p,boolean start){
   Phone11AndroidWakeRuntime wake=Phone11AndroidWakeRuntime.get(getReactApplicationContext());
   if(wake.status()!=Phone11AndroidWakeRuntime.Status.COMMISSIONED_WAITING_FOR_PROVIDER_INGRESS){p.reject("NOT_COMMISSIONED","Background calling is not commissioned");return;}

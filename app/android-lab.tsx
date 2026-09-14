@@ -4,7 +4,7 @@ import { Redirect, router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { isPhone11AndroidLab, phone11AndroidSipConfig } from "@/constants/phone11-build";
 import { useColors } from "@/hooks/use-colors";
-import type { Phone11SiprixModule, Snapshot } from "../modules/phone11-siprix";
+import type { FirebaseDiagnostic, Phone11SiprixModule, Snapshot } from "../modules/phone11-siprix";
 
 export default function AndroidLab() {
  if (!isPhone11AndroidLab() || Platform.OS !== "android") return <Redirect href="/" />;
@@ -12,6 +12,7 @@ export default function AndroidLab() {
 }
 function Lab() {
  const colors=useColors();const [state,setState]=useState<Snapshot|null>(null);
+ const [firebaseDiagnostic,setFirebaseDiagnostic]=useState<FirebaseDiagnostic|null>(null);
  const sip=phone11AndroidSipConfig();
  const [password,setPassword]=useState("");const [error,setError]=useState("");
  const [events,setEvents]=useState<Array<{type:string;state?:string;sequence:number;generation:number;callId?:string;statusCode?:number}>>([]);
@@ -20,7 +21,7 @@ function Lab() {
  const refresh=async()=>{if(bridge)setState(await bridge.getSnapshot());};
  useEffect(()=>{
   if(!bridge){setError("E_NATIVE_MODULE_MISSING");return;}
-  void refresh();
+  void refresh();void bridge.getFirebaseDiagnostic().then(setFirebaseDiagnostic).catch(e=>setFirebaseDiagnostic({status:"blocked",tokenPresent:false,tokenHash:null,reason:String((e as {code?:string}).code||"firebase_diagnostic_unavailable"),checkedAt:Date.now()}));
   const sub=new NativeEventEmitter(bridge as never).addListener("Phone11SiprixEvent",e=>{
    setEvents(old=>[...old.slice(-39),{type:e.type,state:e.call?.state,sequence:e.sequence,generation:e.generation,callId:e.call?.callId,statusCode:e.call?.statusCode}]);
    if(e.type==="callTerminated")setEnded(n=>n+1);void refresh();
@@ -29,12 +30,16 @@ function Lab() {
  async function run(action:()=>Promise<unknown>){if(busyRef.current)return;busyRef.current=true;setBusy(true);setError("");try{await action();await refresh();}catch(e){setError(String((e as {code?:string}).code||"E_COMMAND"));}finally{busyRef.current=false;setBusy(false);}}
  const call=state?.calls[0];const account=state?.accounts[0];
  const button=(label:string,action:()=>Promise<unknown>)=><Pressable accessibilityRole="button" accessibilityLabel={label} testID={`lab-${label}`} disabled={busy} onPress={()=>void run(action)} style={{backgroundColor:colors.surface,padding:14,borderRadius:12,marginBottom:8}}><Text style={{color:colors.primary,fontWeight:"600"}}>{label}</Text></Pressable>;
- const observed=JSON.stringify({initialized:state?.initialized??false,sdk:state?.sdkVersion??null,generation:state?.generation,sequence:state?.sequence,registration:account?.registrationState??"none",call:call?.state??"none",muted:call?.muted??false,held:call?.held??false,ended,error,events,callCount:state?.calls.length??0,labMedia:(state as Snapshot & {labMedia?:unknown})?.labMedia});
+ const observed=JSON.stringify({initialized:state?.initialized??false,sdk:state?.sdkVersion??null,generation:state?.generation,sequence:state?.sequence,registration:account?.registrationState??"none",firebase:firebaseDiagnostic,call:call?.state??"none",muted:call?.muted??false,held:call?.held??false,ended,error,events,callCount:state?.calls.length??0,labMedia:(state as Snapshot & {labMedia?:unknown})?.labMedia});
+ const firebaseLabel=firebaseDiagnostic?.status==="available"
+  ? `Firebase: token ready • ID ${firebaseDiagnostic.tokenHash}`
+  : firebaseDiagnostic?.status==="blocked"?`Firebase: blocked • ${firebaseDiagnostic.reason}`:"Firebase: not commissioned";
  return <ScreenContainer><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:20,gap:8}}>
   <Text style={{fontSize:26,fontWeight:"700",color:colors.foreground}}>Phone11 Android Lab</Text>
   <Text style={{color:colors.muted}}>Isolated synthetic calls • real Siprix • no production accounts</Text>
   <View accessible accessibilityLabel={`lab-state:${observed}`} testID="lab-state">
    <Text style={{color:colors.foreground,fontSize:12}}>SDK: {state?.sdkVersion??"not initialized"}{"\n"}Registration: {account?.registrationState??"none"} • Call: {call?.state??"none"}{"\n"}Completed: {ended} • {error||"No command error"}</Text>
+   <Text style={{color:colors.foreground,fontSize:12}}>{firebaseLabel}</Text>
   </View>
   {button("Initialize",()=>bridge!.initialize({}))}
   {button("Microphone",()=>PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO))}
@@ -58,6 +63,6 @@ function Lab() {
   </View>
   {button("Destroy",()=>bridge!.destroy())}
   {button("Shared Phone11 UI",async()=>{await bridge!.destroy();router.replace("/");})}
-  <Text style={{color:colors.muted}}>FCM and process-death wake are unavailable in this build. This screen verifies the native bridge; shared Phone11 screens remain the source for product UI.</Text>
+  <Text style={{color:colors.muted}}>{firebaseDiagnostic?.status==="available"?"Firebase registration is available. Real delivery remains a separate isolated L3 staging test.":firebaseDiagnostic?.status==="blocked"?"Firebase commissioning is blocked; see the lab state for the safe diagnostic reason.":"FCM and process-death wake are not commissioned in this build."} Shared Phone11 screens remain the source for product UI.</Text>
  </ScrollView></ScreenContainer>;
 }

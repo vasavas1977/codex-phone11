@@ -13,7 +13,7 @@ import com.google.firebase.FirebaseOptions;
 public final class Phone11AndroidWakeRuntime {
   static final String META_COMMISSIONED = "ai.phone11.androidWakeCommissioned";
   static final String META_ENVIRONMENT = "ai.phone11.androidWakeEnvironment";
-  private static final String LAB_PACKAGE = "ai.phone11.mobile.lab";
+  private static final String COMMISSIONED_STAGING_PACKAGE = "ai.phone11.mobile.staging";
   private static Phone11AndroidWakeRuntime instance;
 
   public enum Status {
@@ -155,7 +155,7 @@ public final class Phone11AndroidWakeRuntime {
       boolean commissioned = metadata != null && metadata.getBoolean(META_COMMISSIONED, false);
       if (!commissioned) return Status.UNSUPPORTED_UNCOMMISSIONED;
       String environment = metadata.getString(META_ENVIRONMENT, "");
-      if (!LAB_PACKAGE.equals(context.getPackageName()) || !"staging".equals(environment)) {
+      if (!COMMISSIONED_STAGING_PACKAGE.equals(context.getPackageName()) || !"staging".equals(environment)) {
         return Status.UNSUPPORTED_MISCONFIGURED;
       }
       try {
