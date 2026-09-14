@@ -51,10 +51,12 @@ change. Before a dry-run can pass, an operator must:
    a separate migration identity. The runtime identity needs the SELECT and
    narrowly required session, rate-limit, push-device and wake-binding DML
    grants; it must not own the schema.
-3. Seed exactly one synthetic active tenant, canonical user, extension,
-   `user_extensions`, SIP account and subscriber for extension 7101. Run the
-   existing auth admin tool to create the credential account and explicit
-   `phone11_auth_identity` mapping. Do not fabricate a session or wake binding.
+3. Use the guarded `phone11-stage-migrator` phases in
+   `STAGING-CANONICAL-SEED.md` to seed exactly one synthetic active tenant,
+   canonical user, extension, `user_extensions`, SIP account and subscriber for
+   extension 7101. Run its separate existing auth-admin identity phase to create
+   the credential account and explicit `phone11_auth_identity` mapping. Do not
+   fabricate a session or wake binding.
 4. Create a new random 32-byte-or-longer auth secret, build the dedicated image
    to the exact Artifact Registry path, resolve it to a digest, and provide a
    mode-0600 non-secret environment file containing the final Cloud Run origin.
