@@ -58,8 +58,13 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
   async manualStop(id:string,actor:number){
    const lease=await ledger.active(id,actor);if(!lease)return false;
    if(!await capture.stop(id,actor))return false;
-   // Authenticated transport waits for exact RECORD_STOP, not only command ACK.
-   await capture.recordingStopped(id,lease.path);return true;
+   // The authenticated stop transport waits for the exact RECORD_STOP event,
+   // so the call has stopped even when the WAV upload or CDR correlation is
+   // still temporarily unavailable. Finish asynchronously; the durable
+   // stopped marker lets the reconciliation loop retry without making the
+   // user tap Stop again or showing a false failure after a successful stop.
+   void capture.recordingStopped(id,lease.path).catch(()=>{});
+   return true;
   },
   onAuthenticatedRecordStop:capture.recordingStopped,
   async tick(){
