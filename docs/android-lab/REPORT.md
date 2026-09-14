@@ -10,9 +10,9 @@ Status: **PARTIAL**, by design. The complete 62-case matrix reports every unexec
 - Selected base: `71f4b683d572585c8d07c561649a543acfe87d40` on `codex/phone11-daily-use-20260910`. Live remote inventory and fetch showed this was newer than the supplied baseline and contained the iOS Build39 recording finalization work.
 - Worktree: `/Users/vasavas16macbookpro/Documents/Codex/phone11-android-virtual-lab-20260914`
 - Branch: `codex/phone11-android-virtual-lab-20260914`
-- Final APK source commit: `4bf3d416b0e16e49b2aab768001cd813697b8dfe`
-- APK: `.lab/Phone11-Android-Lab-1.0.0-4bf3d41.apk`
-- APK SHA-256: `934349e12614eff56b8f6dc13d60cac5ced8d864f6b31e16a633f36d9a06cb9c`
+- Final APK source commit: `e1749b35e9d70f21d7d7c66473ba654b3836dcd5`
+- APK: `.lab/Phone11-Android-Lab-1.0.0-e1749b3.apk`
+- APK SHA-256: `ffbf5d49648ab29d5fa931eabb976126f6419ddef2f40813af628bae07907990`
 - Android application ID: `ai.phone11.mobile.lab`; version `1.0.0` / code `1`; minimum SDK24; target/compile SDK36; ARM64 only.
 - Actual emulator: `Phone11_Lab_API35`, API35 Google APIs ARM64, serial `emulator-5580`.
 - Actual native runtime: `Phone11Lab 1.1.0 from 20260905_1222` from pinned Siprix AAR SHA-256 `3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198`.
@@ -74,6 +74,8 @@ Final integrated verification passed:36 Node lab/config/wake/notice/adoption che
 
 The final Android enrollment implementation passed87 focused client/server token, identity, rotation, logout, retry and provider tests plus17 native/config Node and JVM contract checks. Its backend bundle, Android release Java compilation, release Lint and exact APK assembly passed. The42 real PostgreSQL wake tests remained skipped because no dedicated loopback `phone11_push_test` database was configured; no live database or provider was contacted. Repository-wide TypeScript retained only its existing unrelated diagnostics and reported none in the changed enrollment files.
 
+The final commissioning and L3 harness integration passed45 Node configuration, isolation, report and evidence checks plus80 focused enrollment/delivery tests. Commissioned builds now require the exact staging package, staging-only HTTPS API/SIP endpoints and matching Firebase project, sender, app and `google-services.json` identities. The real-FCM harness covers all13 L3 cases and refuses simulations, identity drift, secret-bearing artifacts and missing evidence. With no commissioned inputs it writes sanitized BLOCKED results and performs no ADB, provider or network mutation.
+
 ## Open gates
 
 - L3 remains blocked: the authenticated enrollment/sender implementation has no matching lab Firebase project/client file, provider credential, deployed server, commissioned APK or verified provider delivery. The private data-only ingress and incoming-call services are disabled and uncommissioned in the exact tested APK. No fake notification or local broadcast was counted as Firebase evidence.
@@ -123,7 +125,8 @@ pnpm lab:down
 ## Evidence index
 
 - Final report: `.lab/report.html`, `.lab/report.json`, `.lab/junit.xml`
-- Final integrated APK: `.lab/Phone11-Android-Lab-1.0.0-4bf3d41.apk`, `.lab/final-4bf3d41-apk.json`, `.lab/final-4bf3d41-badging.txt`, `.lab/final-4bf3d41-manifest.txt`, `.lab/final-4bf3d41-launch.png`
+- Final integrated APK: `.lab/Phone11-Android-Lab-1.0.0-e1749b3.apk`, `.lab/final-e1749b3-apk.json`, `.lab/final-e1749b3-badging.txt`, `.lab/final-e1749b3-manifest.txt`, `.lab/final-e1749b3-launch.png`
+- Firebase staging inventory: `docs/android-lab/FIREBASE-STAGING-INVENTORY-2026-09-14.md`; commissioned configuration contract: `docs/android-lab/COMMISSIONED-FCM-STAGING.md`; real delivery harness: `docs/android-lab/FCM-LIVE-HARNESS.md`
 - Final APK identity/native load: `.lab/apk.json`, `.lab/final-updated-native-proof.json`, `.lab/final-updated-sdk.png`, `.lab/final-apk-badging.txt`, `.lab/final-apk-manifest.txt`, `.lab/final-apk-inventory.txt`
 - 40-call campaign: `.lab/sip-1789368207834/`
 - Refreshed 40-call exact-APK campaign plus mute-state check: `.lab/sip-1789383622451/`, `.lab/attempts-3ac0c31.json`
@@ -136,4 +139,4 @@ pnpm lab:down
 - Shared UI: `.lab/shared-phone11-ui.png`; lab runtime: `.lab/sdk-initialized.png`
 - iOS investigations: `docs/phone11-daily-use/SUMMARY-FAILURE-20260914.md`, `docs/phone11-daily-use/RECORDING-PLAYBACK-CANDIDATE-20260914.md`
 
-The exact uncommissioned APK covers authenticated Android FCM token registration, native encrypted binding persistence, wake enrollment/resolution, rotation/logout isolation and platform-specific server delivery. The next Android acceptance gate is a reviewed isolated Firebase project/client/sender configuration, a commissioned staging APK and an approved isolated server target. Only after those are commissioned can the lab execute heads-up delivery, background, lock, Doze and true process-death cases. Full-screen use additionally requires a deliberate permission and policy decision. The next iOS gate is the signed daily-pilot candidate and physical playback/seek/speaker check; recovering the12:40 summary additionally requires approval for one production Gemini retry after the diagnostic backend change is deployed.
+The exact uncommissioned APK covers authenticated Android FCM token registration, native encrypted binding persistence, wake enrollment/resolution, rotation/logout isolation and platform-specific server delivery. Read-only inventory found no accessible Firebase project with both an isolated staging identity and the required `ai.phone11.mobile.staging` Android app. The next Android acceptance gate is therefore creation of a reviewed isolated Firebase project/app/client/sender configuration, a commissioned staging APK and an approved isolated server target. Only after those are commissioned can the lab execute heads-up delivery, background, lock, Doze and true process-death cases. Full-screen use additionally requires a deliberate permission and policy decision. The next iOS gate is the signed daily-pilot candidate and physical playback/seek/speaker check; recovering the12:40 summary additionally requires approval for one production Gemini retry after the diagnostic backend change is deployed.
