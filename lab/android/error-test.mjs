@@ -37,6 +37,10 @@ const attemptDirectory = (apkSha256, id) => {
 };
 const safeSnapshot = value => Object.fromEntries(['initialized', 'sdk', 'generation', 'sequence', 'registration', 'call', 'callCount', 'muted', 'held', 'ended', 'error', 'events'].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
 const uniqueTransactions = messages => new Set(messages.map(message => `${message.direction}:${message.dialog}:${message.cseq}:${message.method}:${message.status ?? 'request'}`));
+const logicalDialogs = (messages, method = 'INVITE') => new Set(messages.filter(message => message.method === method && message.dialog).map(message => message.dialog));
+const redactSipEntry = raw => raw
+  .replace(/^((?:Proxy-)?Authorization:)\s*.+$/gim, '$1 [REDACTED]')
+  .replace(/^Call-ID:\s*(.+)$/gim, (_, value) => `Call-ID: sha256:${sha256(value.trim()).slice(0, 20)}`);
 const boundsNumbers = bounds => {
   const values = String(bounds || '').match(/\d+/g)?.map(Number) || [];
   check(values.length === 4 && values[2] > values[0] && values[3] > values[1], 'Invalid Android UI bounds');
@@ -78,12 +82,18 @@ async function main() {
     assert.throws(() => attemptDirectory('bad', 'LIFE-01'));
     assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }]).size, 1);
     assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'one', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'two', cseq: 1, method: 'INVITE', status: null }]).size, 2);
+    assert.equal(logicalDialogs([{ dialog: 'same', cseq: 1, method: 'INVITE' }, { dialog: 'same', cseq: 2, method: 'INVITE' }]).size, 1);
+    assert.equal(logicalDialogs([{ dialog: 'one', cseq: 1, method: 'INVITE' }, { dialog: 'two', cseq: 1, method: 'INVITE' }]).size, 2);
+    const redacted = redactSipEntry('INVITE sip:x SIP/2.0\r\nAuthorization: Digest response="secret"\r\nCall-ID: private-call-id');
+    assert.match(redacted, /Authorization: \[REDACTED\]\r\nCall-ID: sha256:[a-f0-9]{20}$/);
+    assert.equal(redacted.includes('secret'), false);
+    assert.equal(redacted.includes('private-call-id'), false);
     assert.deepEqual(recentsGesture('[173,211][907,2010]'), { startX: 540, startY: 1686, endX: 540, endY: 498, durationMs: 50 });
     assert.equal(phone11TaskRows(['  * Task{abc #25 A=10207:ai.phone11.mobile.lab U=0}', 'app=ProcessRecord{abc 1:ai.phone11.mobile.lab/u0a1}']).length, 1);
     assert.equal(phone11TaskRows(['app=ProcessRecord{abc 1:ai.phone11.mobile.lab/u0a1}']).length, 0);
     assert.equal(resumedLauncher(['topResumedActivity=ActivityRecord{a u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t1}']), true);
     assert.equal(resumedLauncher(['topResumedActivity=ActivityRecord{a u0 ai.phone11.mobile.lab/.MainActivity t1}']), false);
-    console.log('18 offline harness assertions passed; no ADB, emulator, PBX, or fixture mutation');
+    console.log('23 offline harness assertions passed; no ADB, emulator, PBX, or fixture mutation');
     return;
   }
   if (!process.argv.includes('--execute')) {
@@ -186,17 +196,22 @@ async function main() {
   }
   function historyNumbers() { return [...pbx('pjsip show history').matchAll(/^\s*(\d+)\s+\d+\s+\*\s+[<=>]+/gm)].map(match => Number(match[1])); }
   const mark = () => Math.max(-1, ...historyNumbers());
-  function trace(since) {
+  function traceEvidence(since) {
     const numbers = historyNumbers().filter(number => number > since);
     check(numbers.length <= 120, 'SIP evidence exceeded bounded size');
-    return numbers.map(number => {
+    const entries = numbers.map(number => {
       const raw = pbx(`pjsip show history entry ${number}`);
       const first = raw.split(/\r?\n/).find(line => /^(?:SIP\/2.0|[A-Z]+ sip:)/.test(line)) || '';
       const cseq = raw.match(/^CSeq:\s*(\d+)\s+(\w+)/im);
       const dialog = raw.match(/^Call-ID:\s*(.+)/im)?.[1]?.trim();
-      return { number, direction: raw.includes('Sent to') ? 'TX' : 'RX', method: cseq?.[2], cseq: Number(cseq?.[1]), status: Number(first.match(/^SIP\/2.0 (\d+)/)?.[1]) || null, dialog: dialog ? sha256(dialog).slice(0, 20) : null, authorizationPresent: /^(?:Proxy-)?Authorization:/mi.test(raw) };
+      return {
+        message: { number, direction: raw.includes('Sent to') ? 'TX' : 'RX', method: cseq?.[2], cseq: Number(cseq?.[1]), status: Number(first.match(/^SIP\/2.0 (\d+)/)?.[1]) || null, dialog: dialog ? sha256(dialog).slice(0, 20) : null, authorizationPresent: /^(?:Proxy-)?Authorization:/mi.test(raw) },
+        wire: redactSipEntry(raw),
+      };
     });
+    return { messages: entries.map(entry => entry.message), entries };
   }
+  const trace = since => traceEvidence(since).messages;
   const exchange = (messages, method, status) => messages.some(request => request.direction === 'RX' && request.method === method && request.status === null && messages.some(reply => reply.direction === 'TX' && reply.method === method && reply.status === status && reply.cseq === request.cseq && reply.dialog === request.dialog));
   async function callTone() {
     check(ui.state().call === 'none' && !channels().length, 'Call precondition is not idle');
@@ -383,12 +398,20 @@ async function main() {
         } while (Date.now() < removalDeadline);
         row.observations.push({ removalConfirmation: { taskRows: taskRows.map(line => line.trim()), confirmation: 'Android task manager; no UIAutomator query during task-dismiss animation' } });
         proof(!taskRows.length, 'Phone11 Android task or MainActivity remained after its Recents card disappeared');
-        const afterScreenshot = `${directory}/LIFE-03-recents-after.png`;
-        try { ui.screenshot(afterScreenshot); row.artifacts.push(afterScreenshot.slice(5)); }
-        catch { row.observations.push({ postRemovalScreenshot: 'unavailable; task-manager proof retained and scenario continued' }); }
-        const stoppedAfterRemoval = packageStopped(); const serviceRows = services();
-        const pidText = ui.shell('pidof', pkg).trim(); const processAfterRemoval = /^\d+$/.test(pidText) ? processIdentity() : null;
+        // Do not call UIAutomator or screencap after dismissal. On this API35
+        // emulator, either can block while Launcher settles and turn a proven
+        // task removal into a harness timeout. The task manager dump above is
+        // the sole post-gesture dismissal proof; the following queries observe
+        // package/process/service/PBX ownership without touching app UI.
+        const stoppedAfterRemoval = packageStopped();
+        row.observations.push({ postRemovalPackage: { stopped: stoppedAfterRemoval } }); persist();
+        const serviceRows = services();
+        row.observations.push({ postRemovalServices: serviceRows }); persist();
+        const pidText = ui.shell('pidof', pkg).trim();
+        const processAfterRemoval = /^\d+$/.test(pidText) ? processIdentity() : null;
+        row.observations.push({ postRemovalProcess: processAfterRemoval }); persist();
         const peerAfterRemoval = channels();
+        row.observations.push({ postRemovalPbx: peerAfterRemoval }); persist();
         row.observations.push({ taskRemoval: { activityBefore, processBefore, processAfterRemoval,
           packageStopped: stoppedAfterRemoval, services: serviceRows, taskAndActivityAbsent: true,
           callBefore: active.call }, pbxAfterRemoval: peerAfterRemoval });
@@ -408,14 +431,24 @@ async function main() {
       });
       if (id === 'SIP-11') await scenario(id, async () => {
         await visiblePermissionRecovery(); await resetAndRegister(); await wait(value => value.registration === 'registered');
-        let before = safeSnapshot(ui.state()); let sipMark = mark();
+        const preserveSipTrace = (phase, since) => {
+          const evidence = traceEvidence(since);
+          const artifact = `${directory}/SIP-11-${phase}-sip-trace.json`;
+          write(artifact, { phase, capturedAt: new Date().toISOString(), messages: evidence.entries });
+          row.artifacts.push(artifact.slice(5));
+          return evidence.messages;
+        };
+        let before = safeSnapshot(ui.state()); const firstCallMark = mark(); let sipMark = firstCallMark;
         ownedCall = true; tapBurst('Call tone'); const connected = await wait(value => value.call === 'connected', 8000);
         let messages = trace(sipMark); let peer = channels();
         check(peer.length === 1 && peer[0].state === 'Up', 'Rapid duplicate dial did not yield exactly one connected PBX call');
         let matching = messages.filter(message => message.direction === 'RX' && message.method === 'INVITE' && message.status === null);
-        check(uniqueTransactions(matching).size === 1, 'Rapid duplicate dial emitted more than one unique INVITE transaction');
+        check(logicalDialogs(matching).size === 1, 'Rapid duplicate dial emitted more than one logical SIP Call-ID');
         check(eventCount(connected, 'callDialing', before.sequence) === 1 && connected.callCount === 1, 'Rapid duplicate dial created duplicated native call state');
-        row.observations.push({ rapidDial: { beforeSequence: before.sequence, after: connected, sip: messages, pbx: peer, invitePackets: matching.length, uniqueInviteTransactions: uniqueTransactions(matching).size } });
+        const dialingEvents = (connected.events || []).filter(event => event.generation === connected.generation && event.sequence > before.sequence && event.type === 'callDialing');
+        check(new Set(dialingEvents.map(event => event.callId)).size === 1, 'Rapid duplicate dial created more than one logical Siprix call');
+        check(connected.error === 'E_STATE', 'Second rapid dial command was not explicitly rejected by native state ownership');
+        row.observations.push({ rapidDial: { beforeSequence: before.sequence, after: connected, sip: messages, pbx: peer, invitePackets: matching.length, uniqueInviteTransactions: uniqueTransactions(matching).size, logicalSipDialogs: logicalDialogs(matching).size, nativeDialStarts: dialingEvents.length, logicalNativeCallIds: new Set(dialingEvents.map(event => event.callId)).size, secondCommandRejection: connected.error } });
 
         const endedBefore = connected.ended; sipMark = mark(); tapBurst('Hang up'); const idle = await wait(value => value.call === 'none', 8000);
         messages = trace(sipMark); await noChannels(); ownedCall = false;
@@ -423,6 +456,28 @@ async function main() {
         check(uniqueTransactions(matching).size === 1, 'Rapid duplicate hangup emitted more than one unique BYE transaction');
         check(idle.ended === endedBefore + 1 && eventCount(idle, 'callTerminated', connected.sequence) === 1, 'Rapid duplicate hangup produced missing or duplicated termination');
         row.observations.push({ rapidHangup: { beforeSequence: connected.sequence, after: idle, sip: messages, byePackets: matching.length, uniqueByeTransactions: uniqueTransactions(matching).size } });
+
+        // Capture the first logical call only after termination so the artifact
+        // retains the complete authenticated INVITE, dialog and BYE exchange.
+        const firstCallMessages = preserveSipTrace('rapid-dial-complete', firstCallMark);
+        const firstDialogs = logicalDialogs(firstCallMessages);
+        check(firstDialogs.size === 1, 'Complete rapid-dial trace did not retain exactly one logical SIP Call-ID');
+
+        // A clean, single-command retry must work after the rejected duplicate
+        // and terminal cleanup. Its SIP Call-ID must be distinct from call one.
+        before = safeSnapshot(idle); const retryMark = mark();
+        ownedCall = true; ui.tap('Call tone'); const retried = await wait(value => value.call === 'connected', 8000);
+        peer = channels();
+        check(peer.length === 1 && peer[0].state === 'Up', 'Post-termination retry did not yield exactly one connected PBX call');
+        check(eventCount(retried, 'callDialing', before.sequence) === 1 && retried.callCount === 1, 'Post-termination retry did not create exactly one native call');
+        const retryEndedBefore = retried.ended;
+        ui.tap('Hang up'); const retryIdle = await wait(value => value.call === 'none', 8000);
+        await noChannels(); ownedCall = false;
+        const retryMessages = preserveSipTrace('clean-retry-complete', retryMark);
+        const retryDialogs = logicalDialogs(retryMessages);
+        check(retryDialogs.size === 1 && [...retryDialogs].every(dialog => !firstDialogs.has(dialog)), 'Post-termination retry did not use one fresh logical SIP Call-ID');
+        check(retryIdle.ended === retryEndedBefore + 1 && eventCount(retryIdle, 'callTerminated', retried.sequence) === 1, 'Post-termination retry did not terminate cleanly once');
+        row.observations.push({ cleanRetry: { beforeSequence: before.sequence, connected: retried, idle: retryIdle, pbxWhileConnected: peer, sip: retryMessages, logicalSipDialogs: retryDialogs.size, freshDialog: true, pbxAfterTermination: channels() } });
 
         before = safeSnapshot(ui.state()); sipMark = mark();
         execFileSync(process.execPath, ['lab/android/fixture.mjs', 'incoming'], { cwd: root, encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -435,7 +490,8 @@ async function main() {
         check(uniqueTransactions(inviteResponses).size === 1, 'Rapid duplicate answer emitted missing or multiple unique final INVITE responses');
         row.observations.push({ rapidAnswer: { beforeSequence: before.sequence, ringingSequence: ringing.sequence, after: answered, sip: messages, pbx: peer, finalInviteResponsePackets: inviteResponses.length, uniqueFinalInviteResponses: uniqueTransactions(inviteResponses).size } });
         await endOwnedCall();
-        return ['Two rapid dial taps produced one native call, one unique INVITE transaction and one PBX channel', 'Two rapid hangup taps produced one unique BYE transaction and one native termination', 'Two rapid answer taps produced one connected native call and one unique final INVITE response transaction; cleanup completed'];
+        preserveSipTrace('rapid-answer-complete', sipMark);
+        return ['Two rapid dial taps produced one native start and one logical SIP Call-ID; the second native command was rejected with E_STATE', 'Authenticated INVITE transactions and the complete dialog trace were retained without miscounting the challenge retry as another call', 'One PBX channel connected; rapid hangup terminated once', 'A subsequent outgoing call used one fresh SIP Call-ID and completed cleanly after prior termination', 'Two rapid answer taps produced one connected native call and one unique final INVITE response transaction; cleanup completed'];
       });
     }
   } finally {
