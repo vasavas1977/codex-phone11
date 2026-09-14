@@ -1,6 +1,6 @@
 # Phone11 Android staging cloud runtime commissioning
 
-Verified through `2026-09-14T23:08:00+0700`. Every cloud command named project
+Verified through `2026-09-14T23:15:05+0700`. Every cloud command named project
 `phone11-stage-20260914` explicitly. This record contains public resource
 metadata and sanitized test results only. It contains no access token, refresh
 token, API key, service-account key, secret value, FCM registration token,
@@ -96,10 +96,11 @@ delivery, answer, connected media or call-history reconciliation.
 | Item                         | Verified value                                                            |
 | ---------------------------- | ------------------------------------------------------------------------- |
 | Artifact Registry repository | `asia-southeast1-docker.pkg.dev/phone11-stage-20260914/phone11-staging`   |
-| Immutable image digest       | `sha256:58ef2a8052c45584917a4940851fac4cabd0db7611ca9c0b7b25d6135c88e676` |
+| Immutable image digest       | `sha256:c9f80651abf376fd8d3e63aac80274e0534e951f637b1240e0500dea5a4ab72d` |
+| Backend source commit        | `0cc3ef9d6e10c067f80cdb29dc727c5c37fb8e1d`                                |
 | Cloud Run service            | `phone11-fcm-staging-lab`                                                 |
 | Region                       | `asia-southeast1`                                                         |
-| Ready revision               | `phone11-fcm-staging-lab-00003-5wd`                                       |
+| Ready revision               | `phone11-fcm-staging-lab-00005-zjx`                                       |
 | Runtime service account      | `phone11-fcm-lab@phone11-stage-20260914.iam.gserviceaccount.com`          |
 | Authenticated `/health`      | HTTP `200` with the exact source commit                                   |
 | Anonymous `/health`          | HTTP `403`                                                                |
@@ -107,7 +108,14 @@ delivery, answer, connected media or call-history reconciliation.
 The service uses the immutable image digest above, runs the minimal staging
 entry point, permits at most one instance and requires Cloud Run IAM before
 application-level lab authorization. The authenticated health body reported
-the staging project, service name and exact Android source commit.
+the staging project, service name and exact backend source commit.
+
+The final revision was deployed with its bounded scenario execution already
+expired. It cold-started successfully and kept authenticated `/health` at HTTP
+`200`, while both the attestation and scenario routes returned generic HTTP
+`503` responses. Anonymous `/health` remained HTTP `403`. This leaves the
+service observable while its action routes are closed until a fresh execution
+of at most one hour is deliberately commissioned.
 
 ## Remaining fail-closed gates
 
