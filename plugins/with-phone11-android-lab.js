@@ -1,16 +1,35 @@
 const { withAppBuildGradle, withAndroidManifest, withDangerousMod } = require('expo/config-plugins');
 const fs = require('node:fs');
 const path = require('node:path');
-module.exports = config => {
+
+const entryName = entry => entry?.$?.['android:name'];
+const replaceNamedEntry = (entries = [], name, replacement) => [
+ ...entries.filter(entry => entryName(entry) !== name),
+ replacement,
+];
+
+function configureLabManifest(manifest) {
+ manifest.$['xmlns:tools']='http://schemas.android.com/tools';
+ const application=manifest.application[0];
+ application.$['android:allowBackup']='false';
+ application.$['android:networkSecurityConfig']='@xml/phone11_lab_network';
+ application['meta-data']=replaceNamedEntry(
+  application['meta-data'],
+  'com.siprix.SkipPermissionRequest',
+  {$:{'android:name':'com.siprix.SkipPermissionRequest','android:value':'true'}},
+ );
+ manifest['uses-permission']=replaceNamedEntry(
+  manifest['uses-permission'],
+  'android.permission.CAMERA',
+  {$:{'android:name':'android.permission.CAMERA','tools:node':'remove'}},
+ );
+ return manifest;
+}
+
+const withPhone11AndroidLab = config => {
  if (process.env.PHONE11_ANDROID_LAB !== '1') throw new Error('Android lab plugin requires explicit flag');
  config = withAndroidManifest(config, c => {
-  const m=c.modResults.manifest;
-  m.$['xmlns:tools']='http://schemas.android.com/tools';
-  const a=m.application[0];
-  a.$['android:allowBackup']='false';
-  a.$['android:networkSecurityConfig']='@xml/phone11_lab_network';
-  a['meta-data']=[...(a['meta-data']||[]), {$:{'android:name':'com.siprix.SkipPermissionRequest','android:value':'true'}}];
-  m['uses-permission']=[...(m['uses-permission']||[]), {$:{'android:name':'android.permission.CAMERA','tools:node':'remove'}}];
+  configureLabManifest(c.modResults.manifest);
   return c;
  });
  config = withDangerousMod(config,['android',async c=>{
@@ -25,3 +44,6 @@ module.exports = config => {
   return c;
  });
 };
+
+withPhone11AndroidLab.configureLabManifest = configureLabManifest;
+module.exports = withPhone11AndroidLab;

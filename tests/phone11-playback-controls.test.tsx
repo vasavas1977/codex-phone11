@@ -126,17 +126,23 @@ it("uses native iOS call-guarded media routing instead of an Android-only flag",
   expect(m.native).toHaveBeenCalledWith(true);
   expect(m.mode).not.toHaveBeenCalled();
 });
-it("uses normal Android media routing without falsely advertising a forced speaker override", async () => {
-  m.os = "android";
-  expect(supportsPlaybackSpeaker()).toBe(false);
-  await configurePlaybackRoute(false);
-  expect(m.mode).toHaveBeenCalledWith(
-    expect.objectContaining({
-      shouldRouteThroughEarpiece: false,
-      interruptionModeAndroid: "doNotMix",
-    }),
-  );
-});
+it.each([
+  [false, true],
+  [true, false],
+] as const)(
+  "maps Android speaker %s to earpiece routing %s",
+  async (speaker, shouldRouteThroughEarpiece) => {
+    m.os = "android";
+    expect(supportsPlaybackSpeaker()).toBe(true);
+    await configurePlaybackRoute(speaker);
+    expect(m.mode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        shouldRouteThroughEarpiece,
+        interruptionModeAndroid: "doNotMix",
+      }),
+    );
+  },
+);
 function scrub(loaded = true) {
   const seek = vi.fn();
   renderToStaticMarkup(

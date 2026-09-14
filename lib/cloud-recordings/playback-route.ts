@@ -6,7 +6,8 @@ const nativeRoute = () =>
     | undefined
     | ((speaker: boolean) => Promise<void>);
 export const supportsPlaybackSpeaker = () =>
-  Platform.OS === "ios" && Boolean(nativeRoute());
+  (Platform.OS === "ios" && Boolean(nativeRoute())) ||
+  Platform.OS === "android";
 
 export async function configurePlaybackRoute(speaker: boolean): Promise<void> {
   if (Platform.OS === "ios" && nativeRoute()) {
@@ -21,7 +22,9 @@ export async function configurePlaybackRoute(speaker: boolean): Promise<void> {
     interruptionMode: "doNotMix",
     interruptionModeAndroid: "doNotMix",
     shouldPlayInBackground: false,
-    shouldRouteThroughEarpiece: false,
+    // Expo Audio implements this flag natively on Android. Invert the
+    // product-facing speaker choice so both playback routes are explicit.
+    shouldRouteThroughEarpiece: Platform.OS === "android" ? !speaker : false,
   });
 }
 

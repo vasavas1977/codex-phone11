@@ -14,6 +14,8 @@ const m = vi.hoisted(() => ({
   busy: false,
   controls: {} as any,
   configure: vi.fn(async (_speaker: boolean) => {}),
+  speakerSupported: false,
+  playing: false,
 }));
 vi.mock("react-native", () => ({
   NativeModules: {},
@@ -36,7 +38,7 @@ vi.mock("expo-audio", () => ({
   useAudioPlayerStatus: () => ({
     currentTime: 0,
     duration: 100,
-    playing: false,
+    playing: m.playing,
     isLoaded: true,
   }),
 }));
@@ -79,7 +81,7 @@ vi.mock("../components/cloud-recordings/call-history-view", () => ({
 }));
 vi.mock("../lib/cloud-recordings/playback-route", () => ({
   configurePlaybackRoute: (speaker: boolean) => m.configure(speaker),
-  supportsPlaybackSpeaker: () => false,
+  supportsPlaybackSpeaker: () => m.speakerSupported,
   releasePlaybackRoute: vi.fn(async () => {}),
 }));
 import { Playback } from "../components/cloud-recordings/cloud-playback";
@@ -92,6 +94,8 @@ beforeEach(() => {
   m.focus = undefined;
   m.busy = false;
   m.callListener = undefined;
+  m.speakerSupported = false;
+  m.playing = false;
   m.configure.mockResolvedValue(undefined);
   m.token.mockResolvedValue("token");
 });
@@ -112,6 +116,21 @@ it("a mounted screen loads only on focus and clears audio on blur without autopl
   await Promise.resolve();
   expect(m.player.play).not.toHaveBeenCalled();
   again();
+});
+it("exposes and applies the playback speaker choice when the platform supports it", async () => {
+  m.speakerSupported = true;
+  m.playing = true;
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(m.controls.onSpeakerChange).toEqual(expect.any(Function));
+  m.controls.onSpeakerChange(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(m.configure).toHaveBeenCalledWith(true);
+  blur();
 });
 it("a late credential result after navigation blur cannot restore hidden playback", async () => {
   let resolve!: (value: string) => void;
