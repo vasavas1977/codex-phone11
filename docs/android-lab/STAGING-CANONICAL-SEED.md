@@ -15,8 +15,13 @@ synthetic chain:
 - organization `1`, tenant `1`, canonical non-admin user `1`;
 - extension ID and number `7101`, with one primary `user_extensions` row;
 - one active SIP account and one case-insensitively unique subscriber for
-  `sip:7101@sip.stage.phone11.test`;
+  `sip:7101@sip.stage.phone11.test`, with both authority rows fixed to `UDP`;
 - an internally generated SIP password, stored only in the isolated database.
+
+The Android staging API must return this seeded `UDP` transport with its guarded
+`SIP_PORT=15060` runtime setting. The lab Siprix bridge does not accept a `TLS`
+fixture, and this isolated staging exception does not change the production
+mobile TLS default.
 
 It creates no Better Auth identity or session, provider token, push device,
 wake binding, call, DID, trunk or customer row. The operator email is normalized

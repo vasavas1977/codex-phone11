@@ -7,6 +7,8 @@ export const ANDROID_STAGING_SEED = {
   instance: "phone11-stage-20260914:asia-southeast1:phone11-stage-wake-pg",
   database: "phone11_wake_stage",
   domain: "sip.stage.phone11.test",
+  transport: "UDP",
+  port: 15060,
   extension: "7101",
   organizationId: 1,
   tenantId: 1,
@@ -94,7 +96,7 @@ CREATE TABLE extensions (
   sip_password VARCHAR(128),
   caller_id_name VARCHAR(128),
   caller_id_number VARCHAR(64),
-  transport VARCHAR(16) NOT NULL DEFAULT 'TLS',
+  transport VARCHAR(16) NOT NULL DEFAULT 'UDP',
   status VARCHAR(32) NOT NULL CHECK (status IN ('active','inactive')),
   voicemail_enabled BOOLEAN NOT NULL DEFAULT false,
   deleted_at TIMESTAMPTZ,
@@ -124,7 +126,7 @@ CREATE TABLE sip_accounts (
   secret_iv BYTEA,
   secret_tag BYTEA,
   dek_id VARCHAR(64),
-  transport_preference VARCHAR(16) NOT NULL DEFAULT 'TLS',
+  transport_preference VARCHAR(16) NOT NULL DEFAULT 'UDP',
   status VARCHAR(32) NOT NULL CHECK (status IN ('active','inactive')),
   last_registered_at TIMESTAMPTZ,
   last_registered_contact TEXT,
@@ -200,6 +202,8 @@ export async function inspectAndroidStagingSeed(
       database: ANDROID_STAGING_SEED.database,
       canonicalTables: [...canonicalTables],
       syntheticSipUri: `sip:${ANDROID_STAGING_SEED.extension}@${ANDROID_STAGING_SEED.domain}`,
+      sipTransport: ANDROID_STAGING_SEED.transport,
+      sipPort: ANDROID_STAGING_SEED.port,
       createsSession: false,
       createsPushDevice: false,
       createsWakeBinding: false,
@@ -260,7 +264,7 @@ export async function applyAndroidStagingSeed(
       `INSERT INTO extensions
        (id,org_id,tenant_id,user_id,extension_number,display_name,type,sip_username,sip_domain,
         transport,status,voicemail_enabled)
-       VALUES($1,$2,$3,$4,$5,$6,'user',$5,$7,'TLS','active',false)`,
+       VALUES($1,$2,$3,$4,$5,$6,'user',$5,$7,$8,'active',false)`,
       [
         ANDROID_STAGING_SEED.extensionId,
         ANDROID_STAGING_SEED.organizationId,
@@ -269,6 +273,7 @@ export async function applyAndroidStagingSeed(
         ANDROID_STAGING_SEED.extension,
         "Android Staging 7101",
         ANDROID_STAGING_SEED.domain,
+        ANDROID_STAGING_SEED.transport,
       ],
     );
     await client.query(
@@ -278,7 +283,7 @@ export async function applyAndroidStagingSeed(
     await client.query(
       `INSERT INTO sip_accounts
        (tenant_id,org_id,extension_id,user_id,sip_username,sip_domain,ha1,ha1b,transport_preference,status)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,'TLS','active')`,
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')`,
       [
         ANDROID_STAGING_SEED.tenantId,
         ANDROID_STAGING_SEED.organizationId,
@@ -288,6 +293,7 @@ export async function applyAndroidStagingSeed(
         ANDROID_STAGING_SEED.domain,
         ha1,
         ha1b,
+        ANDROID_STAGING_SEED.transport,
       ],
     );
     await client.query(
@@ -313,6 +319,7 @@ export async function applyAndroidStagingSeed(
        WHERE u.id=1 AND u.role='user' AND e.id=7101 AND e.extension_number='7101'
          AND e.status='active' AND e.deleted_at IS NULL AND ue.is_primary
          AND sa.status='active' AND sa.deleted_at IS NULL
+         AND e.transport='UDP' AND sa.transport_preference='UDP'
          AND ('sip:'||sa.sip_username||'@'||lower(sa.sip_domain))='sip:7101@sip.stage.phone11.test'
          AND length(sub.password)>0
     `);

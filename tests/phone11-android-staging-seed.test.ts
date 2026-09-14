@@ -55,6 +55,13 @@ describe("isolated Android staging canonical seed", () => {
     expect(canonicalAuthoritySchemaSql).toContain(
       "subscriber_username_lower_domain_unique",
     );
+    expect(canonicalAuthoritySchemaSql).toContain(
+      "transport VARCHAR(16) NOT NULL DEFAULT 'UDP'",
+    );
+    expect(canonicalAuthoritySchemaSql).toContain(
+      "transport_preference VARCHAR(16) NOT NULL DEFAULT 'UDP'",
+    );
+    expect(canonicalAuthoritySchemaSql).not.toContain("DEFAULT 'TLS'");
   });
 
   it("plans only after proving the connected public schema is empty", async () => {
@@ -70,6 +77,8 @@ describe("isolated Android staging canonical seed", () => {
     expect(result).toMatchObject({
       readyToApply: true,
       syntheticSipUri: "sip:7101@sip.stage.phone11.test",
+      sipTransport: "UDP",
+      sipPort: 15060,
       createsSession: false,
     });
     expect(
@@ -127,6 +136,21 @@ describe("isolated Android staging canonical seed", () => {
       sipUri: "sip:7101@sip.stage.phone11.test",
     });
     expect(query).toHaveBeenCalledWith("COMMIT");
+    const extension = calls.find(([sql]) =>
+      String(sql).includes("INSERT INTO extensions"),
+    );
+    const sipAccount = calls.find(([sql]) =>
+      String(sql).includes("INSERT INTO sip_accounts"),
+    );
+    expect(extension?.[1]).toEqual(expect.arrayContaining(["UDP"]));
+    expect(sipAccount?.[1]).toEqual(expect.arrayContaining(["UDP"]));
+    expect(
+      calls.some(([sql]) =>
+        String(sql).includes(
+          "e.transport='UDP' AND sa.transport_preference='UDP'",
+        ),
+      ),
+    ).toBe(true);
     const subscriber = calls.find(([sql]) =>
       String(sql).includes("INSERT INTO subscriber"),
     );
