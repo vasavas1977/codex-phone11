@@ -32,7 +32,9 @@ function Lab() {
  return <ScreenContainer><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:20,gap:8}}>
   <Text style={{fontSize:26,fontWeight:"700",color:colors.foreground}}>Phone11 Android Lab</Text>
   <Text style={{color:colors.muted}}>Isolated synthetic calls • real Siprix • no production accounts</Text>
-  <Text accessibilityLabel={`lab-state:${observed}`} testID="lab-state" style={{color:colors.foreground,fontSize:12}}>SDK: {state?.sdkVersion??"not initialized"}{"\n"}Registration: {account?.registrationState??"none"} • Call: {call?.state??"none"}{"\n"}Completed: {ended} • {error||"No command error"}</Text>
+  <View accessible accessibilityLabel={`lab-state:${observed}`} testID="lab-state">
+   <Text style={{color:colors.foreground,fontSize:12}}>SDK: {state?.sdkVersion??"not initialized"}{"\n"}Registration: {account?.registrationState??"none"} • Call: {call?.state??"none"}{"\n"}Completed: {ended} • {error||"No command error"}</Text>
+  </View>
   {button("Initialize",()=>bridge!.initialize({}))}
   {button("Microphone",()=>PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO))}
   <TextInput accessibilityLabel="Lab password" testID="lab-password" secureTextEntry value={password} onChangeText={setPassword} autoCapitalize="none" placeholder="Per-run synthetic password" placeholderTextColor={colors.muted} style={{color:colors.foreground,borderColor:colors.border,borderWidth:1,borderRadius:12,padding:12}}/>
