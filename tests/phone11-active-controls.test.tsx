@@ -151,10 +151,10 @@ it("excludes unsupported transfer and video controls from a live call", () => {
   expect(html).toContain("End call");
 });
 
-it("keeps End call outside the scrolling media controls", () => {
+it("keeps microphone and End call controls outside scrolling recording content", () => {
   const html = renderToStaticMarkup(<ActiveCallScreen />);
   const scrollEnd = html.indexOf("</section>");
   expect(scrollEnd).toBeGreaterThan(0);
-  expect(html.indexOf('aria-label="Mute microphone"')).toBeLessThan(scrollEnd);
+  expect(html.indexOf('aria-label="Mute microphone"')).toBeGreaterThan(scrollEnd);
   expect(html.indexOf('aria-label="End call"')).toBeGreaterThan(scrollEnd);
 });

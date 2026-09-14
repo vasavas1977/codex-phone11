@@ -7,7 +7,7 @@ import { validateState } from './fixture.mjs';
 const fixture = validateState(JSON.parse(fs.readFileSync('.lab/fixture.json')));
 const apk = JSON.parse(fs.readFileSync('.lab/apk.json'));
 const previous = fs.existsSync('.lab/attempts.json') ? JSON.parse(fs.readFileSync('.lab/attempts.json')) : [];
-const selected = ['SIP-01', 'SIP-04', 'SIP-05', 'SIP-06', 'SIP-07', 'SIP-09', 'SIP-10', 'CTRL-02', 'CTRL-03'];
+const selected = ['SIP-01', 'SIP-04', 'SIP-05', 'SIP-06', 'SIP-07', 'SIP-09', 'SIP-10', 'CTRL-01', 'CTRL-02', 'CTRL-03'];
 const sampleCount = Number(process.env.LAB_SIP_SAMPLES || 20);
 if (!Number.isInteger(sampleCount) || sampleCount < 1 || sampleCount > 20) throw new Error('LAB_SIP_SAMPLES must be 1 through 20; fewer than 20 cannot pass SIP04/05');
 const attempts = Object.fromEntries(selected.map(id => [id, 1 + Math.max(0, ...previous.filter(row => row.test_id === id && (row.result !== 'NOT_RUN' || row.execution_started)).map(row => row.attempt || 0))]));
@@ -219,6 +219,21 @@ try {
       gap(!nativeEvents([after], connected.sequence).some(event => event.type === 'callIncoming'), 'Rejected second call created a phantom incoming surface');
       await localEnd(events); return ['Second actual INVITE rejected486', 'Original native/PBX call retained; exactly one call; no phantom incoming callback'];
     }); return ['Single-call busy policy verified at PBX and native/UI'];
+  });
+  await scenario('CTRL-01', async () => {
+    await sample(1, async events => {
+      const { connected } = await outgoing(events);
+      tap('Mute');
+      await observed(events, value => value.muted === true && value.call === 'connected');
+      tap('Mute');
+      await observed(events, value => value.muted === false && value.call === 'connected');
+      const changes = nativeEvents(events, connected.sequence).filter(event => event.type === 'callMuted');
+      gap(changes.length === 2, 'Expected one native mute and one native unmute callback');
+      ensure(changes[0].state === 'connected' && changes[1].state === 'connected', 'Mute controls changed connected call state');
+      await localEnd(events);
+      return ['Native mute/unmute callbacks and snapshot state agree', 'Call remained connected and cleaned up normally'];
+    });
+    throw new ProofGap('Mute/unmute native command and state passed; peer-observed microphone audio remains unavailable with host microphone disabled');
   });
   await scenario('CTRL-02', async () => {
     await sample(1, async events => {
