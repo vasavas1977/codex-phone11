@@ -115,7 +115,10 @@ export function collectAttempts(labDirectory = '.lab') {
     if (row.result !== 'PASS' && !row.reason) row.reason = `Ledger reported ${row.result}`;
     collected.push(sanitize(row));
   }
-  for (const source of ['attempts.json', 'baseline-attempts.json']) {
+  const campaignLedgers = fs.readdirSync(root)
+    .filter(source => /^attempts(?:-[a-z0-9][a-z0-9-]{0,63})?\.json$/.test(source))
+    .sort((a, b) => a.localeCompare(b));
+  for (const source of [...campaignLedgers, 'baseline-attempts.json']) {
     for (const raw of read(source, true)) normalize(raw, source);
   }
   for (const directory of ['error-attempts', 'network-attempts']) {

@@ -54,6 +54,15 @@ test('includes every ledger, normalizes reserved rows and accepts baseline no-mu
   assert.equal(rows.find(r => r.test_id === 'MEDIA-01').mode, 'real');
 });
 
+test('keeps separately named SIP campaigns without consuming an earlier attempt budget', t => {
+  const { lab, write } = fixture(t);
+  write('attempts.json', [standard('SIP-01', { run_id: 'original', attempt: 3 })]);
+  write('attempts-fb26c8e.json', [standard('SIP-01', { run_id: 'candidate', attempt: 1 })]);
+  write('attempts-INVALID.json', [standard('SIP-01', { run_id: 'ignored' })]);
+  const rows = collectAttempts(lab).filter(row => row.test_id === 'SIP-01');
+  assert.deepEqual(rows.map(row => [row.run_id, row.attempt]), [['candidate', 1], ['original', 3]]);
+});
+
 test('retains original media failure despite successful recovered checks and a later pass', t => {
   const { lab, write } = fixture(t);
   write('media-attempts.json', [media(write, 3), media(write, 1, 'positive', { mode: undefined, result: 'FAIL', reason: 'Original export failure' })]);

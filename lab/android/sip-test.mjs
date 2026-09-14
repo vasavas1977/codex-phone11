@@ -6,7 +6,10 @@ import { validateState } from './fixture.mjs';
 
 const fixture = validateState(JSON.parse(fs.readFileSync('.lab/fixture.json')));
 const apk = JSON.parse(fs.readFileSync('.lab/apk.json'));
-const previous = fs.existsSync('.lab/attempts.json') ? JSON.parse(fs.readFileSync('.lab/attempts.json')) : [];
+const campaign = process.env.LAB_SIP_CAMPAIGN?.trim();
+if (campaign && !/^[a-z0-9][a-z0-9-]{0,63}$/.test(campaign)) throw new Error('LAB_SIP_CAMPAIGN must be a lowercase safe identifier');
+const attemptsPath = campaign ? `.lab/attempts-${campaign}.json` : '.lab/attempts.json';
+const previous = fs.existsSync(attemptsPath) ? JSON.parse(fs.readFileSync(attemptsPath)) : [];
 const selected = ['SIP-01', 'SIP-04', 'SIP-05', 'SIP-06', 'SIP-07', 'SIP-09', 'SIP-10', 'CTRL-01', 'CTRL-02', 'CTRL-03'];
 const sampleCount = Number(process.env.LAB_SIP_SAMPLES || 20);
 if (!Number.isInteger(sampleCount) || sampleCount < 1 || sampleCount > 20) throw new Error('LAB_SIP_SAMPLES must be 1 through 20; fewer than 20 cannot pass SIP04/05');
@@ -28,9 +31,9 @@ const clean = value => sanitize(value, secrets);
 const write = (file, value) => fs.writeFileSync(file, JSON.stringify(clean(value), null, 2), { mode: 0o600 });
 const persist = () => {
   write(`${directory}/results.json`, results);
-  const latest = fs.existsSync('.lab/attempts.json') ? JSON.parse(fs.readFileSync('.lab/attempts.json')) : previous;
-  write('.lab/attempts.json.tmp', [...latest.filter(result => result.run_id !== runId), ...results]);
-  fs.renameSync('.lab/attempts.json.tmp', '.lab/attempts.json');
+  const latest = fs.existsSync(attemptsPath) ? JSON.parse(fs.readFileSync(attemptsPath)) : previous;
+  write(`${attemptsPath}.tmp`, [...latest.filter(result => result.run_id !== runId), ...results]);
+  fs.renameSync(`${attemptsPath}.tmp`, attemptsPath);
 };
 const ensure = (condition, message) => { if (!condition) throw new Error(message); };
 class ProofGap extends Error {}
