@@ -108,6 +108,8 @@ const MAPPING = {
   "square.and.arrow.up": "ios-share",
   "calendar.badge.plus": "event",
   "play.fill": "play-arrow",
+  "backward.fill": "fast-rewind",
+  "forward.fill": "fast-forward",
   "stop.fill": "stop",
   // Analytics
   "sparkles": "auto-awesome",
