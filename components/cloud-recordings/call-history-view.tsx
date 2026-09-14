@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
+import { IconSymbol } from "@/components/ui/icon-symbol";
 import {
   transcriptSpeakerLabel,
   transcriptTurns,
@@ -38,6 +39,8 @@ export function CallHistoryRow({
   expanded,
   onToggle,
   onCall,
+  onMore,
+  starred = false,
   calling = false,
   children,
   colors = lightRecordingColors,
@@ -46,6 +49,8 @@ export function CallHistoryRow({
   expanded: boolean;
   onToggle(): void;
   onCall(): void;
+  onMore?(): void;
+  starred?: boolean;
   calling?: boolean;
   children?: ReactNode;
   colors?: RecordingColors;
@@ -89,30 +94,40 @@ export function CallHistoryRow({
               justifyContent: "center",
             }}
           >
-            <Text
-              style={{
-                fontSize: 18,
-                color:
-                  call.direction === "missed" ? colors.error : colors.muted,
-              }}
-            >
-              {call.direction === "outgoing" ? "↗" : "↙"}
-            </Text>
+            <IconSymbol
+              name={
+                call.direction === "outgoing"
+                  ? "phone.arrow.up.right"
+                  : call.direction === "missed"
+                    ? "phone.fill.arrow.down.left"
+                    : "phone.arrow.down.left"
+              }
+              size={20}
+              color={call.direction === "missed" ? colors.error : colors.muted}
+            />
           </View>
           <View style={{ flex: 1, gap: 4 }}>
-            <Text
-              numberOfLines={1}
-              style={{
-                fontSize: 16,
-                fontWeight: "600",
-                color:
-                  call.direction === "missed"
-                    ? colors.error
-                    : colors.foreground,
-              }}
+            <View
+              style={{ flexDirection: "row", alignItems: "center", gap: 5 }}
             >
-              {call.name}
-            </Text>
+              <Text
+                numberOfLines={1}
+                style={{
+                  fontSize: 16,
+                  fontWeight: "600",
+                  flexShrink: 1,
+                  color:
+                    call.direction === "missed"
+                      ? colors.error
+                      : colors.foreground,
+                }}
+              >
+                {call.name}
+              </Text>
+              {starred && (
+                <IconSymbol name="star.fill" size={13} color={colors.primary} />
+              )}
+            </View>
             <Text
               numberOfLines={1}
               style={{ fontSize: 13, color: colors.muted }}
@@ -161,140 +176,33 @@ export function CallHistoryRow({
             marginLeft: 4,
           }}
         >
-          <Text
+          <IconSymbol
+            name="phone.fill"
+            size={21}
+            color={calling ? colors.muted : colors.primary}
+          />
+        </TouchableOpacity>
+        {onMore && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={`More options for ${call.name}`}
+            onPress={onMore}
             style={{
-              fontSize: 13,
-              fontWeight: "600",
-              color: calling ? colors.muted : colors.primary,
+              minWidth: 44,
+              minHeight: 48,
+              alignItems: "center",
+              justifyContent: "center",
             }}
           >
-            Call
-          </Text>
-        </TouchableOpacity>
+            <IconSymbol name="ellipsis" size={23} color={colors.muted} />
+          </TouchableOpacity>
+        )}
       </View>
       {expanded && children}
     </View>
   );
 }
-export function PlaybackControls({
-  currentTime,
-  duration,
-  playing,
-  loaded,
-  onToggle,
-  onSeek,
-  error,
-  colors = lightRecordingColors,
-}: {
-  currentTime: number;
-  duration: number;
-  playing: boolean;
-  loaded: boolean;
-  onToggle(): void;
-  onSeek(seconds: number): void;
-  error?: string;
-  colors?: RecordingColors;
-}) {
-  const time = (n: number) =>
-    `${Math.floor(Math.max(0, n) / 60)}:${String(Math.floor(Math.max(0, n) % 60)).padStart(2, "0")}`;
-  return (
-    <View style={{ gap: 8, paddingBottom: 12 }}>
-      {error ? (
-        <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 22 }}>
-          {error}
-        </Text>
-      ) : (
-        <>
-          <View
-            accessible
-            accessibilityLabel={`${time(currentTime)} of ${time(duration)}`}
-            style={{
-              height: 3,
-              borderRadius: 2,
-              backgroundColor: colors.border,
-              overflow: "hidden",
-            }}
-          >
-            <View
-              style={{
-                height: 3,
-                width: `${duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0}%`,
-                backgroundColor: colors.primary,
-              }}
-            />
-          </View>
-          <View
-            style={{ flexDirection: "row", justifyContent: "space-between" }}
-          >
-            <Text style={{ fontSize: 12, color: colors.muted }}>
-              {time(currentTime)}
-            </Text>
-            <Text style={{ fontSize: 12, color: colors.muted }}>
-              {time(duration)}
-            </Text>
-          </View>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 24,
-            }}
-          >
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel="Back 15 seconds"
-              disabled={!loaded}
-              onPress={() => onSeek(Math.max(0, currentTime - 15))}
-              style={{
-                minHeight: 48,
-                minWidth: 56,
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ color: colors.primary }}>−15s</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel={
-                playing ? "Pause recording" : "Play recording"
-              }
-              disabled={!loaded}
-              onPress={onToggle}
-              style={{
-                minHeight: 48,
-                minWidth: 72,
-                justifyContent: "center",
-                alignItems: "center",
-                backgroundColor: colors.primary,
-                borderRadius: 24,
-              }}
-            >
-              <Text style={{ color: "white", fontWeight: "600" }}>
-                {!loaded ? "Loading" : playing ? "Pause" : "Play"}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel="Forward 15 seconds"
-              disabled={!loaded}
-              onPress={() => onSeek(Math.min(duration, currentTime + 15))}
-              style={{
-                minHeight: 48,
-                minWidth: 56,
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ color: colors.primary }}>+15s</Text>
-            </TouchableOpacity>
-          </View>
-        </>
-      )}
-    </View>
-  );
-}
+export { PlaybackControls } from "./playback-controls";
 export function RecordingPanel({
   summaryStatus,
   summary,
@@ -306,6 +214,8 @@ export function RecordingPanel({
   player,
   controls,
   notice,
+  dateLabel,
+  actions,
   full = false,
   colors = lightRecordingColors,
 }: {
@@ -319,6 +229,8 @@ export function RecordingPanel({
   player?: ReactNode;
   controls?: ReactNode;
   notice?: string;
+  dateLabel?: string;
+  actions?: ReactNode;
   full?: boolean;
   colors?: RecordingColors;
 }) {
@@ -333,6 +245,22 @@ export function RecordingPanel({
         <Text style={{ fontSize: 13, lineHeight: 21, color: colors.muted }}>
           {notice}
         </Text>
+      )}
+      {dateLabel && (
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <Text style={{ fontSize: 13, color: colors.muted }}>Date</Text>
+          <Text
+            style={{ fontSize: 13, color: colors.foreground, flexShrink: 1 }}
+          >
+            {dateLabel}
+          </Text>
+        </View>
       )}
       <View
         accessibilityRole="tablist"
@@ -512,6 +440,7 @@ export function RecordingPanel({
           )}
         </View>
       )}
+      {actions}
     </View>
   );
 }

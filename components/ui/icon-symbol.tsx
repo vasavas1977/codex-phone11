@@ -105,6 +105,7 @@ const MAPPING = {
   "crown.fill": "star",
   "link": "link",
   "doc.on.clipboard": "content-copy",
+  "square.and.arrow.up": "ios-share",
   "calendar.badge.plus": "event",
   "play.fill": "play-arrow",
   "stop.fill": "stop",

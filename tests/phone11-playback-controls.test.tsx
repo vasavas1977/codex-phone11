@@ -1,0 +1,117 @@
+import { createElement, type ReactNode } from "react";
+import { createRequire } from "node:module";
+import { beforeEach, expect, it, vi } from "vitest";
+
+const { renderToStaticMarkup } = createRequire(import.meta.url)(
+  "react-dom/server",
+) as { renderToStaticMarkup(node: ReactNode): string };
+const ui = vi.hoisted(() => ({
+  buttons: new Map<string, any>(),
+  timeline: undefined as any,
+}));
+
+vi.mock("react-native", () => ({
+  Platform: { OS: "web" },
+  View: ({ children, accessibilityRole, ...props }: any) => {
+    if (accessibilityRole === "adjustable") ui.timeline = props;
+    return createElement("div", null, children);
+  },
+  Text: ({ children }: any) => createElement("span", null, children),
+  TouchableOpacity: ({ children, accessibilityLabel, ...props }: any) => {
+    ui.buttons.set(accessibilityLabel, props);
+    return createElement("button", null, children);
+  },
+}));
+
+import {
+  clampPlaybackSeconds,
+  formatPlaybackTime,
+  PlaybackControls,
+  playbackSecondsForTrack,
+} from "../components/cloud-recordings/playback-controls";
+
+beforeEach(() => {
+  ui.buttons.clear();
+  ui.timeline = undefined;
+});
+
+it("formats and bounds elapsed, remaining, and track positions", () => {
+  expect(formatPlaybackTime(65.9)).toBe("1:05");
+  expect(clampPlaybackSeconds(-2, 90)).toBe(0);
+  expect(clampPlaybackSeconds(95, 90)).toBe(90);
+  expect(playbackSecondsForTrack(50, 200, 120)).toBe(30);
+  expect(playbackSecondsForTrack(300, 200, 120)).toBe(120);
+});
+
+it("supports tap or drag seeking and accessible fifteen-second seeking", () => {
+  const seek = vi.fn();
+  const html = renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 30,
+      duration: 120,
+      playing: false,
+      loaded: true,
+      route: "earpiece",
+      output: { route: "earpiece", label: "Earpiece" },
+      onToggle: vi.fn(),
+      onSeek: seek,
+      onRouteChange: vi.fn(),
+    }),
+  );
+
+  expect(html).toContain("0:30");
+  expect(html).toContain("−1:30");
+  expect(html).not.toContain("Output:");
+  expect(ui.timeline["aria-valuemin"]).toBe(0);
+  expect(ui.timeline["aria-valuemax"]).toBe(120);
+  expect(ui.timeline["aria-valuenow"]).toBe(30);
+  ui.timeline.onLayout({ nativeEvent: { layout: { width: 200 } } });
+  ui.timeline.onResponderRelease({ nativeEvent: { locationX: 100 } });
+  expect(seek).toHaveBeenCalledWith(60);
+  ui.timeline.onAccessibilityAction({
+    nativeEvent: { actionName: "increment" },
+  });
+  expect(seek).toHaveBeenLastCalledWith(45);
+  ui.timeline.onKeyDown({ key: "End", preventDefault: vi.fn() });
+  expect(seek).toHaveBeenLastCalledWith(120);
+  ui.buttons.get("Back 15 seconds").onPress();
+  expect(seek).toHaveBeenLastCalledWith(15);
+});
+
+it("exposes one speaker toggle, defaults to earpiece, and reports external audio", () => {
+  const change = vi.fn();
+  renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 0,
+      duration: 0,
+      playing: false,
+      loaded: false,
+      route: "earpiece",
+      output: { route: "earpiece", label: "Earpiece" },
+      onToggle: vi.fn(),
+      onSeek: vi.fn(),
+      onRouteChange: change,
+    }),
+  );
+  expect(ui.buttons.get("Play through speaker").disabled).toBe(true);
+  expect(ui.buttons.has("Play through earpiece")).toBe(false);
+
+  ui.buttons.clear();
+  const html = renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 1,
+      duration: 10,
+      playing: false,
+      loaded: true,
+      route: "earpiece",
+      output: { route: "external", label: "Bluetooth" },
+      onToggle: vi.fn(),
+      onSeek: vi.fn(),
+      onRouteChange: change,
+    }),
+  );
+  ui.buttons.get("Play through speaker").onPress();
+  expect(change).toHaveBeenCalledWith("speaker");
+  expect(html).toContain("Connected to ");
+  expect(html).toContain("Bluetooth");
+});

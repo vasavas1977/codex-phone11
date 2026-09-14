@@ -1,5 +1,9 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
+vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("../components/cloud-recordings/summary-actions", () => ({
+  RecordingSummaryActions: () => null,
+}));
 import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
@@ -17,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   press: new Map<string, () => unknown>(),
 }));
 vi.mock("react-native", () => ({
+  NativeModules: {},
+  Platform: { OS: "web" },
   AppState: { currentState: "active" },
   View: ({ children }: any) => createElement("div", null, children),
   ScrollView: ({ children }: any) => createElement("div", null, children),

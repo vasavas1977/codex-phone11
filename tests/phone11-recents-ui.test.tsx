@@ -4,10 +4,30 @@ import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup(node: ReactNode): string };
+vi.mock("../components/cloud-recordings/call-actions-sheet", () => ({
+  CallActionsSheet: () => null,
+}));
+vi.mock("../hooks/use-hidden-calls", () => ({
+  useHiddenCalls: () => ({
+    ids: [],
+    ready: true,
+    hide: vi.fn(),
+    restoreAll: vi.fn(),
+  }),
+}));
+vi.mock("../hooks/use-call-favorites", () => ({
+  useCallFavorites: () => ({ starred: () => false, toggle: vi.fn() }),
+}));
+vi.mock("../lib/chat/store", () => ({
+  useChatStore: () => ({ userId: null, workspace: null }),
+}));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: mocks.user }),
+}));
 const mocks = vi.hoisted(() => ({
   user: { id: 1 } as { id: number } | null,
   history: {} as any,
-  cloud: { items: [] as any[], reload: vi.fn() },
+  cloud: { items: [] as any[], reload: vi.fn(), loading: false },
   contacts: [] as any[],
   calling: false,
   call: vi.fn(async () => {}),
