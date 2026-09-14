@@ -3,10 +3,23 @@
 The existing iOS implementation uses Siprix 1.0.40. A separate Android lab adapter
 uses the checksum-pinned 1.1.0 AAR in `lab/android/sdk-lock.json`; enable it only
 with the paired lab flags described in `docs/android-lab/RUNBOOK.md`.
-It accepts only the isolated lab account/server and synthetic destinations.
+It accepts only a build-injected isolated account/server scope and synthetic destinations.
 Android FCM, background call service, production accounts, and physical audio
 acceptance remain open gates. See `docs/android-lab/PARITY.md` for shared UI and
 platform-specific status. The lifecycle and packaging details below describe iOS.
+
+The Android contract remains disabled unless `PHONE11_ANDROID_LAB=1` and its
+paired public Siprix flags are set. Gated staging builds may inject
+`PHONE11_ANDROID_LAB_PACKAGE`, `PHONE11_ANDROID_SIP_HOST`,
+`PHONE11_ANDROID_SIP_PORT`, `PHONE11_ANDROID_SIP_ACCOUNT_EXTENSIONS`, and
+`PHONE11_ANDROID_SIP_DESTINATIONS`. The config plugin validates these values,
+writes them to native application metadata and Expo runtime config, and the Java
+adapter rejects any runtime package, account, endpoint, port or destination that
+does not match. Passwords remain runtime account data and are never build
+metadata. Non-lab Android builds do not autolink this adapter or expose the SIP
+configuration. This contract prepares an isolated signed-in staging path; it
+does not commission Firebase, production accounts, release signing or live
+telephony.
 
 Native module: `NativeModules.Phone11Siprix`. Event channel: `Phone11SiprixEvent`.
 The authoritative JS contract is `index.d.ts`. All exported operations return

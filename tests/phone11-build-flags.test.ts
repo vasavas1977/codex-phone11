@@ -16,6 +16,7 @@ vi.mock("expo-constants", () => ({
 
 import {
   isPhone11AndroidLab,
+  phone11AndroidSipConfig,
   phone11ConfiguredApiBaseUrl,
 } from "../constants/phone11-build";
 
@@ -30,9 +31,16 @@ it("retains the Android lab gate and isolated API in a native release bundle", (
   runtime.extra = {
     phone11AndroidLab: true,
     phone11ApiBaseUrl: "http://10.0.2.2:18080",
+    phone11AndroidSip: { sipServer: "sip.staging.example", port: 16060, accountExtension: "8201", destinations: ["8202", "8290"] },
   };
   expect(isPhone11AndroidLab(runtime.extra)).toBe(true);
   expect(phone11ConfiguredApiBaseUrl(runtime.extra)).toBe("http://10.0.2.2:18080");
+  expect(phone11AndroidSipConfig(runtime.extra)).toEqual({ sipServer: "sip.staging.example", port: 16060, accountExtension: "8201", destinations: ["8202", "8290"] });
+});
+
+it("rejects absent Android SIP configuration rather than falling back to a live endpoint", () => {
+  runtime.extra = { phone11AndroidLab: true };
+  expect(() => phone11AndroidSipConfig(runtime.extra)).toThrow("configuration is unavailable");
 });
 
 it("uses the configured non-lab API without a trailing slash", () => {

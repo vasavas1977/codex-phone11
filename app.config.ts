@@ -4,6 +4,7 @@ import type { ExpoConfig } from "expo/config";
 import { withInfoPlist } from "expo/config-plugins";
 
 const { wakeBuildSettings } = require("./plugins/with-phone11-voip-wake.js");
+const { labSipSettings } = require("./plugins/with-phone11-android-lab.js");
 const wakeSettings = wakeBuildSettings();
 const chatCommissioned = process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED ?? "0";
 if (!["0", "1"].includes(chatCommissioned)) throw new Error("Invalid chat notification build flag");
@@ -40,8 +41,11 @@ const env = {
   logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/107568382/ToqVlgyTUoXePKRa.png",
   scheme: "phone11",
   iosBundleId: bundleId,
-  androidPackage: androidLab ? "ai.phone11.mobile.lab" : bundleId,
+  androidPackage: androidLab
+    ? (process.env.PHONE11_ANDROID_LAB_PACKAGE ?? "ai.phone11.mobile.lab")
+    : bundleId,
 };
+const androidSip = androidLab ? labSipSettings(env.androidPackage) : undefined;
 
 const config: ExpoConfig = {
   name: androidLab ? "Phone11 Lab" : env.appName,
@@ -150,6 +154,12 @@ const config: ExpoConfig = {
   extra: {
     phone11ChatNotificationsEnabled: chatNotificationsEnabled,
     phone11AndroidLab: androidLab,
+    ...(androidSip ? { phone11AndroidSip: {
+      sipServer: androidSip.host,
+      port: androidSip.port,
+      accountExtension: androidSip.accountExtensions[0],
+      destinations: androidSip.destinations,
+    } } : {}),
     phone11ApiBaseUrl: androidLab
       ? "http://10.0.2.2:18080"
       : (process.env.EXPO_PUBLIC_API_BASE_URL ?? ""),

@@ -1,7 +1,9 @@
 package ai.phone11.siprix;
 
 import android.Manifest;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import com.facebook.react.bridge.*;
@@ -40,10 +42,19 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  private static class SdkError extends RuntimeException { final int code; SdkError(int n){code=n;} }
  private static class MicrophonePermission extends RuntimeException {}
  private void microphone() {if(getReactApplicationContext().checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED) throw new MicrophonePermission();}
+ private AndroidSipScope configuredScope() throws PackageManager.NameNotFoundException {
+  String packageName=getReactApplicationContext().getPackageName();
+  ApplicationInfo app=getReactApplicationContext().getPackageManager().getApplicationInfo(packageName,PackageManager.GET_META_DATA);
+  Bundle values=app.metaData;
+  if(values==null||!values.getBoolean("ai.phone11.siprix.ANDROID_LAB_ENABLED",false))throw new SecurityException();
+  return new AndroidSipScope(packageName,text(values,"ai.phone11.siprix.PACKAGE"),text(values,"ai.phone11.siprix.SIP_HOST"),
+   text(values,"ai.phone11.siprix.SIP_PORT"),text(values,"ai.phone11.siprix.ACCOUNT_EXTENSIONS"),text(values,"ai.phone11.siprix.DESTINATIONS"));
+ }
+ private static String text(Bundle values,String key){Object value=values.get(key);return value==null?null:String.valueOf(value);}
  private static Map<String,Object> map(Object... kv) { Map<String,Object> m=new LinkedHashMap<>();for(int i=0;i<kv.length;i+=2)m.put((String)kv[i],kv[i+1]);return m; }
  @ReactMethod public void initialize(ReadableMap options,Promise p){perform(p,()->{
-  if(!getReactApplicationContext().getPackageName().equals("ai.phone11.mobile.lab")) throw new SecurityException();
   if(!rt.initialized){
+   rt.scope=configuredScope();
    if(rt.core==null)rt.core=new SiprixCore(getReactApplicationContext().getApplicationContext());
    long generation=++rt.generation;
    rt.core.setModelListener(rt.listener(generation));
@@ -58,10 +69,12 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  @ReactMethod public void createAccount(ReadableMap cfg,Promise p){perform(p,()->{
   rt.ready();if(!rt.accounts.isEmpty())throw new IllegalStateException();
   String host=cfg.getString("sipServer"),ext=cfg.getString("sipExtension");
-  if(!"10.0.2.2".equals(host)||!"7101".equals(ext))throw new SecurityException();
+  if(!rt.scope.host().equalsIgnoreCase(host))throw new SecurityException();
+  ext=rt.scope.account(ext);
+  if(cfg.hasKey("port")&&!cfg.isNull("port")&&cfg.getInt("port")!=rt.scope.port())throw new SecurityException();
   for(String key:new String[]{"sipProxy","stunServer"})if(cfg.hasKey(key)&&!cfg.isNull(key)&&!cfg.getString(key).isEmpty())throw new SecurityException();
   if(!"UDP".equals(cfg.getString("transport"))&&!"TCP".equals(cfg.getString("transport")))throw new UnsupportedOperationException("TLS fixture");
-  AccData data=new AccData();data.setSipServer(host+":15060");data.setSipExtension(ext);data.setSipAuthId(ext);
+  AccData data=new AccData();data.setSipServer(rt.scope.host()+":"+rt.scope.port());data.setSipExtension(ext);data.setSipAuthId(ext);
   data.setSipPassword(cfg.getString("sipPassword"));data.setExpireTime(0);
   data.setTranspProtocol(AccData.SipTransport.valueOf(cfg.getString("transport")));data.setTranspPort(0);
   data.setDisplayName("Phone11 Lab");data.setSecureMediaMode(AccData.SecureMediaMode.DISABLED);
@@ -76,7 +89,7 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  @ReactMethod public void deleteAccount(String id,Promise p){perform(p,()->{int n=rt.account(id);if(!rt.calls.isEmpty())throw new IllegalStateException();ok(rt.core.accountDelete(n));rt.accounts.remove(n);return null;});}
  @ReactMethod public void makeCall(String account,String destination,Promise p){perform(p,()->{
   microphone();int n=rt.account(account);if(!rt.calls.isEmpty())throw new IllegalStateException();
-  String target=LabScope.destination(destination);
+  String target=rt.scope.destination(destination);
   DestData dest=new DestData();dest.setAccountId(n);dest.setExtension(target);dest.setVideoCall(false);dest.setInviteTimeout(15);
   SiprixCore.IdOutArg out=new SiprixCore.IdOutArg();ok(rt.core.callInvite(dest,out));
   Map<String,Object> c=rt.newCall(out.value,n,"outgoing",target);rt.calls.put(out.value,c);rt.event("callDialing","call",new LinkedHashMap<>(c));return c;
@@ -113,14 +126,14 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
  static final class Runtime {
   final BridgeLease lease=new BridgeLease();
   ReactApplicationContext context; final Handler main=new Handler(Looper.getMainLooper());
-  SiprixCore core;LabMedia media;
+  SiprixCore core;LabMedia media;AndroidSipScope scope;
   LabMedia media(){ready();if(media==null)media=new LabMedia(context,core,main,()->event("labMedia","labMedia",media.snapshot()),this::destroy);return media;}
   boolean initialized=false,trial=false;long generation=0,sequence=0;
   final Map<Integer,Map<String,Object>> accounts=new LinkedHashMap<>(),calls=new LinkedHashMap<>();
   final Set<Integer> answerPending=new HashSet<>(),endPending=new HashSet<>(),holdPending=new HashSet<>();
   Runtime(ReactApplicationContext c){context=c;}
-  void destroy(){if(initialized){ok(core.unInitialize());if(media!=null)media.onCoreDestroyed();core.setModelListener(null);initialized=false;++generation;sequence=0;accounts.clear();calls.clear();answerPending.clear();endPending.clear();holdPending.clear();}}
-  void ready(){if(!initialized)throw new IllegalStateException();}
+  void destroy(){if(initialized){ok(core.unInitialize());if(media!=null)media.onCoreDestroyed();core.setModelListener(null);initialized=false;scope=null;++generation;sequence=0;accounts.clear();calls.clear();answerPending.clear();endPending.clear();holdPending.clear();}}
+  void ready(){if(!initialized||scope==null)throw new IllegalStateException();}
   int account(String s){ready();int id=Integer.parseInt(s);if(!accounts.containsKey(id))throw new IllegalStateException();return id;}
   int call(String s){ready();int id=Integer.parseInt(s);if(!calls.containsKey(id))throw new IllegalStateException();return id;}
   Map<String,Object> snapshot(){return map("initialized",initialized,"generation",(double)generation,"sequence",(double)sequence,"sdkVersion",initialized?core.getVersion():null,

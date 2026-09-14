@@ -1,6 +1,14 @@
 type Phone11Extra = {
   phone11AndroidLab?: boolean;
   phone11ApiBaseUrl?: string;
+  phone11AndroidSip?: Phone11AndroidSipConfig;
+};
+
+export type Phone11AndroidSipConfig = {
+  sipServer: string;
+  port: number;
+  accountExtension: string;
+  destinations: string[];
 };
 
 function extra(): Phone11Extra {
@@ -29,4 +37,15 @@ export function phone11ConfiguredApiBaseUrl(runtime = extra()): string {
   const configured =
     process.env.EXPO_PUBLIC_API_BASE_URL?.trim() || runtime.phone11ApiBaseUrl;
   return typeof configured === "string" ? configured.replace(/\/+$/, "") : "";
+}
+
+export function phone11AndroidSipConfig(runtime = extra()): Phone11AndroidSipConfig {
+  const config = runtime.phone11AndroidSip;
+  if (!isPhone11AndroidLab(runtime) || !config || typeof config.sipServer !== "string" ||
+      !Number.isInteger(config.port) || config.port < 1 || config.port > 65535 ||
+      typeof config.accountExtension !== "string" || !Array.isArray(config.destinations) ||
+      config.destinations.length < 2 || config.destinations.some(value => typeof value !== "string" || !value)) {
+    throw new Error("Phone11 Android SIP lab configuration is unavailable");
+  }
+  return { ...config, destinations: [...config.destinations] };
 }

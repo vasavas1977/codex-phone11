@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { NativeEventEmitter, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { Redirect, router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
-import { isPhone11AndroidLab } from "@/constants/phone11-build";
+import { isPhone11AndroidLab, phone11AndroidSipConfig } from "@/constants/phone11-build";
 import { useColors } from "@/hooks/use-colors";
 import type { Phone11SiprixModule, Snapshot } from "../modules/phone11-siprix";
 
@@ -12,6 +12,7 @@ export default function AndroidLab() {
 }
 function Lab() {
  const colors=useColors();const [state,setState]=useState<Snapshot|null>(null);
+ const sip=phone11AndroidSipConfig();
  const [password,setPassword]=useState("");const [error,setError]=useState("");
  const [events,setEvents]=useState<Array<{type:string;state?:string;sequence:number;generation:number;callId?:string;statusCode?:number}>>([]);
  const [busy,setBusy]=useState(false);const [ended,setEnded]=useState(0);
@@ -38,10 +39,10 @@ function Lab() {
   {button("Initialize",()=>bridge!.initialize({}))}
   {button("Microphone",()=>PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO))}
   <TextInput accessibilityLabel="Lab password" testID="lab-password" secureTextEntry value={password} onChangeText={setPassword} autoCapitalize="none" placeholder="Per-run synthetic password" placeholderTextColor={colors.muted} style={{color:colors.foreground,borderColor:colors.border,borderWidth:1,borderRadius:12,padding:12}}/>
-  {button("Register",async()=>{const a=await bridge!.createAccount({sipServer:"10.0.2.2",sipExtension:"7101",sipPassword:password,transport:"UDP",secureMedia:0});setPassword("");await bridge!.registerAccount(a.accountId,120);})}
+  {button("Register",async()=>{const a=await bridge!.createAccount({sipServer:sip.sipServer,port:sip.port,sipExtension:sip.accountExtension,sipPassword:password,transport:"UDP",secureMedia:0});setPassword("");await bridge!.registerAccount(a.accountId,120);})}
   <View style={{flexDirection:"row",gap:8,flexWrap:"wrap"}}>
-   {button("Call tone",()=>bridge!.makeCall(account!.accountId,"7190"))}
-   {button("Call peer",()=>bridge!.makeCall(account!.accountId,"7102"))}
+   {button("Call tone",()=>bridge!.makeCall(account!.accountId,sip.destinations[1]))}
+   {button("Call peer",()=>bridge!.makeCall(account!.accountId,sip.destinations[0]))}
    {button("Answer",()=>bridge!.answerCall(call!.callId))}
    {button("Hang up",()=>bridge!.hangupCall(call!.callId))}
    {button("Mute",()=>bridge!.setMute(call!.callId,!call!.muted))}
