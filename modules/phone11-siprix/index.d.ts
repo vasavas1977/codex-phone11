@@ -61,10 +61,16 @@ export interface Snapshot {
   trialNotified: boolean;
 }
 
+export interface PlaybackAudioRouteStatus {
+  route: "speaker" | "earpiece" | "external" | "unknown";
+  label: string;
+}
+
 type EventData =
   | { type: 'registration'; account: Account }
   | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted'; call: Call }
   | { type: 'devicesAudioChanged' | 'audioSession'; audioSessionActive: boolean; speaker: boolean }
+  | ({ type: 'playbackAudioRoute' } & PlaybackAudioRouteStatus)
   | { type: 'trial' }
   | { type: 'network'; networkState: number }
   | { type: 'dtmf'; callId: string; tone: number }
@@ -96,6 +102,9 @@ export interface Phone11SiprixModule {
   setHold(callId: string, held: boolean): Promise<void>;
   sendDtmf(callId: string, digits: string): Promise<void>;
   setSpeaker(enabled: boolean): Promise<void>;
+  getPlaybackAudioRoute(): Promise<PlaybackAudioRouteStatus>;
+  setPlaybackAudioRoute(route: "speaker" | "earpiece"): Promise<PlaybackAudioRouteStatus>;
+  resetPlaybackAudioRoute(): Promise<PlaybackAudioRouteStatus>;
   handleNativeAudioSession(active: boolean): Promise<void>;
   destroy(): Promise<void>;
   addListener(eventName: string): void;

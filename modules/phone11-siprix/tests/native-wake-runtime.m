@@ -45,6 +45,9 @@ int main(void) {
   RCTPromiseResolveBlock resolve=^(id value){ result=value; error=nil; };
   RCTPromiseRejectBlock reject=^(NSString *code,NSString *message,NSError *err){ error=code; result=nil; };
   Phone11Siprix *js=[Phone11Siprix new];
+  int categoriesDuringPendingWake=playbackCategories;
+  [js setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
+  CHECK([error isEqual:@"E_CALL_AUDIO_ACTIVE"] && playbackCategories==categoriesDuringPendingWake);
   [js getSnapshot:resolve rejecter:reject];
   CHECK(result[@"nativeWake"] && [result[@"calls"] count]==0);
   [js destroy:resolve rejecter:reject]; CHECK([error isEqual:@"E_WAKE_ADOPTION_REQUIRED"] && shutdowns==0);

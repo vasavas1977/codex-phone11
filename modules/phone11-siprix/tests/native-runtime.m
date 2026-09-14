@@ -4,6 +4,21 @@
 #include <stdlib.h>
 
 NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
+NSString *const AVAudioSessionPortBuiltInReceiver = @"Receiver";
+NSString *const AVAudioSessionPortHeadphones = @"Headphones";
+NSString *const AVAudioSessionPortHeadsetMic = @"HeadsetMic";
+NSString *const AVAudioSessionPortBluetoothA2DP = @"BluetoothA2DP";
+NSString *const AVAudioSessionPortBluetoothHFP = @"BluetoothHFP";
+NSString *const AVAudioSessionPortBluetoothLE = @"BluetoothLE";
+NSString *const AVAudioSessionPortAirPlay = @"AirPlay";
+NSString *const AVAudioSessionPortUSBAudio = @"USBAudio";
+NSString *const AVAudioSessionPortHDMI = @"HDMI";
+NSString *const AVAudioSessionCategoryPlayAndRecord = @"playAndRecord";
+NSString *const AVAudioSessionCategoryPlayback = @"playback";
+NSString *const AVAudioSessionModeVoiceChat = @"voiceChat";
+NSString *const AVAudioSessionModeSpokenAudio = @"spokenAudio";
+NSString *const AVAudioSessionRouteChangeNotification = @"routeChange";
+static int playbackCategories, playbackOverrides, playbackActivations;
 @implementation UIView
 @end
 @implementation AVAudioSessionPortDescription
@@ -21,6 +36,17 @@ NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
   });
   return session;
 }
+- (BOOL)setCategory:(NSString *)category mode:(NSString *)mode options:(AVAudioSessionCategoryOptions)options error:(NSError **)error {
+  playbackCategories++; return YES;
+}
+- (BOOL)overrideOutputAudioPort:(AVAudioSessionPortOverride)portOverride error:(NSError **)error {
+  playbackOverrides++;
+  AVAudioSessionPortDescription *output = [AVAudioSessionPortDescription new];
+  output.portType = portOverride == AVAudioSessionPortOverrideSpeaker ? AVAudioSessionPortBuiltInSpeaker : AVAudioSessionPortBuiltInReceiver;
+  self.currentRoute.outputs = @[output];
+  return YES;
+}
+- (BOOL)setActive:(BOOL)active error:(NSError **)error { if (active) playbackActivations++; return YES; }
 @end
 static void (^testEmitHook)(id);
 @implementation RCTEventEmitter
@@ -169,6 +195,21 @@ int main(void) {
     CHECK([error isEqualToString:@"E_RUNTIME_IN_USE"] && initializes == 1);
     [other destroy:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_RUNTIME_IN_USE"] && shutdowns == 0);
+    int categoriesBeforePlayback = playbackCategories;
+    [bridge resetPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK(!error && playbackCategories == categoriesBeforePlayback);
+    [bridge setPlaybackAudioRoute:@"earpiece" resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"route"] isEqual:@"earpiece"] && playbackCategories == categoriesBeforePlayback + 1);
+    CHECK(playbackOverrides == 1 && playbackActivations == 1 && P11SiprixRuntime.shared.playbackRouteActive);
+    AVAudioSessionPortDescription *bluetooth = [AVAudioSessionPortDescription new];
+    bluetooth.portType = AVAudioSessionPortBluetoothA2DP;
+    AVAudioSession.sharedInstance.currentRoute.outputs = @[bluetooth];
+    [bridge getPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK([result[@"route"] isEqual:@"external"] && [result[@"label"] isEqual:@"Bluetooth"]);
+    [bridge setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"route"] isEqual:@"speaker"] && playbackOverrides == 2);
+    [bridge resetPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK(!error && !P11SiprixRuntime.shared.playbackRouteActive && playbackCategories == categoriesBeforePlayback + 3);
     [bridge createAccount:config resolver:resolve rejecter:reject];
     CHECK(!error && [result[@"id"] isEqualToString:@"10"] && [result[@"registrationState"] isEqualToString:@"unregistered"]);
     CHECK(!result[@"sipPassword"] && !result[@"sipAuthId"]);
@@ -234,6 +275,9 @@ int main(void) {
     CHECK([outboundHeader isEqualToString:outboundHeader.lowercaseString]);
     CHECK([outboundHistoryId isEqualToString:[@"native-outbound:" stringByAppendingString:outboundHeader]]);
     CHECK(outboundStartedAt.doubleValue > 0 && [result[@"state"] isEqualToString:@"dialing"]);
+    int categoriesDuringCall = playbackCategories;
+    [bridge setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CALL_AUDIO_ACTIVE"] && playbackCategories == categoriesDuringCall);
     // Even when the SDK calls its delegate inside callInvite, delivery is
     // queued until after the returned call has its correlation identity.
     flush();
