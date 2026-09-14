@@ -74,12 +74,14 @@ public final class Phone11PendingWakeStore {
     public final String bindingId;
     public final String callUUID;
     public final String callState;
+    public final long callExpiresAt;
 
     Snapshot(State state) {
       bound = state.binding != null;
       bindingId = state.binding == null ? null : state.binding.bindingId;
       callUUID = state.call == null ? null : state.call.callUUID;
       callState = state.call == null ? null : state.call.state.name().toLowerCase(Locale.ROOT);
+      callExpiresAt = state.call == null ? -1 : state.call.expiresAt;
     }
   }
 

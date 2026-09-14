@@ -21,6 +21,24 @@ configuration. This contract prepares an isolated signed-in staging path; it
 does not commission Firebase, production accounts, release signing or live
 telephony.
 
+The Android incoming-call notification owner is also staging-only. Its service
+is private and disabled by default, and runtime presentation still requires the
+commissioning metadata, a complete default Firebase configuration, and a
+persisted signed-in binding that owns the pending call. An accepted wake creates
+a high-importance incoming-call channel, uses Android call style on API 31 and
+later, and mints separate immutable app intents for open, answer, and decline.
+The lock-screen text is deliberately generic. Missing notification permission
+or a notification security rejection leaves the pending owner persisted for a
+later in-app recovery without crashing the service. Logout, authenticated
+cancellation, expiry, answer, and decline clear the owned notification in a
+deterministic path; mismatched stale actions cannot clear another call.
+
+Full-screen presentation is implemented behind Android's permission and
+platform capability checks. `android.permission.USE_FULL_SCREEN_INTENT` is
+deliberately absent from the current lab manifest, so Android 10 and later use
+the heads-up notification path. This source contract is not locked-screen,
+Doze, process-death, Firebase-delivery, call-answer, or physical-audio evidence.
+
 Native module: `NativeModules.Phone11Siprix`. Event channel: `Phone11SiprixEvent`.
 The authoritative JS contract is `index.d.ts`. All exported operations return
 Promises. Importing the package does not initialize any SIP runtime.
