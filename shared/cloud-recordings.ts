@@ -5,6 +5,10 @@ export interface CloudRecording {
   callUuid: string; tenantId: number; nativeHistoryId?: string; number: string;
   direction: "inbound" | "outbound"; startedAt: number; endedAt?: number;
   recordingStatus: CloudRecordingStatus; summaryStatus: CloudSummaryStatus;
+  /** The PBX has confirmed that capture stopped and the private WAV is being
+   * finalized. This is durable server state, so clients must not offer Stop
+   * again while upload or call-history correlation is retried. */
+  recordingFinalizing?: boolean;
 }
 export interface CloudRecordingDetail extends CloudRecording {
   playbackPath?: string; transcript?: string;

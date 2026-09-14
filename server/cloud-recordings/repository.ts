@@ -42,7 +42,8 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
  function dto(r:any):CloudRecording {
   return {callUuid:r.call_uuid,tenantId:Number(r.tenant_id),...(r.native_history_id?{nativeHistoryId:r.native_history_id}:{}),
    number:r.number,direction:r.direction,startedAt:new Date(r.started_at).getTime(),
-   ...(r.ended_at?{endedAt:new Date(r.ended_at).getTime()}:{}),recordingStatus:r.recording_status,summaryStatus:r.summary_status};
+   ...(r.ended_at?{endedAt:new Date(r.ended_at).getTime()}:{}),recordingStatus:r.recording_status,summaryStatus:r.summary_status,
+   ...(r.recording_status==='recording'&&r.capture_stopped_at?{recordingFinalizing:true}:{})};
  }
  return {
   async getPolicy(userId:number,tenantId:number):Promise<CloudRecordingPolicy>{

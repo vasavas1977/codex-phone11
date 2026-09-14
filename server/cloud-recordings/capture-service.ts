@@ -41,14 +41,14 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
   async capabilities(channelUuid:string,actorUserId:number){
    const none={canStart:false,canStop:false};
    if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true'||!/^[0-9a-f-]{36}$/i.test(channelUuid)||!Number.isSafeInteger(actorUserId)||actorUserId<=0)return none;
-   const found=await db.query(`SELECT r.recording_status,p.mode FROM phone11_cloud_recordings r
+   const found=await db.query(`SELECT r.recording_status,r.capture_stopped_at,p.mode FROM phone11_cloud_recordings r
     JOIN phone11_recording_routes rr ON rr.channel_uuid::text=r.call_uuid AND rr.tenant_id=r.tenant_id AND rr.extension_id=r.extension_id
     JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id JOIN user_extensions ue ON ue.extension_id=r.extension_id
     JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id JOIN tenants t ON t.id=r.tenant_id
     WHERE r.call_uuid=$1 AND ue.user_id=$2 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active' AND r.expires_at>clock_timestamp()`,[channelUuid,actorUserId]);
    if(found.rows.length!==1)return none;
    try{if((await transport.api(`uuid_exists ${channelUuid}`)).trim()!=='true')return none;
-    if(found.rows[0].recording_status==='recording')return {canStart:false,canStop:true};
+    if(found.rows[0].recording_status==='recording')return {canStart:false,canStop:!found.rows[0].capture_stopped_at};
     const peer=(await transport.api(`uuid_getvar ${channelUuid} signal_bond`)).trim();
     return {canStart:found.rows[0].mode!=='off'&&['off','failed'].includes(found.rows[0].recording_status)&&/^[0-9a-f-]{36}$/i.test(peer)&&peer!==channelUuid,canStop:false};
    }catch{return none;}
@@ -58,6 +58,11 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
   async manualStop(id:string,actor:number){
    const lease=await ledger.active(id,actor);if(!lease)return false;
    if(!await capture.stop(id,actor))return false;
+   // Persist the confirmed stop before replying to the handset. A subsequent
+   // detail refresh then reports finalization and cannot expose Stop again,
+   // even if upload or CDR correlation needs a durable retry. If a concurrent
+   // stop callback already finalized it, the PBX-confirmed stop still succeeds.
+   try{await ledger.stopped(lease);}catch{/* Completion callback/reconciler owns the same durable token. */}
    // The authenticated stop transport waits for the exact RECORD_STOP event,
    // so the call has stopped even when the WAV upload or CDR correlation is
    // still temporarily unavailable. Finish asynchronously; the durable

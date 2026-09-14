@@ -88,9 +88,14 @@ export function LiveRecordingPanel({
           cloud.error ||
           (busy
             ? "Playback is paused while you are on a call."
-            : detail.recordingStatus !== "ready"
-              ? recordingLabels[detail.recordingStatus]
-              : undefined)
+            : detail.recordingFinalizing
+              ? "Saving recording…"
+              : detail.recordingStatus !== "ready"
+                ? detail.recordingStatus === "failed" &&
+                  detail.manualControls?.canStart
+                  ? "Recording off"
+                  : recordingLabels[detail.recordingStatus]
+                : undefined)
         }
         player={
           detail.recordingStatus === "ready" && detail.playbackPath && !busy ? (

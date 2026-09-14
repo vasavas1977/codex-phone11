@@ -150,9 +150,6 @@ export function CaptureControls({
       )}
       {controls.canStop && stopping && (
         <View style={{ gap: 4 }}>
-          <Text style={{ color: colors.muted }}>
-            {message || "Recording stop accepted. Finalizing…"}
-          </Text>
           <TouchableOpacity
             accessibilityRole="button"
             onPress={() => void refresh()}
