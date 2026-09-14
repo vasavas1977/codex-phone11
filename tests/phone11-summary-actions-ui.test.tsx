@@ -87,7 +87,8 @@ const base = {
   startedAt: 1,
   original: { summary: "Original summary", actionItems: [] },
   content: { summary: "Original summary", actionItems: [] },
-  personal: { billable: false, updatedAt: 0 },
+  // Legacy data may retain this compatibility field, but it has no UI.
+  personal: { billable: true, updatedAt: 0 },
   ready: true,
   selectedLanguage: "original" as const,
   onOriginal: vi.fn(),
@@ -144,7 +145,6 @@ it("opens a compact accessible bottom menu with vertical action rows", () => {
       "Edit personal summary",
       "Translate",
       "Save task",
-      "Billable call",
     ]),
   );
   expect(m.buttons).toContain("Close summary actions");
