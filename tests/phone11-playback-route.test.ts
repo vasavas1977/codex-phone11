@@ -69,6 +69,23 @@ it("restores only when safe and leaves call audio untouched", async () => {
   expect(audio.native.resetPlaybackAudioRoute).not.toHaveBeenCalled();
 });
 
+it("preserves the native picker choice without pretending system is an output", async () => {
+  audio.native.setPlaybackAudioRoute.mockResolvedValueOnce({
+    route: "external",
+    label: "Bluetooth",
+  });
+  await expect(setPlaybackAudioRoute("system", () => true)).resolves.toEqual({
+    route: "external",
+    label: "Bluetooth",
+  });
+  expect(audio.native.setPlaybackAudioRoute).toHaveBeenCalledWith("system");
+  expect(audio.setMode).not.toHaveBeenCalled();
+  expect(normalizePlaybackAudioRoute({ route: "system" })).toEqual({
+    route: "unknown",
+    label: "Audio output",
+  });
+});
+
 it("reports external route events without exposing arbitrary native labels", () => {
   const listener = vi.fn();
   const unsubscribe = subscribeToPlaybackAudioRoute(listener);

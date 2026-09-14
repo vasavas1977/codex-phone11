@@ -12,7 +12,11 @@ const ui = vi.hoisted(() => ({
 
 vi.mock("react-native", () => ({
   ActivityIndicator: () => createElement("span", { "data-loading": true }),
+  Modal: ({ children, visible }: any) =>
+    visible ? createElement("section", { "data-modal": true }, children) : null,
   Platform: { OS: "web" },
+  ScrollView: ({ children }: any) => createElement("div", null, children),
+  UIManager: { getViewManagerConfig: () => null },
   View: ({ children, accessibilityRole, ...props }: any) => {
     if (accessibilityRole === "adjustable") ui.timeline = props;
     return createElement("div", null, children);
@@ -22,6 +26,10 @@ vi.mock("react-native", () => ({
     ui.buttons.set(accessibilityLabel, props);
     return createElement("button", null, children);
   },
+}));
+vi.mock("@expo/vector-icons/MaterialIcons", () => ({
+  default: ({ name }: { name: string }) =>
+    createElement("i", { "data-material-icon": name }),
 }));
 vi.mock("../components/ui/icon-symbol", () => ({
   IconSymbol: ({ name }: { name: string }) =>
@@ -69,7 +77,7 @@ it("supports tap or drag seeking and accessible fifteen-second seeking", () => {
   expect(html).toContain('data-icon="play.fill"');
   expect(html).toContain('data-icon="backward.fill"');
   expect(html).toContain('data-icon="forward.fill"');
-  expect(html).toContain('data-icon="speaker.slash.fill"');
+  expect(html).toContain('data-material-icon="volume-up"');
   expect(html).toContain("Speaker");
   expect(html).not.toContain(">Play<");
   expect(html).not.toContain("−15s");
@@ -91,7 +99,7 @@ it("supports tap or drag seeking and accessible fifteen-second seeking", () => {
   expect(seek).toHaveBeenLastCalledWith(15);
 });
 
-it("exposes one speaker toggle, defaults to earpiece, and reports external audio", () => {
+it("opens the audio output chooser instead of changing route directly", () => {
   const change = vi.fn();
   const loadingHtml = renderToStaticMarkup(
     createElement(PlaybackControls, {
@@ -106,8 +114,7 @@ it("exposes one speaker toggle, defaults to earpiece, and reports external audio
       onRouteChange: change,
     }),
   );
-  expect(ui.buttons.get("Play through speaker").disabled).toBe(true);
-  expect(ui.buttons.has("Play through earpiece")).toBe(false);
+  expect(ui.buttons.get("Choose audio output").disabled).toBe(true);
   expect(loadingHtml).toContain('data-loading="true"');
 
   ui.buttons.clear();
@@ -124,8 +131,8 @@ it("exposes one speaker toggle, defaults to earpiece, and reports external audio
       onRouteChange: change,
     }),
   );
-  ui.buttons.get("Play through speaker").onPress();
-  expect(change).toHaveBeenCalledWith("speaker");
+  ui.buttons.get("Choose audio output").onPress();
+  expect(change).not.toHaveBeenCalled();
   expect(html).toContain("Connected to ");
   expect(html).toContain("Bluetooth");
 
@@ -144,8 +151,8 @@ it("exposes one speaker toggle, defaults to earpiece, and reports external audio
     }),
   );
   expect(speakerHtml).toContain('data-icon="pause.fill"');
-  expect(speakerHtml).toContain('data-icon="speaker.wave.3.fill"');
-  expect(ui.buttons.get("Turn speaker off").accessibilityState.selected).toBe(
-    true,
-  );
+  expect(speakerHtml).toContain('data-material-icon="volume-up"');
+  expect(
+    ui.buttons.get("Choose audio output").accessibilityState.selected,
+  ).toBe(true);
 });

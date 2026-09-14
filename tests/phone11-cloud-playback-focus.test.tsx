@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   identity: { id: 1 },
   busy: false,
   buttons: new Map<string, any>(),
+  controls: undefined as any,
   player: {
     pause: vi.fn(),
     replace: vi.fn(),
@@ -64,6 +65,18 @@ vi.mock("../components/ui/icon-symbol", () => ({
   IconSymbol: ({ name }: { name: string }) =>
     createElement("i", { "data-icon": name }),
 }));
+// UI rendering is covered separately; here capture the callback boundary to
+// exercise native picker ownership and playback lifecycle together.
+vi.mock("../components/cloud-recordings/playback-controls", () => ({
+  PlaybackControls: (props: any) => {
+    m.controls = props;
+    m.buttons.set("Play recording", { onPress: props.onToggle });
+    m.buttons.set("Play through speaker", {
+      onPress: () => props.onRouteChange("speaker"),
+    });
+    return createElement("span", null);
+  },
+}));
 vi.mock("@react-navigation/native", () => ({
   useFocusEffect: (effect: () => () => void) => {
     m.focus = effect;
@@ -118,6 +131,7 @@ beforeEach(() => {
   m.focus = undefined;
   m.busy = false;
   m.buttons.clear();
+  m.controls = undefined;
   m.routeListener = undefined;
   m.token.mockResolvedValue("token");
   m.status.currentTime = 0;
@@ -129,6 +143,10 @@ beforeEach(() => {
   m.player.volume = 1;
   m.player.muted = false;
   m.player.seekTo.mockResolvedValue(undefined);
+  m.nativeRoute.getPlaybackAudioRoute.mockResolvedValue({
+    route: "earpiece",
+    label: "Earpiece",
+  });
   m.nativeRoute.setPlaybackAudioRoute.mockImplementation(
     async (route: string) => ({
       route,
@@ -210,6 +228,120 @@ it("a second Play tap cancels pending route setup before audio starts", async ()
   blur();
 });
 
+it("keeps the native picker output when Play is pressed after choosing it", async () => {
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  m.controls.onOutputPickerOpened();
+  await m.controls.onToggle();
+  expect(m.nativeRoute.setPlaybackAudioRoute).toHaveBeenCalledWith("system");
+  expect(m.player.play).toHaveBeenCalledOnce();
+  blur();
+  expect(m.nativeRoute.resetPlaybackAudioRoute).toHaveBeenCalledOnce();
+});
+
+it("does not claim picker ownership or resume playback during a call", async () => {
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  m.busy = true;
+  m.controls.onOutputPickerOpened();
+  await m.controls.onToggle();
+  expect(m.nativeRoute.setPlaybackAudioRoute).not.toHaveBeenCalled();
+  expect(m.player.play).not.toHaveBeenCalled();
+  blur();
+});
+
+it("preserves an already-connected accessory on first Play", async () => {
+  m.nativeRoute.getPlaybackAudioRoute.mockResolvedValueOnce({
+    route: "external",
+    label: "Bluetooth",
+  });
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.controls.onToggle();
+  expect(m.nativeRoute.setPlaybackAudioRoute).toHaveBeenCalledWith("system");
+  blur();
+});
+
+it("does not replace a chosen output with a delayed initial route read", async () => {
+  let finish!: () => void;
+  m.nativeRoute.getPlaybackAudioRoute.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ route: "external", label: "Bluetooth" });
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.controls.onRouteChange("speaker");
+  finish();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.controls.onToggle();
+  expect(m.nativeRoute.setPlaybackAudioRoute).toHaveBeenLastCalledWith(
+    "speaker",
+  );
+  blur();
+});
+
+it("ignores a route change that finishes after a newer picker choice", async () => {
+  let finish!: () => void;
+  m.nativeRoute.setPlaybackAudioRoute.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ route: "speaker", label: "Speaker" });
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const pending = m.controls.onToggle();
+  await Promise.resolve();
+  m.controls.onOutputPickerOpened({ route: "external", label: "Bluetooth" });
+  finish();
+  await pending;
+  expect(m.player.play).not.toHaveBeenCalled();
+  await m.controls.onToggle();
+  expect(m.nativeRoute.setPlaybackAudioRoute).toHaveBeenLastCalledWith(
+    "system",
+  );
+  blur();
+});
+
+it("allows playback after refocus while an old route request settles", async () => {
+  let finish!: () => void;
+  m.nativeRoute.setPlaybackAudioRoute.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ route: "earpiece", label: "Earpiece" });
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const pending = m.controls.onToggle();
+  await Promise.resolve();
+  blur();
+  const blurAgain = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.controls.onToggle();
+  expect(m.player.play).toHaveBeenCalledOnce();
+  finish();
+  await pending;
+  expect(m.player.play).toHaveBeenCalledOnce();
+  blurAgain();
+});
+
 it("the Play wrapper restarts completed playback audibly", async () => {
   m.status.currentTime = 100;
   m.status.didJustFinish = true;
@@ -233,7 +365,7 @@ it("fails closed when a playback seek is rejected", async () => {
   const blur = m.focus!();
   await Promise.resolve();
   await Promise.resolve();
-  await m.buttons.get("Forward 15 seconds").onPress();
+  await m.controls.onSeek(15);
   expect(m.player.replace).toHaveBeenLastCalledWith(null);
   blur();
 });

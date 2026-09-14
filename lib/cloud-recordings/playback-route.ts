@@ -1,9 +1,10 @@
 import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import { setAudioModeAsync } from "expo-audio";
 
-export type PlaybackAudioRoute = "speaker" | "earpiece";
+export type PlaybackAudioRoute = "speaker" | "earpiece" | "system";
 export type EffectivePlaybackAudioRoute =
-  | PlaybackAudioRoute
+  | "speaker"
+  | "earpiece"
   | "external"
   | "unknown";
 export interface PlaybackAudioRouteStatus {
@@ -78,6 +79,9 @@ export async function setPlaybackAudioRoute(
       await bridge.setPlaybackAudioRoute(route),
     );
   }
+  // The system picker owns this choice on iOS. Never map it to an invented
+  // speaker route on platforms without that native picker.
+  if (route === "system") throw new Error("PLAYBACK_ROUTE_UNAVAILABLE");
   await setAudioModeAsync(playbackAudioMode(route));
   return { route, label: labels[route] } satisfies PlaybackAudioRouteStatus;
 }
