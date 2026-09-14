@@ -56,6 +56,6 @@ describe("recording summary actions", () => {
     expect(text).toContain("Personal summary\nCustomer requested");
     expect(text).toContain("Somchai: สวัสดี");
     expect(text).toContain("Vasavas: Hello");
-    expect(text).toContain("Billable call");
+    expect(text).not.toContain("Billable call");
   });
 });

@@ -122,7 +122,6 @@ export function recordingDocument(input: {
       personal.task.text.trim(),
     );
   }
-  if (personal?.billable) lines.push("", "Billable call");
   if (content.transcript) {
     const turns = transcriptTurns(content.transcript, input.speakerNames);
     lines.push(

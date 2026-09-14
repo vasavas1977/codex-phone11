@@ -640,20 +640,6 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                   onPress={openTask}
                   colors={props.colors}
                 />
-                <MenuRow
-                  label="Billable call"
-                  description="Private marker on this device"
-                  icon="payments"
-                  disabled={!props.ready}
-                  selected={props.personal.billable}
-                  onPress={() =>
-                    void props.onUpdate((current) => ({
-                      ...current,
-                      billable: !current.billable,
-                    }))
-                  }
-                  colors={props.colors}
-                />
                 <View
                   style={{
                     borderTopWidth: 1,
