@@ -57,6 +57,24 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
  it('revocation invalidates lease and blocks provider result persistence',async()=>{await ready();const j=(await repo.claimJob('a'))!;await repo.updatePolicy(1,{tenantId:10,mode:'off',aiEnabled:false,retentionDays:30});expect(await repo.finishJob(j,{transcript:'private',summary:{summary:'private',actionItems:[],language:'th'}})).toBe(false);expect(await repo.claimJob('b')).toBeNull();});
  it('expired lease can be reclaimed; former worker cannot finish',async()=>{await ready();const a=(await repo.claimJob('a'))!;await pool.query("UPDATE phone11_recording_jobs SET lease_until=now()-interval '1 second'");const b=(await repo.claimJob('b'))!;expect(b.leaseToken).not.toBe(a.leaseToken);expect(await repo.finishJob(a,null)).toBe(false);expect(await repo.finishJob(b,null)).toBe(true);});
  it('three failed attempts end permanently and do not fake a summary',async()=>{await ready();for(let i=0;i<3;i++){const j=(await repo.claimJob('a'))!;expect(j).toBeTruthy();await repo.finishJob(j,null);await pool.query("UPDATE phone11_recording_jobs SET available_at=now()-interval '1 second'");}expect(await repo.claimJob('a')).toBeNull();expect(await repo.detail(2,'call1')).toMatchObject({summaryStatus:'failed'});expect((await repo.detail(2,'call1')).summary).toBeUndefined();});
+ it('persists only a safe failure category, backs off transient retries, and clears it on success',async()=>{
+  await ready();const first=(await repo.claimJob('a'))!;
+  expect(await repo.finishJob(first,null,{code:'provider_rate_limited',stage:'generate'})).toBe(true);
+  const firstFailure=(await pool.query("SELECT failure_code,extract(epoch FROM available_at-clock_timestamp()) AS retry_seconds FROM phone11_recording_jobs")).rows[0];
+  expect(firstFailure.failure_code).toBe('provider_rate_limited:generate');expect(Number(firstFailure.retry_seconds)).toBeGreaterThan(55);expect(Number(firstFailure.retry_seconds)).toBeLessThanOrEqual(60);
+  await pool.query("UPDATE phone11_recording_jobs SET available_at=now()-interval '1 second'");
+  const second=(await repo.claimJob('b'))!;expect(await repo.finishJob(second,null,{code:'provider_timeout',stage:'generate'})).toBe(true);
+  const secondFailure=(await pool.query("SELECT failure_code,extract(epoch FROM available_at-clock_timestamp()) AS retry_seconds FROM phone11_recording_jobs")).rows[0];
+  expect(secondFailure.failure_code).toBe('provider_timeout:generate');expect(Number(secondFailure.retry_seconds)).toBeGreaterThan(295);expect(Number(secondFailure.retry_seconds)).toBeLessThanOrEqual(300);
+  await pool.query("UPDATE phone11_recording_jobs SET available_at=now()-interval '1 second'");
+  const retry=(await repo.claimJob('c'))!;expect(await repo.finishJob(retry,{transcript:'Actual',summary:{summary:'Actual summary',actionItems:[],language:'en'}})).toBe(true);
+  expect((await pool.query('SELECT failure_code FROM phone11_recording_jobs')).rows[0].failure_code).toBeNull();
+ });
+ it('rejects arbitrary diagnostic text at the database persistence boundary',async()=>{
+  await ready();const job=(await repo.claimJob('a'))!;
+  expect(await repo.finishJob(job,null,{code:'private provider body' as never,stage:'https://secret.invalid' as never})).toBe(true);
+  expect((await pool.query('SELECT failure_code FROM phone11_recording_jobs')).rows[0].failure_code).toBe('analysis_failed');
+ });
  it('retention expiry blocks list, detail and claim',async()=>{await ready();await pool.query("UPDATE phone11_cloud_recordings SET expires_at=now()-interval '1 second'");expect((await repo.list(2)).items).toHaveLength(0);expect(await repo.claimJob('a')).toBeNull();});
  it('same exact SIP identity supplies native history link without number matching',async()=>{await pool.query(`INSERT INTO phone11_auth_session VALUES('test-session') ON CONFLICT DO NOTHING; INSERT INTO phone11_wake_bindings(id,session_id,session_binding,user_id,tenant_id,extension_id,device_id,push_revision,grant_hash,expires_at) VALUES('00000000-0000-4000-8000-000000000001','test-session','00000000-0000-4000-8000-000000000003',2,10,11,'test-device','00000000-0000-4000-8000-000000000004',repeat('a',64),now()+interval '1 day');INSERT INTO phone11_wake_calls(id,binding_id,sip_call_id,sip_uri,state,expires_at) VALUES('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001','sip-test','sip:test@example.invalid','pending',now()+interval '1 minute')`);await repo.registerCall('call1');expect((await repo.detail(2,'call1')).nativeHistoryId).toBe('native-wake:00000000-0000-4000-8000-000000000002');});
  it('manual capture needs assigned actor and token; policyoff cancels pendingcapture',async()=>{

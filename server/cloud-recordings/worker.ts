@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
-import { analyzeRecordingAudio, type RecordingAnalysis } from "./gemini";
+import { analyzeRecordingAudio, RecordingAnalysisError, type RecordingAnalysis } from "./gemini";
+import type { RecordingFailure } from "./failure";
 import { createCloudRecordingRepository, type RecordingJob } from "./repository";
 
 const maxBytes = 100 * 1024 * 1024;
@@ -30,7 +31,7 @@ export async function readPrivateRecording(job: RecordingJob, root = process.env
 interface Repository {
   claimJob(workerId: string): Promise<RecordingJob | null>;
   validateJob(job: RecordingJob): Promise<boolean>;
-  finishJob(job: RecordingJob, result: RecordingAnalysis | null): Promise<boolean>;
+  finishJob(job: RecordingJob, result: RecordingAnalysis | null, failure?: RecordingFailure): Promise<boolean>;
 }
 /** Each tick claims at most one leased job. Failures never affect live call processing. */
 export async function processRecordingJob(deps: {
@@ -42,13 +43,21 @@ export async function processRecordingJob(deps: {
   const job = await deps.repository.claimJob(deps.workerId);
   if (!job) return "idle" as const;
   let bytes: Buffer | undefined;
+  let phase: "read" | "validate" | "analyze" | "persist" = "read";
   try {
     bytes = await (deps.read ?? readPrivateRecording)(job);
+    phase = "validate";
     if (!await deps.repository.validateJob(job)) return "revoked" as const;
+    phase = "analyze";
     const result = await (deps.analyze ?? analyzeRecordingAudio)({ bytes, mimeType: "audio/wav" });
+    phase = "persist";
     return await deps.repository.finishJob(job, result) ? "completed" as const : "revoked" as const;
-  } catch {
-    await deps.repository.finishJob(job, null);
+  } catch (error) {
+    const failure: RecordingFailure = error instanceof RecordingAnalysisError
+      ? { code: error.code, stage: error.stage }
+      : { code: phase === "read" ? "recording_read_failed" : "analysis_failed", stage: phase };
+    // Persist only allowlisted codes; never provider bodies, transcripts, URLs or credentials.
+    await deps.repository.finishJob(job, null, failure);
     return "failed" as const;
   } finally { bytes?.fill(0); }
 }

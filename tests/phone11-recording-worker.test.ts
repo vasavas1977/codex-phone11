@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { RecordingAnalysisError } from "../server/cloud-recordings/gemini";
+import { recordingFailureCode, recordingRetryDelaySeconds } from "../server/cloud-recordings/failure";
 import { processRecordingJob, readPrivateRecording, processRecordingPurge, removeExpiredRecording } from "../server/cloud-recordings/worker";
 const job = { callUuid: "call-test", tenantId: 1, storageKey: "/private/1/call.wav", leaseToken: "lease-test" };
 const result = { transcript: "Hello", summary: { summary: "Greeting", actionItems: [], language: "en" } };
@@ -52,8 +54,32 @@ describe("durable recording worker", () => {
   it("records a retryable failure without fake summary or leaked audio", async () => {
     const f = fixture(); f.analyze.mockRejectedValue(new Error("private provider details"));
     expect(await processRecordingJob(f)).toBe("failed");
-    expect(f.repository.finishJob).toHaveBeenCalledWith(job, null);
+    expect(f.repository.finishJob).toHaveBeenCalledWith(job, null, { code: "analysis_failed", stage: "analyze" });
     expect(f.bytes.every(byte => byte === 0)).toBe(true);
+  });
+  it("preserves a transient provider category without retaining provider content", async () => {
+    const f = fixture(); f.analyze.mockRejectedValue(new RecordingAnalysisError("provider_unavailable", "generate"));
+    expect(await processRecordingJob(f)).toBe("failed");
+    expect(f.repository.finishJob).toHaveBeenCalledWith(job, null, { code: "provider_unavailable", stage: "generate" });
+    expect(JSON.stringify(f.repository.finishJob.mock.calls)).not.toContain("private provider");
+    expect(f.bytes.every(byte => byte === 0)).toBe(true);
+  });
+  it("distinguishes media read and validation failures", async () => {
+    const readFailure = fixture(); readFailure.read.mockRejectedValue(new Error("private filesystem path"));
+    expect(await processRecordingJob(readFailure)).toBe("failed");
+    expect(readFailure.repository.finishJob).toHaveBeenCalledWith(job, null, { code: "recording_read_failed", stage: "read" });
+    const validationFailure = fixture(); validationFailure.repository.validateJob.mockRejectedValue(new Error("private database details"));
+    expect(await processRecordingJob(validationFailure)).toBe("failed");
+    expect(validationFailure.repository.finishJob).toHaveBeenCalledWith(job, null, { code: "analysis_failed", stage: "validate" });
+    expect(validationFailure.analyze).not.toHaveBeenCalled();
+  });
+  it("allowlists persisted categories and applies bounded transient backoff", () => {
+    expect(recordingFailureCode({ code: "provider_rate_limited", stage: "generate" })).toBe("provider_rate_limited:generate");
+    expect(recordingFailureCode({ code: "secret provider response", stage: "generate" } as never)).toBe("analysis_failed");
+    expect(recordingFailureCode({ code: "invalid_result", stage: "secret audio URL" } as never)).toBe("analysis_failed");
+    expect(recordingRetryDelaySeconds({ code: "provider_timeout", stage: "generate" }, 1)).toBe(60);
+    expect(recordingRetryDelaySeconds({ code: "provider_timeout", stage: "generate" }, 2)).toBe(300);
+    expect(recordingRetryDelaySeconds({ code: "invalid_result", stage: "parse" }, 1)).toBe(30);
   });
   it("does not touch media when no job is due", async () => {
     const f = fixture(); f.repository.claimJob.mockResolvedValue(null as never);
