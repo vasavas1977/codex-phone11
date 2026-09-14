@@ -1,7 +1,7 @@
 import { beforeEach,describe,it,expect,vi } from 'vitest';
 const mocks=vi.hoisted(()=>({query:vi.fn(),api:vi.fn(),failed:vi.fn(),pendingUploads:vi.fn(),active:vi.fn(),stopped:vi.fn(),discard:vi.fn(),complete:vi.fn(),uploaded:vi.fn(),cleaned:vi.fn(),releaseCompletion:vi.fn(),putCompleted:vi.fn(),openFile:vi.fn()}));
 vi.mock('../server/pbx/db',()=>({getPool:()=>({query:mocks.query})}));
-vi.mock('../server/cloud-recordings/correlation',()=>({bindIncomingChannel:vi.fn()}));
+vi.mock('../server/cloud-recordings/correlation',()=>({bindIncomingChannel:vi.fn(),bindObservedOutboundChannel:vi.fn()}));
 vi.mock('../server/cloud-recordings/capture-ledger',()=>({createCaptureLedger:()=>({failed:mocks.failed,pendingUploads:mocks.pendingUploads,active:mocks.active,stopped:mocks.stopped,complete:mocks.complete,uploaded:mocks.uploaded,cleaned:mocks.cleaned,releaseCompletion:mocks.releaseCompletion})}));
 vi.mock('../server/cloud-recordings/esl-capture',()=>({createEslCaptureTransport:()=>({api:mocks.api})}));
 vi.mock('../server/cloud-recordings/capture-spool',()=>({createCaptureSpool:()=>({discardCompleted:mocks.discard,putCompleted:mocks.putCompleted})}));

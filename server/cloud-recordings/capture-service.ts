@@ -1,5 +1,5 @@
 import { persistRouteCdr } from './route-cdr';
-import { bindIncomingChannel } from './correlation';
+import { bindIncomingChannel, bindObservedOutboundChannel } from './correlation';
 import { getPool } from '../pbx/db';
 import { createCaptureLedger } from './capture-ledger';
 import { createRecordingCapture } from './capture';
@@ -19,7 +19,7 @@ export function parseRecordingChannelDump(body:string,channelUuid:string):Record
  const parsed:unknown=JSON.parse(body);
  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))throw new Error('Invalid recording channel snapshot');
  const data=parsed as Record<string,unknown>,fields:Record<string,string>={};
- for(const key of ['Unique-ID','variable_sip_call_id','Caller-Channel-Created-Time','variable_start_epoch','Caller-Caller-ID-Number']){
+ for(const key of ['Unique-ID','variable_sip_call_id','Caller-Channel-Created-Time','variable_start_epoch','Caller-Caller-ID-Number','Caller-Destination-Number','Call-Direction','variable_call_direction','variable_sip_received_ip','variable_sofia_profile_name','variable_bypass_media','variable_bypass_media_after_bridge','variable_proxy_media','variable_phone11_outbound_id','variable_phone11_authenticated_user','variable_phone11_authenticated_realm']){
   if(!Object.prototype.hasOwnProperty.call(data,key))continue;
   const value=data[key];
   if(typeof value!=='string'||value.length>512||/[\x00-\x1f\x7f]/.test(value))throw new Error('Invalid recording channel snapshot');
@@ -85,7 +85,12 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
       try{
        const fields=parseRecordingChannelDump(await transport.api(`uuid_dump ${id} json`),id);
        const sip=fields.variable_sip_call_id;
-       if(sip){await bindIncomingChannel(id,sip,fields['Caller-Caller-ID-Number']??'');if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED==='true')await persistRouteCdr(db,id,fields);}
+       if(sip){
+        if(fields.variable_call_direction==='outbound'){
+         if(fields['Call-Direction']==='inbound')await bindObservedOutboundChannel(fields);
+        }else await bindIncomingChannel(id,sip,fields['Caller-Caller-ID-Number']??'');
+        if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED==='true')await persistRouteCdr(db,id,fields);
+       }
       }catch{/* Unmapped channels remain excluded. */}
      }
     }

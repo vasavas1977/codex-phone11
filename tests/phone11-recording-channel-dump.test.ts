@@ -1,7 +1,7 @@
 import {beforeEach,afterEach,expect,it,vi} from 'vitest';
-const mocks=vi.hoisted(()=>({api:vi.fn(),query:vi.fn(),bind:vi.fn(),persist:vi.fn()}));
+const mocks=vi.hoisted(()=>({api:vi.fn(),query:vi.fn(),bind:vi.fn(),observed:vi.fn(),persist:vi.fn()}));
 vi.mock('../server/pbx/db',()=>({getPool:()=>({query:mocks.query})}));
-vi.mock('../server/cloud-recordings/correlation',()=>({bindIncomingChannel:mocks.bind}));
+vi.mock('../server/cloud-recordings/correlation',()=>({bindIncomingChannel:mocks.bind,bindObservedOutboundChannel:mocks.observed}));
 vi.mock('../server/cloud-recordings/route-cdr',()=>({persistRouteCdr:mocks.persist}));
 vi.mock('../server/cloud-recordings/capture-ledger',()=>({createCaptureLedger:()=>({pendingUploads:async()=>[]})}));
 vi.mock('../server/cloud-recordings/esl-capture',()=>({createEslCaptureTransport:()=>({api:mocks.api})}));
@@ -26,4 +26,31 @@ it.each(['invalid','null','[]',JSON.stringify({...fields(),'Unique-ID':'22222222
 it('excludes arbitrary tenant fields and does not normalize whitespace into another SIP ID',()=>{
  const result=parseRecordingChannelDump(JSON.stringify({...fields(' call@example.test '),tenant_id:'123'}),id);
  expect(result.variable_sip_call_id).toBe(' call@example.test ');expect(result).not.toHaveProperty('tenant_id');
+});
+it('keeps only FreeSWITCH internal outbound markers and media guards while excluding raw protected SIP headers',()=>{
+ const result=parseRecordingChannelDump(JSON.stringify({...fields(),variable_bypass_media_after_bridge:'false',variable_phone11_outbound_id:'22222222-2222-4222-8222-222222222222',variable_phone11_authenticated_user:'3001',variable_phone11_authenticated_realm:'phone11.invalid','variable_sip_h_X-Phone11-Outbound-ID':'attacker','variable_sip_h_X-Phone11-Authenticated-User':'attacker','variable_sip_h_X-Phone11-Authenticated-Realm':'attacker'}),id);
+ expect(result).toMatchObject({variable_bypass_media_after_bridge:'false',variable_phone11_outbound_id:'22222222-2222-4222-8222-222222222222',variable_phone11_authenticated_user:'3001',variable_phone11_authenticated_realm:'phone11.invalid'});
+ expect(Object.keys(result).some(key=>key.startsWith('variable_sip_h_X-Phone11-'))).toBe(false);
+});
+it('sends only the trusted-proxy inbound A-leg of an outbound bridge to outbound correlation',async()=>{
+ const outbound={...fields(),'Caller-Destination-Number':'+66800000000','Call-Direction':'inbound',variable_call_direction:'outbound',variable_sip_received_ip:'10.0.0.8',variable_sofia_profile_name:'external',
+  variable_phone11_outbound_id:'22222222-2222-4222-8222-222222222222',variable_phone11_authenticated_user:'3001',variable_phone11_authenticated_realm:'phone11.invalid'};
+ mocks.api.mockImplementation(async(command:string)=>command==='show channels as json'?JSON.stringify({rows:[{uuid:id}]}):JSON.stringify(outbound));
+ await service().tick();
+ expect(mocks.observed).toHaveBeenCalledWith(outbound);expect(mocks.bind).not.toHaveBeenCalled();
+ expect(mocks.persist).toHaveBeenCalledWith(expect.anything(),id,outbound);
+});
+it('does not bind the outgoing FreeSWITCH bridge leg as a handset-owned channel',async()=>{
+ const bleg={...fields(),'Call-Direction':'outbound',variable_call_direction:'outbound',variable_sip_received_ip:'10.0.0.8',variable_sofia_profile_name:'external',
+  variable_phone11_outbound_id:'22222222-2222-4222-8222-222222222222',variable_phone11_authenticated_user:'3001',variable_phone11_authenticated_realm:'phone11.invalid'};
+ mocks.api.mockImplementation(async(command:string)=>command==='show channels as json'?JSON.stringify({rows:[{uuid:id}]}):JSON.stringify(bleg));
+ await service().tick();expect(mocks.observed).not.toHaveBeenCalled();expect(mocks.bind).not.toHaveBeenCalled();
+});
+it('selects exactly one inbound A-leg from a connected outbound bridge snapshot',async()=>{
+ const peer='33333333-3333-4333-8333-333333333333';
+ const common={'Caller-Destination-Number':'+66800000000',variable_call_direction:'outbound',variable_sip_received_ip:'10.0.0.8',variable_sofia_profile_name:'external',variable_phone11_outbound_id:'22222222-2222-4222-8222-222222222222',variable_phone11_authenticated_user:'3001',variable_phone11_authenticated_realm:'phone11.invalid'};
+ const aleg={...fields(),...common,'Call-Direction':'inbound'};
+ const bleg={...fields(),...common,'Unique-ID':peer,variable_sip_call_id:'carrier-leg@example.test','Call-Direction':'outbound'};
+ mocks.api.mockImplementation(async(command:string)=>command==='show channels as json'?JSON.stringify({rows:[{uuid:id},{uuid:peer}]}):command===`uuid_dump ${id} json`?JSON.stringify(aleg):JSON.stringify(bleg));
+ await service().tick();expect(mocks.observed).toHaveBeenCalledTimes(1);expect(mocks.observed).toHaveBeenCalledWith(aleg);expect(mocks.bind).not.toHaveBeenCalled();
 });
