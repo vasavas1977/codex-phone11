@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  mergeTranscriptSpeakerNames,
   transcriptSpeakerLabel,
   transcriptTurns,
 } from "../lib/cloud-recordings/transcript";
@@ -54,5 +55,26 @@ describe("Phone11 transcript speaker labels", () => {
       { speaker: "speaker1", text: "ฮัลโหลค่ะ" },
       { speaker: "speaker2", text: "ดีว่า?" },
     ]);
+  });
+
+  it("prefers device contacts over server caller-ID names", () => {
+    expect(
+      mergeTranscriptSpeakerNames(
+        { speaker1: "Somchai Contact", speaker2: "Vasavas" },
+        { speaker1: "SOMCHAI TRADING", speaker2: "Extension 3001" },
+      ),
+    ).toEqual({ speaker1: "Somchai Contact", speaker2: "Vasavas" });
+    expect(
+      mergeTranscriptSpeakerNames(
+        { speaker1: "+66 81 234 5678" },
+        { speaker1: "  Somchai\n  S.  " },
+      ),
+    ).toEqual({ speaker1: "Somchai S." });
+  });
+
+  it("keeps fallback labels distinct when participant names collide", () => {
+    const names = { speaker1: "Alex", speaker2: "alex" };
+    expect(transcriptSpeakerLabel("speaker1", names)).toBe("Alex");
+    expect(transcriptSpeakerLabel("speaker2", names)).toBe("Speaker 2");
   });
 });

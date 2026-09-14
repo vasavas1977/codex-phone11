@@ -9,7 +9,10 @@ import { recordingLabels } from "@/lib/cloud-recordings/presentation";
 import { RecordingPanel } from "./call-history-view";
 import { Playback } from "./cloud-playback";
 import { CaptureControls } from "./capture-controls";
-import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
+import {
+  mergeTranscriptSpeakerNames,
+  type TranscriptSpeakerNames,
+} from "@/lib/cloud-recordings/transcript";
 export function LiveRecordingPanel({
   callUuid,
   full = false,
@@ -77,11 +80,10 @@ export function LiveRecordingPanel({
         summaryStatus={detail.summaryStatus}
         summary={detail.summary}
         transcript={detail.transcript}
-        speakerNames={
-          speakerNames || detail.participantNames
-            ? { ...speakerNames, ...detail.participantNames }
-            : undefined
-        }
+        speakerNames={mergeTranscriptSpeakerNames(
+          speakerNames,
+          detail.participantNames,
+        )}
         notice={
           cloud.error ||
           (busy

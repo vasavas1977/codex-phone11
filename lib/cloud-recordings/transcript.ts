@@ -16,11 +16,30 @@ export type TranscriptTurn = {
 };
 
 const cleanName = (value: string | undefined) => {
-  const name = value?.trim();
+  const name = value?.replace(/\s+/gu, " ").trim();
   return name && name.length <= 80 && !/^\+?[0-9 ()-]+$/.test(name)
     ? name
     : undefined;
 };
+
+/**
+ * Prefer names resolved on the handset (signed-in user and device contacts),
+ * then fall back to participant names persisted with the server call record.
+ * Caller-ID text is useful when no contact exists, but it should not replace a
+ * contact name the person chose on their own phone.
+ */
+export function mergeTranscriptSpeakerNames(
+  preferred: TranscriptSpeakerNames = {},
+  fallback: TranscriptSpeakerNames = {},
+): TranscriptSpeakerNames | undefined {
+  const speaker1 = cleanName(preferred.speaker1) ?? cleanName(fallback.speaker1);
+  const speaker2 = cleanName(preferred.speaker2) ?? cleanName(fallback.speaker2);
+  if (!speaker1 && !speaker2) return undefined;
+  return {
+    ...(speaker1 ? { speaker1 } : {}),
+    ...(speaker2 ? { speaker2 } : {}),
+  };
+}
 
 function namedPrefix(line: string, names: TranscriptSpeakerNames) {
   const entries: Array<["speaker1" | "speaker2", string | undefined]> = [
@@ -120,7 +139,14 @@ export function transcriptSpeakerLabel(
   speaker: TranscriptTurn["speaker"],
   names: TranscriptSpeakerNames = {},
 ) {
-  if (speaker === "speaker1") return cleanName(names.speaker1) ?? "Speaker 1";
-  if (speaker === "speaker2") return cleanName(names.speaker2) ?? "Speaker 2";
+  const speaker1 = cleanName(names.speaker1);
+  const speaker2 = cleanName(names.speaker2);
+  const duplicateNames =
+    speaker1 &&
+    speaker2 &&
+    speaker1.localeCompare(speaker2, undefined, { sensitivity: "accent" }) === 0;
+  if (speaker === "speaker1") return speaker1 ?? "Speaker 1";
+  if (speaker === "speaker2")
+    return !duplicateNames && speaker2 ? speaker2 : "Speaker 2";
   return "Transcript";
 }
