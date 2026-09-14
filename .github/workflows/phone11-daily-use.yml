@@ -10,6 +10,8 @@ on:
       - "infra/configs/kamailio/phone11-wake-candidate/**"
       - "infra/configs/kamailio/phone11-recording-anchor-candidate/**"
       - "infra/configs/freeswitch/phone11-recording-anchor-candidate/**"
+      - "infra/configs/kamailio/phone11-outbound-recording-candidate/**"
+      - "infra/configs/freeswitch/dialplan/public/02_kamailio_outbound.xml"
       - "ops/scripts/check-phone11-wake-kamailio.mjs"
       - "ops/scripts/test-phone11-wake-kamailio.mjs"
       - "app/**"
@@ -31,6 +33,8 @@ on:
       - "infra/configs/kamailio/phone11-wake-candidate/**"
       - "infra/configs/kamailio/phone11-recording-anchor-candidate/**"
       - "infra/configs/freeswitch/phone11-recording-anchor-candidate/**"
+      - "infra/configs/kamailio/phone11-outbound-recording-candidate/**"
+      - "infra/configs/freeswitch/dialplan/public/02_kamailio_outbound.xml"
       - "ops/scripts/check-phone11-wake-kamailio.mjs"
       - "ops/scripts/test-phone11-wake-kamailio.mjs"
       - "app/**"
@@ -138,6 +142,13 @@ jobs:
             python3 tests/fixtures/phone11-recording-anchor/run.py
           docker run --rm --network none -v "$PWD:/work:ro" phone11-recording-anchor-test \
             python3 tests/fixtures/phone11-recording-anchor/xml-check.py
+          docker run --rm --network none -v "$PWD:/work:ro" phone11-recording-anchor-test \
+            python3 tests/fixtures/phone11-outbound-recording/run.py
+      - name: Verify outgoing recording metadata with actual FreeSWITCH and isolated SIP endpoints
+        run: |
+          docker pull safarov/freeswitch@sha256:b31c743f4c911a19687c61e3214968f2a24f93f9d3d667cc26284192e158ffc6
+          sudo env PHONE11_FREESWITCH_IMAGE=safarov/freeswitch@sha256:b31c743f4c911a19687c61e3214968f2a24f93f9d3d667cc26284192e158ffc6 \
+            bash tests/fixtures/phone11-outbound-recording-fs/run.sh
       - name: Compile backend with esbuild
         run: pnpm run build:backend
 
