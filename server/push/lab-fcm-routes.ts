@@ -36,8 +36,9 @@ export class LabFcmError extends Error{constructor(public readonly status:number
 export type LabFcmConfig={executionId:string;expiresAt:number;apkSha256:string;sourceCommit:string;bindingId:string;pilotSipUri:string;allowed:Set<string>;publicOrigin:string;driverOrigin:string};
 const stage=/(^|[.-])(staging|stage|sandbox|nonprod)([.-]|$)/i;
 const placeholder=/(example|placeholder|changeme|replace[-_]?me|your[-_]|dummy|sample)/i;
+const specialUseHostname=/(^|\.)(test|invalid|example|localhost)$/i;
 const secret=(value:unknown)=>typeof value==="string"&&value.length>=32&&value.length<=512&&!placeholder.test(value);
-function stagingOrigin(value:unknown){try{const url=new URL(String(value));if(url.protocol!=="https:"||url.username||url.password||url.pathname!=="/"||url.search||url.hash||!stage.test(url.hostname)||placeholder.test(url.hostname))throw new Error();return url.origin;}catch{throw new LabFcmError(503);}}
+function stagingOrigin(value:unknown){try{const url=new URL(String(value)),hostname=url.hostname.replace(/\.$/,"");if(url.protocol!=="https:"||url.username||url.password||url.pathname!=="/"||url.search||url.hash||!stage.test(hostname)||placeholder.test(hostname)||specialUseHostname.test(hostname))throw new Error();return url.origin;}catch{throw new LabFcmError(503);}}
 function stagingSip(value:unknown){const match=/^sip:[A-Za-z0-9_.+-]{1,128}@([A-Za-z0-9.-]{1,253})$/.exec(String(value));if(!match||!stage.test(match[1])||placeholder.test(match[1]))throw new LabFcmError(503);return String(value);}
 
 function parseLabFcmConfig(source:NodeJS.ProcessEnv,now:number,allowExpired:boolean):LabFcmConfig{

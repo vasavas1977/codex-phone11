@@ -9,8 +9,8 @@ const now=2_000_000_000_000,executionId=randomUUID(),bindingId=randomUUID(),apk=
 const source=():NodeJS.ProcessEnv=>({NODE_ENV:"test",PHONE11_LAB_FCM_SCENARIO_ENABLED:"1",PHONE11_LAB_FCM_ENVIRONMENT:"staging",PHONE11_LAB_FCM_PACKAGE:"ai.phone11.mobile.staging",
  PHONE11_LAB_FCM_PROJECT_ID:"phone11-stage-20260914",PHONE11_LAB_FCM_SENDER_ID:"413228367517",PHONE11_LAB_FCM_APP_ID:"1:413228367517:android:f41353883923fc15911e74",
  PHONE11_LAB_FCM_APK_SHA256:apk,PHONE11_LAB_FCM_EXECUTION_ID:executionId,PHONE11_LAB_FCM_EXECUTION_EXPIRES_AT:String(now+300_000),PHONE11_LAB_FCM_BINDING_ID:bindingId,
- PHONE11_LAB_FCM_CASES:"PUSH-06,PUSH-01",PHONE11_LAB_FCM_TRIGGER_SECRET:secret,PHONE11_LAB_FCM_PUBLIC_ORIGIN:"https://api.stage.phone11.test",
- PHONE11_LAB_SIP_DRIVER_ORIGIN:"https://sip-driver.stage.phone11.test",PHONE11_LAB_SIP_DRIVER_SECRET:"d".repeat(48),PHONE11_WAKE_ENABLED:"1",PHONE11_WAKE_PILOT_SIP_URI:"sip:7101@sip.stage.phone11.test",
+ PHONE11_LAB_FCM_CASES:"PUSH-06,PUSH-01",PHONE11_LAB_FCM_TRIGGER_SECRET:secret,PHONE11_LAB_FCM_PUBLIC_ORIGIN:"https://api.stage.phone11.ai",
+ PHONE11_LAB_SIP_DRIVER_ORIGIN:"https://sip-driver.stage.phone11.ai",PHONE11_LAB_SIP_DRIVER_SECRET:"d".repeat(48),PHONE11_WAKE_ENABLED:"1",PHONE11_WAKE_PILOT_SIP_URI:"sip:7101@sip.stage.phone11.test",
  FCM_PROJECT_ID:"phone11-stage-20260914",PHONE11_BUILD_SHA:commit});
 const headers={"x-phone11-lab-secret":secret,"x-phone11-execution-id":executionId};
 function event(event:string,correlationId:string,extra={}){return {event,timestampMs:now,correlationId,source:"backend",...extra};}
@@ -31,6 +31,8 @@ describe("isolated Phone11 staging FCM routes",()=>{
   expect(()=>readLabFcmConfig({...source(),PHONE11_LAB_FCM_PROJECT_ID:"phone11-prod"},now)).toThrowError(LabFcmError);
   expect(()=>readLabFcmConfig({...source(),PHONE11_LAB_FCM_EXECUTION_EXPIRES_AT:String(now-1)},now)).toThrowError(LabFcmError);
   expect(()=>readLabFcmConfig({...source(),PHONE11_WAKE_PILOT_SIP_URI:"sip:7101@sip.phone11.test"},now)).toThrowError(LabFcmError);
+  expect(()=>readLabFcmConfig({...source(),PHONE11_LAB_SIP_DRIVER_ORIGIN:"https://sip-driver.stage.phone11.test"},now)).toThrowError(LabFcmError);
+  expect(()=>readLabFcmConfig({...source(),PHONE11_LAB_FCM_PUBLIC_ORIGIN:"https://api.stage.phone11.invalid"},now)).toThrowError(LabFcmError);
  });
 
  it("attests only a current Android FCM binding and service-account project without secrets",async()=>{
