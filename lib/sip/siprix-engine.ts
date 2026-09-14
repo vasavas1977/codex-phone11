@@ -82,6 +82,7 @@ export class SiprixEngine {
   private calls = new Map<string, SiprixCall>();
   private terminated = new Set<string>();
   private connected = new Set<string>();
+  private outboundAttempt: { revision: number } | null = null;
   private audioActive = false;
   private callManager: typeof import("./native-call").nativeCallManager | null = null;
 
@@ -384,7 +385,15 @@ export class SiprixEngine {
   makeCall(destination: string, video = false): Promise<string | null> {
     if (video) return Promise.reject(unsupported("video calls"));
     const revision = this.revision;
-    return this.serialize(async () => {
+    // Reserve synchronously, before this request joins the lifecycle queue. A
+    // second tap must not become a new call merely because the first call ends
+    // while that duplicate request is waiting behind another native command.
+    if (this.outboundAttempt?.revision === revision) {
+      return Promise.reject(unsupported("a duplicate outbound call start"));
+    }
+    const attempt = { revision };
+    this.outboundAttempt = attempt;
+    const operation = this.serialize(async () => {
       if (revision !== this.revision) throw new Error("Siprix phone session changed");
       const session = this.requireSession();
       if (useSipAccountStore.getState().registrationState !== "registered") throw new Error("Siprix is not registered yet");
@@ -400,6 +409,10 @@ export class SiprixEngine {
         if (!this.calls.has(call.callId)) this.applyCall(call);
         return this.calls.has(call.callId) ? call.callId : null;
       } catch (error) { throw this.failure("outbound call", error); }
+    });
+    return operation.finally(() => {
+      // Never let a stale completion clear a newer session's reservation.
+      if (this.outboundAttempt === attempt) this.outboundAttempt = null;
     });
   }
 
@@ -527,6 +540,9 @@ export class SiprixEngine {
     this.calls.clear();
     this.terminated.clear();
     this.connected.clear();
+    // destroy() advances the revision before cleanup. Preserve a reservation
+    // already made for that newer revision while this older queue drains.
+    if (this.outboundAttempt?.revision !== this.revision) this.outboundAttempt = null;
     this.callManager = null;
     this.bridge = null;
     this.session = null;

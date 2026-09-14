@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NativeEventEmitter, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { Redirect, router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
@@ -15,7 +15,7 @@ function Lab() {
  const sip=phone11AndroidSipConfig();
  const [password,setPassword]=useState("");const [error,setError]=useState("");
  const [events,setEvents]=useState<Array<{type:string;state?:string;sequence:number;generation:number;callId?:string;statusCode?:number}>>([]);
- const [busy,setBusy]=useState(false);const [ended,setEnded]=useState(0);
+ const busyRef=useRef(false);const [busy,setBusy]=useState(false);const [ended,setEnded]=useState(0);
  const bridge=NativeModules.Phone11Siprix as (Phone11SiprixModule & {labStartMedia(id:string):Promise<unknown>;labInjectTone(id:string):Promise<unknown>;labStopMedia():Promise<unknown>;labClearMedia():Promise<unknown>})|undefined;
  const refresh=async()=>{if(bridge)setState(await bridge.getSnapshot());};
  useEffect(()=>{
@@ -26,7 +26,7 @@ function Lab() {
    if(e.type==="callTerminated")setEnded(n=>n+1);void refresh();
   });return()=>sub.remove();
  },[]);
- async function run(action:()=>Promise<unknown>){if(busy)return;setBusy(true);setError("");try{await action();await refresh();}catch(e){setError(String((e as {code?:string}).code||"E_COMMAND"));}finally{setBusy(false);}}
+ async function run(action:()=>Promise<unknown>){if(busyRef.current)return;busyRef.current=true;setBusy(true);setError("");try{await action();await refresh();}catch(e){setError(String((e as {code?:string}).code||"E_COMMAND"));}finally{busyRef.current=false;setBusy(false);}}
  const call=state?.calls[0];const account=state?.accounts[0];
  const button=(label:string,action:()=>Promise<unknown>)=><Pressable accessibilityRole="button" accessibilityLabel={label} testID={`lab-${label}`} disabled={busy} onPress={()=>void run(action)} style={{backgroundColor:colors.surface,padding:14,borderRadius:12,marginBottom:8}}><Text style={{color:colors.primary,fontWeight:"600"}}>{label}</Text></Pressable>;
  const observed=JSON.stringify({initialized:state?.initialized??false,sdk:state?.sdkVersion??null,generation:state?.generation,sequence:state?.sequence,registration:account?.registrationState??"none",call:call?.state??"none",muted:call?.muted??false,held:call?.held??false,ended,error,events,callCount:state?.calls.length??0,labMedia:(state as Snapshot & {labMedia?:unknown})?.labMedia});

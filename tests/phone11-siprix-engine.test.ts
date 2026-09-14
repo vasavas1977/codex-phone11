@@ -60,8 +60,9 @@ const emptySnapshot = (): SiprixSnapshot => ({
 });
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>(done => { resolve = done; });
-  return { promise, resolve };
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 let snapshot: SiprixSnapshot;
@@ -514,6 +515,44 @@ describe("Siprix native adapter", () => {
     emit({ type: "callIncoming", call: newCall({ id: "12", callId: "12", direction: "incoming", state: "ringing" }) });
     expect(bridge.hangupCall).toHaveBeenCalledWith("12");
     expect(useSipCallStore.getState().incomingCall).toBeNull();
+  });
+
+  it("reserves an outbound start before queueing and permits a new call after termination", async () => {
+    await ready();
+    const firstNative = deferred<SiprixCall>();
+    bridge.makeCall.mockImplementationOnce(() => firstNative.promise);
+    const first = engine.makeCall("2002");
+    await expect(engine.makeCall("2003")).rejects.toThrow("duplicate outbound call start");
+    expect(bridge.makeCall).toHaveBeenCalledOnce();
+
+    firstNative.resolve(newCall());
+    await expect(first).resolves.toBe("11");
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    bridge.makeCall.mockResolvedValueOnce(newCall({ id: "12", callId: "12", remoteUri: "sip:2003@sip.example.test" }));
+    await expect(engine.makeCall("2003")).resolves.toBe("12");
+    expect(bridge.makeCall).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a failed or stale outbound completion clear another reservation", async () => {
+    await ready();
+    const oldNative = deferred<SiprixCall>();
+    bridge.makeCall.mockImplementationOnce(() => oldNative.promise);
+    const oldCall = engine.makeCall("2002");
+    await vi.waitFor(() => expect(bridge.makeCall).toHaveBeenCalledOnce());
+    const cleanup = engine.destroy();
+    oldNative.resolve(newCall());
+    await expect(oldCall).resolves.toBeNull();
+    await cleanup;
+
+    await ready();
+    const currentNative = deferred<SiprixCall>();
+    bridge.makeCall.mockImplementationOnce(() => currentNative.promise);
+    const currentCall = engine.makeCall("2003");
+    await expect(engine.makeCall("2004")).rejects.toThrow("duplicate outbound call start");
+    currentNative.reject(new Error("transport"));
+    await expect(currentCall).rejects.toThrow("outbound call failed");
+    bridge.makeCall.mockResolvedValueOnce(newCall({ id: "12", callId: "12" }));
+    await expect(engine.makeCall("2004")).resolves.toBe("12");
   });
 
   it("never resurrects an outgoing call terminated before its native Promise resolves", async () => {
