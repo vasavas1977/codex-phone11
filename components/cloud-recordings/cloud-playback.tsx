@@ -421,7 +421,9 @@ export function Playback({
         resumeAfterScrub.current = false;
       }}
       onRouteChange={(nextRoute) => void applyRoute(nextRoute)}
-      onOutputSelect={applyOutput}
+      onOutputSelect={async (selectedOutput) => {
+        await applyOutput(selectedOutput);
+      }}
       onOutputPickerOpened={(selectedOutput) => {
         if (!playbackAuthorized.current || callBusy()) {
           controller.current?.pause();
