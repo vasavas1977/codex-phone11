@@ -1,6 +1,8 @@
 import {afterEach,describe,expect,it,vi} from "vitest";
 const apns=vi.hoisted(()=>({send:vi.fn(async()=>{})}));
+const fcm=vi.hoisted(()=>({send:vi.fn(async()=>{})}));
 vi.mock("../server/push/apns",()=>({sendApnsPush:apns.send}));
+vi.mock("../server/push-gateway",()=>({sendFcmPush:fcm.send}));
 import {createWakeService,wakePilot} from "../server/push/wake-service";
 import {wakeRepository,WakeError,type WakeCall} from "../server/push/wake-repository";
 import {pushRepository} from "../server/push/repository";
@@ -15,8 +17,8 @@ function harness(){
 }
 function providerHarness() {
  const h=harness();
- const token={revision:"revision-original",token:"synthetic-provider-token",registeredAt:1000};
- vi.spyOn(wakeRepository,"deliveryTarget").mockResolvedValue({sipUri:input.sipUri,revision:token.revision} as never);
+ const token={revision:"revision-original",token:"synthetic-provider-token",registeredAt:1000,platform:"ios" as const,tokenType:"voip" as const};
+ vi.spyOn(wakeRepository,"deliveryTarget").mockResolvedValue({sipUri:input.sipUri,revision:token.revision,platform:token.platform,tokenType:token.tokenType} as never);
  vi.spyOn(wakeRepository,"current").mockResolvedValue(call);
  const list=vi.spyOn(pushRepository,"list").mockResolvedValue([token] as never);
  const current=vi.spyOn(pushRepository,"isCurrent").mockResolvedValue(true);
@@ -25,7 +27,7 @@ function providerHarness() {
  const service=createWakeService({repository:h.repository as unknown as typeof wakeRepository,pilot:()=>input.sipUri});
  return {...h,service,token,list,current,mark,remove};
 }
-afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllEnvs();apns.send.mockReset();apns.send.mockResolvedValue();});
+afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllEnvs();apns.send.mockReset();apns.send.mockResolvedValue();fcm.send.mockReset();fcm.send.mockResolvedValue();});
 describe("wake service ownership and bounded call setup",()=>{
  it("stays unavailable without explicit enablement and exact valid pilot",()=>{
   vi.stubEnv("PHONE11_WAKE_ENABLED","");vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URI",input.sipUri);expect(()=>wakePilot()).toThrow(WakeError);
@@ -40,7 +42,7 @@ describe("wake service ownership and bounded call setup",()=>{
  it("forwards the exact resolved session and device identity to enrollment and resolution",async()=>{
   const h=harness();await h.service.enroll("session-current",7,{deviceId:"device",platform:"ios"});
   await h.service.resolve("session-current",7,call.bindingId);await h.service.revoke("session-current",7,call.bindingId);
-  expect(h.repository.enroll).toHaveBeenCalledWith("session-current",7,"device",input.sipUri);
+  expect(h.repository.enroll).toHaveBeenCalledWith("session-current",7,"device",input.sipUri,"ios");
   expect(h.repository.resolve).toHaveBeenCalledWith(call.bindingId,"session-current",7);
   expect(h.repository.revoke).toHaveBeenCalledWith(call.bindingId,"session-current",7);
  });
@@ -84,8 +86,8 @@ describe("wake service ownership and bounded call setup",()=>{
  });
  it("default provider submits only correlation metadata with the original deadline and fresh ownership check",async()=>{
   vi.useFakeTimers();vi.setSystemTime(0);const h=harness();
-  const token={revision:"revision",token:"synthetic-provider-token-never-in-payload",registeredAt:0};
-  vi.spyOn(wakeRepository,"deliveryTarget").mockResolvedValue({sipUri:input.sipUri,revision:"revision"} as never);
+  const token={revision:"revision",token:"synthetic-provider-token-never-in-payload",registeredAt:0,platform:"ios" as const,tokenType:"voip" as const};
+  vi.spyOn(wakeRepository,"deliveryTarget").mockResolvedValue({sipUri:input.sipUri,revision:"revision",platform:"ios",tokenType:"voip"} as never);
   vi.spyOn(wakeRepository,"current").mockResolvedValue(call);
   vi.spyOn(pushRepository,"list").mockResolvedValue([token] as never);
   const current=vi.spyOn(pushRepository,"isCurrent").mockResolvedValue(true);
@@ -98,6 +100,24 @@ describe("wake service ownership and bounded call setup",()=>{
   });
   const service=createWakeService({repository:h.repository as unknown as typeof wakeRepository,pilot:()=>input.sipUri});
   expect(await service.offer(input)).toEqual({v:1,callUUID:call.callUUID,status:"ready"});expect(apns.send).toHaveBeenCalledOnce();expect(current).toHaveBeenCalledWith(token);expect(mark).toHaveBeenCalledWith(token);expect(remove).not.toHaveBeenCalled();
+ });
+ it("dispatches Android wake only through FCM with the strict correlation envelope",async()=>{
+  vi.useFakeTimers();vi.setSystemTime(0);const h=harness();
+  const token={revision:"revision-android",token:"synthetic-fcm-token-never-in-payload",registeredAt:0,platform:"android" as const,tokenType:"fcm" as const};
+  vi.spyOn(wakeRepository,"deliveryTarget").mockResolvedValue({sipUri:input.sipUri,revision:token.revision,platform:"android",tokenType:"fcm"} as never);
+  vi.spyOn(wakeRepository,"current").mockResolvedValue(call);
+  vi.spyOn(pushRepository,"list").mockResolvedValue([token] as never);
+  const current=vi.spyOn(pushRepository,"isCurrent").mockResolvedValue(true);
+  const mark=vi.spyOn(pushRepository,"markUsed").mockResolvedValue();
+  fcm.send.mockImplementation(async (...args:any[])=>{
+   expect(args[0]).toBe(token);expect(args[2]).toBe(5000);
+   expect(args[1]).toEqual({callId:call.callUUID,callerNumber:"",wake:{v:1,callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:call.expiresAt}});
+   const payload=JSON.stringify(args[1]);expect(payload).not.toContain(token.token);expect(payload).not.toContain(input.sipUri);expect(payload).not.toContain("grant");
+   expect(await args[3]()).toBe(true);
+  });
+  const service=createWakeService({repository:h.repository as unknown as typeof wakeRepository,pilot:()=>input.sipUri});
+  expect(await service.offer(input)).toEqual({v:1,callUUID:call.callUUID,status:"ready"});
+  expect(fcm.send).toHaveBeenCalledOnce();expect(apns.send).not.toHaveBeenCalled();expect(current).toHaveBeenCalledWith(token);expect(mark).toHaveBeenCalledWith(token);
  });
  it("removes only the delivered revision on a current explicit invalid-token response",async()=>{
   const h=providerHarness();apns.send.mockRejectedValue({invalidToken:true,invalidatedAt:h.token.registeredAt});

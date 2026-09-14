@@ -26,7 +26,8 @@ function validBinding(value: unknown): value is PushBinding {
   const entry = value as PushBinding;
   return Number.isSafeInteger(entry.ownerUserId) && entry.ownerUserId > 0 &&
     [entry.token, entry.deviceId, entry.sipUri, entry.bundleId].every(item => typeof item === "string" && item.length > 0 && item.length <= 4096) &&
-    entry.platform === "ios" && typeof entry.sandbox === "boolean";
+    (entry.platform === "ios" || entry.platform === "android") && typeof entry.sandbox === "boolean" &&
+    (entry.platform !== "android" || entry.sandbox === false);
 }
 
 function phoneIdentity(options: RefreshOptions = {}) {
@@ -85,7 +86,8 @@ const coordinator = new VoipTokenCoordinator({
     current();
     const client = await requestClient(binding.ownerUserId, signal, origin.signal); current();
     const { ownerUserId: _, ...data } = binding;
-    await client.push.register.mutate({ ...data, tokenType: "voip" }); current();
+    const tokenType = binding.platform === "ios" ? "voip" : "fcm";
+    await client.push.register.mutate({ ...data, tokenType }); current();
     const cached = await getNativeWakeBinding(); current();
     // An active wake retains its grant. Resolve under the captured bearer before
     // minting another grant; no operation may borrow a replacement login.
@@ -93,7 +95,7 @@ const coordinator = new VoipTokenCoordinator({
       ? await client.push.resolveWakeBinding.query({ bindingId: cached.bindingId }) : null;
     current();
     if (!publicBinding || (renewalCandidates.has(binding) && publicBinding.expiresAt - Date.now() <= 24 * 60 * 60_000)) {
-      const enrollment = await client.push.enrollWake.mutate({ deviceId: binding.deviceId, platform: "ios" }); current();
+      const enrollment = await client.push.enrollWake.mutate({ deviceId: binding.deviceId, platform: binding.platform }); current();
       if (enrollment.ownerUserId !== binding.ownerUserId || enrollment.deviceId !== binding.deviceId || origin.account?.tenantId !== enrollment.tenantId) throw new Error("Incoming phone account changed");
       await saveNativeWakeEnrollment(enrollment); current();
       // No late global stop here: logout's authoritative server revocation and
@@ -116,7 +118,7 @@ const coordinator = new VoipTokenCoordinator({
 /** Revalidate native wake identity against the exact current authenticated
  * session before JS adopts a cold call. The native grant never crosses to JS. */
 export async function getWakeAdoptionBinding(): Promise<WakeBinding | null> {
-  if (Platform.OS !== "ios") return null;
+  if (Platform.OS !== "ios" && Platform.OS !== "android") return null;
   const user = getAuthSnapshot().user;
   if (!user) return null;
   const controller = new AbortController();
@@ -143,10 +145,11 @@ export async function getWakeAdoptionBinding(): Promise<WakeBinding | null> {
  * occurs until a separate reviewed native wake implementation is commissioned. */
 export async function registerPhoneVoipPush(options: RefreshOptions = {}): Promise<null> {
   const origin = phoneIdentity(options);
-  if (Platform.OS !== "ios" || !(await getVoipCapabilities()).registrationAvailable || !origin.current()) return null;
+  const platform = Platform.OS === "ios" ? "ios" : Platform.OS === "android" ? "android" : null;
+  if (!platform || !(await getVoipCapabilities()).registrationAvailable || !origin.current()) return null;
   const account = origin.account;
   const owner = origin.user?.id;
-  const bundleId = Constants.expoConfig?.ios?.bundleIdentifier;
+  const bundleId = platform === "ios" ? Constants.expoConfig?.ios?.bundleIdentifier : Constants.expoConfig?.android?.package;
   if (!origin.current() || !owner || !account || !bundleId) return null;
   const current = ++generation;
   unsubscribe?.(); unsubscribe = undefined;
@@ -160,10 +163,10 @@ export async function registerPhoneVoipPush(options: RefreshOptions = {}): Promi
   if (generation !== current || !origin.current()) return null;
   // APNs environment is a signed-build property, never inferred from __DEV__.
   // A commissioned build must explicitly provide this value in its native config.
-  const environment = Constants.expoConfig?.extra?.phone11ApnsEnvironment;
-  if (environment !== "sandbox" && environment !== "production") return null;
-  const binding = { ownerUserId: owner, deviceId, sipUri: `sip:${account.username}@${account.domain}`,
-    bundleId, platform: "ios" as const, sandbox: environment === "sandbox" };
+  const environment = platform === "ios" ? Constants.expoConfig?.extra?.phone11ApnsEnvironment : null;
+  if (platform === "ios" && environment !== "sandbox" && environment !== "production") return null;
+  const binding: Omit<PushBinding,"token"> = { ownerUserId: owner, deviceId, sipUri: `sip:${account.username}@${account.domain}`,
+    bundleId, platform, sandbox: platform === "ios" && environment === "sandbox" };
   let initialOperation: Promise<void> | undefined;
   const remove = await startNativeVoip(token => {
     if (generation !== current || !origin.current()) return;
@@ -195,7 +198,7 @@ export async function refreshPhoneVoipEnrollment(signal: AbortSignal, canRefresh
 
 export async function beforePhoneLogout(): Promise<void> {
   ++generation;
-  if (Platform.OS !== "ios") return;
+  if (Platform.OS !== "ios" && Platform.OS !== "android") return;
   // Server session revocation (and its push-token cascade) is authoritative.
   // A local cleanup failure must not prevent that revocation request.
   try { await coordinator.beforeLogout(); } catch { /* retain encrypted ledger */ }

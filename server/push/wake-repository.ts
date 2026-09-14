@@ -9,6 +9,7 @@ export interface WakeBinding {
   sessionBinding: string; expiresAt: number;
 }
 export interface WakeCall { v: 1; callUUID: string; bindingId: string; expiresAt: number; status: WakeStatus; }
+export type WakePlatform = "ios" | "android";
 export class WakeError extends Error {
   constructor(public readonly status: number, message = "This incoming call is unavailable") { super(message); }
 }
@@ -30,7 +31,7 @@ const livePush = `JOIN phone11_auth_session auths ON auths.id=p.session_id AND a
  AND ('sip:'||sa.sip_username||'@'||lower(sa.sip_domain))=p.sip_uri`;
 const liveBinding = `JOIN phone11_push_devices p ON p.revision=b.push_revision AND p.session_id=b.session_id
  AND p.user_id=b.user_id AND p.tenant_id=b.tenant_id AND p.extension_id=b.extension_id AND p.device_id=b.device_id
- AND p.platform='ios' AND p.token_type='voip' ${livePush}`;
+ AND ((p.platform='ios' AND p.token_type='voip') OR (p.platform='android' AND p.token_type='fcm')) ${livePush}`;
 
 export function createWakeRepository(runTransaction: Transaction = withTransaction) {
   const transaction:Transaction=fn=>runTransaction(async client=>{
@@ -72,16 +73,17 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
   }
   return {
     pruneExpired,
-    async enroll(sessionId: string, userId: number, deviceId: string, pilotUri: string) {
+    async enroll(sessionId: string, userId: number, deviceId: string, pilotUri: string, platform: WakePlatform = "ios") {
       return transaction(async client => {
+        const tokenType = platform === "ios" ? "voip" : "fcm";
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`phone11-wake:${pilotUri}`]);
         await client.query('SELECT id FROM phone11_auth_session WHERE id=$1 FOR SHARE', [sessionId]);
         await client.query(`SELECT p.revision FROM phone11_push_devices p ${livePush}
           WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.sip_uri=$4
           FOR SHARE OF ai,ue,e,t,sa`, [sessionId,userId,deviceId,pilotUri]);
         const result = await client.query(`SELECT p.*,auths."expiresAt" AS session_expiry FROM phone11_push_devices p ${livePush}
-          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.platform='ios' AND p.token_type='voip'
-          AND p.sip_uri=$4 FOR SHARE OF p,auths,ai,ue,e,t,sa`, [sessionId,userId,deviceId,pilotUri]);
+          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.platform=$5 AND p.token_type=$6
+          AND p.sip_uri=$4 FOR SHARE OF p,auths,ai,ue,e,t,sa`, [sessionId,userId,deviceId,pilotUri,platform,tokenType]);
         if (result.rows.length !== 1) throw new WakeError(403, "Register this phone before enabling incoming call wake");
         const p = result.rows[0];
         // Reclaim revoked/expired enrollment; an invalid grant must not lock out a new phone.
@@ -155,11 +157,12 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
     },
     async deliveryTarget(callUUID: string) {
       return transaction(async client => {
-        const rows=await client.query(`SELECT b.push_revision,p.sip_uri FROM phone11_wake_calls c
+        const rows=await client.query(`SELECT b.push_revision,p.sip_uri,p.platform,p.token_type FROM phone11_wake_calls c
           JOIN phone11_wake_bindings b ON b.id=c.binding_id ${liveBinding}
           WHERE c.id=$1 AND c.state='pending' AND c.expires_at>clock_timestamp() AND b.expires_at>clock_timestamp()`,[callUUID]);
         if (rows.rows.length!==1) throw new WakeError(410);
-        return { revision:rows.rows[0].push_revision as string,sipUri:rows.rows[0].sip_uri as string };
+        return { revision:rows.rows[0].push_revision as string,sipUri:rows.rows[0].sip_uri as string,
+          platform:rows.rows[0].platform as WakePlatform,tokenType:rows.rows[0].token_type as "voip"|"fcm" };
       });
     },
     async transitionTrusted(sipUri: string, sipCallId: string, status: "cancelled" | "ended") {

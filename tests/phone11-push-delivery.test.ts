@@ -4,7 +4,7 @@ vi.mock("../server/pbx/push-access", () => ({ assignedPushOwners: mocks.owners, 
 vi.mock("../server/push/repository", () => ({ pushRepository: { list: mocks.list, isCurrent: mocks.current, markUsed: mocks.markUsed, removeInvalid: mocks.removeInvalid } }));
 vi.mock("../server/push/apns", () => ({ sendApnsPush: mocks.send }));
 vi.mock("google-auth-library", () => ({ GoogleAuth: class { async getClient() { return { getAccessToken: mocks.adc }; } } }));
-import { triggerPushForUser } from "../server/push-gateway";
+import { sendFcmPush, triggerPushForUser } from "../server/push-gateway";
 const owner = { userId: 1, tenantId: 10, extensionId: 1, sipUri: "sip:1001@test.invalid" };
 const token = { owner, sipUri: owner.sipUri, token: "a".repeat(64), tokenType: "voip", platform: "ios", revision: "test-revision", deviceId: "test-device", bundleId: "test.phone11", registeredAt: 1000 };
 const call = { sipUri: owner.sipUri, callId: "call-test", callerNumber: "1002" };
@@ -77,6 +77,27 @@ describe("push gateway provider acceptance and registry lifecycle", () => {
     expect(await result).toEqual({ sent: 0, errors: ["Push delivery deadline elapsed"] });
     pending.resolve({ token: "fake-delayed-credential" }); await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).not.toHaveBeenCalled(); expect(mocks.markUsed).not.toHaveBeenCalled();
+  });
+
+  it("serializes native Android wake as the exact four-field data-only envelope", async () => {
+    vi.stubEnv("FCM_PROJECT_ID", "test-only-project"); mocks.adc.mockResolvedValue({ token: "fake-test-credential" });
+    const cancel = vi.fn(async () => {});
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({ ok: true, body: { cancel } })); vi.stubGlobal("fetch", fetchMock);
+    const android = { ...token, sessionId:"synthetic-session", platform: "android" as const, tokenType: "fcm" as const, bundleId: "ai.phone11.mobile.staging" };
+    const wake = { v: 1 as const, callUUID: "33333333-3333-4333-8333-333333333333", bindingId: "11111111-1111-4111-8111-111111111111", expiresAt: Date.now() + 20_000 };
+    await sendFcmPush(android, { callId: "must-not-be-sent", callerNumber: "must-not-be-sent", callerName: "must-not-be-sent", wake }, Date.now() + 5000);
+    const [, request] = fetchMock.mock.calls[0]; const body = JSON.parse(String(request?.body));
+    expect(body.message.token).toBe(android.token);
+    expect(body.message.data).toEqual({ v: "1", callUUID: wake.callUUID, bindingId: wake.bindingId, expiresAt: String(wake.expiresAt) });
+    expect(Object.keys(body.message.data)).toHaveLength(4);expect(body.message.notification).toBeUndefined();expect(body.message.android).toMatchObject({priority:"HIGH",ttl:"0s"});expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("does not submit Android wake after its current binding check fails", async () => {
+    vi.stubEnv("FCM_PROJECT_ID", "test-only-project");mocks.adc.mockResolvedValue({token:"fake-test-credential"});
+    const fetchMock=vi.fn();vi.stubGlobal("fetch",fetchMock);
+    const android={...token,sessionId:"synthetic-session",platform:"android" as const,tokenType:"fcm" as const};
+    await expect(sendFcmPush(android,{callId:"call",callerNumber:"",wake:{v:1,callUUID:"33333333-3333-4333-8333-333333333333",bindingId:"11111111-1111-4111-8111-111111111111",expiresAt:Date.now()+20_000}},Date.now()+5000,async()=>false)).rejects.toThrow("current");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
 });

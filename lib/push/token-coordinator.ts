@@ -3,7 +3,7 @@ export type PushBinding = {
   ownerUserId: number;
   token: string;
   deviceId: string;
-  platform: "ios";
+  platform: "ios" | "android";
   sipUri: string;
   bundleId: string;
   sandbox: boolean;
@@ -38,9 +38,11 @@ export class VoipTokenCoordinator {
       if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
       const entries = await this.deps.read();
       const previousEntries = entries.filter(entry => entry.ownerUserId === binding.ownerUserId &&
-        (entry.token !== binding.token || entry.deviceId !== binding.deviceId || entry.sipUri !== binding.sipUri));
+        (entry.token !== binding.token || entry.deviceId !== binding.deviceId || entry.sipUri !== binding.sipUri ||
+          entry.platform !== binding.platform || entry.bundleId !== binding.bundleId || entry.sandbox !== binding.sandbox));
       const exists = entries.some(entry => entry.ownerUserId === binding.ownerUserId &&
-        entry.token === binding.token && entry.deviceId === binding.deviceId && entry.sipUri === binding.sipUri);
+        entry.token === binding.token && entry.deviceId === binding.deviceId && entry.sipUri === binding.sipUri &&
+        entry.platform === binding.platform && entry.bundleId === binding.bundleId && entry.sandbox === binding.sandbox);
       if (!exists) {
         entries.push(binding);
         await this.deps.write(entries);
@@ -53,7 +55,7 @@ export class VoipTokenCoordinator {
         if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
         // unregister is token/device scoped; the same token/device now names the
         // NEW assignment and must never be removed as an old sipUri cleanup.
-        if (previous.token !== binding.token || previous.deviceId !== binding.deviceId) {
+        if (previous.token !== binding.token || previous.deviceId !== binding.deviceId || previous.platform !== binding.platform) {
           await this.deps.unregister(previous, signal);
           if (revision !== this.revision || !this.ownerIs(binding.ownerUserId)) return;
         }

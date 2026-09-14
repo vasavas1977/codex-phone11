@@ -77,6 +77,15 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     expect(safe).not.toHaveProperty("grant"); expect(safe).not.toHaveProperty("grant_hash"); expect(safe).not.toHaveProperty("sip");
     expect(safe.bindingId).toBe(b.bindingId);
   });
+  it("enrolls only the registered Android FCM platform and resolves it for delivery", async () => {
+    const android={...token,platform:"android" as const,tokenType:"fcm" as const,bundleId:"ai.phone11.mobile.staging"};
+    await push.put(android);
+    await expect(wake.enroll("session-1",1,"device-a",uri,"ios")).rejects.toMatchObject({status:403});
+    const b=await wake.enroll("session-1",1,"device-a",uri,"android");
+    const offered=await wake.offer(uri,"android-call");
+    expect(await wake.resolve(b.bindingId,"session-1",1)).toMatchObject({bindingId:b.bindingId,deviceId:"device-a"});
+    expect(await wake.deliveryTarget(offered.call.callUUID)).toMatchObject({sipUri:uri,platform:"android",tokenType:"fcm"});
+  });
   it("binds resolve and revoke to the exact session, not merely the same user", async () => {
     const b = await enrolled();
     await expect(wake.resolve(b.bindingId, "session-new", 1)).rejects.toMatchObject({ status: 403 });

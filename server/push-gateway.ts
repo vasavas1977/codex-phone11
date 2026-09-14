@@ -198,7 +198,7 @@ async function getFcmAccessToken(deadlineAt: number): Promise<string> {
  * Uses data-only message (no notification field) so the app
  * handles display via Notifee full-screen notification.
  */
-async function sendFcmPush(token: PushToken, payload: PushPayload, deadlineAt: number): Promise<void> {
+export async function sendFcmPush(token: PushToken, payload: PushPayload, deadlineAt: number, current: () => Promise<boolean> = async () => true): Promise<void> {
   const projectId = process.env.FCM_PROJECT_ID;
   if (!projectId) throw new Error("FCM push delivery is not configured");
 
@@ -212,20 +212,29 @@ async function sendFcmPush(token: PushToken, payload: PushPayload, deadlineAt: n
   }
 
   if (Date.now() >= deadlineAt) throw new Error("Push delivery deadline elapsed");
+  if (!await withinCallDeadline(deadlineAt, current)) throw new Error("FCM delivery is no longer current");
 
   // FCM HTTP v1 API payload
+  // Native incoming-call wake accepts an exact four-field correlation envelope.
+  // Ordinary Android notifications retain their existing payload contract.
+  const data = payload.wake ? {
+    v: String(payload.wake.v),
+    callUUID: payload.wake.callUUID,
+    bindingId: payload.wake.bindingId,
+    expiresAt: String(payload.wake.expiresAt),
+  } : {
+    type: "voip_call",
+    callId: payload.callId,
+    callerNumber: payload.callerNumber,
+    callerName: payload.callerName || payload.callerNumber,
+    hasVideo: String(payload.hasVideo || false),
+    timestamp: String(Date.now()),
+  };
   const fcmPayload = {
     message: {
       token: token.token,
       // Data-only message — app handles display via Notifee
-      data: {
-        type: "voip_call",
-        callId: payload.callId,
-        callerNumber: payload.callerNumber,
-        callerName: payload.callerName || payload.callerNumber,
-        hasVideo: String(payload.hasVideo || false),
-        timestamp: String(Date.now()),
-      },
+      data,
       android: {
         priority: "HIGH" as const,
         // TTL: 0s means don't store if device offline (call is time-sensitive)

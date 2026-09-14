@@ -53,6 +53,11 @@ describe("authenticated VoIP token lifecycle", () => {
     const h=harness([binding()]); const next={...binding(),sipUri:"sip:3002@sip.phone11.ai"};
     await h.coordinator.bind(next); expect(h.deps.unregister).not.toHaveBeenCalled(); expect(h.entries()).toEqual([next]);
   });
+  it("tracks Android as a distinct provider identity without deleting a reused new assignment", async () => {
+    const old=binding();const next={...old,platform:"android" as const,bundleId:"ai.phone11.mobile.staging",sandbox:false};
+    const h=harness([old]);await h.coordinator.bind(next);
+    expect(h.deps.unregister).toHaveBeenCalledWith(old,expect.any(AbortSignal));expect(h.entries()).toEqual([next]);
+  });
   it("logout during replacement registration blocks stale old-token cleanup", async () => {
     const h=harness([binding()]); let finish!:()=>void;
     h.deps.register.mockImplementation(()=>new Promise<void>(resolve=>{finish=resolve;}));

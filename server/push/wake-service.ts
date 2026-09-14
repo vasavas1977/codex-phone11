@@ -2,9 +2,10 @@ import { z } from "zod";
 import { wakeRepository, WakeError, type WakeCall } from "./wake-repository";
 import { pushRepository } from "./repository";
 import { sendApnsPush } from "./apns";
+import { sendFcmPush } from "../push-gateway";
 
 export const wakeIdentitySchema=z.object({bindingId:z.string().uuid()}).strict();
-export const wakeEnrollSchema=z.object({deviceId:z.string().min(1).max(512),platform:z.literal("ios")}).strict();
+export const wakeEnrollSchema=z.object({deviceId:z.string().min(1).max(512),platform:z.enum(["ios","android"])}).strict();
 export const wakeDeviceCallSchema=z.object({bindingId:z.string().uuid(),callUUID:z.string().uuid()}).strict();
 export const wakeOfferSchema=z.object({sipUri:z.string().regex(/^sip:[A-Za-z0-9_.+-]{1,128}@[A-Za-z0-9.-]{1,253}$/),
   sipCallId:z.string().min(1).max(512).regex(/^[\x21-\x7e]+$/)}).strict();
@@ -26,16 +27,30 @@ async function notify(call: WakeCall, deadline:number, signal:AbortSignal) {
   check();
   if(candidates.length!==1) throw new WakeError(410);
   const token=candidates[0];
+  if(token.platform!==target.platform || token.tokenType!==target.tokenType) throw new WakeError(410);
   try {
-    await sendApnsPush(token,{callId:call.callUUID,callerNumber:"",wake:{v:1,callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:call.expiresAt}},async()=>{
-    check();
-    const current=await wakeRepository.current(call.callUUID);
-    check();
-    if(!current || current.status!=="pending")return false;
-    const valid=await pushRepository.isCurrent(token);
-    check();
-    return valid;
-    },Math.min(call.expiresAt,deadline));
+    const payload={callId:call.callUUID,callerNumber:"",wake:{v:1 as const,callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:call.expiresAt}};
+    if(token.platform==="ios" && token.tokenType==="voip") {
+      await sendApnsPush(token,payload,async()=>{
+        check();
+        const current=await wakeRepository.current(call.callUUID);
+        check();
+        if(!current || current.status!=="pending")return false;
+        const valid=await pushRepository.isCurrent(token);
+        check();
+        return valid;
+      },Math.min(call.expiresAt,deadline));
+    } else if(token.platform==="android" && token.tokenType==="fcm") {
+      await sendFcmPush(token,payload,Math.min(call.expiresAt,deadline),async()=>{
+        check();
+        const current=await wakeRepository.current(call.callUUID);
+        check();
+        if(!current || current.status!=="pending")return false;
+        const valid=await pushRepository.isCurrent(token);
+        check();
+        return valid;
+      });
+    } else throw new WakeError(410);
     check();
     await pushRepository.markUsed(token);
   } catch(error) {
@@ -74,7 +89,7 @@ export function createWakeService(deps: {
   });
   return {
     enroll(sessionId:string,userId:number,input:z.infer<typeof wakeEnrollSchema>) {
-      return repository.enroll(sessionId,userId,input.deviceId,pilot());
+      return repository.enroll(sessionId,userId,input.deviceId,pilot(),input.platform);
     },
     resolve(sessionId:string,userId:number,bindingId:string) {pilot();return repository.resolve(bindingId,sessionId,userId);},
     revoke(sessionId:string,userId:number,bindingId:string) {return repository.revoke(bindingId,sessionId,userId);},
