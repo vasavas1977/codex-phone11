@@ -10,9 +10,9 @@ Status: **PARTIAL**, by design. The complete 62-case matrix reports every unexec
 - Selected base: `71f4b683d572585c8d07c561649a543acfe87d40` on `codex/phone11-daily-use-20260910`. Live remote inventory and fetch showed this was newer than the supplied baseline and contained the iOS Build39 recording finalization work.
 - Worktree: `/Users/vasavas16macbookpro/Documents/Codex/phone11-android-virtual-lab-20260914`
 - Branch: `codex/phone11-android-virtual-lab-20260914`
-- Final APK source commit: `bec452ce46d0f652989744016ebfc5f87813fd2b`
-- APK: `android/app/build/outputs/apk/release/app-release.apk`
-- APK SHA-256: `08136e73b0905431d70a121fc6ea357dc2aabf7fc4dfb1f31349215adb092f1c`
+- Final APK source commit: `fb7dace9de492af8825f1ce5ad2ba294f1b5aae0`
+- APK: `.lab/Phone11-Android-Lab-1.0.0-fb7dace.apk`
+- APK SHA-256: `e657d92b5325609aee73fe97f8dc5f32aed02dd5b50255a23cb132411a17c6a2`
 - Android application ID: `ai.phone11.mobile.lab`; version `1.0.0` / code `1`; minimum SDK24; target/compile SDK36; ARM64 only.
 - Actual emulator: `Phone11_Lab_API35`, API35 Google APIs ARM64, serial `emulator-5580`.
 - Actual native runtime: `Phone11Lab 1.1.0 from 20260905_1222` from pinned Siprix AAR SHA-256 `3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198`.
@@ -24,6 +24,10 @@ The final APK is a local lab artifact signed by the generated local Android sign
 The branch adds the Android Siprix adapter inside the existing Phone11 native module, rather than a second application. Shared Expo/React Native screens, theme, call logic, recording history, transcript and summary UI remain common to iOS and Android. Lab-only flags select a distinct Android ID, local API base, pinned AAR and synthetic SIP allowlist.
 
 The native adapter provides callback-driven initialization, accounts, registration, outgoing/incoming calls, answer/reject/hangup, mute, hold, DTMF, routing, snapshots, generation/sequence filtering, bridge ownership leases and bounded synthetic media capture. Unsupported Android wake/CallKit operations reject explicitly. An isolated Asterisk fixture binds only loopback host ports, has no trunks, uses generated credentials and allows only extensions7101,7102,7190 and7191 with20-second call limits.
+
+Android SIP identity and routing are now supplied through an explicit build contract: application ID, SIP host/port, account allowlist and destination allowlist must agree in Expo runtime configuration, the generated manifest and the native adapter. Non-lab builds retain `ai.phone11.mobile` and receive no Android SIP configuration. A custom staging identity can be injected, but this remains an architecture path behind `PHONE11_ANDROID_LAB=1`, not a commissioned product build.
+
+The native wake foundation now owns one persisted pending-call record and rejects duplicate, expired, canceled, rotated-session, logged-out and corrupt records. The generated Android manifest contains one private incoming-call service, disabled by default, and a false commissioning marker. This is compile-tested ownership scaffolding; no Firebase client, push receiver or authenticated delivery was added, so L3 remains blocked.
 
 Recording playback changes are shared across iOS and Android: the progress control is draggable and accessible, replay/seek is clamped, player volume and mute state are corrected, and late playback operations are canceled on blur, sign-out or an active call. Android now exposes explicit speaker/earpiece playback selection through Expo Audio's native Android route. Emulator and physical acoustic listening remain separate acceptance gates.
 
@@ -39,7 +43,7 @@ The final matrix counts are:
 |---|---:|---:|---:|---:|
 | L0 logic/contracts | 9 | 0 | 2 | 2 |
 | L1 real native APK | 5 | 0 | 1 | 0 |
-| L2 real isolated SIP/media | 9 | 3 | 7 | 8 |
+| L2 real isolated SIP/media | 9 | 4 | 7 | 7 |
 | L3 real Firebase wake | 0 | 0 | 13 | 0 |
 | L4 physical device | 0 | 0 | 3 | 0 |
 
@@ -57,13 +61,14 @@ Verified runtime outcomes:
 - MEDIA-04 passed:605 PBX downlink RTP packets were deliberately dropped inside the owned container, the decoder correctly failed the downlink assertion while retaining verified uplink, and the exact rule was removed with absence verified.
 - PERM-01 passed on the updated APK: revoked microphone permission produced `E_MICROPHONE_PERMISSION`, no native call/INVITE/PBX channel, visible permission recovery, then a successful synthetic call.
 - LIFE-02 passed: HOME/background was observed, no ADB/UI polling occurred for three seconds, PID/start time/generation stayed the same, the call remained connected, and cleanup completed.
+- LIFE-01 activity recreation remains a retained failure after three bounded attempts. One attempt proved a changed Android activity token with the same PID, process start time, native generation and one connected native call, but the fixture's20-second cap ended the PBX call before the final comparison. LIFE-03 task removal and SIP-11 rapid duplicate control remain not run.
 - The actual SDK loaded from a self-contained release APK without Metro. The APK contains the bundled JS plus ARM64 Siprix, SiprixMedia, React Native and Hermes libraries, contains no PJSIP native library, and reports call state through the Siprix native callback stream.
 
-Refresh verification passed:25 Node lab/report/config tests and194 focused Vitest checks covering the Siprix engine, wake contract, playback, call controls, Recents and transcript rendering. The existing5 bridge-lease assertions,18 destination/state native-guard assertions, and6 media-watchdog JVM scenarios remain passing evidence from the unchanged native adapter. Android prebuild and release merged-manifest processing passed with one Siprix permission metadata entry and no camera permission. Repository-wide TypeScript still has the same235 baseline diagnostics in unrelated transfer/marketing code; changed files introduced no diagnostics in the recorded comparison. Focused lint reported zero errors.
+Final integrated verification passed:42 Node lab/config/packaging checks,135 focused Vitest calling/wake/build checks and44 recording/playback checks. Native JVM verification passed5 lab guards,19 injected SIP-scope assertions,5 bridge-lease assertions,21 persisted-wake assertions and6 media-lifecycle scenarios. Android release Java compilation, APK assembly and merged-manifest processing passed. The exact final APK was installed and cold-launched on `emulator-5580`; it rendered the shared Phone11 dialer. Its packaged manifest contains exactly one `Phone11IncomingCallService` with `enabled=false` and `exported=false`. Repository-wide TypeScript still has the same235 baseline diagnostics in unrelated transfer/marketing code; changed files introduced no diagnostics in the recorded comparison. Focused lint reported zero errors.
 
 ## Open gates
 
-- L3 remains blocked: there is no matching lab Firebase client/sender, authenticated Android native wake receiver/service, or verified pending-call delivery adapter. No fake notification or local broadcast was counted as Firebase evidence.
+- L3 remains blocked: there is no matching lab Firebase client/sender, authenticated Android push receiver or verified pending-call delivery adapter. The new private service is disabled and uncommissioned in the exact APK. No fake notification or local broadcast was counted as Firebase evidence.
 - Android authenticated Phone11 UCC sign-in/backend acceptance, process death/Doze/locked-screen incoming calls, notification/full-screen/foreground-service ownership and logout isolation remain open.
 - Android speaker/earpiece recording route selection is implemented and contract-tested. Physical handset audio, microphone, earpiece, speaker, wired/Bluetooth accessories, mobile-network changes and OEM power behavior remain L4.
 - Reject/cancel product-history reconciliation and decoded media after hold/resume remain blocked even though their signaling samples passed.
@@ -110,6 +115,7 @@ pnpm lab:down
 ## Evidence index
 
 - Final report: `.lab/report.html`, `.lab/report.json`, `.lab/junit.xml`
+- Final integrated APK: `.lab/Phone11-Android-Lab-1.0.0-fb7dace.apk`, `.lab/final-fb7dace-apk.json`, `.lab/final-fb7dace-badging.txt`, `.lab/final-fb7dace-manifest.txt`, `.lab/final-fb7dace-launch.png`
 - Final APK identity/native load: `.lab/apk.json`, `.lab/final-updated-native-proof.json`, `.lab/final-updated-sdk.png`, `.lab/final-apk-badging.txt`, `.lab/final-apk-manifest.txt`, `.lab/final-apk-inventory.txt`
 - 40-call campaign: `.lab/sip-1789368207834/`
 - Refreshed 40-call exact-APK campaign plus mute-state check: `.lab/sip-1789383622451/`, `.lab/attempts-3ac0c31.json`
@@ -121,4 +127,4 @@ pnpm lab:down
 - Shared UI: `.lab/shared-phone11-ui.png`; lab runtime: `.lab/sdk-initialized.png`
 - iOS investigations: `docs/phone11-daily-use/SUMMARY-FAILURE-20260914.md`, `docs/phone11-daily-use/RECORDING-PLAYBACK-CANDIDATE-20260914.md`
 
-The next Android acceptance gate is an isolated staging Firebase project plus native authenticated wake/service implementation, followed by background, lock, Doze and true process-death delivery. The next iOS gate is the signed daily-pilot candidate and physical playback/seek/speaker check; recovering the12:40 summary additionally requires approval for one production Gemini retry after the diagnostic backend change is deployed.
+The next Android acceptance gate is an isolated staging Firebase client/sender plus authenticated push ingress and Siprix account adoption into the private service. Only after that path is commissioned can the lab execute background, lock, Doze and true process-death delivery. The next iOS gate is the signed daily-pilot candidate and physical playback/seek/speaker check; recovering the12:40 summary additionally requires approval for one production Gemini retry after the diagnostic backend change is deployed.
