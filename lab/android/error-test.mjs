@@ -138,8 +138,8 @@ async function main() {
   }
   const observe = value => { const snapshot = safeSnapshot(value); row?.observations.push({ at: new Date().toISOString(), native: snapshot }); return snapshot; };
   const wait = async (predicate, timeout = 10000) => observe(await ui.waitFor(predicate, timeout));
-  const processIdentity = () => {
-    const pid = ui.shell('pidof', pkg).trim();
+  const processIdentity = (knownPid = '') => {
+    const pid = knownPid || ui.shell('pidof', pkg).trim();
     proof(/^\d+$/.test(pid), 'Exactly one app process could not be identified');
     // /proc starttime prevents a recycled PID from being called process continuity.
     const stat = ui.shell('cat', `/proc/${pid}/stat`).trim();
@@ -177,6 +177,15 @@ async function main() {
   };
   const eventCount = (snapshot, type, afterSequence = -1) => (snapshot.events || [])
     .filter(event => event.generation === snapshot.generation && event.sequence > afterSequence && event.type === type).length;
+  async function openLabReady(timeout = 15000) {
+    ui.openLab();
+    const deadline = Date.now() + timeout;
+    do {
+      try { return ui.state(); }
+      catch { await delay(250); }
+    } while (Date.now() < deadline);
+    throw new Error('Lab screen did not become observable before the bounded readiness deadline');
+  }
   async function visiblePermissionRecovery() {
     if (hasMicrophone()) return;
     ui.tap('Microphone');
@@ -277,8 +286,8 @@ async function main() {
     check(installedHash === expected, 'Installed APK differs from final reviewed APK');
     write(`${directory}/identity.json`, { apk_sha256: expected, installed_apk_sha256: installedHash, source_sha: apk.commit, source_dirty: apk.sourceDirty, fixture_run: fixture.runId, serial: ui.serial });
     check(!channels().length, 'Existing synthetic call found; refusing takeover');
-    ui.openLab(); await ui.waitFor(() => true, 8000);
-    check(ui.state().call === 'none' && !ui.state().labMedia?.active, 'Existing native call or media capture found; refusing takeover');
+    const initialState = await openLabReady();
+    check(initialState.call === 'none' && !initialState.labMedia?.active, 'Existing native call or media capture found; refusing takeover');
     touched = true;
     check(pbx('pjsip set history on').includes('enabled'), 'PBX sanitized SIP history unavailable'); historyOn = true;
     for (const id of ids) {
@@ -407,8 +416,12 @@ async function main() {
         row.observations.push({ postRemovalPackage: { stopped: stoppedAfterRemoval } }); persist();
         const serviceRows = services();
         row.observations.push({ postRemovalServices: serviceRows }); persist();
-        const pidText = ui.shell('pidof', pkg).trim();
-        const processAfterRemoval = /^\d+$/.test(pidText) ? processIdentity() : null;
+        // `pidof` exits non-zero when task removal also ends the process. Run it
+        // through a bounded shell fallback so expected process exit is recorded
+        // as null instead of being misclassified as a harness failure.
+        const pidText = ui.shell('sh', '-c', `pidof ${pkg} || true`).trim();
+        check(pidText === '' || /^\d+$/.test(pidText), 'Unexpected post-removal process identity');
+        const processAfterRemoval = pidText ? processIdentity(pidText) : null;
         row.observations.push({ postRemovalProcess: processAfterRemoval }); persist();
         const peerAfterRemoval = channels();
         row.observations.push({ postRemovalPbx: peerAfterRemoval }); persist();
