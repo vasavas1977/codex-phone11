@@ -1,6 +1,6 @@
 # Phone11 outgoing recording controls — Build 45
 
-Date: 2026-09-14. Physical outbound acceptance is pending.
+Date: 2026-09-14. Build 45 and server updates are installed; physical outbound acceptance is pending.
 
 ## Problem and repair
 
@@ -67,11 +67,36 @@ and provisioning validity passed. IPA SHA256:
 After a fresh server idle guard, installation and launch succeeded; installed
 inventory independently confirmed Build 45 and the running app process.
 
+## Live metadata commissioning
+
+The actual pinned FreeSWITCH image passed the isolated fixture twice. Baseline
+and candidate each preserved all four number routes and caller identity
+headers. Candidate dumps contained the exact internal A-leg nonce/user/realm,
+expected inbound/logical-outbound directions, observed source peer, external
+profile, and normal media mode. None of the protected SIP headers reached the
+carrier. Fixture source: `082895d668bbd11a12321be95cd9af5e56fd32af`.
+
+Source `437339148268c3a180ed4840eda8097689c39369` commits the outbound XML and
+adds the real digest and FreeSWITCH regression fixtures to daily CI. Its XML
+SHA256 is `08c1926902d78203f6708e1a25f76014451ac4d7e92f2fdafdab60b2ea3a4493`.
+The live staged full Kamailio configuration passed the actual-image parser;
+independent integration review found no blockers. Live application required a
+matching fixture proof hash and fresh zero-channel/dialog/capture/job guard.
+FreeSWITCH reloaded XML without restart; Kamailio restarted and answered its
+real JSON-RPC readiness check. The exact backend health remained healthy.
+
+The first rollout verifier expected a Docker HEALTHCHECK that this existing
+Kamailio container does not define. It restored the prior configuration; the
+verifier was corrected to use the actual Kamailio RPC before successful retry.
+Private `metadata-result.json` records the completed rollout and source hashes.
+Build 45 is running, and the user has been invited to test the outgoing call.
+Final daily-use CI `34863247928` passed all five jobs at exact source
+`437339148268c3a180ed4840eda8097689c39369`, including both new real-service
+SIP fixtures.
+
 ## Acceptance still required
 
-Finish the isolated FreeSWITCH carrier-header fixture and commission the
-metadata-only routing hooks with fresh idle guards and rollback verification.
-Then one outgoing call from the installed iPhone must establish two-way audio,
+One outgoing call from the installed iPhone must establish two-way audio,
 automatically play the announcement and show Recording in progress, stop
 capture successfully, and expose
 playback plus AI summary/transcript in Recents. Installation, CI, SIP metadata,
