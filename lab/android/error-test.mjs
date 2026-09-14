@@ -37,6 +37,30 @@ const attemptDirectory = (apkSha256, id) => {
 };
 const safeSnapshot = value => Object.fromEntries(['initialized', 'sdk', 'generation', 'sequence', 'registration', 'call', 'callCount', 'muted', 'held', 'ended', 'error', 'events'].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
 const uniqueTransactions = messages => new Set(messages.map(message => `${message.direction}:${message.dialog}:${message.cseq}:${message.method}:${message.status ?? 'request'}`));
+const boundsNumbers = bounds => {
+  const values = String(bounds || '').match(/\d+/g)?.map(Number) || [];
+  check(values.length === 4 && values[2] > values[0] && values[3] > values[1], 'Invalid Android UI bounds');
+  return values;
+};
+const recentsGesture = bounds => {
+  const [left, top, right, bottom] = boundsNumbers(bounds);
+  return {
+    startX: Math.floor((left + right) / 2),
+    startY: Math.floor(top + ((bottom - top) * 0.82)),
+    endX: Math.floor((left + right) / 2),
+    endY: Math.floor(top + ((bottom - top) * 0.16)),
+    // Pixel Launcher snaps a slow drag back into place. A short upward flick is
+    // the user gesture that actually dismisses a Recents card.
+    durationMs: 50,
+  };
+};
+const phone11TaskRows = lines => lines.filter(line => (
+  line.includes('A=') && line.includes(`:${pkg} `)
+) || line.includes(`${pkg}/.MainActivity`));
+const resumedLauncher = lines => lines.some(line =>
+  /(?:topResumedActivity|mResumedActivity)=ActivityRecord/.test(line)
+  && line.includes('com.google.android.apps.nexuslauncher/.NexusLauncherActivity')
+);
 
 async function main() {
   if (process.argv.includes('--self-test')) {
@@ -54,7 +78,12 @@ async function main() {
     assert.throws(() => attemptDirectory('bad', 'LIFE-01'));
     assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }]).size, 1);
     assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'one', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'two', cseq: 1, method: 'INVITE', status: null }]).size, 2);
-    console.log('13 offline harness assertions passed; no ADB, emulator, PBX, or fixture mutation');
+    assert.deepEqual(recentsGesture('[173,211][907,2010]'), { startX: 540, startY: 1686, endX: 540, endY: 498, durationMs: 50 });
+    assert.equal(phone11TaskRows(['  * Task{abc #25 A=10207:ai.phone11.mobile.lab U=0}', 'app=ProcessRecord{abc 1:ai.phone11.mobile.lab/u0a1}']).length, 1);
+    assert.equal(phone11TaskRows(['app=ProcessRecord{abc 1:ai.phone11.mobile.lab/u0a1}']).length, 0);
+    assert.equal(resumedLauncher(['topResumedActivity=ActivityRecord{a u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t1}']), true);
+    assert.equal(resumedLauncher(['topResumedActivity=ActivityRecord{a u0 ai.phone11.mobile.lab/.MainActivity t1}']), false);
+    console.log('18 offline harness assertions passed; no ADB, emulator, PBX, or fixture mutation');
     return;
   }
   if (!process.argv.includes('--execute')) {
@@ -330,18 +359,33 @@ async function main() {
       if (id === 'LIFE-03') await scenario(id, async () => {
         await visiblePermissionRecovery(); await resetAndRegister(); await wait(value => value.registration === 'registered');
         const active = await callTone(); const processBefore = processIdentity(); const activityBefore = activityIdentity();
-        ui.shell('input', 'keyevent', 'KEYCODE_APP_SWITCH'); await delay(700);
-        const card = ui.nodes().find(node => node['content-desc'] === 'Phone11 Lab' && /:id\/task$/.test(node['resource-id'] || ''));
-        proof(Boolean(card?.bounds), 'Phone11 task card was not visible in Android Recents');
-        const bounds = card.bounds.match(/\d+/g).map(Number); const x = Math.floor((bounds[0] + bounds[2]) / 2);
-        ui.shell('input', 'swipe', String(x), String(Math.floor((bounds[1] + bounds[3]) / 2)), String(x), '80', '300');
-        let activityRows = []; const removalDeadline = Date.now() + 5000;
+        ui.shell('input', 'keyevent', 'KEYCODE_APP_SWITCH');
+        let recentsRows = [], recentsNodes = [], card;
+        const recentsDeadline = Date.now() + 5000;
         do {
-          activityRows = ui.shell('dumpsys', 'activity', 'activities').split('\n').filter(line => line.includes(pkg));
-          if (!activityRows.length) break;
+          recentsRows = ui.shell('dumpsys', 'activity', 'activities').split('\n').filter(line => /topResumedActivity|mResumedActivity/.test(line));
+          recentsNodes = ui.nodes();
+          card = recentsNodes.find(node => node['content-desc'] === 'Phone11 Lab' && /:id\/task$/.test(node['resource-id'] || ''));
+          if (resumedLauncher(recentsRows) && card?.bounds) break;
+          await delay(150);
+        } while (Date.now() < recentsDeadline);
+        proof(Boolean(card?.bounds), 'Phone11 task card was not visible in Android Recents');
+        proof(resumedLauncher(recentsRows), 'Android Recents surface was not fully resumed before the removal gesture');
+        const beforeScreenshot = `${directory}/LIFE-03-recents-before.png`; ui.screenshot(beforeScreenshot); row.artifacts.push(beforeScreenshot.slice(5));
+        const gesture = recentsGesture(card.bounds);
+        row.observations.push({ recentsSurface: { launcherResumed: true, cardBounds: card.bounds, gesture } });
+        ui.shell('input', 'swipe', String(gesture.startX), String(gesture.startY), String(gesture.endX), String(gesture.endY), String(gesture.durationMs));
+        let taskRows = []; const removalDeadline = Date.now() + 5000;
+        do {
+          taskRows = phone11TaskRows(ui.shell('dumpsys', 'activity', 'activities').split('\n'));
+          if (!taskRows.length) break;
           await delay(150);
         } while (Date.now() < removalDeadline);
-        proof(!activityRows.length, 'Phone11 activity/task remained after Recents swipe');
+        row.observations.push({ removalConfirmation: { taskRows: taskRows.map(line => line.trim()), confirmation: 'Android task manager; no UIAutomator query during task-dismiss animation' } });
+        proof(!taskRows.length, 'Phone11 Android task or MainActivity remained after its Recents card disappeared');
+        const afterScreenshot = `${directory}/LIFE-03-recents-after.png`;
+        try { ui.screenshot(afterScreenshot); row.artifacts.push(afterScreenshot.slice(5)); }
+        catch { row.observations.push({ postRemovalScreenshot: 'unavailable; task-manager proof retained and scenario continued' }); }
         const stoppedAfterRemoval = packageStopped(); const serviceRows = services();
         const pidText = ui.shell('pidof', pkg).trim(); const processAfterRemoval = /^\d+$/.test(pidText) ? processIdentity() : null;
         const peerAfterRemoval = channels();
