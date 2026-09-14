@@ -461,12 +461,9 @@ export function RecordingPanel({
               >
                 <Text
                   style={{
-                    fontSize: 13,
-                    fontWeight: "600",
-                    color:
-                      turn.speaker === "speaker2"
-                        ? colors.primary
-                        : colors.muted,
+                    fontSize: 14,
+                    fontWeight: "700",
+                    color: colors.foreground,
                   }}
                 >
                   {transcriptSpeakerLabel(turn.speaker, speakerNames)}

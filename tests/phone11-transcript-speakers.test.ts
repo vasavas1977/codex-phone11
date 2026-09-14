@@ -40,4 +40,19 @@ describe("Phone11 transcript speaker labels", () => {
     ]);
     expect(transcriptSpeakerLabel("unknown")).toBe("Transcript");
   });
+
+  it("supports participant names shown on their own line", () => {
+    expect(
+      transcriptTurns(
+        "Vasavas Nonsopa Boss/บอส\nฮัลโหลค่ะ\nSavitree Lerdhirunvanich\nดีว่า?",
+        {
+          speaker1: "Vasavas Nonsopa Boss/บอส",
+          speaker2: "Savitree Lerdhirunvanich",
+        },
+      ),
+    ).toEqual([
+      { speaker: "speaker1", text: "ฮัลโหลค่ะ" },
+      { speaker: "speaker2", text: "ดีว่า?" },
+    ]);
+  });
 });
