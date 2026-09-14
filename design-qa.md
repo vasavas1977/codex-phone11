@@ -33,6 +33,20 @@ overflow. Preview interactions confirmed forward/back 15 seconds, play/pause,
 and Speaker on/off. All touch targets remain at least 44 points. The preview
 uses synthetic state and does not establish physical audio routing.
 
+## Output picker refinement
+
+The user's latest reference (`IMG_0636.PNG`) supersedes the direct Speaker
+toggle: the same compact Speaker button now opens an output picker. iOS embeds
+the public AVRoutePickerView, leaving device discovery and selection to iOS.
+The browser preview uses a compact fallback sheet with Phone and Speaker,
+icons, and a checkmark on the selected output. It never fabricates Bluetooth
+devices. Android can supply its actual route inventory and selection adapter.
+
+Verified the fallback at 320×740 and 440×956: no horizontal overflow, tapping
+Speaker opens the sheet, choosing an output updates the checkmark and closes
+the sheet. Native output selection is a separate physical-handset gate; browser
+screenshots establish the fallback design only.
+
 ## Evidence
 
 - `docs/phone11-daily-use/recents-design-qa-20260915/minimal-player.png`
@@ -42,5 +56,7 @@ uses synthetic state and does not establish physical audio routing.
 - `docs/phone11-daily-use/recents-design-qa-20260915/icon-player.png`
 - `docs/phone11-daily-use/recents-design-qa-20260915/icon-player-small.png`
 - `docs/phone11-daily-use/recents-design-qa-20260915/icon-player-speaker.png`
+- `docs/phone11-daily-use/recents-design-qa-20260915/output-picker.png`
+- `docs/phone11-daily-use/recents-design-qa-20260915/output-picker-small.png`
 
 Preview: `http://127.0.0.1:8087/dev/recents-preview`. It is development-only and uses synthetic content, with no actual call or recording API requests.

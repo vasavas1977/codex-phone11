@@ -156,7 +156,9 @@ export default function RecentsPreview() {
                     route,
                     label: route === "speaker" ? "Speaker" : "Earpiece",
                   }}
-                  onRouteChange={setRoute}
+                  onRouteChange={(nextRoute) => {
+                    if (nextRoute !== "system") setRoute(nextRoute);
+                  }}
                   currentTime={time}
                   duration={217}
                   playing={playing}

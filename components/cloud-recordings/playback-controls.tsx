@@ -12,6 +12,10 @@ import type {
   PlaybackAudioRoute,
   PlaybackAudioRouteStatus,
 } from "@/lib/cloud-recordings/playback-route";
+import {
+  PlaybackOutputPickerButton,
+  type PlaybackExternalOutput,
+} from "./playback-output-picker";
 
 export interface PlaybackControlColors {
   foreground: string;
@@ -66,6 +70,9 @@ export function PlaybackControls({
   onScrubStart,
   onScrubEnd,
   onRouteChange,
+  onOutputPickerOpened,
+  availableOutputs,
+  onOutputSelect,
   error,
   routeError,
   colors = defaultPlaybackColors,
@@ -82,6 +89,9 @@ export function PlaybackControls({
   onScrubStart?(): void;
   onScrubEnd?(): void;
   onRouteChange(route: PlaybackAudioRoute): void | Promise<void>;
+  onOutputPickerOpened?(output: PlaybackAudioRouteStatus): void | Promise<void>;
+  availableOutputs?: readonly PlaybackExternalOutput[];
+  onOutputSelect?(output: PlaybackExternalOutput): void | Promise<void>;
   error?: string;
   routeError?: string;
   colors?: PlaybackControlColors;
@@ -112,7 +122,6 @@ export function PlaybackControls({
   };
   const adjust = (delta: number) =>
     onSeek(clampPlaybackSeconds(shownTime + delta, duration));
-  const speakerSelected = output.route === "speaker";
   const webSliderProps =
     Platform.OS === "web"
       ? ({
@@ -313,56 +322,16 @@ export function PlaybackControls({
                 color={loaded ? colors.primary : colors.muted}
               />
             </TouchableOpacity>
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel={
-                speakerSelected ? "Turn speaker off" : "Play through speaker"
-              }
-              accessibilityHint={
-                speakerSelected
-                  ? "Returns recording audio to the earpiece"
-                  : "Routes recording audio through the loudspeaker"
-              }
-              accessibilityState={{
-                selected: speakerSelected,
-                busy: routeChanging,
-              }}
-              disabled={!loaded || routeChanging}
-              onPress={() =>
-                onRouteChange(speakerSelected ? "earpiece" : "speaker")
-              }
-              style={{
-                height: 44,
-                minWidth: 104,
-                paddingHorizontal: 10,
-                borderRadius: 22,
-                borderWidth: 1,
-                borderColor: speakerSelected ? colors.primary : colors.border,
-                flexDirection: "row",
-                gap: 6,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: speakerSelected
-                  ? colors.primary
-                  : colors.surface,
-              }}
-            >
-              <IconSymbol
-                name={
-                  speakerSelected ? "speaker.wave.3.fill" : "speaker.slash.fill"
-                }
-                size={18}
-                color={speakerSelected ? "white" : colors.foreground}
-              />
-              <Text
-                style={{
-                  color: speakerSelected ? "white" : colors.foreground,
-                  fontWeight: "600",
-                }}
-              >
-                {routeChanging ? "Changing…" : "Speaker"}
-              </Text>
-            </TouchableOpacity>
+            <PlaybackOutputPickerButton
+              loaded={loaded}
+              output={output}
+              routeChanging={routeChanging}
+              availableOutputs={availableOutputs}
+              onRouteChange={onRouteChange}
+              onOutputSelect={onOutputSelect}
+              onOutputPickerOpened={onOutputPickerOpened}
+              colors={colors}
+            />
           </View>
           {(routeError || output.route === "external") && (
             <Text
