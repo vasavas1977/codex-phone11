@@ -454,7 +454,10 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     } else if ([type isEqualToString:@"callTerminated"]) {
       call[@"state"] = @"terminated";
       call[@"statusCode"] = data[@"statusCode"];
-      if (call[@"historyId"]) {
+      // Only cold-start wake calls belong in the native completed-wake spool.
+      // Foreground outbound calls carry an exact correlation historyId too,
+      // but JS owns their ordinary call-history persistence.
+      if ([call[@"historyId"] hasPrefix:@"native-wake:"]) {
         double ended=MAX(MAX(P11NowMs(),[call[@"startedAt"] doubleValue]),[call[@"answeredAt"] doubleValue]);
         NSMutableDictionary *entry=[call[@"historyOwner"] mutableCopy];
         NSString *number=P11HistoryNumber(call[@"remoteUri"]);
@@ -1131,6 +1134,10 @@ RCT_EXPORT_METHOD(makeCall:(NSString *)accountId destination:(NSString *)destina
   dest.fromAccId = accountId.intValue;
   dest.toExt = destination;
   dest.withVideo = @NO;
+  // This fixed, bridge-owned header is the only mobile-to-PBX correlation
+  // input. The public JS API cannot inject arbitrary SIP headers.
+  NSString *outboundUUID = NSUUID.UUID.UUIDString.lowercaseString;
+  dest.xheaders = @{ @"X-Phone11-Outbound-ID": outboundUUID };
   if (![self checkSDK:[runtime.sdk callInvite:dest] operation:@"callInvite" reject:reject]) return;
   if (dest.myCallId <= kInvalidId) {
     runtime.quarantined = YES;
@@ -1142,6 +1149,8 @@ RCT_EXPORT_METHOD(makeCall:(NSString *)accountId destination:(NSString *)destina
     P11Reject(reject, @"E_SDK_INVALID_ID", @"SDK reused a retired call ID. Destroy is required."); return;
   }
   NSMutableDictionary *call = P11Call(callId, accountId, @"outgoing", @"dialing", destination);
+  call[@"historyId"] = [@"native-outbound:" stringByAppendingString:outboundUUID];
+  call[@"startedAt"] = @(P11NowMs());
   runtime.calls[callId] = call;
   resolve([call copy]);
 }

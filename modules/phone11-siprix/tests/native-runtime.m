@@ -43,6 +43,7 @@ static void (^testEmitHook)(id);
 
 static int sdkCode, initCode, shutdownCode, initializes, shutdowns, registrations;
 static int inlineRegistrationState = -1;
+static BOOL inlineCallProceeding;
 static int pushRegistrationState = -1;
 static int registrationCode;
 static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, deactivations;
@@ -54,6 +55,7 @@ static NSString *wakeHeader;
 static int incomingPushes, headerReads;
 static NSString *mockVersion = @"siprix 1.0.40 from 20260620_1419";
 static SiprixIniData *lastInit;
+static SiprixDestData *lastDestination;
 static id<SiprixEventDelegate> sdkDelegate;
 
 @implementation SiprixModule
@@ -90,7 +92,16 @@ static id<SiprixEventDelegate> sdkDelegate;
 }
 - (int)accountUnRegister:(int)accId { return sdkCode; }
 - (int)accountDelete:(int)accId { return sdkCode; }
-- (int)callInvite:(SiprixDestData *)data { invites++; if (!sdkCode) data.myCallId = nextCall++; return sdkCode; }
+- (int)callInvite:(SiprixDestData *)data {
+  invites++;
+  lastDestination = data;
+  if (!sdkCode) {
+    data.myCallId = nextCall++;
+    if (inlineCallProceeding)
+      [sdkDelegate onCallProceeding:data.myCallId response:@"180 Ringing"];
+  }
+  return sdkCode;
+}
 - (int)callAccept:(int)callId withVideo:(BOOL)video { accepts++; return sdkCode; }
 - (int)callReject:(int)callId statusCode:(int)statusCode { rejects++; return sdkCode; }
 - (int)callBye:(int)callId { byes++; return sdkCode; }
@@ -211,20 +222,33 @@ int main(void) {
     [bridge makeCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_SIPRIX_-77"] && P11SiprixRuntime.shared.calls.count == 0);
     sdkCode = 0;
+    inlineCallProceeding = YES;
     [bridge makeCall:@"10" destination:@"sip:123:private@invalid.example;password=secret" resolver:resolve rejecter:reject];
+    inlineCallProceeding = NO;
     CHECK(!error && [result[@"remoteUri"] isEqualToString:@"sip:123@invalid.example"]);
     NSString *callId = result[@"id"];
-    CHECK([result[@"state"] isEqualToString:@"dialing"]);
+    NSString *outboundHeader = lastDestination.xheaders[@"X-Phone11-Outbound-ID"];
+    NSString *outboundHistoryId = result[@"historyId"];
+    NSNumber *outboundStartedAt = result[@"startedAt"];
+    CHECK(lastDestination.xheaders.count == 1 && [[NSUUID alloc] initWithUUIDString:outboundHeader]);
+    CHECK([outboundHeader isEqualToString:outboundHeader.lowercaseString]);
+    CHECK([outboundHistoryId isEqualToString:[@"native-outbound:" stringByAppendingString:outboundHeader]]);
+    CHECK(outboundStartedAt.doubleValue > 0 && [result[@"state"] isEqualToString:@"dialing"]);
+    // Even when the SDK calls its delegate inside callInvite, delivery is
+    // queued until after the returned call has its correlation identity.
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"call"][@"state"] isEqualToString:@"proceeding"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"historyId"] isEqualToString:outboundHistoryId]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"startedAt"] isEqual:outboundStartedAt]);
     [bridge makeCall:@"10" destination:@"456" resolver:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_CALL_ACTIVE"]);
     [bridge deleteAccount:@"10" resolver:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_CALL_ACTIVE"]);
-    [sdkDelegate onCallProceeding:callId.intValue response:@"180 Ringing sensitive text"];
-    flush();
-    CHECK([bridge.testEvents.lastObject[@"call"][@"state"] isEqualToString:@"proceeding"]);
     [sdkDelegate onCallConnected:callId.intValue hdrFrom:@"" hdrTo:@"" withVideo:NO];
     flush();
     CHECK([bridge.testEvents.lastObject[@"call"][@"state"] isEqualToString:@"connected"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"historyId"] isEqualToString:outboundHistoryId]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"answeredAt"] doubleValue] >= outboundStartedAt.doubleValue);
     sdkCode = -33;
     [bridge setMute:callId muted:YES resolver:resolve rejecter:reject];
     CHECK([error isEqualToString:@"E_SIPRIX_-33"] && ![P11SiprixRuntime.shared.calls[callId][@"muted"] boolValue]);
@@ -280,6 +304,8 @@ int main(void) {
     [sdkDelegate onCallTerminated:callId.intValue statusCode:200];
     flush();
     CHECK(P11SiprixRuntime.shared.calls.count == 0 && [bridge.testEvents.lastObject[@"call"][@"state"] isEqualToString:@"terminated"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"historyId"] isEqualToString:outboundHistoryId]);
+    CHECK(P11WakeHistory.shared.pending.count == 0);
     [sdkDelegate onCallIncoming:50 accId:10 withVideo:NO hdrFrom:@"Test <sip:caller:password@invalid.example>" hdrTo:@""];
     flush();
     CHECK([bridge.testEvents.lastObject[@"call"][@"remoteUri"] isEqualToString:@"sip:caller@invalid.example"]);

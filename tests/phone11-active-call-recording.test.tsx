@@ -63,6 +63,18 @@ it("only exposes control for unique exact server-correlated native history ID", 
     ),
   ).toBeUndefined();
 });
+it("exposes controls for an exact outbound correlation ID", () => {
+  const nativeHistoryId =
+    "native-outbound:11111111-2222-4333-8444-555555555555";
+  mocks.list.items = [
+    { ...row, direction: "outbound", nativeHistoryId },
+  ];
+  mocks.detail.detail = {
+    ...mocks.list.items[0],
+    manualControls: { canStart: true, canStop: false },
+  };
+  expect(render(nativeHistoryId)).toContain("Start recording exact-cloud-call");
+});
 it("does not fall back to matching phone and time", () => {
   mocks.list.items = [{ ...row, nativeHistoryId: "other-call" }];
   expect(render()).not.toContain("Start recording");
