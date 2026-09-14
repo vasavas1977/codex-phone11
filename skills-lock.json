@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "freeswitch": {
+      "source": "adinvadim/freeswitch-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "45b19daf86ae256a301e383730c67908517610a799748e59e5910917ef390b10"
+    },
+    "kamailio-config": {
+      "source": "userad/claudeskills",
+      "sourceType": "github",
+      "skillPath": "skills/kamailio-config/SKILL.md",
+      "computedHash": "a0d634d0f300aa1d6512267fea4be1b7cf6c00c033edd7daf67c6c43e40c27c8"
+    }
+  }
+}

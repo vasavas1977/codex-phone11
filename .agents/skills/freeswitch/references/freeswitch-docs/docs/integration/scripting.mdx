@@ -1,0 +1,359 @@
+---
+sidebar_position: 4
+id: scripting
+slug: /integration/scripting
+title: "Chapter 28: Scripting Integration"
+description: "Embed Lua, Perl, Python, JavaScript (V8), and Java inside FreeSWITCH to drive call flow, serve XML config, and react to events."
+sidebar_label: "28. Scripting Integration"
+---
+
+# Chapter 28: Scripting Integration
+
+FreeSWITCH embeds scripting language runtimes directly inside the switch process, allowing scripts to control call flow from the dialplan, serve XML configuration dynamically, react to events, and run as background daemons. Lua is the default embedded language and is loaded automatically; Perl, Python 3, V8 (JavaScript), and Java are available as optional modules that follow the same wiring patterns.
+
+<SignalWireCallout
+  title="Call logic in Python, without the embedding"
+  href="https://signalwire.com/docs/server-sdks/guides/build-ai-agents"
+  page="scripting"
+  linkText="See the SignalWire SDK">
+
+The SignalWire SDK runs call logic as ordinary Python or TypeScript services: no `mod_lua` embedding, no interpreter inside the switch. The same SDK builds hosted voice AI agents that follow steps you define in code.
+
+</SignalWireCallout>
+
+## Embedded Scripting Overview {#embedded-scripting-overview}
+
+Language modules run inside the FreeSWITCH process. A script executes in a dedicated Lua state (or equivalent) with full access to the FreeSWITCH C API surface through the module's SWIG bindings. Scripts are not external processes and do not require IPC.
+
+`mod_lua` is loaded by default via `modules.conf.xml`. All other language modules (`mod_perl`, `mod_python3`, `mod_v8`, `mod_java`) are commented out in the default configuration and must be explicitly enabled.
+
+Each language module registers the same set of integration points:
+
+- A dialplan **application** (e.g., `lua`) that runs a script in the context of an active call leg.
+- An **API command** that runs a script outside of a call leg.
+- An **XML handler** binding that makes the script the source of dynamic configuration.
+- An **event hook** mechanism for reacting to switch events.
+
+---
+
+## Script Directory {#script-directory}
+
+FreeSWITCH resolves relative script paths against the built-in `$${script_dir}` preprocessor variable. This variable is set at compile time and typically resolves to `/usr/local/freeswitch/scripts` on a standard installation. Its current value can be confirmed at the `fs_cli` prompt:
+
+```
+eval $${script_dir}
+```
+
+When a script name passed to the `lua` application or `luarun` API command does not begin with `/`, FreeSWITCH prepends `$${script_dir}` and a path separator before loading the file. Absolute paths bypass this resolution and are used as-is.
+
+---
+
+## lua.conf.xml Reference {#luaconfxml-reference}
+
+`lua.conf.xml` is located in `$${conf_dir}/autoload_configs/`. It is read once at module load time. A reload is triggered by `reload mod_lua` at the `fs_cli` prompt.
+
+### Parameter Table {#parameter-table}
+
+| Parameter | Purpose | Accepted Values | Default |
+|---|---|---|---|
+| `script-directory` | Prepends a path to the Lua `LUA_PATH` environment variable so that `require` can locate `.lua` modules. Use the `?.lua` glob pattern. Multiple entries are allowed. | Path string with `?` glob, e.g. `$${script_dir}/?.lua` | None |
+| `module-directory` | Prepends a path to the Lua `LUA_CPATH` environment variable for native C extension modules (`.so` or `.dll`). Multiple entries are allowed. | Path string with `?` glob, e.g. `/usr/lib/lua/5.1/?.so` | None |
+| `xml-handler-script` | Path to the Lua script invoked when FreeSWITCH needs to resolve an XML section registered by `xml-handler-bindings`. Must be set before `xml-handler-bindings`. | Absolute or relative path to a `.lua` file | None |
+| `xml-handler-bindings` | Registers `xml-handler-script` as the XML fetch handler for one or more configuration sections. Requires `xml-handler-script` to be set first in the same `<settings>` block. | `dialplan`, `directory`, `configuration`, `phrases`, or a space-separated combination | None |
+| `startup-script` | Launches a Lua script in a detached background thread when the module loads. Multiple entries are allowed, one script per `<param>`. | Script filename (resolved against `$${script_dir}`) | None |
+
+The `hook` element (a sibling of `<param>` inside `<settings>`) binds a Lua script to a FreeSWITCH event. See [Event Hooks](#event-hooks).
+
+### Configuration Example {#configuration-example}
+
+```xml
+<configuration name="lua.conf" description="LUA Configuration">
+  <settings>
+
+    <!-- Add directories to LUA_PATH for require() resolution -->
+    <param name="script-directory" value="$${script_dir}/?.lua"/>
+
+    <!-- Add directories to LUA_CPATH for native C modules -->
+    <param name="module-directory" value="/usr/local/lib/lua/5.1/?.so"/>
+
+    <!-- XML handler: must appear before xml-handler-bindings -->
+    <param name="xml-handler-script" value="xml_handler.lua"/>
+    <param name="xml-handler-bindings" value="dialplan"/>
+
+    <!-- Background daemon scripts launched at module load -->
+    <param name="startup-script" value="event_daemon.lua"/>
+
+    <!-- Event hook -->
+    <hook event="CUSTOM" subclass="conference::maintenance" script="catch-event.lua"/>
+
+  </settings>
+</configuration>
+```
+
+---
+
+## Invoking Scripts from the Dialplan {#invoking-scripts-from-the-dialplan}
+
+The `lua` dialplan application executes a script synchronously within a call leg. The call is held for the duration of the script. The `session` object is automatically available to the script as a global variable named `session`.
+
+**Syntax:**
+
+```
+<action application="lua" data="script_name.lua [arg1 arg2 ...]"/>
+```
+
+When arguments are supplied, they are available inside the script as the global `argv` table. `argv[0]` holds the script filename; arguments begin at `argv[1]`.
+
+**Dialplan example:**
+
+```xml
+<extension name="ivr-entry">
+  <condition field="destination_number" expression="^1000$">
+    <action application="lua" data="ivr_menu.lua option1 option2"/>
+  </condition>
+</extension>
+```
+
+In this example, `ivr_menu.lua` is resolved to `$${script_dir}/ivr_menu.lua` because the path is relative. An absolute path such as `/opt/scripts/ivr_menu.lua` is also accepted.
+
+The `lua` application is registered with the `SAF_SUPPORT_NOMEDIA`, `SAF_ROUTING_EXEC`, and `SAF_ZOMBIE_EXEC` flags, meaning it can be called on channels that have no media, during routing, and on zombie channels.
+
+---
+
+## Running Scripts from the Console {#running-scripts-from-the-console}
+
+Two API commands are available from `fs_cli` or the ESL API surface.
+
+### `luarun`
+
+Launches a script in a detached background thread and returns immediately with `+OK`. The script has no associated call session.
+
+```
+luarun script_name.lua [arg1 arg2 ...]
+```
+
+### `lua`
+
+Executes a script synchronously and returns its output to the command stream. If called via an HTTP API endpoint under `/api/` or `/webapi/`, errors are returned as HTML; otherwise they are returned as plain text.
+
+```
+lua script_name.lua [arg1 arg2 ...]
+```
+
+Neither command blocks the console for `luarun`; `lua` blocks until the script completes.
+
+---
+
+## Lua as an XML Handler {#lua-as-an-xml-handler}
+
+FreeSWITCH consults registered XML handlers whenever it needs to resolve a configuration section. A Lua script can serve XML for the `dialplan`, `directory`, `configuration`, or `phrases` sections, replacing or supplementing static files.
+
+### Wiring the Handler {#wiring-the-handler}
+
+Two parameters in `lua.conf.xml` wire the handler. They must appear in order: `xml-handler-script` before `xml-handler-bindings`.
+
+```xml
+<param name="xml-handler-script" value="xml_handler.lua"/>
+<param name="xml-handler-bindings" value="dialplan"/>
+```
+
+When FreeSWITCH needs to fetch XML for the bound section, it calls the script and passes context via Lua globals:
+
+- `XML_REQUEST` -- a table with the keys `section`, `tag_name`, `key_name`, and `key_value` describing what is being requested.
+- `params` -- a FreeSWITCH event object containing channel variables and other contextual headers, when available.
+
+The script must set the global `XML_STRING` to a valid XML string representing the requested section before returning. FreeSWITCH parses `XML_STRING` with the same parser used for static files.
+
+**Minimal handler skeleton:**
+
+```lua
+-- xml_handler.lua
+local req = XML_REQUEST
+-- req.section, req.tag_name, req.key_name, req.key_value are populated by FreeSWITCH
+
+XML_STRING = [[
+<document type="freeswitch/xml">
+  <section name="dialplan">
+    <!-- dynamically constructed dialplan XML here -->
+  </section>
+</document>
+]]
+```
+
+### Binding Targets {#binding-targets}
+
+The `xml-handler-bindings` value is passed to the internal `switch_xml_parse_section_string` function. Recognized values are:
+
+| Value | Section served |
+|---|---|
+| `dialplan` | Dialplan XML fetched during call routing |
+| `directory` | User directory XML fetched during SIP registration and authentication |
+| `configuration` | Module configuration XML |
+| `phrases` | Phrase macro XML |
+
+Multiple bindings may be specified by listing them space-separated in a single `xml-handler-bindings` parameter, or by adding additional `xml-handler-script` / `xml-handler-bindings` pairs. Note that a single `xml-handler-script` value applies only to the `xml-handler-bindings` that immediately follows it in the `<settings>` block, because the module processes parameters sequentially and sets the handler before registering the binding.
+
+---
+
+## Event Hooks {#event-hooks}
+
+The `<hook>` element inside `<settings>` binds a Lua script to a FreeSWITCH event. The script is executed in a dedicated thread each time the event fires.
+
+```xml
+<hook event="CUSTOM" subclass="conference::maintenance" script="catch-event.lua"/>
+```
+
+| Attribute | Purpose | Required |
+|---|---|---|
+| `event` | FreeSWITCH event type name (e.g., `CHANNEL_ANSWER`, `CUSTOM`) | Yes |
+| `subclass` | Event subclass, used with `CUSTOM` events (e.g., `conference::maintenance`) | No |
+| `script` | Script filename, resolved against `$${script_dir}` | Yes |
+
+Inside the script, the event is available as the global `event` object. Multiple `<hook>` elements are allowed; each registers an independent binding.
+
+---
+
+## Startup Scripts {#startup-scripts}
+
+The `startup-script` parameter launches a Lua script in a background thread when `mod_lua` loads. The script runs for as long as it needs to, including indefinitely. Multiple `startup-script` parameters are processed in order, with a 10-millisecond yield between each to avoid Lua initialization contention.
+
+```xml
+<param name="startup-script" value="event_daemon.lua"/>
+<param name="startup-script" value="presence_manager.lua"/>
+```
+
+Startup scripts have no associated call session. They are useful for persistent event listeners, timers, or external integration loops.
+
+---
+
+## Other Language Modules {#other-language-modules}
+
+`mod_perl`, `mod_python3`, `mod_v8`, and `mod_java` provide equivalent integration points through their own configuration files and registered dialplan applications. None of these modules is loaded in the default configuration; each must be uncommented in `modules.conf.xml` and have its corresponding `autoload_configs` file present.
+
+Each module registers two distinct API commands that mirror the behavior of Lua's `luarun` and `lua` commands: one that launches the script in a detached background thread and returns immediately, and one that executes the script synchronously and returns output to the caller.
+
+| Module | Dialplan application | Background API command | Synchronous API command | Config file |
+|---|---|---|---|---|
+| `mod_perl` | `perl` | `perlrun` | `perl` | `perl.conf.xml` |
+| `mod_python3` | `python` | `pyrun` | `python` | `python.conf.xml` |
+| `mod_v8` | `javascript` | `jsrun` | `jsapi` | `v8.conf.xml` |
+| `mod_java` | `java` | (none registered) | (none registered) | `java.conf.xml` |
+
+`mod_java` registers only the dialplan application (`java`). No API command for running Java scripts from the console or ESL is registered in the source. The Java module uses a different invocation model: all script execution is routed through the `org.freeswitch.Launcher` Java class configured in `java.conf.xml`, and there is no shell-level API command equivalent to `luarun` or `perlrun`.
+
+`mod_v8` additionally registers `jsmon on|off` to enable or disable its runtime performance monitor, and `jsps` to display running script process status. These have no equivalent in the other language modules.
+
+### Per-Engine Configuration {#per-engine-configuration}
+
+The XML handler wiring for `mod_perl`, `mod_python3`, and `mod_v8` uses the **same parameter names as Lua** -- `xml-handler-script` followed by `xml-handler-bindings` -- and the same ordering rule applies: the script must be set before the binding that consumes it. `startup-script` also behaves identically across these three engines. The engines differ in which *additional* knobs they recognize and in whether they support `<hook>`.
+
+`mod_java` is the exception: it does not use `<param>` elements at all and has its own configuration schema described below.
+
+| Engine | Config file | `<param>` names recognized | `<hook>` support |
+|---|---|---|---|
+| Lua | `lua.conf.xml` | `script-directory`, `module-directory`, `xml-handler-script`, `xml-handler-bindings`, `startup-script` | Yes |
+| Perl | `perl.conf.xml` | `xml-handler-script`, `xml-handler-bindings`, `startup-script` | No |
+| Python 3 | `python.conf.xml` | `xml-handler-script`, `xml-handler-bindings`, `startup-script` | No |
+| V8 | `v8.conf.xml` | `xml-handler-script`, `xml-handler-bindings`, `startup-script`, `script-caching`, `cache-expires-sec` | Yes |
+| Java | `java.conf.xml` | none (uses `<javavm>`, `<options>`, `<startup>`, `<shutdown>` -- see [9.5](#mod-java)) | No |
+
+Note that Perl and Python 3 recognize **only** the three shared parameters. They do not implement `script-directory` or `module-directory`, and they do not parse a `<hook>` element -- only Lua and V8 bind event hooks from configuration.
+
+### mod_perl (`perl.conf.xml`) {#mod_perl-perlconfxml}
+
+`mod_perl` parses exactly three parameters, with the same names and semantics as their Lua counterparts:
+
+| Parameter | Purpose |
+|---|---|
+| `xml-handler-script` | Perl script invoked to serve XML for the bound section. Set before `xml-handler-bindings`. |
+| `xml-handler-bindings` | XML section(s) to bind the handler to (`dialplan`, `directory`, `configuration`, `phrases`). |
+| `startup-script` | Perl script launched in a background thread at module load. Multiple entries allowed. |
+
+```xml
+<configuration name="perl.conf" description="PERL Configuration">
+  <settings>
+    <param name="xml-handler-script" value="$${temp_dir}/xml.pl"/>
+    <param name="xml-handler-bindings" value="dialplan"/>
+    <param name="startup-script" value="startup_script_1.pl"/>
+  </settings>
+</configuration>
+```
+
+There is no `<hook>` support and no script- or module-directory parameter.
+
+### mod_python3 (`python.conf.xml`) {#mod_python3-pythonconfxml}
+
+`mod_python3` recognizes the same three parameters as `mod_perl`. The `xml-handler-script` and `startup-script` values name Python *modules* (importable on the interpreter path), not file paths.
+
+```xml
+<configuration name="python.conf" description="PYTHON Configuration">
+  <settings>
+    <param name="xml-handler-script" value="dp"/>
+    <param name="xml-handler-bindings" value="dialplan"/>
+    <param name="startup-script" value="startup_script_1"/>
+  </settings>
+</configuration>
+```
+
+As with Perl, there is no `<hook>` support.
+
+### mod_v8 (`v8.conf.xml`) {#mod_v8-v8confxml}
+
+`mod_v8` shares the three Lua parameters and adds two V8-only caching knobs, a `<modules>` block for loading native V8 extension modules, and `<hook>` support.
+
+| Parameter | Purpose | Default |
+|---|---|---|
+| `xml-handler-script` | JavaScript handler for the bound section. | None |
+| `xml-handler-bindings` | XML section(s) to bind (`dialplan`, `directory`, `configuration`, `phrases`). | None |
+| `startup-script` | JavaScript launched in a background thread at load. Multiple entries allowed. | None |
+| `script-caching` | Enables compiled-script caching (`enabled` / `disabled`). | `disabled` |
+| `cache-expires-sec` | Seconds before a cached compiled script expires; `0` means never. Only parsed when built against V8 major version 5 or newer. | `0` |
+
+The `script-caching` and `cache-expires-sec` parameters are compiled in only when `mod_v8` is built against V8 major version 5 or later; on older V8 builds they are ignored.
+
+The `<modules>` block (a sibling of `<settings>`) loads native extension modules into the V8 runtime:
+
+```xml
+<configuration name="v8.conf" description="Google V8 JavaScript Plug-Ins">
+  <settings>
+    <param name="script-caching" value="enabled"/>
+    <param name="cache-expires-sec" value="3600"/>
+    <param name="startup-script" value="startup1.js"/>
+    <param name="xml-handler-script" value="directory.js"/>
+    <param name="xml-handler-bindings" value="directory"/>
+    <hook event="CUSTOM" subclass="sofia::register" script="catch-event.js"/>
+    <hook event="CHANNEL_HANGUP" script="hangup-event.js"/>
+  </settings>
+  <modules>
+    <load module="mod_v8_skel"/>
+  </modules>
+</configuration>
+```
+
+The `<hook>` element works the same way as in Lua -- `event`, optional `subclass`, and `script` attributes -- and binds the named script to fire on each matching event. Inside the script, the event is available as the global `event` object.
+
+### mod_java (`java.conf.xml`) {#mod-java}
+
+`mod_java` does **not** use `<param>` elements. Its configuration is a set of dedicated child elements directly under `<configuration>`:
+
+| Element | Attributes | Purpose |
+|---|---|---|
+| `<javavm>` | `path` | Filesystem path to the JVM shared library (`libjvm.so`). Required; the module fails to load if absent. |
+| `<options>` / `<option>` | `value` | Repeatable JVM options (e.g. `-Djava.class.path=...`). Each `<option value="..."/>` is passed verbatim to `JNI_CreateJavaVM`. |
+| `<startup>` | `class`, `method`, `arg` | A static Java method invoked when the module loads. `class` is a JVM-style slash-separated class name. |
+| `<shutdown>` | `class`, `method`, `arg` | A static Java method invoked when the module unloads. |
+
+```xml
+<configuration name="java.conf" description="Java Plug-Ins">
+  <javavm path="/opt/jdk1.6.0_04/jre/lib/amd64/server/libjvm.so"/>
+  <options>
+    <option value="-Djava.class.path=$${script_dir}/freeswitch.jar:$${script_dir}/example.jar"/>
+    <option value="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=0.0.0.0:8000"/>
+  </options>
+  <startup class="org/freeswitch/example/ApplicationLauncher" method="startup"/>
+</configuration>
+```
+
+The module always appends `-Djava.library.path=<mod_dir>` to the supplied JVM options so the native JNI bridge can be located.
+
+The `org.freeswitch.Launcher` class is **hardcoded in the module's C source** -- it is loaded directly by `FindClass` so that its static initializer loads the JNI library, and it is not a configuration knob. The class you configure through `<startup>` (for example `org.freeswitch.example.ApplicationLauncher` above) is your own bootstrap class and is independent of the internal `Launcher`. There is no `<hook>` support in `mod_java`.
