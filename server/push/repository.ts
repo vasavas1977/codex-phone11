@@ -29,6 +29,8 @@ export function createPushRepository(transaction: Transaction = withTransaction)
         // Serialize token handover and each owner's quota across all server processes.
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`phone11-push-token:${token.platform}:${token.bundleId}:${!!token.sandbox}:${hash}`]);
         await client.query("SELECT pg_advisory_xact_lock(731102, $1)", [token.owner.userId]);
+        // Keep logout serialized through the writable session row. Canonical assignment tables
+        // remain read-only to this runtime and are rechecked again before every delivery.
         const assignment = await client.query(`SELECT ue.user_id FROM user_extensions ue
           JOIN extensions e ON e.id = ue.extension_id JOIN tenants t ON t.id = e.tenant_id
           JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
@@ -37,7 +39,7 @@ export function createPushRepository(transaction: Transaction = withTransaction)
           WHERE ue.user_id = $1 AND e.tenant_id = $2 AND e.id = $3
             AND ('sip:' || sa.sip_username || '@' || lower(sa.sip_domain)) = $4
             AND t.status = 'active' AND e.status = 'active' AND e.deleted_at IS NULL
-            AND sa.status = 'active' AND sa.deleted_at IS NULL FOR SHARE OF ue, e, t, sa, ai, auths`,
+            AND sa.status = 'active' AND sa.deleted_at IS NULL FOR SHARE OF auths`,
           [token.owner.userId, token.owner.tenantId, token.owner.extensionId, token.sipUri, token.sessionId]);
         if (assignment.rows.length !== 1) throw new Error("This phone account is not assigned to you");
         // Expired/disabled sessions must not permanently consume this owner's quota.
