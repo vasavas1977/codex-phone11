@@ -123,6 +123,7 @@ export default function RecentsPreview() {
                   startedAt={1789383000000}
                   original={sample}
                   content={sample}
+                  speakerNames={{ speaker1: "Vasavas", speaker2: "Nathasa" }}
                   personal={personal}
                   ready
                   selectedLanguage="original"
@@ -148,6 +149,7 @@ export default function RecentsPreview() {
               transcript={
                 "Speaker 1: Can we make the product clearer in each conversation?\nSpeaker 2: Yes, I’ll review the details and add a product label."
               }
+              speakerNames={{ speaker1: "Vasavas", speaker2: "Nathasa" }}
               player={
                 <PlaybackControls
                   colors={colors}

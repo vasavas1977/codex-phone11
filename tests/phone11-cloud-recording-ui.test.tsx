@@ -164,7 +164,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("keeps generic speaker labels without a trusted identity map", () => {
+it("uses device contact and signed-in user names without trusting server caller-ID text", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -199,12 +199,48 @@ it("keeps generic speaker labels without a trusted identity map", () => {
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Speaker 1");
-  expect(html).toContain("Speaker 2");
-  expect(html).not.toContain("Somchai Contact");
-  expect(html).not.toContain("Vasavas");
+  expect(html).toContain("Somchai Contact");
+  expect(html).toContain("Vasavas");
+  expect(html).not.toContain("Speaker 1");
+  expect(html).not.toContain("Speaker 2");
   expect(html).not.toContain("SERVER CALLER ID");
   expect(html).not.toContain("Server Extension");
+});
+
+it("maps an outbound transcript to the local user and the contacted person", () => {
+  mocks.identity = { id: 1, name: "Vasavas" };
+  mocks.contacts = {
+    people: [
+      {
+        id: "contact-1",
+        name: "Somchai Contact",
+        phones: [
+          {
+            number: "+66812345678",
+            label: "Mobile",
+            key: "+66812345678",
+          },
+        ],
+      },
+    ],
+  };
+  mocks.cloud.detail = {
+    ...item,
+    number: "+66812345678",
+    direction: "outbound",
+    summaryStatus: "ready",
+    transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+  };
+  const html = renderToStaticMarkup(
+    createElement(LiveRecordingPanel, {
+      callUuid: item.callUuid,
+      full: true,
+      initialTab: "transcription",
+    }),
+  );
+  expect(html.indexOf("Vasavas")).toBeLessThan(
+    html.indexOf("Somchai Contact"),
+  );
 });
 
 it("uses participant names only when the caller supplies a trusted identity map", () => {
