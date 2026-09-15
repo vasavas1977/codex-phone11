@@ -236,10 +236,13 @@ it("offers compact filters and name-or-number search", () => {
   expect(html).toContain('aria-label="Search recent calls"');
   expect(html).toContain('placeholder="Search name or number"');
   expect(html).toContain('aria-label="Show recorded calls"');
-  expect(html).toContain('aria-label="Show ai summary calls"');
+  expect(html).toContain('aria-label="Show all calls"');
+  expect(html).toContain('aria-label="Show missed calls"');
+  expect(html).not.toContain('aria-label="Show ai summary calls"');
+  expect(html).not.toContain('aria-label="Show starred calls"');
 });
 
-it("filters recorded and summarized calls from cloud metadata", () => {
+it("keeps recordings with and without summaries together", () => {
   const rows = [
     {
       id: "plain",
@@ -273,23 +276,8 @@ it("filters recorded and summarized calls from cloud metadata", () => {
     },
   ] as any[];
   expect(
-    filterRecentsRows(
-      rows,
-      "recorded",
-      "",
-      () => false,
-      () => false,
-    ).map((row) => row.id),
+    filterRecentsRows(rows, "recorded", "", () => false).map((row) => row.id),
   ).toEqual(["summary", "recorded"]);
-  expect(
-    filterRecentsRows(
-      rows,
-      "summary",
-      "",
-      () => false,
-      () => false,
-    ).map((row) => row.id),
-  ).toEqual(["summary"]);
 });
 
 it("searches contact names and normalized phone digits within the active filter", () => {
@@ -315,13 +303,9 @@ it("searches contact names and normalized phone digits within the active filter"
     },
   ] as any[];
   const filter = (query: string) =>
-    filterRecentsRows(
-      rows,
-      "recorded",
-      query,
-      () => false,
-      () => false,
-    ).map((row) => row.id);
+    filterRecentsRows(rows, "recorded", query, () => false).map(
+      (row) => row.id,
+    );
   expect(filter("nathasa")).toEqual(["friend"]);
   expect(filter("0825503222")).toEqual(["friend"]);
   expect(filter("Somchai")).toEqual([]);

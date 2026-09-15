@@ -44,13 +44,7 @@ type Row = HistoryRowCall & {
   startedAt: number;
   recording?: CloudRecording;
 };
-type RecentsFilter =
-  | "all"
-  | "missed"
-  | "recorded"
-  | "summary"
-  | "starred"
-  | "hidden";
+type RecentsFilter = "all" | "missed" | "recorded" | "hidden";
 const filters: readonly {
   value: Exclude<RecentsFilter, "hidden">;
   label: string;
@@ -58,8 +52,6 @@ const filters: readonly {
   { value: "all", label: "All" },
   { value: "missed", label: "Missed" },
   { value: "recorded", label: "Recorded" },
-  { value: "summary", label: "AI summary" },
-  { value: "starred", label: "Starred" },
 ];
 function matchesSearch(row: Row, query: string) {
   const normalized = query.trim().toLocaleLowerCase();
@@ -80,7 +72,6 @@ export function filterRecentsRows(
   rows: Row[],
   filter: RecentsFilter,
   query: string,
-  starred: (number: string) => boolean,
   hidden: (row: Row) => boolean,
 ) {
   return rows
@@ -90,11 +81,7 @@ export function filterRecentsRows(
         ? row.direction === "missed"
         : filter === "recorded"
           ? row.recordingReady
-          : filter === "summary"
-            ? row.summaryReady
-            : filter === "starred"
-              ? starred(row.number)
-              : true,
+          : true,
     )
     .filter((row) => matchesSearch(row, query))
     .sort((a, b) => b.startedAt - a.startedAt);
@@ -210,7 +197,6 @@ export default function RecentsScreen() {
     hidden.ready ? rows : [],
     filter,
     search,
-    favorites.starred,
     isHidden,
   );
   const actionCall = actionId
@@ -394,11 +380,7 @@ export default function RecentsScreen() {
                     ? "No calls match your search"
                     : filter === "recorded"
                       ? "No recorded calls"
-                      : filter === "summary"
-                        ? "No AI summaries yet"
-                        : filter === "starred"
-                          ? "No starred calls"
-                          : "No saved calls"}
+                      : "No saved calls"}
           </Text>
         }
         renderItem={({ item, index }) => (
