@@ -1,0 +1,219 @@
+name: Repair EC2 Postgres Live Role
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: 'EC2 public IP or DNS'
+        required: true
+        default: '43.210.122.111'
+      ec2_user:
+        description: 'SSH/Linux user'
+        required: true
+        default: 'ubuntu'
+      project_path:
+        description: 'Current live Phone11 path on EC2'
+        required: true
+        default: '/opt/phone11ai/cloudphone11'
+      branch:
+        description: 'Git branch deployed on EC2'
+        required: true
+        default: 'main'
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: ${{ github.event.inputs.ec2_host }}
+  EC2_USER: ${{ github.event.inputs.ec2_user }}
+  PROJECT_PATH: ${{ github.event.inputs.project_path }}
+  DEPLOY_BRANCH: ${{ github.event.inputs.branch }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: read
+
+jobs:
+  repair-postgres-live-role:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare repair script
+        run: |
+          cat > /tmp/phone11-repair-postgres-live-role.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          LIVE_PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
+          DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+          DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
+          REPO_URL="${REPO_URL:-https://github.com/vasavas1977/codex-phone11.git}"
+
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+
+          echo "=== Phone11 Postgres live-role repair ==="
+          echo "Live project path: $LIVE_PROJECT_PATH"
+          echo "Deploy branch: $DEPLOY_BRANCH"
+
+          $SUDO mkdir -p "$(dirname "$DEPLOY_CHECKOUT")"
+          if [ ! -d "$DEPLOY_CHECKOUT/.git" ]; then
+            $SUDO rm -rf "$DEPLOY_CHECKOUT"
+            $SUDO mkdir -p "$DEPLOY_CHECKOUT"
+            $SUDO chown -R "$(id -u):$(id -g)" "$DEPLOY_CHECKOUT"
+            git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$DEPLOY_CHECKOUT"
+          fi
+
+          cd "$DEPLOY_CHECKOUT"
+          git fetch origin "$DEPLOY_BRANCH"
+          git checkout "$DEPLOY_BRANCH"
+          git reset --hard "origin/$DEPLOY_BRANCH"
+
+          ENV_FILE="$DEPLOY_CHECKOUT/.env"
+          ENV_SOURCE=""
+          for candidate in \
+            "$LIVE_PROJECT_PATH/infra/compose/.env" \
+            "$LIVE_PROJECT_PATH/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
+            "$LIVE_PROJECT_PATH/.env.production" \
+            "/opt/phone11ai/.env" \
+            "/opt/phone11ai/cloudphone11/.env"; do
+            if [ -f "$candidate" ]; then ENV_SOURCE="$candidate"; break; fi
+          done
+
+          if [ -n "$ENV_SOURCE" ]; then
+            $SUDO cp -a "$ENV_SOURCE" "$ENV_FILE"
+            $SUDO chown "$(id -u):$(id -g)" "$ENV_FILE"
+            echo "Loaded runtime env file without printing secret values."
+          elif [ ! -f "$ENV_FILE" ]; then
+            echo "ERROR: no runtime env file was found. Cannot safely repair database credentials."
+            exit 40
+          fi
+
+          read_env_file() {
+            awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+          }
+
+          first_nonempty() {
+            for value in "$@"; do
+              if [ -n "$value" ]; then printf '%s' "$value"; return 0; fi
+            done
+          }
+
+          DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "cloudphone11")
+          DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "cloudphone11")
+          DB_PASSWORD_VALUE=$(read_env_file DB_PASSWORD)
+
+          if [ -z "$DB_PASSWORD_VALUE" ]; then
+            echo "ERROR: DB_PASSWORD is missing from the runtime env file."
+            exit 41
+          fi
+
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE="docker-compose"
+          else
+            echo "ERROR: docker compose is not available on EC2."
+            exit 42
+          fi
+
+          COMPOSE_FILE="infra/compose/docker-compose.prod.yml"
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "ERROR: $COMPOSE_FILE not found."
+            exit 43
+          fi
+
+          if ! docker ps --format '{{.Names}}' | grep -qx 'cp11-postgres'; then
+            echo "Starting Postgres container before credential repair..."
+            $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d postgres
+          fi
+
+          echo "Waiting for Postgres container..."
+          for i in $(seq 1 30); do
+            if docker exec -u postgres cp11-postgres pg_isready -U "$DB_USER_VALUE" -d "$DB_NAME_VALUE" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+
+          if ! docker exec -u postgres cp11-postgres pg_isready -U "$DB_USER_VALUE" -d "$DB_NAME_VALUE" >/dev/null 2>&1; then
+            echo "ERROR: Postgres did not become ready for the configured DB role."
+            docker logs --tail=80 cp11-postgres || true
+            exit 44
+          fi
+
+          echo "Resetting configured Postgres role password and grants without printing secrets..."
+          docker exec -i -u postgres cp11-postgres psql -v ON_ERROR_STOP=1 \
+            -U "$DB_USER_VALUE" \
+            -d "$DB_NAME_VALUE" \
+            -v db_user="$DB_USER_VALUE" \
+            -v db_pass="$DB_PASSWORD_VALUE" <<'SQL'
+          ALTER ROLE :"db_user" WITH LOGIN PASSWORD :'db_pass';
+          GRANT ALL ON SCHEMA public TO :"db_user";
+          GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO :"db_user";
+          GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO :"db_user";
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO :"db_user";
+          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO :"db_user";
+          SQL
+
+          echo "Restarting backend with repaired database credentials..."
+          docker rm -f cp11-backend >/dev/null 2>&1 || true
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d backend
+
+          echo "Checking backend health..."
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/health; then
+              echo ""
+              echo "Backend health check passed after database credential repair."
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "ERROR: backend health check failed after credential repair. Recent logs:"
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=160 backend || true
+          exit 45
+          SCRIPT
+          chmod +x /tmp/phone11-repair-postgres-live-role.sh
+
+      - name: Locate EC2 instance through AWS
+        id: ec2
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured."
+            exit 30
+          fi
+
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find a running EC2 instance with public IP $EC2_HOST"
+            exit 31
+          fi
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Repair through EC2 Instance Connect
+        run: |
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+          AZ='${{ steps.ec2.outputs.az }}'
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
+
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-repair-postgres-live-role.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-repair-postgres-live-role.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-repair-postgres-live-role.sh"

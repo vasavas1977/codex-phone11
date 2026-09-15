@@ -1,0 +1,353 @@
+name: Phone11 EC2 Provision User 1
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: 'EC2 public IP or DNS'
+        required: true
+        default: '43.210.122.111'
+      ec2_user:
+        description: 'SSH/Linux user'
+        required: true
+        default: 'ubuntu'
+      project_path:
+        description: 'Current live Phone11 path on EC2'
+        required: true
+        default: '/opt/phone11ai/cloudphone11'
+      pilot_user_id:
+        description: 'Phone11 app user id to provision'
+        required: true
+        default: '1'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/phone11-ec2-provision-user1.yml'
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: ${{ github.event.inputs.ec2_host || '43.210.122.111' }}
+  EC2_USER: ${{ github.event.inputs.ec2_user || 'ubuntu' }}
+  PROJECT_PATH: ${{ github.event.inputs.project_path || '/opt/phone11ai/cloudphone11' }}
+  PILOT_USER_ID: ${{ github.event.inputs.pilot_user_id || '1' }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: read
+
+jobs:
+  provision-user:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare provisioning script
+        run: |
+          cat > /tmp/phone11-provision-user.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          LIVE_PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
+          DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
+          PILOT_USER_ID="${PILOT_USER_ID:-1}"
+
+          echo "=== Phone11 pilot SIP provisioning ==="
+          echo "Host: $(hostname)"
+          echo "Time: $(date -Iseconds)"
+          echo "Pilot user id: $PILOT_USER_ID"
+
+          ENV_FILE=""
+          for candidate in \
+            "$DEPLOY_CHECKOUT/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env" \
+            "$LIVE_PROJECT_PATH/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
+            "$LIVE_PROJECT_PATH/.env.production" \
+            "/opt/phone11ai/.env" \
+            "/opt/phone11ai/cloudphone11/.env"; do
+            if [ -f "$candidate" ]; then ENV_FILE="$candidate"; break; fi
+          done
+
+          if [ -z "$ENV_FILE" ]; then
+            echo "ERROR: No EC2 runtime env file found."
+            exit 40
+          fi
+          echo "Using runtime env path: $ENV_FILE"
+
+          read_env_file() {
+            awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+          }
+
+          DB_NAME_VALUE="$(read_env_file DB_NAME)"
+          DB_USER_VALUE="$(read_env_file DB_USER)"
+          DB_PASSWORD_VALUE="$(read_env_file DB_PASSWORD)"
+          DB_NAME_VALUE="${DB_NAME_VALUE:-cloudphone11}"
+          DB_USER_VALUE="${DB_USER_VALUE:-cloudphone11}"
+
+          if [ -z "$DB_PASSWORD_VALUE" ]; then
+            echo "ERROR: DB_PASSWORD is missing in runtime env."
+            exit 41
+          fi
+          if ! docker ps --format '{{.Names}}' | grep -qx 'cp11-postgres'; then
+            echo "ERROR: cp11-postgres is not running."
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+            exit 42
+          fi
+          if ! docker ps --format '{{.Names}}' | grep -qx 'cp11-backend'; then
+            echo "ERROR: cp11-backend is not running."
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+            exit 43
+          fi
+
+          echo "--- Aligning Postgres role password with runtime env ---"
+          docker exec -i -u postgres cp11-postgres psql -U "$DB_USER_VALUE" -d "$DB_NAME_VALUE" -v ON_ERROR_STOP=1 -v db_user="$DB_USER_VALUE" -v db_password="$DB_PASSWORD_VALUE" <<'SQL'
+          ALTER ROLE :"db_user" WITH PASSWORD :'db_password';
+          SQL
+          echo "Database role password aligned."
+
+          echo "--- Backend PG authentication and pilot provisioning ---"
+          docker exec -i -e PILOT_USER_ID="$PILOT_USER_ID" cp11-backend node --input-type=module - <<'NODE'
+          import crypto from 'crypto';
+          import pg from 'pg';
+
+          const userId = Number.parseInt(process.env.PILOT_USER_ID || '1', 10);
+          if (!Number.isFinite(userId) || userId <= 0) {
+            throw new Error(`Invalid PILOT_USER_ID: ${process.env.PILOT_USER_ID}`);
+          }
+
+          const required = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'];
+          const missing = required.filter((key) => !process.env[key]);
+          if (missing.length) {
+            throw new Error(`Missing backend PG env: ${missing.join(', ')}`);
+          }
+
+          const sipDomain = process.env.SIP_DOMAIN || 'sip.phone11.ai';
+          const pool = new pg.Pool({
+            host: process.env.PG_HOST,
+            port: Number(process.env.PG_PORT || 5432),
+            user: process.env.PG_USER,
+            password: process.env.PG_PASSWORD,
+            database: process.env.PG_DATABASE,
+            ssl: false,
+            connectionTimeoutMillis: 5000,
+          });
+
+          const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
+          const makePassword = () => crypto.randomBytes(18).toString('base64url');
+
+          const client = await pool.connect();
+          try {
+            const auth = await client.query('select current_user, current_database()');
+            console.log(`Backend PG auth OK as ${auth.rows[0].current_user} on ${auth.rows[0].current_database}`);
+
+            await client.query('BEGIN');
+            await client.query(`CREATE TABLE IF NOT EXISTS subscriber (
+              id SERIAL PRIMARY KEY,
+              username VARCHAR(64) NOT NULL DEFAULT '',
+              domain VARCHAR(64) NOT NULL DEFAULT '',
+              password VARCHAR(128) NOT NULL DEFAULT '',
+              ha1 VARCHAR(128) NOT NULL DEFAULT '',
+              ha1b VARCHAR(128) NOT NULL DEFAULT '',
+              email_address VARCHAR(128) NOT NULL DEFAULT '',
+              rpid VARCHAR(128) DEFAULT NULL,
+              UNIQUE (username, domain)
+            )`);
+            await client.query(`CREATE TABLE IF NOT EXISTS organizations (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(128) NOT NULL DEFAULT 'Phone11',
+              plan VARCHAR(64) NOT NULL DEFAULT 'business',
+              created_at TIMESTAMPTZ DEFAULT NOW(),
+              updated_at TIMESTAMPTZ DEFAULT NOW()
+            )`);
+            await client.query(`CREATE TABLE IF NOT EXISTS tenants (
+              id SERIAL PRIMARY KEY,
+              name VARCHAR(128) NOT NULL DEFAULT 'Phone11',
+              plan VARCHAR(64) NOT NULL DEFAULT 'business',
+              status VARCHAR(32) NOT NULL DEFAULT 'active',
+              created_at TIMESTAMPTZ DEFAULT NOW(),
+              updated_at TIMESTAMPTZ DEFAULT NOW()
+            )`);
+            await client.query(`INSERT INTO organizations (id, name, plan) VALUES (1, 'Phone11', 'business') ON CONFLICT (id) DO NOTHING`);
+            await client.query(`INSERT INTO tenants (id, name, plan, status) VALUES (1, 'Phone11', 'business', 'active') ON CONFLICT (id) DO NOTHING`);
+            await client.query(`CREATE TABLE IF NOT EXISTS extensions (
+              id SERIAL PRIMARY KEY,
+              org_id INTEGER DEFAULT 1,
+              tenant_id INTEGER DEFAULT 1,
+              user_id INTEGER,
+              extension_number VARCHAR(32) NOT NULL,
+              display_name VARCHAR(128),
+              type VARCHAR(32) NOT NULL DEFAULT 'user',
+              sip_username VARCHAR(64),
+              sip_domain VARCHAR(128),
+              sip_password VARCHAR(128),
+              caller_id_name VARCHAR(128),
+              caller_id_number VARCHAR(64),
+              transport VARCHAR(16) NOT NULL DEFAULT 'TLS',
+              status VARCHAR(32) NOT NULL DEFAULT 'active',
+              voicemail_enabled BOOLEAN NOT NULL DEFAULT false,
+              deleted_at TIMESTAMPTZ,
+              created_at TIMESTAMPTZ DEFAULT NOW(),
+              updated_at TIMESTAMPTZ DEFAULT NOW()
+            )`);
+            await client.query(`CREATE TABLE IF NOT EXISTS user_extensions (
+              id SERIAL PRIMARY KEY,
+              user_id INTEGER NOT NULL,
+              extension_id INTEGER NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
+              is_primary BOOLEAN NOT NULL DEFAULT false,
+              created_at TIMESTAMPTZ DEFAULT NOW(),
+              UNIQUE (user_id, extension_id)
+            )`);
+            await client.query(`CREATE TABLE IF NOT EXISTS sip_accounts (
+              id SERIAL PRIMARY KEY,
+              tenant_id INTEGER DEFAULT 1,
+              org_id INTEGER DEFAULT 1,
+              extension_id INTEGER REFERENCES extensions(id) ON DELETE CASCADE,
+              user_id INTEGER,
+              sip_username VARCHAR(64) NOT NULL,
+              sip_domain VARCHAR(128) NOT NULL DEFAULT 'sip.phone11.ai',
+              ha1 VARCHAR(128),
+              ha1b VARCHAR(128),
+              secret_ciphertext BYTEA,
+              secret_iv BYTEA,
+              secret_tag BYTEA,
+              dek_id VARCHAR(64),
+              transport_preference VARCHAR(16) NOT NULL DEFAULT 'TLS',
+              status VARCHAR(32) NOT NULL DEFAULT 'active',
+              last_registered_at TIMESTAMPTZ,
+              last_registered_contact TEXT,
+              deleted_at TIMESTAMPTZ,
+              created_at TIMESTAMPTZ DEFAULT NOW(),
+              updated_at TIMESTAMPTZ DEFAULT NOW()
+            )`);
+
+            const existing = await client.query(`
+              SELECT e.id, e.extension_number
+              FROM extensions e
+              LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+              LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+              WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
+                AND COALESCE(e.status, 'active') = 'active'
+                AND e.deleted_at IS NULL
+              ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
+              LIMIT 1
+            `, [userId]);
+
+            let extensionNumber;
+            let created = false;
+            if (existing.rows.length) {
+              extensionNumber = existing.rows[0].extension_number;
+            } else {
+              const seed = Number.parseInt(process.env.PILOT_EXTENSION_START || '1020', 10);
+              const maxResult = await client.query(`
+                SELECT MAX(extension_number::integer) AS max_extension
+                FROM extensions
+                WHERE extension_number ~ '^[0-9]+$'
+                  AND deleted_at IS NULL
+              `);
+              const currentMax = Number.parseInt(maxResult.rows[0]?.max_extension || '', 10);
+              extensionNumber = String(Math.max(Number.isFinite(currentMax) ? currentMax + 1 : seed, seed));
+              const sipPassword = makePassword();
+              const ha1 = md5(`${extensionNumber}:${sipDomain}:${sipPassword}`);
+              const ha1b = md5(`${extensionNumber}@${sipDomain}:${sipDomain}:${sipPassword}`);
+
+              await client.query(`
+                INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (username, domain) DO UPDATE SET
+                  password = EXCLUDED.password,
+                  ha1 = EXCLUDED.ha1,
+                  ha1b = EXCLUDED.ha1b
+              `, [extensionNumber, sipDomain, sipPassword, ha1, ha1b]);
+
+              const extResult = await client.query(`
+                INSERT INTO extensions (
+                  org_id, tenant_id, user_id, extension_number, sip_username, sip_domain, sip_password,
+                  display_name, transport, status, type
+                )
+                VALUES (1, 1, $1, $2, $2, $3, $4, $5, 'TLS', 'active', 'user')
+                RETURNING id
+              `, [userId, extensionNumber, sipDomain, sipPassword, `Phone11 Pilot ${extensionNumber}`]);
+              const extensionId = extResult.rows[0].id;
+
+              await client.query(`
+                INSERT INTO sip_accounts (
+                  tenant_id, org_id, extension_id, user_id, sip_username, sip_domain, ha1, ha1b,
+                  transport_preference, status
+                )
+                VALUES (1, 1, $1, $2, $3, $4, $5, $6, 'TLS', 'active')
+              `, [extensionId, userId, extensionNumber, sipDomain, ha1, ha1b]);
+
+              await client.query(`INSERT INTO user_extensions (user_id, extension_id, is_primary)
+                VALUES ($1, $2, true)
+                ON CONFLICT (user_id, extension_id) DO UPDATE SET is_primary = true
+              `, [userId, extensionId]);
+              created = true;
+            }
+
+            await client.query('UPDATE user_extensions SET is_primary = true WHERE user_id = $1 AND extension_id IN (SELECT id FROM extensions WHERE extension_number = $2)', [userId, extensionNumber]);
+            await client.query('UPDATE extensions SET user_id = $1, updated_at = NOW() WHERE extension_number = $2 AND deleted_at IS NULL', [userId, extensionNumber]);
+            await client.query('UPDATE sip_accounts SET user_id = $1, updated_at = NOW() WHERE sip_username = $2 AND deleted_at IS NULL', [userId, extensionNumber]);
+            await client.query('COMMIT');
+
+            console.log(`${created ? 'Created' : 'Found'} pilot extension ${extensionNumber} for user ${userId} on ${sipDomain}`);
+          } catch (error) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw error;
+          } finally {
+            client.release();
+            await pool.end();
+          }
+          NODE
+
+          echo "--- Restarting backend after provisioning ---"
+          docker restart cp11-backend >/dev/null
+          sleep 5
+          curl -fsS http://127.0.0.1:3000/health
+          echo ""
+          echo "Pilot provisioning is ready for the iPhone to sync."
+          SCRIPT
+          chmod +x /tmp/phone11-provision-user.sh
+
+      - name: Locate EC2 instance through AWS
+        id: ec2
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured."
+            exit 30
+          fi
+
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find a running EC2 instance with public IP $EC2_HOST"
+            exit 31
+          fi
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Provision through EC2 Instance Connect
+        run: |
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+          AZ='${{ steps.ec2.outputs.az }}'
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
+
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-provision-user.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-provision-user.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PROJECT_PATH='$PROJECT_PATH' PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-provision-user.sh"

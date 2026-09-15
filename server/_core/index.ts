@@ -57,13 +57,19 @@ async function startServer() {
 
   registerStorageProxy(app);
 
+  const healthPayload = () => ({
+    ok: true,
+    timestamp: Date.now(),
+    build: process.env.PHONE11_BUILD_SHA || "unknown",
+    service: "phone11-backend",
+  });
+
+  app.get("/health", (_req, res) => {
+    res.json(healthPayload());
+  });
+
   app.get("/api/health", (_req, res) => {
-    res.json({
-      ok: true,
-      timestamp: Date.now(),
-      build: process.env.PHONE11_BUILD_SHA || "unknown",
-      service: "phone11-backend",
-    });
+    res.json(healthPayload());
   });
 
   // FreeSWITCH REST callbacks (mod_xml_curl)
