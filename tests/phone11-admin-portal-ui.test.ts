@@ -95,6 +95,26 @@ describe("enterprise PBX admin screens", () => {
     expect(dashboard).not.toContain('route: "/admin/analytics"');
   });
 
+  it("does not present demo users, analytics, or system health as live data", () => {
+    const unavailable = readFileSync(
+      resolve(process.cwd(), "components/admin/unavailable-admin-screen.tsx"),
+      "utf8",
+    );
+
+    for (const screen of ["users", "analytics", "system"]) {
+      const source = readFileSync(
+        resolve(process.cwd(), `app/admin/${screen}.tsx`),
+        "utf8",
+      );
+      expect(source).toContain("UnavailableAdminScreen");
+      expect(source).not.toMatch(/MOCK_USERS|Math\.random|All systems operational/);
+    }
+
+    expect(unavailable).toContain("Not available yet");
+    expect(unavailable).toContain("live service");
+    expect(unavailable).toContain("router.back()");
+  });
+
   it("offers workspace administration only to owner or admin memberships", () => {
     expect(settings).toContain('["owner", "admin"].includes');
     expect(settings).toContain('router.push("/admin")');
