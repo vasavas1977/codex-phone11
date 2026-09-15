@@ -56,6 +56,10 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
   let restoreInFlight: Promise<void> | null = null;
   let restoreFailed = false;
   let requestedWorkspace: number | undefined;
+  // A room screen and the foreground refresh can both notice the same unread
+  // message. Keep one acknowledgement in flight for that room so opening a
+  // chat never produces duplicate read receipts.
+  const readRequests = new Map<string, Promise<void>>();
   const empty = () => ({ workspace: null, workspaces: [], channels: [], messages: {}, people: [], drafts: {}, storageError: null, loading: false, error: null, roomErrors: {}, roomLoading: {}, hasMore: {} });
   return create<ChatState>((set, get) => {
     const persist = async () => {
@@ -104,7 +108,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       setUser: id => {
         const previous = get().userId;
         if (id !== previous) {
-          generation++; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ userId: id, ...empty() });
+          generation++; readRequests.clear(); requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ userId: id, ...empty() });
           if (previous && persistence) void persistence.clearOwner(previous).catch(() => {
             set({ storageError: "Could not clear saved chat drafts. Sign out again before sharing this phone." });
           });
@@ -123,7 +127,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       loadChannels: async tenantId => {
         if (!get().userId) return;
         if (tenantId !== undefined && tenantId !== (requestedWorkspace ?? get().workspace?.id)) {
-          generation++; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty() });
+          generation++; readRequests.clear(); restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty() });
         }
         requestedWorkspace = tenantId ?? requestedWorkspace ?? get().workspace?.id;
         const current = generation;
@@ -208,14 +212,28 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       markAsRead: async id => {
         const state = get(), current = generation;
         if (!state.userId || !state.workspace) return;
+        // Do not manufacture read receipts for a room that the authoritative
+        // list already says is clear. This also avoids acknowledging a just
+        // sent local message as though it were incoming.
+        const channel = state.channels.find(candidate => candidate.id === id);
+        if (!channel || channel.unreadCount <= 0) return;
         const through = Math.max(0, ...(state.messages[id] || []).filter(m => m.status === "sent").map(m => m.sequence));
         if (!through) return;
-        try {
-          await api.read(state.workspace.id, id, through);
-          // New messages may arrive after the acknowledged cursor. Fetch the
-          // server's remaining count instead of erasing those unread messages.
-          if (current === generation) await get().loadChannels();
-        } catch { /* Keep the unread marker until the server acknowledges it. */ }
+        const key = `${current}:${state.workspace.id}:${id}`;
+        const existing = readRequests.get(key);
+        if (existing) return existing;
+        let request!: Promise<void>;
+        request = (async () => {
+          try {
+            await api.read(state.workspace!.id, id, through);
+            // New messages may arrive after the acknowledged cursor. Fetch the
+            // server's remaining count instead of erasing those unread messages.
+            if (current === generation) await get().loadChannels();
+          } catch { /* Keep the unread marker until the server acknowledges it. */ }
+          finally { if (readRequests.get(key) === request) readRequests.delete(key); }
+        })();
+        readRequests.set(key, request);
+        return request;
       },
       searchMessages: async (id, text) => {
         const state = get(), current = generation;
