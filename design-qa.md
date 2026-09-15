@@ -105,3 +105,17 @@ Additional evidence:
 - `design-qa-evidence/call-actions-comparison.png`
 - `design-qa-evidence/summary-actions-comparison.png`
 - `design-qa-evidence/audio-output-comparison.png`
+
+## Preview visibility follow-up — 2026-09-15
+
+The development fixture now exposes the completed controls directly at the
+same URL: `http://127.0.0.1:8087/dev/recents-preview`. It visibly includes
+name/number search, Recorded and AI summary filters, Share recording, and a
+Bluetooth headset row in the fallback output picker. The fixture remains a
+phone-width responsive surface inside a desktop browser; the production
+desktop dial pad is a separate route and keeps its own layout.
+
+The Android background push enrollment permission regression was also fixed in
+`4865442` by removing row locks from read-only assignment tables while keeping
+locks on service-owned push, wake, and auth-session rows. Focused push tests
+pass.
