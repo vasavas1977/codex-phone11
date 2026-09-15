@@ -38,11 +38,26 @@ FS socket with the marker and fixed extension; it enters the existing wake flow.
 That new leg's SIP Call-ID is the wake link and recording identity. Do not carry
 an A-leg wake identity across the bridge.
 
+The existing `PHONE11_INBOUND_REPLY` route must call
+`route(PHONE11_RECORDING_ANCHOR_INBOUND_REPLY)` inside its 1xx/2xx SDP guard,
+before its public-origin answer handling. The existing inbound offer route must
+set `$dlg_var(phone11_inbound_origin)` to `freeswitch`, and set
+`$avp(phone11_inbound_offer_leg)` to `origin` for an offer from the carrier or
+the exact FreeSWITCH socket and to `phone` for the reverse direction. The helper
+then translates a handset `RTP/SAVP` answer to `RTP/AVP` with DTLS and SDES off
+when the offer came from FreeSWITCH. For a handset-originated re-INVITE,
+FreeSWITCH answers in plain RTP and the helper restores `RTP/SAVP` with
+SDES `AES_CM_128_HMAC_SHA1_80` toward the handset. This hook is required: configuring the returned
+FreeSWITCH bridge for mandatory SRTP moves the security boundary into
+FreeSWITCH and must not be used with this candidate.
+
 Media paths: carrier plain RTP ↔ RTPengine pub/private ↔ FS; FS ↔ existing
 RTPengine FS-origin priv/pub path ↔ Phone11 SRTP. A-leg initial and in-dialog
-media use explicit RTP/AVP, SDES/DTLS off, and PCMA/telephone-event. The carrier
+media use explicit RTP/AVP, SDES/DTLS off, and PCMA/telephone-event. The returned
+B-leg reply also uses explicit RTP/AVP with SDES/DTLS off before reaching
+FreeSWITCH; reverse re-INVITE answers remain SDES-SRTP toward Phone11. The carrier
 uses existing RTPengine public ports; no FreeSWITCH public port exposure or
-security-group change is needed. Existing FS-origin behavior applies to the B leg. Config checks do not
+security-group change is needed. Config checks do not
 prove packet reachability or two-way audio; a supervised call must verify both,
 announcement, hangup, repeat incoming calls, and actual recording before release.
 
@@ -58,3 +73,10 @@ The fixture runs actual Kamailio with synthetic FS and device SIP endpoints.
 It covers forwarding, new B-leg identity/wake boundary, A-leg ACK/re-INVITE/BYE,
 pre-answer CANCEL, spoof/loop refusal, and unchanged nonpilot/emergency routing.
 It does not run real FreeSWITCH, the wake HTTP service, or RTP audio.
+
+The `media-runtime.py` fixture additionally runs real RTPengine locally with no
+network access and validates the resulting SDP (including the SDES crypto line)
+for both reply directions on the same dialog. It reads the actual helper flags.
+Run it inside an RTPengine image with Python 3 using `--network none`, mounting
+the repository at `/work`, and use Python 3 as the entrypoint. This verifies
+SDP negotiation, not physical handset audio.

@@ -48,3 +48,12 @@ test('JSON values are encoded and terminal callbacks cannot block or relay SIP',
   assert.doesNotMatch(body('PHONE11_WAKE_TERMINAL_RESULT'),/t_reply\(|t_relay\(|route\(RELAY\)/);
   assert.match(modules,/"curl_verbose", 0/);assert.match(modules,/"curl_follow_redirect", 0/);
 });
+test('failed wake branches preserve shared media until the whole transaction fails',()=>{
+  const reply=body('PHONE11_WAKE_REPLY_MEDIA_CLEANUP');
+  assert.match(reply,/if \(isflagset\(PHONE11_WAKE_FLAG\)\) \{ return; \}/);
+  assert.ok(reply.indexOf('isflagset')<reply.indexOf('rtpengine_delete()'));
+  assert.doesNotMatch(reply,/\$dlg_var|\$avp|exit;/);
+  assert.match(body('PHONE11_WAKE_FAILURE'),/route\(PHONE11_WAKE_MEDIA_CLEANUP\)/);
+  assert.match(body('PHONE11_WAKE_MEDIA_CLEANUP'),/\$avp\(phone11_wake_media_allocated\) == 1/);
+  assert.match(body('PHONE11_WAKE_MEDIA_CLEANUP'),/rtpengine_delete\(\)/);
+});
