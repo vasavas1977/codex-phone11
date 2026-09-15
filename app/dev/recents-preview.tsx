@@ -30,7 +30,9 @@ export default function RecentsPreview() {
   const [expanded, setExpanded] = useState(true);
   const [menu, setMenu] = useState(false);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "recorded" | "summary">("all");
+  const [filter, setFilter] = useState<
+    "all" | "missed" | "recorded" | "summary"
+  >("all");
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [personal, setPersonal] = useState(emptyPersonalRecordingMetadata);
   const sample = {
@@ -53,13 +55,41 @@ export default function RecentsPreview() {
     recordingReady: true,
     summaryReady: true,
   };
-  const visibleSample =
-    (filter === "all" ||
-      (filter === "recorded" && sampleCall.recordingReady) ||
-      (filter === "summary" && sampleCall.summaryReady)) &&
-    `${sampleCall.name} ${sampleCall.number}`
-      .toLocaleLowerCase()
-      .includes(search.trim().toLocaleLowerCase());
+  const previewCalls = [
+    sampleCall,
+    {
+      id: "preview-recorded",
+      name: "Ping Ping Daughter",
+      number: "+66625503222",
+      direction: "outgoing" as const,
+      time: "16:42",
+      duration: "0:23",
+      recordingReady: true,
+      summaryReady: false,
+    },
+    {
+      id: "preview-missed",
+      name: "020303988",
+      number: "+6620303988",
+      direction: "missed" as const,
+      time: "15:18",
+      duration: "Missed",
+      recordingReady: false,
+      summaryReady: false,
+    },
+  ];
+  const visibleCalls = previewCalls.filter((call) => {
+    const query = search.trim().toLocaleLowerCase();
+    const matchesFilter =
+      filter === "all" ||
+      (filter === "missed" && call.direction === "missed") ||
+      (filter === "recorded" && call.recordingReady) ||
+      (filter === "summary" && call.summaryReady);
+    return (
+      matchesFilter &&
+      `${call.name} ${call.number}`.toLocaleLowerCase().includes(query)
+    );
+  });
   const outputs: readonly PlaybackExternalOutput[] = [
     {
       id: "bluetooth-preview",
@@ -107,6 +137,7 @@ export default function RecentsPreview() {
           >
             {([
               ["all", "All"],
+              ["missed", "Missed"],
               ["recorded", "Recorded"],
               ["summary", "AI summary"],
             ] as const).map(([value, label]) => (
@@ -164,10 +195,11 @@ export default function RecentsPreview() {
           >
             Today
           </Text>
-          {visibleSample ? (
+          {visibleCalls.length ? visibleCalls.map((call) => call.id === sampleCall.id ? (
             <CallHistoryRow
+              key={call.id}
               colors={colors}
-              call={sampleCall}
+              call={call}
               expanded={expanded}
               onToggle={() => setExpanded(!expanded)}
               onCall={() => {}}
@@ -232,6 +264,16 @@ export default function RecentsPreview() {
               />
             </CallHistoryRow>
           ) : (
+            <CallHistoryRow
+              key={call.id}
+              colors={colors}
+              call={call}
+              expanded={false}
+              onToggle={() => {}}
+              onCall={() => {}}
+              onMore={() => {}}
+            />
+          )) : (
             <Text style={{ padding: 24, color: colors.muted, textAlign: "center" }}>
               No calls match this view
             </Text>
