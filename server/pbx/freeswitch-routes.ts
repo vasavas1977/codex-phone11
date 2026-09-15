@@ -11,7 +11,8 @@ import { bindAuthenticatedOutbound } from "../cloud-recordings/correlation";
  * 3. POST /api/freeswitch/cdr       — CDR webhook (call end)
  * 4. POST /api/freeswitch/event     — Event socket webhook
  */
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, json, urlencoded } from "express";
+import { CdrInputError, parseCdrBody, requireCdrAuth, resolveCdrTenant } from "./cdr-input";
 import { query } from "./db";
 import { requireIntegrationSecret } from "./integration-auth";
 import { cacheGetOrSet, rateLimitCheck, invalidateCache } from "./redis";
@@ -225,22 +226,24 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
 // ============================================================================
 // 3. CDR Webhook (Enhanced — uses call_records + call_legs + call_events)
 // ============================================================================
-router.post("/cdr", verifyFsAuth, async (req: Request, res: Response) => {
-  try {
-    // Handle both: {cdr: {variables: ...}} (test/wrapper) and {variables: ...} (direct FS)
-    const cdr = req.body.cdr || req.body;
-    const tenantId = Number(cdr.variables?.tenant_id);
-    if (!Number.isSafeInteger(tenantId) || tenantId <= 0) return res.status(400).json({ error: "An explicit tenant_id is required" });
-    const tenant = await query("SELECT id FROM tenants WHERE id = $1 AND status = 'active'", [tenantId]);
-    if (!tenant.rows.length) return res.status(403).json({ error: "Unknown tenant" });
-    const result = await processCdr(cdr);
-    console.log(`[FS CDR] Processed: record=${result.callRecordId}, leg=${result.callLegId}`);
-    res.json({ ok: true, ...result });
-  } catch (error: any) {
-    console.error("[FS CDR] Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
+// Also mounted before the application-wide body parsers so this limit is real.
+export const freeswitchCdrRouter = Router();
+freeswitchCdrRouter.post("/", requireCdrAuth,
+  json({ limit: "1mb" }), urlencoded({ limit: "1mb", extended: false, parameterLimit: 4 }),
+  async (req: Request, res: Response) => {
+    try {
+      const cdr = parseCdrBody(req.body);
+      await resolveCdrTenant(cdr);
+      const result = await processCdr(cdr);
+      res.json({ ok: true, ...result });
+    } catch (error: unknown) {
+      if (error instanceof CdrInputError) return res.status(error.status).json({ error: error.message });
+      // CDRs and database errors may contain numbers or credentials.
+      console.error("[FS CDR] Processing failed");
+      res.status(500).json({ error: "CDR processing failed" });
+    }
+  });
+router.use("/cdr", freeswitchCdrRouter);
 
 // ============================================================================
 // 4. Event Webhook (registration, BLF, etc.)

@@ -1,5 +1,5 @@
 import { createCloudRecordingRepository } from "../cloud-recordings/repository";
-import { trustedRecordingRoute } from "../cloud-recordings/correlation";
+import { trustedCdrRecordingRoute } from "../cloud-recordings/correlation";
 /**
  * CDR Processor Module
  * 
@@ -107,7 +107,7 @@ function parseCdrData(cdr: any) {
   const writeCodec = vars.write_codec || null;
 
   // Tenant info
-  const tenantId = parseInt(vars.tenant_id || "1");
+  const tenantId = Number(vars.tenant_id);
 
   // SIP call ID
   const sipCallId = vars.sip_call_id || null;
@@ -155,7 +155,8 @@ function tsExpr(epoch: number, stamp: string | null): { sql: string; val: any } 
  */
 export async function processCdr(cdr: any): Promise<{ callRecordId: number; callLegId: number }> {
   const parsed = parseCdrData(cdr);
-  const recordingRoute = await trustedRecordingRoute(parsed.callUuid,parsed.sipCallId);
+  if (!Number.isSafeInteger(parsed.tenantId) || parsed.tenantId <= 0) throw new Error("Explicit CDR tenant required");
+  const recordingRoute = await trustedCdrRecordingRoute(parsed.callUuid,parsed.sipCallId);
   if (recordingRoute && recordingRoute.tenantId !== parsed.tenantId) throw new Error("Trusted call tenant mismatch");
 
   const result = await withTransaction(async (client) => {
@@ -175,10 +176,14 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (call_uuid) DO UPDATE SET
          disposition = EXCLUDED.disposition,
+         answered_at = COALESCE(EXCLUDED.answered_at, call_records.answered_at),
+         metadata = call_records.metadata || EXCLUDED.metadata,
          ended_at = EXCLUDED.ended_at,
          total_duration_seconds = EXCLUDED.total_duration_seconds,
          total_billable_seconds = EXCLUDED.total_billable_seconds,
          recording_url = COALESCE(EXCLUDED.recording_url, call_records.recording_url)
+       WHERE call_records.tenant_id = EXCLUDED.tenant_id
+         AND (call_records.ended_at IS NULL OR EXCLUDED.ended_at IS NOT NULL)
        RETURNING id`,
       [
         parsed.tenantId,           // $1
@@ -194,22 +199,47 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.billSeconds,        // $11 → total_billable_seconds
         process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" ? null : parsed.recordingPath, // Cloud media only comes from authenticated storage.
         JSON.stringify({           // $13 → metadata
+          completion: endedAt ? "complete" : "unknown",
+          source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,
           hangup_cause: parsed.hangupCause,
           sip_response_code: parsed.sipResponseCode,
         }),
       ]
     );
+    if (!recordResult.rows.length) throw new Error("Call tenant collision");
     const callRecordId = recordResult.rows[0].id;
 
-    // 2. Insert call_leg
+    // The parent upsert holds its row lock until commit, serializing CDR retries
+    // with each other and with authenticated ESL snapshots for this channel.
+    const existingLegs = await client.query(
+      "SELECT id, call_record_id, tenant_id, extension_id, sip_call_id, ended_at FROM call_legs WHERE leg_uuid=$1 FOR UPDATE",
+      [parsed.callUuid]
+    );
+    if (existingLegs.rows.length > 1) throw new Error("Ambiguous existing call legs");
+    const existingLeg = existingLegs.rows[0];
+    if (existingLeg && (Number(existingLeg.tenant_id) !== parsed.tenantId || Number(existingLeg.call_record_id) !== Number(callRecordId)
+      || (existingLeg.sip_call_id && existingLeg.sip_call_id !== parsed.sipCallId)
+      || (recordingRoute && existingLeg.extension_id != null && Number(existingLeg.extension_id) !== recordingRoute.extensionId))) {
+      throw new Error("Call leg ownership mismatch");
+    }
+
+    // 2. Complete the exact snapshot leg or insert the channel's first leg.
     const ringingAt = parsed.progressEpoch > 0 ? new Date(parsed.progressEpoch * 1000) : null;
     const pddMs = parsed.progressEpoch > 0 && parsed.startEpoch > 0
       ? (parsed.progressEpoch - parsed.startEpoch) * 1000
       : null;
 
     const legResult = await client.query(
-      `INSERT INTO call_legs
+      existingLeg ? `UPDATE call_legs SET
+        from_uri=$4, to_uri=$5, started_at=$6, ringing_at=$7,
+        answered_at=COALESCE($8,answered_at), ended_at=$9,
+        duration_seconds=$10, billable_seconds=$11, pdd_ms=$12,
+        codec=$13, codec_read=$14, codec_write=$15,
+        hangup_cause=$16, hangup_disposition=$17, sip_response_code=$18,
+        sip_call_id=$19, metadata=metadata || $20::jsonb
+       WHERE call_record_id=$1 AND leg_uuid=$2 AND tenant_id=$3 AND id=$21 RETURNING id`
+      : `INSERT INTO call_legs
         (call_record_id, leg_uuid, tenant_id, from_uri, to_uri,
          started_at, ringing_at, answered_at, ended_at, 
          duration_seconds, billable_seconds, pdd_ms,
@@ -239,15 +269,18 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.sipResponseCode,    // $18 → sip_response_code
         parsed.sipCallId,          // $19 → sip_call_id
         JSON.stringify({           // $20 → metadata
+          completion: endedAt ? "complete" : "unknown",
+          source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,
           raw_direction: parsed.direction,
         }),
+        ...(existingLeg ? [existingLeg.id] : []),
       ]
     );
     const callLegId = legResult.rows[0].id;
     if(recordingRoute) await client.query("UPDATE call_legs SET extension_id=$2 WHERE id=$1 AND tenant_id=$3",[callLegId,recordingRoute.extensionId,recordingRoute.tenantId]);
 
-    return { callRecordId, callLegId };
+    return { callRecordId, callLegId, previouslyCompleted: existingLeg?.ended_at != null };
   });
 
   if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" && recordingRoute) {
@@ -265,7 +298,7 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
   if (parsed.bridgeEpoch > 0) events.push(["bridge", parsed.bridgeEpoch]);
   if (parsed.endEpoch > 0) events.push(["hangup", parsed.endEpoch, parsed.hangupCause]);
 
-  for (const [eventType, epoch, detail] of events) {
+  for (const [eventType, epoch, detail] of result.previouslyCompleted ? [] : events) {
     try {
       await query(
         `INSERT INTO call_events (tenant_id, call_record_id, call_leg_id, event_type, event_timestamp, metadata)
@@ -279,7 +312,7 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
     }
   }
 
-  return result;
+  return { callRecordId: result.callRecordId, callLegId: result.callLegId };
 }
 
 /**

@@ -54,3 +54,12 @@ export async function bindIncomingChannel(channelUuid:string,sipCallId:string,di
   return true;
  });
 }
+
+/** CDR ingestion must not contradict an immutable channel's observed SIP identity. */
+export async function trustedCdrRecordingRoute(callUuid:string,sipCallId?:string|null):Promise<{tenantId:number;extensionId:number}|null>{
+ if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED==='true'&&channel.test(callUuid)){
+  const known=await query('SELECT sip_call_id FROM phone11_recording_routes WHERE channel_uuid=$1',[callUuid]);
+  if(known.rows.length===1&&known.rows[0].sip_call_id&&known.rows[0].sip_call_id!==sipCallId)throw new Error('Trusted channel SIP identity mismatch');
+ }
+ return trustedRecordingRoute(callUuid,sipCallId);
+}
