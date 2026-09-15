@@ -7,6 +7,8 @@ import {randomUUID,createHash} from 'node:crypto';
 import {assertSanitizedOneShotEvidence,buildFcmRequest,commissioned,parseRegistrationToken,sendOneShot} from '../lab/android/one-shot-fcm-send.mjs';
 
 const token=`fcm:${'a'.repeat(132)}`,access=`ya29.${'b'.repeat(180)}`;
+const liveBindingId='20000000-0000-4000-8000-000000000002';
+const source=device=>({PHONE11_FCM_ONE_SHOT_ENABLED:'1',PHONE11_FCM_ONE_SHOT_BINDING_ID:liveBindingId,LAB_EMULATOR_SERIAL:device.serial,ANDROID_HOME:'/sdk'});
 const sha=value=>createHash('sha256').update(value).digest('hex');
 const fixture=()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'phone11-fcm-one-shot-')),evidenceDir=path.join(dir,'.lab/push-live');fs.mkdirSync(evidenceDir,{recursive:true});
@@ -45,8 +47,8 @@ test('keeps credentials transient and writes only fixed sanitized evidence with 
     throw new Error(`unexpected command ${tail}`);
   };
   const fetchFn=async(url,options)=>{requests.push({url,options});return {ok:true,status:200,text:async()=>JSON.stringify({name:`projects/${commissioned.projectId}/messages/0:abc`})};};
-  const generated=['10000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000002'],uuids=[...generated];
-  const {evidence,output}=await sendOneShot({source:{PHONE11_FCM_ONE_SHOT_ENABLED:'1',LAB_EMULATOR_SERIAL:device.serial,ANDROID_HOME:'/sdk'},projectRoot:dir,execute,fetchFn,now:()=>1700000000000,uuid:()=>uuids.shift()});
+  const generated=['10000000-0000-4000-8000-000000000001',liveBindingId];
+  const {evidence,output}=await sendOneShot({source:source(device),projectRoot:dir,execute,fetchFn,now:()=>1700000000000,uuid:()=>generated[0]});
   assert.equal(requests.length,1);assert.match(requests[0].url,/^https:\/\/fcm\.googleapis\.com\/v1\/projects\/phone11-stage-20260914\/messages:send$/);
   assert.equal(requests[0].options.headers.authorization,`Bearer ${access}`);assert.equal(requests[0].options.redirect,'error');
   const payload=JSON.parse(requests[0].options.body);assert.equal(payload.message.token,token);assert.deepEqual(Object.keys(payload.message.data).sort(),['bindingId','callUUID','expiresAt','v']);assert.equal('notification' in payload.message,false);
@@ -55,7 +57,7 @@ test('keeps credentials transient and writes only fixed sanitized evidence with 
   assert.equal(evidence.device.tokenFingerprint,sha(token).slice(0,16));assert.equal(evidence.provider.accepted,true);assertSanitizedOneShotEvidence(evidence,[token,access]);
   assert.equal(commands.some(({args})=>args.some(arg=>arg===token||arg===access)),false);
   assert.throws(()=>fs.accessSync(`${output}.lock`));
-  await assert.rejects(()=>sendOneShot({source:{PHONE11_FCM_ONE_SHOT_ENABLED:'1',LAB_EMULATOR_SERIAL:device.serial,ANDROID_HOME:'/sdk'},projectRoot:dir,execute,fetchFn}),/already exists/);
+  await assert.rejects(()=>sendOneShot({source:source(device),projectRoot:dir,execute,fetchFn}),/already exists/);
 });
 
 test('retains a private lock after an uncertain provider request to prevent duplicate sends',async()=>{
@@ -65,6 +67,6 @@ test('retains a private lock after an uncertain provider request to prevent dupl
     const tail=args.slice(2).join(' ');
     return tail==='emu avd name'?commissioned.avdName:tail==='shell getprop ro.build.version.sdk'?'35':tail==='shell getprop ro.product.cpu.abi'?commissioned.abi:tail==='shell id'?'uid=0(root)':tail===`shell pm path ${commissioned.packageName}`?'package:/data/app/example/base.apk':tail==='shell sha256sum /data/app/example/base.apk'?`${device.installedApkSha256} /data/app/example/base.apk`:xml(token);
   };
-  await assert.rejects(()=>sendOneShot({source:{PHONE11_FCM_ONE_SHOT_ENABLED:'1',LAB_EMULATOR_SERIAL:device.serial,ANDROID_HOME:'/sdk'},projectRoot:dir,execute,fetchFn:async()=>{throw new Error('uncertain network');}}),/uncertain network/);
+  await assert.rejects(()=>sendOneShot({source:source(device),projectRoot:dir,execute,fetchFn:async()=>{throw new Error('uncertain network');}}),/uncertain network/);
   const lock=path.join(dir,'.lab/push-live',`first-provider-send-${device.sourceCommit.slice(0,7)}.json.lock`);assert.equal(fs.statSync(lock).mode&0o777,0o600);
 });

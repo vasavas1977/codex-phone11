@@ -96,6 +96,9 @@ function mintAccessToken(execute){
 export async function sendOneShot({source=process.env,projectRoot=root,execute=runSecret,fetchFn=fetch,now=Date.now,uuid=randomUUID}={}){
   if(source.PHONE11_FCM_ONE_SHOT_ENABLED!=='1')throw new Error('PHONE11_FCM_ONE_SHOT_ENABLED=1 is required');
   if(!/^emulator-\d+$/.test(source.LAB_EMULATOR_SERIAL||''))throw new Error('LAB_EMULATOR_SERIAL must select the dedicated emulator');
+  const bindingId=source.PHONE11_FCM_ONE_SHOT_BINDING_ID;
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(bindingId||''))
+    throw new Error('PHONE11_FCM_ONE_SHOT_BINDING_ID must select the reviewed live wake binding');
   const device=readCommissionedDeviceEvidence(projectRoot,source);
   const directory=path.join(projectRoot,'.lab/push-live');fs.mkdirSync(directory,{recursive:true,mode:0o700});fs.chmodSync(directory,0o700);
   const output=path.join(directory,`first-provider-send-${device.sourceCommit.slice(0,7)}.json`),lock=`${output}.lock`;
@@ -105,7 +108,7 @@ export async function sendOneShot({source=process.env,projectRoot=root,execute=r
   try{
     const registrationToken=readLiveRegistrationToken({source,execute,device});
     const accessToken=mintAccessToken(execute);
-    const sentAt=now(),expiresAt=sentAt+60_000,callUUID=uuid(),bindingId=uuid();
+    const sentAt=now(),expiresAt=sentAt+60_000,callUUID=uuid();
     const body=buildFcmRequest({registrationToken,callUUID,bindingId,expiresAt});
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15_000);
     let response,responseText;
