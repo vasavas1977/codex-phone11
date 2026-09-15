@@ -9,7 +9,10 @@ on:
       build_profile:
         description: Signed build profile; wake pilot requires server and Apple commissioning
         required: true
-        default: preview-ios-siprix
+        # The working handset uses the daily pilot. Keep this as the safe
+        # default so an omitted manual selection cannot produce a lower-gate
+        # preview package or a development launcher replacement.
+        default: preview-ios-siprix-daily-pilot
         type: choice
         options:
           - preview-ios-siprix
@@ -84,7 +87,7 @@ jobs:
       - name: Build signed Siprix app using existing iOS credentials
         env:
           EXPO_NO_TELEMETRY: "1"
-          PHONE11_BUILD_PROFILE: ${{ inputs.build_profile || 'preview-ios-siprix' }}
+          PHONE11_BUILD_PROFILE: ${{ inputs.build_profile || 'preview-ios-siprix-daily-pilot' }}
         run: |
           case "$PHONE11_BUILD_PROFILE" in
             preview-ios-siprix|preview-ios-siprix-wake-pilot|preview-ios-siprix-daily-pilot) ;;
