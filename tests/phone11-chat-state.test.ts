@@ -74,6 +74,27 @@ describe("Team Chat network state", () => {
     vi.mocked(api.list).mockResolvedValue({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [{ ...channel, unreadCount: 0 }] });
     await store.getState().markAsRead("room"); expect(store.getState().channels[0].unreadCount).toBe(0); expect(api.read).toHaveBeenCalledWith(10, "room", 1);
   });
+  it("does not send a read receipt for a room the server already reports as read", async () => {
+    const { store, api } = setup({
+      list: vi.fn(async () => ({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [{ ...channel, unreadCount: 0 }] })),
+      history: vi.fn(async () => ({ messages: [saved()], hasMore: false })),
+    });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().markAsRead("room");
+    expect(api.read).not.toHaveBeenCalled();
+  });
+  it("coalesces duplicate read reconciliation while one acknowledgement is pending", async () => {
+    let finish!: () => void;
+    const { store, api } = setup({
+      history: vi.fn(async () => ({ messages: [saved()], hasMore: false })),
+      read: vi.fn(() => new Promise<void>(resolve => { finish = resolve; })),
+    });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room");
+    const first = store.getState().markAsRead("room");
+    const second = store.getState().markAsRead("room");
+    expect(api.read).toHaveBeenCalledOnce();
+    finish(); await Promise.all([first, second]);
+    expect(api.read).toHaveBeenCalledWith(10, "room", 1);
+  });
   it("clears revoked workspace data instead of showing cached conversations", async () => {
     const { store, api } = setup(); await store.getState().loadChannels();
     vi.mocked(api.list).mockRejectedValue({ data: { code: "FORBIDDEN" } }); await store.getState().loadChannels();
