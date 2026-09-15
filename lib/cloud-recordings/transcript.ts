@@ -16,13 +16,49 @@ export type TranscriptTurn = {
 };
 
 const cleanName = (value: string | undefined) => {
-  const name = value?.trim();
-  return name && name.length <= 80 && !/^\+?[0-9 ()-]+$/.test(name)
+  const name = value?.replace(/\s+/gu, " ").trim();
+  return name &&
+    name.length <= 80 &&
+    !/^\+?[0-9 ()-]+$/.test(name) &&
+    name.toLocaleLowerCase() !== "unknown"
     ? name
     : undefined;
 };
 
+function duplicateParticipantNames(names: TranscriptSpeakerNames) {
+  const speaker1 = cleanName(names.speaker1);
+  const speaker2 = cleanName(names.speaker2);
+  return Boolean(
+    speaker1 &&
+      speaker2 &&
+      speaker1.localeCompare(speaker2, undefined, { sensitivity: "accent" }) ===
+        0,
+  );
+}
+
+/**
+ * Merge user-confirmed or verified speaker-to-person mappings only.
+ * Call direction, device contacts, and server caller ID do not establish
+ * which voice received a diarization label.
+ */
+export function mergeTranscriptSpeakerNames(
+  preferred: TranscriptSpeakerNames = {},
+  fallback: TranscriptSpeakerNames = {},
+): TranscriptSpeakerNames | undefined {
+  const speaker1 = cleanName(preferred.speaker1) ?? cleanName(fallback.speaker1);
+  const speaker2 = cleanName(preferred.speaker2) ?? cleanName(fallback.speaker2);
+  if (!speaker1 && !speaker2) return undefined;
+  return {
+    ...(speaker1 ? { speaker1 } : {}),
+    ...(speaker2 ? { speaker2 } : {}),
+  };
+}
+
 function namedPrefix(line: string, names: TranscriptSpeakerNames) {
+  // A legacy name-prefixed transcript cannot distinguish two participants with
+  // the same display name. Keep it unassigned instead of attributing every
+  // matching line to Speaker 1.
+  if (duplicateParticipantNames(names)) return null;
   const entries: Array<["speaker1" | "speaker2", string | undefined]> = [
     ["speaker1", cleanName(names.speaker1)],
     ["speaker2", cleanName(names.speaker2)],
@@ -37,6 +73,7 @@ function namedPrefix(line: string, names: TranscriptSpeakerNames) {
 }
 
 function standaloneName(line: string, names: TranscriptSpeakerNames) {
+  if (duplicateParticipantNames(names)) return null;
   const normalized = line.trim().toLocaleLowerCase();
   if (!normalized) return null;
   for (const [speaker, name] of [

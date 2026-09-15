@@ -3,7 +3,10 @@ import { createElement, type ReactNode } from "react";
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
 vi.mock("@expo/vector-icons/MaterialIcons", () => ({ default: () => null }));
 vi.mock("../components/cloud-recordings/summary-actions", () => ({
-  RecordingSummaryActions: () => null,
+  RecordingSummaryActions: (props: any) => {
+    mocks.summaryProps = props;
+    return null;
+  },
 }));
 import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
@@ -11,6 +14,8 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
 ) as { renderToStaticMarkup(node: ReactNode): string };
 const mocks = vi.hoisted(() => ({
   cloud: {} as any,
+  speakerNames: {} as any,
+  summaryProps: undefined as any,
   push: vi.fn(),
   back: vi.fn(),
   replace: vi.fn(),
@@ -20,6 +25,14 @@ const mocks = vi.hoisted(() => ({
   stop: vi.fn(),
   contacts: { people: [] } as any,
   press: new Map<string, () => unknown>(),
+}));
+vi.mock("../hooks/use-recording-speaker-names", () => ({
+  useRecordingSpeakerNames: () => ({
+    names: mocks.speakerNames,
+    ready: true,
+    saving: false,
+    save: vi.fn(async () => true),
+  }),
 }));
 vi.mock("react-native", () => ({
   NativeModules: {},
@@ -99,6 +112,7 @@ import {
 } from "../components/cloud-recordings/live-recording-panel";
 import Detail from "../app/call-recording/[callUuid]";
 import { playbackURL } from "../lib/cloud-recordings/presentation";
+import { recordingDocument } from "../lib/cloud-recordings/summary-actions";
 import type { CloudRecordingDetail } from "../shared/cloud-recordings";
 const item = {
   callUuid: "11111111-1111-4111-8111-111111111111",
@@ -113,6 +127,8 @@ beforeEach(() => {
   mocks.playback.mockClear();
   mocks.press.clear();
   mocks.identity = { id: 1 };
+  mocks.speakerNames = {};
+  mocks.summaryProps = undefined;
   mocks.start.mockReset();
   mocks.stop.mockReset();
   mocks.contacts = { people: [] };
@@ -534,4 +550,45 @@ it("full transcription link preserves the chosen tab", () => {
   );
   mocks.press.get("View full transcription")!();
   expect(view).toHaveBeenCalledWith("transcription");
+});
+
+it("uses the same confirmed speaker mapping for the transcript and copy/export actions", () => {
+  mocks.cloud = {
+    owner: 1,
+    loading: false,
+    items: [],
+    reload: vi.fn(),
+    detail: {
+      ...item,
+      direction: "inbound",
+      summaryStatus: "ready",
+      summary: { summary: "Agreed", actionItems: [] },
+      transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+    },
+  };
+  mocks.speakerNames = { speaker1: "Nathasa", speaker2: "Vasavas" };
+  const html = renderToStaticMarkup(
+    createElement(LiveRecordingPanel, {
+      callUuid: item.callUuid,
+      initialTab: "transcription",
+    }),
+  );
+  expect(html).toContain("Nathasa");
+  expect(html).toContain("Vasavas");
+  expect(mocks.summaryProps.speakerNames).toEqual(mocks.speakerNames);
+  const copied = recordingDocument({
+    title: "Call",
+    startedAt: 1,
+    content: {
+      summary: "Agreed",
+      actionItems: [],
+      transcript: mocks.summaryProps.transcript,
+    },
+    speakerNames: mocks.summaryProps.speakerNames,
+  });
+  expect(copied).toContain("Nathasa: Hello");
+  expect(copied).toContain("Vasavas: Sawasdee");
+  expect(copied).not.toContain("Speaker 1:");
+  expect(html.indexOf("Name speakers")).toBeLessThan(html.indexOf("Hello"));
+  expect(html).toContain("Name speakers");
 });
