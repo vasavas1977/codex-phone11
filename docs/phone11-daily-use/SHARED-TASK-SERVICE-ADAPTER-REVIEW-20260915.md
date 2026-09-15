@@ -136,3 +136,55 @@ The shared owner and Phone11 owner should approve these contract decisions first
 10. lazy migration and rollback for existing Phone11 local tasks.
 
 After that checkpoint, implement the shared contract and service in its canonical repository first. Phone11 should then implement only its adapter, local outbox, migration, and UI states against the pinned contract version. Zoom Phone should use its own adapter and must not share Phone11 credentials, source identifiers, or privacy defaults.
+
+## Continuation: Phone11 durable queue foundation
+
+After the owner's instruction to continue, Phone11 added
+`lib/tasks/durable-outbox.ts` and its focused tests. This is a device persistence
+component behind injected storage, command validation, and transport. It is not
+connected to the recording UI or any live endpoint and does not implement a
+second canonical task service.
+
+The queue persists intent before transmission, snapshots mutable inputs,
+compares retries independent of property order, preserves original IDs after
+uncertain responses, and removes only a matching acknowledged operation after
+storage succeeds. Conflicts retain intent and block later edits for that task;
+unrelated tasks may continue. Storage corruption fails closed without erasing
+pending work. Account keys must include the server/account namespace.
+
+Integration must provide one queue instance per account/storage key and an
+`isCurrentSession` callback bound to a login-session generation, not just the
+current numeric user ID. Call `stop()` on logout or account replacement. The
+injected validator must enforce the full pinned shared contract and scope.
+The transport must bind credentials to the captured login session, rather than
+reading whichever account is current when sending. The server must revalidate
+mapping, source ownership, current permissions and
+idempotency. The queue does not grant permission or supply a share action.
+No existing private recording task is automatically imported.
+
+### Newly discovered shared work
+
+Read-only parallel review found a newer `work/phone11-sync-contracts-20260915`
+checkout at `dd41cbc` with uncommitted changes owned by the shared project.
+It provides explicit Phone11/Zoom bindings, server-call projection, private
+import preparation and `Phone11CanonicalTaskAdapter.create/mutate`.
+`work/calendar-task-contracts-20260915` at `d35b07f` still uses the older canonical
+contract. No mutable shared file was copied or changed by Phone11.
+
+The shared owner must resolve these demonstrated mismatches before integration:
+
+- Dotted conversation IDs pass sync preparation but fail canonical creation.
+- Dates outside 2000–2099 pass sync preparation but fail canonical creation.
+- The shared in-memory enqueue helper retains mutable nested command references.
+- Its retry equality depends on object-property insertion order.
+- Completed legacy tasks need explicit handling: their completion time is unknown,
+  while canonical creation starts incomplete.
+
+Shared service, personal realm mapping, reopen, durable operation ledger,
+conflict resolution, tombstones and explicit workspace sharing remain pending.
+Phone11 can wire its queue only after the shared transport and contract version
+are pinned; Zoom Phone retains a separate adapter.
+
+Validation: 8 queue tests and 2 existing private metadata tests pass. Standalone
+strict TypeScript, focused ESLint and whitespace checks pass. These establish
+local component behavior, not handset or cross-app synchronization acceptance.
