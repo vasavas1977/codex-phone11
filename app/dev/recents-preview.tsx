@@ -31,7 +31,7 @@ export default function RecentsPreview() {
   const [menu, setMenu] = useState(false);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<
-    "all" | "missed" | "recorded" | "summary"
+    "all" | "missed" | "recorded"
   >("all");
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [personal, setPersonal] = useState(emptyPersonalRecordingMetadata);
@@ -83,8 +83,7 @@ export default function RecentsPreview() {
     const matchesFilter =
       filter === "all" ||
       (filter === "missed" && call.direction === "missed") ||
-      (filter === "recorded" && call.recordingReady) ||
-      (filter === "summary" && call.summaryReady);
+      (filter === "recorded" && call.recordingReady);
     return (
       matchesFilter &&
       `${call.name} ${call.number}`.toLocaleLowerCase().includes(query)
@@ -139,7 +138,6 @@ export default function RecentsPreview() {
               ["all", "All"],
               ["missed", "Missed"],
               ["recorded", "Recorded"],
-              ["summary", "AI summary"],
             ] as const).map(([value, label]) => (
               <TouchableOpacity
                 key={value}
