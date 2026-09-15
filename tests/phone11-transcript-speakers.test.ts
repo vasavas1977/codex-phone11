@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   mergeTranscriptSpeakerNames,
+  nameCallSummaryParticipants,
+  nameSummaryParticipants,
   transcriptSpeakerLabel,
   transcriptTurns,
 } from "../lib/cloud-recordings/transcript";
@@ -16,12 +18,12 @@ describe("Phone11 transcript speaker labels", () => {
       { speaker: "speaker1", text: "สวัสดี" },
       { speaker: "speaker2", text: "Hello" },
     ]);
-    expect(
-      transcriptSpeakerLabel("speaker1", { speaker1: "Somchai" }),
-    ).toBe("Somchai");
-    expect(
-      transcriptSpeakerLabel("speaker2", { speaker1: "Somchai" }),
-    ).toBe("Speaker 2");
+    expect(transcriptSpeakerLabel("speaker1", { speaker1: "Somchai" })).toBe(
+      "Somchai",
+    );
+    expect(transcriptSpeakerLabel("speaker2", { speaker1: "Somchai" })).toBe(
+      "Speaker 2",
+    );
   });
 
   it("accepts named turns and joins continuation lines without guessing", () => {
@@ -103,5 +105,31 @@ describe("Phone11 transcript speaker labels", () => {
         speaker2: "Unknown",
       }),
     ).toBe("Speaker 2");
+  });
+
+  it("uses the same participant names throughout summaries and next steps", () => {
+    const names = { speaker1: "Me", speaker2: "Ping Ping Daughter" };
+    expect(
+      nameSummaryParticipants(
+        "Person 1 called Person 2. The caller asked the callee to reply.",
+        names,
+      ),
+    ).toBe(
+      "Me called Ping Ping Daughter. Me asked Ping Ping Daughter to reply.",
+    );
+    expect(
+      nameCallSummaryParticipants(
+        {
+          summary: "Speaker 1 thanked Speaker 2.",
+          actionItems: ["Participant 2 will call person 1."],
+          language: "en",
+        },
+        names,
+      ),
+    ).toEqual({
+      summary: "Me thanked Ping Ping Daughter.",
+      actionItems: ["Ping Ping Daughter will call Me."],
+      language: "en",
+    });
   });
 });

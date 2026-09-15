@@ -46,13 +46,17 @@ export function normalizeAssignedSpeakerNames(
 export function defaultCallSpeakerNames(
   direction: "inbound" | "outbound",
   contactName?: string,
+  ownerName?: string,
 ): TranscriptSpeakerNames {
   const remote = normalizeAssignedSpeakerNames({
-    speaker1: contactName,
-  }).speaker1;
+    speaker1: contactName || "Other party",
+  }).speaker1!;
+  const owner = normalizeAssignedSpeakerNames({
+    speaker1: ownerName || "Me",
+  }).speaker1!;
   return direction === "inbound"
-    ? { ...(remote ? { speaker1: remote } : {}), speaker2: "Me" }
-    : { speaker1: "Me", ...(remote ? { speaker2: remote } : {}) };
+    ? { speaker1: remote, speaker2: owner }
+    : { speaker1: owner, speaker2: remote };
 }
 
 export function validateAssignedSpeakerNames(input: TranscriptSpeakerNames) {

@@ -22,6 +22,7 @@ import { getAuthSnapshot } from "@/lib/_core/auth";
 import type { RecordingSummaryContent } from "@/lib/cloud-recordings/summary-actions";
 import {
   mergeTranscriptSpeakerNames,
+  nameCallSummaryParticipants,
   type TranscriptSpeakerNames,
 } from "@/lib/cloud-recordings/transcript";
 import type { CloudRecordingDetail } from "@/shared/cloud-recordings";
@@ -97,15 +98,16 @@ export function LiveRecordingPanel({
   const matchedContactName = detail
     ? deviceContactName(contacts.people, detail.number) || contactName
     : undefined;
+  const ownerName = getAuthSnapshot().user?.name || undefined;
   const automaticSpeakerNames = detail
-    ? defaultCallSpeakerNames(detail.direction, matchedContactName)
+    ? defaultCallSpeakerNames(detail.direction, matchedContactName, ownerName)
     : undefined;
   const speakerNames = mergeTranscriptSpeakerNames(
     assigned.names,
     mergeTranscriptSpeakerNames(trustedSpeakerNames, automaticSpeakerNames),
   );
   const candidates = normalizeAssignedSpeakerNames({
-    speaker1: "Me",
+    speaker1: ownerName || "Me",
     speaker2: matchedContactName,
   });
   const suggestions = [...new Set(Object.values(candidates))];
@@ -113,6 +115,14 @@ export function LiveRecordingPanel({
     translation?.owner === cloud.owner && translation?.callUuid === callUuid
       ? translation.content
       : undefined;
+  const namedSummary = nameCallSummaryParticipants(
+    translated ?? detail?.summary,
+    speakerNames,
+  );
+  const namedOriginalSummary = nameCallSummaryParticipants(
+    detail?.summary,
+    speakerNames,
+  );
   // Call direction identifies participants, but does not establish which voice
   // the transcription service labeled Speaker 1 or Speaker 2.
   if (!detail)
@@ -169,7 +179,7 @@ export function LiveRecordingPanel({
         activeTab={tab}
         onTabChange={setTab}
         summaryStatus={detail.summaryStatus}
-        summary={translated ?? detail.summary}
+        summary={namedSummary}
         transcript={translated?.transcript ?? detail.transcript}
         speakerNames={speakerNames}
         notice={
@@ -198,14 +208,16 @@ export function LiveRecordingPanel({
           ) : undefined
         }
         actions={
-          detail.summaryStatus === "ready" && detail.summary && cloud.owner ? (
+          detail.summaryStatus === "ready" &&
+          namedOriginalSummary &&
+          cloud.owner ? (
             <RecordingSummaryActions
               key={`${cloud.owner}:${callUuid}`}
               ownerId={cloud.owner}
               callUuid={callUuid}
               title={`Call with ${contactName || internationalHistoryNumber(detail.number)}`}
               startedAt={detail.startedAt}
-              summary={detail.summary}
+              summary={namedOriginalSummary}
               transcript={detail.transcript}
               speakerNames={speakerNames}
               colors={colors}
@@ -226,7 +238,7 @@ export function LiveRecordingPanel({
                   );
                 if (getAuthSnapshot().user !== identity)
                   throw new Error("Account changed");
-                return result;
+                return nameCallSummaryParticipants(result, speakerNames)!;
               }}
             />
           ) : undefined

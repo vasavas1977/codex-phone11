@@ -104,7 +104,18 @@ it("defaults inbound and outbound calls to Me and the matched contact", () => {
     speaker1: "Me",
     speaker2: "Somchai",
   });
-  expect(defaultCallSpeakerNames("outbound")).toEqual({ speaker1: "Me" });
+  expect(defaultCallSpeakerNames("outbound")).toEqual({
+    speaker1: "Me",
+    speaker2: "Other party",
+  });
+  expect(defaultCallSpeakerNames("outbound", "Somchai", "Vasavas")).toEqual({
+    speaker1: "Vasavas",
+    speaker2: "Somchai",
+  });
+  expect(defaultCallSpeakerNames("inbound", "Somchai", "Vasavas")).toEqual({
+    speaker1: "Somchai",
+    speaker2: "Vasavas",
+  });
 });
 it("saves confirmed names and loads them when the same recording is reopened", async () => {
   render();

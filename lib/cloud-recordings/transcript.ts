@@ -10,6 +10,12 @@ export type TranscriptSpeakerNames = {
   speaker2?: string;
 };
 
+export type CallSummary = {
+  summary: string;
+  actionItems: string[];
+  language?: string;
+};
+
 export type TranscriptTurn = {
   speaker: "speaker1" | "speaker2" | "unknown";
   text: string;
@@ -30,9 +36,9 @@ function duplicateParticipantNames(names: TranscriptSpeakerNames) {
   const speaker2 = cleanName(names.speaker2);
   return Boolean(
     speaker1 &&
-      speaker2 &&
-      speaker1.localeCompare(speaker2, undefined, { sensitivity: "accent" }) ===
-        0,
+    speaker2 &&
+    speaker1.localeCompare(speaker2, undefined, { sensitivity: "accent" }) ===
+      0,
   );
 }
 
@@ -45,8 +51,10 @@ export function mergeTranscriptSpeakerNames(
   preferred: TranscriptSpeakerNames = {},
   fallback: TranscriptSpeakerNames = {},
 ): TranscriptSpeakerNames | undefined {
-  const speaker1 = cleanName(preferred.speaker1) ?? cleanName(fallback.speaker1);
-  const speaker2 = cleanName(preferred.speaker2) ?? cleanName(fallback.speaker2);
+  const speaker1 =
+    cleanName(preferred.speaker1) ?? cleanName(fallback.speaker1);
+  const speaker2 =
+    cleanName(preferred.speaker2) ?? cleanName(fallback.speaker2);
   if (!speaker1 && !speaker2) return undefined;
   return {
     ...(speaker1 ? { speaker1 } : {}),
@@ -95,9 +103,15 @@ function labeledPrefix(line: string) {
   if (!match) return null;
   const label = match[1].toLowerCase().replace(/[ _-]/g, "");
   const speaker: TranscriptTurn["speaker"] =
-    label === "speaker1" || label === "caller" || label === "agent" || label === "you"
+    label === "speaker1" ||
+    label === "caller" ||
+    label === "agent" ||
+    label === "you"
       ? "speaker1"
-      : label === "speaker2" || label === "callee" || label === "customer" || label === "other"
+      : label === "speaker2" ||
+          label === "callee" ||
+          label === "customer" ||
+          label === "other"
         ? "speaker2"
         : "unknown";
   return { speaker, text: match[3].trim() };
@@ -110,9 +124,15 @@ function standaloneLabel(line: string) {
   if (!match) return null;
   const label = match[1].toLowerCase().replace(/[ _-]/g, "");
   const speaker: TranscriptTurn["speaker"] =
-    label === "speaker1" || label === "caller" || label === "agent" || label === "you"
+    label === "speaker1" ||
+    label === "caller" ||
+    label === "agent" ||
+    label === "you"
       ? "speaker1"
-      : label === "speaker2" || label === "callee" || label === "customer" || label === "other"
+      : label === "speaker2" ||
+          label === "callee" ||
+          label === "customer" ||
+          label === "other"
         ? "speaker2"
         : "unknown";
   return { speaker, text: "" };
@@ -125,7 +145,10 @@ export function transcriptTurns(
 ): TranscriptTurn[] {
   const source = transcript.trim();
   if (!source) return [];
-  const lines = source.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
   const parsed = lines.map(
     (line) =>
       namedPrefix(line, names) ??
@@ -140,7 +163,8 @@ export function transcriptTurns(
     const current = parsed[index];
     if (current) {
       const prior = turns[turns.length - 1];
-      if (prior && prior.speaker === current.speaker) prior.text += ` ${current.text}`;
+      if (prior && prior.speaker === current.speaker)
+        prior.text += ` ${current.text}`;
       else turns.push({ ...current });
     } else {
       // Continuation lines belong to the preceding explicit turn. A preamble
@@ -164,4 +188,32 @@ export function transcriptSpeakerLabel(
   if (speaker === "speaker2")
     return !duplicateNames && speaker2 ? speaker2 : "Speaker 2";
   return "Transcript";
+}
+
+/** Apply the transcript's participant identities to AI-generated prose too. */
+export function nameSummaryParticipants(
+  value: string,
+  names: TranscriptSpeakerNames = {},
+) {
+  const speaker1 = cleanName(names.speaker1) ?? "Speaker 1";
+  const speaker2 = cleanName(names.speaker2) ?? "Speaker 2";
+  return value
+    .replace(/\b(?:speaker|person|participant)\s*1\b/giu, speaker1)
+    .replace(/\b(?:speaker|person|participant)\s*2\b/giu, speaker2)
+    .replace(/\b(?:the\s+)?caller\b/giu, speaker1)
+    .replace(/\b(?:the\s+)?callee\b/giu, speaker2);
+}
+
+export function nameCallSummaryParticipants(
+  summary: CallSummary | undefined,
+  names: TranscriptSpeakerNames = {},
+): CallSummary | undefined {
+  if (!summary) return undefined;
+  return {
+    ...summary,
+    summary: nameSummaryParticipants(summary.summary, names),
+    actionItems: summary.actionItems.map((item) =>
+      nameSummaryParticipants(item, names),
+    ),
+  };
 }

@@ -248,7 +248,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("automatically labels inbound voices with the contact and Me", () => {
+it("automatically labels inbound voices with the contact and signed-in user", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -284,12 +284,12 @@ it("automatically labels inbound voices with the contact and Me", () => {
     }),
   );
   expect(html).toContain("Somchai Contact");
-  expect(html).toContain("Me");
+  expect(html).toContain("Vasavas");
   expect(html).not.toContain("SERVER CALLER ID");
   expect(html).not.toContain("Server Extension");
 });
 
-it("automatically labels outbound voices with Me and the contact", () => {
+it("automatically labels outbound voices with the signed-in user and contact", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -312,16 +312,27 @@ it("automatically labels outbound voices with Me and the contact", () => {
     direction: "outbound",
     summaryStatus: "ready",
     transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+    summary: {
+      summary: "Person 1 called Person 2. The caller confirmed the plan.",
+      actionItems: ["Speaker 2 will reply to Speaker 1."],
+      language: "en",
+    },
   };
   const html = renderToStaticMarkup(
     createElement(LiveRecordingPanel, {
       callUuid: item.callUuid,
       full: true,
-      initialTab: "transcription",
+      initialTab: "summary",
     }),
   );
-  expect(html).toContain("Me");
+  expect(html).toContain("Vasavas");
   expect(html).toContain("Somchai Contact");
+  expect(html).toContain(
+    "Vasavas called Somchai Contact. Vasavas confirmed the plan.",
+  );
+  expect(html).toContain("Somchai Contact will reply to Vasavas.");
+  expect(html).not.toContain("Person 1");
+  expect(html).not.toContain("Speaker 2");
 });
 
 it("uses participant names only when the caller supplies a trusted identity map", () => {
@@ -386,8 +397,9 @@ it.each(["inbound", "outbound"] as const)(
       }),
     );
     expect(html).toContain("Verified participant");
-    expect(html).toContain(direction === "inbound" ? "Me" : "Somchai Contact");
-    expect(html).not.toContain("Vasavas");
+    expect(html).toContain(
+      direction === "inbound" ? "Vasavas" : "Somchai Contact",
+    );
     expect(html).not.toContain("Server caller");
     expect(html).not.toContain("Server extension");
   },
