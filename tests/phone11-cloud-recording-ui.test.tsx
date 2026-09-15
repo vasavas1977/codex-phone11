@@ -333,6 +333,34 @@ it("does not rewrite summary participants from outbound direction", () => {
   expect(html).not.toContain("Somchai Contact");
 });
 
+it("uses local account and contact names only after verified stereo roles arrive", () => {
+  mocks.identity = { id: 1, name: "Vasavas" };
+  mocks.cloud.detail = {
+    ...item,
+    number: "+66812345678",
+    summaryStatus: "ready",
+    transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+    speakerRoles: {
+      schemaVersion: 1,
+      verified: true,
+      speaker1Role: "extension",
+      speaker2Role: "remote",
+    },
+  };
+  const html = renderToStaticMarkup(
+    createElement(LiveRecordingPanel, {
+      callUuid: item.callUuid,
+      full: true,
+      initialTab: "transcription",
+      contactName: "Nathasa",
+    }),
+  );
+  expect(html).toContain("Vasavas");
+  expect(html).toContain("Nathasa");
+  expect(html).not.toContain("Speaker 1");
+  expect(html).not.toContain("Speaker 2");
+});
+
 it("uses participant names only when the caller supplies a trusted identity map", () => {
   mocks.cloud.detail = {
     ...item,

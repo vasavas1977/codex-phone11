@@ -19,6 +19,7 @@ import {
   nameCallSummaryParticipants,
   type TranscriptSpeakerNames,
 } from "@/lib/cloud-recordings/transcript";
+import { verifiedCallSpeakerNames } from "@/lib/cloud-recordings/speaker-names";
 import type { CloudRecordingDetail } from "@/shared/cloud-recordings";
 
 export function recordingStatusMessage(detail: CloudRecordingDetail) {
@@ -91,9 +92,16 @@ export function LiveRecordingPanel({
   // Contact and direction can identify the people on a call, but do not prove
   // which diarized audio stream Gemini named Speaker 1 or Speaker 2. Names
   // come only from a verified server mapping or an explicit local correction.
+  const verifiedNames = verifiedCallSpeakerNames(detail?.speakerRoles, {
+    extensionName: getAuthSnapshot().user?.name ?? undefined,
+    // Contacts remain device-local. If there is no contact label, a normalized
+    // number can still identify the remote participant without assigning a
+    // diarized stream until the server role evidence is verified.
+    remoteName: contactName ?? detail?.number,
+  });
   const speakerNames = mergeTranscriptSpeakerNames(
     assigned.names,
-    trustedSpeakerNames,
+    mergeTranscriptSpeakerNames(trustedSpeakerNames, verifiedNames),
   );
   const translated =
     translation?.owner === cloud.owner && translation?.callUuid === callUuid
