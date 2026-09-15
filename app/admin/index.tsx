@@ -16,6 +16,7 @@ import {
   StyleSheet,
   RefreshControl,
   ActivityIndicator,
+  useWindowDimensions,
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
@@ -32,6 +33,8 @@ interface QuickAction {
 
 export default function AdminDashboard() {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  const wide = width >= 900;
   const [refreshing, setRefreshing] = useState(false);
 
   // Live data from PBX APIs
@@ -92,12 +95,13 @@ export default function AdminDashboard() {
   return (
     <ScreenContainer>
       <ScrollView
+        contentContainerStyle={{ width: "100%", maxWidth: 1200, alignSelf: "center", paddingHorizontal: wide ? 24 : 0 }}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
       >
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn} accessibilityRole="button" accessibilityLabel="Back to settings">
             <IconSymbol name="chevron.left" size={22} color={colors.primary} />
           </TouchableOpacity>
           <View style={{ flex: 1 }}>
@@ -114,6 +118,13 @@ export default function AdminDashboard() {
             <ActivityIndicator size="small" color={colors.primary} />
             <Text style={[styles.loadingText, { color: colors.muted }]}>Loading stats...</Text>
           </View>
+        ) : statsQuery.isError || !stats ? (
+          <View style={styles.emptyState}>
+            <Text accessibilityRole="alert" style={{ color: colors.muted }}>Overview could not be loaded.</Text>
+            <TouchableOpacity accessibilityRole="button" onPress={() => void statsQuery.refetch()} style={{ minHeight: 44, justifyContent: "center" }}>
+              <Text style={{ color: colors.primary }}>Try again</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <View style={styles.statsGrid}>
             {[
@@ -122,7 +133,7 @@ export default function AdminDashboard() {
               { label: "Calls Today", value: String(stats?.callsToday || 0), icon: "phone.arrow.up.right.fill", iconColor: "#00C896", sub: `${stats?.missedCallsToday || 0} missed` },
               { label: "Avg Duration", value: formatDuration(stats?.avgCallDuration || 0), icon: "clock.fill", iconColor: "#FF9500", sub: "today" },
             ].map((stat, i) => (
-              <View key={i} style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View key={i} style={[styles.statCard, wide && { flexBasis: "22%", width: "23%" }, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                 <View style={[styles.statIcon, { backgroundColor: stat.iconColor + "15" }]}>
                   <IconSymbol name={stat.icon as any} size={18} color={stat.iconColor} />
                 </View>
@@ -158,6 +169,13 @@ export default function AdminDashboard() {
           {recentCallsQuery.isLoading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="small" color={colors.primary} />
+            </View>
+          ) : recentCallsQuery.isError ? (
+            <View style={styles.emptyState}>
+              <Text accessibilityRole="alert" style={{ color: colors.muted }}>Recent calls could not be loaded.</Text>
+              <TouchableOpacity accessibilityRole="button" onPress={() => void recentCallsQuery.refetch()} style={{ minHeight: 44, justifyContent: "center" }}>
+                <Text style={{ color: colors.primary }}>Try again</Text>
+              </TouchableOpacity>
             </View>
           ) : recentCallsQuery.data && recentCallsQuery.data.length > 0 ? (
             recentCallsQuery.data.map((call: any, i: number) => (
