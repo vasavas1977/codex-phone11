@@ -74,9 +74,9 @@ beforeEach(() => {
 });
 it("offers only one entry and requires explicit choices before assigning contact suggestions", async () => {
   const html = render();
-  expect([...m.handlers.keys()]).toEqual(["Name speakers"]);
+  expect([...m.handlers.keys()]).toEqual(["Correct speaker labels"]);
   expect(html).not.toContain("Nathasa");
-  m.handlers.get("Name speakers")!();
+  m.handlers.get("Correct speaker labels")!();
   expect(render()).toContain("A first utterance");
   expect(m.inputs.get("Name for Speaker 1").value).toBe("");
   expect(m.inputs.get("Name for Speaker 2").value).toBe("");
@@ -94,12 +94,12 @@ it("offers only one entry and requires explicit choices before assigning contact
   });
   expect([...m.handlers.keys()]).toContain("Save names");
   render();
-  expect([...m.handlers.keys()]).toEqual(["Name speakers"]);
+  expect([...m.handlers.keys()]).toEqual(["Correct speaker labels"]);
 });
 it("supports manual correction and clearing without saving a canceled edit", () => {
   const props = { ...base, names: { speaker1: "Original" } };
   render(props);
-  m.handlers.get("Name speakers")!();
+  m.handlers.get("Correct speaker labels")!();
   render(props);
   m.inputs.get("Name for Speaker 1").onChangeText("Corrected");
   render(props);

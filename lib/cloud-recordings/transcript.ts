@@ -1,3 +1,5 @@
+import { contactPhoneKey } from "@/lib/phone/phone-number";
+
 /**
  * Small, deterministic formatter for the transcript shown in call history.
  *
@@ -23,12 +25,14 @@ export type TranscriptTurn = {
 
 const cleanName = (value: string | undefined) => {
   const name = value?.replace(/\s+/gu, " ").trim();
-  return name &&
-    name.length <= 80 &&
-    !/^\+?[0-9 ()-]+$/.test(name) &&
-    name.toLocaleLowerCase() !== "unknown"
-    ? name
-    : undefined;
+  if (!name || name.length > 80 || name.toLocaleLowerCase() === "unknown")
+    return undefined;
+  // A local address-book name is preferred, but an owner is still entitled to
+  // see the number that they called when no contact exists. Normalizing it
+  // here keeps the transcript, AI summary, copied text, and translated view
+  // consistent without sending device contacts to the server.
+  if (/^\+?[0-9 ()-]+$/.test(name)) return contactPhoneKey(name) ?? undefined;
+  return name;
 };
 
 function duplicateParticipantNames(names: TranscriptSpeakerNames) {

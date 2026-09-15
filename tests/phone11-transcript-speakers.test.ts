@@ -71,7 +71,7 @@ describe("Phone11 transcript speaker labels", () => {
         { speaker1: "+66 81 234 5678" },
         { speaker1: "  Somchai\n  S.  " },
       ),
-    ).toEqual({ speaker1: "Somchai S." });
+    ).toEqual({ speaker1: "+66812345678" });
   });
 
   it("keeps fallback labels distinct when participant names collide", () => {
@@ -98,13 +98,19 @@ describe("Phone11 transcript speaker labels", () => {
         { speaker1: "Unknown", speaker2: "+66 81 234 5678" },
         { speaker1: "Somchai" },
       ),
-    ).toEqual({ speaker1: "Somchai" });
+    ).toEqual({ speaker1: "Somchai", speaker2: "+66812345678" });
     expect(
       transcriptSpeakerLabel("speaker2", {
         speaker1: "Somchai",
         speaker2: "Unknown",
       }),
     ).toBe("Speaker 2");
+  });
+
+  it("shows a normalized remote number when no device contact is available", () => {
+    expect(
+      transcriptSpeakerLabel("speaker2", { speaker2: "02 030 3001" }),
+    ).toBe("+6620303001");
   });
 
   it("uses the same participant names throughout summaries and next steps", () => {

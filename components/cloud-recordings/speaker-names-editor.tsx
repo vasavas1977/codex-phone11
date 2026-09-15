@@ -56,7 +56,7 @@ export function SpeakerNamesEditor({
     <View style={{ paddingBottom: 4 }}>
       {!editing ? (
         button(
-          "Name speakers",
+          "Correct speaker labels",
           () => {
             setDraft(names ?? {});
             setEditing(true);
@@ -66,8 +66,9 @@ export function SpeakerNamesEditor({
       ) : (
         <View style={{ gap: 10 }}>
           <Text style={{ color: colors.muted, lineHeight: 20 }}>
-            Correct the names if the two voices were identified in reverse.
-            Changes are saved for this call on this device.
+            Phone11 fills these labels from your account and contacts. Correct
+            them only if the two voices were identified in reverse. Changes are
+            saved for this call on this device.
           </Text>
           {speakers.map((speaker) => (
             <View key={speaker} style={{ gap: 4 }}>

@@ -39,20 +39,22 @@ export function normalizeAssignedSpeakerNames(
 }
 
 /**
- * Default a two-party call from its direction: caller is Speaker 1 and callee
- * is Speaker 2. The remote name comes only from the private device contact;
- * the owner uses the stable, language-neutral "Me" label.
+ * Gemini's recording contract labels the caller as Speaker 1 and the receiver
+ * as Speaker 2. Resolve those labels locally from the signed-in Phone11 owner
+ * and the device address book. A recording's own number is used only when the
+ * owner has no matching contact; no address-book data is sent to the server.
  */
 export function defaultCallSpeakerNames(
   direction: "inbound" | "outbound",
   contactName?: string,
   ownerName?: string,
+  remoteNumber?: string,
 ): TranscriptSpeakerNames {
   const remote = normalizeAssignedSpeakerNames({
-    speaker1: contactName || "Other party",
+    speaker1: contactName || remoteNumber || "Other party",
   }).speaker1!;
   const owner = normalizeAssignedSpeakerNames({
-    speaker1: ownerName || "Me",
+    speaker1: ownerName || "Phone11",
   }).speaker1!;
   return direction === "inbound"
     ? { speaker1: remote, speaker2: owner }
