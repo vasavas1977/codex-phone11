@@ -1,5 +1,12 @@
 import { useState, useCallback } from "react";
-import { FlatList, Text, TouchableOpacity, View } from "react-native";
+import {
+  FlatList,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
@@ -14,7 +21,10 @@ import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { usePhoneCall } from "@/hooks/use-phone-call";
 import { deviceContactName } from "@/lib/phone/device-contacts";
-import { internationalHistoryNumber } from "@/lib/phone/phone-number";
+import {
+  contactPhoneKey,
+  internationalHistoryNumber,
+} from "@/lib/phone/phone-number";
 import {
   useCallHistoryStore,
   historyDuration,
@@ -34,6 +44,61 @@ type Row = HistoryRowCall & {
   startedAt: number;
   recording?: CloudRecording;
 };
+type RecentsFilter =
+  | "all"
+  | "missed"
+  | "recorded"
+  | "summary"
+  | "starred"
+  | "hidden";
+const filters: ReadonlyArray<{
+  value: Exclude<RecentsFilter, "hidden">;
+  label: string;
+}> = [
+  { value: "all", label: "All" },
+  { value: "missed", label: "Missed" },
+  { value: "recorded", label: "Recorded" },
+  { value: "summary", label: "AI summary" },
+  { value: "starred", label: "Starred" },
+];
+function matchesSearch(row: Row, query: string) {
+  const normalized = query.trim().toLocaleLowerCase();
+  if (!normalized) return true;
+  if (`${row.name} ${row.number}`.toLocaleLowerCase().includes(normalized))
+    return true;
+  const digits = normalized.replace(/\D/g, "");
+  if (
+    digits.length > 0 &&
+    `${row.name} ${row.number}`.replace(/\D/g, "").includes(digits)
+  )
+    return true;
+  const queryPhone = contactPhoneKey(normalized);
+  const rowPhone = contactPhoneKey(row.number);
+  return Boolean(queryPhone && rowPhone && queryPhone === rowPhone);
+}
+export function filterRecentsRows(
+  rows: Row[],
+  filter: RecentsFilter,
+  query: string,
+  starred: (number: string) => boolean,
+  hidden: (row: Row) => boolean,
+) {
+  return rows
+    .filter((row) => (filter === "hidden" ? hidden(row) : !hidden(row)))
+    .filter((row) =>
+      filter === "missed"
+        ? row.direction === "missed"
+        : filter === "recorded"
+          ? row.recordingReady
+          : filter === "summary"
+            ? row.summaryReady
+            : filter === "starred"
+              ? starred(row.number)
+              : true,
+    )
+    .filter((row) => matchesSearch(row, query))
+    .sort((a, b) => b.startedAt - a.startedAt);
+}
 const time = (ms: number) =>
   new Date(ms).toLocaleTimeString(undefined, {
     hour: "2-digit",
@@ -66,9 +131,8 @@ export default function RecentsScreen() {
   const hidden = useHiddenCalls(user?.id);
   const chat = useChatStore();
   const { placeCall, calling } = usePhoneCall();
-  const [filter, setFilter] = useState<"all" | "missed" | "starred" | "hidden">(
-    "all",
-  );
+  const [filter, setFilter] = useState<RecentsFilter>("all");
+  const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [actionId, setActionId] = useState<string | null>(null);
   const reloadHistory = history.reload;
@@ -142,16 +206,13 @@ export default function RecentsScreen() {
     Boolean(
       row.recording && hidden.ids.includes(`cloud:${row.recording.callUuid}`),
     );
-  const visible = (hidden.ready ? rows : [])
-    .filter((row) => (filter === "hidden" ? isHidden(row) : !isHidden(row)))
-    .filter((row) =>
-      filter === "missed"
-        ? row.direction === "missed"
-        : filter === "starred"
-          ? favorites.starred(row.number)
-          : true,
-    )
-    .sort((a, b) => b.startedAt - a.startedAt);
+  const visible = filterRecentsRows(
+    hidden.ready ? rows : [],
+    filter,
+    search,
+    favorites.starred,
+    isHidden,
+  );
   const actionCall = actionId
     ? rows.find((row) => row.id === actionId)
     : undefined;
@@ -217,17 +278,40 @@ export default function RecentsScreen() {
             </Text>
           </TouchableOpacity>
         </View>
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          {(["all", "missed", "starred"] as const).map((value) => (
+        <TextInput
+          accessibilityLabel="Search recent calls"
+          value={search}
+          onChangeText={setSearch}
+          placeholder="Search name or number"
+          placeholderTextColor={colors.muted}
+          autoCorrect={false}
+          returnKeyType="search"
+          clearButtonMode="while-editing"
+          style={{
+            minHeight: 44,
+            borderRadius: 14,
+            paddingHorizontal: 14,
+            fontSize: 15,
+            color: colors.foreground,
+            backgroundColor: colors.surface,
+          }}
+        />
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: 8 }}
+        >
+          {filters.map(({ value, label }) => (
             <TouchableOpacity
               key={value}
               accessibilityRole="button"
+              accessibilityLabel={`Show ${label.toLocaleLowerCase()} calls`}
               accessibilityState={{ selected: filter === value }}
               onPress={() => setFilter(value)}
               style={{
-                minHeight: 48,
-                minWidth: 78,
-                borderRadius: 24,
+                minHeight: 44,
+                paddingHorizontal: 18,
+                borderRadius: 22,
                 alignItems: "center",
                 justifyContent: "center",
                 backgroundColor:
@@ -241,15 +325,11 @@ export default function RecentsScreen() {
                   color: filter === value ? "white" : colors.muted,
                 }}
               >
-                {value === "all"
-                  ? "All"
-                  : value === "missed"
-                    ? "Missed"
-                    : "Starred"}
+                {label}
               </Text>
             </TouchableOpacity>
           ))}
-        </View>
+        </ScrollView>
         {hidden.ids.length > 0 && (
           <View
             style={{ flexDirection: "row", justifyContent: "space-between" }}
@@ -310,7 +390,15 @@ export default function RecentsScreen() {
                 ? "Loading calls..."
                 : filter === "missed"
                   ? "No missed calls"
-                  : "No saved calls"}
+                  : search.trim()
+                    ? "No calls match your search"
+                    : filter === "recorded"
+                      ? "No recorded calls"
+                      : filter === "summary"
+                        ? "No AI summaries yet"
+                        : filter === "starred"
+                          ? "No starred calls"
+                          : "No saved calls"}
           </Text>
         }
         renderItem={({ item, index }) => (

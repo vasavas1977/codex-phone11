@@ -45,7 +45,15 @@ vi.mock("../hooks/use-cloud-recordings", () => ({
 vi.mock("react-native", () => ({
   StyleSheet: { create: (s: any) => s },
   View: ({ children }: any) => createElement("div", null, children),
+  ScrollView: ({ children }: any) => createElement("div", null, children),
   Text: ({ children }: any) => createElement("span", null, children),
+  TextInput: ({ accessibilityLabel, placeholder, value }: any) =>
+    createElement("input", {
+      "aria-label": accessibilityLabel,
+      placeholder,
+      value,
+      readOnly: true,
+    }),
   FlatList: ({
     data,
     renderItem,
@@ -113,7 +121,7 @@ vi.mock("../lib/sip/call-history", () => ({
   isMissedCall: (entry: any) =>
     entry.direction === "inbound" && entry.answeredAt === undefined,
 }));
-import RecentsScreen from "../app/(tabs)/recents";
+import RecentsScreen, { filterRecentsRows } from "../app/(tabs)/recents";
 function entry(ownerUserId = 1) {
   return {
     id: `saved-${ownerUserId}`,
@@ -155,7 +163,12 @@ it("hides a previous owner's history after sign-out", () => {
   const html = renderToStaticMarkup(<RecentsScreen />);
   expect(html).toContain("Sign in to see your calls");
   expect(html).not.toContain("สมชาย");
-  expect(mocks.press.size).toBe(0);
+  expect(
+    [...mocks.press.keys()].some((label) => label.startsWith("Call ")),
+  ).toBe(false);
+  expect(
+    [...mocks.press.keys()].some((label) => label.startsWith("Details for ")),
+  ).toBe(false);
 });
 it("requires both the history owner and each individual entry to match the signed-in user", () => {
   mocks.history.entries.push(entry(2));
@@ -228,4 +241,100 @@ it("joins cloud recording controls only by exact server-provided history ID", ()
   html = renderToStaticMarkup(createElement(RecentsScreen));
   expect(html.match(/aria-label="Details for/g)).toHaveLength(2);
   expect(html.match(/● Recording/g)).toHaveLength(1);
+});
+
+it("offers compact filters and name-or-number search", () => {
+  const html = renderToStaticMarkup(<RecentsScreen />);
+  expect(html).toContain('aria-label="Search recent calls"');
+  expect(html).toContain('placeholder="Search name or number"');
+  expect(html).toContain('aria-label="Show recorded calls"');
+  expect(html).toContain('aria-label="Show ai summary calls"');
+});
+
+it("filters recorded and summarized calls from cloud metadata", () => {
+  const rows = [
+    {
+      id: "plain",
+      name: "Plain call",
+      number: "+6620303001",
+      direction: "incoming",
+      startedAt: 1,
+      time: "10:00",
+      duration: "0:30",
+    },
+    {
+      id: "recorded",
+      name: "Recorded call",
+      number: "+66811111111",
+      direction: "outgoing",
+      startedAt: 2,
+      time: "10:01",
+      duration: "1:00",
+      recordingReady: true,
+    },
+    {
+      id: "summary",
+      name: "Summarized call",
+      number: "+66822222222",
+      direction: "outgoing",
+      startedAt: 3,
+      time: "10:02",
+      duration: "2:00",
+      recordingReady: true,
+      summaryReady: true,
+    },
+  ] as any[];
+  expect(
+    filterRecentsRows(
+      rows,
+      "recorded",
+      "",
+      () => false,
+      () => false,
+    ).map((row) => row.id),
+  ).toEqual(["summary", "recorded"]);
+  expect(
+    filterRecentsRows(
+      rows,
+      "summary",
+      "",
+      () => false,
+      () => false,
+    ).map((row) => row.id),
+  ).toEqual(["summary"]);
+});
+
+it("searches contact names and normalized phone digits within the active filter", () => {
+  const rows = [
+    {
+      id: "friend",
+      name: "Nathasa Friend",
+      number: "+66 82 550 3222",
+      direction: "outgoing",
+      startedAt: 2,
+      time: "10:01",
+      duration: "1:00",
+      recordingReady: true,
+    },
+    {
+      id: "other",
+      name: "Somchai",
+      number: "+66 81 111 1111",
+      direction: "incoming",
+      startedAt: 1,
+      time: "10:00",
+      duration: "0:30",
+    },
+  ] as any[];
+  const filter = (query: string) =>
+    filterRecentsRows(
+      rows,
+      "recorded",
+      query,
+      () => false,
+      () => false,
+    ).map((row) => row.id);
+  expect(filter("nathasa")).toEqual(["friend"]);
+  expect(filter("0825503222")).toEqual(["friend"]);
+  expect(filter("Somchai")).toEqual([]);
 });
