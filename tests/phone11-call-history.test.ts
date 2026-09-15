@@ -98,6 +98,51 @@ describe("real call history", () => {
     calls.getState().addOutgoingCall(native, "2003"); calls.getState().terminateCall("1");
     await flush(); expect(store.getState().entries).toHaveLength(2);
   });
+  it("persists exact outbound correlation IDs and native timestamps", async () => {
+    const id = "native-outbound:11111111-2222-4333-8444-555555555555";
+    let info = {
+      historyId: id,
+      startedAt: 1_000,
+      answeredAt: undefined as number | undefined,
+      state: "PJSIP_INV_STATE_CALLING",
+    };
+    const native = {
+      getId: () => "3",
+      getState: () => info.state,
+      getInfo: () => info,
+    };
+    calls.getState().addOutgoingCall(native, "sip:2004@example.test");
+    info = { ...info, answeredAt: 2_000, state: "PJSIP_INV_STATE_CONFIRMED" };
+    calls.getState().updateCallState(native);
+    calls.getState().terminateCall("3");
+    await flush();
+    expect(store.getState().entries[0]).toMatchObject({
+      id,
+      direction: "outbound",
+      startedAt: 1_000,
+      answeredAt: 2_000,
+    });
+  });
+  it("rejects malformed or unnamespaced native history identifiers", async () => {
+    for (const [historyId, callId] of [
+      ["native-outbound:NOT-A-UUID", "4"],
+      ["11111111-2222-4333-8444-555555555555", "5"],
+    ] as const) {
+      const native = {
+        getId: () => callId,
+        getState: () => "PJSIP_INV_STATE_CALLING",
+        getInfo: () => ({ historyId, startedAt: 1_000 }),
+      };
+      calls.getState().addOutgoingCall(native, "2005");
+      calls.getState().terminateCall(callId);
+    }
+    await flush();
+    expect(
+      store.getState().entries.every(
+        (entry) => !entry.id.startsWith("native-outbound:"),
+      ),
+    ).toBe(true);
+  });
   it("records missed incoming calls and ignores unknown states", async () => {
     const native = { getId: () => "2", getRemoteUri: () => "sip:2003@example.test", getState: () => "unknown" };
     calls.getState().setIncomingCall(native); calls.getState().updateCallState(native);

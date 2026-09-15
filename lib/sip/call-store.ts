@@ -34,12 +34,17 @@ export interface SipCall {
 }
 
 let historySequence = 0;
+const exactNativeHistoryId =
+  /^native-(?:wake|outbound):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function rememberCall(call: SipCall, ended = false): SipCall {
   const owner = call.history?.ownerUserId ?? getAuthSnapshot().user?.id;
   if (!owner) return call;
   const now = Date.now();
   const info = callInfoFromNative(call._nativeCall);
-  const nativeId = typeof info.historyId === "string" && /^native-wake:[0-9a-f-]{36}$/i.test(info.historyId) ? info.historyId : undefined;
+  const nativeId =
+    typeof info.historyId === "string" && exactNativeHistoryId.test(info.historyId)
+      ? info.historyId
+      : undefined;
   const history: CallHistoryEntry = {
     ...call.history,
     id: call.history?.id ?? nativeId ?? `${now}-${++historySequence}-${Math.random().toString(36).slice(2)}`,
