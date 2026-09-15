@@ -4,12 +4,6 @@ import { Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useCloudRecordings } from "@/hooks/use-cloud-recordings";
 import { useRecordingSpeakerNames } from "@/hooks/use-recording-speaker-names";
-import { useDeviceContacts } from "@/hooks/use-device-contacts";
-import { deviceContactName } from "@/lib/phone/device-contacts";
-import {
-  defaultCallSpeakerNames,
-  normalizeAssignedSpeakerNames,
-} from "@/lib/cloud-recordings/speaker-names";
 import { SpeakerNamesEditor } from "./speaker-names-editor";
 import { useColors } from "@/hooks/use-colors";
 import { useSipCallStore } from "@/lib/sip/call-store";
@@ -89,30 +83,18 @@ export function LiveRecordingPanel({
       ),
   );
   const detail = cloud.detail;
-  const contacts = useDeviceContacts();
   const assigned = useRecordingSpeakerNames(
     cloud.owner,
     callUuid,
     detail?.transcript ?? "",
   );
-  const matchedContactName = detail
-    ? deviceContactName(contacts.people, detail.number) || contactName
-    : undefined;
-  const ownerName = getAuthSnapshot().user?.name || undefined;
-  const automaticSpeakerNames = detail
-    ? defaultCallSpeakerNames(
-        detail.direction,
-        matchedContactName,
-        ownerName,
-        detail.number,
-      )
-    : undefined;
+  // Contact and direction can identify the people on a call, but do not prove
+  // which diarized audio stream Gemini named Speaker 1 or Speaker 2. Names
+  // come only from a verified server mapping or an explicit local correction.
   const speakerNames = mergeTranscriptSpeakerNames(
     assigned.names,
-    mergeTranscriptSpeakerNames(trustedSpeakerNames, automaticSpeakerNames),
+    trustedSpeakerNames,
   );
-  const candidates = normalizeAssignedSpeakerNames(automaticSpeakerNames);
-  const suggestions = [...new Set(Object.values(candidates))];
   const translated =
     translation?.owner === cloud.owner && translation?.callUuid === callUuid
       ? translation.content
@@ -251,7 +233,7 @@ export function LiveRecordingPanel({
               key={`${cloud.owner}:${callUuid}:${detail.transcript}`}
               transcript={detail.transcript}
               names={speakerNames}
-              suggestions={suggestions}
+              suggestions={[]}
               ready={assigned.ready}
               saving={assigned.saving}
               error={assigned.error}

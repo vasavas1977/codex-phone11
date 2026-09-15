@@ -248,7 +248,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("automatically labels inbound voices with the contact and signed-in user", () => {
+it("keeps generic labels when only direction, contact, and caller ID are available", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -283,13 +283,15 @@ it("automatically labels inbound voices with the contact and signed-in user", ()
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Somchai Contact");
-  expect(html).toContain("Vasavas");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
+  expect(html).not.toContain("Somchai Contact");
+  expect(html).not.toContain("Vasavas");
   expect(html).not.toContain("SERVER CALLER ID");
   expect(html).not.toContain("Server Extension");
 });
 
-it("automatically labels outbound voices with the signed-in user and contact", () => {
+it("does not rewrite summary participants from outbound direction", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -325,14 +327,10 @@ it("automatically labels outbound voices with the signed-in user and contact", (
       initialTab: "summary",
     }),
   );
-  expect(html).toContain("Vasavas");
-  expect(html).toContain("Somchai Contact");
-  expect(html).toContain(
-    "Vasavas called Somchai Contact. Vasavas confirmed the plan.",
-  );
-  expect(html).toContain("Somchai Contact will reply to Vasavas.");
-  expect(html).not.toContain("Person 1");
-  expect(html).not.toContain("Speaker 2");
+  expect(html).toContain("Speaker 1 called Speaker 2. Speaker 1 confirmed the plan.");
+  expect(html).toContain("Speaker 2 will reply to Speaker 1.");
+  expect(html).not.toContain("Vasavas");
+  expect(html).not.toContain("Somchai Contact");
 });
 
 it("uses participant names only when the caller supplies a trusted identity map", () => {
@@ -363,7 +361,7 @@ it("uses participant names only when the caller supplies a trusted identity map"
   expect(html).not.toContain("Untrusted server extension");
 });
 it.each(["inbound", "outbound"] as const)(
-  "fills only the missing trusted voice mapping for an %s call",
+  "does not fill missing verified voice mapping from an %s call",
   (direction) => {
     mocks.identity = { id: 1, name: "Vasavas" };
     mocks.contacts = {
@@ -397,9 +395,9 @@ it.each(["inbound", "outbound"] as const)(
       }),
     );
     expect(html).toContain("Verified participant");
-    expect(html).toContain(
-      direction === "inbound" ? "Vasavas" : "Somchai Contact",
-    );
+    expect(html).toContain("Speaker 2");
+    expect(html).not.toContain("Vasavas");
+    expect(html).not.toContain("Somchai Contact");
     expect(html).not.toContain("Server caller");
     expect(html).not.toContain("Server extension");
   },
@@ -604,7 +602,7 @@ it("uses the same confirmed speaker mapping for the transcript and copy/export a
   expect(html).toContain("Correct speaker labels");
 });
 
-it("uses the recording number automatically when a remote contact is unavailable", () => {
+it("does not use the recording number as a diarized speaker name", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.cloud.detail = {
     ...item,
@@ -625,8 +623,8 @@ it("uses the recording number automatically when a remote contact is unavailable
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Vasavas");
-  expect(html).toContain("+6620303001");
-  expect(html).not.toContain("Speaker 1");
-  expect(html).not.toContain("Speaker 2");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
+  expect(html).not.toContain("Vasavas");
+  expect(html).not.toContain("+6620303001");
 });

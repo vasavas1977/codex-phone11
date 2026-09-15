@@ -9,21 +9,6 @@ type DB = Pick<Pool, "connect" | "query">;
 const uuid = /^[a-zA-Z0-9_-]{1,128}$/;
 const analysisAvailable=()=>process.env.PHONE11_RECORDING_AI_ENABLED==='true' && Boolean(process.env.GEMINI_API_KEY) && /^[a-zA-Z0-9._-]{1,100}$/.test(process.env.PHONE11_RECORDING_GEMINI_MODEL??'');
 const unavailable = () => new TRPCError({code:"NOT_FOUND",message:"Recording not found"});
-function participantName(value:unknown):string|undefined{
- const name=typeof value==='string'?value.trim():'';
- return name&&name.length<=80&&!/^\+?[0-9 ()-]+$/.test(name)&&name.toLowerCase()!=='unknown'?name:undefined;
-}
-function persistedParticipantNames(row:any):{speaker1?:string;speaker2?:string}|undefined{
- let metadata:any=row.cdr_metadata;
- if(typeof metadata==='string'){try{metadata=JSON.parse(metadata);}catch{metadata=undefined;}}
- if(!metadata||typeof metadata!=='object'||Array.isArray(metadata))metadata={};
- const local=participantName(row.local_participant_name);
- const caller=participantName(metadata.caller_name);
- const callee=participantName(metadata.callee_name);
- const speaker1=row.direction==='inbound'?caller:local??caller;
- const speaker2=row.direction==='inbound'?local??callee:callee;
- return speaker1||speaker2?{...(speaker1?{speaker1}:{}),...(speaker2?{speaker2}:{})}:undefined;
-}
 const owned = `EXISTS (SELECT 1 FROM extensions e JOIN user_extensions ue ON ue.extension_id=e.id
  JOIN tenants t ON t.id=e.tenant_id WHERE e.id=r.extension_id AND e.tenant_id=r.tenant_id
  AND ue.user_id=$1 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active')`;
@@ -44,7 +29,7 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
   return {callUuid:r.call_uuid,tenantId:Number(r.tenant_id),...(r.native_history_id?{nativeHistoryId:r.native_history_id}:{}),
    number:r.number,direction:r.direction,startedAt:new Date(r.started_at).getTime(),
    ...(r.ended_at?{endedAt:new Date(r.ended_at).getTime()}:{}),recordingStatus:r.recording_status,summaryStatus:r.summary_status,
-   ...(r.recording_status==='recording'&&r.capture_stopped_at?{recordingFinalizing:true}:{})};
+   ...(r.recording_status==='recording'&&(r.capture_stop_requested_at||r.capture_stopped_at)?{recordingFinalizing:true}:{})};
  }
  return {
   async getPolicy(userId:number,tenantId:number):Promise<CloudRecordingPolicy>{
@@ -72,14 +57,11 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
   },
   async detail(userId:number,callUuid:string):Promise<CloudRecordingDetail>{
    if(!uuid.test(callUuid))throw unavailable();
-   const result=await db.query(`SELECT r.*,cr.metadata AS cdr_metadata,e.display_name AS local_participant_name
+   const result=await db.query(`SELECT r.*
     FROM phone11_cloud_recordings r
-    LEFT JOIN call_records cr ON cr.call_uuid=r.call_uuid AND cr.tenant_id=r.tenant_id
-    LEFT JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id
     WHERE ${owned} AND r.call_uuid=$2 AND r.expires_at>clock_timestamp()`,[userId,callUuid]);
    const r=result.rows[0]; if(!r)throw unavailable();
-   const names=persistedParticipantNames(r);
-   return {...dto(r),...(names?{participantNames:names}:{}),...(r.recording_status==='ready'?{playbackPath:`/api/recordings/play/${encodeURIComponent(callUuid)}`} : {}),
+   return {...dto(r),...(r.recording_status==='ready'?{playbackPath:`/api/recordings/play/${encodeURIComponent(callUuid)}`} : {}),
     ...(r.summary_status==='ready'?{transcript:r.transcript,summary:r.summary}: {})};
   },
   /** Internal only: trusted PBX adapter supplies IDs, never a mobile request. Verifies explicit assigned leg. */

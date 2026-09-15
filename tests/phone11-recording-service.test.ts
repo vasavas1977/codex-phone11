@@ -1,8 +1,8 @@
 import { beforeEach,describe,it,expect,vi } from 'vitest';
-const mocks=vi.hoisted(()=>({query:vi.fn(),api:vi.fn(),failed:vi.fn(),pendingUploads:vi.fn(),active:vi.fn(),stopped:vi.fn(),discard:vi.fn(),complete:vi.fn(),uploaded:vi.fn(),cleaned:vi.fn(),releaseCompletion:vi.fn(),putCompleted:vi.fn(),openFile:vi.fn()}));
+const mocks=vi.hoisted(()=>({query:vi.fn(),api:vi.fn(),failed:vi.fn(),pendingUploads:vi.fn(),active:vi.fn(),stopRequested:vi.fn(),stopped:vi.fn(),discard:vi.fn(),complete:vi.fn(),uploaded:vi.fn(),cleaned:vi.fn(),releaseCompletion:vi.fn(),putCompleted:vi.fn(),openFile:vi.fn()}));
 vi.mock('../server/pbx/db',()=>({getPool:()=>({query:mocks.query})}));
 vi.mock('../server/cloud-recordings/correlation',()=>({bindIncomingChannel:vi.fn(),bindObservedOutboundChannel:vi.fn()}));
-vi.mock('../server/cloud-recordings/capture-ledger',()=>({createCaptureLedger:()=>({failed:mocks.failed,pendingUploads:mocks.pendingUploads,active:mocks.active,stopped:mocks.stopped,complete:mocks.complete,uploaded:mocks.uploaded,cleaned:mocks.cleaned,releaseCompletion:mocks.releaseCompletion})}));
+vi.mock('../server/cloud-recordings/capture-ledger',()=>({createCaptureLedger:()=>({failed:mocks.failed,pendingUploads:mocks.pendingUploads,active:mocks.active,stopRequested:mocks.stopRequested,stopped:mocks.stopped,complete:mocks.complete,uploaded:mocks.uploaded,cleaned:mocks.cleaned,releaseCompletion:mocks.releaseCompletion})}));
 vi.mock('../server/cloud-recordings/esl-capture',()=>({createEslCaptureTransport:()=>({api:mocks.api})}));
 vi.mock('../server/cloud-recordings/capture-spool',()=>({createCaptureSpool:()=>({discardCompleted:mocks.discard,putCompleted:mocks.putCompleted})}));
 vi.mock('node:fs',()=>({constants:{O_RDONLY:0,O_NOFOLLOW:0},promises:{open:mocks.openFile}}));
@@ -12,26 +12,43 @@ function service(){return createRecordingCaptureService({esl:{host:'fixture',por
 beforeEach(()=>{vi.clearAllMocks();mocks.openFile.mockReset();mocks.openFile.mockRejectedValue(Object.assign(new Error('missing'),{code:'ENOENT'}));process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED='true';mocks.pendingUploads.mockResolvedValue([]);mocks.api.mockImplementation(async(c:string)=>c==='show channels as json'?'{"rows":[]}':c.startsWith('uuid_exists')?'true':'+OK');});
 describe('capture reconciliation safeguards',()=>{
  it('checks manual stop actor in ledger before command',async()=>{mocks.active.mockResolvedValue(null);expect(await service().manualStop(id,7)).toBe(false);expect(mocks.active).toHaveBeenCalledWith(id,7);expect(mocks.api).not.toHaveBeenCalled();});
- it('reports an accepted stop while deferred upload is retried',async()=>{
+ it('reports an accepted stop while authenticated stop finalization remains pending',async()=>{
   const path=`/var/lib/freeswitch/recordings/phone11/2/${token}.wav`;
   const lease={channelUuid:id,callUuid:id,tenantId:2,extensionId:3,token,path};
-  mocks.active.mockResolvedValue(lease);
-  mocks.complete.mockRejectedValue(new Error('recording file not ready'));
+ mocks.active.mockResolvedValue(lease);
+  mocks.stopRequested.mockResolvedValue(undefined);
   expect(await service().manualStop(id,7)).toBe(true);
-  expect(mocks.stopped).toHaveBeenCalledWith(lease);
-  expect(mocks.complete).toHaveBeenCalledWith(id,path);
+  expect(mocks.stopRequested).toHaveBeenCalledWith(lease);
+  expect(mocks.stopped).not.toHaveBeenCalled();
+  expect(mocks.complete).not.toHaveBeenCalled();
  });
  it('keeps a PBX-confirmed stop accepted when completion won the marker race',async()=>{
   const path=`/var/lib/freeswitch/recordings/phone11/2/${token}.wav`;
   const lease={channelUuid:id,callUuid:id,tenantId:2,extensionId:3,token,path};
-  mocks.active.mockResolvedValue(lease);mocks.stopped.mockRejectedValue(new Error('already finalized'));
+  mocks.active.mockResolvedValue(lease);mocks.stopRequested.mockResolvedValue(undefined);
   expect(await service().manualStop(id,7)).toBe(true);
+ });
+ it('does not report a stop accepted unless its requested state is durable',async()=>{
+  const path=`/var/lib/freeswitch/recordings/phone11/2/${token}.wav`;
+  const lease={channelUuid:id,callUuid:id,tenantId:2,extensionId:3,token,path};
+  mocks.active.mockResolvedValue(lease);mocks.stopRequested.mockRejectedValue(new Error('database unavailable'));
+  expect(await service().manualStop(id,7)).toBe(false);
  });
  it('does not offer Stop again after its durable stop marker is present',async()=>{
   mocks.query.mockResolvedValue({rows:[{recording_status:'recording',capture_stopped_at:'2026-09-14T04:00:00.000Z',mode:'manual'}]});
   expect(await service().capabilities(id,7)).toEqual({canStart:false,canStop:false});
   expect(mocks.api).toHaveBeenCalledWith(`uuid_exists ${id}`);
   expect(mocks.api.mock.calls.some(([command])=>String(command).includes('signal_bond'))).toBe(false);
+ });
+ it('does not offer Stop again after an accepted stop request is pending finalization',async()=>{
+  mocks.query.mockResolvedValue({rows:[{recording_status:'recording',capture_stop_requested_at:'2026-09-16T04:00:00.000Z',capture_stopped_at:null,mode:'manual'}]});
+  expect(await service().capabilities(id,7)).toEqual({canStart:false,canStop:false});
+ });
+ it('reissues only the exact private stop while a durable stop request awaits RECORD_STOP',async()=>{
+  mocks.query.mockResolvedValue({rows:[{call_uuid:id,tenant_id:2,extension_id:3,capture_token:token,capture_stop_requested_at:'2026-09-16T04:00:00.000Z',capture_stopped_at:null,recording_status:'recording',mode:'manual',expired:false}]});
+  await service().tick();
+  expect(mocks.api).toHaveBeenCalledWith(`uuid_record ${id} stop /var/lib/freeswitch/recordings/phone11/2/${token}.wav`);
+  expect(mocks.complete).not.toHaveBeenCalled();
  });
  it('cleanup tick stops existing recorder with global capture disabled',async()=>{process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED='false';mocks.query.mockResolvedValue({rows:[{call_uuid:id,tenant_id:2,extension_id:3,capture_token:token,recording_status:'recording',mode:'automatic',expired:false}]});await service().tick();expect(mocks.api).toHaveBeenCalledWith(`uuid_record ${id} stop /var/lib/freeswitch/recordings/phone11/2/${token}.wav`);expect(mocks.discard).toHaveBeenCalled();});
  it('revocation cleans previously confirmed stop without stopping recorder twice',async()=>{mocks.query.mockResolvedValue({rows:[{call_uuid:id,tenant_id:2,extension_id:3,capture_token:token,capture_stopped_at:new Date(),recording_status:'recording',mode:'off',expired:false}]});await service().tick();expect(mocks.api.mock.calls.some(([c])=>String(c).startsWith('uuid_record'))).toBe(false);expect(mocks.discard).toHaveBeenCalled();expect(mocks.failed).toHaveBeenCalled();});
