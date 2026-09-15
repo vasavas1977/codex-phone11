@@ -17,6 +17,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { getAuthSnapshot } from "@/lib/_core/auth";
+import type { CallBlockReason } from "@/lib/phone/call-blocks";
 
 export interface CallActionCall {
   id: string;
@@ -27,6 +28,8 @@ export interface CallActionCall {
   duration: string;
   occurredAtLabel?: string;
   deviceContactId?: string;
+  recordingStatus?: string;
+  summaryStatus?: string;
 }
 
 type IconName = ComponentProps<typeof IconSymbol>["name"];
@@ -49,6 +52,8 @@ export interface CallActionsSheetProps {
   onCall(): void | Promise<void>;
   onChat?(): void | Promise<void>;
   onToggleStar(): void | Promise<void>;
+  blockReason?: CallBlockReason;
+  onSetBlock?(reason: CallBlockReason | null): void | Promise<void>;
   onDeleteHistory(): void | Promise<void>;
   onClose(): void;
   extraActions?: readonly ExtraCallAction[];
@@ -81,6 +86,22 @@ export function callShareText(call: CallActionCall) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function statusLabel(value?: string) {
+  if (!value) return "Not available";
+  return value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ");
+}
+
+export function callDetailsText(call: CallActionCall) {
+  return [
+    `Number: ${call.number}`,
+    `Direction: ${directionLabel(call.direction)}`,
+    `Date: ${call.occurredAtLabel || "Not available"}`,
+    `Duration: ${call.duration}`,
+    `Recording: ${statusLabel(call.recordingStatus)}`,
+    `AI summary: ${statusLabel(call.summaryStatus)}`,
+  ].join("\n");
 }
 
 function ActionRow({
@@ -154,6 +175,8 @@ export function CallActionsSheet({
   onCall,
   onChat,
   onToggleStar,
+  blockReason,
+  onSetBlock,
   onDeleteHistory,
   onClose,
   extraActions = [],
@@ -202,6 +225,55 @@ export function CallActionsSheet({
               "remove",
               onDeleteHistory,
               "Call could not be removed",
+            ),
+        },
+      ],
+    );
+  };
+  const changeBlock = () => {
+    if (!onSetBlock) return;
+    onClose();
+    if (blockReason) {
+      Alert.alert(
+        "Unblock this number?",
+        "Remove this number from the blocklist saved on this device?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Unblock",
+            onPress: () =>
+              void run(
+                "unblock",
+                () => onSetBlock(null),
+                "Number could not be unblocked",
+              ),
+          },
+        ],
+      );
+      return;
+    }
+    Alert.alert(
+      "Block or report spam",
+      "Choose how to save this number in Phone11's blocklist on this device.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Block number",
+          onPress: () =>
+            void run(
+              "block",
+              () => onSetBlock("other"),
+              "Number could not be blocked",
+            ),
+        },
+        {
+          text: "Report spam & block",
+          style: "destructive",
+          onPress: () =>
+            void run(
+              "spam",
+              () => onSetBlock("spam"),
+              "Spam report could not be saved",
             ),
         },
       ],
@@ -343,6 +415,16 @@ export function CallActionsSheet({
             ) : null}
             <Section title="Organize">
               <ActionRow
+                icon="info.circle"
+                label="Call details"
+                description="Duration, direction, recording and AI status"
+                disabled={busy !== null}
+                onPress={() => {
+                  onClose();
+                  Alert.alert("Call details", callDetailsText(call));
+                }}
+              />
+              <ActionRow
                 icon="doc.on.clipboard"
                 label="Copy number"
                 disabled={busy !== null}
@@ -391,6 +473,24 @@ export function CallActionsSheet({
                   )
                 }
               />
+              {onSetBlock ? (
+                <ActionRow
+                  icon="hand.raised.fill"
+                  label={
+                    blockReason ? "Unblock number" : "Block or report spam"
+                  }
+                  description={
+                    blockReason === "spam"
+                      ? "Reported as spam in this device blocklist"
+                      : blockReason
+                        ? "Saved in this device blocklist"
+                        : "Saved locally on this device"
+                  }
+                  destructive={!blockReason}
+                  disabled={busy !== null}
+                  onPress={changeBlock}
+                />
+              ) : null}
             </Section>
             {extraActions.length ? (
               <Section title="Call content">

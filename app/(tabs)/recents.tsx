@@ -33,6 +33,7 @@ import {
 import type { CloudRecording } from "@/shared/cloud-recordings";
 import { CallActionsSheet } from "@/components/cloud-recordings/call-actions-sheet";
 import { useCallFavorites } from "@/hooks/use-call-favorites";
+import { useCallBlocks } from "@/hooks/use-call-blocks";
 import { useHiddenCalls } from "@/hooks/use-hidden-calls";
 import {
   uniqueDeviceContactId,
@@ -128,6 +129,7 @@ export default function RecentsScreen() {
   const history = useCallHistoryStore();
   const contacts = useDeviceContacts();
   const favorites = useCallFavorites(user?.id);
+  const blocks = useCallBlocks(user?.id);
   const hidden = useHiddenCalls(user?.id);
   const chat = useChatStore();
   const { placeCall, calling } = usePhoneCall();
@@ -367,7 +369,11 @@ export default function RecentsScreen() {
           void cloud.reload();
         }}
         ListHeaderComponent={
-          history.error || cloud.error || hidden.error || favorites.error ? (
+          history.error ||
+          cloud.error ||
+          hidden.error ||
+          favorites.error ||
+          blocks.error ? (
             <Text
               style={{
                 paddingHorizontal: 20,
@@ -376,7 +382,11 @@ export default function RecentsScreen() {
                 lineHeight: 22,
               }}
             >
-              {history.error || cloud.error || hidden.error || favorites.error}
+              {history.error ||
+                cloud.error ||
+                hidden.error ||
+                favorites.error ||
+                blocks.error}
             </Text>
           ) : null
         }
@@ -463,6 +473,8 @@ export default function RecentsScreen() {
               contacts.people,
               actionCall.number,
             ),
+            recordingStatus: actionCall.recording?.recordingStatus,
+            summaryStatus: actionCall.recording?.summaryStatus,
           }}
           starred={favorites.starred(actionCall.number)}
           calling={calling}
@@ -472,6 +484,10 @@ export default function RecentsScreen() {
           }}
           onToggleStar={async () => {
             await favorites.toggle(actionCall.number);
+          }}
+          blockReason={blocks.reason(actionCall.number)}
+          onSetBlock={async (reason) => {
+            await blocks.set(actionCall.number, reason);
           }}
           onDeleteHistory={async () => {
             await hidden.hide(actionCall.id);

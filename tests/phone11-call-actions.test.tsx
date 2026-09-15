@@ -73,6 +73,7 @@ vi.mock("../lib/_core/auth", () => ({
 // eslint-disable-next-line import/first
 import {
   CallActionsSheet,
+  callDetailsText,
   callShareText,
   type CallActionCall,
 } from "../components/cloud-recordings/call-actions-sheet";
@@ -207,7 +208,8 @@ describe("call actions sheet", () => {
 
   it("requires destructive confirmation and preserves the recording", async () => {
     const remove = vi.fn();
-    render({ onDeleteHistory: remove });
+    const { html } = render({ onDeleteHistory: remove });
+    expect(html).not.toContain("Delete recording");
     await mocks.presses.get("Remove from Recents")!();
     expect(remove).not.toHaveBeenCalled();
     expect(mocks.alerts[0].title).toBe("Remove from Recents?");
@@ -217,6 +219,49 @@ describe("call actions sheet", () => {
       .onPress();
     await tick();
     expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it("shows explicit call details including independent recording and summary status", async () => {
+    const detailed = {
+      ...call,
+      recordingStatus: "ready",
+      summaryStatus: "processing",
+    };
+    const { html } = render({ call: detailed });
+    expect(html).toContain("Call details");
+    await mocks.presses.get("Call details")!();
+    expect(mocks.alerts[0]).toMatchObject({
+      title: "Call details",
+      message: callDetailsText(detailed),
+    });
+    expect(mocks.alerts[0].message).toContain("Recording: Ready");
+    expect(mocks.alerts[0].message).toContain("AI summary: Processing");
+  });
+
+  it("blocks, reports spam, and unblocks through an explicit local-only action", async () => {
+    const setBlock = vi.fn();
+    let result = render({ onSetBlock: setBlock });
+    expect(result.html).toContain("Block or report spam");
+    expect(result.html).toContain("Saved locally on this device");
+    await mocks.presses.get("Block or report spam")!();
+    expect(mocks.alerts[0].title).toBe("Block or report spam");
+    await mocks.alerts[0].buttons.find(
+      (button) => button.text === "Report spam & block",
+    ).onPress();
+    await tick();
+    expect(setBlock).toHaveBeenCalledWith("spam");
+
+    mocks.alerts.length = 0;
+    setBlock.mockClear();
+    result = render({ blockReason: "spam", onSetBlock: setBlock });
+    expect(result.html).toContain("Unblock number");
+    expect(result.html).toContain("Reported as spam in this device blocklist");
+    await mocks.presses.get("Unblock number")!();
+    await mocks.alerts[0].buttons.find(
+      (button) => button.text === "Unblock",
+    ).onPress();
+    await tick();
+    expect(setBlock).toHaveBeenCalledWith(null);
   });
 
   it("rejects a stale menu action after the signed-in owner changes", async () => {
