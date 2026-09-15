@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { RecordingAnalysisError } from "../server/cloud-recordings/gemini";
-import { recordingFailureCode } from "../server/cloud-recordings/failure";
+import { recordingFailureCode, recordingRetryDelaySeconds } from "../server/cloud-recordings/failure";
 import { processRecordingJob, readPrivateRecording, processRecordingPurge, removeExpiredRecording } from "../server/cloud-recordings/worker";
 const job = { callUuid: "call-test", tenantId: 1, storageKey: "/private/1/call.wav", leaseToken: "lease-test" };
 const result = { transcript: "Hello", summary: { summary: "Greeting", actionItems: [], language: "en" } };
@@ -75,11 +75,13 @@ describe("durable recording worker", () => {
     expect(f.repository.finishJob).toHaveBeenCalledWith(job, null, { code: "analysis_failed", stage: "validate" });
     expect(f.analyze).not.toHaveBeenCalled();
   });
-  it("rejects arbitrary exception text at the persistence boundary", () => {
+  it("allowlists persisted categories and applies bounded transient backoff", () => {
     expect(recordingFailureCode({ code: "provider_rate_limited", stage: "generate" })).toBe("provider_rate_limited:generate");
     expect(recordingFailureCode({ code: "secret provider response", stage: "generate" } as never)).toBe("analysis_failed");
     expect(recordingFailureCode({ code: "invalid_result", stage: "secret audio URL" } as never)).toBe("analysis_failed");
-    expect(recordingFailureCode()).toBe("analysis_failed");
+    expect(recordingRetryDelaySeconds({ code: "provider_timeout", stage: "generate" }, 1)).toBe(60);
+    expect(recordingRetryDelaySeconds({ code: "provider_timeout", stage: "generate" }, 2)).toBe(300);
+    expect(recordingRetryDelaySeconds({ code: "invalid_result", stage: "parse" }, 1)).toBe(30);
   });
   it("does not touch media when no job is due", async () => {
     const f = fixture(); f.repository.claimJob.mockResolvedValue(null as never);

@@ -72,6 +72,28 @@ it("clears loaded cloud metadata synchronously on auth change", async () => {
   expect(m.state.detail).toBeUndefined();
   dispose();
 });
+it("reloads after a same-owner auth snapshot refresh", async () => {
+  m.query.mockResolvedValue({ items: [] });
+  useCloudRecordings();
+  const dispose = m.effects[0]();
+  await vi.waitFor(() => expect(m.query).toHaveBeenCalledTimes(1));
+  m.user = { id: 1 };
+  m.listeners.forEach((f) => f());
+  await vi.waitFor(() => expect(m.query).toHaveBeenCalledTimes(2));
+  dispose();
+});
+it("clears but never reloads for a different owner", async () => {
+  m.query.mockResolvedValue({ items: [] });
+  useCloudRecordings();
+  const dispose = m.effects[0]();
+  await vi.waitFor(() => expect(m.query).toHaveBeenCalledTimes(1));
+  m.user = { id: 2 };
+  m.listeners.forEach((f) => f());
+  await Promise.resolve();
+  expect(m.query).toHaveBeenCalledTimes(1);
+  expect(m.state.items).toEqual([]);
+  dispose();
+});
 it("drops an old account response resolving after account change", async () => {
   let resolve!: (v: any) => void;
   m.query.mockImplementation(
