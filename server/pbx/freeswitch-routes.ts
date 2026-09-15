@@ -14,6 +14,7 @@ import { bindAuthenticatedOutbound } from "../cloud-recordings/correlation";
 import { Router, Request, Response, json, urlencoded } from "express";
 import { CdrInputError, parseCdrBody, requireCdrAuth, resolveCdrTenant } from "./cdr-input";
 import { query } from "./db";
+import { decodeDidInternalTarget } from "./did-route-target";
 import { requireIntegrationSecret } from "./integration-auth";
 import { cacheGetOrSet, rateLimitCheck, invalidateCache } from "./redis";
 import { normalizeToE164, THAI_EMERGENCY_NUMBERS } from "./e164";
@@ -93,6 +94,24 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
       return res.type("xml").send(emptyDialplanXml());
     }
 
+    // Preserve the server-validated tenant for inbound PSTN callers, who have
+    // no local SIP registration from which FreeSWITCH can infer a workspace.
+    const didTarget = decodeDidInternalTarget(destNumber);
+    if (didTarget) {
+      switch (didTarget.type) {
+        case "ivr":
+          return res.type("xml").send(await generateIvrDialplan(didTarget.targetId, didTarget.tenantId));
+        case "ringgroup":
+          return res.type("xml").send(await generateRingGroupDialplan(didTarget.targetId, didTarget.tenantId));
+        case "queue":
+          return res.type("xml").send(await generateQueueDialplan(didTarget.targetId, didTarget.tenantId));
+        case "timecondition":
+          return res.type("xml").send(await timeConditionDialplanXml(didTarget.targetId, didTarget.tenantId, domain, callerIdNumber));
+        case "ringall":
+          return res.type("xml").send(await tenantRingAllDialplanXml(didTarget.tenantId));
+      }
+    }
+
     // Normalize the destination
     const normalized = normalizeToE164(destNumber);
 
@@ -140,18 +159,7 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
       const tcId = parseInt(tcMatch[1], 10);
       const tenantId = await getTenantIdFromCaller(fromUser, domain);
       if (tenantId) {
-        const result = await evaluateTimeCondition(tcId, tenantId);
-        // Route based on time condition result
-        if (result.action === "transfer" && result.target) {
-          return res.type("xml").send(extensionDialplanXml({ extension_number: result.target, sip_username: result.target, sip_domain: domain || "phone11.cloud", voicemail_enabled: false, cfna_timeout_seconds: 30 }, callerIdNumber));
-        } else if (result.action === "ivr" && result.target) {
-          const xml = await generateIvrDialplan(parseInt(result.target), tenantId);
-          return res.type("xml").send(xml);
-        } else if (result.action === "voicemail") {
-          return res.type("xml").send(voicemailDialplanXml(result.target || "1000", domain || "phone11.cloud"));
-        } else {
-          return res.type("xml").send(busyDialplanXml("Outside business hours"));
-        }
+        return res.type("xml").send(await timeConditionDialplanXml(tcId, tenantId, domain, callerIdNumber));
       }
     }
 
@@ -386,6 +394,47 @@ function emptyDialplanXml(): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <document type="freeswitch/xml">
   <section name="dialplan">
+  </section>
+</document>`;
+}
+
+async function timeConditionDialplanXml(tcId: number, tenantId: number, domain: string | undefined, callerIdNumber: string): Promise<string> {
+  const result = await evaluateTimeCondition(tcId, tenantId);
+  if (result.action === "transfer" && result.target) {
+    return extensionDialplanXml({ extension_number: result.target, sip_username: result.target, sip_domain: domain || "phone11.cloud", voicemail_enabled: false, cfna_timeout_seconds: 30 }, callerIdNumber);
+  } else if (result.action === "ivr" && result.target) {
+    return generateIvrDialplan(parseInt(result.target), tenantId);
+  } else if (result.action === "voicemail") {
+    return voicemailDialplanXml(result.target || "1000", domain || "phone11.cloud");
+  }
+  return busyDialplanXml("Outside business hours");
+}
+
+async function tenantRingAllDialplanXml(tenantId: number): Promise<string> {
+  const result = await query(
+    `SELECT sa.sip_username, sa.sip_domain
+     FROM extensions e
+     JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id AND sa.deleted_at IS NULL
+     JOIN tenants t ON t.id = e.tenant_id
+     WHERE e.tenant_id = $1 AND e.status = 'active' AND e.deleted_at IS NULL
+       AND sa.status = 'active' AND t.status = 'active'
+     ORDER BY e.id`,
+    [tenantId]
+  );
+  if (result.rows.length === 0) return emptyDialplanXml();
+  const targets = result.rows.map((row) => `user/${row.sip_username}@${row.sip_domain}`).join(",");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<document type="freeswitch/xml">
+  <section name="dialplan">
+    <context name="default">
+      <extension name="did_ring_all">
+        <condition>
+          <action application="set" data="tenant_id=${tenantId}"/>
+          <action application="set" data="hangup_after_bridge=true"/>
+          <action application="bridge" data="${targets}"/>
+        </condition>
+      </extension>
+    </context>
   </section>
 </document>`;
 }

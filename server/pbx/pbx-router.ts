@@ -6,11 +6,11 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { router, protectedProcedure, adminProcedure } from "../_core/trpc";
+import { router, protectedProcedure } from "../_core/trpc";
 import { query, withTransaction } from "./db";
 import { writeAuditLog, queryAuditLogs } from "./audit";
-import { createSipCredentials, regenerateSipCredentials, decryptSecret } from "./sip-secrets";
-import { normalizeToE164, isValidE164 } from "./e164";
+import { createSipCredentials, regenerateSipCredentials } from "./sip-secrets";
+import { normalizeToE164 } from "./e164";
 import { resolveTenantContext, hasRole, validateTenantOwnership } from "./tenant-middleware";
 import { buildPaginationSQL, buildPaginatedResponse } from "./pagination";
 import { invalidateCache } from "./redis";
@@ -33,6 +33,38 @@ const paginationSchema = z.object({
 async function getTenantCtx(ctx: any, requestedTenantId?: number) {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" });
   return resolveTenantContext(ctx.user.id, requestedTenantId);
+}
+
+async function getTenantAdminCtx(ctx: any, requestedTenantId?: number) {
+  const tenant = await getTenantCtx(ctx, requestedTenantId);
+  if (!hasRole(tenant.role, "admin")) {
+    throw new TRPCError({ code: "FORBIDDEN" });
+  }
+  return tenant;
+}
+
+type AssignableDidRouteType = "extension" | "ring_group" | "queue" | "ivr" | "time_condition";
+
+const didRouteTargets: Record<AssignableDidRouteType, { table: string; activeClause: string }> = {
+  extension: { table: "extensions", activeClause: " AND status = 'active' AND deleted_at IS NULL" },
+  ring_group: { table: "ring_groups", activeClause: " AND is_active = true" },
+  queue: { table: "call_queues", activeClause: " AND is_active = true" },
+  ivr: { table: "ivr_menus", activeClause: " AND is_active = true" },
+  time_condition: { table: "time_conditions", activeClause: "" },
+};
+
+async function requireDidRouteTarget(routeType: AssignableDidRouteType, routeId: number, tenantId: number) {
+  const route = didRouteTargets[routeType];
+  const result = await query(
+    `SELECT id FROM ${route.table} WHERE id = $1 AND tenant_id = $2${route.activeClause} LIMIT 1`,
+    [routeId, tenantId]
+  );
+  if (result.rows.length !== 1) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "The selected call destination is unavailable in this workspace",
+    });
+  }
 }
 
 // ============================================================================
@@ -60,7 +92,7 @@ export const pbxRouter = router({
     }),
 
     /** Update tenant settings */
-    updateSettings: adminProcedure
+    updateSettings: protectedProcedure
       .input(z.object({
         tenantId: z.number().optional(),
         defaultCallerId: z.string().optional(),
@@ -71,7 +103,7 @@ export const pbxRouter = router({
         maxRingTimeoutSeconds: z.number().min(10).max(120).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx, input.tenantId);
+        const tc = await getTenantAdminCtx(ctx, input.tenantId);
         if (!hasRole(tc.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
 
         const sets: string[] = [];
@@ -171,7 +203,7 @@ export const pbxRouter = router({
       }),
 
     /** Create a new extension with SIP account */
-    create: adminProcedure
+    create: protectedProcedure
       .input(z.object({
         extensionNumber: z.string().min(2).max(10),
         displayName: z.string().optional(),
@@ -182,7 +214,7 @@ export const pbxRouter = router({
         transport: z.string().default("UDP"),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         if (!hasRole(tc.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
 
         return withTransaction(async (client) => {
@@ -252,7 +284,7 @@ export const pbxRouter = router({
       }),
 
     /** Update an extension */
-    update: adminProcedure
+    update: protectedProcedure
       .input(z.object({
         id: z.number(),
         displayName: z.string().optional(),
@@ -268,7 +300,7 @@ export const pbxRouter = router({
         cfnaTimeoutSeconds: z.number().min(5).max(120).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         if (!await validateTenantOwnership("extensions", input.id, tc.tenantId)) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
@@ -322,10 +354,10 @@ export const pbxRouter = router({
       }),
 
     /** Soft delete an extension */
-    delete: adminProcedure
+    delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         if (!await validateTenantOwnership("extensions", input.id, tc.tenantId)) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
@@ -358,10 +390,10 @@ export const pbxRouter = router({
       }),
 
     /** Reset SIP password for an extension */
-    resetPassword: adminProcedure
+    resetPassword: protectedProcedure
       .input(z.object({ extensionId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         if (!await validateTenantOwnership("extensions", input.extensionId, tc.tenantId)) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
@@ -434,7 +466,7 @@ export const pbxRouter = router({
       }),
 
     /** Add a phone number */
-    create: adminProcedure
+    create: protectedProcedure
       .input(z.object({
         number: z.string(),
         numberType: z.enum(["local", "mobile", "toll_free", "international"]).default("local"),
@@ -442,7 +474,7 @@ export const pbxRouter = router({
         country: z.string().default("TH"),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         const normalized = normalizeToE164(input.number);
 
         const result = await query(
@@ -466,16 +498,22 @@ export const pbxRouter = router({
       }),
 
     /** Assign route to a phone number */
-    assignRoute: adminProcedure
+    assignRoute: protectedProcedure
       .input(z.object({
         id: z.number(),
-        assignedRouteType: z.enum(["extension", "ring_group", "queue", "ivr", "voicemail"]).nullable(),
-        assignedRouteId: z.number().nullable(),
-      }))
+        assignedRouteType: z.enum(["extension", "ring_group", "queue", "ivr", "time_condition"]).nullable(),
+        assignedRouteId: z.number().int().positive().nullable(),
+      }).refine(
+        (value) => (value.assignedRouteType === null) === (value.assignedRouteId === null),
+        { message: "Call destination type and destination must be set together", path: ["assignedRouteId"] }
+      ))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         if (!await validateTenantOwnership("phone_numbers", input.id, tc.tenantId)) {
           throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        if (input.assignedRouteType && input.assignedRouteId) {
+          await requireDidRouteTarget(input.assignedRouteType, input.assignedRouteId, tc.tenantId);
         }
 
         await query(
@@ -513,7 +551,7 @@ export const pbxRouter = router({
       return result.rows;
     }),
 
-    create: adminProcedure
+    create: protectedProcedure
       .input(z.object({
         name: z.string().min(1),
         addressLine1: z.string().optional(),
@@ -525,7 +563,7 @@ export const pbxRouter = router({
         isMain: z.boolean().default(false),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         const result = await query(
           `INSERT INTO sites (tenant_id, name, address_line1, city, state_province, postal_code, country, timezone, is_main)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -548,7 +586,7 @@ export const pbxRouter = router({
       return result.rows;
     }),
 
-    create: adminProcedure
+    create: protectedProcedure
       .input(z.object({
         label: z.string().optional(),
         street: z.string().min(1),
@@ -560,7 +598,7 @@ export const pbxRouter = router({
         siteId: z.number().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         const result = await query(
           `INSERT INTO emergency_addresses (tenant_id, site_id, label, street, city, state_province, postal_code, country, caller_name)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -574,13 +612,13 @@ export const pbxRouter = router({
   // FRAUD CONTROLS
   // ========================================================================
   fraudControls: router({
-    get: adminProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantCtx(ctx);
+    get: protectedProcedure.query(async ({ ctx }) => {
+      const tc = await getTenantAdminCtx(ctx);
       const result = await query(`SELECT * FROM fraud_controls WHERE tenant_id = $1`, [tc.tenantId]);
       return result.rows[0] || null;
     }),
 
-    update: adminProcedure
+    update: protectedProcedure
       .input(z.object({
         maxConcurrentOutbound: z.number().min(1).max(100).optional(),
         callsPerMinuteLimit: z.number().min(1).max(100).optional(),
@@ -594,7 +632,7 @@ export const pbxRouter = router({
         autoDisableOnCeiling: z.boolean().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         if (!hasRole(tc.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
 
         const sets: string[] = [];
@@ -739,7 +777,7 @@ export const pbxRouter = router({
         return result.rows;
       }),
 
-    create: adminProcedure
+    create: protectedProcedure
       .input(z.object({
         name: z.string().min(1),
         category: z.enum(["greeting", "moh", "announcement", "voicemail_greeting", "system"]),
@@ -750,7 +788,7 @@ export const pbxRouter = router({
         description: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         const result = await query(
           `INSERT INTO audio_files (tenant_id, name, category, file_url, duration_ms, format, language, description, owner_user_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -759,10 +797,10 @@ export const pbxRouter = router({
         return result.rows[0];
       }),
 
-    delete: adminProcedure
+    delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         if (!await validateTenantOwnership("audio_files", input.id, tc.tenantId)) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
@@ -775,7 +813,7 @@ export const pbxRouter = router({
   // AUDIT LOGS
   // ========================================================================
   auditLogs: router({
-    list: adminProcedure
+    list: protectedProcedure
       .input(z.object({
         ...paginationSchema.shape,
         resourceType: z.string().optional(),
@@ -784,7 +822,7 @@ export const pbxRouter = router({
         toDate: z.string().optional(),
       }).optional())
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         return queryAuditLogs({
           tenantId: tc.tenantId,
           resourceType: input?.resourceType,

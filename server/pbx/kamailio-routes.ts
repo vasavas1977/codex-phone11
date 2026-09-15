@@ -10,12 +10,43 @@
  */
 import { Router, Request, Response } from "express";
 import { query } from "./db";
+import { encodeDidInternalTarget, type DidInternalRouteType } from "./did-route-target";
 import { requireIntegrationSecret } from "./integration-auth";
 import { cacheGetOrSet, invalidateCache } from "./redis";
 
 const router = Router();
 
 const verifyKamAuth = requireIntegrationSecret("KAM_SHARED_SECRET", "x-kam-secret");
+
+type DidFeatureRouteType = "ivr" | "ring_group" | "queue" | "time_condition";
+
+const didFeatureRoutes: Record<DidFeatureRouteType, {
+  table: "ivr_menus" | "ring_groups" | "call_queues" | "time_conditions";
+  internalType: Exclude<DidInternalRouteType, "ringall">;
+  requiresActive: boolean;
+}> = {
+  ivr: { table: "ivr_menus", internalType: "ivr", requiresActive: true },
+  ring_group: { table: "ring_groups", internalType: "ringgroup", requiresActive: true },
+  queue: { table: "call_queues", internalType: "queue", requiresActive: true },
+  time_condition: { table: "time_conditions", internalType: "timecondition", requiresActive: false },
+};
+
+function isDidFeatureRouteType(value: unknown): value is DidFeatureRouteType {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(didFeatureRoutes, value);
+}
+
+async function resolveDidFeatureTarget(routeType: DidFeatureRouteType, routeId: unknown, tenantId: number) {
+  if (!Number.isSafeInteger(routeId) || (routeId as number) <= 0) return null;
+  const route = didFeatureRoutes[routeType];
+  // The table comes only from the fixed map; the target and tenant stay bound.
+  const activeClause = route.requiresActive ? " AND is_active = true" : "";
+  const result = await query(
+    `SELECT id FROM ${route.table} WHERE id = $1 AND tenant_id = $2${activeClause} LIMIT 1`,
+    [routeId, tenantId]
+  );
+  if (result.rows.length !== 1) return null;
+  return encodeDidInternalTarget({ type: route.internalType, tenantId, targetId: routeId as number });
+}
 
 
 /**
@@ -136,11 +167,30 @@ router.post("/route", verifyKamAuth, async (req: Request, res: Response) => {
             tenantId: did.tenant_id,
           });
         }
+
+        // A removed, disabled, or cross-tenant target must not spill into a
+        // tenant-wide ring.
+        return res.json({ action: "reject", code: 404 });
+      }
+
+      if (isDidFeatureRouteType(did.assigned_route_type)) {
+        const target = await resolveDidFeatureTarget(
+          did.assigned_route_type,
+          did.assigned_route_id,
+          did.tenant_id
+        );
+        if (!target) return res.json({ action: "reject", code: 404 });
+        return res.json({ action: "freeswitch", target, tenantId: did.tenant_id });
+      }
+
+      if (did.assigned_route_type || did.assigned_route_id) {
+        return res.json({ action: "reject", code: 404 });
       }
 
       // Default: ring all extensions in tenant
       return res.json({
         action: "ring_all",
+        target: encodeDidInternalTarget({ type: "ringall", tenantId: did.tenant_id, targetId: 0 }),
         tenantId: did.tenant_id,
       });
     }
