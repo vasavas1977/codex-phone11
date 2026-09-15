@@ -6,54 +6,82 @@
 import { useState } from "react";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList, Alert,
+  TextInput, Modal, ActivityIndicator,
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useCreateIvrMenu, useDeleteIvrMenu, useIvrMenus, useTenant } from "@/hooks/use-pbx-admin";
 
-interface IVRFlow {
-  id: string;
-  name: string;
-  description: string;
-  did: string;
-  nodes: number;
-  status: "active" | "draft" | "disabled";
-  lastModified: string;
-  callsToday: number;
-}
-
-const MOCK_FLOWS: IVRFlow[] = [
-  { id: "1", name: "Main Auto-Attendant", description: "Primary greeting → Sales / Support / Billing menu", did: "+1 (415) 555-0000", nodes: 8, status: "active", lastModified: "2 hours ago", callsToday: 142 },
-  { id: "2", name: "After Hours", description: "Voicemail greeting → Leave message → Email notification", did: "+1 (415) 555-0000", nodes: 4, status: "active", lastModified: "3 days ago", callsToday: 23 },
-  { id: "3", name: "Sales Queue", description: "Hold music → Agent ring group → Overflow to voicemail", did: "+1 (800) 555-0200", nodes: 6, status: "active", lastModified: "1 day ago", callsToday: 67 },
-  { id: "4", name: "Support Triage", description: "Language select → Department → Priority routing", did: "+1 (415) 555-2002", nodes: 12, status: "active", lastModified: "5 hours ago", callsToday: 89 },
-  { id: "5", name: "Holiday Greeting", description: "Holiday message → Emergency option → Voicemail", did: "", nodes: 3, status: "draft", lastModified: "2 weeks ago", callsToday: 0 },
-  { id: "6", name: "VIP Routing", description: "Caller ID lookup → Direct to account manager", did: "", nodes: 5, status: "disabled", lastModified: "1 month ago", callsToday: 0 },
-];
+const EXIT_ACTIONS = [
+  { value: "voicemail", label: "Voicemail" },
+  { value: "transfer", label: "Transfer" },
+  { value: "hangup", label: "End call" },
+] as const;
 
 export default function AdminIVR() {
   const colors = useColors();
+  const tenantQuery = useTenant();
+  const tenantId = tenantQuery.data?.id ?? 0;
+  const menusQuery = useIvrMenus(tenantId);
+  const createMutation = useCreateIvrMenu();
+  const deleteMutation = useDeleteIvrMenu();
+  const [showCreate, setShowCreate] = useState(false);
+  const [name, setName] = useState("");
+  const [greeting, setGreeting] = useState("");
+  const [exitAction, setExitAction] = useState<(typeof EXIT_ACTIONS)[number]["value"]>("voicemail");
+  const [exitTarget, setExitTarget] = useState("");
+  const menus = menusQuery.data || [];
 
-  const statusColor = (s: string) =>
-    s === "active" ? "#00C896" : s === "draft" ? "#FF9500" : "#9BA1A6";
-
-  const handleDeploy = (flow: IVRFlow) => {
+  const handleDelete = (id: number, menuName: string) => {
     Alert.alert(
-      "Deploy IVR Flow",
-      `Deploy "${flow.name}" to FreeSWITCH? This will update the live dial plan.`,
+      "Delete IVR Menu",
+      `Calls assigned to "${menuName}" may stop routing.`,
       [
-        { text: "Cancel" },
-        { text: "Deploy", style: "default", onPress: () => Alert.alert("Deployed", "IVR flow deployed to FreeSWITCH successfully.") },
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: async () => {
+          try {
+            await deleteMutation.mutateAsync({ id });
+          } catch (e: any) {
+            Alert.alert("IVR not deleted", e.message || "Please try again.");
+          }
+        }},
       ]
     );
   };
 
-  const renderFlow = ({ item }: { item: IVRFlow }) => (
-    <TouchableOpacity
+  const handleCreate = async () => {
+    if (!tenantId || !name.trim() || !greeting.trim()) {
+      Alert.alert("Missing details", "Enter a menu name and greeting.");
+      return;
+    }
+    if (exitAction !== "hangup" && !exitTarget.trim()) {
+      Alert.alert("Missing destination", "Enter the extension or voicemail destination.");
+      return;
+    }
+    try {
+      await createMutation.mutateAsync({
+        tenant_id: tenantId,
+        name: name.trim(),
+        greeting_tts: greeting.trim(),
+        exit_action: exitAction,
+        exit_target: exitAction === "hangup" ? undefined : exitTarget.trim(),
+        is_active: true,
+      });
+      setShowCreate(false);
+      setName("");
+      setGreeting("");
+      setExitAction("voicemail");
+      setExitTarget("");
+    } catch (e: any) {
+      Alert.alert("IVR not created", e.message || "Please try again.");
+    }
+  };
+
+  const renderFlow = ({ item }: { item: any }) => (
+    <View
       style={[styles.flowCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-      activeOpacity={0.7}
-      onPress={() => router.push("/settings/ivr" as any)}
     >
       <View style={styles.flowHeader}>
         <View style={[styles.flowIcon, { backgroundColor: "#8B5CF615" }]}>
@@ -61,51 +89,42 @@ export default function AdminIVR() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[styles.flowName, { color: colors.foreground }]}>{item.name}</Text>
-          <Text style={[styles.flowDesc, { color: colors.muted }]}>{item.description}</Text>
+          <Text style={[styles.flowDesc, { color: colors.muted }]} numberOfLines={2}>
+            {item.greeting_tts || item.description || "Audio greeting configured"}
+          </Text>
         </View>
-        <View style={[styles.statusBadge, { backgroundColor: statusColor(item.status) + "20" }]}>
-          <Text style={[styles.statusText, { color: statusColor(item.status) }]}>{item.status.toUpperCase()}</Text>
+        <View style={[styles.statusBadge, { backgroundColor: item.is_active ? "#00C89620" : "#9BA1A620" }]}>
+          <Text style={[styles.statusText, { color: item.is_active ? "#00C896" : "#9BA1A6" }]}>
+            {item.is_active ? "ACTIVE" : "INACTIVE"}
+          </Text>
         </View>
       </View>
 
       <View style={[styles.flowStats, { borderTopColor: colors.border }]}>
         <View style={styles.flowStat}>
-          <Text style={[styles.flowStatValue, { color: colors.foreground }]}>{item.nodes}</Text>
-          <Text style={[styles.flowStatLabel, { color: colors.muted }]}>Nodes</Text>
+          <Text style={[styles.flowStatValue, { color: colors.foreground }]}>{Number(item.action_count) || 0}</Text>
+          <Text style={[styles.flowStatLabel, { color: colors.muted }]}>Key Options</Text>
         </View>
         <View style={styles.flowStat}>
-          <Text style={[styles.flowStatValue, { color: colors.foreground }]}>{item.callsToday}</Text>
-          <Text style={[styles.flowStatLabel, { color: colors.muted }]}>Calls Today</Text>
+          <Text style={[styles.flowStatValue, { color: colors.foreground }]}>{Math.round((item.timeout_ms || 5000) / 1000)}s</Text>
+          <Text style={[styles.flowStatLabel, { color: colors.muted }]}>Input Timeout</Text>
         </View>
         <View style={styles.flowStat}>
-          <Text style={[styles.flowStatValue, { color: colors.foreground }]}>{item.did || "—"}</Text>
-          <Text style={[styles.flowStatLabel, { color: colors.muted }]}>DID</Text>
+          <Text style={[styles.flowStatValue, { color: colors.foreground }]}>{item.exit_action || "hangup"}</Text>
+          <Text style={[styles.flowStatLabel, { color: colors.muted }]}>No Response</Text>
         </View>
       </View>
 
       <View style={[styles.flowActions, { borderTopColor: colors.border }]}>
         <TouchableOpacity
-          style={[styles.actionBtn, { backgroundColor: colors.primary + "15" }]}
-          onPress={() => router.push("/settings/ivr" as any)}
+          style={[styles.actionBtn, { backgroundColor: "#EF444415" }]}
+          onPress={() => handleDelete(item.id, item.name)}
         >
-          <IconSymbol name="pencil" size={14} color={colors.primary} />
-          <Text style={[styles.actionText, { color: colors.primary }]}>Edit</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.actionBtn, { backgroundColor: "#00C89615" }]}
-          onPress={() => handleDeploy(item)}
-        >
-          <IconSymbol name="paperplane.fill" size={14} color="#00C896" />
-          <Text style={[styles.actionText, { color: "#00C896" }]}>Deploy</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.actionBtn, { backgroundColor: "#8B5CF615" }]}>
-          <IconSymbol name="doc.on.doc.fill" size={14} color="#8B5CF6" />
-          <Text style={[styles.actionText, { color: "#8B5CF6" }]}>Clone</Text>
+          <IconSymbol name="trash.fill" size={14} color="#EF4444" />
+          <Text style={[styles.actionText, { color: "#EF4444" }]}>Delete</Text>
         </TouchableOpacity>
       </View>
-
-      <Text style={[styles.flowModified, { color: colors.muted }]}>Modified {item.lastModified}</Text>
-    </TouchableOpacity>
+    </View>
   );
 
   return (
@@ -114,8 +133,12 @@ export default function AdminIVR() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <IconSymbol name="chevron.left" size={22} color={colors.primary} />
         </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.foreground }]}>IVR Flows</Text>
-        <TouchableOpacity style={[styles.addBtn, { backgroundColor: colors.primary }]}>
+        <Text style={[styles.title, { color: colors.foreground }]}>IVR Menus</Text>
+        <TouchableOpacity
+          style={[styles.addBtn, { backgroundColor: colors.primary }]}
+          onPress={() => setShowCreate(true)}
+          disabled={!tenantId}
+        >
           <IconSymbol name="plus" size={18} color="#fff" />
         </TouchableOpacity>
       </View>
@@ -123,28 +146,126 @@ export default function AdminIVR() {
       {/* Summary */}
       <View style={[styles.summaryRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={styles.summaryItem}>
-          <Text style={[styles.summaryValue, { color: colors.foreground }]}>{MOCK_FLOWS.length}</Text>
-          <Text style={[styles.summaryLabel, { color: colors.muted }]}>Total Flows</Text>
+          <Text style={[styles.summaryValue, { color: colors.foreground }]}>{menus.length}</Text>
+          <Text style={[styles.summaryLabel, { color: colors.muted }]}>Total Menus</Text>
         </View>
         <View style={[styles.summaryDivider, { backgroundColor: colors.border }]} />
         <View style={styles.summaryItem}>
-          <Text style={[styles.summaryValue, { color: "#00C896" }]}>{MOCK_FLOWS.filter((f) => f.status === "active").length}</Text>
+          <Text style={[styles.summaryValue, { color: "#00C896" }]}>{menus.filter((menu: any) => menu.is_active).length}</Text>
           <Text style={[styles.summaryLabel, { color: colors.muted }]}>Active</Text>
-        </View>
-        <View style={[styles.summaryDivider, { backgroundColor: colors.border }]} />
-        <View style={styles.summaryItem}>
-          <Text style={[styles.summaryValue, { color: colors.primary }]}>{MOCK_FLOWS.reduce((s, f) => s + f.callsToday, 0)}</Text>
-          <Text style={[styles.summaryLabel, { color: colors.muted }]}>Calls Today</Text>
         </View>
       </View>
 
-      <FlatList
-        data={MOCK_FLOWS}
-        keyExtractor={(item) => item.id}
-        renderItem={renderFlow}
-        contentContainerStyle={{ padding: 16, gap: 12 }}
-        showsVerticalScrollIndicator={false}
-      />
+      {tenantQuery.isLoading || menusQuery.isLoading ? (
+        <View style={styles.emptyState}>
+          <ActivityIndicator size="small" color={colors.primary} />
+          <Text style={[styles.emptyText, { color: colors.muted }]}>Loading IVR menus...</Text>
+        </View>
+      ) : tenantQuery.isError || menusQuery.isError ? (
+        <View style={styles.emptyState}>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load IVR menus</Text>
+          <TouchableOpacity onPress={() => menusQuery.refetch()}>
+            <Text style={[styles.retryText, { color: colors.primary }]}>Try again</Text>
+          </TouchableOpacity>
+        </View>
+      ) : menus.length === 0 ? (
+        <View style={styles.emptyState}>
+          <IconSymbol name="rectangle.grid.3x2.fill" size={48} color={colors.muted} />
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No IVR Menus</Text>
+          <Text style={[styles.emptyText, { color: colors.muted }]}>
+            Create a greeting and choose where calls go when nobody presses a key.
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={menus}
+          keyExtractor={(item: any) => String(item.id)}
+          renderItem={renderFlow}
+          contentContainerStyle={{ padding: 16, gap: 12 }}
+          showsVerticalScrollIndicator={false}
+          refreshing={menusQuery.isRefetching}
+          onRefresh={menusQuery.refetch}
+        />
+      )}
+
+      <Modal visible={showCreate} animationType="slide" transparent onRequestClose={() => setShowCreate(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.foreground }]}>New IVR Menu</Text>
+              <TouchableOpacity onPress={() => setShowCreate(false)}>
+                <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
+              <Text style={[styles.fieldLabel, { color: colors.muted }]}>Name *</Text>
+              <TextInput
+                style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
+                value={name}
+                onChangeText={setName}
+                placeholder="Main menu"
+                placeholderTextColor={colors.muted}
+              />
+              <Text style={[styles.fieldLabel, { color: colors.muted }]}>Greeting *</Text>
+              <TextInput
+                style={[styles.input, styles.greetingInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
+                value={greeting}
+                onChangeText={setGreeting}
+                placeholder="Welcome. Press 1 for sales..."
+                placeholderTextColor={colors.muted}
+                multiline
+              />
+              <Text style={[styles.fieldLabel, { color: colors.muted }]}>If there is no response</Text>
+              <View style={styles.exitActions}>
+                {EXIT_ACTIONS.map((action) => (
+                  <TouchableOpacity
+                    key={action.value}
+                    style={[
+                      styles.exitAction,
+                      { borderColor: exitAction === action.value ? colors.primary : colors.border },
+                      exitAction === action.value && { backgroundColor: colors.primary + "10" },
+                    ]}
+                    onPress={() => setExitAction(action.value)}
+                  >
+                    <Text style={[styles.exitActionText, { color: exitAction === action.value ? colors.primary : colors.foreground }]}>
+                      {action.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {exitAction !== "hangup" && (
+                <>
+                  <Text style={[styles.fieldLabel, { color: colors.muted }]}>Destination *</Text>
+                  <TextInput
+                    style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
+                    value={exitTarget}
+                    onChangeText={setExitTarget}
+                    placeholder="Extension or voicemail number"
+                    placeholderTextColor={colors.muted}
+                    keyboardType="phone-pad"
+                  />
+                </>
+              )}
+            </ScrollView>
+            <View style={styles.modalFooter}>
+              <TouchableOpacity style={[styles.cancelBtn, { borderColor: colors.border }]} onPress={() => setShowCreate(false)}>
+                <Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.createBtn, { backgroundColor: colors.primary }]}
+                onPress={handleCreate}
+                disabled={createMutation.isPending}
+              >
+                {createMutation.isPending ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.createText}>Create Menu</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScreenContainer>
   );
 }
@@ -173,5 +294,24 @@ const styles = StyleSheet.create({
   flowActions: { flexDirection: "row", padding: 10, gap: 8, borderTopWidth: 0.5 },
   actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 8, borderRadius: 8, gap: 4 },
   actionText: { fontSize: 12, fontWeight: "600" },
-  flowModified: { fontSize: 10, paddingHorizontal: 14, paddingBottom: 10 },
+  emptyState: { alignItems: "center", padding: 40, gap: 12 },
+  emptyTitle: { fontSize: 18, fontWeight: "700", marginTop: 8 },
+  emptyText: { fontSize: 13, textAlign: "center", lineHeight: 18 },
+  retryText: { fontSize: 14, fontWeight: "600", padding: 8 },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
+  modal: { borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 0.5, maxHeight: "85%" },
+  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 0.5, borderBottomColor: "#333" },
+  modalTitle: { fontSize: 18, fontWeight: "700" },
+  modalBody: { padding: 16 },
+  fieldLabel: { fontSize: 12, fontWeight: "600", marginTop: 12, marginBottom: 6 },
+  input: { borderWidth: 0.5, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
+  greetingInput: { minHeight: 84, textAlignVertical: "top" },
+  exitActions: { flexDirection: "row", gap: 8 },
+  exitAction: { flex: 1, borderWidth: 1, borderRadius: 10, paddingVertical: 10, alignItems: "center" },
+  exitActionText: { fontSize: 12, fontWeight: "600" },
+  modalFooter: { flexDirection: "row", padding: 16, gap: 12 },
+  cancelBtn: { flex: 1, borderWidth: 1, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
+  cancelText: { fontSize: 15, fontWeight: "600" },
+  createBtn: { flex: 2, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
+  createText: { color: "#fff", fontSize: 15, fontWeight: "600" },
 });

@@ -2,9 +2,8 @@
  * Admin Dashboard — Phone11 Cloud PBX Portal
  *
  * Live overview using real PBX API data:
- *  - Extension stats, call metrics
- *  - System health
- *  - Quick links to all management sections
+ *  - Extension and call metrics
+ *  - Quick links to source-backed management sections
  *  - Recent call activity
  */
 
@@ -44,17 +43,12 @@ export default function AdminDashboard() {
   const tenant = tenantQuery.data;
 
   const quickActions: QuickAction[] = [
-    { icon: "person.2.fill", iconColor: "#0057FF", label: "Users", route: "/admin/users" },
-    { icon: "phone.fill", iconColor: "#00C896", label: "Extensions", route: "/admin/extensions" },
-    { icon: "number", iconColor: "#8B5CF6", label: "DID Pool", route: "/admin/dids" },
-    { icon: "rectangle.grid.3x2.fill", iconColor: "#FF9500", label: "IVR Flows", route: "/admin/ivr" },
+    { icon: "person.2.fill", iconColor: "#0057FF", label: "People & extensions", route: "/admin/extensions" },
+    { icon: "number", iconColor: "#8B5CF6", label: "Phone numbers", route: "/admin/dids" },
+    { icon: "rectangle.grid.3x2.fill", iconColor: "#FF9500", label: "IVR menus", route: "/admin/ivr" },
     { icon: "person.3.fill", iconColor: "#10B981", label: "Ring Groups", route: "/admin/ring-groups" },
     { icon: "person.line.dotted.person.fill", iconColor: "#F59E0B", label: "Queues", route: "/admin/queues" },
-    { icon: "clock.fill", iconColor: "#F97316", label: "Call History", route: "/admin/call-history" },
-    { icon: "envelope.fill", iconColor: "#EC4899", label: "Voicemail", route: "/admin/voicemail" },
-    { icon: "chart.bar.fill", iconColor: "#06B6D4", label: "Analytics", route: "/admin/analytics" },
-    { icon: "waveform.circle.fill", iconColor: "#EF4444", label: "Live Calls", route: "/admin/live-calls" },
-    { icon: "gearshape.fill", iconColor: "#6B7280", label: "Settings", route: "/admin/settings" },
+    { icon: "calendar.badge.clock", iconColor: "#F97316", label: "Business Hours", route: "/admin/schedules" },
   ];
 
   const onRefresh = useCallback(async () => {
@@ -158,36 +152,6 @@ export default function AdminDashboard() {
           ))}
         </View>
 
-        {/* System Health */}
-        <Text style={[styles.sectionTitle, { color: colors.muted }]}>SYSTEM HEALTH</Text>
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          {[
-            { name: "Kamailio SIP Proxy", status: "online", detail: `${stats?.totalExtensions || 0} registrations` },
-            { name: "FreeSWITCH PBX", status: "online", detail: `${stats?.callsToday || 0} calls today` },
-            { name: "PostgreSQL", status: "online", detail: "RDS ap-southeast-7" },
-            { name: "Redis Cache", status: "online", detail: "Directory + rate limit" },
-          ].map((svc, i) => (
-            <View
-              key={i}
-              style={[
-                styles.serviceRow,
-                i < 3 && { borderBottomWidth: 0.5, borderBottomColor: colors.border },
-              ]}
-            >
-              <View style={styles.serviceLeft}>
-                <View style={[styles.statusDot, { backgroundColor: svc.status === "online" ? "#00C896" : "#FF3B30" }]} />
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.serviceName, { color: colors.foreground }]}>{svc.name}</Text>
-                  <Text style={[styles.serviceDetail, { color: colors.muted }]}>{svc.detail}</Text>
-                </View>
-              </View>
-              <Text style={[styles.serviceStatus, { color: svc.status === "online" ? "#00C896" : "#FF3B30" }]}>
-                {svc.status.toUpperCase()}
-              </Text>
-            </View>
-          ))}
-        </View>
-
         {/* Recent Calls */}
         <Text style={[styles.sectionTitle, { color: colors.muted }]}>RECENT CALLS</Text>
         <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -256,12 +220,6 @@ const styles = StyleSheet.create({
   actionIcon: { width: 44, height: 44, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   actionLabel: { fontSize: 13, fontWeight: "600" },
   section: { marginHorizontal: 16, borderRadius: 14, borderWidth: 0.5, overflow: "hidden" },
-  serviceRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 14 },
-  serviceLeft: { flexDirection: "row", alignItems: "center", flex: 1, gap: 10 },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  serviceName: { fontSize: 14, fontWeight: "600" },
-  serviceDetail: { fontSize: 11, marginTop: 2 },
-  serviceStatus: { fontSize: 10, fontWeight: "600" },
   callRow: { flexDirection: "row", alignItems: "center", padding: 14, gap: 10 },
   callIcon: { width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" },
   callNumber: { fontSize: 13, fontWeight: "600" },

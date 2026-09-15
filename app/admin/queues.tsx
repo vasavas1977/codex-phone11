@@ -27,7 +27,7 @@ const QUEUE_STRATEGIES = [
 export default function AdminQueues() {
   const colors = useColors();
   const tenantQuery = useTenant();
-  const tenantId = tenantQuery.data?.id || 1;
+  const tenantId = tenantQuery.data?.id ?? 0;
   const queuesQuery = useCallQueues(tenantId);
   const createMutation = useCreateCallQueue();
   const deleteMutation = useDeleteCallQueue();
@@ -161,6 +161,7 @@ export default function AdminQueues() {
         <TouchableOpacity
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
           onPress={() => setShowCreate(true)}
+          disabled={!tenantId}
         >
           <IconSymbol name="plus" size={18} color="#fff" />
         </TouchableOpacity>
@@ -192,6 +193,13 @@ export default function AdminQueues() {
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="small" color={colors.primary} />
           <Text style={[styles.loadingText, { color: colors.muted }]}>Loading queues...</Text>
+        </View>
+      ) : queuesQuery.isError ? (
+        <View style={styles.emptyState}>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load call queues</Text>
+          <TouchableOpacity onPress={() => queuesQuery.refetch()}>
+            <Text style={[styles.retryText, { color: colors.primary }]}>Try again</Text>
+          </TouchableOpacity>
         </View>
       ) : queues.length === 0 ? (
         <View style={styles.emptyState}>
@@ -337,6 +345,7 @@ const styles = StyleSheet.create({
   emptyDesc: { fontSize: 13, textAlign: "center", lineHeight: 18 },
   emptyBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, marginTop: 8 },
   emptyBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  retryText: { fontSize: 14, fontWeight: "600", padding: 8 },
   card: { borderRadius: 14, borderWidth: 0.5, overflow: "hidden" },
   cardHeader: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
   cardIcon: { width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center" },

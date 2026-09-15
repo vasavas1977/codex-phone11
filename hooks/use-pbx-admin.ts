@@ -51,10 +51,14 @@ export function useUpdateTenantSettings() {
 // ============================================================================
 // Extensions
 // ============================================================================
-export function useExtensions(page: number = 1, pageSize: number = 25) {
+export function useExtensions(
+  page: number = 1,
+  pageSize: number = 25,
+  enabled: boolean = true,
+) {
   return trpc.pbx.extensions.list.useQuery(
     { page, pageSize, sortBy: "extension_number", sortOrder: "asc" },
-    { staleTime: 30_000 }
+    { enabled, staleTime: 30_000 }
   );
 }
 
@@ -101,10 +105,14 @@ export function useResetExtensionPassword() {
 // ============================================================================
 // Phone Numbers
 // ============================================================================
-export function usePhoneNumbers(page: number = 1, pageSize: number = 25) {
+export function usePhoneNumbers(
+  page: number = 1,
+  pageSize: number = 25,
+  enabled: boolean = true,
+) {
   return trpc.pbx.phoneNumbers.list.useQuery(
     { page, pageSize },
-    { staleTime: 30_000 }
+    { enabled, staleTime: 30_000 }
   );
 }
 

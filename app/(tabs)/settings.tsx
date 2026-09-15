@@ -8,10 +8,18 @@ import { useSipAccountStore } from "@/lib/sip/account-store";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useAuth } from "@/hooks/use-auth";
 import { chatNotificationClientEnabled } from "@/lib/notifications/client";
+import { trpc } from "@/lib/trpc";
 
 export default function SettingsScreen() {
   const colors = useColors();
   const { user, logout } = useAuth({ autoFetch: false });
+  const tenantQuery = trpc.pbx.tenant.get.useQuery(undefined, {
+    enabled: Boolean(user),
+    staleTime: 300_000,
+  });
+  const canManageWorkspace = ["owner", "admin"].includes(
+    String(tenantQuery.data?.userRole || ""),
+  );
   const saved = useSipAccountStore(s => s.account);
   const account = saved?.ownerUserId === user?.id ? saved : null;
   const state = useSipAccountStore(s => s.registrationState);
@@ -52,6 +60,7 @@ export default function SettingsScreen() {
     {row("Call history", "Calls placed and received on this phone", () => router.push("/(tabs)/recents"))}
     {row("Team Chat", "Conversations in your work account", () => router.push("/(tabs)/teamchat"))}
     {chatNotificationClientEnabled() && row("Message alerts", "Choose alerts for your selected workspace", () => router.push("/notifications/preferences"))}
+    {canManageWorkspace && row("Workspace administration", "Manage people, numbers and call routing", () => router.push("/admin"))}
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <Text style={[styles.rowTitle, { color: colors.foreground }]}>Preview availability</Text>
       <Text style={[styles.detail, { color: colors.muted }]}>Keep Phone11 open to receive calls in this preview. Incoming-call notifications while the app is closed are not connected yet.</Text>

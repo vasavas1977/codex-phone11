@@ -4,7 +4,7 @@
  * Phone11 Cloud PBX — Milestone 7
  */
 
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList,
   Alert, TextInput, Modal, ActivityIndicator,
@@ -26,7 +26,7 @@ const STRATEGIES = [
 export default function AdminRingGroups() {
   const colors = useColors();
   const tenantQuery = useTenant();
-  const tenantId = tenantQuery.data?.id || 1;
+  const tenantId = tenantQuery.data?.id ?? 0;
   const ringGroupsQuery = useRingGroups(tenantId);
   const createMutation = useCreateRingGroup();
   const deleteMutation = useDeleteRingGroup();
@@ -145,6 +145,7 @@ export default function AdminRingGroups() {
         <TouchableOpacity
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
           onPress={() => setShowCreate(true)}
+          disabled={!tenantId}
         >
           <IconSymbol name="plus" size={18} color="#fff" />
         </TouchableOpacity>
@@ -176,6 +177,13 @@ export default function AdminRingGroups() {
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="small" color={colors.primary} />
           <Text style={[styles.loadingText, { color: colors.muted }]}>Loading ring groups...</Text>
+        </View>
+      ) : ringGroupsQuery.isError ? (
+        <View style={styles.emptyState}>
+          <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load ring groups</Text>
+          <TouchableOpacity onPress={() => ringGroupsQuery.refetch()}>
+            <Text style={[styles.retryText, { color: colors.primary }]}>Try again</Text>
+          </TouchableOpacity>
         </View>
       ) : groups.length === 0 ? (
         <View style={styles.emptyState}>
@@ -306,6 +314,7 @@ const styles = StyleSheet.create({
   emptyDesc: { fontSize: 13, textAlign: "center", lineHeight: 18 },
   emptyBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, marginTop: 8 },
   emptyBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  retryText: { fontSize: 14, fontWeight: "600", padding: 8 },
   card: { borderRadius: 14, borderWidth: 0.5, overflow: "hidden" },
   cardHeader: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
   cardIcon: { width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center" },
