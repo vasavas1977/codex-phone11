@@ -5,6 +5,8 @@ export interface CloudRecording {
   callUuid: string; tenantId: number; nativeHistoryId?: string; number: string;
   direction: "inbound" | "outbound"; startedAt: number; endedAt?: number;
   recordingStatus: CloudRecordingStatus; summaryStatus: CloudSummaryStatus;
+  /** Capture has stopped and the private recording is being finalized. */
+  recordingFinalizing?: boolean;
 }
 export interface CloudRecordingDetail extends CloudRecording {
   playbackPath?: string; transcript?: string;
