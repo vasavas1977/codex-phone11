@@ -34,10 +34,10 @@ describe.skipIf(!connectionString)("Team Chat real PostgreSQL persistence and is
   });
   beforeEach(async () => {
     await pool.query(`TRUNCATE phone11_chat_messages, phone11_chat_members, phone11_chat_conversations, user_extensions, extensions, users, tenants RESTART IDENTITY CASCADE;
-      INSERT INTO users VALUES (1,'Alice'),(2,'Bob'),(3,'Other tenant'),(4,'No assignment'),(5,'Not in conversation');
+      INSERT INTO users VALUES (1,'Alice'),(2,'Bob'),(3,'Other tenant'),(4,'No assignment'),(5,'Not in conversation'),(6,'Beta teammate');
       INSERT INTO tenants VALUES (10,'Alpha','active'),(20,'Beta','active');
-      INSERT INTO extensions VALUES (1,10,'1001','active',NULL),(2,10,'1002','active',NULL),(3,20,'2001','active',NULL),(5,10,'1005','active',NULL);
-      INSERT INTO user_extensions(user_id,extension_id,is_primary) VALUES (1,1,true),(2,2,true),(3,3,true),(5,5,true);`);
+      INSERT INTO extensions VALUES (1,10,'1001','active',NULL),(2,10,'1002','active',NULL),(3,20,'2001','active',NULL),(5,10,'1005','active',NULL),(6,20,'2002','active',NULL);
+      INSERT INTO user_extensions(user_id,extension_id,is_primary) VALUES (1,1,true),(2,2,true),(3,3,true),(5,5,true),(6,6,true);`);
   });
   afterAll(() => pool.end());
   const room = () => service.create(1, 10, "direct", "Direct", [2]);
@@ -55,6 +55,17 @@ describe.skipIf(!connectionString)("Team Chat real PostgreSQL persistence and is
     await expect(service.create(1, 10, "group", "Private", [2, 3])).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(service.create(1, 10, "direct", "Private", [4])).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect((await service.list(1, 10)).channels).toEqual([]);
+  });
+  it("supports separate companies without sharing rooms or messages", async () => {
+    const alpha = await room();
+    const beta = await service.create(3, 20, "direct", "Direct", [6]);
+    expect(beta.id).not.toBe(alpha.id);
+    await service.send(3, 20, beta.id, randomUUID(), "Beta hello");
+    expect((await service.history(6, 20, beta.id)).messages.map(message => message.content)).toEqual(["Beta hello"]);
+    expect((await service.list(3, 20)).workspace).toEqual({ id: 20, name: "Beta" });
+    expect((await service.list(1, 10)).workspace).toEqual({ id: 10, name: "Alpha" });
+    await expect(service.list(3, 10)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.history(1, 10, beta.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
   it("concurrent direct creation converges on one persisted conversation", async () => {
     const results = await Promise.all([room(), service.create(2, 10, "direct", "Direct", [1]), room()]);
