@@ -165,7 +165,8 @@ No existing private recording task is automatically imported.
 ### Newly discovered shared work
 
 Read-only parallel review found a newer `work/phone11-sync-contracts-20260915`
-checkout at `dd41cbc` with uncommitted changes owned by the shared project.
+checkout. Its latest committed boundary is `5ed5e83`; further defensive-copy
+changes remain uncommitted and owned by the shared project.
 It provides explicit Phone11/Zoom bindings, server-call projection, private
 import preparation and `Phone11CanonicalTaskAdapter.create/mutate`.
 `work/calendar-task-contracts-20260915` at `d35b07f` still uses the older canonical
@@ -179,6 +180,11 @@ The shared owner must resolve these demonstrated mismatches before integration:
 - Its retry equality depends on object-property insertion order.
 - Completed legacy tasks need explicit handling: their completion time is unknown,
   while canonical creation starts incomplete.
+
+The committed shared boundary passes its 34 canonical and Phone11 contract tests,
+but it does not provide a database repository, authenticated API endpoint, durable
+server operation ledger, replay worker, or reconciliation service. Phone11 must
+not expose synchronization as available until that server path exists.
 
 Shared service, personal realm mapping, reopen, durable operation ledger,
 conflict resolution, tombstones and explicit workspace sharing remain pending.
