@@ -11,6 +11,7 @@
     "build:backend": "esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs",
     "build:auth-admin": "esbuild scripts/phone11-auth-admin.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/auth-admin.mjs",
     "auth:admin": "tsx scripts/phone11-auth-admin.ts",
+    "pbx:schema:preflight": "tsx scripts/phone11-pbx-schema-preflight.ts",
     "test:auth": "node scripts/test-phone11-auth.mjs",
     "test:auth-client": "vitest run --config tests/phone11-auth-client.config.ts",
     "test:auth-sip": "vitest run tests/phone11-auth-sip.test.ts tests/auth.logout.test.ts tests/phone11-native-audio-patch.test.ts tests/phone11-native-sdp-repair.test.ts",
