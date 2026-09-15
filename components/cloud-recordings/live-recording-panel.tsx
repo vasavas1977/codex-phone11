@@ -3,11 +3,8 @@ import { useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useCloudRecordings } from "@/hooks/use-cloud-recordings";
-import { useDeviceContacts } from "@/hooks/use-device-contacts";
-import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { useSipCallStore } from "@/lib/sip/call-store";
-import { deviceContactName } from "@/lib/phone/device-contacts";
 import { RecordingPanel } from "./call-history-view";
 import { Playback } from "./cloud-playback";
 import { CaptureControls } from "./capture-controls";
@@ -15,10 +12,7 @@ import { RecordingSummaryActions } from "./summary-actions";
 import { createTRPCClient } from "@/lib/trpc";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import type { RecordingSummaryContent } from "@/lib/cloud-recordings/summary-actions";
-import {
-  mergeTranscriptSpeakerNames,
-  type TranscriptSpeakerNames,
-} from "@/lib/cloud-recordings/transcript";
+import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
 import type { CloudRecordingDetail } from "@/shared/cloud-recordings";
 
 export function recordingStatusMessage(detail: CloudRecordingDetail) {
@@ -67,8 +61,6 @@ export function LiveRecordingPanel({
   contactName?: string;
 }) {
   const cloud = useCloudRecordings(callUuid);
-  const contacts = useDeviceContacts();
-  const { user } = useAuth({ autoFetch: false });
   const colors = useColors();
   const router = useRouter();
   const [tab, setTab] = useState<"summary" | "transcription">(initialTab);
@@ -89,17 +81,8 @@ export function LiveRecordingPanel({
     translation?.owner === cloud.owner && translation?.callUuid === callUuid
       ? translation.content
       : undefined;
-  const contactIdentity = detail
-    ? deviceContactName(contacts.people, detail.number)
-    : undefined;
-  const directionNames: TranscriptSpeakerNames =
-    detail?.direction === "inbound"
-      ? { speaker1: contactIdentity, speaker2: user?.name ?? undefined }
-      : { speaker1: user?.name ?? undefined, speaker2: contactIdentity };
-  const resolvedSpeakerNames = mergeTranscriptSpeakerNames(
-    trustedSpeakerNames ?? directionNames,
-    trustedSpeakerNames ? directionNames : {},
-  );
+  // Call direction identifies participants, but does not establish which voice
+  // the transcription service labeled Speaker 1 or Speaker 2.
   if (!detail)
     return (
       <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
@@ -156,7 +139,7 @@ export function LiveRecordingPanel({
         summaryStatus={detail.summaryStatus}
         summary={translated ?? detail.summary}
         transcript={translated?.transcript ?? detail.transcript}
-        speakerNames={resolvedSpeakerNames}
+        speakerNames={trustedSpeakerNames}
         notice={
           cloud.error ||
           (busy
@@ -192,7 +175,7 @@ export function LiveRecordingPanel({
               startedAt={detail.startedAt}
               summary={detail.summary}
               transcript={detail.transcript}
-              speakerNames={resolvedSpeakerNames}
+              speakerNames={trustedSpeakerNames}
               colors={colors}
               onContentChange={(content, language) =>
                 setTranslation(

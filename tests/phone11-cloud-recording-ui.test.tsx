@@ -149,9 +149,7 @@ it("distinguishes recording preparation, readiness, and durable failure", () => 
     recordingStatus: "pending",
     summaryStatus: "queued",
   };
-  expect(recordingStatusMessage(statusDetail)).toBe(
-    "Preparing recording…",
-  );
+  expect(recordingStatusMessage(statusDetail)).toBe("Preparing recording…");
   expect(recordingStatusNeedsRefresh(statusDetail)).toBe(true);
 
   const readyWithoutPlayback = {
@@ -234,7 +232,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("uses device contact and signed-in user names without trusting server caller-ID text", () => {
+it("keeps inbound voices anonymous even when contact and account names are known", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -269,15 +267,15 @@ it("uses device contact and signed-in user names without trusting server caller-
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Somchai Contact");
-  expect(html).toContain("Vasavas");
-  expect(html).not.toContain("Speaker 1");
-  expect(html).not.toContain("Speaker 2");
+  expect(html).not.toContain("Somchai Contact");
+  expect(html).not.toContain("Vasavas");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
   expect(html).not.toContain("SERVER CALLER ID");
   expect(html).not.toContain("Server Extension");
 });
 
-it("maps an outbound transcript to the local user and the contacted person", () => {
+it("keeps outbound voices anonymous even when contact and account names are known", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -308,9 +306,10 @@ it("maps an outbound transcript to the local user and the contacted person", () 
       initialTab: "transcription",
     }),
   );
-  expect(html.indexOf("Vasavas")).toBeLessThan(
-    html.indexOf("Somchai Contact"),
-  );
+  expect(html).not.toContain("Vasavas");
+  expect(html).not.toContain("Somchai Contact");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
 });
 
 it("uses participant names only when the caller supplies a trusted identity map", () => {
@@ -340,6 +339,48 @@ it("uses participant names only when the caller supplies a trusted identity map"
   expect(html).not.toContain("Untrusted server caller ID");
   expect(html).not.toContain("Untrusted server extension");
 });
+it.each(["inbound", "outbound"])(
+  "does not fill a partial trusted voice mapping from %s call direction",
+  (direction) => {
+    mocks.identity = { id: 1, name: "Vasavas" };
+    mocks.contacts = {
+      people: [
+        {
+          id: "contact-1",
+          name: "Somchai Contact",
+          phones: [
+            { number: "+66812345678", label: "Mobile", key: "+66812345678" },
+          ],
+        },
+      ],
+    };
+    mocks.cloud.detail = {
+      ...item,
+      number: "+66812345678",
+      direction,
+      summaryStatus: "ready",
+      transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+      participantNames: {
+        speaker1: "Server caller",
+        speaker2: "Server extension",
+      },
+    };
+    const html = renderToStaticMarkup(
+      createElement(LiveRecordingPanel, {
+        callUuid: item.callUuid,
+        full: true,
+        initialTab: "transcription",
+        trustedSpeakerNames: { speaker1: "Verified participant" },
+      }),
+    );
+    expect(html).toContain("Verified participant");
+    expect(html).toContain("Speaker 2");
+    expect(html).not.toContain("Vasavas");
+    expect(html).not.toContain("Somchai Contact");
+    expect(html).not.toContain("Server caller");
+    expect(html).not.toContain("Server extension");
+  },
+);
 it("shows unavailable server state without fake records", () => {
   mocks.cloud = {
     items: [],
