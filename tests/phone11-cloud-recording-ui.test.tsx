@@ -248,7 +248,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("keeps inbound voices anonymous even when contact and account names are known", () => {
+it("automatically labels inbound voices with the contact and Me", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -283,15 +283,13 @@ it("keeps inbound voices anonymous even when contact and account names are known
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Speaker 1");
-  expect(html).toContain("Speaker 2");
-  expect(html).not.toContain("Somchai Contact");
-  expect(html).not.toContain("Vasavas");
+  expect(html).toContain("Somchai Contact");
+  expect(html).toContain("Me");
   expect(html).not.toContain("SERVER CALLER ID");
   expect(html).not.toContain("Server Extension");
 });
 
-it("keeps outbound voices anonymous even when contact and account names are known", () => {
+it("automatically labels outbound voices with Me and the contact", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -322,10 +320,8 @@ it("keeps outbound voices anonymous even when contact and account names are know
       initialTab: "transcription",
     }),
   );
-  expect(html).not.toContain("Vasavas");
-  expect(html).not.toContain("Somchai Contact");
-  expect(html).toContain("Speaker 1");
-  expect(html).toContain("Speaker 2");
+  expect(html).toContain("Me");
+  expect(html).toContain("Somchai Contact");
 });
 
 it("uses participant names only when the caller supplies a trusted identity map", () => {
@@ -355,8 +351,8 @@ it("uses participant names only when the caller supplies a trusted identity map"
   expect(html).not.toContain("Untrusted server caller ID");
   expect(html).not.toContain("Untrusted server extension");
 });
-it.each(["inbound", "outbound"])(
-  "does not fill a partial trusted voice mapping from %s call direction",
+it.each(["inbound", "outbound"] as const)(
+  "fills only the missing trusted voice mapping for an %s call",
   (direction) => {
     mocks.identity = { id: 1, name: "Vasavas" };
     mocks.contacts = {
@@ -390,9 +386,10 @@ it.each(["inbound", "outbound"])(
       }),
     );
     expect(html).toContain("Verified participant");
-    expect(html).toContain("Speaker 2");
+    expect(html).toContain(
+      direction === "inbound" ? "Me" : "Somchai Contact",
+    );
     expect(html).not.toContain("Vasavas");
-    expect(html).not.toContain("Somchai Contact");
     expect(html).not.toContain("Server caller");
     expect(html).not.toContain("Server extension");
   },

@@ -66,8 +66,8 @@ export function SpeakerNamesEditor({
       ) : (
         <View style={{ gap: 10 }}>
           <Text style={{ color: colors.muted, lineHeight: 20 }}>
-            Match each voice to a name after listening. Names are saved for this
-            call on this device.
+            Correct the names if the two voices were identified in reverse.
+            Changes are saved for this call on this device.
           </Text>
           {speakers.map((speaker) => (
             <View key={speaker} style={{ gap: 4 }}>

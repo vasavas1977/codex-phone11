@@ -38,6 +38,22 @@ export function normalizeAssignedSpeakerNames(
   );
 }
 
+/**
+ * Label two-party calls from their direction using only the private contact
+ * match for the remote participant and the stable owner label "Me".
+ */
+export function defaultCallSpeakerNames(
+  direction: "inbound" | "outbound",
+  contactName?: string,
+): TranscriptSpeakerNames {
+  const remote = normalizeAssignedSpeakerNames({
+    speaker1: contactName,
+  }).speaker1;
+  return direction === "inbound"
+    ? { ...(remote ? { speaker1: remote } : {}), speaker2: "Me" }
+    : { speaker1: "Me", ...(remote ? { speaker2: remote } : {}) };
+}
+
 export function validateAssignedSpeakerNames(input: TranscriptSpeakerNames) {
   const names = normalizeAssignedSpeakerNames(input);
   for (const key of ["speaker1", "speaker2"] as const) {

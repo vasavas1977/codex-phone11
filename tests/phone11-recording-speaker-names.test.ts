@@ -75,6 +75,7 @@ import {
   transcriptFingerprint,
   speakerNamesStorageKey,
   decodeAssignedSpeakerNames,
+  defaultCallSpeakerNames,
   validateAssignedSpeakerNames,
 } from "../lib/cloud-recordings/speaker-names";
 const callUuid = "11111111-1111-4111-8111-111111111111";
@@ -93,6 +94,17 @@ beforeEach(() => {
   m.authListeners.clear();
   m.getItem.mockReset().mockResolvedValue(null);
   m.setItem.mockReset().mockResolvedValue(undefined);
+});
+it("defaults inbound and outbound calls to Me and the matched contact", () => {
+  expect(defaultCallSpeakerNames("inbound", "Somchai")).toEqual({
+    speaker1: "Somchai",
+    speaker2: "Me",
+  });
+  expect(defaultCallSpeakerNames("outbound", "Somchai")).toEqual({
+    speaker1: "Me",
+    speaker2: "Somchai",
+  });
+  expect(defaultCallSpeakerNames("outbound")).toEqual({ speaker1: "Me" });
 });
 it("saves confirmed names and loads them when the same recording is reopened", async () => {
   render();

@@ -5,9 +5,11 @@ import { useRouter } from "expo-router";
 import { useCloudRecordings } from "@/hooks/use-cloud-recordings";
 import { useRecordingSpeakerNames } from "@/hooks/use-recording-speaker-names";
 import { useDeviceContacts } from "@/hooks/use-device-contacts";
-import { useAuth } from "@/hooks/use-auth";
 import { deviceContactName } from "@/lib/phone/device-contacts";
-import { normalizeAssignedSpeakerNames } from "@/lib/cloud-recordings/speaker-names";
+import {
+  defaultCallSpeakerNames,
+  normalizeAssignedSpeakerNames,
+} from "@/lib/cloud-recordings/speaker-names";
 import { SpeakerNamesEditor } from "./speaker-names-editor";
 import { useColors } from "@/hooks/use-colors";
 import { useSipCallStore } from "@/lib/sip/call-store";
@@ -87,21 +89,24 @@ export function LiveRecordingPanel({
   );
   const detail = cloud.detail;
   const contacts = useDeviceContacts();
-  const { user } = useAuth({ autoFetch: false });
   const assigned = useRecordingSpeakerNames(
     cloud.owner,
     callUuid,
     detail?.transcript ?? "",
   );
+  const matchedContactName = detail
+    ? deviceContactName(contacts.people, detail.number) || contactName
+    : undefined;
+  const automaticSpeakerNames = detail
+    ? defaultCallSpeakerNames(detail.direction, matchedContactName)
+    : undefined;
   const speakerNames = mergeTranscriptSpeakerNames(
     assigned.names,
-    trustedSpeakerNames,
+    mergeTranscriptSpeakerNames(trustedSpeakerNames, automaticSpeakerNames),
   );
   const candidates = normalizeAssignedSpeakerNames({
-    speaker1: user?.name,
-    speaker2: detail
-      ? deviceContactName(contacts.people, detail.number) || contactName
-      : undefined,
+    speaker1: "Me",
+    speaker2: matchedContactName,
   });
   const suggestions = [...new Set(Object.values(candidates))];
   const translated =
