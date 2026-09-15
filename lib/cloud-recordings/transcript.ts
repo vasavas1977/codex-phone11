@@ -37,10 +37,9 @@ function duplicateParticipantNames(names: TranscriptSpeakerNames) {
 }
 
 /**
- * Prefer names resolved on the handset (signed-in user and device contacts),
- * then fall back to participant names persisted with the server call record.
- * Caller-ID text is useful when no contact exists, but it should not replace a
- * contact name the person chose on their own phone.
+ * Merge user-confirmed or verified speaker-to-person mappings only.
+ * Call direction, device contacts, and server caller ID do not establish
+ * which voice received a diarization label.
  */
 export function mergeTranscriptSpeakerNames(
   preferred: TranscriptSpeakerNames = {},

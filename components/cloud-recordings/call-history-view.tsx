@@ -216,6 +216,7 @@ export function RecordingPanel({
   notice,
   dateLabel,
   actions,
+  transcriptActions,
   full = false,
   colors = lightRecordingColors,
 }: {
@@ -231,6 +232,7 @@ export function RecordingPanel({
   notice?: string;
   dateLabel?: string;
   actions?: ReactNode;
+  transcriptActions?: ReactNode;
   full?: boolean;
   colors?: RecordingColors;
 }) {
@@ -246,7 +248,8 @@ export function RecordingPanel({
     queued: "Preparing transcription…",
     processing: "Transcription is processing…",
     ready: "Transcript is still processing. Refresh status.",
-    failed: "Transcription could not be created. Refresh status to check again.",
+    failed:
+      "Transcription could not be created. Refresh status to check again.",
   }[summaryStatus];
   const turns = transcript ? transcriptTurns(transcript, speakerNames) : [];
   const visibleTurns = full ? turns : turns.slice(0, 4);
@@ -312,6 +315,7 @@ export function RecordingPanel({
           </TouchableOpacity>
         ))}
       </View>
+      {activeTab === "transcription" && transcriptActions}
       {activeTab === "summary" ? (
         summaryStatus === "ready" && summary ? (
           <View style={{ gap: 12 }}>

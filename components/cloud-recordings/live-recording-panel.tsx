@@ -3,6 +3,12 @@ import { useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useCloudRecordings } from "@/hooks/use-cloud-recordings";
+import { useRecordingSpeakerNames } from "@/hooks/use-recording-speaker-names";
+import { useDeviceContacts } from "@/hooks/use-device-contacts";
+import { useAuth } from "@/hooks/use-auth";
+import { deviceContactName } from "@/lib/phone/device-contacts";
+import { normalizeAssignedSpeakerNames } from "@/lib/cloud-recordings/speaker-names";
+import { SpeakerNamesEditor } from "./speaker-names-editor";
 import { useColors } from "@/hooks/use-colors";
 import { useSipCallStore } from "@/lib/sip/call-store";
 import { RecordingPanel } from "./call-history-view";
@@ -12,7 +18,10 @@ import { RecordingSummaryActions } from "./summary-actions";
 import { createTRPCClient } from "@/lib/trpc";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import type { RecordingSummaryContent } from "@/lib/cloud-recordings/summary-actions";
-import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
+import {
+  mergeTranscriptSpeakerNames,
+  type TranscriptSpeakerNames,
+} from "@/lib/cloud-recordings/transcript";
 import type { CloudRecordingDetail } from "@/shared/cloud-recordings";
 
 export function recordingStatusMessage(detail: CloudRecordingDetail) {
@@ -77,6 +86,24 @@ export function LiveRecordingPanel({
       ),
   );
   const detail = cloud.detail;
+  const contacts = useDeviceContacts();
+  const { user } = useAuth({ autoFetch: false });
+  const assigned = useRecordingSpeakerNames(
+    cloud.owner,
+    callUuid,
+    detail?.transcript ?? "",
+  );
+  const speakerNames = mergeTranscriptSpeakerNames(
+    assigned.names,
+    trustedSpeakerNames,
+  );
+  const candidates = normalizeAssignedSpeakerNames({
+    speaker1: user?.name,
+    speaker2: detail
+      ? deviceContactName(contacts.people, detail.number) || contactName
+      : undefined,
+  });
+  const suggestions = [...new Set(Object.values(candidates))];
   const translated =
     translation?.owner === cloud.owner && translation?.callUuid === callUuid
       ? translation.content
@@ -139,7 +166,7 @@ export function LiveRecordingPanel({
         summaryStatus={detail.summaryStatus}
         summary={translated ?? detail.summary}
         transcript={translated?.transcript ?? detail.transcript}
-        speakerNames={trustedSpeakerNames}
+        speakerNames={speakerNames}
         notice={
           cloud.error ||
           (busy
@@ -175,7 +202,7 @@ export function LiveRecordingPanel({
               startedAt={detail.startedAt}
               summary={detail.summary}
               transcript={detail.transcript}
-              speakerNames={trustedSpeakerNames}
+              speakerNames={speakerNames}
               colors={colors}
               onContentChange={(content, language) =>
                 setTranslation(
@@ -196,6 +223,21 @@ export function LiveRecordingPanel({
                   throw new Error("Account changed");
                 return result;
               }}
+            />
+          ) : undefined
+        }
+        transcriptActions={
+          detail.transcript && cloud.owner ? (
+            <SpeakerNamesEditor
+              key={`${cloud.owner}:${callUuid}:${detail.transcript}`}
+              transcript={detail.transcript}
+              names={speakerNames}
+              suggestions={suggestions}
+              ready={assigned.ready}
+              saving={assigned.saving}
+              error={assigned.error}
+              onSave={assigned.save}
+              colors={colors}
             />
           ) : undefined
         }
