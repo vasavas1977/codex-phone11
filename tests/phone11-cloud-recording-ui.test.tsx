@@ -92,9 +92,14 @@ import {
   CaptureControls,
   recordingChangeMessage,
 } from "../components/cloud-recordings/capture-controls";
-import { LiveRecordingPanel } from "../components/cloud-recordings/live-recording-panel";
+import {
+  LiveRecordingPanel,
+  recordingStatusMessage,
+  recordingStatusNeedsRefresh,
+} from "../components/cloud-recordings/live-recording-panel";
 import Detail from "../app/call-recording/[callUuid]";
 import { playbackURL } from "../lib/cloud-recordings/presentation";
+import type { CloudRecordingDetail } from "../shared/cloud-recordings";
 const item = {
   callUuid: "11111111-1111-4111-8111-111111111111",
   number: "3001",
@@ -135,6 +140,67 @@ it("offers a manual AI refresh for failed or stale detail", async () => {
   html = renderToStaticMarkup(createElement(Detail));
   expect(html).toContain("Refreshing AI status");
 });
+it("distinguishes recording preparation, readiness, and durable failure", () => {
+  const statusDetail: CloudRecordingDetail = {
+    ...item,
+    tenantId: 1,
+    direction: "inbound",
+    recordingStatus: "pending",
+    summaryStatus: "queued",
+  };
+  expect(recordingStatusMessage(statusDetail)).toBe("Preparing recording…");
+  expect(recordingStatusNeedsRefresh(statusDetail)).toBe(true);
+
+  const readyWithoutPlayback = {
+    ...statusDetail,
+    recordingStatus: "ready" as const,
+    manualControls: undefined,
+  };
+  expect(recordingStatusMessage(readyWithoutPlayback)).toBe(
+    "Recording saved. Preparing playback…",
+  );
+  expect(recordingStatusNeedsRefresh(readyWithoutPlayback)).toBe(true);
+
+  const retryableFailure = {
+    ...statusDetail,
+    recordingStatus: "failed" as const,
+    manualControls: { canStart: true, canStop: false },
+  };
+  expect(recordingStatusMessage(retryableFailure)).toBe(
+    "Recording is off. You can start it again.",
+  );
+  expect(recordingStatusNeedsRefresh(retryableFailure)).toBe(false);
+
+  const durableFailure = {
+    ...statusDetail,
+    recordingStatus: "failed" as const,
+    manualControls: { canStart: false, canStop: false },
+  };
+  expect(recordingStatusMessage(durableFailure)).toBe(
+    "Recording could not be saved.",
+  );
+  expect(recordingStatusNeedsRefresh(durableFailure)).toBe(true);
+});
+it("shows explicit transcript processing and failure states", () => {
+  let html = renderToStaticMarkup(
+    createElement(RecordingPanel, {
+      summaryStatus: "processing",
+      activeTab: "transcription",
+      onTabChange: vi.fn(),
+    }),
+  );
+  expect(html).toContain("Transcription is processing");
+  expect(html).not.toContain("No transcription available");
+
+  html = renderToStaticMarkup(
+    createElement(RecordingPanel, {
+      summaryStatus: "failed",
+      activeTab: "transcription",
+      onTabChange: vi.fn(),
+    }),
+  );
+  expect(html).toContain("Transcription could not be created");
+  expect(html).toContain("Refresh status to check again");
 it("renders server summary and transcript only when provided", () => {
   mocks.cloud.detail = {
     ...item,
@@ -164,7 +230,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("keeps generic speaker labels without a trusted identity map", () => {
+it("keeps inbound voices anonymous even when contact and account names are known", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -207,6 +273,43 @@ it("keeps generic speaker labels without a trusted identity map", () => {
   expect(html).not.toContain("Server Extension");
 });
 
+it("keeps outbound voices anonymous even when contact and account names are known", () => {
+  mocks.identity = { id: 1, name: "Vasavas" };
+  mocks.contacts = {
+    people: [
+      {
+        id: "contact-1",
+        name: "Somchai Contact",
+        phones: [
+          {
+            number: "+66812345678",
+            label: "Mobile",
+            key: "+66812345678",
+          },
+        ],
+      },
+    ],
+  };
+  mocks.cloud.detail = {
+    ...item,
+    number: "+66812345678",
+    direction: "outbound",
+    summaryStatus: "ready",
+    transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+  };
+  const html = renderToStaticMarkup(
+    createElement(LiveRecordingPanel, {
+      callUuid: item.callUuid,
+      full: true,
+      initialTab: "transcription",
+    }),
+  );
+  expect(html).not.toContain("Vasavas");
+  expect(html).not.toContain("Somchai Contact");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
+});
+
 it("uses participant names only when the caller supplies a trusted identity map", () => {
   mocks.cloud.detail = {
     ...item,
@@ -234,6 +337,48 @@ it("uses participant names only when the caller supplies a trusted identity map"
   expect(html).not.toContain("Untrusted server caller ID");
   expect(html).not.toContain("Untrusted server extension");
 });
+it.each(["inbound", "outbound"])(
+  "does not fill a partial trusted voice mapping from %s call direction",
+  (direction) => {
+    mocks.identity = { id: 1, name: "Vasavas" };
+    mocks.contacts = {
+      people: [
+        {
+          id: "contact-1",
+          name: "Somchai Contact",
+          phones: [
+            { number: "+66812345678", label: "Mobile", key: "+66812345678" },
+          ],
+        },
+      ],
+    };
+    mocks.cloud.detail = {
+      ...item,
+      number: "+66812345678",
+      direction,
+      summaryStatus: "ready",
+      transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+      participantNames: {
+        speaker1: "Server caller",
+        speaker2: "Server extension",
+      },
+    };
+    const html = renderToStaticMarkup(
+      createElement(LiveRecordingPanel, {
+        callUuid: item.callUuid,
+        full: true,
+        initialTab: "transcription",
+        trustedSpeakerNames: { speaker1: "Verified participant" },
+      }),
+    );
+    expect(html).toContain("Verified participant");
+    expect(html).toContain("Speaker 2");
+    expect(html).not.toContain("Vasavas");
+    expect(html).not.toContain("Somchai Contact");
+    expect(html).not.toContain("Server caller");
+    expect(html).not.toContain("Server extension");
+  },
+);
 it("shows unavailable server state without fake records", () => {
   mocks.cloud = {
     items: [],

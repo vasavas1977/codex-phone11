@@ -14,6 +14,36 @@ import { createTRPCClient } from "@/lib/trpc";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import type { RecordingSummaryContent } from "@/lib/cloud-recordings/summary-actions";
 import type { TranscriptSpeakerNames } from "@/lib/cloud-recordings/transcript";
+import type { CloudRecordingDetail } from "@/shared/cloud-recordings";
+
+export function recordingStatusMessage(detail: CloudRecordingDetail) {
+  if (detail.recordingFinalizing) return "Saving recording…";
+  switch (detail.recordingStatus) {
+    case "pending":
+      return "Preparing recording…";
+    case "recording":
+      return "Recording in progress";
+    case "ready":
+      return detail.playbackPath
+        ? undefined
+        : "Recording saved. Preparing playback…";
+    case "failed":
+      return detail.manualControls?.canStart
+        ? "Recording is off. You can start it again."
+        : "Recording could not be saved.";
+    default:
+      return detail.manualControls?.canStart ? "Recording is off." : undefined;
+  }
+}
+
+export function recordingStatusNeedsRefresh(detail: CloudRecordingDetail) {
+  return (
+    detail.recordingFinalizing ||
+    detail.recordingStatus === "pending" ||
+    (detail.recordingStatus === "ready" && !detail.playbackPath) ||
+    (detail.recordingStatus === "failed" && !detail.manualControls?.canStart)
+  );
+}
 export function LiveRecordingPanel({
   callUuid,
   full = false,
@@ -52,6 +82,8 @@ export function LiveRecordingPanel({
     translation?.owner === cloud.owner && translation?.callUuid === callUuid
       ? translation.content
       : undefined;
+  // Call direction identifies participants, but does not establish which voice
+  // the transcription service labeled Speaker 1 or Speaker 2.
   if (!detail)
     return (
       <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
