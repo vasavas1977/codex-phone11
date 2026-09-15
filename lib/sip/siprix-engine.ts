@@ -82,6 +82,7 @@ export class SiprixEngine {
   private terminated = new Set<string>();
   private connected = new Set<string>();
   private audioActive = false;
+  private transfers = new Map<string, { requestId?: string; settle: (error?: Error) => void }>();
   private callManager: typeof import("./native-call").nativeCallManager | null = null;
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -279,6 +280,8 @@ export class SiprixEngine {
     this.sequence = event.sequence;
     if (event.type === "registration" && "account" in event) {
       this.registration(event.account);
+    } else if (event.type === "callTransferred" && "call" in event) {
+      this.transferOutcome(event.call);
     } else if (["callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted"].includes(event.type) && "call" in event) {
       this.applyCall(event.call, event.type === "callConnected");
     } else if (event.type === "network" && "networkState" in event && event.networkState === 0) {
@@ -313,7 +316,10 @@ export class SiprixEngine {
     else useSipAccountStore.getState().setRegistrationState("unregistered");
     const present = new Set(snapshot.calls.map(call => call.callId));
     for (const id of this.calls.keys()) if (!present.has(id)) this.endCall(id);
-    for (const call of snapshot.calls) this.applyCall(call, call.state === "connected");
+    for (const call of snapshot.calls) {
+      this.applyCall(call, call.state === "connected");
+      this.transferOutcome(call);
+    }
   }
 
   private async reconcileCompletedCalls(session: Session, verified?: WakeBinding): Promise<void> {
@@ -334,7 +340,15 @@ export class SiprixEngine {
     }
   }
 
+  private transferOutcome(call: SiprixCall): void {
+    if (call.accountId !== this.session?.accountId || !this.calls.has(call.callId) || call.transferPending !== false || !Number.isInteger(call.transferStatusCode)) return;
+    const pending = this.transfers.get(call.callId);
+    if (!pending?.requestId || call.transferRequestId !== pending.requestId) return;
+    pending.settle(call.transferStatusCode === 0 ? undefined : new Error("Call transfer failed. Your original call remains available."));
+  }
+
   private endCall(id: string): void {
+    this.transfers.get(id)?.settle(new Error("The call ended before transfer was confirmed."));
     if (this.calls.has(id)) this.callManager?.reportCallEnded(id);
     this.terminated.add(id);
     this.connected.delete(id);
@@ -487,8 +501,43 @@ export class SiprixEngine {
     if (!/^[0-9*#A-D]+$/i.test(digits)) return Promise.reject(new Error("Invalid DTMF digits"));
     return this.command(callId, "DTMF", bridge => bridge.sendDtmf(callId, digits.toUpperCase()));
   }
-  transferCall(_callId: string, _destination: string): Promise<void> {
-    return Promise.reject(unsupported("transfer"));
+  supportsBlindTransfer(): boolean {
+    return this.current() && typeof this.bridge?.transferCall === "function" && typeof this.bridge?.createTransferRequestId === "function";
+  }
+
+  transferCall(callId: string, destination: string): Promise<void> {
+    const target = destination.trim();
+    if (!/^\+?[0-9*#]{1,32}$/.test(target)) return Promise.reject(new Error("Enter a phone number or extension."));
+    if (!this.supportsBlindTransfer()) return Promise.reject(new Error("Install the Phone11 update to enable call transfer."));
+    const call = this.calls.get(callId);
+    if (!call || call.state !== "connected" || call.held || call.holdState !== 0) return Promise.reject(new Error("Resume the connected call before transferring it."));
+    if (this.transfers.has(callId)) return Promise.reject(new Error("A transfer is already in progress."));
+    let settled = false;
+    let settle!: (error?: Error) => void;
+    const outcome = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => settle(new Error("Transfer has not been confirmed. Keep the call open; the server may still complete it.")), 30_000);
+      settle = error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.transfers.delete(callId);
+        if (error) reject(error);
+        else resolve();
+      };
+    });
+    const pending: { requestId?: string; settle: (error?: Error) => void } = { settle };
+    this.transfers.set(callId, pending);
+    // Never hold the command queue while waiting for REFER: mute/end must stay responsive.
+    void this.command(callId, "transfer", async bridge => {
+      if (settled) throw new Error("Transfer request expired before it could be sent.");
+      if (!bridge.transferCall || !bridge.createTransferRequestId) throw new Error("Call transfer requires a native update.");
+      const requestId = await bridge.createTransferRequestId();
+      if (settled) throw new Error("Transfer request expired before it could be sent.");
+      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId)) throw new Error("Invalid native transfer identity.");
+      pending.requestId = requestId;
+      await bridge.transferCall(callId, target, requestId);
+    }).catch(() => settle(new Error("Could not request transfer. Your original call remains available.")));
+    return outcome;
   }
 
   handleNativeAudioSession(active: boolean, _source = "callkit"): Promise<void> {
@@ -505,6 +554,7 @@ export class SiprixEngine {
   destroy(): Promise<void> {
     // Invalidate before waiting for an outstanding native Promise or auth cleanup.
     ++this.revision;
+    for (const transfer of [...this.transfers.values()]) transfer.settle(new Error("Your phone session changed."));
     return this.serialize(() => this.cleanup());
   }
 

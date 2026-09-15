@@ -8,10 +8,12 @@ import { useSipAccountStore } from "@/lib/sip/account-store";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useAuth } from "@/hooks/use-auth";
 import { chatNotificationClientEnabled } from "@/lib/notifications/client";
+import { useThemeContext, type AppearancePreference } from "@/lib/theme-provider";
 import { trpc } from "@/lib/trpc";
 
 export default function SettingsScreen() {
   const colors = useColors();
+  const { appearance, setAppearance } = useThemeContext();
   const { user, logout } = useAuth({ autoFetch: false });
   const tenantQuery = trpc.pbx.tenant.get.useQuery(undefined, {
     enabled: Boolean(user),
@@ -57,6 +59,24 @@ export default function SettingsScreen() {
     </View>
     {row("Phone account", "View your assigned extension and connection", () => router.push(user ? "/settings/sip" : "/auth/sign-in"))}
     {account && row(busy ? "Connecting…" : "Reconnect", "Refresh your phone connection", reconnect)}
+    <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <Text style={[styles.rowTitle, { color: colors.foreground }]}>Appearance</Text>
+      <View accessibilityRole="radiogroup" style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+        {(["system", "light", "dark"] as AppearancePreference[]).map(preference => (
+          <Pressable key={preference} accessibilityRole="radio"
+            accessibilityState={{ checked: appearance === preference }}
+            accessibilityLabel={preference === "system" ? "Follow device appearance" : `${preference} appearance`}
+            onPress={() => setAppearance(preference)}
+            style={{ flex: 1, minHeight: 44, padding: 10, alignItems: "center", justifyContent: "center", borderRadius: 10,
+              backgroundColor: appearance === preference ? colors.primary : colors.background }}>
+            <Text style={{ color: appearance === preference ? "#FFFFFF" : colors.foreground, fontWeight: "600" }}>
+              {preference === "system" ? "System" : preference === "light" ? "Light" : "Dark"}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+    {row("Recording & AI", "Recording policy, AI summaries and retention", () => router.push("/call-recording/settings"))}
     {row("Call history", "Calls placed and received on this phone", () => router.push("/(tabs)/recents"))}
     {row("Team Chat", "Conversations in your work account", () => router.push("/(tabs)/teamchat"))}
     {chatNotificationClientEnabled() && row("Message alerts", "Choose alerts for your selected workspace", () => router.push("/notifications/preferences"))}

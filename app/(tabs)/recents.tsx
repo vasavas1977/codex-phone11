@@ -240,32 +240,16 @@ export default function RecentsScreen() {
           gap: 14,
         }}
       >
-        <View
+        <Text
+          accessibilityRole="header"
           style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "space-between",
+            fontSize: 28,
+            fontWeight: "700",
+            color: colors.foreground,
           }}
         >
-          <Text
-            style={{
-              fontSize: 28,
-              fontWeight: "700",
-              color: colors.foreground,
-            }}
-          >
-            Recents
-          </Text>
-          <TouchableOpacity
-            accessibilityRole="button"
-            style={{ minHeight: 48, justifyContent: "center" }}
-            onPress={() => router.push("/call-recording/settings")}
-          >
-            <Text style={{ fontSize: 13, color: colors.primary }}>
-              Recording settings
-            </Text>
-          </TouchableOpacity>
-        </View>
+          Recents
+        </Text>
         <TextInput
           accessibilityLabel="Search recent calls"
           value={search}

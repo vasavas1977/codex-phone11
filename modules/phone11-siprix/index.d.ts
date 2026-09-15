@@ -42,6 +42,9 @@ export interface Call {
   muted: boolean;
   held: boolean;
   holdState: number;
+  transferRequestId?: string;
+  transferPending?: boolean;
+  transferStatusCode?: number;
   statusCode?: number;
   historyId?: string; startedAt?: number; answeredAt?: number;
   wakeCallUUID?: string;
@@ -68,7 +71,7 @@ export interface PlaybackAudioRouteStatus {
 
 type EventData =
   | { type: 'registration'; account: Account }
-  | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted'; call: Call }
+  | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted' | 'callTransferred'; call: Call }
   | { type: 'devicesAudioChanged' | 'audioSession'; audioSessionActive: boolean; speaker: boolean }
   | ({ type: 'playbackAudioRoute' } & PlaybackAudioRouteStatus)
   | { type: 'trial' }
@@ -98,6 +101,9 @@ export interface Phone11SiprixModule {
   makeCall(accountId: string, destination: string): Promise<Call>;
   answerCall(callId: string): Promise<void>;
   hangupCall(callId: string): Promise<void>;
+  /** Optional for compatibility with installed native builds predating transfer support. Resolves acceptance only. */
+  createTransferRequestId?(): Promise<string>;
+  transferCall?(callId: string, destination: string, requestId: string): Promise<void>;
   setMute(callId: string, muted: boolean): Promise<void>;
   setHold(callId: string, held: boolean): Promise<void>;
   sendDtmf(callId: string, digits: string): Promise<void>;

@@ -37,7 +37,7 @@ function RecordingStatus({
   message: string;
   refresh(): Promise<void>;
 }) {
-  const colors = useColors();
+  const colors = useColors("dark");
   return (
     <View style={{ gap: 4 }}>
       <Text accessibilityLiveRegion="polite" style={{ color: "#B4BAC6" }}>
@@ -63,7 +63,7 @@ function MatchedRecording({
 }) {
   const cloud = useCloudRecordings(callUuid);
   useActiveRefresh(cloud);
-  const colors = useColors();
+  const colors = useColors("dark");
   const detail = cloud.detail;
   if (
     !detail ||

@@ -66,7 +66,7 @@ const config: ExpoConfig = {
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
-  userInterfaceStyle: "dark",
+  userInterfaceStyle: "automatic",
   // Both native SIP adapters currently expose the legacy NativeModules bridge.
   newArchEnabled: false,
   ios: {

@@ -587,6 +587,10 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
         }
       }
     }
+  } else if ([type isEqualToString:@"callTransferred"] && call && [call[@"transferPending"] boolValue]) {
+    call[@"transferPending"] = @NO;
+    call[@"transferStatusCode"] = data[@"statusCode"];
+    [self emit:type data:@{@"call": [call copy]}];
   } else if ([type isEqualToString:@"devicesAudioChanged"]) {
     [self emit:type data:@{@"audioSessionActive": @(self.audioSessionActive), @"speaker": @(P11Speaker())}];
   } else if ([type isEqualToString:@"trial"]) {
@@ -697,7 +701,9 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 - (void)onPlayerState:(NSInteger)playerId playerState:(PlayerState)state {}
 - (void)onRingerState:(BOOL)started {}
 - (void)onCallSwitched:(NSInteger)callId {}
-- (void)onCallTransferred:(NSInteger)callId statusCode:(NSInteger)code {}
+- (void)onCallTransferred:(NSInteger)callId statusCode:(NSInteger)code {
+  [self post:@"callTransferred" data:@{@"callId": P11ID(callId), @"statusCode": @(code)}];
+}
 - (void)onCallRedirected:(NSInteger)callId relatedCallId:(NSInteger)relatedId referTo:(NSString *)to {}
 - (void)onCallVideoUpgraded:(NSInteger)callId withVideo:(BOOL)video {}
 - (void)onCallVideoUpgradeRequested:(NSInteger)callId {}
@@ -1294,6 +1300,37 @@ RCT_EXPORT_METHOD(hangupCall:(NSString *)callId resolver:(RCTPromiseResolveBlock
   }
 }
 
+// Native UUIDs remain unique across JS engine recreation and retained call snapshots.
+RCT_EXPORT_METHOD(createTransferRequestId:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (![self ready:reject]) return;
+  resolve(NSUUID.UUID.UUIDString.lowercaseString);
+}
+
+// Resolves command acceptance only; callTransferred carries the SDK outcome.
+RCT_EXPORT_METHOD(transferCall:(NSString *)callId destination:(NSString *)destination requestId:(NSString *)requestId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSMutableDictionary *call = runtime.calls[callId];
+  if (![call[@"state"] isEqualToString:@"connected"] || [call[@"held"] boolValue] || [call[@"holdState"] integerValue] != 0 || [runtime.pendingHolds containsObject:callId]) {
+    P11Reject(reject, @"E_CALL_STATE", @"Resume the connected call before transferring it."); return;
+  }
+  if ([call[@"transferPending"] boolValue] || [call[@"transferStatusCode"] isEqual:@0]) {
+    P11Reject(reject, @"E_TRANSFER_PENDING", @"Wait for the transfer outcome before another request."); return;
+  }
+  if (!P11String(requestId, 64) || [requestId rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef-"] invertedSet]].location != NSNotFound) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Invalid transfer request identity."); return;
+  }
+  // Restrict this first release to extension/phone-number targets; no SIP headers or URIs.
+  NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"^[+]?[0-9*#]{1,32}\\z" options:0 error:nil];
+  if (!P11String(destination, 33) || [pattern numberOfMatchesInString:destination options:0 range:NSMakeRange(0, destination.length)] != 1) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Enter a phone number or extension."); return;
+  }
+  if (![self checkSDK:[runtime.sdk callTransferBlind:callId.intValue toExt:destination] operation:@"callTransferBlind" reject:reject]) return;
+  call[@"transferRequestId"] = requestId;
+  call[@"transferPending"] = @YES;
+  [call removeObjectForKey:@"transferStatusCode"];
+  resolve(nil);
+}
+
 RCT_EXPORT_METHOD(setMute:(NSString *)callId muted:(BOOL)muted resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
   if (![self checkSDK:[runtime.sdk callMuteMic:callId.intValue mute:muted] operation:@"callMuteMic" reject:reject]) return;
@@ -1304,6 +1341,9 @@ RCT_EXPORT_METHOD(setMute:(NSString *)callId muted:(BOOL)muted resolver:(RCTProm
 
 RCT_EXPORT_METHOD(setHold:(NSString *)callId held:(BOOL)held resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  if ([runtime.calls[callId][@"transferPending"] boolValue]) {
+    P11Reject(reject, @"E_TRANSFER_PENDING", @"Wait for the transfer outcome before changing hold."); return;
+  }
   if ([runtime.pendingHolds containsObject:callId]) {
     P11Reject(reject, @"E_HOLD_PENDING", @"Wait for the SDK hold callback before another hold command."); return;
   }

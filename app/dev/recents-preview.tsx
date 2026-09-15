@@ -10,7 +10,8 @@ import { CallActionsSheet } from "@/components/cloud-recordings/call-actions-she
 import { SummaryActionsView } from "@/components/cloud-recordings/summary-actions";
 import { emptyPersonalRecordingMetadata } from "@/lib/cloud-recordings/summary-actions";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { SchemeColors } from "@/constants/theme";
+import { useColors } from "@/hooks/use-colors";
+import { useThemeContext } from "@/lib/theme-provider";
 import type {
   PlaybackAudioRoute,
   PlaybackAudioRouteStatus,
@@ -44,7 +45,8 @@ export default function RecentsPreview() {
     transcript:
       "Speaker 1: Can we make the product clearer in each conversation?\nSpeaker 2: Yes, I’ll review the details and add a product label.",
   };
-  const colors = SchemeColors.dark;
+  const colors = useColors();
+  const { appearance, setAppearance } = useThemeContext();
   const sampleCall = {
     id: "preview",
     name: "Nathasa",
@@ -109,26 +111,33 @@ export default function RecentsPreview() {
         }}
       >
         <View style={{ padding: 20, paddingTop: 30, gap: 22 }}>
-          <View
+          <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+            <Text style={{ color: colors.muted, fontSize: 12 }}>Preview</Text>
+            {(["system", "light", "dark"] as const).map((value) => (
+              <TouchableOpacity
+                key={value}
+                accessibilityRole="button"
+                accessibilityLabel={`Preview ${value} appearance`}
+                accessibilityState={{ selected: appearance === value }}
+                onPress={() => setAppearance(value)}
+                style={{ minHeight: 44, paddingHorizontal: 12, justifyContent: "center" }}
+              >
+                <Text style={{ color: appearance === value ? colors.primary : colors.muted }}>
+                  {value.charAt(0).toUpperCase() + value.slice(1)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <Text
+            accessibilityRole="header"
             style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
+              color: colors.foreground,
+              fontSize: 28,
+              fontWeight: "700",
             }}
           >
-            <Text
-              style={{
-                color: colors.foreground,
-                fontSize: 28,
-                fontWeight: "700",
-              }}
-            >
-              Recents
-            </Text>
-            <Text style={{ color: colors.primary, fontSize: 13 }}>
-              Recording settings
-            </Text>
-          </View>
+            Recents
+          </Text>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}

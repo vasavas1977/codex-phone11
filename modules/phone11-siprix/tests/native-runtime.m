@@ -156,6 +156,7 @@ static id<SiprixEventDelegate> sdkDelegate;
 - (int)callAccept:(int)callId withVideo:(BOOL)video { accepts++; return sdkCode; }
 - (int)callReject:(int)callId statusCode:(int)statusCode { rejects++; return sdkCode; }
 - (int)callBye:(int)callId { byes++; return sdkCode; }
+- (int)callTransferBlind:(int)callId toExt:(NSString *)toExt { return sdkCode; }
 - (int)callMuteMic:(int)callId mute:(BOOL)mute { mutes++; lastMuteCall = callId; lastMuteValue = mute; return sdkCode; }
 - (int)callGetHoldState:(int)callId holdState:(SiprixHoldData *)data { data.holdState = mockHold; return sdkCode; }
 - (int)callHold:(int)callId { holds++; return sdkCode; }
@@ -410,6 +411,36 @@ int main(void) {
     CHECK(!error);
     [bridge getSnapshot:resolve rejecter:reject];
     CHECK(![result[@"speaker"] boolValue]); // Route request is not physical route proof.
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-1" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_STATE"]); // A prior hold command is still pending.
+    mockHold = HoldStateNone;
+    [sdkDelegate onCallHeld:callId.intValue holdState:mockHold]; flush();
+    [bridge createTransferRequestId:resolve rejecter:reject];
+    NSString *transferRequest1 = result;
+    CHECK(!error && [[NSUUID alloc] initWithUUIDString:transferRequest1] != nil);
+    [bridge createTransferRequestId:resolve rejecter:reject];
+    CHECK(!error && ![transferRequest1 isEqualToString:result]);
+    // Transfer command acceptance preserves the call until the SDK's outcome.
+    [bridge transferCall:callId destination:@"sip:3003@external.example" requestId:@"1-1" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_INVALID_ARGUMENT"]);
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-2" resolver:resolve rejecter:reject];
+    CHECK(!error && [P11SiprixRuntime.shared.calls[callId][@"transferPending"] boolValue]);
+    [bridge setHold:callId held:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_TRANSFER_PENDING"]);
+    [bridge transferCall:callId destination:@"4004" requestId:@"1-3" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_TRANSFER_PENDING"]);
+    [sdkDelegate onCallTransferred:callId.intValue statusCode:486]; flush();
+    CHECK(![P11SiprixRuntime.shared.calls[callId][@"transferPending"] boolValue]);
+    CHECK([bridge.testEvents.lastObject[@"type"] isEqualToString:@"callTransferred"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"transferStatusCode"] intValue] == 486);
+    CHECK(P11SiprixRuntime.shared.calls.count == 1 && byes == 0);
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-2" resolver:resolve rejecter:reject];
+    CHECK(!error);
+    [sdkDelegate onCallTransferred:callId.intValue statusCode:0]; flush();
+    CHECK([P11SiprixRuntime.shared.calls[callId][@"transferStatusCode"] isEqual:@0]);
+    CHECK(P11SiprixRuntime.shared.calls.count == 1 && byes == 0);
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-2" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_TRANSFER_PENDING"]);
     [bridge hangupCall:callId resolver:resolve rejecter:reject];
     CHECK(!error && byes == 1 && P11SiprixRuntime.shared.calls.count == 1);
     [sdkDelegate onCallTerminated:callId.intValue statusCode:200];

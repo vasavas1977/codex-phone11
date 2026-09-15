@@ -20,7 +20,7 @@ import { resolveCurrentCall } from "@/lib/sip/current-call";
 import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 
 export default function ActiveCallScreen() {
-  const colors = useColors();
+  const colors = useColors("dark");
   const insets = useSafeAreaInsets();
   const { number, callId: requestedCallId } = useLocalSearchParams<{
     number?: string;
