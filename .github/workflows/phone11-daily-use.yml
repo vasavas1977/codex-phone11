@@ -122,7 +122,6 @@ jobs:
             tests/phone11-voip-token.test.ts \
             tests/phone11-voip-client.test.ts \
             tests/phone11-apns.test.ts \
-            tests/phone11-push-delivery.test.ts \
             tests/phone11-pbx-integration-security.test.ts \
             tests/phone11-chat-state.test.ts \
             tests/phone11-chat-controls.test.tsx \
@@ -143,6 +142,7 @@ jobs:
             tests/phone11-voip-enrollment-lifecycle.test.ts \
             tests/phone11-wake-service.test.ts \
             tests/phone11-wake-routes.test.ts
+          pnpm exec vitest run tests/phone11-push-delivery.test.ts
           node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
       - name: Parse disabled and enabled wake candidates with exact Kamailio version
         run: node ops/scripts/check-phone11-wake-kamailio.mjs --image ghcr.io/kamailio/kamailio-ci@sha256:8eebac744905d360d04bd871ee46a3de0908aa30989649c00fd590914cb35fa0

@@ -49,6 +49,9 @@ jobs:
       - name: Run Vitest tests
         run: pnpm exec vitest run --exclude "**/*.test.mjs"
 
+      - name: Generate Android project for native contract tests
+        run: pnpm exec expo prebuild --platform android --no-install
+
       - name: Run Node tests
         run: |
           node_tests=()
