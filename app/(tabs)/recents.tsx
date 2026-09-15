@@ -52,10 +52,10 @@ type RecentsFilter =
   | "summary"
   | "starred"
   | "hidden";
-const filters: ReadonlyArray<{
+const filters: readonly {
   value: Exclude<RecentsFilter, "hidden">;
   label: string;
-}> = [
+}[] = [
   { value: "all", label: "All" },
   { value: "missed", label: "Missed" },
   { value: "recorded", label: "Recorded" },
@@ -147,7 +147,7 @@ export default function RecentsScreen() {
         setExpanded(null);
         setActionId(null);
       };
-    }, [reloadHistory, reloadCloud, user?.id]),
+    }, [reloadHistory, reloadCloud]),
   );
   const local =
     history.ownerUserId === user?.id
