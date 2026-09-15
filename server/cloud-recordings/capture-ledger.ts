@@ -4,7 +4,7 @@ import { createCloudRecordingRepository } from './repository';
 import type { CaptureLedger,CaptureLease } from './capture';
 const channel=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Persistent leases and exact pre-answer authenticated route identity. */
-export function createCaptureLedger(db= getPool(),repo=createCloudRecordingRepository(db)):CaptureLedger & { stopped(lease:CaptureLease):Promise<void>; pendingUploads():Promise<Array<{channelUuid:string;path:string}>> } {
+export function createCaptureLedger(db= getPool(),repo=createCloudRecordingRepository(db)):CaptureLedger & { stopped(lease:CaptureLease):Promise<void>; pendingUploads():Promise<{channelUuid:string;path:string}[]> } {
  const path=(tenant:number,token:string)=>`/var/lib/freeswitch/recordings/phone11/${tenant}/${token}.wav`;
  function lease(r:any):CaptureLease{return {channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:path(Number(r.tenant_id),r.capture_token),...(r.recording_status==='ready'&&r.storage_key?{storageKey:r.storage_key}:{}),...(r.capture_upload_lease_token?{uploadLeaseToken:r.capture_upload_lease_token}:{})};}
  const route=`JOIN phone11_recording_routes rr ON rr.channel_uuid::text=r.call_uuid AND rr.tenant_id=r.tenant_id AND rr.extension_id=r.extension_id`;

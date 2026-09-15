@@ -63,7 +63,6 @@ function MatchedRecording({
 }) {
   const cloud = useCloudRecordings(callUuid);
   useActiveRefresh(cloud);
-  const colors = useColors();
   const detail = cloud.detail;
   if (
     !detail ||
