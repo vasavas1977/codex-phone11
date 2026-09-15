@@ -40,7 +40,7 @@ export interface SummaryActionsViewProps {
   saving?: boolean;
   storageError?: string;
   selectedLanguage: RecordingTranslationLanguage;
-  translating?: boolean;
+  translatingLanguage?: TranslatableRecordingLanguage;
   translationError?: string;
   showTranslatedContent?: boolean;
   onTranslate?(language: TranslatableRecordingLanguage): Promise<void>;
@@ -127,6 +127,7 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
   const [editor, setEditor] = useState<Editor>(null);
   const [draft, setDraft] = useState("");
   const [status, setStatus] = useState<string>();
+  const closeEditor = () => setEditor(null);
   const document = recordingDocument({
     title: props.title,
     startedAt: props.startedAt,
@@ -456,7 +457,7 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
           editor === "actions" ? "overFullScreen" : "pageSheet"
         }
         statusBarTranslucent={editor === "actions"}
-        onRequestClose={() => setEditor(null)}
+        onRequestClose={closeEditor}
       >
         <View
           style={
@@ -474,7 +475,7 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
               accessibilityRole="button"
               accessibilityLabel="Close summary actions"
               activeOpacity={1}
-              onPress={() => setEditor(null)}
+              onPress={closeEditor}
               style={{
                 position: "absolute",
                 top: 0,
@@ -531,7 +532,7 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
               <TouchableOpacity
                 accessibilityRole="button"
                 accessibilityLabel="Cancel"
-                onPress={() => setEditor(null)}
+                onPress={closeEditor}
                 style={{ minHeight: 48, justifyContent: "center" }}
               >
                 <Text style={{ color: props.colors.primary, fontSize: 16 }}>
@@ -778,8 +779,15 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                     accessibilityLabel={`Show ${language.label}`}
                     accessibilityState={{
                       selected: props.selectedLanguage === language.code,
+                      busy: props.translatingLanguage === language.code,
+                      disabled:
+                        Boolean(props.translatingLanguage) &&
+                        language.code !== "original",
                     }}
-                    disabled={props.translating}
+                    disabled={
+                      Boolean(props.translatingLanguage) &&
+                      language.code !== "original"
+                    }
                     onPress={() => {
                       if (language.code === "original") {
                         props.onOriginal();
@@ -787,7 +795,8 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                       } else if (props.onTranslate) {
                         void props
                           .onTranslate(language.code)
-                          .then(() => setEditor(null));
+                          .then(closeEditor)
+                          .catch(() => undefined);
                       }
                     }}
                     style={{
@@ -797,6 +806,12 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                       justifyContent: "space-between",
                       borderBottomWidth: 1,
                       borderBottomColor: props.colors.border,
+                      opacity:
+                        props.translatingLanguage &&
+                        language.code !== "original" &&
+                        language.code !== props.translatingLanguage
+                          ? 0.45
+                          : 1,
                     }}
                   >
                     <Text
@@ -804,16 +819,42 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                     >
                       {language.label}
                     </Text>
-                    {props.translating ? (
-                      <ActivityIndicator
-                        size="small"
-                        color={props.colors.primary}
-                      />
+                    {props.translatingLanguage === language.code ? (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <Text
+                          style={{ color: props.colors.muted, fontSize: 12 }}
+                        >
+                          Translating…
+                        </Text>
+                        <ActivityIndicator
+                          size="small"
+                          color={props.colors.primary}
+                        />
+                      </View>
                     ) : props.selectedLanguage === language.code ? (
                       <Text style={{ color: props.colors.primary }}>✓</Text>
                     ) : null}
                   </TouchableOpacity>
                 ))}
+                {props.translationError ? (
+                  <Text
+                    accessibilityLiveRegion="polite"
+                    style={{
+                      color: props.colors.error,
+                      fontSize: 13,
+                      lineHeight: 20,
+                      paddingTop: 12,
+                    }}
+                  >
+                    {props.translationError}
+                  </Text>
+                ) : null}
               </View>
             ) : (
               <>
@@ -894,8 +935,11 @@ export function RecordingSummaryActions({
   const personal = useRecordingPersonalMetadata(ownerId, callUuid);
   const [selectedLanguage, setSelectedLanguage] =
     useState<RecordingTranslationLanguage>("original");
-  const [translated, setTranslated] = useState<RecordingSummaryContent>();
-  const [translating, setTranslating] = useState(false);
+  const [translations, setTranslations] = useState<
+    Partial<Record<TranslatableRecordingLanguage, RecordingSummaryContent>>
+  >({});
+  const [translatingLanguage, setTranslatingLanguage] =
+    useState<TranslatableRecordingLanguage>();
   const [translationError, setTranslationError] = useState<string>();
   const generation = useRef(0);
   const original = { ...summary, transcript };
@@ -903,8 +947,8 @@ export function RecordingSummaryActions({
     const generationRef = generation;
     generationRef.current++;
     setSelectedLanguage("original");
-    setTranslated(undefined);
-    setTranslating(false);
+    setTranslations({});
+    setTranslatingLanguage(undefined);
     setTranslationError(undefined);
     return () => {
       generationRef.current++;
@@ -912,20 +956,30 @@ export function RecordingSummaryActions({
   }, [callUuid, ownerId]);
   const translate = async (language: TranslatableRecordingLanguage) => {
     if (!onTranslate) return;
+    const cached = translations[language];
+    if (cached) {
+      generation.current++;
+      setSelectedLanguage(language);
+      setTranslationError(undefined);
+      onContentChange?.(cached, language);
+      return;
+    }
     const revision = ++generation.current;
-    setTranslating(true);
+    setTranslatingLanguage(language);
     setTranslationError(undefined);
     try {
       const result = await onTranslate(language);
       if (generation.current !== revision) return;
-      setTranslated(result);
+      setTranslations((current) => ({ ...current, [language]: result }));
       setSelectedLanguage(language);
       onContentChange?.(result, language);
     } catch {
-      if (generation.current === revision)
+      if (generation.current === revision) {
         setTranslationError("Translation is unavailable. Please try again.");
+        throw new Error("translation_failed");
+      }
     } finally {
-      if (generation.current === revision) setTranslating(false);
+      if (generation.current === revision) setTranslatingLanguage(undefined);
     }
   };
   return (
@@ -934,7 +988,9 @@ export function RecordingSummaryActions({
       startedAt={startedAt}
       original={original}
       content={
-        selectedLanguage === "original" ? original : (translated ?? original)
+        selectedLanguage === "original"
+          ? original
+          : (translations[selectedLanguage] ?? original)
       }
       speakerNames={speakerNames}
       personal={personal.value}
@@ -942,15 +998,14 @@ export function RecordingSummaryActions({
       saving={personal.saving}
       storageError={personal.error}
       selectedLanguage={selectedLanguage}
-      translating={translating}
+      translatingLanguage={translatingLanguage}
       translationError={translationError}
       showTranslatedContent={!onContentChange}
       onTranslate={onTranslate ? translate : undefined}
       onOriginal={() => {
         generation.current++;
         setSelectedLanguage("original");
-        setTranslated(undefined);
-        setTranslating(false);
+        setTranslatingLanguage(undefined);
         setTranslationError(undefined);
         onContentChange?.(original, "original");
       }}

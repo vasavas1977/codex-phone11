@@ -166,3 +166,31 @@ it("does not duplicate translated content when the parent panel renders it", () 
     }),
   ).toContain("ภาษาไทยฉบับแปล");
 });
+
+it("shows progress only beside the language being translated", () => {
+  resetView();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("More summary actions")?.();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("Translate")?.();
+  const html = render({
+    ...base,
+    translatingLanguage: "th",
+    onTranslate: vi.fn(async () => undefined),
+  });
+  expect(html.match(/Translating…/gu)).toHaveLength(1);
+});
+
+it("shows a recoverable translation error beside the language choices", () => {
+  resetView();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("More summary actions")?.();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("Translate")?.();
+  const html = render({
+    ...base,
+    translationError: "Translation is unavailable. Please try again.",
+    onTranslate: vi.fn(async () => undefined),
+  });
+  expect(html).toContain("Translation is unavailable. Please try again.");
+});
