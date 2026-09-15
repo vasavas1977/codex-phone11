@@ -7,7 +7,6 @@ import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { useSipCallStore } from "@/lib/sip/call-store";
-import { recordingLabels } from "@/lib/cloud-recordings/presentation";
 import { deviceContactName } from "@/lib/phone/device-contacts";
 import { RecordingPanel } from "./call-history-view";
 import { Playback } from "./cloud-playback";
@@ -20,6 +19,36 @@ import {
   mergeTranscriptSpeakerNames,
   type TranscriptSpeakerNames,
 } from "@/lib/cloud-recordings/transcript";
+import type { CloudRecordingDetail } from "@/shared/cloud-recordings";
+
+export function recordingStatusMessage(detail: CloudRecordingDetail) {
+  if (detail.recordingFinalizing) return "Saving recording…";
+  switch (detail.recordingStatus) {
+    case "pending":
+      return "Preparing recording…";
+    case "recording":
+      return "Recording in progress";
+    case "ready":
+      return detail.playbackPath
+        ? undefined
+        : "Recording saved. Preparing playback…";
+    case "failed":
+      return detail.manualControls?.canStart
+        ? "Recording is off. You can start it again."
+        : "Recording could not be saved.";
+    default:
+      return detail.manualControls?.canStart ? "Recording is off." : undefined;
+  }
+}
+
+export function recordingStatusNeedsRefresh(detail: CloudRecordingDetail) {
+  return (
+    detail.recordingFinalizing ||
+    detail.recordingStatus === "pending" ||
+    (detail.recordingStatus === "ready" && !detail.playbackPath) ||
+    (detail.recordingStatus === "failed" && !detail.manualControls?.canStart)
+  );
+}
 export function LiveRecordingPanel({
   callUuid,
   full = false,
@@ -89,7 +118,8 @@ export function LiveRecordingPanel({
         </TouchableOpacity>
       </View>
     );
-  const summaryNeedsRefresh =
+  const statusNeedsRefresh =
+    recordingStatusNeedsRefresh(detail) ||
     detail.summaryStatus === "queued" ||
     detail.summaryStatus === "processing" ||
     detail.summaryStatus === "failed" ||
@@ -131,14 +161,7 @@ export function LiveRecordingPanel({
           cloud.error ||
           (busy
             ? "Playback is paused while you are on a call."
-            : detail.recordingFinalizing
-              ? "Saving recording…"
-              : detail.recordingStatus !== "ready"
-                ? detail.recordingStatus === "failed" &&
-                  detail.manualControls?.canStart
-                  ? "Recording off"
-                  : recordingLabels[detail.recordingStatus]
-                : undefined)
+            : recordingStatusMessage(detail))
         }
         player={
           detail.recordingStatus === "ready" && detail.playbackPath && !busy ? (
@@ -200,11 +223,11 @@ export function LiveRecordingPanel({
           })
         }
       />
-      {summaryNeedsRefresh && (
+      {statusNeedsRefresh && (
         <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
           <TouchableOpacity
             accessibilityRole="button"
-            accessibilityLabel="Refresh AI summary status"
+            accessibilityLabel="Refresh recording and AI status"
             disabled={cloud.loading}
             style={{ minHeight: 48, justifyContent: "center" }}
             onPress={() => void cloud.reload()}
@@ -212,7 +235,7 @@ export function LiveRecordingPanel({
             <Text
               style={{ color: cloud.loading ? colors.muted : colors.primary }}
             >
-              {cloud.loading ? "Refreshing AI status…" : "Refresh AI status"}
+              {cloud.loading ? "Refreshing status…" : "Refresh status"}
             </Text>
           </TouchableOpacity>
         </View>

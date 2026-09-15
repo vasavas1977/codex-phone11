@@ -234,7 +234,20 @@ export function RecordingPanel({
   full?: boolean;
   colors?: RecordingColors;
 }) {
-  const pending = summaryStatus === "queued" || summaryStatus === "processing";
+  const summaryMessage = {
+    off: "AI summary was not enabled for this call.",
+    queued: "Preparing transcription before the AI summary…",
+    processing: "Creating AI summary…",
+    ready: "AI summary is still processing. Refresh status.",
+    failed: "AI summary could not be created. Refresh status to check again.",
+  }[summaryStatus];
+  const transcriptionMessage = {
+    off: "Transcription was not enabled for this call.",
+    queued: "Preparing transcription…",
+    processing: "Transcription is processing…",
+    ready: "Transcript is still processing. Refresh status.",
+    failed: "Transcription could not be created. Refresh status to check again.",
+  }[summaryStatus];
   const turns = transcript ? transcriptTurns(transcript, speakerNames) : [];
   const visibleTurns = full ? turns : turns.slice(0, 4);
   return (
@@ -367,11 +380,7 @@ export function RecordingPanel({
           </View>
         ) : (
           <Text style={{ color: colors.muted, lineHeight: 24 }}>
-            {pending
-              ? "Your summary is being prepared."
-              : summaryStatus === "failed" || summaryStatus === "ready"
-                ? "Summary unavailable. Please try refreshing later."
-                : "AI summary is off for this call."}
+            {summaryMessage}
           </Text>
         )
       ) : (
@@ -411,9 +420,7 @@ export function RecordingPanel({
             ))
           ) : (
             <Text style={{ color: colors.muted, lineHeight: 24 }}>
-              {pending
-                ? "Transcription is being prepared."
-                : "No transcription available."}
+              {transcriptionMessage}
             </Text>
           )}
           {!full && transcript && onViewFull && (
