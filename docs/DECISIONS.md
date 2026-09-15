@@ -2,15 +2,15 @@
 
 ## Architecture Decisions
 
-### ADR-001: JsSIP over SRTP/SRTP for Mobile SIP
+### ADR-001: PJSIP for Native Mobile Cloud Phone
 
-**Decision:** Use JsSIP (JavaScript SIP library) with react-native-webrtc for the mobile app.
+**Decision:** Use PJSIP/PJSUA2 as the native SIP engine for Phone11 mobile cloud phone calling.
 
-**Context:** Needed a SIP stack that works in React Native with WebRTC for media. Alternatives were SRTP (C library, hard to integrate), Opal, or native SRTP frameworks.
+**Context:** Phone11 must behave like a carrier-grade mobile softphone, with reliable SIP registration, inbound calls, hold, transfer, DTMF, native call UI, and mobile NAT handling. The Manus prototype documents mentioned JsSIP/WebRTC, but the actual mobile source already uses `react-native-pjsip`.
 
-**Rationale:** JsSIP is well-maintained, supports WebSocket SIP transport (RFC 7118), integrates naturally with WebRTC, and has a large community. It avoids native bridge complexity.
+**Rationale:** PJSIP is purpose-built for SIP/RTP on iOS and Android and aligns better with Phone11's telecom-operator architecture than browser-style WebRTC SIP. It keeps PSTN/cloud-phone calling close to the carrier stack while allowing meetings/video to use a separate SFU path.
 
-**Consequences:** Requires WebSocket SIP proxy (Kamailio with WSS), and RTPEngine for WebRTC-to-RTP bridging.
+**Consequences:** The app needs native builds, CallKit/ConnectionService integration, and proper PJSIP licensing for a commercial closed-source product. LiveKit/WebRTC remains the plan for meetings and group video, not the primary mobile PSTN calling engine.
 
 ---
 
@@ -26,15 +26,15 @@
 
 ---
 
-### ADR-003: RTPEngine for WebRTC Media Bridging
+### ADR-003: RTPEngine for SIP Media Anchoring
 
-**Decision:** Use RTPEngine (kernel-space media relay) for WebRTC↔RTP/SRTP bridging.
+**Decision:** Use RTPEngine as the carrier media relay for SIP/RTP/SRTP anchoring, NAT traversal, recording forks, and SBC interoperability.
 
-**Context:** Mobile WebRTC clients use DTLS-SRTP and ICE. FreeSWITCH expects plain RTP or SDES-SRTP. Need a bridge.
+**Context:** Mobile clients, customer networks, AWS NAT, FreeSWITCH, and external SBCs all require predictable media anchoring. Even when the app uses native SIP/PJSIP instead of JsSIP/WebRTC, RTPEngine remains important for NAT traversal and operational visibility.
 
-**Rationale:** RTPEngine handles DTLS termination, ICE, codec transcoding, and operates in kernel space for low latency. It's the standard choice with Kamailio.
+**Rationale:** RTPEngine is the standard Kamailio media relay choice and supports the relay behavior needed for mobile SIP clients, PSTN trunks, and recording/AI pipelines.
 
-**Consequences:** Requires careful flag configuration in Kamailio for offer/answer manipulation. Current DTLS role negotiation issue is a consequence of this complexity.
+**Consequences:** Requires careful AWS NAT configuration: bind RTPEngine to the EC2 private address and advertise the Elastic/public address to clients.
 
 ---
 
@@ -74,15 +74,15 @@
 
 ---
 
-### ADR-007: WebSocket SIP (not raw UDP from mobile)
+### ADR-007: SIP TLS First for Native Mobile
 
-**Decision:** Mobile app connects via WebSocket Secure (WSS) to Kamailio, not raw SIP/UDP.
+**Decision:** Phone11 native mobile should use SIP over TLS by default, with TCP/UDP available for controlled testing and WSS reserved for future browser clients or compatibility cases.
 
-**Context:** Mobile networks block or mangle SIP/UDP. Need reliable transport.
+**Context:** Mobile networks often block or mangle SIP/UDP. A production mobile app needs reliable encrypted signaling while staying compatible with carrier SIP infrastructure.
 
-**Rationale:** WSS works through all firewalls/NATs, supports TLS encryption natively, and is the standard for browser/mobile WebRTC SIP (RFC 7118).
+**Rationale:** SIP TLS is the natural transport for PJSIP-based native apps. It avoids forcing the phone product through a browser WebRTC signaling model.
 
-**Consequences:** Kamailio must listen on TCP/8088 for WSS. RTPEngine handles the media NAT traversal separately.
+**Consequences:** Kamailio must expose and monitor SIP TLS cleanly. WSS can still be added later for web softphone support.
 
 ---
 
@@ -100,24 +100,24 @@
 
 ## Operational Decisions
 
-### OD-001: DTLS=passive on Answer (not active)
+### OD-001: AWS NAT Media Advertisement
 
-**Decision:** RTPEngine should be DTLS passive on the WebRTC (app) side.
+**Decision:** In AWS, RTPEngine must bind to the EC2 private address and advertise the Elastic/public address.
 
-**Context:** The app's WebRTC stack (react-native-webrtc) offers `a=setup:actpass`. RTPEngine must choose a complementary role.
+**Context:** EC2 instances do not own the public Elastic IP on the host interface. Binding RTPEngine directly to the public IP can fail with media port allocation errors.
 
-**Rationale:** Standard WebRTC gateway pattern (Janus, mediasoup) is for the gateway to be passive — the browser/app drives ICE and initiates DTLS. This avoids race conditions with premature ClientHello.
+**Rationale:** RTPEngine supports separate bind and advertised addresses. This matches AWS networking and prevents call setup failures caused by binding to an address that is not present on the host.
 
-**Status:** Currently broken — RTPEngine sends premature ClientHello during offer. Fix in progress.
+**Status:** Repo configuration has been updated in the production compose path; live server rollout still requires secure server access.
 
 ---
 
-### OD-002: ICE=remove on Offer, ICE=force on Answer
+### OD-002: Meetings Use LiveKit, Phone Uses PJSIP
 
-**Decision:** Strip ICE from the offer sent to FreeSWITCH (it doesn't need it), re-add ICE on the answer back to the app.
+**Decision:** Do not force one media stack to do everything. Phone11 cloud phone uses PJSIP/SIP; meetings and group video use LiveKit/WebRTC.
 
-**Context:** FreeSWITCH doesn't participate in ICE. The app requires ICE candidates in the answer SDP.
+**Context:** Zoom Phone and Zoom Meetings are related products but have different media requirements. Phone11 should copy that separation internally while presenting one app to the customer.
 
-**Rationale:** Clean separation — FreeSWITCH sees plain RTP, app sees full WebRTC SDP with ICE candidates.
+**Rationale:** PJSIP gives stronger telecom/SIP behavior for PSTN calling. LiveKit gives the right SFU primitives for meetings, rooms, screen sharing, and group video.
 
-**Status:** Working correctly for ICE connectivity. The issue is DTLS timing, not ICE.
+**Status:** Locked product architecture for the Phone11 UCC app.

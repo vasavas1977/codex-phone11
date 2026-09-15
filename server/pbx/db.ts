@@ -5,29 +5,81 @@
  * Uses the same RDS instance as Kamailio.
  */
 import pg from "pg";
+import { GoogleAuth } from "google-auth-library";
 
 let _pool: pg.Pool | null = null;
 
-function getSslConfig(connectionString?: string): pg.PoolConfig["ssl"] {
-  if (process.env.PG_SSL === "false" || connectionString?.includes("sslmode=disable")) {
+function firstEnv(source: NodeJS.ProcessEnv, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = source[key];
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function getSslConfig(source: NodeJS.ProcessEnv, connectionString?: string): pg.PoolConfig["ssl"] {
+  const sslMode = firstEnv(source, "PG_SSL", "DB_SSL", "POSTGRES_SSL", "DATABASE_SSL")?.toLowerCase();
+  if (
+    sslMode === "false" ||
+    sslMode === "0" ||
+    sslMode === "disable" ||
+    connectionString?.includes("sslmode=disable")
+  ) {
     return false;
   }
 
   return {
-    rejectUnauthorized: process.env.PG_SSL_REJECT_UNAUTHORIZED === "true",
+    rejectUnauthorized: firstEnv(source, "PG_SSL_REJECT_UNAUTHORIZED", "DB_SSL_REJECT_UNAUTHORIZED") === "true",
   };
 }
 
-function buildPgConfig(): pg.PoolConfig {
-  const requiredEnv = ["PG_HOST", "PG_USER", "PG_PASSWORD", "PG_DATABASE"] as const;
-  const missing = requiredEnv.filter((key) => !process.env[key]);
+type IamTokenProvider = () => Promise<string>;
+
+async function defaultIamTokenProvider(): Promise<string> {
+  const client = await new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/sqlservice.login"] }).getClient();
+  const access = await client.getAccessToken();
+  const token = typeof access === "string" ? access : access?.token;
+  if (!token) throw new Error("[PBX DB] Cloud SQL IAM token is unavailable");
+  return token;
+}
+
+/** Build a pool configuration without exposing a Cloud SQL IAM token in env or logs. */
+export function buildPgConfig(
+  source: NodeJS.ProcessEnv = process.env,
+  iamTokenProvider: IamTokenProvider = defaultIamTokenProvider,
+): pg.PoolConfig {
+  const iamAuth = source.PHONE11_CLOUDSQL_IAM_DB_AUTH === "1";
+  const discrete = {
+    host: firstEnv(source, "PG_HOST", "DB_HOST", "POSTGRES_HOST"),
+    port: firstEnv(source, "PG_PORT", "DB_PORT", "POSTGRES_PORT"),
+    user: firstEnv(source, "PG_USER", "DB_USER", "POSTGRES_USER"),
+    password: firstEnv(source, "PG_PASSWORD", "DB_PASSWORD", "POSTGRES_PASSWORD"),
+    database: firstEnv(source, "PG_DATABASE", "DB_NAME", "DB_DATABASE", "POSTGRES_DB"),
+  };
+  const missing = [
+    ["host", discrete.host],
+    ["user", discrete.user],
+    ...(iamAuth ? [] : [["password", discrete.password]]),
+    ["database", discrete.database],
+  ]
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
   const hasDiscretePgConfig = missing.length === 0;
 
-  // Prefer discrete PG_* settings when present. They avoid URL parsing bugs when
+  // Prefer discrete settings when present. They avoid URL parsing bugs when
   // database passwords contain URL-sensitive characters such as @, /, :, or #.
-  const connectionString = process.env.PG_CONNECTION_STRING ?? (hasDiscretePgConfig ? undefined : process.env.DATABASE_URL);
+  const connectionString = source.PG_CONNECTION_STRING ?? (hasDiscretePgConfig ? undefined : source.DATABASE_URL);
+  if (iamAuth) {
+    const instance = source.PHONE11_CLOUDSQL_INSTANCE;
+    const expectedHost = instance ? `/cloudsql/${instance}` : "";
+    if (!instance || discrete.host !== expectedHost || !discrete.user?.endsWith(".iam") || discrete.password || connectionString || source.DATABASE_URL) {
+      throw new Error("[PBX DB] Cloud SQL IAM configuration is invalid");
+    }
+  }
   const common: pg.PoolConfig = {
-    ssl: getSslConfig(connectionString),
+    // The local Unix socket is plaintext; the managed Cloud SQL connector
+    // authenticates both ends and encrypts the upstream hop.
+    ssl: iamAuth ? false : getSslConfig(source, connectionString),
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,
@@ -41,17 +93,17 @@ function buildPgConfig(): pg.PoolConfig {
   }
 
   if (missing.length > 0) {
-    throw new Error(`[PBX DB] Missing required environment variables: ${missing.join(", ")}`);
+    throw new Error(`[PBX DB] Missing required database settings: ${missing.join(", ")}`);
   }
 
   return {
     ...common,
-    ssl: getSslConfig(),
-    host: process.env.PG_HOST,
-    port: parseInt(process.env.PG_PORT ?? "5432", 10),
-    user: process.env.PG_USER,
-    password: process.env.PG_PASSWORD,
-    database: process.env.PG_DATABASE,
+    ssl: iamAuth ? false : getSslConfig(source),
+    host: discrete.host,
+    port: parseInt(discrete.port ?? "5432", 10),
+    user: discrete.user,
+    password: iamAuth ? iamTokenProvider : discrete.password,
+    database: discrete.database,
   };
 }
 

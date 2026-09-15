@@ -1,12 +1,23 @@
 // Load environment variables with proper priority (system > .env)
 import "./scripts/load-env.js";
 import type { ExpoConfig } from "expo/config";
+import { withInfoPlist } from "expo/config-plugins";
 
-// Bundle ID format: space.manus.<project_name_dots>.<timestamp>
-// e.g., "my-app" created at 2024-01-15 10:30:45 -> "space.manus.my.app.t20240115103045"
-// Bundle ID can only contain letters, numbers, and dots
-// Android requires each dot-separated segment to start with a letter
-const rawBundleId = "space.manus.cloudphone11.t20260425073427";
+const { wakeBuildSettings } = require("./plugins/with-phone11-voip-wake.js");
+const { androidWakeBuildSettings, labSipSettings } = require("./plugins/with-phone11-android-lab.js");
+const wakeSettings = wakeBuildSettings();
+const chatCommissioned = process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED ?? "0";
+if (!["0", "1"].includes(chatCommissioned)) throw new Error("Invalid chat notification build flag");
+if (chatCommissioned === "1" && (wakeSettings.gate !== "1" || wakeSettings.environment !== "production")) {
+  throw new Error("Chat notification pilot requires the production incoming-call pilot configuration");
+}
+const chatNotificationsEnabled = chatCommissioned === "1";
+
+const androidLab = process.env.PHONE11_ANDROID_LAB === "1";
+if (androidLab && (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix" || process.env.EXPO_PUBLIC_PHONE11_ANDROID_LAB !== "1")) throw new Error("Lab requires matching native/JS Siprix lab flags");
+const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
+const sipEngine = process.env.EXPO_PUBLIC_SIP_ENGINE ?? "pjsip";
+if (!["siprix", "pjsip"].includes(sipEngine)) throw new Error("Invalid SIP engine selection");
 const bundleId =
   rawBundleId
     .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
@@ -21,42 +32,50 @@ const bundleId =
       return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
     })
     .join(".") || "space.manus.app";
-// Extract timestamp from bundle ID and prefix with "manus" for deep link scheme
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
-
 const env = {
   // App branding - update these values directly (do not use env vars)
-  appName: "CloudPhone11",
-  appSlug: "cloudphone11",
+  appName: "Phone11",
+  appSlug: "phone11ai",
   // S3 URL of the app logo - set this to the URL returned by generate_image when creating custom logo
   // Leave empty to use the default icon from assets/images/icon.png
   logoUrl: "https://files.manuscdn.com/user_upload_by_module/session_file/107568382/ToqVlgyTUoXePKRa.png",
-  scheme: schemeFromBundleId,
+  scheme: "phone11",
   iosBundleId: bundleId,
-  androidPackage: bundleId,
+  androidPackage: androidLab
+    ? (process.env.PHONE11_ANDROID_LAB_PACKAGE ?? "ai.phone11.mobile.lab")
+    : bundleId,
 };
+const androidSip = androidLab ? labSipSettings(env.androidPackage) : undefined;
+const androidWakeSettings = androidLab
+  ? androidWakeBuildSettings(process.env, { packageName: env.androidPackage, projectRoot: process.cwd() })
+  : undefined;
 
 const config: ExpoConfig = {
-  name: env.appName,
+  name: androidLab ? "Phone11 Lab" : env.appName,
   slug: env.appSlug,
   version: "1.0.0",
+  runtimeVersion: `1.0.0-${sipEngine}${chatNotificationsEnabled ? "-daily-pilot" : wakeSettings.gate === "1" ? "-wake-pilot" : ""}-1`,
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
-  userInterfaceStyle: "automatic",
-  newArchEnabled: true,
+  userInterfaceStyle: "dark",
+  // Both native SIP adapters currently expose the legacy NativeModules bridge.
+  newArchEnabled: false,
   ios: {
     supportsTablet: true,
     bundleIdentifier: env.iosBundleId,
-    "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
-      }
+    buildNumber: "5",
+    ...(wakeSettings.environment ? { entitlements: { "aps-environment": wakeSettings.environment } } : {}),
+    infoPlist: {
+      Phone11ChatNotificationsCommissioned: chatNotificationsEnabled ? 1 : 0,
+      ITSAppUsesNonExemptEncryption: false,
+      NSMicrophoneUsageDescription: "Allow Phone11 to access your microphone for voice and video calls.",
+      UIBackgroundModes: ["audio", "voip", "remote-notification"],
+    },
   },
   android: {
     adaptiveIcon: {
-      backgroundColor: "#E6F4FE",
+      backgroundColor: "#000000",
       foregroundImage: "./assets/images/android-icon-foreground.png",
       backgroundImage: "./assets/images/android-icon-background.png",
       monochromeImage: "./assets/images/android-icon-monochrome.png",
@@ -64,7 +83,9 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS"],
+    ...(androidWakeSettings?.firebase ? { googleServicesFile: androidWakeSettings.firebase.googleServicesFile } : {}),
+    permissions: ["POST_NOTIFICATIONS", "RECORD_AUDIO", "READ_PHONE_STATE"],
+    blockedPermissions: ["android.permission.WRITE_CONTACTS"],
     intentFilters: [
       {
         action: "VIEW",
@@ -85,7 +106,12 @@ const config: ExpoConfig = {
     favicon: "./assets/images/favicon.png",
   },
   plugins: [
+    ...(androidLab ? ["./plugins/with-phone11-android-lab.js"] : []),
     "expo-router",
+    ["expo-contacts", { contactsPermission: "Phone11 uses your contacts to show names and let you call people. Your address book stays on this device." }],
+    ...(sipEngine === "siprix" && !androidLab ? [["./plugins/with-phone11-voip-wake.js", {
+      origin: process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://api.phone11.ai",
+    }] as [string, { origin: string }]] : []),
     [
       "expo-audio",
       {
@@ -105,7 +131,7 @@ const config: ExpoConfig = {
         image: "./assets/images/splash-icon.png",
         imageWidth: 200,
         resizeMode: "contain",
-        backgroundColor: "#ffffff",
+        backgroundColor: "#000000",
         dark: {
           backgroundColor: "#000000",
         },
@@ -115,16 +141,56 @@ const config: ExpoConfig = {
       "expo-build-properties",
       {
         android: {
-          buildArchs: ["armeabi-v7a", "arm64-v8a"],
+          buildArchs: androidLab ? ["arm64-v8a"] : ["armeabi-v7a", "arm64-v8a"],
           minSdkVersion: 24,
+        },
+        ios: {
+          // Keep building RN from source while validating the legacy PJSIP bridge.
+          buildReactNativeFromSource: true,
         },
       },
     ],
   ],
   experiments: {
     typedRoutes: true,
-    reactCompiler: true,
+    reactCompiler: false,
+  },
+  extra: {
+    phone11ChatNotificationsEnabled: chatNotificationsEnabled,
+    phone11AndroidLab: androidLab,
+    ...(androidSip ? { phone11AndroidSip: {
+      sipServer: androidSip.host,
+      port: androidSip.port,
+      accountExtension: androidSip.accountExtensions[0],
+      destinations: androidSip.destinations,
+    } } : {}),
+    phone11ApiBaseUrl: androidLab
+      ? (androidWakeSettings?.apiBaseUrl ?? "http://10.0.2.2:18080")
+      : (process.env.EXPO_PUBLIC_API_BASE_URL ?? ""),
+    ...(wakeSettings.environment ? { phone11ApnsEnvironment: wakeSettings.environment } : {}),
+    eas: {
+      projectId: "e354ffd3-485c-49f1-9e6f-aebe571d8dfb",
+    },
+    buildInfo: {
+      sipEngine,
+      sipSdkVersion: androidLab ? "1.1.0-trial" : sipEngine === "siprix" ? "1.0.40-trial" : "react-native-pjsip-2.7.4",
+      easBuildId: process.env.EAS_BUILD_ID ?? "local",
+      easBuildProfile: process.env.EAS_BUILD_PROFILE ?? "unknown",
+      gitCommitHash: process.env.EAS_BUILD_GIT_COMMIT_HASH ?? process.env.GITHUB_SHA ?? "unknown",
+      builtAt: new Date().toISOString(),
+    },
+    router: {},
   },
 };
 
-export default config;
+// Apply only during native prebuild. Putting this value directly in ios.infoPlist
+// would also expose it through Expo's public runtime configuration.
+export default withInfoPlist(config, (nativeConfig) => {
+  const license = process.env.PHONE11_SIPRIX_LICENSE?.trim();
+  if (sipEngine === "siprix" && license) {
+    nativeConfig.modResults.Phone11SiprixLicense = license;
+  } else {
+    delete nativeConfig.modResults.Phone11SiprixLicense;
+  }
+  return nativeConfig;
+});

@@ -1,0 +1,288 @@
+name: Phone11 live provision 1001 v42
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-provision-1001-v42.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  provision-1001-v42:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v42_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v42_key.pub" >/dev/null
+
+      - name: Create live extension 1001 and prove SIP auth
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_v42_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN=sip.phone11.ai
+          EXT=1001
+          USER_ID=1
+          PASS="$(openssl rand -hex 18)"
+          HA1="$(printf '%s:%s:%s' "$EXT" "$DOMAIN" "$PASS" | md5sum | awk '{print $1}')"
+          HA1B="$(printf '%s@%s:%s:%s' "$EXT" "$DOMAIN" "$DOMAIN" "$PASS" | md5sum | awk '{print $1}')"
+          PRIVATE_IP="$(hostname -I | awk '{print $1}')"
+
+          echo "===== V42 live provisioning target ====="
+          echo "EC2_HOST_PUBLIC=43.210.122.111"
+          echo "EC2_PRIVATE_IP=$PRIVATE_IP"
+          echo "USER_ID=$USER_ID"
+          echo "SIP_USER=$EXT"
+          echo "SIP_DOMAIN=$DOMAIN"
+          echo "PASSWORD_LENGTH=${#PASS}"
+
+          echo "===== Containers ====="
+          docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -E 'cp11-postgres|cp11-backend|p11-kamailio|p11-freeswitch|p11-rtpengine' || true
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+
+          echo "===== Before provision, redacted ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          SELECT 'extensions' AS table_name, id, extension_number, sip_username, sip_domain, user_id, transport, status, length(coalesce(sip_password,'')) AS password_len
+          FROM extensions
+          WHERE extension_number = '$EXT' OR sip_username = '$EXT'
+          ORDER BY id;
+          SELECT 'sip_accounts' AS table_name, id, extension_id, user_id, sip_username, sip_domain, transport_preference, status, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len
+          FROM sip_accounts
+          WHERE sip_username = '$EXT' OR extension_id IN (SELECT id FROM extensions WHERE extension_number = '$EXT' OR sip_username = '$EXT')
+          ORDER BY id;
+          SELECT 'subscriber' AS table_name, username, domain, length(coalesce(password,'')) AS password_len, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len
+          FROM subscriber
+          WHERE username = '$EXT' AND domain = '$DOMAIN';
+          SQL
+
+          echo "===== Provision extension/account/subscriber for user 1 ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          BEGIN;
+          INSERT INTO organizations (id, name, plan)
+          VALUES (1, 'Phone11', 'business')
+          ON CONFLICT (id) DO NOTHING;
+          INSERT INTO tenants (id, name, plan, status)
+          VALUES (1, 'Phone11', 'business', 'active')
+          ON CONFLICT (id) DO NOTHING;
+
+          CREATE TEMP TABLE target_ext AS
+          WITH existing AS (
+            SELECT id
+            FROM extensions
+            WHERE deleted_at IS NULL
+              AND (extension_number = '$EXT' OR sip_username = '$EXT')
+            ORDER BY id
+            LIMIT 1
+          ), inserted AS (
+            INSERT INTO extensions (
+              org_id, tenant_id, user_id, extension_number, display_name, type,
+              sip_username, sip_domain, sip_password, transport, status,
+              voicemail_enabled, created_at, updated_at
+            )
+            SELECT 1, 1, $USER_ID, '$EXT', 'Extension $EXT', 'user',
+                   '$EXT', '$DOMAIN', '$PASS', 'UDP', 'active', false, NOW(), NOW()
+            WHERE NOT EXISTS (SELECT 1 FROM existing)
+            RETURNING id
+          )
+          SELECT id FROM inserted
+          UNION ALL
+          SELECT id FROM existing
+          LIMIT 1;
+
+          UPDATE extensions
+          SET org_id = 1,
+              tenant_id = 1,
+              user_id = $USER_ID,
+              extension_number = '$EXT',
+              display_name = 'Extension $EXT',
+              type = 'user',
+              sip_username = '$EXT',
+              sip_domain = '$DOMAIN',
+              sip_password = '$PASS',
+              transport = 'UDP',
+              status = 'active',
+              deleted_at = NULL,
+              updated_at = NOW()
+          WHERE id = (SELECT id FROM target_ext);
+
+          UPDATE user_extensions SET is_primary = false WHERE user_id = $USER_ID;
+          INSERT INTO user_extensions (user_id, extension_id, is_primary)
+          SELECT $USER_ID, id, true FROM target_ext
+          ON CONFLICT (user_id, extension_id) DO UPDATE SET is_primary = EXCLUDED.is_primary;
+
+          CREATE TEMP TABLE target_account AS
+          WITH existing AS (
+            SELECT id
+            FROM sip_accounts
+            WHERE deleted_at IS NULL
+              AND (sip_username = '$EXT' OR extension_id = (SELECT id FROM target_ext))
+            ORDER BY id
+            LIMIT 1
+          ), inserted AS (
+            INSERT INTO sip_accounts (
+              tenant_id, org_id, extension_id, user_id, sip_username, sip_domain,
+              ha1, ha1b, secret_ciphertext, secret_iv, secret_tag, dek_id,
+              transport_preference, status, deleted_at, created_at, updated_at
+            )
+            SELECT 1, 1, id, $USER_ID, '$EXT', '$DOMAIN',
+                   '$HA1', '$HA1B', NULL, NULL, NULL, NULL,
+                   'UDP', 'active', NULL, NOW(), NOW()
+            FROM target_ext
+            WHERE NOT EXISTS (SELECT 1 FROM existing)
+            RETURNING id
+          )
+          SELECT id FROM inserted
+          UNION ALL
+          SELECT id FROM existing
+          LIMIT 1;
+
+          UPDATE sip_accounts
+          SET tenant_id = 1,
+              org_id = 1,
+              extension_id = (SELECT id FROM target_ext),
+              user_id = $USER_ID,
+              sip_username = '$EXT',
+              sip_domain = '$DOMAIN',
+              ha1 = '$HA1',
+              ha1b = '$HA1B',
+              secret_ciphertext = NULL,
+              secret_iv = NULL,
+              secret_tag = NULL,
+              dek_id = NULL,
+              transport_preference = 'UDP',
+              status = 'active',
+              deleted_at = NULL,
+              updated_at = NOW()
+          WHERE id = (SELECT id FROM target_account);
+
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES ('$EXT', '$DOMAIN', '$PASS', '$HA1', '$HA1B')
+          ON CONFLICT (username, domain) DO UPDATE SET
+            password = EXCLUDED.password,
+            ha1 = EXCLUDED.ha1,
+            ha1b = EXCLUDED.ha1b;
+          COMMIT;
+          SQL
+
+          echo "===== After provision, redacted ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          SELECT 'extensions' AS table_name, id, extension_number, sip_username, sip_domain, user_id, transport, status, length(coalesce(sip_password,'')) AS password_len
+          FROM extensions
+          WHERE extension_number = '$EXT' OR sip_username = '$EXT'
+          ORDER BY id;
+          SELECT 'user_extensions' AS table_name, id, user_id, extension_id, is_primary
+          FROM user_extensions
+          WHERE user_id = $USER_ID OR extension_id IN (SELECT id FROM extensions WHERE extension_number = '$EXT' OR sip_username = '$EXT')
+          ORDER BY id;
+          SELECT 'sip_accounts' AS table_name, id, extension_id, user_id, sip_username, sip_domain, transport_preference, status, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len, secret_ciphertext IS NULL AS secret_is_null
+          FROM sip_accounts
+          WHERE sip_username = '$EXT' OR extension_id IN (SELECT id FROM extensions WHERE extension_number = '$EXT' OR sip_username = '$EXT')
+          ORDER BY id;
+          SELECT 'subscriber' AS table_name, username, domain, length(coalesce(password,'')) AS password_len, length(coalesce(ha1,'')) AS ha1_len, length(coalesce(ha1b,'')) AS ha1b_len,
+                 coalesce(ha1,'') = md5(username || ':' || domain || ':' || password) AS ha1_matches_password,
+                 coalesce(ha1b,'') = md5(username || '@' || domain || ':' || domain || ':' || password) AS ha1b_matches_password
+          FROM subscriber
+          WHERE username = '$EXT' AND domain = '$DOMAIN';
+          SQL
+
+          echo "===== Synthetic REGISTER proof against live Kamailio ====="
+          PHONE11_TEST_USER="$EXT" PHONE11_TEST_PASS="$PASS" PHONE11_TEST_DOMAIN="$DOMAIN" PHONE11_TEST_IP="$PRIVATE_IP" python3 - <<'PY'
+          import hashlib, os, random, re, secrets, select, socket, sys, time
+          USER=os.environ['PHONE11_TEST_USER']
+          PASS=os.environ['PHONE11_TEST_PASS']
+          DOMAIN=os.environ['PHONE11_TEST_DOMAIN']
+          IP=os.environ['PHONE11_TEST_IP']
+          SERVER=(IP,5060)
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def header(txt,name):
+              m=re.search(rf'^{re.escape(name)}:\s*(.+)$', txt, re.I|re.M)
+              return m.group(1).strip() if m else ''
+          def code(txt):
+              first=txt.splitlines()[0] if txt.splitlines() else ''
+              m=re.match(r'SIP/2.0\s+(\d+)', first)
+              return int(m.group(1)) if m else 0
+          def digest(challenge,method,uri):
+              fields={k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', challenge.replace('Digest','',1))}
+              realm=fields.get('realm', DOMAIN)
+              nonce=fields['nonce']
+              qop='auth' if 'auth' in fields.get('qop','') else ''
+              nc='00000001'
+              cnonce=secrets.token_hex(8)
+              ha1=md5(f'{USER}:{realm}:{PASS}')
+              ha2=md5(f'{method}:{uri}')
+              resp=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+              parts=[f'username="{USER}"', f'realm="{realm}"', f'nonce="{nonce}"', f'uri="{uri}"', f'response="{resp}"', 'algorithm=MD5']
+              if qop:
+                  parts += [f'qop={qop}', f'nc={nc}', f'cnonce="{cnonce}"']
+              return 'Digest ' + ', '.join(parts)
+          sip=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sip.bind((IP, random.randint(27000,27999)))
+          sip.setblocking(False)
+          sport=sip.getsockname()[1]
+          callid=f'phone11-v42-register-{secrets.token_hex(8)}@ec2'
+          tag=secrets.token_hex(5)
+          uri=f'sip:{DOMAIN}'
+          contact=f'<sip:{USER}@{IP}:{sport};transport=udp>'
+          def build(cseq, auth=''):
+              lines=[f'REGISTER {uri} SIP/2.0', f'Via: SIP/2.0/UDP {IP}:{sport};branch=z9hG4bKv42{secrets.token_hex(6)};rport', 'Max-Forwards: 70', f'From: <sip:{USER}@{DOMAIN}>;tag={tag}', f'To: <sip:{USER}@{DOMAIN}>', f'Call-ID: {callid}', f'CSeq: {cseq} REGISTER', f'Contact: {contact};expires=300', 'Expires: 300', 'User-Agent: Phone11V42']
+              if auth:
+                  lines.append(auth)
+              return '\r\n'.join(lines + ['Content-Length: 0','',''])
+          def send(msg): sip.sendto(msg.encode(), SERVER)
+          def recv(timeout=10):
+              end=time.time()+timeout
+              while time.time()<end:
+                  r,_,_=select.select([sip],[],[],0.25)
+                  if r:
+                      data,addr=sip.recvfrom(65535)
+                      txt=data.decode(errors='replace')
+                      if callid in txt:
+                          return txt,addr
+              raise TimeoutError(callid)
+          send(build(1))
+          txt,addr=recv()
+          c=code(txt)
+          print(f'v42_register_first={c}')
+          if c in (401,407):
+              challenge=header(txt,'WWW-Authenticate') or header(txt,'Proxy-Authenticate')
+              auth_header=('Proxy-Authorization' if c==407 else 'Authorization') + ': ' + digest(challenge,'REGISTER',uri)
+              send(build(2,auth_header))
+              txt,addr=recv()
+              c=code(txt)
+          print(f'v42_register_final={c}')
+          print(f'v42_register_call_id={callid}')
+          if c != 200:
+              print('V42_REGISTER_RESULT=fail')
+              sys.exit(52)
+          print('V42_REGISTER_RESULT=pass')
+          PY
+
+          echo "===== Kamailio auth log tail ====="
+          docker logs --since 180s --timestamps p11-kamailio 2>&1 | grep -Eia "phone11-v42|1001|REGISTER|401|200 OK|auth|unauth|error|warning" | tail -n 300 || true
+          echo "V42_LIVE_PROVISION_COMPLETE=yes"
+          REMOTE

@@ -11,29 +11,39 @@ FROM node:22-alpine AS deps
 
 WORKDIR /app
 
-# Some shared mobile/native packages run bash/curl-based postinstall scripts.
-RUN apk add --no-cache bash curl
+# Some shared mobile packages run shell/curl-based postinstall scripts even when
+# the backend only needs their JS dependencies.
+RUN apk add --no-cache bash curl ca-certificates
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
-# Copy package manifests
+# Copy package manifests and postinstall helpers
 COPY package.json pnpm-lock.yaml ./
+COPY scripts/ ./scripts/
 
 # Install production dependencies only
 RUN pnpm install --frozen-lockfile --prod
+
+# ws is used directly by the backend WebSocket server, but in the current lock it
+# is only present transitively. Expose it at the runtime root without changing the
+# mobile dependency graph.
+RUN if [ ! -e node_modules/ws ]; then \
+      WS_DIR="$(find node_modules/.pnpm -path '*/node_modules/ws' -type d | sort | tail -n 1)"; \
+      test -n "$WS_DIR"; \
+      ln -s "/app/$WS_DIR" node_modules/ws; \
+    fi
 
 # --- Stage 2: Build ---
 FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Some shared mobile/native packages run bash/curl-based postinstall scripts.
-RUN apk add --no-cache bash curl
-
+RUN apk add --no-cache bash curl ca-certificates
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
 COPY package.json pnpm-lock.yaml ./
+COPY scripts/ ./scripts/
 RUN pnpm install --frozen-lockfile
 
 # Copy source
@@ -42,15 +52,11 @@ COPY shared/ ./shared/
 COPY drizzle/ ./drizzle/
 COPY drizzle.config.ts ./
 COPY tsconfig.json ./
-COPY scripts/ ./scripts/
 
-# Build server bundle with esbuild
-RUN pnpm build
-
-# The server imports ws directly, but the current monorepo lockfile does not
-# list it as a top-level backend dependency yet. Install it after build so
-# build-only tools stay available, and the production backend can boot.
-RUN pnpm add ws@8.18.3 --ignore-scripts
+# Build only the backend bundle. Avoid pnpm build here because npm lifecycle
+# scripts would run the Expo mobile prebuild inside the backend image.
+RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs
+RUN pnpm exec esbuild scripts/phone11-auth-admin.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/auth-admin.mjs
 
 # --- Stage 3: Production ---
 FROM node:22-alpine AS production
@@ -63,14 +69,12 @@ WORKDIR /app
 # Security: run as non-root
 RUN addgroup -g 1001 -S cloudphone && \
     adduser -S cloudphone -u 1001 -G cloudphone && \
-    mkdir -p /opt/phone11ai/recordings /opt/phone11ai/voicemail && \
-    chown -R cloudphone:cloudphone /opt/phone11ai
+    mkdir -p /var/lib/phone11/recordings /var/lib/phone11/voicemail \
+      /opt/phone11ai/recordings /opt/phone11ai/voicemail && \
+    chown -R cloudphone:cloudphone /var/lib/phone11 /opt/phone11ai
 
-# The server bundle keeps external Node packages, including ws, at runtime.
-# Copy the builder install so runtime-only packages that are reached through
-# development tooling transitive deps are still present until dependencies are
-# split into a backend-only package.
-COPY --from=builder /app/node_modules ./node_modules
+# Copy production dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
 
 # Copy built server from builder stage
 COPY --from=builder /app/dist ./dist
@@ -85,13 +89,15 @@ COPY package.json ./
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HOST=0.0.0.0
+ENV RECORDINGS_PATH=/var/lib/phone11/recordings
+ENV VOICEMAIL_PATH=/var/lib/phone11/voicemail
 
 # Health check
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=10s \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
 
 EXPOSE 3000/tcp
 
 USER cloudphone
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/index.mjs"]

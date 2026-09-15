@@ -1,0 +1,2 @@
+Trigger safe Phone11 DB password rotation and backend redeploy after allowing empty appId in mobile session tokens.
+Time Asia/Bangkok: 2026-05-17 21:26:50

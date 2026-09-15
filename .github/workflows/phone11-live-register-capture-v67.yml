@@ -1,0 +1,95 @@
+name: Phone11 live register capture v67
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-register-capture-v67.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture-register:
+    runs-on: ubuntu-24.04
+    env:
+      AWS_DEFAULT_REGION: ap-southeast-7
+      EC2_HOST: 43.210.122.111
+      EC2_USER: ubuntu
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Capture synchronized Phone11 REGISTER attempt
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v67_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeu
+          echo "V67_CAPTURE_READY_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V67_ACTION=On iPhone: open Phone11 > Settings > SIP Diagnostics > Start SIP Registration Test once during this 7 minute capture window."
+          echo "V67_DNS_BEGIN"
+          (getent ahostsv4 sip.phone11.ai || nslookup sip.phone11.ai || host sip.phone11.ai || true) 2>&1
+          echo "V67_DNS_END"
+          echo "V67_LISTEN_BEGIN"
+          (ss -lunpt || sudo ss -lunpt || true) 2>/dev/null | grep -E ':5060|:5061|:3000' || true
+          echo "V67_LISTEN_END"
+
+          CAPTURE_FILE="/tmp/phone11-v67-register-$(date -u +%Y%m%dT%H%M%SZ).log"
+          echo "V67_CAPTURE_FILE=$CAPTURE_FILE"
+          if command -v timeout >/dev/null 2>&1; then TIMEOUT=timeout; else TIMEOUT=gtimeout; fi
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo "V67_TCPDUMP_MISSING=true"
+            exit 25
+          fi
+
+          ($TIMEOUT 420 sudo tcpdump -nn -s 0 -A -i any '(udp port 5060 or tcp port 5060 or udp port 5061 or tcp port 5061)' > "$CAPTURE_FILE" 2>&1) || true
+          echo "V67_CAPTURE_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V67_CAPTURE_SIZE_BYTES=$(wc -c < "$CAPTURE_FILE" | tr -d ' ')"
+
+          echo "V67_REGISTER_COUNTS_BEGIN"
+          printf 'register_request_lines='; grep -Eia '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'register_1001_lines='; grep -Eia 'REGISTER sip:|CSeq: [0-9]+ REGISTER|sip:1001@sip.phone11.ai|username="1001"|User-Agent:.*(Phone11|PJSIP|pjsua|react-native)' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'phone11_or_pjsip_user_agent_lines='; grep -Eia 'User-Agent:.*(Phone11|PJSIP|pjsua|react-native)' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'status_401_lines='; grep -Eia 'SIP/2.0 401' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          printf 'status_200_lines='; grep -Eia 'SIP/2.0 200' "$CAPTURE_FILE" | wc -l | tr -d ' '
+          echo "V67_REGISTER_COUNTS_END"
+
+          echo "V67_TRUE_PHONE11_CONTEXT_BEGIN"
+          grep -Eina -B 8 -A 45 'REGISTER sip:.*sip.phone11.ai|sip:1001@sip.phone11.ai|username="1001"|User-Agent:.*(Phone11|PJSIP|pjsua|react-native)' "$CAPTURE_FILE" | head -620 || true
+          echo "V67_TRUE_PHONE11_CONTEXT_END"
+
+          echo "V67_ALL_REGISTER_CONTEXT_BEGIN"
+          grep -Eina -B 4 -A 34 '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" | head -420 || true
+          echo "V67_ALL_REGISTER_CONTEXT_END"
+
+          echo "V67_REGISTER_SOURCE_IPS_BEGIN"
+          grep -Eia '(^|[[:space:]])REGISTER sip:' "$CAPTURE_FILE" \
+            | sed -nE 's/.* IP ([0-9.]+)\.([0-9]+) > ([0-9.]+)\.([0-9]+): SIP:.*/src=\1 src_port=\2 dst=\3 dst_port=\4/p' \
+            | sort | uniq -c | sort -nr | head -50 || true
+          echo "V67_REGISTER_SOURCE_IPS_END"
+          REMOTE

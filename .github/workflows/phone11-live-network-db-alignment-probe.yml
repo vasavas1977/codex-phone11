@@ -1,0 +1,85 @@
+name: Phone11 Live Network DB Alignment Probe
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-network-db-alignment-probe.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  probe:
+    name: Check whether Kamailio can use backend Postgres
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_network_probe_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_network_probe_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Probe Docker networks and DB reachability
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_network_probe_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "===== networks ====="
+          docker network ls
+          echo "===== container network membership ====="
+          for c in p11-kamailio cp11-backend cp11-postgres; do
+            echo "--- $c ---"
+            docker inspect "$c" --format '{{range $name, $conf := .NetworkSettings.Networks}}network={{$name}} ip={{$conf.IPAddress}} aliases={{$conf.Aliases}}{{println}}{{end}}' || true
+          done
+          echo "===== backend DB env / local DB login from backend network ====="
+          BACK_PG_HOST="$(docker exec cp11-backend sh -lc 'printf %s "${PG_HOST:-}"')"
+          BACK_PG_USER="$(docker exec cp11-backend sh -lc 'printf %s "${PG_USER:-}"')"
+          BACK_PG_DB="$(docker exec cp11-backend sh -lc 'printf %s "${PG_DATABASE:-}"')"
+          BACK_PG_PASS="$(docker exec cp11-backend sh -lc 'printf %s "${PG_PASSWORD:-}"')"
+          echo "backend_pg_host=$BACK_PG_HOST"
+          echo "backend_pg_user=$BACK_PG_USER"
+          echo "backend_pg_db=$BACK_PG_DB"
+          echo "backend_pg_password_present=$( [ -n "$BACK_PG_PASS" ] && echo yes || echo no )"
+          echo "===== p11-kamailio reachability to local postgres aliases ====="
+          for host in postgres cp11-postgres; do
+            echo "probe_host=$host"
+            docker exec p11-kamailio sh -lc "getent hosts $host || true; nc -zvw2 $host 5432 >/tmp/nc.out 2>/tmp/nc.err; echo nc_status=\$?; cat /tmp/nc.out /tmp/nc.err 2>/dev/null || true" || true
+          done
+          echo "===== local postgres subscriber rows ====="
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<'SQL'
+          SELECT current_database() AS db, current_user AS user_name;
+          SELECT username, domain, length(password) AS password_len, left(ha1,8) AS ha1_prefix
+          FROM subscriber
+          WHERE username IN ('1001','1996','1997')
+          ORDER BY username, domain;
+          SQL
+          REMOTE

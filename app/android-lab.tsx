@@ -1,0 +1,79 @@
+import { useEffect, useRef, useState } from "react";
+import { NativeEventEmitter, NativeModules, PermissionsAndroid, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Redirect, router } from "expo-router";
+import { ScreenContainer } from "@/components/screen-container";
+import { isPhone11AndroidLab, phone11AndroidSipConfig } from "@/constants/phone11-build";
+import { useColors } from "@/hooks/use-colors";
+import type { FirebaseDiagnostic, Phone11SiprixModule, Snapshot } from "../modules/phone11-siprix";
+
+export default function AndroidLab() {
+ if (!isPhone11AndroidLab() || Platform.OS !== "android") return <Redirect href="/" />;
+ return <Lab />;
+}
+function Lab() {
+ const colors=useColors();const [state,setState]=useState<Snapshot|null>(null);
+ const [firebaseDiagnostic,setFirebaseDiagnostic]=useState<FirebaseDiagnostic|null>(null);
+ const sip=phone11AndroidSipConfig();
+ const [password,setPassword]=useState("");const [error,setError]=useState("");
+ const [events,setEvents]=useState<Array<{type:string;state?:string;sequence:number;generation:number;callId?:string;statusCode?:number}>>([]);
+ const busyRef=useRef(false);const [busy,setBusy]=useState(false);const [ended,setEnded]=useState(0);
+ const bridge=NativeModules.Phone11Siprix as (Phone11SiprixModule & {labStartMedia(id:string):Promise<unknown>;labInjectTone(id:string):Promise<unknown>;labStopMedia():Promise<unknown>;labClearMedia():Promise<unknown>})|undefined;
+ const refresh=async()=>{if(bridge)setState(await bridge.getSnapshot());};
+ useEffect(()=>{
+  if(!bridge){setError("E_NATIVE_MODULE_MISSING");return;}
+  const refreshFirebase=()=>bridge.getFirebaseDiagnostic().then(setFirebaseDiagnostic).catch(e=>setFirebaseDiagnostic({status:"blocked",tokenPresent:false,tokenHash:null,reason:String((e as {code?:string}).code||"firebase_diagnostic_unavailable"),checkedAt:Date.now(),enrollment:{status:"not_bound",expiresAt:null},ingress:null}));
+  void refresh();void refreshFirebase();
+  const sub=new NativeEventEmitter(bridge as never).addListener("Phone11SiprixEvent",e=>{
+   setEvents(old=>[...old.slice(-39),{type:e.type,state:e.call?.state,sequence:e.sequence,generation:e.generation,callId:e.call?.callId,statusCode:e.call?.statusCode}]);
+   if(e.type==="callTerminated")setEnded(n=>n+1);void refresh();
+  });
+  const diagnosticSub=new NativeEventEmitter(bridge as never).addListener("Phone11FirebaseDiagnosticChanged",()=>void refreshFirebase());
+  return()=>{sub.remove();diagnosticSub.remove();};
+ },[]);
+ async function run(action:()=>Promise<unknown>){if(busyRef.current)return;busyRef.current=true;setBusy(true);setError("");try{await action();await refresh();}catch(e){setError(String((e as {code?:string}).code||"E_COMMAND"));}finally{busyRef.current=false;setBusy(false);}}
+ const call=state?.calls[0];const account=state?.accounts[0];
+ const button=(label:string,action:()=>Promise<unknown>)=><Pressable accessibilityRole="button" accessibilityLabel={label} testID={`lab-${label}`} disabled={busy} onPress={()=>void run(action)} style={{backgroundColor:colors.surface,padding:14,borderRadius:12,marginBottom:8}}><Text style={{color:colors.primary,fontWeight:"600"}}>{label}</Text></Pressable>;
+ const observed=JSON.stringify({initialized:state?.initialized??false,sdk:state?.sdkVersion??null,generation:state?.generation,sequence:state?.sequence,registration:account?.registrationState??"none",firebase:firebaseDiagnostic,call:call?.state??"none",muted:call?.muted??false,held:call?.held??false,ended,error,events,callCount:state?.calls.length??0,labMedia:(state as Snapshot & {labMedia?:unknown})?.labMedia});
+ const firebaseLabel=firebaseDiagnostic?.status==="available"
+  ? `Firebase: token ready • ID ${firebaseDiagnostic.tokenHash}`
+  : firebaseDiagnostic?.status==="blocked"?`Firebase: blocked • ${firebaseDiagnostic.reason}`:"Firebase: not commissioned";
+ const ingress=firebaseDiagnostic?.ingress;
+ const ingressLabel=ingress?`FCM receipt: ${ingress.receiptCount} • ${ingress.envelopeShapeValid?"valid shape":"invalid shape"} • ${ingress.decision}/${ingress.reason}`:"FCM receipt: none";
+ const enrollment=firebaseDiagnostic?.enrollment;
+ const enrollmentLabel=enrollment?.status==="bound"
+  ? `Wake enrollment: bound • expires ${new Date(enrollment.expiresAt!).toISOString()}`
+  : "Wake enrollment: not bound";
+ return <ScreenContainer><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:20,gap:8}}>
+  <Text style={{fontSize:26,fontWeight:"700",color:colors.foreground}}>Phone11 Android Lab</Text>
+  <Text style={{color:colors.muted}}>Isolated synthetic calls • real Siprix • no production accounts</Text>
+  <View accessible accessibilityLabel={`lab-state:${observed}`} testID="lab-state">
+   <Text style={{color:colors.foreground,fontSize:12}}>SDK: {state?.sdkVersion??"not initialized"}{"\n"}Registration: {account?.registrationState??"none"} • Call: {call?.state??"none"}{"\n"}Completed: {ended} • {error||"No command error"}</Text>
+   <Text style={{color:colors.foreground,fontSize:12}}>{firebaseLabel}</Text>
+   <Text style={{color:colors.foreground,fontSize:12}}>{enrollmentLabel}</Text>
+   <Text style={{color:colors.foreground,fontSize:12}}>{ingressLabel}</Text>
+  </View>
+  {button("Initialize",()=>bridge!.initialize({}))}
+  {button("Microphone",()=>PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO))}
+  <TextInput accessibilityLabel="Lab password" testID="lab-password" secureTextEntry value={password} onChangeText={setPassword} autoCapitalize="none" placeholder="Per-run synthetic password" placeholderTextColor={colors.muted} style={{color:colors.foreground,borderColor:colors.border,borderWidth:1,borderRadius:12,padding:12}}/>
+  {button("Register",async()=>{const a=await bridge!.createAccount({sipServer:sip.sipServer,port:sip.port,sipExtension:sip.accountExtension,sipPassword:password,transport:"UDP",secureMedia:0});setPassword("");await bridge!.registerAccount(a.accountId,120);})}
+  <View style={{flexDirection:"row",gap:8,flexWrap:"wrap"}}>
+   {button("Call tone",()=>bridge!.makeCall(account!.accountId,sip.destinations[1]))}
+   {button("Call peer",()=>bridge!.makeCall(account!.accountId,sip.destinations[0]))}
+   {button("Answer",()=>bridge!.answerCall(call!.callId))}
+   {button("Hang up",()=>bridge!.hangupCall(call!.callId))}
+   {button("Mute",()=>bridge!.setMute(call!.callId,!call!.muted))}
+   {button("Hold",()=>bridge!.setHold(call!.callId,!call!.held))}
+   {button("DTMF",()=>bridge!.sendDtmf(call!.callId,"123#"))}
+   {button("Speaker",()=>bridge!.setSpeaker(true))}
+  </View>
+  <View style={{flexDirection:"row",gap:8,flexWrap:"wrap"}}>
+   {button("Capture media",()=>bridge!.labStartMedia(call!.callId))}
+   {button("Inject tone",()=>bridge!.labInjectTone(call!.callId))}
+   {button("Stop capture",()=>bridge!.labStopMedia())}
+   {button("Clear media",()=>bridge!.labClearMedia())}
+  </View>
+  {button("Destroy",()=>bridge!.destroy())}
+  {button("Shared Phone11 UI",async()=>{await bridge!.destroy();router.replace("/");})}
+  <Text style={{color:colors.muted}}>{firebaseDiagnostic?.status==="available"?"Firebase registration is available. Real delivery remains a separate isolated L3 staging test.":firebaseDiagnostic?.status==="blocked"?"Firebase commissioning is blocked; see the lab state for the safe diagnostic reason.":"FCM and process-death wake are not commissioned in this build."} Shared Phone11 screens remain the source for product UI.</Text>
+ </ScrollView></ScreenContainer>;
+}

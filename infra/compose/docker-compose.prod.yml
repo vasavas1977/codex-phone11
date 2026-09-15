@@ -212,6 +212,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      PHONE11_BUILD_SHA: ${PHONE11_BUILD_SHA:-unknown}
       DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable
       PG_HOST: postgres
       PG_PORT: 5432
@@ -221,11 +222,18 @@ services:
       PG_SSL: "false"
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       SIP_DOMAIN: ${SIP_DOMAIN}
-      FREESWITCH_ESL_HOST: freeswitch
+      # The all-in-one Compose layout resolves the service name. Production
+      # installations that keep FreeSWITCH on the host network must override
+      # this with the backend bridge gateway (for example, 172.18.0.1).
+      FREESWITCH_ESL_HOST: ${FREESWITCH_ESL_HOST:-freeswitch}
       FREESWITCH_ESL_PORT: 8021
       FREESWITCH_ESL_PASSWORD: ${FS_ESL_PASSWORD}
       FCM_API_KEY: ${FCM_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
+      PHONE11_AUTH_SECRET: ${PHONE11_AUTH_SECRET:?Set a new Phone11 auth secret}
+      PHONE11_AUTH_BASE_URL: ${PHONE11_AUTH_BASE_URL:-https://api.phone11.ai}
+      PHONE11_AUTH_TRUSTED_ORIGINS: ${PHONE11_AUTH_TRUSTED_ORIGINS:-}
+      PHONE11_TRUSTED_PROXY_CIDRS: ${PHONE11_TRUSTED_PROXY_CIDRS:?Set exact trusted reverse-proxy addresses}
       STORAGE_BUCKET: ${STORAGE_BUCKET}
     ports:
       - "127.0.0.1:3000:3000"

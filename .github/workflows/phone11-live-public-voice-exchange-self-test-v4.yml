@@ -1,0 +1,650 @@
+name: Phone11 Live Public Voice Exchange Self Test V4
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-public-voice-exchange-self-test-v4.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+      caller_extension:
+        description: Caller SIP extension for automated media testing
+        required: true
+        default: "1996"
+      callee_extension:
+        description: Callee SIP extension for automated media testing
+        required: true
+        default: "1997"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  voice-exchange-self-test:
+    name: Verify registered SIP endpoints exchange RTP both ways
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Locate live SIP/media EC2 instance
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS credentials are not configured."
+            exit 30
+          fi
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 31
+          fi
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_public_voice_v4_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_public_voice_v4_key.pub" >/dev/null
+
+      - name: Ensure dedicated media test SIP accounts
+        id: credentials
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ steps.ec2.outputs.ec2_host }}"
+          CALLER_EXTENSION="${{ github.event.inputs.caller_extension || '1996' }}"
+          CALLEE_EXTENSION="${{ github.event.inputs.callee_extension || '1997' }}"
+          PASS_FILE="$RUNNER_TEMP/phone11_media_test_passwords.json"
+          ERR_FILE="$RUNNER_TEMP/phone11_media_test_accounts.err"
+          rm -f "$PASS_FILE" "$ERR_FILE"
+
+          set +e
+          ssh -i ~/.ssh/phone11_public_voice_v4_key \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$EC2_USER@$EC2_HOST" \
+            "TEST_ACCOUNTS='$CALLER_EXTENSION,$CALLEE_EXTENSION' bash -s" >"$PASS_FILE" 2>"$ERR_FILE" <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i -e TEST_ACCOUNTS="$TEST_ACCOUNTS" cp11-backend node --input-type=module <<'NODE'
+          import crypto from 'crypto';
+          import pg from 'pg';
+
+          const accounts = (process.env.TEST_ACCOUNTS || '1996,1997')
+            .split(',')
+            .map((value) => value.trim())
+            .filter(Boolean);
+          const domain = process.env.SIP_DOMAIN || 'sip.phone11.ai';
+          const firstEnv = (...keys) => keys.map((key) => process.env[key]).find(Boolean);
+          const cfg = {
+            host: firstEnv('PG_HOST', 'DB_HOST', 'POSTGRES_HOST'),
+            port: Number(firstEnv('PG_PORT', 'DB_PORT', 'POSTGRES_PORT') || 5432),
+            user: firstEnv('PG_USER', 'DB_USER', 'POSTGRES_USER'),
+            password: firstEnv('PG_PASSWORD', 'DB_PASSWORD', 'POSTGRES_PASSWORD'),
+            database: firstEnv('PG_DATABASE', 'DB_NAME', 'DB_DATABASE', 'POSTGRES_DB'),
+          };
+          const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
+          if (missing.length) {
+            console.error(`missing backend db env: ${missing.join(',')}`);
+            process.exit(2);
+          }
+
+          const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
+          const dekSecret = process.env.SIP_DEK_SECRET || 'phone11-sip-dek-v1-change-in-production';
+          const key = crypto.createHash('sha256').update(dekSecret).digest();
+          const sslMode = firstEnv('PG_SSL', 'DB_SSL', 'POSTGRES_SSL', 'DATABASE_SSL')?.toLowerCase();
+          const ssl = sslMode === 'false' || sslMode === '0' || sslMode === 'disable' ? false : { rejectUnauthorized: false };
+          const pool = new pg.Pool({ ...cfg, ssl, connectionTimeoutMillis: 5000 });
+
+          function randomPassword() {
+            return Array.from(crypto.randomBytes(24)).map((b) => charset[b % charset.length]).join('');
+          }
+
+          function encryptSecret(password) {
+            const iv = crypto.randomBytes(12);
+            const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+            const ciphertext = Buffer.concat([cipher.update(password, 'utf8'), cipher.final()]);
+            const tag = cipher.getAuthTag();
+            return { ciphertext, iv, tag };
+          }
+
+          async function ensureAccount(extension) {
+            const password = randomPassword();
+            const ha1 = crypto.createHash('md5').update(`${extension}:${domain}:${password}`).digest('hex');
+            const ha1b = crypto.createHash('md5').update(`${extension}@${domain}:${domain}:${password}`).digest('hex');
+            const secret = encryptSecret(password);
+
+            await pool.query(`
+              INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+              VALUES ($1, $2, $3, $4, $5)
+              ON CONFLICT (username, domain) DO UPDATE SET
+                password = EXCLUDED.password,
+                ha1 = EXCLUDED.ha1,
+                ha1b = EXCLUDED.ha1b
+            `, [extension, domain, password, ha1, ha1b]);
+
+            const ext = await pool.query(`
+              SELECT id FROM extensions
+              WHERE (extension_number = $1 OR sip_username = $1)
+                AND deleted_at IS NULL
+              ORDER BY id ASC
+              LIMIT 1
+            `, [extension]);
+
+            let extensionId;
+            if (ext.rows.length) {
+              extensionId = ext.rows[0].id;
+              await pool.query(`
+                UPDATE extensions
+                SET org_id = COALESCE(org_id, 1), tenant_id = COALESCE(tenant_id, 1),
+                    extension_number = $1, sip_username = $1, sip_domain = $2,
+                    sip_password = $3, display_name = $4,
+                    transport = 'UDP', status = 'active', type = COALESCE(type, 'user'),
+                    updated_at = NOW()
+                WHERE id = $5
+              `, [extension, domain, password, `Phone11 Media Test ${extension}`, extensionId]);
+            } else {
+              const inserted = await pool.query(`
+                INSERT INTO extensions (
+                  org_id, tenant_id, extension_number, sip_username, sip_domain, sip_password,
+                  display_name, transport, status, type
+                )
+                VALUES (1, 1, $1, $1, $2, $3, $4, 'UDP', 'active', 'user')
+                RETURNING id
+              `, [extension, domain, password, `Phone11 Media Test ${extension}`]);
+              extensionId = inserted.rows[0].id;
+            }
+
+            const account = await pool.query(`
+              SELECT id FROM sip_accounts
+              WHERE extension_id = $1 AND deleted_at IS NULL
+              ORDER BY id ASC
+              LIMIT 1
+            `, [extensionId]);
+
+            if (account.rows.length) {
+              await pool.query(`
+                UPDATE sip_accounts
+                SET tenant_id = 1, org_id = 1, sip_username = $1, sip_domain = $2,
+                    ha1 = $3, ha1b = $4, secret_ciphertext = $5,
+                    secret_iv = $6, secret_tag = $7, dek_id = 'dek-v1',
+                    transport_preference = 'UDP', status = 'active', updated_at = NOW()
+                WHERE id = $8
+              `, [extension, domain, ha1, ha1b, secret.ciphertext, secret.iv, secret.tag, account.rows[0].id]);
+            } else {
+              await pool.query(`
+                INSERT INTO sip_accounts (
+                  tenant_id, org_id, extension_id, sip_username, sip_domain, ha1, ha1b,
+                  secret_ciphertext, secret_iv, secret_tag, dek_id, transport_preference, status
+                )
+                VALUES (1, 1, $1, $2, $3, $4, $5, $6, $7, $8, 'dek-v1', 'UDP', 'active')
+              `, [extensionId, extension, domain, ha1, ha1b, secret.ciphertext, secret.iv, secret.tag]);
+            }
+
+            console.error(`media_test_extension_ready=${extension}; extension_id=${extensionId}; domain=${domain}`);
+            return password;
+          }
+
+          try {
+            await pool.query('BEGIN');
+            const result = {};
+            for (const extension of accounts) {
+              result[extension] = await ensureAccount(extension);
+            }
+            await pool.query('COMMIT');
+            process.stdout.write(JSON.stringify(result));
+          } catch (error) {
+            await pool.query('ROLLBACK').catch(() => {});
+            console.error(`media test account setup exception: ${error.name}: ${error.message}`);
+            process.exit(4);
+          } finally {
+            await pool.end().catch(() => {});
+          }
+          NODE
+          REMOTE
+          SSH_STATUS=$?
+          set -e
+
+          tr -d '\r\n' < "$PASS_FILE" > "$PASS_FILE.clean" || true
+          mv "$PASS_FILE.clean" "$PASS_FILE" || true
+          if [ "$SSH_STATUS" -ne 0 ] || [ ! -s "$PASS_FILE" ]; then
+            echo "ERROR: Could not create/read media test SIP passwords."
+            sed -E 's#(password|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig' "$ERR_FILE" || true
+            exit 54
+          fi
+          jq -e --arg caller "$CALLER_EXTENSION" --arg callee "$CALLEE_EXTENSION" '.[$caller] and .[$callee]' "$PASS_FILE" >/dev/null
+          jq -r 'to_entries[].value' "$PASS_FILE" | while IFS= read -r value; do
+            echo "::add-mask::$value"
+          done
+          echo "caller_extension=$CALLER_EXTENSION"
+          echo "callee_extension=$CALLEE_EXTENSION"
+          echo "sip_credential_lookup=ok source=managed_media_test_accounts"
+          sed -E 's#(password|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig' "$ERR_FILE" || true
+          echo "password_json_file=$PASS_FILE" >> "$GITHUB_OUTPUT"
+
+      - name: Run public SIP/RTP pair voice exchange self-test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          CALLER_EXTENSION="${{ github.event.inputs.caller_extension || '1996' }}"
+          CALLEE_EXTENSION="${{ github.event.inputs.callee_extension || '1997' }}"
+          PASS_FILE="${{ steps.credentials.outputs.password_json_file }}"
+          CALLER_PASSWORD="$(jq -r --arg extension "$CALLER_EXTENSION" '.[$extension]' "$PASS_FILE")"
+          CALLEE_PASSWORD="$(jq -r --arg extension "$CALLEE_EXTENSION" '.[$extension]' "$PASS_FILE")"
+          export CALLER_EXTENSION CALLEE_EXTENSION CALLER_PASSWORD CALLEE_PASSWORD
+
+          PUBLIC_IP="$(curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
+          if [ -z "$PUBLIC_IP" ]; then
+            PUBLIC_IP="$(curl -fsS https://api.ipify.org 2>/dev/null | tr -d '[:space:]' || true)"
+          fi
+          if [ -z "$PUBLIC_IP" ]; then
+            echo "ERROR: Could not discover GitHub runner public IP for SDP."
+            exit 55
+          fi
+          export PUBLIC_IP
+          echo "runner_public_ip=$PUBLIC_IP"
+          echo "sip_target=sip.phone11.ai:5060"
+          echo "test_call=sip:${CALLER_EXTENSION}@sip.phone11.ai_to_sip:${CALLEE_EXTENSION}@sip.phone11.ai"
+
+          PYLOG="$RUNNER_TEMP/phone11-public-voice-exchange-v4.log"
+          set +e
+          timeout 75 python3 - <<'PYTEST' > "$PYLOG" 2>&1
+          import hashlib
+          import os
+          import random
+          import re
+          import secrets
+          import select
+          import socket
+          import struct
+          import sys
+          import time
+
+          domain = "sip.phone11.ai"
+          server = (domain, 5060)
+          public_ip = os.environ["PUBLIC_IP"]
+
+          def md5(value):
+              return hashlib.md5(value.encode()).hexdigest()
+
+          def header(text, name):
+              match = re.search(rf"^{re.escape(name)}:\s*(.+)$", text, re.I | re.M)
+              return match.group(1).strip() if match else ""
+
+          def headers(text, name):
+              return re.findall(rf"^{re.escape(name)}:\s*(.+)$", text, re.I | re.M)
+
+          def status_code(text):
+              first = text.splitlines()[0] if text.splitlines() else ""
+              match = re.match(r"SIP/2.0\s+(\d+)", first)
+              return int(match.group(1)) if match else 0
+
+          def parse_auth(value):
+              value = value.replace("Digest", "", 1).strip()
+              result = {}
+              for key, quoted, bare in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', value):
+                  result[key.lower()] = quoted or bare
+              return result
+
+          def auth_value(username, password, challenge, method, uri):
+              data = parse_auth(challenge)
+              realm = data.get("realm", domain)
+              nonce = data["nonce"]
+              qop_options = data.get("qop", "")
+              qop = "auth" if "auth" in qop_options else ""
+              cnonce = secrets.token_hex(8)
+              nc = "00000001"
+              ha1 = md5(f"{username}:{realm}:{password}")
+              ha2 = md5(f"{method}:{uri}")
+              response = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}") if qop else md5(f"{ha1}:{nonce}:{ha2}")
+              parts = [f'username="{username}"', f'realm="{realm}"', f'nonce="{nonce}"', f'uri="{uri}"', f'response="{response}"', 'algorithm=MD5']
+              if data.get("opaque"):
+                  parts.append(f'opaque="{data["opaque"]}"')
+              if qop:
+                  parts.extend([f'qop={qop}', f'nc={nc}', f'cnonce="{cnonce}"'])
+              return "Digest " + ", ".join(parts)
+
+          def parse_sdp_media(message):
+              body = message.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in message else ""
+              media_ip = ""
+              media_port = 0
+              for line in body.splitlines():
+                  if line.startswith("c=IN IP4 "):
+                      media_ip = line.split()[2]
+                  if line.startswith("m=audio "):
+                      media_port = int(line.split()[1])
+              if not media_ip or not media_port:
+                  raise RuntimeError("No media address in SDP")
+              return media_ip, media_port
+
+          class Endpoint:
+              def __init__(self, username, password, sip_port, rtp_port):
+                  self.username = username
+                  self.password = password
+                  self.sip_port = sip_port
+                  self.rtp_port = rtp_port
+                  self.sip = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                  self.sip.bind(("0.0.0.0", sip_port))
+                  self.sip.setblocking(False)
+                  self.rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                  self.rtp.bind(("0.0.0.0", rtp_port))
+                  self.rtp.setblocking(False)
+                  self.contact = f"<sip:{username}@{public_ip}:{sip_port};transport=udp>"
+
+              def send(self, payload):
+                  self.sip.sendto(payload.encode(), server)
+
+              def recv_matching(self, call_id, timeout):
+                  deadline = time.time() + timeout
+                  while time.time() < deadline:
+                      ready, _, _ = select.select([self.sip], [], [], 0.2)
+                      if not ready:
+                          continue
+                      data, addr = self.sip.recvfrom(65535)
+                      text = data.decode(errors="replace")
+                      if call_id in text:
+                          return text, addr
+                  raise TimeoutError(f"No SIP response for {self.username} call_id={call_id}")
+
+              def sdp(self, label):
+                  return "\r\n".join([
+                      "v=0",
+                      f"o=phone11-{self.username} 1 1 IN IP4 {public_ip}",
+                      f"s=Phone11 {label}",
+                      f"c=IN IP4 {public_ip}",
+                      "t=0 0",
+                      f"m=audio {self.rtp_port} RTP/AVP 0",
+                      "a=rtpmap:0 PCMU/8000",
+                      "a=sendrecv",
+                      "",
+                  ])
+
+          caller = Endpoint(os.environ["CALLER_EXTENSION"], os.environ["CALLER_PASSWORD"], random.randint(24100, 24999), random.randrange(28000, 29998, 2))
+          callee = Endpoint(os.environ["CALLEE_EXTENSION"], os.environ["CALLEE_PASSWORD"], random.randint(25000, 25999), random.randrange(30000, 31998, 2))
+
+          def register(endpoint):
+              uri = f"sip:{domain}"
+              call_id = f"phone11-register-{endpoint.username}-{secrets.token_hex(6)}@{public_ip}"
+              branch = f"z9hG4bKreg{secrets.token_hex(8)}"
+              def message(cseq, auth_header="", proxy=False):
+                  lines = [
+                      f"REGISTER {uri} SIP/2.0",
+                      f"Via: SIP/2.0/UDP {public_ip}:{endpoint.sip_port};branch={branch}{cseq};rport",
+                      "Max-Forwards: 70",
+                      f"From: <sip:{endpoint.username}@{domain}>;tag={secrets.token_hex(4)}",
+                      f"To: <sip:{endpoint.username}@{domain}>",
+                      f"Call-ID: {call_id}",
+                      f"CSeq: {cseq} REGISTER",
+                      f"Contact: {endpoint.contact};expires=300",
+                      "Expires: 300",
+                      "User-Agent: Phone11PublicVoiceSelfTest/4.0",
+                  ]
+                  if auth_header:
+                      lines.append(("Proxy-Authorization" if proxy else "Authorization") + f": {auth_header}")
+                  lines.extend(["Content-Length: 0", "", ""])
+                  return "\r\n".join(lines)
+              endpoint.send(message(1))
+              text, _ = endpoint.recv_matching(call_id, 8)
+              code = status_code(text)
+              if code in (401, 407):
+                  challenge = header(text, "Proxy-Authenticate") or header(text, "WWW-Authenticate")
+                  proxy = code == 407 or bool(header(text, "Proxy-Authenticate"))
+                  endpoint.send(message(2, auth_value(endpoint.username, endpoint.password, challenge, "REGISTER", uri), proxy=proxy))
+                  text, _ = endpoint.recv_matching(call_id, 8)
+                  code = status_code(text)
+              print(f"registration_{endpoint.username}_status={code}")
+              if code != 200:
+                  raise RuntimeError(f"REGISTER failed for {endpoint.username}: SIP {code}")
+
+          def build_invite(cseq, call_id, from_tag, auth_header="", proxy=False):
+              req_uri = f"sip:{callee.username}@{domain}"
+              sdp = caller.sdp("caller offer")
+              branch = f"z9hG4bKinvite{secrets.token_hex(6)}{cseq}"
+              lines = [
+                  f"INVITE {req_uri} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {public_ip}:{caller.sip_port};branch={branch};rport",
+                  "Max-Forwards: 70",
+                  f"From: Phone11 Self Test <sip:{caller.username}@{domain}>;tag={from_tag}",
+                  f"To: <{req_uri}>",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} INVITE",
+                  f"Contact: {caller.contact}",
+                  "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS",
+                  "Supported: replaces, timer",
+                  "User-Agent: Phone11PublicVoiceSelfTest/4.0",
+              ]
+              if auth_header:
+                  lines.append(("Proxy-Authorization" if proxy else "Authorization") + f": {auth_header}")
+              lines.extend(["Content-Type: application/sdp", f"Content-Length: {len(sdp.encode())}", "", sdp])
+              return "\r\n".join(lines)
+
+          def send_response(endpoint, request, addr, code, reason, to_tag, include_sdp=False):
+              via_lines = headers(request, "Via")
+              from_header = header(request, "From")
+              to_header = header(request, "To")
+              call_id = header(request, "Call-ID")
+              cseq = header(request, "CSeq")
+              if "tag=" not in to_header:
+                  to_header = f"{to_header};tag={to_tag}"
+              body = endpoint.sdp("callee answer") if include_sdp else ""
+              lines = [f"SIP/2.0 {code} {reason}"]
+              lines.extend([f"Via: {value}" for value in via_lines])
+              lines.extend([
+                  f"From: {from_header}",
+                  f"To: {to_header}",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq}",
+                  f"Contact: {endpoint.contact}",
+              ])
+              if include_sdp:
+                  lines.append("Content-Type: application/sdp")
+              lines.extend([f"Content-Length: {len(body.encode())}", "", body])
+              endpoint.sip.sendto("\r\n".join(lines).encode(), addr)
+              return to_header
+
+          def send_ack(call_id, cseq, from_tag, to_header):
+              req_uri = f"sip:{callee.username}@{domain}"
+              branch = f"z9hG4bKack{secrets.token_hex(8)}"
+              lines = [
+                  f"ACK {req_uri} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {public_ip}:{caller.sip_port};branch={branch};rport",
+                  "Max-Forwards: 70",
+                  f"From: Phone11 Self Test <sip:{caller.username}@{domain}>;tag={from_tag}",
+                  f"To: {to_header}",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} ACK",
+                  f"Contact: {caller.contact}",
+                  "Content-Length: 0",
+                  "",
+                  "",
+              ]
+              caller.send("\r\n".join(lines))
+
+          def send_bye(call_id, cseq, from_tag, to_header):
+              req_uri = f"sip:{callee.username}@{domain}"
+              branch = f"z9hG4bKbye{secrets.token_hex(8)}"
+              lines = [
+                  f"BYE {req_uri} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {public_ip}:{caller.sip_port};branch={branch};rport",
+                  "Max-Forwards: 70",
+                  f"From: Phone11 Self Test <sip:{caller.username}@{domain}>;tag={from_tag}",
+                  f"To: {to_header}",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} BYE",
+                  f"Contact: {caller.contact}",
+                  "Content-Length: 0",
+                  "",
+                  "",
+              ]
+              caller.send("\r\n".join(lines))
+
+          try:
+              print(f"caller_sip_bind=0.0.0.0:{caller.sip_port}")
+              print(f"callee_sip_bind=0.0.0.0:{callee.sip_port}")
+              print(f"caller_rtp_bind=0.0.0.0:{caller.rtp_port}")
+              print(f"callee_rtp_bind=0.0.0.0:{callee.rtp_port}")
+              register(caller)
+              register(callee)
+
+              call_id = f"phone11-public-voice-pair-{secrets.token_hex(8)}@{public_ip}"
+              from_tag = secrets.token_hex(6)
+              cseq = 1
+              print(f"call_id={call_id}")
+              caller.send(build_invite(cseq, call_id, from_tag))
+
+              callee_invite = None
+              callee_addr = None
+              caller_200 = None
+              to_header_for_dialog = ""
+              deadline = time.time() + 25
+              while time.time() < deadline and not caller_200:
+                  ready, _, _ = select.select([caller.sip, callee.sip], [], [], 0.2)
+                  for sock in ready:
+                      data, addr = sock.recvfrom(65535)
+                      text = data.decode(errors="replace")
+                      if sock is caller.sip:
+                          if call_id not in text:
+                              continue
+                          code = status_code(text)
+                          if code:
+                              print(f"caller_sip_response={code}")
+                          if code in (401, 407):
+                              challenge = header(text, "Proxy-Authenticate") or header(text, "WWW-Authenticate")
+                              proxy = code == 407 or bool(header(text, "Proxy-Authenticate"))
+                              cseq += 1
+                              auth = auth_value(caller.username, caller.password, challenge, "INVITE", f"sip:{callee.username}@{domain}")
+                              caller.send(build_invite(cseq, call_id, from_tag, auth, proxy=proxy))
+                          elif code == 200:
+                              caller_200 = text
+                              to_header_for_dialog = header(text, "To")
+                      elif sock is callee.sip:
+                          if text.startswith("INVITE ") and call_id in text:
+                              callee_invite = text
+                              callee_addr = addr
+                              print("callee_received_invite=yes")
+                              callee_offer_media = parse_sdp_media(text)
+                              print(f"callee_offer_media={callee_offer_media[0]}:{callee_offer_media[1]}")
+                              tag = secrets.token_hex(6)
+                              send_response(callee, text, addr, 180, "Ringing", tag, include_sdp=False)
+                              to_header_for_dialog = send_response(callee, text, addr, 200, "OK", tag, include_sdp=True)
+                  if callee_invite and not caller_200:
+                      continue
+
+              if not callee_invite:
+                  raise RuntimeError("Callee never received INVITE; registration/contact routing failed")
+              if not caller_200:
+                  raise RuntimeError("Caller never received 200 OK after callee answered")
+
+              caller_answer_media = parse_sdp_media(caller_200)
+              print("sip_final_status=200")
+              print(f"caller_answer_media={caller_answer_media[0]}:{caller_answer_media[1]}")
+              send_ack(call_id, cseq, from_tag, to_header_for_dialog)
+
+              caller_sent = caller_received = callee_sent = callee_received = 0
+              caller_first_from = callee_first_from = ""
+              caller_seq = random.randint(0, 65535)
+              callee_seq = random.randint(0, 65535)
+              caller_ts = random.randint(0, 2**32 - 1)
+              callee_ts = random.randint(0, 2**32 - 1)
+              caller_ssrc = random.randint(1, 2**32 - 1)
+              callee_ssrc = random.randint(1, 2**32 - 1)
+              end = time.time() + 12
+              while time.time() < end:
+                  caller_packet = struct.pack("!BBHII", 0x80, 0x00, caller_seq & 0xFFFF, caller_ts & 0xFFFFFFFF, caller_ssrc) + (b"\xff" * 160)
+                  callee_packet = struct.pack("!BBHII", 0x80, 0x00, callee_seq & 0xFFFF, callee_ts & 0xFFFFFFFF, callee_ssrc) + (b"\xff" * 160)
+                  caller.rtp.sendto(caller_packet, caller_answer_media)
+                  callee.rtp.sendto(callee_packet, callee_offer_media)
+                  caller_sent += 1
+                  callee_sent += 1
+                  caller_seq += 1
+                  callee_seq += 1
+                  caller_ts += 160
+                  callee_ts += 160
+                  ready, _, _ = select.select([caller.rtp, callee.rtp], [], [], 0.02)
+                  for sock in ready:
+                      packet, addr = sock.recvfrom(2048)
+                      if len(packet) < 12:
+                          continue
+                      if sock is caller.rtp:
+                          caller_received += 1
+                          caller_first_from = caller_first_from or f"{addr[0]}:{addr[1]}"
+                      else:
+                          callee_received += 1
+                          callee_first_from = callee_first_from or f"{addr[0]}:{addr[1]}"
+
+              send_bye(call_id, cseq + 1, from_tag, to_header_for_dialog)
+              print(f"caller_rtp_packets_sent={caller_sent}")
+              print(f"caller_rtp_packets_received={caller_received}")
+              print(f"callee_rtp_packets_sent={callee_sent}")
+              print(f"callee_rtp_packets_received={callee_received}")
+              if caller_first_from:
+                  print(f"caller_first_rtp_from={caller_first_from}")
+              if callee_first_from:
+                  print(f"callee_first_rtp_from={callee_first_from}")
+              if caller_sent > 0 and callee_sent > 0 and caller_received > 0 and callee_received > 0:
+                  print("MEDIA_SELF_TEST_RESULT=pass")
+                  print("voice_exchange_objective=rtp_packets_seen_both_directions")
+                  sys.exit(0)
+              print("MEDIA_SELF_TEST_RESULT=fail")
+              print("voice_exchange_objective=not_proven")
+              sys.exit(60)
+          except Exception as exc:
+              print(f"python_sip_status=exception {type(exc).__name__}: {exc}")
+              print("MEDIA_SELF_TEST_RESULT=fail")
+              print("voice_exchange_objective=not_proven")
+              sys.exit(61)
+          PYTEST
+          PY_STATUS=$?
+          set -e
+
+          echo "===== Python SIP/RTP summary ====="
+          cat "$PYLOG" | sed -E 's#(password|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig' || true
+
+          CALL_ID="$(awk -F= '/^call_id=/{print $2}' "$PYLOG" | tail -n 1)"
+          echo "===== Kamailio media logs from self-test ====="
+          if [ -n "$CALL_ID" ]; then
+            ssh -i ~/.ssh/phone11_public_voice_v4_key \
+              -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=20 \
+              "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" \
+              "CALL_ID='$CALL_ID' bash -s" <<'REMOTE_LOGS' | sed -E 's#(password|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig' || true
+          set -Eeuo pipefail
+          docker logs --since 240s --timestamps p11-kamailio 2>&1 \
+            | grep -Eia "$CALL_ID|RTPENGINE|BEFORE_ANSWER|AFTER_ANSWER|FORCED_PUBLIC_NATIVE_ANSWER_SDP|c=IN IP4|m=audio|INVITE|ACK|BYE|REGISTER|SIP/2.0|1996|1997" \
+            | tail -n 320 || true
+          REMOTE_LOGS
+          else
+            echo "No call_id captured from Python log."
+          fi
+
+          exit "$PY_STATUS"

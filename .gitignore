@@ -27,6 +27,7 @@ terraform.tfvars
 
 # === Dependencies ===
 node_modules/
+modules/phone11-siprix/vendor/
 .pnp.*
 
 # === Build Artifacts ===
@@ -94,3 +95,6 @@ Thumbs.db
 .watchmanconfig
 coverage/
 .webdev/
+
+# Private, per-run Android lab artifacts and synthetic credentials
+.lab/

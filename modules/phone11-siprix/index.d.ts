@@ -1,0 +1,150 @@
+export interface AccountConfig {
+  sipServer: string;
+  sipExtension: string;
+  sipPassword: string;
+  sipAuthId?: string;
+  sipProxy?: string;
+  stunServer?: string;
+  displName?: string;
+  transport: 'UDP' | 'TCP' | 'TLS';
+  port?: number;
+  expireTime?: number;
+  secureMedia?: 0 | 1 | 2;
+  iceEnabled?: boolean;
+  rtcpMuxEnabled?: boolean;
+  rewriteContactIp?: boolean;
+  verifyIncomingCall?: boolean;
+  forceSipProxy?: boolean;
+  aCodecs?: number[];
+}
+
+export interface Account {
+  id: string;
+  accountId: string;
+  registrationState: 'unregistered' | 'registering' | 'registered' | 'failed';
+  regState?: number;
+  sipStatusCode?: number;
+}
+
+export interface WakeBinding {
+  bindingId: string; ownerUserId: number; tenantId: number; deviceId: string; sessionBinding: string; expiresAt: number;
+}
+export interface NativeWake extends WakeBinding { v: 1; callUUID: string; grantExpiresAt: number; }
+export interface FirebaseDiagnostic {
+  status: "available" | "blocked" | "unavailable";
+  tokenPresent: boolean;
+  tokenHash: string | null;
+  reason: string;
+  checkedAt: number;
+  enrollment: FirebaseEnrollmentDiagnostic;
+  ingress: FirebaseIngressDiagnostic | null;
+}
+export interface FirebaseEnrollmentDiagnostic {
+  status: "bound" | "not_bound";
+  expiresAt: number | null;
+}
+export interface FirebaseIngressDiagnostic {
+  receiptCount: number;
+  receivedAt: number;
+  envelopeShapeValid: boolean;
+  decision: "accepted" | "ignored" | "rejected";
+  reason: string;
+}
+
+export interface Call {
+  id: string;
+  callId: string;
+  accountId: string;
+  direction: 'incoming' | 'outgoing';
+  state: 'dialing' | 'ringing' | 'proceeding' | 'connected' | 'held' | 'terminated';
+  remoteUri: string;
+  hasVideo: false;
+  muted: boolean;
+  held: boolean;
+  holdState: number;
+  statusCode?: number;
+  historyId?: string; startedAt?: number; answeredAt?: number;
+  wakeCallUUID?: string;
+  wakeSystemAnswered?: boolean;
+}
+
+export interface Snapshot {
+  nativeWake?: NativeWake;
+  initialized: boolean;
+  generation: number;
+  sequence: number;
+  sdkVersion: string | null;
+  accounts: Account[];
+  calls: Call[];
+  audioSessionActive: boolean;
+  speaker: boolean;
+  trialNotified: boolean;
+}
+
+type EventData =
+  | { type: 'registration'; account: Account }
+  | { type: 'callDialing' | 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted'; call: Call }
+  | { type: 'devicesAudioChanged' | 'audioSession'; audioSessionActive: boolean; speaker: boolean }
+  | ({ type: 'playbackAudioOutputsChanged' } & PlaybackAudioOutputs)
+  | { type: 'trial' }
+  | { type: 'network'; networkState: number }
+  | { type: 'dtmf'; callId: string; tone: number }
+  | { type: 'error'; operation: string; code: number };
+
+export type SiprixEvent = EventData & { generation: number; sequence: number };
+export type SiprixAccount = Account;
+export type SiprixCall = Call;
+export type SiprixSnapshot = Snapshot;
+
+export interface PlaybackAudioOutput {
+  /** Session-scoped Android AudioDeviceInfo identifier; never a device name. */
+  id: string;
+  kind: "phone" | "speaker" | "bluetooth";
+  label: "Phone" | "Speaker" | `Bluetooth audio${string}`;
+  selected: boolean;
+}
+export interface PlaybackAudioOutputs {
+  outputs: PlaybackAudioOutput[];
+  selectedId: string | null;
+}
+
+/** Channel: Phone11SiprixEvent via new NativeEventEmitter(Phone11Siprix). */
+export interface CompletedWakeCall { id: string; ownerUserId: number; tenantId: number; number: string; direction: "inbound"; startedAt: number; answeredAt?: number; endedAt: number; updatedAt: number; }
+export interface Phone11SiprixModule {
+  getCapabilities(): Promise<{ registrationAvailable: boolean; closedAppCalling: false; reason: string }>;
+  getFirebaseDiagnostic(): Promise<FirebaseDiagnostic>;
+  start(): Promise<string | null>;
+  currentToken(): Promise<string | null>;
+  createDeviceId(): Promise<string>;
+  stop(): Promise<void>;
+  saveWakeEnrollment(value: WakeBinding & { grant: string }): Promise<void>;
+  getWakeBinding(): Promise<WakeBinding | null>;
+  readCompletedWakeCalls(binding: WakeBinding): Promise<CompletedWakeCall[]>;
+  ackCompletedWakeCalls(binding: WakeBinding, ids: string[]): Promise<void>;
+  bindForegroundWakeContext(binding: WakeBinding, sip: AccountConfig): Promise<void>;
+  adoptIncomingWake(binding: WakeBinding, sip: AccountConfig): Promise<Snapshot>;
+  restoreIncomingWakeDelegate(): Promise<void>;
+  initialize(options: Record<string, never>): Promise<Snapshot>;
+  getSnapshot(): Promise<Snapshot>;
+  createAccount(config: AccountConfig): Promise<Account>;
+  registerAccount(accountId: string, expireTime: number): Promise<void>;
+  unregisterAccount(accountId: string): Promise<void>;
+  deleteAccount(accountId: string): Promise<void>;
+  makeCall(accountId: string, destination: string): Promise<Call>;
+  answerCall(callId: string): Promise<void>;
+  hangupCall(callId: string): Promise<void>;
+  setMute(callId: string, muted: boolean): Promise<void>;
+  setHold(callId: string, held: boolean): Promise<void>;
+  sendDtmf(callId: string, digits: string): Promise<void>;
+  setSpeaker(enabled: boolean): Promise<void>;
+  getPlaybackAudioOutputs(): Promise<PlaybackAudioOutputs>;
+  selectPlaybackAudioOutput(outputId: string): Promise<PlaybackAudioOutputs>;
+  resetPlaybackAudioOutput(): Promise<PlaybackAudioOutputs>;
+  handleNativeAudioSession(active: boolean): Promise<void>;
+  destroy(): Promise<void>;
+  addListener(eventName: string): void;
+  removeListeners(count: number): void;
+}
+
+declare const Phone11Siprix: Phone11SiprixModule | undefined;
+export default Phone11Siprix;

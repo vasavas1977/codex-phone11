@@ -1,10 +1,20 @@
+import { cloudRecordingsRouter } from "./cloud-recordings/router";
+import { chatNotificationsRouter } from "./chat-notifications/router";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { integrationSecretStatus } from "./pbx/integration-auth";
+import { findOwnedRecording } from "./pbx/media-access";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { revokePhone11Session } from "./_core/phone11-auth";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { pbxRouter } from "./pbx/pbx-router";
 import { ivrRouter } from "./pbx/ivr-router";
+import { chatRouter } from "./chat/router";
+import { wakeService,wakeEnrollSchema,wakeIdentitySchema } from "./push/wake-service";
+import { resolvePushSession } from "./push/session";
+import { WakeError } from "./push/wake-repository";
 import { invokeLLM } from "./_core/llm";
 import {
   getPhoneConfig,
@@ -27,10 +37,14 @@ import {
 } from "./push-gateway";
 
 export const appRouter = router({
+  cloudRecordings: cloudRecordingsRouter,
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+      const response = await revokePhone11Session(ctx.req.headers);
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length) ctx.res.setHeader("Set-Cookie", cookies);
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return {
@@ -109,18 +123,19 @@ export const appRouter = router({
 
   /** AI-powered call transcript analysis */
   recording: router({
-    analyzeTranscript: publicProcedure
+    analyzeTranscript: protectedProcedure
       .input(
         z.object({
           recordingId: z.string(),
-          transcription: z.string().min(1),
+          transcription: z.string().min(1).max(100_000),
           callerName: z.string(),
           calleeName: z.string(),
           direction: z.string(),
           duration: z.number(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        if (!await findOwnedRecording(ctx.user.id, input.recordingId)) throw new TRPCError({ code: "NOT_FOUND", message: "Recording not found" });
         const { transcription, callerName, calleeName, direction, duration } = input;
 
         const durationMin = Math.round(duration / 60);
@@ -220,26 +235,40 @@ Rules:
 
   /** Push Gateway — VoIP push token management and call trigger */
   push: router({
+    enrollWake: protectedProcedure.input(wakeEnrollSchema).mutation(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      return wakeService.enroll(session,ctx.user.id,input);
+    }),
+    resolveWakeBinding: protectedProcedure.input(wakeIdentitySchema).query(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      try{return await wakeService.resolve(session,ctx.user.id,input.bindingId);}
+      catch(error){if(error instanceof WakeError && error.status===403)return null;throw error;}
+    }),
+    revokeWake: protectedProcedure.input(wakeIdentitySchema).mutation(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      await wakeService.revoke(session,ctx.user.id,input.bindingId);return {ok:true};
+    }),
     /** Register a VoIP push token (called by mobile app on startup) */
     register: protectedProcedure
       .input(registerTokenSchema)
-      .mutation(async ({ input }) => {
-        return registerPushToken(input);
+      .mutation(async ({ input, ctx }) => {
+        return registerPushToken(input, ctx.user.id, ctx.req.headers);
       }),
 
     /** Unregister a push token (called on logout) */
     unregister: protectedProcedure
       .input(unregisterTokenSchema)
-      .mutation(async ({ input }) => {
-        return unregisterPushToken(input);
+      .mutation(async ({ input, ctx }) => {
+        return unregisterPushToken(input, ctx.user.id, ctx.req.headers);
       }),
 
     /** Trigger a VoIP push for incoming call (called by SIP proxy webhook) */
     triggerCall: publicProcedure
       .input(triggerPushSchema)
-      .mutation(async ({ input }) => {
-        // TODO: Add authentication for SIP proxy webhook
-        // (shared secret or IP whitelist)
+      .mutation(async ({ input, ctx }) => {
+        const auth = integrationSecretStatus("PUSH_SHARED_SECRET", ctx.req.headers["x-push-secret"]);
+        if (auth === "unavailable") throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Push integration is not configured" });
+        if (auth !== "ok") throw new TRPCError({ code: "FORBIDDEN" });
         return triggerPushForUser(input);
       }),
 
@@ -254,6 +283,8 @@ export const fullRouter = router({
   ...appRouter._def.record,
   pbx: pbxRouter,
   ivr: ivrRouter,
+  chat: chatRouter,
+  chatNotifications: chatNotificationsRouter,
 });
 
 export type AppRouter = typeof fullRouter;

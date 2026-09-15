@@ -1,0 +1,118 @@
+name: Phone11 Live Auth Variant Probe V11
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-auth-variant-probe-v11.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  auth-probe:
+    name: Probe Kamailio digest auth variants
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate EC2 and prepare SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_auth_probe_v11_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_auth_probe_v11_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Run auth variants on EC2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_auth_probe_v11_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" "bash -s" <<'REMOTE' | sed -E 's#(password|secret|token|authorization)([=:][[:space:]]*)[^[:space:],;]+#\1\2<redacted>#Ig'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          USERNAME="1996"
+          TEST_PASSWORD="phone11-auth-probe-v11"
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+          echo "kamailio_db_env:"
+          docker exec p11-kamailio sh -lc 'echo DB_HOST=$DB_HOST; echo DB_NAME=$DB_NAME; echo DB_USER=$DB_USER; if [ -n "$DB_PASS" ]; then echo DB_PASS_present=yes; else echo DB_PASS_present=no; fi'
+          echo "auth_config:"
+          docker exec p11-kamailio sh -lc 'grep -R "modparam(.*auth_db\|auth_check\|www_challenge\|proxy_challenge\|calculate_ha1\|password_column\|use_domain\|DBURL" -n /etc/kamailio 2>/dev/null | head -80' || true
+          seed_variant() {
+            variant="$1"
+            case "$variant" in
+              ha1_standard)
+                HA1_EXPR="md5('$USERNAME:$DOMAIN:$TEST_PASSWORD')"; HA1B_EXPR="md5('$USERNAME@$DOMAIN:$DOMAIN:$TEST_PASSWORD')" ;;
+              ha1_full_username)
+                HA1_EXPR="md5('$USERNAME@$DOMAIN:$DOMAIN:$TEST_PASSWORD')"; HA1B_EXPR="md5('$USERNAME@$DOMAIN:$DOMAIN:$TEST_PASSWORD')" ;;
+              plain_password)
+                HA1_EXPR="'$TEST_PASSWORD'"; HA1B_EXPR="'$TEST_PASSWORD'" ;;
+            esac
+            docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES ('$USERNAME', '$DOMAIN', '$TEST_PASSWORD', $HA1_EXPR, $HA1B_EXPR)
+          ON CONFLICT (username, domain) DO UPDATE SET password=EXCLUDED.password, ha1=EXCLUDED.ha1, ha1b=EXCLUDED.ha1b;
+          SELECT username, domain, length(password) AS password_len, length(ha1) AS ha1_len, length(ha1b) AS ha1b_len, left(ha1,8) AS ha1_prefix, left(ha1b,8) AS ha1b_prefix FROM subscriber WHERE username='$USERNAME' AND domain='$DOMAIN';
+          SQL
+          }
+          export DOMAIN USERNAME TEST_PASSWORD SIP_TARGET_IP="$(hostname -I | awk '{print $1}')"
+          python_register_probe='import hashlib, os, random, re, secrets, select, socket, sys, time
+          DOMAIN=os.environ["DOMAIN"]; USERNAME=os.environ["USERNAME"]; PASSWORD=os.environ["TEST_PASSWORD"]; SERVER=(os.environ["SIP_TARGET_IP"],5060); AUTH_USERNAME=os.environ["AUTH_USERNAME"]
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def header(t,n):
+              m=re.search(rf"^{re.escape(n)}:\\s*(.+)$",t,re.I|re.M); return m.group(1).strip() if m else ""
+          def code(t):
+              m=re.match(r"SIP/2.0\\s+(\\d+)", t.splitlines()[0] if t.splitlines() else ""); return int(m.group(1)) if m else 0
+          def parse_auth(v): return {k.lower():(q or b) for k,q,b in re.findall(r"(\\w+)=(?:\"([^\"]*)\"|([^,\\s]+))", v.replace("Digest","",1).strip())}
+          def auth(challenge, method, uri):
+              d=parse_auth(challenge); realm=d.get("realm",DOMAIN); nonce=d["nonce"]; qop="auth" if "auth" in d.get("qop","") else ""; cnonce=secrets.token_hex(8); nc="00000001"; ha1=md5(f"{AUTH_USERNAME}:{realm}:{PASSWORD}"); ha2=md5(f"{method}:{uri}"); resp=md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}") if qop else md5(f"{ha1}:{nonce}:{ha2}"); parts=[f"username=\"{AUTH_USERNAME}\"",f"realm=\"{realm}\"",f"nonce=\"{nonce}\"",f"uri=\"{uri}\"",f"response=\"{resp}\"","algorithm=MD5"]
+              if d.get("opaque"): parts.append(f"opaque=\"{d["opaque"]}\"")
+              if qop: parts += [f"qop={qop}",f"nc={nc}",f"cnonce=\"{cnonce}\""]
+              return "Digest "+", ".join(parts), realm
+          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); port=random.randint(27000,27999); s.bind(("0.0.0.0",port)); s.setblocking(False); ip=os.environ["SIP_TARGET_IP"]; uri=f"sip:{DOMAIN}"; cid=f"phone11-auth-v11-{secrets.token_hex(4)}@{ip}"; tag=secrets.token_hex(4)
+          def msg(cseq, ah=""):
+              lines=[f"REGISTER {uri} SIP/2.0",f"Via: SIP/2.0/UDP {ip}:{port};branch=z9hG4bK{secrets.token_hex(8)};rport","Max-Forwards: 70",f"From: <sip:{USERNAME}@{DOMAIN}>;tag={tag}",f"To: <sip:{USERNAME}@{DOMAIN}>",f"Call-ID: {cid}",f"CSeq: {cseq} REGISTER",f"Contact: <sip:{USERNAME}@{ip}:{port};transport=udp>;expires=120","Expires: 120","User-Agent: Phone11AuthVariantProbe/11"]
+              if ah: lines.append("Authorization: "+ah)
+              lines += ["Content-Length: 0","",""]; return "\\r\\n".join(lines)
+          def recv():
+              end=time.time()+5
+              while time.time()<end:
+                  r,_,_=select.select([s],[],[],0.2)
+                  if not r: continue
+                  data,addr=s.recvfrom(65535); t=data.decode(errors="replace")
+                  if cid in t: return t
+              raise TimeoutError("no response")
+          s.sendto(msg(1).encode(),SERVER); t=recv(); c1=code(t); print(f"first_status={c1}")
+          if c1 in (401,407):
+              challenge=header(t,"WWW-Authenticate") or header(t,"Proxy-Authenticate"); ah,realm=auth(challenge,"REGISTER",uri); print(f"challenge_realm={realm}"); s.sendto(msg(2,ah).encode(),SERVER); t=recv(); print(f"final_status={code(t)}")
+          else: print(f"final_status={c1}")'
+          for variant in ha1_standard ha1_full_username plain_password; do
+            echo "===== auth_variant=$variant bare_username ====="
+            seed_variant "$variant"
+            AUTH_USERNAME="$USERNAME" python3 -c "$python_register_probe" || true
+            echo "===== auth_variant=$variant full_username ====="
+            AUTH_USERNAME="$USERNAME@$DOMAIN" python3 -c "$python_register_probe" || true
+          done
+          REMOTE

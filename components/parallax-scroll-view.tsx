@@ -1,11 +1,5 @@
-import type { PropsWithChildren, ReactElement } from "react";
-import { View } from "react-native";
-import Animated, {
-  interpolate,
-  useAnimatedRef,
-  useAnimatedStyle,
-  useScrollOffset,
-} from "react-native-reanimated";
+import { useRef, type PropsWithChildren, type ReactElement } from "react";
+import { Animated, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useColors } from "@/hooks/use-colors";
@@ -18,8 +12,7 @@ type Props = PropsWithChildren<{
 }>;
 
 /**
- * A scroll view with parallax header effect.
- * Note: Animated components require style objects for dynamic animations.
+ * A scroll view with a lightweight parallax header effect.
  */
 export default function ParallaxScrollView({
   children,
@@ -28,35 +21,40 @@ export default function ParallaxScrollView({
 }: Props) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const scrollRef = useAnimatedRef<Animated.ScrollView>();
-  const scrollOffset = useScrollOffset(scrollRef);
+  const scrollY = useRef(new Animated.Value(0)).current;
 
   const headerHeight = HEADER_HEIGHT + insets.top;
-
-  const headerAnimatedStyle = useAnimatedStyle(() => ({
+  const headerAnimatedStyle = {
     transform: [
       {
-        translateY: interpolate(
-          scrollOffset.value,
-          [-headerHeight, 0, headerHeight],
-          [-headerHeight / 2, 0, headerHeight * 0.75],
-        ),
+        translateY: scrollY.interpolate({
+          inputRange: [-headerHeight, 0, headerHeight],
+          outputRange: [-headerHeight / 2, 0, headerHeight * 0.75],
+          extrapolate: "clamp",
+        }),
       },
       {
-        scale: interpolate(scrollOffset.value, [-headerHeight, 0, headerHeight], [2, 1, 1]),
+        scale: scrollY.interpolate({
+          inputRange: [-headerHeight, 0, headerHeight],
+          outputRange: [2, 1, 1],
+          extrapolate: "clamp",
+        }),
       },
     ],
-  }));
+  };
 
   return (
     <Animated.ScrollView
-      ref={scrollRef}
       style={{ backgroundColor: colors.background, flex: 1 }}
       contentContainerStyle={{
         paddingBottom: insets.bottom,
         paddingLeft: insets.left,
         paddingRight: insets.right,
       }}
+      onScroll={Animated.event(
+        [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+        { useNativeDriver: true },
+      )}
       scrollEventThrottle={16}
     >
       <Animated.View

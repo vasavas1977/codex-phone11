@@ -1,0 +1,91 @@
+name: Phone11 live Kamailio remove unsafe apply v35
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-kamailio-remove-unsafe-apply-v35.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  kamailio-remove-unsafe-apply-v35:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_kam_v35_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_kam_v35_key.pub" >/dev/null
+
+      - name: Remove unsafe msg_apply_changes after Record-Route
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_kam_v35_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker cp p11-kamailio:/etc/kamailio/kamailio.cfg /tmp/kamailio.cfg.v35
+          cp /tmp/kamailio.cfg.v35 /tmp/kamailio.cfg.v35.before
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("/tmp/kamailio.cfg.v35")
+          text = path.read_text()
+
+          # Remove earlier misplaced global strip block if present.
+          text = re.sub(
+              r'\n\s*# phone11-strip-fs-auth-all:.*?\n'
+              r'\s*remove_hf\("Proxy-Authorization"\);\n'
+              r'\s*remove_hf\("Authorization"\);\n'
+              r'\s*msg_apply_changes\(\);\n',
+              '\n',
+              text,
+              flags=re.S,
+          )
+
+          route_start = text.index('route[TO_FREESWITCH] {')
+          route_end = text.index('\n}', route_start)
+          route_text = text[route_start:route_end]
+
+          # remove_hf() creates forwarding lumps; t_relay applies them. Calling
+          # msg_apply_changes() after record_route() breaks Kamailio processing.
+          route_text = route_text.replace('    msg_apply_changes();\n', '')
+
+          text = text[:route_start] + route_text + text[route_end:]
+          path.write_text(text)
+          PY
+
+          docker cp /tmp/kamailio.cfg.v35 p11-kamailio:/etc/kamailio/kamailio.cfg
+          echo "===== V35 route proof ====="
+          docker exec p11-kamailio sh -lc "grep -n -A45 'route\\[TO_FREESWITCH\\]' /etc/kamailio/kamailio.cfg | sed -n '1,100p'"
+          echo "===== V35 unsafe apply proof ====="
+          if docker exec p11-kamailio sh -lc "grep -n 'phone11-strip-fs-auth-all\\|msg_apply_changes' /etc/kamailio/kamailio.cfg"; then
+            echo "V35_UNSAFE_APPLY_REMAINS=yes"
+            exit 41
+          fi
+          docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg
+          docker restart p11-kamailio
+          sleep 5
+          docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep p11-kamailio
+          echo "V35_REMOVE_UNSAFE_APPLY_RESULT=pass"
+          REMOTE

@@ -1,0 +1,2 @@
+Phone11 backend redeploy trigger after attaching IAM policy Phone11RdsSecretRead.
+Created by Codex on 2026-05-13 to rerun phone11-ec2-redeploy-mobile-branch-v3 with Secrets Manager read access.

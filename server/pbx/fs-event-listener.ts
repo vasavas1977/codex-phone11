@@ -16,6 +16,7 @@
 
 import net from "net";
 import { wsManager } from "./websocket";
+import { getFreeSwitchConfig } from "./fs-config";
 
 interface FsEvent {
   "Event-Name"?: string;
@@ -38,20 +39,19 @@ class FreeSwitchEventListener {
   private connected = false;
   private reconnectTimer: NodeJS.Timer | null = null;
   private buffer = "";
-  private host: string;
-  private port: number;
-  private password: string;
-
-  constructor() {
-    this.host = process.env.FS_ESL_HOST || "127.0.0.1";
-    this.port = parseInt(process.env.FS_ESL_PORT || "8021");
-    this.password = process.env.FS_ESL_PASSWORD || "ClueCon";
-  }
+  private host = "";
+  private port = 8021;
+  private password = "";
 
   /**
    * Start the event listener — connect to FreeSWITCH ESL
    */
   start(): void {
+    // Validate at start so tooling can import the module without live credentials.
+    const config = getFreeSwitchConfig();
+    this.host = config.host;
+    this.port = config.port;
+    this.password = config.password;
     this.connect();
   }
 

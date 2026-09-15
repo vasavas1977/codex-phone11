@@ -1,272 +1,68 @@
-/**
- * Notification Preferences Screen
- *
- * Allows users to configure push notification settings:
- * master toggle, per-category toggles, sound, vibration, quiet hours.
- */
-
-import React, { useEffect } from "react";
-import { View, Text, TouchableOpacity, ScrollView, Switch, StyleSheet, Platform } from "react-native";
-import { useRouter } from "expo-router";
-import * as Haptics from "expo-haptics";
+import { FeatureUnavailable } from "@/components/feature-unavailable";
+import { useEffect, useRef, useState } from "react";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { useNotificationStore } from "@/lib/notifications/store";
-import type { NotificationPreferences } from "@/lib/notifications/types";
+import { useAuth } from "@/hooks/use-auth";
+import { getAuthSnapshot } from "@/lib/_core/auth";
+import { useChatStore } from "@/lib/chat/store";
+import { chatNotificationClientEnabled } from "@/lib/notifications/client";
+import { enableChatNotifications } from "@/lib/notifications/chat-notifications";
 
-interface ToggleRowProps {
-  icon: string;
-  iconColor: string;
-  label: string;
-  sublabel?: string;
-  value: boolean;
-  onToggle: () => void;
-  disabled?: boolean;
+export default function Screen() {
+  if (chatNotificationClientEnabled()) return <MessageAlertSettings />;
+  return <FeatureUnavailable title="Notification settings are not available yet" description="Message alerts are not connected yet. Keep Phone11 open and check Team Chat for new messages." />;
 }
 
-function ToggleRow({ icon, iconColor, label, sublabel, value, onToggle, disabled }: ToggleRowProps) {
+function MessageAlertSettings() {
   const colors = useColors();
-  return (
-    <View style={[styles.row, { borderBottomColor: colors.border }, disabled && { opacity: 0.5 }]}>
-      <View style={[styles.rowIcon, { backgroundColor: iconColor + "15" }]}>
-        <IconSymbol name={icon as any} size={18} color={iconColor} />
-      </View>
-      <View style={styles.rowText}>
-        <Text style={[styles.rowLabel, { color: colors.foreground }]}>{label}</Text>
-        {sublabel && <Text style={[styles.rowSublabel, { color: colors.muted }]}>{sublabel}</Text>}
-      </View>
-      <Switch
-        value={value}
-        onValueChange={() => {
-          if (!disabled) {
-            if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            onToggle();
-          }
-        }}
-        trackColor={{ true: colors.primary, false: colors.border }}
-        disabled={disabled}
-      />
-    </View>
-  );
-}
-
-export default function NotificationPreferencesScreen() {
-  const router = useRouter();
-  const colors = useColors();
-  const { preferences, updatePreferences, initialize } = useNotificationStore();
-
-  useEffect(() => {
-    initialize();
-  }, []);
-
-  const toggle = (key: keyof NotificationPreferences) => {
-    const current = preferences[key];
-    if (typeof current === "boolean") {
-      updatePreferences({ [key]: !current });
+  const { user } = useAuth({ autoFetch: false });
+  const chat = useChatStore();
+  type Action = { owner: typeof user; tenantId: number };
+  const mounted = useRef(true), pending = useRef<Action | null>(null);
+  const [busy, setBusy] = useState<Action | null>(null);
+  const [feedback, setFeedback] = useState<{ action: Action; text: string } | null>(null);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; pending.current = null; }; }, []);
+  const matchesView = (action: Action | null) => !!action && action.owner === user && chat.userId === user?.id && action.tenantId === chat.workspace?.id;
+  const current = (action: Action) => {
+    const auth = getAuthSnapshot(), state = useChatStore.getState();
+    return mounted.current && chatNotificationClientEnabled() && auth.user === action.owner && !auth.loading &&
+      state.userId === auth.user?.id && state.workspace?.id === action.tenantId;
+  };
+  const ownsWorkspace = Boolean(user && chat.userId === user.id && chat.workspace);
+  const enable = async () => {
+    if (!ownsWorkspace || !chat.workspace || matchesView(pending.current)) return;
+    const action = { owner: user, tenantId: chat.workspace.id };
+    if (!current(action)) return;
+    pending.current = action; setBusy(action); setFeedback(null);
+    try {
+      const result = await enableChatNotifications();
+      if (!current(action) || pending.current !== action) return;
+      const text = result.status === "enabled" ? `Alert setup saved for ${chat.workspace.name}.`
+        : result.status === "permission-denied" ? "Allow notifications for Phone11 in your phone’s settings, then try again."
+        : result.status === "session-changed" ? "Your account or workspace changed. Open these settings again."
+        : "Could not set up message alerts. Check your connection and try again.";
+      setFeedback({ action, text });
+    } catch {
+      if (current(action) && pending.current === action) setFeedback({ action, text: "Could not set up message alerts. Check your connection and try again." });
+    } finally {
+      if (pending.current === action) { pending.current = null; if (mounted.current) setBusy(null); }
     }
   };
-
-  const masterEnabled = preferences.enabled;
-
-  return (
-    <ScreenContainer edges={["top", "bottom", "left", "right"]}>
-      {/* Header */}
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.headerBtn}>
-          <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-          <Text style={[styles.headerBtnText, { color: colors.primary }]}>Back</Text>
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.foreground }]}>Notification Settings</Text>
-        <View style={{ width: 70 }} />
-      </View>
-
-      <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Master Toggle */}
-        <Text style={[styles.sectionHeader, { color: colors.muted }]}>GENERAL</Text>
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <ToggleRow
-            icon="bell.fill"
-            iconColor="#0057FF"
-            label="Push Notifications"
-            sublabel="Enable all push notifications"
-            value={preferences.enabled}
-            onToggle={() => toggle("enabled")}
-          />
-        </View>
-
-        {/* Category Toggles */}
-        <Text style={[styles.sectionHeader, { color: colors.muted }]}>NOTIFICATION TYPES</Text>
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <ToggleRow
-            icon="phone.fill.arrow.down.left"
-            iconColor="#FF3B30"
-            label="Missed Calls"
-            sublabel="Alert when you miss an incoming call"
-            value={preferences.missedCalls}
-            onToggle={() => toggle("missedCalls")}
-            disabled={!masterEnabled}
-          />
-          <ToggleRow
-            icon="voicemail"
-            iconColor="#8B5CF6"
-            label="Voicemail"
-            sublabel="Alert when a new voicemail is received"
-            value={preferences.voicemail}
-            onToggle={() => toggle("voicemail")}
-            disabled={!masterEnabled}
-          />
-          <ToggleRow
-            icon="record.circle.fill"
-            iconColor="#FF9500"
-            label="Recording Ready"
-            sublabel="Alert when a call recording is processed"
-            value={preferences.recordingReady}
-            onToggle={() => toggle("recordingReady")}
-            disabled={!masterEnabled}
-          />
-          <ToggleRow
-            icon="antenna.radiowaves.left.and.right"
-            iconColor="#06B6D4"
-            label="SIP Registration"
-            sublabel="Alert on SIP registration changes"
-            value={preferences.sipRegistration}
-            onToggle={() => toggle("sipRegistration")}
-            disabled={!masterEnabled}
-          />
-          <ToggleRow
-            icon="info.circle"
-            iconColor="#6B7280"
-            label="System Alerts"
-            sublabel="App updates and system messages"
-            value={preferences.systemAlerts}
-            onToggle={() => toggle("systemAlerts")}
-            disabled={!masterEnabled}
-          />
-        </View>
-
-        {/* Sound & Vibration */}
-        <Text style={[styles.sectionHeader, { color: colors.muted }]}>SOUND & VIBRATION</Text>
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <ToggleRow
-            icon="speaker.wave.3.fill"
-            iconColor="#0057FF"
-            label="Sound"
-            sublabel="Play notification sounds"
-            value={preferences.soundEnabled}
-            onToggle={() => toggle("soundEnabled")}
-            disabled={!masterEnabled}
-          />
-          <ToggleRow
-            icon="waveform"
-            iconColor="#8B5CF6"
-            label="Vibration"
-            sublabel="Vibrate on notifications"
-            value={preferences.vibrationEnabled}
-            onToggle={() => toggle("vibrationEnabled")}
-            disabled={!masterEnabled}
-          />
-        </View>
-
-        {/* Quiet Hours */}
-        <Text style={[styles.sectionHeader, { color: colors.muted }]}>QUIET HOURS</Text>
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <ToggleRow
-            icon="moon.fill"
-            iconColor="#FF9500"
-            label="Quiet Hours"
-            sublabel={
-              preferences.quietHoursEnabled
-                ? `${preferences.quietHoursStart} – ${preferences.quietHoursEnd}`
-                : "Mute notifications during set hours"
-            }
-            value={preferences.quietHoursEnabled}
-            onToggle={() => toggle("quietHoursEnabled")}
-            disabled={!masterEnabled}
-          />
-        </View>
-
-        {/* Flexisip Info */}
-        <Text style={[styles.sectionHeader, { color: colors.muted }]}>PUSH GATEWAY</Text>
-        <View style={[styles.section, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <View style={[styles.row, { borderBottomColor: colors.border }]}>
-            <View style={[styles.rowIcon, { backgroundColor: "#06B6D4" + "15" }]}>
-              <IconSymbol name="server.rack" size={18} color="#06B6D4" />
-            </View>
-            <View style={styles.rowText}>
-              <Text style={[styles.rowLabel, { color: colors.foreground }]}>Flexisip Push Gateway</Text>
-              <Text style={[styles.rowSublabel, { color: colors.muted }]}>
-                Handles FCM (Android) and APNs (iOS) delivery via SIP REGISTER contact parameters
-              </Text>
-            </View>
-          </View>
-          <View style={[styles.row, { borderBottomColor: colors.border }]}>
-            <View style={[styles.rowIcon, { backgroundColor: "#00C896" + "15" }]}>
-              <IconSymbol name="checkmark.circle.fill" size={18} color="#00C896" />
-            </View>
-            <View style={styles.rowText}>
-              <Text style={[styles.rowLabel, { color: colors.foreground }]}>Token Status</Text>
-              <Text style={[styles.rowSublabel, { color: colors.muted }]}>
-                {Platform.OS === "ios" ? "APNs" : Platform.OS === "android" ? "FCM" : "Web Push"} token registered
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </ScreenContainer>
-  );
+  return <ScreenContainer><View style={styles.content}>
+    <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Message alerts</Text>
+    <Text style={[styles.body, { color: colors.muted }]}>Alerts are for the workspace currently selected in Team Chat. Switch workspaces there to change which messages can notify you.</Text>
+    <Text style={[styles.body, { color: colors.foreground }]}>{ownsWorkspace ? `Selected workspace: ${chat.workspace?.name}` : user ? "Open Team Chat and select a workspace first." : "Sign in and open Team Chat to set up message alerts."}</Text>
+    <Text style={[styles.body, { color: colors.muted }]}>Message text is not shown in alerts.</Text>
+    {feedback && matchesView(feedback.action) && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.foreground }]}>{feedback.text}</Text>}
+    <Pressable accessibilityRole="button" accessibilityLabel="Enable message alerts" disabled={!ownsWorkspace || matchesView(busy)} onPress={enable}
+      style={[styles.button, { backgroundColor: colors.primary, opacity: !ownsWorkspace || matchesView(busy) ? 0.5 : 1 }]}>
+      <Text style={styles.buttonText}>{matchesView(busy) ? "Setting up…" : "Enable message alerts"}</Text>
+    </Pressable>
+    <Pressable accessibilityRole="button" onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/settings")} style={styles.button}>
+      <Text style={{ color: colors.primary }}>Back</Text>
+    </Pressable>
+  </View></ScreenContainer>;
 }
-
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 0.5,
-  },
-  headerBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    padding: 4,
-    minWidth: 70,
-  },
-  headerBtnText: { fontSize: 16 },
-  headerTitle: { fontSize: 17, fontWeight: "600" },
-  sectionHeader: {
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.8,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 8,
-  },
-  section: {
-    marginHorizontal: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    overflow: "hidden",
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 13,
-    borderBottomWidth: 0.5,
-    gap: 12,
-  },
-  rowIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  rowText: { flex: 1 },
-  rowLabel: { fontSize: 15, fontWeight: "500" },
-  rowSublabel: { fontSize: 12, marginTop: 1, lineHeight: 17 },
-});
+const styles = StyleSheet.create({ content: { padding: 24, gap: 20 }, title: { fontSize: 24, fontWeight: "700" }, body: { fontSize: 16, lineHeight: 24 }, button: { minHeight: 48, padding: 14, alignItems: "center", borderRadius: 12 }, buttonText: { color: "white", fontWeight: "600", fontSize: 16 } });

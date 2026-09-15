@@ -1,0 +1,216 @@
+name: Phone11 Live SIP Answer Capture V17
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-sip-answer-capture-v17.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  sip-answer-capture:
+    name: Capture SIP answer path with correct proxy auth
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_sip_answer_v17_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_sip_answer_v17_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Run controlled SIP call with packet capture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_sip_answer_v17_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          CALLER_EXTENSION="1996"
+          CALLEE_EXTENSION="1997"
+          CALLER_PASSWORD="phone11-v17-caller"
+          CALLEE_PASSWORD="phone11-v17-callee"
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+
+          echo "===== Runtime state ====="
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'p11-kamailio|p11-rtpengine|p11-freeswitch|cp11-postgres' || true
+          grep -nE 'DB_URL|auth_db.*db_url|dispatcher.*db_url|usrloc.*db_url|^alias=|^listen=' /opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' || true
+
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES
+            ('$CALLER_EXTENSION', '$DOMAIN', '$CALLER_PASSWORD', md5('$CALLER_EXTENSION:$DOMAIN:$CALLER_PASSWORD'), md5('$CALLER_EXTENSION@$DOMAIN:$DOMAIN:$CALLER_PASSWORD')),
+            ('$CALLEE_EXTENSION', '$DOMAIN', '$CALLEE_PASSWORD', md5('$CALLEE_EXTENSION:$DOMAIN:$CALLEE_PASSWORD'), md5('$CALLEE_EXTENSION@$DOMAIN:$DOMAIN:$CALLEE_PASSWORD'))
+          ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b;
+          SELECT username, domain, length(ha1) AS ha1_len FROM subscriber WHERE username IN ('$CALLER_EXTENSION', '$CALLEE_EXTENSION') AND domain = '$DOMAIN' ORDER BY username;
+          SQL
+
+          export SIP_TARGET_IP="$(hostname -I | awk '{print $1}')"
+          export ADVERTISED_IP="$SIP_TARGET_IP"
+          export DOMAIN CALLER_EXTENSION CALLEE_EXTENSION CALLER_PASSWORD CALLEE_PASSWORD
+          CAP="/tmp/phone11-v17-sip.pcap.txt"
+          PYLOG="/tmp/phone11-v17-sip-call.log"
+          CALLID_FILE="/tmp/phone11-v17.callid"
+          rm -f "$CAP" "$PYLOG" "$CALLID_FILE"
+
+          if command -v tcpdump >/dev/null 2>&1; then
+            sudo timeout 45 tcpdump -i any -nn -s0 -A 'udp port 5060' > "$CAP" 2>&1 &
+            CAP_PID=$!
+            sleep 2
+          else
+            echo "tcpdump_missing=yes" > "$CAP"
+            CAP_PID=""
+          fi
+
+          set +e
+          timeout 38 python3 - <<'PYTEST' > "$PYLOG" 2>&1
+          import hashlib, os, random, re, secrets, select, socket, sys, time
+          DOMAIN=os.environ['DOMAIN']; SERVER=(os.environ['SIP_TARGET_IP'],5060); ADVERTISED_IP=os.environ['ADVERTISED_IP']
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def header(text,name):
+              m=re.search(rf'^{re.escape(name)}:\s*(.+)$',text,re.I|re.M); return m.group(1).strip() if m else ''
+          def headers(text,name): return re.findall(rf'^{re.escape(name)}:\s*(.+)$',text,re.I|re.M)
+          def status_code(text):
+              first=text.splitlines()[0] if text.splitlines() else ''; m=re.match(r'SIP/2.0\s+(\d+)',first); return int(m.group(1)) if m else 0
+          def parse_auth(value):
+              value=value.replace('Digest','',1).strip(); return {k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))',value)}
+          def digest_value(username,password,challenge,method,uri):
+              d=parse_auth(challenge); realm=d.get('realm',DOMAIN); nonce=d['nonce']; qop='auth' if 'auth' in d.get('qop','') else ''; cnonce=secrets.token_hex(8); nc='00000001'
+              ha1=md5(f'{username}:{realm}:{password}'); ha2=md5(f'{method}:{uri}'); resp=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+              parts=[f'username="{username}"',f'realm="{realm}"',f'nonce="{nonce}"',f'uri="{uri}"',f'response="{resp}"','algorithm=MD5']
+              if d.get('opaque'): parts.append(f'opaque="{d["opaque"]}"')
+              if qop: parts.extend([f'qop={qop}',f'nc={nc}',f'cnonce="{cnonce}"'])
+              return 'Digest '+', '.join(parts)
+          class Endpoint:
+              def __init__(self,username,password,sip_port,rtp_port):
+                  self.username=username; self.password=password; self.sip_port=sip_port; self.rtp_port=rtp_port
+                  self.sip=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); self.sip.bind(('0.0.0.0',sip_port)); self.sip.setblocking(False)
+                  self.contact=f'<sip:{username}@{ADVERTISED_IP}:{sip_port};transport=udp>'
+              def send(self,payload): self.sip.sendto(payload.encode(),SERVER)
+              def recv_matching(self,call_id,timeout):
+                  deadline=time.time()+timeout
+                  while time.time()<deadline:
+                      ready,_,_=select.select([self.sip],[],[],0.2)
+                      if not ready: continue
+                      data,addr=self.sip.recvfrom(65535); text=data.decode(errors='replace')
+                      if call_id in text: return text,addr
+                  raise TimeoutError(f'No response for {self.username} call_id={call_id}')
+              def sdp(self,label): return '\r\n'.join(['v=0',f'o=phone11-{self.username} 1 1 IN IP4 {ADVERTISED_IP}',f's=Phone11 {label}',f'c=IN IP4 {ADVERTISED_IP}','t=0 0',f'm=audio {self.rtp_port} RTP/AVP 0','a=rtpmap:0 PCMU/8000','a=sendrecv',''])
+          caller=Endpoint(os.environ['CALLER_EXTENSION'],os.environ['CALLER_PASSWORD'],random.randint(24100,24999),random.randrange(28000,29998,2))
+          callee=Endpoint(os.environ['CALLEE_EXTENSION'],os.environ['CALLEE_PASSWORD'],random.randint(25000,25999),random.randrange(30000,31998,2))
+          def register(ep):
+              uri=f'sip:{DOMAIN}'; call_id=f'phone11-v17-register-{ep.username}-{secrets.token_hex(6)}@{ADVERTISED_IP}'; tag=secrets.token_hex(4)
+              def msg(cseq,auth_header=''):
+                  branch=f'z9hG4bKv17reg{secrets.token_hex(8)}{cseq}'; lines=[f'REGISTER {uri} SIP/2.0',f'Via: SIP/2.0/UDP {ADVERTISED_IP}:{ep.sip_port};branch={branch};rport','Max-Forwards: 70',f'From: <sip:{ep.username}@{DOMAIN}>;tag={tag}',f'To: <sip:{ep.username}@{DOMAIN}>',f'Call-ID: {call_id}',f'CSeq: {cseq} REGISTER',f'Contact: {ep.contact};expires=300','Expires: 300','User-Agent: Phone11SipAnswerCapture/17']
+                  if auth_header: lines.append(auth_header)
+                  lines += ['Content-Length: 0','','']; return '\r\n'.join(lines)
+              ep.send(msg(1)); first,_=ep.recv_matching(call_id,8); code=status_code(first)
+              if code in (401,407):
+                  challenge=header(first,'WWW-Authenticate') or header(first,'Proxy-Authenticate')
+                  name='Proxy-Authorization' if code == 407 else 'Authorization'
+                  ep.send(msg(2, f'{name}: {digest_value(ep.username, ep.password, challenge, "REGISTER", uri)}'))
+                  final,_=ep.recv_matching(call_id,8); code=status_code(final)
+              print(f'registration_{ep.username}_status={code}')
+              if code != 200: raise RuntimeError(f'register failed {ep.username} {code}')
+          def invite_msg(cseq,call_id,from_tag,auth_header=''):
+              req_uri=f'sip:{callee.username}@{DOMAIN}'; body=caller.sdp('caller offer'); branch=f'z9hG4bKv17inv{secrets.token_hex(8)}{cseq}'
+              lines=[f'INVITE {req_uri} SIP/2.0',f'Via: SIP/2.0/UDP {ADVERTISED_IP}:{caller.sip_port};branch={branch};rport','Max-Forwards: 70',f'From: Phone11 Self Test <sip:{caller.username}@{DOMAIN}>;tag={from_tag}',f'To: <{req_uri}>',f'Call-ID: {call_id}',f'CSeq: {cseq} INVITE',f'Contact: {caller.contact}','Allow: INVITE, ACK, CANCEL, BYE, OPTIONS','User-Agent: Phone11SipAnswerCapture/17']
+              if auth_header: lines.append(auth_header)
+              lines += ['Content-Type: application/sdp',f'Content-Length: {len(body.encode())}','',body]; return '\r\n'.join(lines)
+          def response(ep,request,addr,code,reason,to_tag,with_sdp=False):
+              to=header(request,'To')
+              if 'tag=' not in to: to=f'{to};tag={to_tag}'
+              body=ep.sdp('callee answer') if with_sdp else ''
+              lines=[f'SIP/2.0 {code} {reason}'] + [f'Via: {v}' for v in headers(request,'Via')]
+              lines += [f'From: {header(request,"From")}',f'To: {to}',f'Call-ID: {header(request,"Call-ID")}',f'CSeq: {header(request,"CSeq")}',f'Contact: {ep.contact}']
+              if with_sdp: lines.append('Content-Type: application/sdp')
+              lines += [f'Content-Length: {len(body.encode())}','',body]
+              payload='\r\n'.join(lines)
+              print(f'callee_send_response={code} to={addr[0]}:{addr[1]} via_top={headers(request,"Via")[0] if headers(request,"Via") else "none"}')
+              ep.sip.sendto(payload.encode(),addr)
+          register(caller); register(callee)
+          call_id=f'phone11-v17-answer-{secrets.token_hex(8)}@{ADVERTISED_IP}'
+          open('/tmp/phone11-v17.callid','w').write(call_id)
+          print(f'call_id={call_id}')
+          from_tag=secrets.token_hex(6); cseq=1
+          caller.send(invite_msg(cseq,call_id,from_tag))
+          deadline=time.time()+22; got_200=False; got_180=False; got_invite=False
+          auth_attempts=0
+          while time.time()<deadline and not got_200:
+              ready,_,_=select.select([caller.sip,callee.sip],[],[],0.2)
+              for sock in ready:
+                  data,addr=sock.recvfrom(65535); text=data.decode(errors='replace')
+                  if sock is caller.sip and call_id in text:
+                      code=status_code(text); print(f'caller_rx_status={code} from={addr[0]}:{addr[1]}')
+                      if code in (401,407):
+                          auth_attempts += 1
+                          if auth_attempts > 3:
+                              raise RuntimeError('too many INVITE auth challenges')
+                          challenge=header(text,'WWW-Authenticate') or header(text,'Proxy-Authenticate')
+                          name='Proxy-Authorization' if code == 407 else 'Authorization'
+                          cseq+=1
+                          caller.send(invite_msg(cseq,call_id,from_tag, f'{name}: {digest_value(caller.username, caller.password, challenge, "INVITE", f"sip:{callee.username}@{DOMAIN}")}'))
+                      elif code == 180:
+                          got_180=True
+                      elif code == 200:
+                          got_200=True
+                  elif sock is callee.sip and text.startswith('INVITE ') and call_id in text:
+                      got_invite=True
+                      print(f'callee_rx_invite_from={addr[0]}:{addr[1]} via_top={headers(text,"Via")[0] if headers(text,"Via") else "none"}')
+                      tag=secrets.token_hex(6); response(callee,text,addr,180,'Ringing',tag,False); response(callee,text,addr,200,'OK',tag,True)
+          print(f'got_callee_invite={got_invite}')
+          print(f'got_caller_180={got_180}')
+          print(f'got_caller_200={got_200}')
+          print('SIP_ANSWER_PATH_RESULT=' + ('pass' if got_200 else 'fail'))
+          sys.exit(0 if got_200 else 61)
+          PYTEST
+          PY_STATUS=$?
+          set -e
+          if [ -n "${CAP_PID:-}" ]; then
+            sleep 2
+            sudo kill "$CAP_PID" >/dev/null 2>&1 || true
+            wait "$CAP_PID" >/dev/null 2>&1 || true
+          fi
+
+          echo "===== Python SIP answer summary ====="
+          cat "$PYLOG"
+          CALL_ID="$(cat "$CALLID_FILE" 2>/dev/null || true)"
+          echo "===== SIP packet capture filtered ====="
+          if [ -s "$CAP" ]; then
+            grep -aE "SIP/2.0|INVITE|REGISTER|ACK|BYE|Call-ID:|CSeq:|Via:|From:|To:|Contact:|c=IN IP4|m=audio|$CALL_ID|phone11-v17" "$CAP" | tail -n 620 || true
+          else
+            echo "No tcpdump capture file."
+          fi
+          echo "===== Kamailio logs around Call-ID ====="
+          if [ -n "$CALL_ID" ]; then
+            docker logs --since 180s --timestamps p11-kamailio 2>&1 | grep -Eia "$CALL_ID|INVITE|ACK|BYE|RTPENGINE|BEFORE_ANSWER|AFTER_ANSWER|1996|1997" | tail -n 260 || true
+          fi
+          exit "$PY_STATUS"
+          REMOTE

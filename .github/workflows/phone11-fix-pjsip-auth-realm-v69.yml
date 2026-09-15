@@ -1,0 +1,99 @@
+name: Phone11 Fix PJSIP Auth Realm V69
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-fix-pjsip-auth-realm-v69.yml
+
+permissions:
+  contents: write
+
+env:
+  TARGET_BRANCH: codex/phone11-mobile-pjsip-20260506
+
+jobs:
+  patch-auth-realm:
+    name: Patch iOS PJSIP digest realm
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Explain evidence
+        run: |
+          set -euo pipefail
+          echo "V69_REASON=react-native-pjsip iOS uses config.regServer as the digest credential realm."
+          echo "V69_CURRENT_APP_SENT=regServer sip:sip.phone11.ai:5060;transport=UDP"
+          echo "V69_EXPECTED_KAMAILIO_REALM=sip.phone11.ai"
+          echo "V69_FIX=set regServer null so iOS PJSIP uses wildcard realm and can answer the 401 challenge."
+
+      - name: Patch lib/sip/engine.ts
+        run: |
+          set -euo pipefail
+          file="lib/sip/engine.ts"
+          test -f "$file"
+
+          if grep -Fq "regServer: null," "$file"; then
+            echo "V69_PATCH_STATUS=already_patched"
+            exit 0
+          fi
+
+          if ! grep -Fq "regServer: registrationServer," "$file"; then
+            echo "V69_PATCH_STATUS=target_line_missing"
+            grep -n "regServer:" "$file" || true
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('lib/sip/engine.ts')
+          text = path.read_text()
+          old = '        regServer: registrationServer,\n'
+          new = '        regServer: null,\n'
+          if old not in text:
+              raise SystemExit('target regServer line not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          echo "V69_PATCH_STATUS=patched"
+          grep -n "regServer:" "$file"
+
+      - name: Verify native module realm behavior
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          node scripts/patch-react-native-pjsip.mjs
+          grep -n "cred.realm" node_modules/react-native-pjsip/ios/RTCPjSip/PjSipAccount.m
+          grep -n "self.regServer = config" node_modules/react-native-pjsip/ios/RTCPjSip/PjSipAccount.m
+          echo "V69_NATIVE_EVIDENCE=cred.realm is derived from config.regServer when non-empty, otherwise wildcard."
+
+      - name: Run checks
+        run: |
+          set -euo pipefail
+          pnpm test
+          pnpm exec expo config --type public >/tmp/phone11-expo-config.txt
+          echo "V69_CHECKS=passed"
+
+      - name: Commit and push patch
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- lib/sip/engine.ts; then
+            echo "V69_COMMIT_STATUS=no_changes"
+            exit 0
+          fi
+
+          git config user.name "phone11-ci"
+          git config user.email "phone11-ci@users.noreply.github.com"
+          git add lib/sip/engine.ts
+          git commit -m "Fix iOS PJSIP digest auth realm"
+          git push origin HEAD:${{ env.TARGET_BRANCH }}
+          echo "V69_COMMIT_STATUS=pushed"

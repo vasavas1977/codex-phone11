@@ -1,17 +1,22 @@
+import { startRecordingCaptureService } from "../cloud-recordings/capture-service";
 import "dotenv/config";
+import { startChatNotificationDispatcher } from "../chat-notifications/dispatcher";
+import { startRecordingAnalysisWorker, startRecordingRetentionWorker } from "../cloud-recordings/worker";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
+import { registerAuthRoutes, phone11Cors } from "./auth-routes";
 import { registerStorageProxy } from "./storageProxy";
 import { fullRouter } from "../routers";
 import { createContext } from "./context";
-import { freeswitchRouter } from "../pbx/freeswitch-routes";
+import { freeswitchRouter, freeswitchCdrRouter } from "../pbx/freeswitch-routes";
 import { kamailioRouter } from "../pbx/kamailio-routes";
 import { storageRouter } from "../pbx/recording-storage";
 import { wsManager } from "../pbx/websocket";
 import { fsEventListener } from "../pbx/fs-event-listener";
+import { registerWakeRoutes } from "../push/wake-routes";
+import { registerLabFcmRoutes } from "../push/lab-fcm-routes";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -33,37 +38,32 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  let stopRecordingAnalysis = () => {};
+  let stopRecordingRetention = () => {};
+  let stopRecordingCapture = () => {};
   const app = express();
   const server = createServer(app);
 
-  // Enable CORS for all routes - reflect the request origin to support credentials
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.header("Access-Control-Allow-Origin", origin);
-    }
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header(
-      "Access-Control-Allow-Headers",
-      "Origin, X-Requested-With, Content-Type, Accept, Authorization",
-    );
-    res.header("Access-Control-Allow-Credentials", "true");
+  const trustedProxies = process.env.PHONE11_TRUSTED_PROXY_CIDRS?.split(",").map(v => v.trim()).filter(Boolean);
+  if (trustedProxies?.length) app.set("trust proxy", trustedProxies);
+  app.use(phone11Cors);
+  registerAuthRoutes(app);
+  // Wake requests have their own small body limit and fail closed until commissioned.
+  registerWakeRoutes(app);
+  registerLabFcmRoutes(app);
 
-    // Handle preflight requests
-    if (req.method === "OPTIONS") {
-      res.sendStatus(200);
-      return;
-    }
-    next();
-  });
-
+  app.use("/api/freeswitch/cdr", freeswitchCdrRouter);
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
 
-  const healthPayload = () => ({ ok: true, timestamp: Date.now() });
+  const healthPayload = () => ({
+    ok: true,
+    timestamp: Date.now(),
+    build: process.env.PHONE11_BUILD_SHA || "unknown",
+    service: "phone11-backend",
+  });
 
   app.get("/health", (_req, res) => {
     res.json(healthPayload());
@@ -97,20 +97,25 @@ async function startServer() {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
-  // Initialize WebSocket server for real-time events
-  wsManager.init(server);
+  // The legacy /ws endpoint trusted caller-supplied tenant/role values.
+  // Keep it disabled until upgrades use authenticated tenant membership.
 
   // WebSocket status endpoint
   app.get("/api/ws/status", (_req, res) => {
-    res.json({
-      ok: true,
-      clients: wsManager.getClientCount(),
+    res.status(503).json({
+      ok: false,
+      enabled: false,
+      reason: "Authenticated event delivery is not enabled",
       timestamp: Date.now(),
     });
   });
 
   server.listen(port, () => {
     console.log(`[api] server listening on port ${port}`);
+    startChatNotificationDispatcher();
+    stopRecordingAnalysis = startRecordingAnalysisWorker();
+    stopRecordingRetention = startRecordingRetentionWorker();
+    stopRecordingCapture = startRecordingCaptureService();
 
     // Start FreeSWITCH ESL event listener after server is up
     try {
@@ -122,6 +127,9 @@ async function startServer() {
 
   // Graceful shutdown
   process.on("SIGTERM", () => {
+    stopRecordingAnalysis();
+    stopRecordingRetention();
+    stopRecordingCapture();
     console.log("[api] SIGTERM received, shutting down...");
     fsEventListener.stop();
     wsManager.shutdown();

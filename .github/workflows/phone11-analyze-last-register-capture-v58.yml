@@ -1,0 +1,98 @@
+name: Phone11 analyze last REGISTER capture v58
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-analyze-last-register-capture-v58.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  analyze-register:
+    name: Analyze last captured REGISTER blocks
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Connect and analyze capture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v58_key"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'python3 - <<'"'"'PY'"'"'
+          import re
+          path='/tmp/phone11-v52-register-capture.txt'
+          text=open(path, errors='replace').read()
+          print('===== V58 analyze last REGISTER capture =====')
+          print('source_file=' + path)
+          starts=[m.start() for m in re.finditer(r'REGISTER\s+sip:[^\s]+\s+SIP/2\.0', text, re.I)]
+          print('register_start_count=%d' % len(starts))
+          for idx, pos in enumerate(starts, 1):
+              prev=text.rfind('\n', 0, pos)
+              header_start=text.rfind('\n', 0, max(0, prev-1))
+              block=text[pos:pos+3500]
+              # Stop at next tcpdump timestamp or next SIP request after a reasonable body.
+              cut=len(block)
+              for pat in ['\n15:', '\n11:', '\nIP ', '\nREGISTER sip:']:
+                  n=block.find(pat, 20)
+                  if n != -1:
+                      cut=min(cut,n)
+              block=block[:cut]
+              packet_line=text[header_start+1:prev].strip() if header_start >= 0 and prev >= 0 else ''
+              red=re.sub(r'(nonce=")[^"]+(")', r'\1<redacted>\2', block, flags=re.I)
+              red=re.sub(r'(response=")[^"]+(")', r'\1<redacted>\2', red, flags=re.I)
+              red=re.sub(r'(cnonce=")[^"]+(")', r'\1<redacted>\2', red, flags=re.I)
+              red=re.sub(r'(opaque=")[^"]+(")', r'\1<redacted>\2', red, flags=re.I)
+              has_auth=bool(re.search(r'^(Authorization|Proxy-Authorization):', block, re.I|re.M))
+              call_id=re.search(r'^Call-ID:\s*(.+)$', block, re.I|re.M)
+              cseq=re.search(r'^CSeq:\s*(.+)$', block, re.I|re.M)
+              from_h=re.search(r'^From:\s*(.+)$', block, re.I|re.M)
+              to_h=re.search(r'^To:\s*(.+)$', block, re.I|re.M)
+              contact=re.search(r'^Contact:\s*(.+)$', block, re.I|re.M)
+              auth=re.search(r'^(Authorization|Proxy-Authorization):\s*(.+)$', block, re.I|re.M)
+              print('----- REGISTER_BLOCK_%d -----' % idx)
+              print('packet_line=' + packet_line)
+              print('has_auth=' + str(has_auth).lower())
+              print('call_id=' + (call_id.group(1).strip() if call_id else 'missing'))
+              print('cseq=' + (cseq.group(1).strip() if cseq else 'missing'))
+              print('from=' + (from_h.group(1).strip() if from_h else 'missing'))
+              print('to=' + (to_h.group(1).strip() if to_h else 'missing'))
+              print('contact=' + (contact.group(1).strip() if contact else 'missing'))
+              if auth:
+                  val=auth.group(2)
+                  keys={k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', val)}
+                  print('auth_header=' + auth.group(1))
+                  for k in ['username','realm','uri','algorithm','qop','nc']:
+                      print('auth_%s=%s' % (k, keys.get(k,'missing')))
+              print('redacted_block_begin')
+              print(red.strip())
+              print('redacted_block_end')
+          statuses=[]
+          for m in re.finditer(r'SIP/2\.0\s+(401|407|200)[^\r\n]*', text, re.I):
+              s=text[m.start():m.end()].strip()
+              surrounding=text[max(0,m.start()-900):m.start()+900]
+              cid=re.search(r'Call-ID:\s*([^\r\n]+)', surrounding, re.I)
+              statuses.append((s, cid.group(1).strip() if cid else 'missing'))
+          print('===== STATUS_BY_NEARBY_CALL_ID =====')
+          for s,cid in statuses[:80]:
+              print(f'{s} | call_id={cid}')
+          print('V58_ANALYSIS_COMPLETE=yes')
+          PY

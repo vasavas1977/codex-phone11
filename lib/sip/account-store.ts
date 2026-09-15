@@ -1,15 +1,20 @@
 /**
  * SIP Account Store
- * Persists SIP account configuration using AsyncStorage.
- * Connects to Kamailio SIP proxy → Dinstar SBC → PSTN.
+ * Keeps native SIP credentials in device secure storage, bound to the signed-in user.
+ * Connects Phone11 to Kamailio SIP proxy -> SBC -> PSTN.
  */
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as SecureStore from "expo-secure-store";
+import { Platform } from "react-native";
+import { getAuthSnapshot } from "../_core/auth";
 import { create } from "zustand";
 
 export type SipTransport = "UDP" | "TCP" | "TLS";
 
 export interface SipAccount {
+  ownerUserId?: number;
+  tenantId?: number;
   id: string;
   displayName: string;
   username: string;       // SIP username / extension
@@ -40,15 +45,23 @@ interface SipAccountState {
   setRegistrationState: (state: RegistrationState, error?: string) => void;
 }
 
-const STORAGE_KEY = "cloudphone11_sip_account";
+const STORAGE_KEY = "phone11_sip_account";
+const SECURE_STORAGE_KEY = "phone11_sip_account_v2";
+let storageQueue: Promise<unknown> = Promise.resolve();
+let revision = 0;
+function serialize<T>(operation: () => Promise<T>): Promise<T> {
+  const task = storageQueue.then(operation, operation);
+  storageQueue = task.catch(() => undefined);
+  return task;
+}
 
 const DEFAULT_ACCOUNT: Omit<SipAccount, "username" | "password" | "domain"> = {
   id: "default",
   displayName: "",
   proxy: "",
-  port: 5060,
-  transport: "UDP",
-  srtp: false,
+  port: 5061,
+  transport: "TLS",
+  srtp: true,
   stun: "stun.l.google.com:19302",
   enabled: true,
 };
@@ -59,25 +72,52 @@ export const useSipAccountStore = create<SipAccountState>((set) => ({
   registrationError: null,
 
   setAccount: async (account: SipAccount) => {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(account));
-    set({ account });
+    if (!account.ownerUserId || account.ownerUserId !== getAuthSnapshot().user?.id) {
+      throw new Error("Sign in before provisioning a Phone11 account");
+    }
+    const current = ++revision;
+    await serialize(async () => {
+      if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) return;
+      if (Platform.OS !== "web") {
+        await SecureStore.setItemAsync(SECURE_STORAGE_KEY, JSON.stringify(account), {
+          keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+        });
+      }
+      await AsyncStorage.removeItem(STORAGE_KEY);
+      if (current === revision && account.ownerUserId === getAuthSnapshot().user?.id) {
+        set({ account });
+      } else if (Platform.OS !== "web") {
+        // Auth can change while the keychain write is in flight. Do not leave that
+        // owner's credentials available to a later hydration before cleanup runs.
+        await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+      }
+    });
   },
 
   loadAccount: async () => {
-    try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      if (raw) {
+    const current = revision;
+    await serialize(async () => {
+      // Old unbound/plaintext credentials must be re-provisioned after real sign-in.
+      await AsyncStorage.removeItem(STORAGE_KEY);
+      if (Platform.OS === "web") return;
+      const raw = await SecureStore.getItemAsync(SECURE_STORAGE_KEY);
+      if (!raw || current !== revision) return;
+      try {
         const account = JSON.parse(raw) as SipAccount;
-        set({ account });
-      }
-    } catch {
-      // No stored account
-    }
+        if (Number.isSafeInteger(account.ownerUserId) && account.ownerUserId === getAuthSnapshot().user?.id) {
+          set({ account });
+        }
+      } catch { /* Invalid cached account; authenticated provisioning replaces it. */ }
+    });
   },
 
   clearAccount: async () => {
-    await AsyncStorage.removeItem(STORAGE_KEY);
-    set({ account: null, registrationState: "unregistered" });
+    ++revision;
+    set({ account: null, registrationState: "unregistered", registrationError: null });
+    await serialize(async () => {
+      if (Platform.OS !== "web") await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+      await AsyncStorage.removeItem(STORAGE_KEY);
+    });
   },
 
   setRegistrationState: (state: RegistrationState, error?: string) => {

@@ -1,0 +1,122 @@
+name: Phone11 patch PJSIP auto register v46
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-patch-pjsip-auto-register-v46.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+          fetch-depth: 0
+
+      - name: Patch lib/sip/engine.ts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("lib/sip/engine.ts")
+          text = path.read_text()
+
+          text = text.replace(
+              '          stun: account.stun || "none",\n        },\n      });\n\n      // Create PJSIP endpoint',
+              '          stun: account.stun || "none",\n          hasPassword: Boolean(account.password),\n          passwordLength: account.password?.length ?? 0,\n        },\n      });\n\n      // Create PJSIP endpoint',
+              1,
+          )
+
+          text = text.replace(
+              '          stun: account.stun || "none",\n        },\n      });\n      await recordPersistentSipDiagnosticEvent({\n        level: "info",\n        category: "registration",\n        message: "Native PJSIP SIP account create attempt",',
+              '          stun: account.stun || "none",\n          hasPassword: Boolean(account.password),\n          passwordLength: account.password?.length ?? 0,\n        },\n      });\n      await recordPersistentSipDiagnosticEvent({\n        level: "info",\n        category: "registration",\n        message: "Native PJSIP SIP account create attempt",',
+              1,
+          )
+
+          text = text.replace(
+              '          stun: account.stun || "none",\n        },\n      });\n      this.pjsipAccount = await this.endpoint.createAccount({',
+              '          stun: account.stun || "none",\n          hasPassword: Boolean(account.password),\n          passwordLength: account.password?.length ?? 0,\n        },\n      });\n      this.pjsipAccount = await this.endpoint.createAccount({',
+              1,
+          )
+
+          text = text.replace(
+              '        regOnAdd: false,\n        regServer: null,',
+              '        regOnAdd: true,\n        regServer: registrationServer,',
+              1,
+          )
+
+          start_marker = '      if (typeof this.endpoint.registerAccount !== "function") {'
+          end_marker = '      // Listen for incoming calls'
+          try:
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+          except ValueError as exc:
+              raise SystemExit(f"Could not find manual register block: {exc}")
+
+          replacement_lines = [
+              '      this._diag("info", "registration", "Native PJSIP auto-registration armed", {',
+              '        destination: registrationServer,',
+              '        context: {',
+              '          stage: "endpoint.createAccount.regOnAdd",',
+              '          username: account.username,',
+              '          domain: account.domain,',
+              '          proxy: outboundProxy,',
+              '          transport: account.transport,',
+              '          hasPassword: Boolean(account.password),',
+              '          passwordLength: account.password?.length ?? 0,',
+              '        },',
+              '      });',
+              '      await recordPersistentSipDiagnosticEvent({',
+              '        level: "info",',
+              '        category: "registration",',
+              '        message: "Native PJSIP auto-registration armed",',
+              '        destination: registrationServer,',
+              '        context: {',
+              '          stage: "endpoint.createAccount.regOnAdd",',
+              '          username: account.username,',
+              '          domain: account.domain,',
+              '          proxy: outboundProxy,',
+              '          transport: account.transport,',
+              '          hasPassword: Boolean(account.password),',
+              '          passwordLength: account.password?.length ?? 0,',
+              '        },',
+              '      });',
+              '',
+          ]
+          replacement = "\n".join(replacement_lines) + "\n"
+          text = text[:start] + replacement + text[end:]
+
+          if 'regOnAdd: true' not in text:
+              raise SystemExit('Patch failed: regOnAdd true not present')
+          if 'endpoint.registerAccount(this.pjsipAccount, true)' in text:
+              raise SystemExit('Patch failed: manual registerAccount call still present')
+          if text.count('Native PJSIP auto-registration armed') < 2:
+              raise SystemExit('Patch failed: auto-registration diagnostics missing')
+          if 'password: account.password' not in text:
+              raise SystemExit('Patch failed: password field missing from account creation')
+
+          path.write_text(text)
+          PY
+
+      - name: Show diff
+        run: git diff -- lib/sip/engine.ts
+
+      - name: Commit and push patch
+        run: |
+          if git diff --quiet -- lib/sip/engine.ts; then
+            echo "No engine patch needed"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/sip/engine.ts
+          git commit -m "Use PJSIP auto registration on iOS"
+          git push origin HEAD:codex/phone11-mobile-pjsip-20260506

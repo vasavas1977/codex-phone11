@@ -1,0 +1,231 @@
+name: Phone11 V92 Old API Host Proxy To Live Backend
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-old-api-proxy-live-v92.yml
+      - ops/phone11-old-api-proxy-live-v92-trigger-*
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  OLD_API_HOST: 43.209.112.208
+  LIVE_BACKEND_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  API_HOSTNAME: api.phone11.ai
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  proxy-old-api-to-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Patch old API host nginx and verify proxy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG=/tmp/phone11-old-api-proxy-live-v92.log
+          STATUS=0
+          INSTANCE_ID=''
+          AZ=''
+          exec > >(tee "$LOG") 2>&1
+
+          sanitize_log() {
+            sed -E \
+              -e 's#(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN)=([^[:space:]]+)#\1=<redacted>#g' \
+              "$LOG" 2>/dev/null || true
+          }
+
+          write_status() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 V92 Old API Host Proxy Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- Old public API host: $OLD_API_HOST"
+              echo "- Live backend host: $LIVE_BACKEND_HOST"
+              echo "- API hostname: $API_HOSTNAME"
+              echo "- Old EC2 instance: ${INSTANCE_ID:-not-set}"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sanitize_log
+              echo '```'
+            } > ops/phone11-old-api-proxy-live-v92-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-old-api-proxy-live-v92-status.md
+            if git diff --cached --quiet; then
+              echo 'No V92 status file changes to commit.'
+            else
+              git commit -m "Update Phone11 V92 old API proxy status" || true
+              git push || true
+            fi
+          }
+
+          trap 'STATUS=$?; write_status; exit $STATUS' EXIT
+
+          echo '=== Phone11 V92 old public API proxy to live backend ==='
+          echo "Time: $(date -u -Iseconds)"
+          echo "Old API host: $OLD_API_HOST"
+          echo "Live backend host: $LIVE_BACKEND_HOST"
+          echo "API hostname: $API_HOSTNAME"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '--- Locate old public API EC2 ---'
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$OLD_API_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for old API host $OLD_API_HOST"
+            exit 32
+          fi
+          echo "Found old API EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '--- Prepare temporary SSH access ---'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v92_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v92_eic_key.pub"
+
+          echo '--- Prepare remote nginx proxy patch ---'
+          cat >/tmp/phone11-v92-old-api-proxy.sh <<'REMOTE'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          echo '--- Preflight: old API host and live backend health ---'
+          hostname
+          date -u -Iseconds
+          echo 'Current old public API health through local resolve:'
+          curl -k -fsS --connect-timeout 5 --max-time 12 --resolve "${API_HOSTNAME}:443:${OLD_API_HOST}" "https://${API_HOSTNAME}/api/health" || true
+          echo
+          echo 'Live backend HTTP Host-route health from old API host:'
+          curl -fsS --connect-timeout 5 --max-time 12 -H "Host: ${API_HOSTNAME}" "http://${LIVE_BACKEND_HOST}/api/health"
+          echo
+
+          echo '--- Discover existing nginx config and certificates ---'
+          sudo nginx -T 2>/tmp/phone11-v92-nginx-dump.err | grep -E -C 3 "${API_HOSTNAME}|server_name|proxy_pass" | head -240 || true
+          if [ -s /tmp/phone11-v92-nginx-dump.err ]; then cat /tmp/phone11-v92-nginx-dump.err || true; fi
+
+          CERT_DIR=''
+          for candidate in "/etc/letsencrypt/live/${API_HOSTNAME}" "/etc/letsencrypt/live/phone11.ai"; do
+            if [ -f "$candidate/fullchain.pem" ] && [ -f "$candidate/privkey.pem" ]; then
+              CERT_DIR="$candidate"
+              break
+            fi
+          done
+          if [ -z "$CERT_DIR" ]; then
+            echo "ERROR: No Let's Encrypt certificate found for ${API_HOSTNAME} or phone11.ai on old API host."
+            exit 50
+          fi
+          echo "Using certificate directory: $CERT_DIR"
+
+          BACKUP_DIR="/etc/nginx/phone11-v92-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo mkdir -p "$BACKUP_DIR"
+
+          echo '--- Remove api.phone11.ai from broad existing server_name lines ---'
+          mapfile -t CONFIG_FILES < <(sudo grep -RIl "server_name .*${API_HOSTNAME}" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true)
+          for file in "${CONFIG_FILES[@]}"; do
+            base=$(basename "$file")
+            sudo cp "$file" "$BACKUP_DIR/$base"
+            sudo perl -0pi -e 's/(server_name\s+[^;]*?)\s+api\.phone11\.ai(\s+[^;]*;)/$1$2/g; s/(server_name\s+)api\.phone11\.ai\s+/$1/g; s/(server_name\s+)api\.phone11\.ai;/${1}_removed_api_phone11_ai_;/' "$file"
+            echo "Patched server_name in $file"
+          done
+
+          echo '--- Install dedicated api.phone11.ai reverse proxy to live backend ---'
+          TMP_CONF=/tmp/phone11-api-live-proxy.conf
+          {
+            echo 'server {'
+            echo '    listen 80;'
+            echo "    server_name ${API_HOSTNAME};"
+            echo '    location /.well-known/acme-challenge/ { root /var/www/html; }'
+            echo '    location / {'
+            echo "        proxy_pass http://${LIVE_BACKEND_HOST};"
+            echo '        proxy_http_version 1.1;'
+            echo "        proxy_set_header Host ${API_HOSTNAME};"
+            echo '        proxy_set_header X-Real-IP $remote_addr;'
+            echo '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;'
+            echo '        proxy_set_header X-Forwarded-Proto $scheme;'
+            echo '        proxy_set_header Upgrade $http_upgrade;'
+            echo '        proxy_set_header Connection "upgrade";'
+            echo '        proxy_read_timeout 300;'
+            echo '        proxy_send_timeout 300;'
+            echo '    }'
+            echo '}'
+            echo ''
+            echo 'server {'
+            echo '    listen 443 ssl http2;'
+            echo "    server_name ${API_HOSTNAME};"
+            echo "    ssl_certificate ${CERT_DIR}/fullchain.pem;"
+            echo "    ssl_certificate_key ${CERT_DIR}/privkey.pem;"
+            if [ -f /etc/letsencrypt/options-ssl-nginx.conf ]; then
+              echo '    include /etc/letsencrypt/options-ssl-nginx.conf;'
+            fi
+            if [ -f /etc/letsencrypt/ssl-dhparams.pem ]; then
+              echo '    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;'
+            fi
+            echo '    location / {'
+            echo "        proxy_pass http://${LIVE_BACKEND_HOST};"
+            echo '        proxy_http_version 1.1;'
+            echo "        proxy_set_header Host ${API_HOSTNAME};"
+            echo '        proxy_set_header X-Real-IP $remote_addr;'
+            echo '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;'
+            echo '        proxy_set_header X-Forwarded-Proto $scheme;'
+            echo '        proxy_set_header Upgrade $http_upgrade;'
+            echo '        proxy_set_header Connection "upgrade";'
+            echo '        proxy_read_timeout 300;'
+            echo '        proxy_send_timeout 300;'
+            echo '    }'
+            echo '}'
+          } > "$TMP_CONF"
+          cat "$TMP_CONF"
+          sudo install -m 0644 "$TMP_CONF" /etc/nginx/conf.d/phone11-api-live-proxy.conf
+
+          echo '--- Validate and reload nginx ---'
+          sudo nginx -t
+          sudo systemctl reload nginx || sudo nginx -s reload
+
+          echo '--- Verify old public API now returns live backend build ---'
+          sleep 2
+          OLD_PROXY_HEALTH=$(curl -k -fsS --connect-timeout 5 --max-time 12 --resolve "${API_HOSTNAME}:443:${OLD_API_HOST}" "https://${API_HOSTNAME}/api/health")
+          echo "$OLD_PROXY_HEALTH"
+          LIVE_HEALTH=$(curl -fsS --connect-timeout 5 --max-time 12 -H "Host: ${API_HOSTNAME}" "http://${LIVE_BACKEND_HOST}/api/health")
+          echo "$LIVE_HEALTH"
+          OLD_BUILD=$(printf '%s' "$OLD_PROXY_HEALTH" | jq -r '.build // empty')
+          LIVE_BUILD=$(printf '%s' "$LIVE_HEALTH" | jq -r '.build // empty')
+          if [ -z "$OLD_BUILD" ] || [ -z "$LIVE_BUILD" ] || [ "$OLD_BUILD" != "$LIVE_BUILD" ]; then
+            echo "ERROR: old API proxy build mismatch: old=${OLD_BUILD:-missing} live=${LIVE_BUILD:-missing}"
+            exit 51
+          fi
+          echo "V92_OLD_API_PROXY_TO_LIVE_OK=true build=$OLD_BUILD"
+          REMOTE
+
+          echo '--- Run remote nginx proxy patch on old API EC2 ---'
+          scp -i ~/.ssh/phone11_v92_eic_key -o StrictHostKeyChecking=no /tmp/phone11-v92-old-api-proxy.sh "$EC2_USER@$OLD_API_HOST:/tmp/phone11-v92-old-api-proxy.sh"
+          ssh -i ~/.ssh/phone11_v92_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$OLD_API_HOST" "OLD_API_HOST='$OLD_API_HOST' LIVE_BACKEND_HOST='$LIVE_BACKEND_HOST' API_HOSTNAME='$API_HOSTNAME' bash /tmp/phone11-v92-old-api-proxy.sh"
+
+          echo 'V92 old API host now proxies to live backend.'

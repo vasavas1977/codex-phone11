@@ -1,0 +1,132 @@
+name: Phone11 iOS PJSIP auth realm v79
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-ios-pjsip-auth-realm-v79.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  EAS_PROFILE: preview-ios-existing-credentials
+
+jobs:
+  patch-test-build:
+    name: Patch iOS PJSIP auth realm, test, and queue build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply focused PJSIP realm patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'lib/sip/engine.ts';
+          let source = fs.readFileSync(path, 'utf8');
+          const before = source;
+
+          if (!source.includes('regServer: account.domain,')) {
+            source = source.replace('regOnAdd: true,\n        regServer: null,', 'regOnAdd: true,\n        regServer: account.domain,');
+          }
+
+          if (!source.includes('authRealm: account.domain')) {
+            source = source.replace(
+              'domain: account.domain,\n          proxy: account.proxy || registrationServer,',
+              'domain: account.domain,\n          authRealm: account.domain,\n          proxy: account.proxy || registrationServer,'
+            );
+            source = source.replaceAll(
+              'domain: account.domain,\n          proxy: outboundProxy,',
+              'domain: account.domain,\n          authRealm: account.domain,\n          proxy: outboundProxy,'
+            );
+          }
+
+          if (source === before) {
+            console.log('No code change needed; auth realm patch already present.');
+          } else {
+            fs.writeFileSync(path, source);
+            console.log('Updated lib/sip/engine.ts for explicit PJSIP digest realm.');
+          }
+
+          const next = fs.readFileSync(path, 'utf8');
+          if (!next.includes('regServer: account.domain,')) {
+            throw new Error('PJSIP regServer auth realm patch missing after edit.');
+          }
+          if (!next.includes('authRealm: account.domain')) {
+            throw new Error('PJSIP authRealm diagnostics missing after edit.');
+          }
+          NODE
+          git diff -- lib/sip/engine.ts
+
+      - name: Commit patch to branch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet -- lib/sip/engine.ts; then
+            echo "patch_commit=none" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          git config user.name "phone11-ci"
+          git config user.email "phone11-ci@users.noreply.github.com"
+          git add lib/sip/engine.ts
+          git commit -m "Set PJSIP auth realm for iOS SIP registration"
+          git push origin HEAD:codex/phone11-mobile-pjsip-20260506
+          echo "patch_commit=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+
+      - name: Install locked dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify TypeScript and tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pnpm exec tsc --noEmit
+          pnpm test
+
+      - name: Validate Expo config
+        shell: bash
+        run: pnpm exec expo config --type public
+
+      - name: Queue iOS build for device testing
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "Missing EXPO_TOKEN; cannot queue EAS build."
+            exit 1
+          fi
+          eas whoami
+          eas build --platform ios --profile "$EAS_PROFILE" --non-interactive --no-wait

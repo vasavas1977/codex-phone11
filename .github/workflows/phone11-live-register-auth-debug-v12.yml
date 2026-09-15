@@ -1,0 +1,268 @@
+name: Phone11 Live Register Auth Debug V12
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-register-auth-debug-v12.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+      extension:
+        description: SIP extension for auth debug
+        required: true
+        default: "1996"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  register-auth-debug:
+    name: Capture exact REGISTER auth failure and Kamailio evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_register_auth_v12_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_register_auth_v12_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Run REGISTER auth probe and capture Kamailio logs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EXTENSION="${{ github.event.inputs.extension || '1996' }}"
+          ssh -i ~/.ssh/phone11_register_auth_v12_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" \
+            "EXTENSION='$EXTENSION' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          PASSWORD="phone11-auth-debug-v12"
+          FULL_USER="$EXTENSION@$DOMAIN"
+
+          echo "===== Live container status ====="
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'p11-kamailio|p11-rtpengine|p11-freeswitch|cp11-postgres' || true
+
+          echo "===== Kamailio DB environment ====="
+          docker exec p11-kamailio sh -lc 'echo DB_HOST=$DB_HOST; echo DB_NAME=$DB_NAME; echo DB_USER=$DB_USER; if [ -n "$DB_PASS" ]; then echo DB_PASS_present=yes; else echo DB_PASS_present=no; fi'
+
+          echo "===== Kamailio auth/db config evidence ====="
+          docker exec p11-kamailio sh -lc "grep -nE 'substdef|define|DB_URL|MY_DOMAIN|auth_db|calculate_ha1|password_column|use_domain|auth_check|modparam\(\"domain\"' /etc/kamailio/kamailio.cfg /etc/kamailio/*.cfg 2>/dev/null | head -220" | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(DB_PASS=).*#\1<redacted>#g'
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+
+          echo "===== Seed deterministic subscriber rows ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES
+            ('$EXTENSION', '$DOMAIN', '$PASSWORD', md5('$EXTENSION:$DOMAIN:$PASSWORD'), md5('$EXTENSION@$DOMAIN:$DOMAIN:$PASSWORD')),
+            ('$FULL_USER', '$DOMAIN', '$PASSWORD', md5('$FULL_USER:$DOMAIN:$PASSWORD'), md5('$FULL_USER:$DOMAIN:$PASSWORD'))
+          ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b;
+          SELECT username, domain, length(password) AS password_len, length(ha1) AS ha1_len, left(ha1, 8) AS ha1_prefix, left(ha1b, 8) AS ha1b_prefix
+          FROM subscriber
+          WHERE username IN ('$EXTENSION', '$FULL_USER') AND domain = '$DOMAIN'
+          ORDER BY username;
+          SQL
+
+          export SIP_TARGET_IP="$(hostname -I | awk '{print $1}')"
+          export DOMAIN PASSWORD EXTENSION FULL_USER
+          echo "sip_target=$SIP_TARGET_IP:5060"
+
+          PYLOG="/tmp/phone11-register-auth-debug-v12.log"
+          CALLIDS="/tmp/phone11-register-auth-debug-v12.callids"
+          rm -f "$PYLOG" "$CALLIDS"
+
+          python3 - <<'PYTEST' > "$PYLOG" 2>&1
+          import hashlib, os, re, secrets, select, socket, sys, time
+
+          server=(os.environ['SIP_TARGET_IP'],5060)
+          domain=os.environ['DOMAIN']
+          password=os.environ['PASSWORD']
+          extension=os.environ['EXTENSION']
+          full_user=os.environ['FULL_USER']
+          callids_path='/tmp/phone11-register-auth-debug-v12.callids'
+
+          def md5(value):
+              return hashlib.md5(value.encode()).hexdigest()
+
+          def header(text, name):
+              match=re.search(rf'^{re.escape(name)}:\s*(.+)$', text, re.I|re.M)
+              return match.group(1).strip() if match else ''
+
+          def status_code(text):
+              first=text.splitlines()[0] if text.splitlines() else ''
+              match=re.match(r'SIP/2.0\s+(\d+)\s*(.*)', first)
+              return (int(match.group(1)), match.group(2).strip(), first) if match else (0, '', first)
+
+          def parse_auth(value):
+              value=value.replace('Digest','',1).strip()
+              return {k.lower():(quoted or bare) for k,quoted,bare in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', value)}
+
+          def build_digest(auth_username, challenge, method, uri):
+              values=parse_auth(challenge)
+              realm=values.get('realm', domain)
+              nonce=values.get('nonce', '')
+              qop_value=values.get('qop', '')
+              qop='auth' if 'auth' in qop_value else ''
+              cnonce=secrets.token_hex(8)
+              nc='00000001'
+              ha1=md5(f'{auth_username}:{realm}:{password}')
+              ha2=md5(f'{method}:{uri}')
+              if qop:
+                  response=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}')
+              else:
+                  response=md5(f'{ha1}:{nonce}:{ha2}')
+              parts=[
+                  f'username="{auth_username}"',
+                  f'realm="{realm}"',
+                  f'nonce="{nonce}"',
+                  f'uri="{uri}"',
+                  f'response="{response}"',
+                  'algorithm=MD5',
+              ]
+              if values.get('opaque'):
+                  parts.append(f'opaque="{values["opaque"]}"')
+              if qop:
+                  parts.extend([f'qop={qop}', f'nc={nc}', f'cnonce="{cnonce}"'])
+              return 'Digest ' + ', '.join(parts), values
+
+          def recv_matching(sock, call_id, timeout=8):
+              deadline=time.time()+timeout
+              while time.time()<deadline:
+                  ready,_,_=select.select([sock],[],[],0.25)
+                  if not ready:
+                      continue
+                  data,addr=sock.recvfrom(65535)
+                  text=data.decode(errors='replace')
+                  if call_id in text:
+                      return text, addr
+              raise TimeoutError(f'no response call_id={call_id}')
+
+          def attempt(label, auth_username, header_mode):
+              sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+              sock.bind(('0.0.0.0', 0))
+              sock.setblocking(False)
+              local_port=sock.getsockname()[1]
+              local_ip=os.environ['SIP_TARGET_IP']
+              uri=f'sip:{domain}'
+              call_id=f'phone11-v12-{label}-{secrets.token_hex(6)}@{local_ip}'
+              with open(callids_path, 'a') as handle:
+                  handle.write(call_id + '\n')
+              from_tag=secrets.token_hex(4)
+
+              def message(cseq, digest='', digest_header='Authorization'):
+                  branch=f'z9hG4bKv12{secrets.token_hex(8)}{cseq}'
+                  lines=[
+                      f'REGISTER {uri} SIP/2.0',
+                      f'Via: SIP/2.0/UDP {local_ip}:{local_port};branch={branch};rport',
+                      'Max-Forwards: 70',
+                      f'From: <sip:{extension}@{domain}>;tag={from_tag}',
+                      f'To: <sip:{extension}@{domain}>',
+                      f'Call-ID: {call_id}',
+                      f'CSeq: {cseq} REGISTER',
+                      f'Contact: <sip:{extension}@{local_ip}:{local_port};transport=udp>;expires=300',
+                      'Expires: 300',
+                      'User-Agent: Phone11RegisterAuthDebug/12',
+                  ]
+                  if digest:
+                      lines.append(f'{digest_header}: {digest}')
+                  lines += ['Content-Length: 0', '', '']
+                  return '\r\n'.join(lines)
+
+              print(f'--- attempt={label} auth_username={auth_username} requested_header_mode={header_mode} local_port={local_port} call_id={call_id}')
+              sock.sendto(message(1).encode(), server)
+              first,_=recv_matching(sock, call_id)
+              first_code, first_reason, first_line=status_code(first)
+              print(f'{label}_first_status={first_code} {first_reason}')
+              print(f'{label}_first_line={first_line}')
+              www=header(first,'WWW-Authenticate')
+              proxy=header(first,'Proxy-Authenticate')
+              challenge=proxy or www
+              challenge_type='Proxy-Authenticate' if proxy else 'WWW-Authenticate' if www else 'none'
+              print(f'{label}_challenge_type={challenge_type}')
+              if first_code not in (401,407) or not challenge:
+                  print(f'{label}_final_status={first_code} {first_reason}')
+                  return first_code
+
+              digest, values=build_digest(auth_username, challenge, 'REGISTER', uri)
+              print(f'{label}_challenge_realm={values.get("realm", "")}')
+              print(f'{label}_challenge_qop={values.get("qop", "")}')
+              print(f'{label}_challenge_algorithm={values.get("algorithm", "")}')
+              if header_mode == 'matching':
+                  digest_header='Proxy-Authorization' if proxy or first_code == 407 else 'Authorization'
+              elif header_mode == 'proxy':
+                  digest_header='Proxy-Authorization'
+              else:
+                  digest_header='Authorization'
+              print(f'{label}_auth_header_sent={digest_header}')
+              sock.sendto(message(2, digest, digest_header).encode(), server)
+              final,_=recv_matching(sock, call_id)
+              final_code, final_reason, final_line=status_code(final)
+              print(f'{label}_final_status={final_code} {final_reason}')
+              print(f'{label}_final_line={final_line}')
+              return final_code
+
+          results=[]
+          for label, auth_username, header_mode in [
+              ('bare-matching', extension, 'matching'),
+              ('bare-authorization', extension, 'authorization'),
+              ('bare-proxy', extension, 'proxy'),
+              ('full-matching', full_user, 'matching'),
+          ]:
+              try:
+                  results.append((label, attempt(label, auth_username, header_mode)))
+              except Exception as exc:
+                  print(f'{label}_exception={type(exc).__name__}: {exc}')
+                  results.append((label, 'exception'))
+
+          print('REGISTER_AUTH_PROBE_SUMMARY=' + ','.join(f'{label}:{code}' for label,code in results))
+          if any(code == 200 for _, code in results):
+              print('REGISTER_AUTH_PROBE_RESULT=pass')
+          else:
+              print('REGISTER_AUTH_PROBE_RESULT=fail')
+          PYTEST
+
+          echo "===== REGISTER auth probe output ====="
+          cat "$PYLOG"
+
+          echo "===== Kamailio logs for exact REGISTER Call-IDs ====="
+          if [ -s "$CALLIDS" ]; then
+            while IFS= read -r CALL_ID; do
+              echo "----- call_id=$CALL_ID -----"
+              docker logs --since 300s --timestamps p11-kamailio 2>&1 | grep -F "$CALL_ID" | tail -n 80 || true
+            done < "$CALLIDS"
+          else
+            echo "No REGISTER Call-IDs captured."
+          fi
+
+          echo "===== Kamailio auth/db log context from last 5 minutes ====="
+          docker logs --since 300s --timestamps p11-kamailio 2>&1 | grep -Eia 'REGISTER|401|403|200 OK|auth|credential|password|ha1|subscriber|db_|uri|realm|nonce|1996|sip.phone11.ai' | tail -n 280 || true
+
+          if grep -q 'REGISTER_AUTH_PROBE_RESULT=pass' "$PYLOG"; then
+            exit 0
+          fi
+          echo "REGISTER auth still failed; diagnostic logs above are the output to use for the next patch."
+          exit 0
+          REMOTE

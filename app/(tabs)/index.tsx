@@ -1,12 +1,21 @@
+import { useDeviceContacts } from "@/hooks/use-device-contacts";
+import { deviceContactName } from "@/lib/phone/device-contacts";
 import { useState, useCallback } from "react";
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { Alert, View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { isPhone11AndroidLab } from "@/constants/phone11-build";
 import { useColors } from "@/hooks/use-colors";
-import { useNotificationStore } from "@/lib/notifications/store";
+import { usePhoneCall } from "@/hooks/use-phone-call";
+import { useSip } from "@/lib/sip/sip-provider";
+import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
+import { useAuth } from "@/hooks/use-auth";
+import { useCallHistoryStore } from "@/lib/sip/call-history";
+import { normalizeDialInput } from "@/lib/sip/dial-input";
 
 const DIAL_KEYS = [
   { digit: "1", sub: "" },
@@ -23,20 +32,57 @@ const DIAL_KEYS = [
   { digit: "#", sub: "" },
 ];
 
-const RECENT_NUMBERS = [
-  { number: "+1 (555) 234-5678", name: "John Smith" },
-  { number: "+1 (555) 987-6543", name: "Acme Corp" },
-  { number: "1001", name: "Ext. 1001" },
+const DIAL_KEY_ROWS = [
+  DIAL_KEYS.slice(0, 3),
+  DIAL_KEYS.slice(3, 6),
+  DIAL_KEYS.slice(6, 9),
+  DIAL_KEYS.slice(9, 12),
 ];
+
+function registrationLabel(state: RegistrationState): string {
+  switch (state) {
+    case "registered":
+      return "Ready to call";
+    case "registering":
+      return "Connecting…";
+    case "failed":
+      return "Connection failed";
+    case "network_error":
+      return "Offline";
+    default:
+      return "Connecting…";
+  }
+}
+
+function registrationColor(state: RegistrationState, colors: ReturnType<typeof useColors>): string {
+  if (state === "registered") return colors.success;
+  if (state === "registering") return colors.warning;
+  if (state === "failed" || state === "network_error") return colors.error;
+  return colors.muted;
+}
 
 export default function DialpadScreen() {
   const colors = useColors();
   const [input, setInput] = useState("");
-  const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const { user } = useAuth({ autoFetch: false });
+  const history = useCallHistoryStore();
+  const deviceContacts = useDeviceContacts();
+  useFocusEffect(useCallback(() => { void history.reload(); }, [history.reload, user?.id]));
+  const recentNumbers = (history.ownerUserId === user?.id ? history.entries : [])
+    .filter((entry, index, all) => entry.ownerUserId === user?.id && all.findIndex(other => other.number === entry.number) === index)
+    .slice(0, 3)
+    .map(entry => ({ ...entry, name: deviceContactName(deviceContacts.people, entry.number) || entry.name }));
+  const { placeCall, calling } = usePhoneCall();
+  const { reconnectPhone } = useSip();
+  const [reconnecting, setReconnecting] = useState(false);
+  const savedAccount = useSipAccountStore((s) => s.account);
+  const account = savedAccount?.ownerUserId === user?.id ? savedAccount : null;
+  const registrationState = useSipAccountStore((s) => s.registrationState);
+  const statusColor = registrationColor(registrationState, colors);
 
   const handleKey = useCallback((digit: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setInput((prev) => prev + digit);
+    setInput((prev) => normalizeDialInput(prev + digit) ?? prev);
   }, []);
 
   const handleBackspace = useCallback(() => {
@@ -44,57 +90,56 @@ export default function DialpadScreen() {
     setInput((prev) => prev.slice(0, -1));
   }, []);
 
-  const handleCall = useCallback((number?: string) => {
-    const target = number || input;
-    if (!target) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.push({ pathname: "/call/active", params: { number: target, type: "voice" } });
-  }, [input]);
-
-  const handleVideoCall = useCallback(() => {
-    if (!input) return;
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    router.push({ pathname: "/call/video", params: { number: input, type: "video" } });
-  }, [input]);
+  const handleCall = (number?: string) => placeCall(number || input);
+  const reconnect = async () => {
+    if (reconnecting) return;
+    setReconnecting(true);
+    try { await reconnectPhone(); }
+    catch { Alert.alert("Unable to reconnect", "Check your connection and account setup, then try again."); }
+    finally { setReconnecting(false); }
+  };
 
   return (
     <ScreenContainer>
+      {isPhone11AndroidLab() && <TouchableOpacity accessibilityLabel="Open Android lab" onPress={() => router.push("/android-lab" as never)}><Text style={{ color: colors.primary, padding: 12 }}>Android lab diagnostics</Text></TouchableOpacity>}
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
         {/* Header */}
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <View style={[styles.header, { borderBottomColor: colors.border }]}> 
           <View style={styles.headerLeft}>
-            <Text style={[styles.headerTitle, { color: colors.foreground }]}>CloudPhone11</Text>
+            <Text style={[styles.headerTitle, { color: colors.foreground }]}>Phone11</Text>
             <View style={styles.sipStatus}>
-              <View style={[styles.sipDot, { backgroundColor: colors.success }]} />
-              <Text style={[styles.sipText, { color: colors.muted }]}>SIP Registered</Text>
+              <View style={[styles.sipDot, { backgroundColor: statusColor }]} />
+              <Text style={[styles.sipText, { color: colors.muted }]}>{!user ? "Sign in to call" : !account?.enabled ? "Set up your work phone" : registrationLabel(registrationState)}</Text>
             </View>
           </View>
-          <TouchableOpacity
-            onPress={() => router.push("/notifications" as any)}
-            style={styles.bellBtn}
-          >
-            <IconSymbol name="bell.fill" size={22} color={colors.foreground} />
-            {unreadCount > 0 && (
-              <View style={[styles.bellBadge, { backgroundColor: colors.error }]}>
-                <Text style={styles.bellBadgeText}>
-                  {unreadCount > 9 ? "9+" : unreadCount}
-                </Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          {user && account?.enabled && registrationState !== "registered" && (
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Reconnect phone" disabled={reconnecting} onPress={reconnect} style={styles.bellBtn}>
+              <Text style={{ color: colors.primary, fontWeight: "700" }}>{reconnecting ? "Connecting…" : "Reconnect"}</Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* Number Input */}
         <View style={styles.inputRow}>
-          <Text
+          <TextInput
             style={[styles.numberInput, { color: colors.foreground }]}
-            numberOfLines={1}
-            adjustsFontSizeToFit
-          >
-            {input || " "}
-          </Text>
+            value={input}
+            onChangeText={value => {
+              const number = normalizeDialInput(value);
+              if (number !== null) setInput(number);
+              else Alert.alert("Invalid phone number", "Paste one phone number, including its country code if needed.");
+            }}
+            accessibilityLabel="Phone number"
+            placeholder="Phone number"
+            placeholderTextColor={colors.muted}
+            keyboardType="phone-pad"
+            autoCorrect={false}
+            autoCapitalize="none"
+            contextMenuHidden={false}
+            selectionColor={colors.primary}
+          />
           {input.length > 0 && (
-            <TouchableOpacity onPress={handleBackspace} style={styles.backspaceBtn}>
+            <TouchableOpacity accessibilityRole="button" accessibilityLabel="Delete last digit" onPress={handleBackspace} style={styles.backspaceBtn}>
               <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
             </TouchableOpacity>
           )}
@@ -102,85 +147,52 @@ export default function DialpadScreen() {
 
         {/* Dial Pad */}
         <View style={styles.dialpad}>
-          {DIAL_KEYS.map(({ digit, sub }) => (
-            <TouchableOpacity
-              key={digit}
-              style={[styles.dialKey, { backgroundColor: colors.surface }]}
-              onPress={() => handleKey(digit)}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.dialDigit, { color: colors.foreground }]}>{digit}</Text>
-              {sub ? <Text style={[styles.dialSub, { color: colors.muted }]}>{sub}</Text> : null}
-            </TouchableOpacity>
+          {DIAL_KEY_ROWS.map((row) => (
+            <View key={row.map((key) => key.digit).join("")} style={styles.dialRow}>
+              {row.map(({ digit, sub }) => (
+                <TouchableOpacity
+                  key={digit}
+                  style={[styles.dialKey, { backgroundColor: colors.surface }]}
+                  accessibilityRole="button" accessibilityLabel={digit === "0" ? "0, hold for plus" : digit}
+                  onLongPress={digit === "0" ? () => handleKey("+") : undefined}
+                  onPress={() => handleKey(digit)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.dialDigit, { color: colors.foreground }]}>{digit}</Text>
+                  {sub ? <Text style={[styles.dialSub, { color: colors.muted }]}>{sub}</Text> : null}
+                </TouchableOpacity>
+              ))}
+            </View>
           ))}
         </View>
 
-        {/* Call Buttons */}
         <View style={styles.callRow}>
-          <TouchableOpacity
-            style={[styles.videoBtn, { backgroundColor: colors.primary + "20", borderColor: colors.primary }]}
-            onPress={handleVideoCall}
-            activeOpacity={0.8}
-          >
-            <IconSymbol name="video.fill" size={22} color={colors.primary} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.callBtn, { backgroundColor: colors.success }]}
-            onPress={() => handleCall()}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Call number" disabled={calling || !input.trim()}
+            style={[styles.callBtn, { backgroundColor: colors.success, opacity: calling || !input.trim() ? 0.5 : 1 }]}
+            onPress={() => handleCall()} activeOpacity={0.8}>
             <IconSymbol name="phone.fill" size={28} color="#fff" />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.meetNowBtn, { backgroundColor: colors.primary + "20", borderColor: colors.primary }]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-              router.push("/conference" as any);
-            }}
-            activeOpacity={0.8}
-          >
-            <IconSymbol name="person.3.fill" size={22} color={colors.primary} />
           </TouchableOpacity>
         </View>
 
-        {/* Meet Now Banner */}
-        <TouchableOpacity
-          style={[styles.meetNowBanner, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            router.push("/conference" as any);
-          }}
-          activeOpacity={0.7}
-        >
-          <View style={[styles.meetNowIconBg, { backgroundColor: colors.primary + "20" }]}>
-            <IconSymbol name="video.fill" size={18} color={colors.primary} />
-          </View>
-          <View style={styles.meetNowInfo}>
-            <Text style={[styles.meetNowTitle, { color: colors.foreground }]}>Conference Bridge</Text>
-            <Text style={[styles.meetNowSub, { color: colors.muted }]}>Meet Now • Up to 50 participants</Text>
-          </View>
-          <IconSymbol name="chevron.right" size={16} color={colors.muted} />
-        </TouchableOpacity>
-
         {/* Recent Quick Dial */}
-        <View style={[styles.recentSection, { borderTopColor: colors.border }]}>
+        <View style={[styles.recentSection, { borderTopColor: colors.border }]}> 
           <Text style={[styles.recentTitle, { color: colors.muted }]}>RECENT</Text>
-          {RECENT_NUMBERS.map((item) => (
+          {recentNumbers.length === 0 && <Text style={{ color: colors.muted, paddingVertical: 18 }}>Your recent calls will appear here.</Text>}
+          {recentNumbers.map((item) => (
             <TouchableOpacity
               key={item.number}
               style={styles.recentRow}
+              accessibilityRole="button" accessibilityLabel={`Call ${item.name || item.number}`} disabled={calling}
               onPress={() => handleCall(item.number)}
               activeOpacity={0.7}
             >
-              <View style={[styles.recentAvatar, { backgroundColor: colors.primary + "20" }]}>
-                <Text style={[styles.recentAvatarText, { color: colors.primary }]}>
-                  {item.name.charAt(0)}
+              <View style={[styles.recentAvatar, { backgroundColor: colors.primary + "20" }]}> 
+                <Text style={[styles.recentAvatarText, { color: colors.primary }]}> 
+                  {(item.name || item.number).charAt(0)}
                 </Text>
               </View>
               <View style={styles.recentInfo}>
-                <Text style={[styles.recentName, { color: colors.foreground }]}>{item.name}</Text>
+                <Text style={[styles.recentName, { color: colors.foreground }]}>{item.name || item.number}</Text>
                 <Text style={[styles.recentNumber, { color: colors.muted }]}>{item.number}</Text>
               </View>
               <IconSymbol name="phone.fill" size={18} color={colors.success} />
@@ -261,10 +273,14 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   dialpad: {
-    flexDirection: "row",
-    flexWrap: "wrap",
     paddingHorizontal: 24,
-    gap: 12,
+    gap: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dialRow: {
+    flexDirection: "row",
+    gap: 18,
     justifyContent: "center",
   },
   dialKey: {

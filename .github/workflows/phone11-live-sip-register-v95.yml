@@ -1,0 +1,290 @@
+name: Phone11 V95 Live SIP REGISTER Credential Self-Test
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-sip-register-v95.yml
+      - ops/phone11-live-sip-register-v95-trigger-*
+      - server/db.ts
+      - server/phone-provisioning.ts
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  PILOT_EXTENSION: '1001'
+  SIP_DOMAIN: sip.phone11.ai
+  LATEST_APP_SIP_PW_FP: 2b847b074c0ba53a
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  live-sip-register-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Run live SIP REGISTER proof
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          LOG=/tmp/phone11-live-sip-register-v95.log
+          STATUS=0
+          INSTANCE_ID=''
+          exec > >(tee "$LOG") 2>&1
+
+          sanitize_log() {
+            sed -E \
+              -e 's#(PGPASSWORD|DB_PASSWORD|POSTGRES_PASSWORD|JWT_SECRET|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN)=([^[:space:]]+)#\1=<redacted>#g' \
+              -e 's#(Authorization: Digest [^\r\n]+)#Authorization: Digest <redacted>#g' \
+              "$LOG" 2>/dev/null || true
+          }
+
+          write_status() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 V95 Live SIP REGISTER Credential Self-Test Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- Live EC2 host: $EC2_HOST"
+              echo "- Live EC2 instance: ${INSTANCE_ID:-not-set}"
+              echo "- Extension: $PILOT_EXTENSION"
+              echo "- SIP domain: $SIP_DOMAIN"
+              echo "- Latest app SIP password fingerprint from user log: $LATEST_APP_SIP_PW_FP"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sanitize_log
+              echo '```'
+            } > ops/phone11-live-sip-register-v95-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-live-sip-register-v95-status.md
+            if git diff --cached --quiet; then
+              echo 'No V95 status file changes to commit.'
+            else
+              git commit -m "Update Phone11 V95 live SIP register status" || true
+              git push || true
+            fi
+          }
+
+          trap 'STATUS=$?; write_status; exit $STATUS' EXIT
+
+          echo '=== Phone11 V95 live SIP REGISTER credential self-test ==='
+          echo "Live EC2 host: $EC2_HOST"
+          echo "Extension: $PILOT_EXTENSION"
+          echo "SIP domain: $SIP_DOMAIN"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '--- Locate live EC2 ---'
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          PRIVATE_IP=$(echo "$INSTANCE_JSON" | jq -r '.PrivateIpAddress // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for live host $EC2_HOST"
+            exit 32
+          fi
+          echo "Found live EC2 instance $INSTANCE_ID in $AZ private=$PRIVATE_IP"
+
+          echo '--- Prepare temporary SSH access ---'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v95_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v95_eic_key.pub"
+
+          echo '--- Prepare remote REGISTER self-test script ---'
+          cat >/tmp/phone11-v95-sip-register-test.sh <<'REMOTE'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          echo '--- SIP listener evidence ---'
+          ss -lunpt | grep -E '(:5060\b|:5061\b)' || true
+          docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -E '^p11-kamailio\b|^cp11-backend\b' || true
+
+          echo '--- Credential and REGISTER test ---'
+          docker exec -i \
+            -e PILOT_EXTENSION="${PILOT_EXTENSION:-1001}" \
+            -e SIP_DOMAIN="${SIP_DOMAIN:-sip.phone11.ai}" \
+            -e SIP_TARGET_HOST="${SIP_TARGET_HOST:-}" \
+            -e LATEST_APP_SIP_PW_FP="${LATEST_APP_SIP_PW_FP:-}" \
+            cp11-backend node --input-type=module - <<'NODE'
+          import crypto from 'node:crypto';
+          import dgram from 'node:dgram';
+          import pg from 'pg';
+
+          const firstEnv = (...keys) => keys.map((key) => process.env[key]).find((value) => value && value.length > 0);
+          const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
+          const fp = (value) => value ? crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 16) : 'none';
+          const pilotExtension = process.env.PILOT_EXTENSION || '1001';
+          const sipDomain = process.env.SIP_DOMAIN || 'sip.phone11.ai';
+          const latestAppFp = process.env.LATEST_APP_SIP_PW_FP || '';
+          const targetHost = process.env.SIP_TARGET_HOST || firstEnv('PRIVATE_IP', 'EXTERNAL_IP') || sipDomain;
+          const targetPort = 5060;
+          const cfg = {
+            host: firstEnv('PG_HOST', 'DB_HOST', 'POSTGRES_HOST'),
+            port: Number(firstEnv('PG_PORT', 'DB_PORT', 'POSTGRES_PORT') || 5432),
+            user: firstEnv('PG_USER', 'DB_USER', 'POSTGRES_USER'),
+            password: firstEnv('PG_PASSWORD', 'DB_PASSWORD', 'POSTGRES_PASSWORD'),
+            database: firstEnv('PG_DATABASE', 'DB_NAME', 'DB_DATABASE', 'POSTGRES_DB'),
+          };
+          const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
+          if (missing.length) throw new Error(`Missing backend DB env: ${missing.join(', ')}`);
+          const sslMode = firstEnv('PG_SSL', 'DB_SSL', 'POSTGRES_SSL', 'DATABASE_SSL')?.toLowerCase();
+          const ssl = sslMode === 'false' || sslMode === '0' || sslMode === 'disable' ? false : { rejectUnauthorized: false };
+
+          const pool = new pg.Pool({ ...cfg, ssl, connectionTimeoutMillis: 5000, max: 2 });
+          let password;
+          try {
+            const result = await pool.query(`
+              SELECT sub.password AS subscriber_password
+              FROM extensions e
+              LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+              LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
+                AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
+              WHERE e.extension_number = $1 OR sa.sip_username = $1
+              ORDER BY (e.extension_number = $1) DESC, e.id ASC
+              LIMIT 1
+            `, [pilotExtension, sipDomain]);
+            password = result.rows[0]?.subscriber_password;
+          } finally {
+            await pool.end();
+          }
+          if (!password) throw new Error(`No subscriber password found for ${pilotExtension}@${sipDomain}`);
+          const credentialFp = fp(password);
+          console.log(`REGISTER_CREDENTIAL_SOURCE=subscriber username=${pilotExtension} domain=${sipDomain} fp=${credentialFp} len=${String(password).length}`);
+          if (latestAppFp && credentialFp === latestAppFp) {
+            throw new Error(`REGISTER credential still equals latest failed app fingerprint ${latestAppFp}`);
+          }
+
+          function parseDigestChallenge(response) {
+            const line = response.split(/\r?\n/).find((item) => /^WWW-Authenticate:/i.test(item));
+            if (!line) throw new Error(`No WWW-Authenticate header in response: ${response.split(/\r?\n/)[0]}`);
+            const params = {};
+            const body = line.replace(/^WWW-Authenticate:\s*Digest\s*/i, '');
+            for (const match of body.matchAll(/([a-zA-Z0-9_-]+)=("([^"]*)"|([^,\s]*))/g)) {
+              params[match[1].toLowerCase()] = match[3] ?? match[4] ?? '';
+            }
+            if (!params.realm || !params.nonce) throw new Error(`Incomplete digest challenge: ${line}`);
+            return params;
+          }
+
+          function sendUdp(message) {
+            return new Promise((resolve, reject) => {
+              const socket = dgram.createSocket('udp4');
+              const timer = setTimeout(() => {
+                socket.close();
+                reject(new Error('Timed out waiting for SIP response'));
+              }, 5000);
+              socket.once('error', (error) => {
+                clearTimeout(timer);
+                socket.close();
+                reject(error);
+              });
+              socket.once('message', (buffer) => {
+                clearTimeout(timer);
+                socket.close();
+                resolve(buffer.toString('utf8'));
+              });
+              socket.send(Buffer.from(message), targetPort, targetHost);
+            });
+          }
+
+          const branch = `z9hG4bK-${crypto.randomBytes(8).toString('hex')}`;
+          const callId = `${crypto.randomBytes(12).toString('hex')}@phone11-v95`;
+          const localTag = crypto.randomBytes(6).toString('hex');
+          const contactHost = '127.0.0.1';
+          const uri = `sip:${sipDomain}`;
+          const baseHeaders = [
+            `Via: SIP/2.0/UDP ${contactHost}:5070;branch=${branch};rport`,
+            `Max-Forwards: 70`,
+            `From: <sip:${pilotExtension}@${sipDomain}>;tag=${localTag}`,
+            `To: <sip:${pilotExtension}@${sipDomain}>`,
+            `Call-ID: ${callId}`,
+            `Contact: <sip:${pilotExtension}@${contactHost}:5070>` ,
+            `User-Agent: Phone11-V95-Register-Proof`,
+            `Expires: 60`,
+            `Allow: REGISTER, INVITE, ACK, BYE, CANCEL, OPTIONS`,
+          ];
+          const firstRegister = [
+            `REGISTER ${uri} SIP/2.0`,
+            ...baseHeaders,
+            `CSeq: 1 REGISTER`,
+            `Content-Length: 0`,
+            '',
+            '',
+          ].join('\r\n');
+          const firstResponse = await sendUdp(firstRegister);
+          const firstStatus = firstResponse.split(/\r?\n/)[0] || '';
+          console.log(`REGISTER_FIRST_RESPONSE=${firstStatus}`);
+          if (!/^SIP\/2\.0\s+401\b/.test(firstStatus)) {
+            throw new Error(`Expected first REGISTER 401 challenge, got: ${firstStatus}`);
+          }
+          const challenge = parseDigestChallenge(firstResponse);
+          const realm = challenge.realm;
+          const nonce = challenge.nonce;
+          const qop = (challenge.qop || '').split(',').map((item) => item.trim()).find((item) => item === 'auth');
+          const cnonce = crypto.randomBytes(8).toString('hex');
+          const nc = '00000001';
+          const ha1 = md5(`${pilotExtension}:${realm}:${password}`);
+          const ha2 = md5(`REGISTER:${uri}`);
+          const response = qop ? md5(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`) : md5(`${ha1}:${nonce}:${ha2}`);
+          const authParts = [
+            `username="${pilotExtension}"`,
+            `realm="${realm}"`,
+            `nonce="${nonce}"`,
+            `uri="${uri}"`,
+            `response="${response}"`,
+            `algorithm=MD5`,
+          ];
+          if (qop) authParts.push(`qop=${qop}`, `cnonce="${cnonce}"`, `nc=${nc}`);
+          const secondBranch = `z9hG4bK-${crypto.randomBytes(8).toString('hex')}`;
+          const secondHeaders = [...baseHeaders];
+          secondHeaders[0] = `Via: SIP/2.0/UDP ${contactHost}:5070;branch=${secondBranch};rport`;
+          const secondRegister = [
+            `REGISTER ${uri} SIP/2.0`,
+            ...secondHeaders,
+            `CSeq: 2 REGISTER`,
+            `Authorization: Digest ${authParts.join(', ')}`,
+            `Content-Length: 0`,
+            '',
+            '',
+          ].join('\r\n');
+          const secondResponse = await sendUdp(secondRegister);
+          const secondStatus = secondResponse.split(/\r?\n/)[0] || '';
+          console.log(`REGISTER_SECOND_RESPONSE=${secondStatus}`);
+          if (!/^SIP\/2\.0\s+200\b/.test(secondStatus)) {
+            throw new Error(`Expected authenticated REGISTER 200 OK, got: ${secondStatus}`);
+          }
+          console.log(`V95_SIP_REGISTER_200_OK=true username=${pilotExtension} domain=${sipDomain} target=${targetHost}:${targetPort} credentialFp=${credentialFp}`);
+          NODE
+          REMOTE
+
+          echo '--- Run remote REGISTER self-test on live EC2 ---'
+          scp -i ~/.ssh/phone11_v95_eic_key -o StrictHostKeyChecking=no /tmp/phone11-v95-sip-register-test.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-v95-sip-register-test.sh"
+          ssh -i ~/.ssh/phone11_v95_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "SIP_TARGET_HOST='$PRIVATE_IP' PILOT_EXTENSION='$PILOT_EXTENSION' SIP_DOMAIN='$SIP_DOMAIN' LATEST_APP_SIP_PW_FP='$LATEST_APP_SIP_PW_FP' bash /tmp/phone11-v95-sip-register-test.sh"
+
+          echo 'V95 live SIP REGISTER credential self-test succeeded.'

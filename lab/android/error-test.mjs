@@ -1,0 +1,533 @@
+/** Run only after parent approval: LAB_EMULATOR_SERIAL=emulator-... LAB_EXPECTED_APK_SHA256=... node lab/android/error-test.mjs --execute
+ * No UI module is imported unless --execute is present. --self-test is entirely offline.
+ * Writes its own immutable attempt files, never .lab/attempts.json. No automatic reruns.
+ */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { sha256, sanitize, matrix, validateAttempt } from './core.mjs';
+import { validateState, validateRuntime } from './fixture.mjs';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const pkg = 'ai.phone11.mobile.lab';
+const permission = 'android.permission.RECORD_AUDIO';
+const supported = ['SIP-02', 'PERM-01', 'LIFE-01', 'LIFE-02', 'LIFE-03', 'SIP-11'];
+class Gap extends Error {}
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const proof = (condition, message) => { if (!condition) throw new Gap(message); };
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const select = text => {
+  const ids = (text || 'SIP-02,PERM-01,LIFE-02').split(',');
+  check(ids.length > 0 && new Set(ids).size === ids.length && ids.every(id => supported.includes(id)), 'Unsupported or repeated test selection');
+  return ids;
+};
+const nextAttempt = (names, previous = []) => {
+  const numbers = names.map(name => /^attempt-([1-3])\.json$/.exec(name)).filter(Boolean).map(match => Number(match[1]));
+  const prior = previous.filter(row => row.execution_started || row.result !== 'NOT_RUN').map(row => Number(row.attempt || 0));
+  const next = 1 + Math.max(0, ...numbers, ...prior);
+  check(next <= 3, 'Three attempts already recorded; earlier failures must be preserved');
+  return next;
+};
+const attemptDirectory = (apkSha256, id) => {
+  check(/^[a-f0-9]{64}$/.test(apkSha256 || ''), 'Invalid APK hash for attempt namespace');
+  check(supported.includes(id), 'Unsupported test attempt namespace');
+  return `.lab/error-attempts/${apkSha256.slice(0, 12)}/${id}`;
+};
+const safeSnapshot = value => Object.fromEntries(['initialized', 'sdk', 'generation', 'sequence', 'registration', 'call', 'callCount', 'muted', 'held', 'ended', 'error', 'events'].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+const uniqueTransactions = messages => new Set(messages.map(message => `${message.direction}:${message.dialog}:${message.cseq}:${message.method}:${message.status ?? 'request'}`));
+const logicalDialogs = (messages, method = 'INVITE') => new Set(messages.filter(message => message.method === method && message.dialog).map(message => message.dialog));
+const redactSipEntry = raw => raw
+  .replace(/^((?:Proxy-)?Authorization:)\s*.+$/gim, '$1 [REDACTED]')
+  .replace(/^Call-ID:\s*(.+)$/gim, (_, value) => `Call-ID: sha256:${sha256(value.trim()).slice(0, 20)}`);
+const boundsNumbers = bounds => {
+  const values = String(bounds || '').match(/\d+/g)?.map(Number) || [];
+  check(values.length === 4 && values[2] > values[0] && values[3] > values[1], 'Invalid Android UI bounds');
+  return values;
+};
+const recentsGesture = bounds => {
+  const [left, top, right, bottom] = boundsNumbers(bounds);
+  return {
+    startX: Math.floor((left + right) / 2),
+    startY: Math.floor(top + ((bottom - top) * 0.82)),
+    endX: Math.floor((left + right) / 2),
+    endY: Math.floor(top + ((bottom - top) * 0.16)),
+    // Pixel Launcher snaps a slow drag back into place. A short upward flick is
+    // the user gesture that actually dismisses a Recents card.
+    durationMs: 50,
+  };
+};
+const phone11TaskRows = lines => lines.filter(line => (
+  line.includes('A=') && line.includes(`:${pkg} `)
+) || line.includes(`${pkg}/.MainActivity`));
+const resumedLauncher = lines => lines.some(line =>
+  /(?:topResumedActivity|mResumedActivity)=ActivityRecord/.test(line)
+  && line.includes('com.google.android.apps.nexuslauncher/.NexusLauncherActivity')
+);
+
+async function main() {
+  if (process.argv.includes('--self-test')) {
+    const assert = (await import('node:assert/strict')).default;
+    assert.deepEqual(select(), ['SIP-02', 'PERM-01', 'LIFE-02']);
+    assert.throws(() => select('SIP-02,SIP-02'));
+    assert.throws(() => select('FCM-01'));
+    assert.deepEqual(select('LIFE-01,LIFE-03,SIP-11'), ['LIFE-01', 'LIFE-03', 'SIP-11']);
+    assert.equal(nextAttempt([]), 1);
+    assert.equal(nextAttempt(['attempt-1.json', 'attempt-2.json']), 3);
+    assert.throws(() => nextAttempt(['attempt-1.json', 'attempt-2.json', 'attempt-3.json']));
+    assert.equal(safeSnapshot({ call: 'none', password: 'private' }).password, undefined);
+    assert.equal(nextAttempt([], [{ attempt: 2, result: 'FAIL' }]), 3);
+    assert.equal(attemptDirectory('a'.repeat(64), 'LIFE-01'), '.lab/error-attempts/aaaaaaaaaaaa/LIFE-01');
+    assert.throws(() => attemptDirectory('bad', 'LIFE-01'));
+    assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'same', cseq: 1, method: 'INVITE', status: null }]).size, 1);
+    assert.equal(uniqueTransactions([{ direction: 'RX', dialog: 'one', cseq: 1, method: 'INVITE', status: null }, { direction: 'RX', dialog: 'two', cseq: 1, method: 'INVITE', status: null }]).size, 2);
+    assert.equal(logicalDialogs([{ dialog: 'same', cseq: 1, method: 'INVITE' }, { dialog: 'same', cseq: 2, method: 'INVITE' }]).size, 1);
+    assert.equal(logicalDialogs([{ dialog: 'one', cseq: 1, method: 'INVITE' }, { dialog: 'two', cseq: 1, method: 'INVITE' }]).size, 2);
+    const redacted = redactSipEntry('INVITE sip:x SIP/2.0\r\nAuthorization: Digest response="secret"\r\nCall-ID: private-call-id');
+    assert.match(redacted, /Authorization: \[REDACTED\]\r\nCall-ID: sha256:[a-f0-9]{20}$/);
+    assert.equal(redacted.includes('secret'), false);
+    assert.equal(redacted.includes('private-call-id'), false);
+    assert.deepEqual(recentsGesture('[173,211][907,2010]'), { startX: 540, startY: 1686, endX: 540, endY: 498, durationMs: 50 });
+    assert.equal(phone11TaskRows(['  * Task{abc #25 A=10207:ai.phone11.mobile.lab U=0}', 'app=ProcessRecord{abc 1:ai.phone11.mobile.lab/u0a1}']).length, 1);
+    assert.equal(phone11TaskRows(['app=ProcessRecord{abc 1:ai.phone11.mobile.lab/u0a1}']).length, 0);
+    assert.equal(resumedLauncher(['topResumedActivity=ActivityRecord{a u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t1}']), true);
+    assert.equal(resumedLauncher(['topResumedActivity=ActivityRecord{a u0 ai.phone11.mobile.lab/.MainActivity t1}']), false);
+    console.log('23 offline harness assertions passed; no ADB, emulator, PBX, or fixture mutation');
+    return;
+  }
+  if (!process.argv.includes('--execute')) {
+    console.log('Prepared only. After approval, set LAB_EMULATOR_SERIAL and LAB_EXPECTED_APK_SHA256, then run with --execute. Optional LAB_ERROR_TESTS=SIP-02,PERM-01,LIFE-01,LIFE-02,LIFE-03,SIP-11. --self-test is offline.');
+    return;
+  }
+  process.chdir(root);
+  const ids = select(process.env.LAB_ERROR_TESTS);
+  const expected = process.env.LAB_EXPECTED_APK_SHA256;
+  check(/^[a-f0-9]{64}$/.test(expected || ''), 'Pin the final reviewed APK using LAB_EXPECTED_APK_SHA256');
+  const fixture = validateState(JSON.parse(fs.readFileSync('.lab/fixture.json')));
+  const adb = path.join(process.env.ANDROID_HOME || path.join(os.homedir(), 'Library/Android/sdk'), 'platform-tools/adb');
+  check(fs.existsSync(adb), 'Android platform tools are unavailable');
+  const apk = JSON.parse(fs.readFileSync('.lab/apk.json'));
+  check(apk.sha256 === expected && fs.existsSync(apk.apk) && sha256(fs.readFileSync(apk.apk)) === expected, 'Reviewed local APK does not match final hash');
+  const correct = fixture.accounts?.['7101']?.password;
+  check(/^[a-f0-9]{48}$/.test(correct || ''), 'Fixture7101 password missing or invalid');
+  const wrong = (correct[0] === '0' ? '1' : '0') + correct.slice(1);
+  const clean = value => sanitize(value, [correct, wrong, ...Object.values(fixture.accounts).map(account => account.password)]);
+  const runId = `errors-${Date.now()}`;
+  const directory = `.lab/${runId}`;
+  const heldLocks = [];
+  let ui, historyOn = false, touched = false, permissionChanged = false, row, ownedCall = false, cleanup = 'not_started';
+  const rows = [];
+  const attempts = new Map();
+  const priorGlobal = fs.existsSync('.lab/attempts.json') ? JSON.parse(fs.readFileSync('.lab/attempts.json')) : [];
+  const write = (file, value) => fs.writeFileSync(file, JSON.stringify(clean(value), null, 2), { mode: 0o600 });
+  const docker = args => execFileSync('docker', args, { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+  const pbx = command => docker(['exec', fixture.container, 'asterisk', '-rx', command]);
+  const assertFixture = () => {
+    const container = JSON.parse(docker(['inspect', fixture.container]))[0];
+    const network = JSON.parse(docker(['network', 'inspect', fixture.network]))[0];
+    for (const labels of [container.Config?.Labels, network.Labels]) check(labels?.['com.phone11.android-lab.owner'] === fixture.owner && labels?.['com.phone11.android-lab.run'] === fixture.runId, 'Fixture runtime ownership mismatch');
+    validateRuntime(container, network);
+    check(/TIMEOUT\(absolute\)=20/.test(pbx('dialplan show 7190@lab')), 'Tone fixture lacks the independent20-second call cap');
+  };
+  const channels = () => pbx('core show channels concise').split('\n').map(line => line.split('!')).filter(parts => /^PJSIP\/7101-[a-f0-9]+$/.test(parts[0])).map(parts => ({ name: parts[0], extension: parts[2], state: parts[4] }));
+  async function noChannels() {
+    const deadline = Date.now() + 5000;
+    do { const current = channels(); if (!current.length) return current; await delay(200); } while (Date.now() < deadline);
+    throw new Error('A synthetic7101 PBX channel remains');
+  }
+  const observe = value => { const snapshot = safeSnapshot(value); row?.observations.push({ at: new Date().toISOString(), native: snapshot }); return snapshot; };
+  const wait = async (predicate, timeout = 10000) => observe(await ui.waitFor(predicate, timeout));
+  const processIdentity = (knownPid = '') => {
+    const pid = knownPid || ui.shell('pidof', pkg).trim();
+    proof(/^\d+$/.test(pid), 'Exactly one app process could not be identified');
+    // /proc starttime prevents a recycled PID from being called process continuity.
+    const stat = ui.shell('cat', `/proc/${pid}/stat`).trim();
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(/\s+/);
+    proof(/^\d+$/.test(fields[19] || ''), 'App process starttime is unavailable');
+    return { pid: Number(pid), startTicks: fields[19] };
+  };
+  const hasMicrophone = () => {
+    const result = ui.shell('dumpsys', 'package', pkg).match(/android\.permission\.RECORD_AUDIO:\s*granted=(true|false)/);
+    proof(Boolean(result), 'Runtime microphone permission is not observable');
+    return result[1] === 'true';
+  };
+  const activityIdentity = () => {
+    const lines = ui.shell('dumpsys', 'activity', 'activities').split('\n');
+    const line = lines.find(value => value.includes(` ${pkg}/.MainActivity `));
+    const match = line?.match(/ActivityRecord\{([a-f0-9]+) u0 [^ ]+ t(\d+)\}/);
+    proof(Boolean(match), 'Phone11 MainActivity identity is not observable');
+    return { token: match[1], taskId: Number(match[2]) };
+  };
+  const packageStopped = () => {
+    const user = ui.shell('dumpsys', 'package', pkg).split('\n').find(line => /User 0:/.test(line));
+    const match = user?.match(/\bstopped=(true|false)\b/);
+    proof(Boolean(match), 'Android package stopped state is not observable');
+    return match[1] === 'true';
+  };
+  const services = () => ui.shell('dumpsys', 'activity', 'services', pkg).split('\n')
+    .map(line => line.trim()).filter(line => line && line !== 'ACTIVITY MANAGER SERVICES (dumpsys activity services)' && line !== '(nothing)');
+  const tapBurst = (label, count = 2) => {
+    const node = ui.nodes().find(value => value['content-desc'] === label || value.text === label);
+    proof(Boolean(node?.bounds), `Control not visible for rapid input: ${label}`);
+    const bounds = node.bounds.match(/\d+/g).map(Number);
+    const x = String(Math.floor((bounds[0] + bounds[2]) / 2));
+    const y = String(Math.floor((bounds[1] + bounds[3]) / 2));
+    for (let index = 0; index < count; index++) ui.shell('input', 'tap', x, y);
+  };
+  const eventCount = (snapshot, type, afterSequence = -1) => (snapshot.events || [])
+    .filter(event => event.generation === snapshot.generation && event.sequence > afterSequence && event.type === type).length;
+  async function openLabReady(timeout = 15000) {
+    ui.openLab();
+    const deadline = Date.now() + timeout;
+    do {
+      try { return ui.state(); }
+      catch { await delay(250); }
+    } while (Date.now() < deadline);
+    throw new Error('Lab screen did not become observable before the bounded readiness deadline');
+  }
+  async function visiblePermissionRecovery() {
+    if (hasMicrophone()) return;
+    ui.tap('Microphone');
+    const visible = ui.nodes();
+    const allow = visible.find(node => /permission_allow_foreground_only_button$/.test(node['resource-id'] || '') || node.text === 'While using the app');
+    proof(Boolean(allow?.text), 'Android did not offer a visible foreground microphone grant; no shell grant or settings bypass used');
+    ui.tap(allow.text);
+    proof(hasMicrophone(), 'Visible microphone permission recovery was not confirmed');
+    permissionChanged = false;
+  }
+  async function resetAndRegister(password = correct) {
+    const current = ui.state();
+    check(current.call === 'none' && channels().length === 0, 'Refusing to reset a call not created by this scenario');
+    if (current.initialized) { ui.tap('Destroy'); await wait(value => !value.initialized); }
+    ui.tap('Initialize'); await wait(value => value.initialized);
+    ui.enterPassword(password); ui.tap('Register');
+  }
+  function historyNumbers() { return [...pbx('pjsip show history').matchAll(/^\s*(\d+)\s+\d+\s+\*\s+[<=>]+/gm)].map(match => Number(match[1])); }
+  const mark = () => Math.max(-1, ...historyNumbers());
+  function traceEvidence(since) {
+    const numbers = historyNumbers().filter(number => number > since);
+    check(numbers.length <= 120, 'SIP evidence exceeded bounded size');
+    const entries = numbers.map(number => {
+      const raw = pbx(`pjsip show history entry ${number}`);
+      const first = raw.split(/\r?\n/).find(line => /^(?:SIP\/2.0|[A-Z]+ sip:)/.test(line)) || '';
+      const cseq = raw.match(/^CSeq:\s*(\d+)\s+(\w+)/im);
+      const dialog = raw.match(/^Call-ID:\s*(.+)/im)?.[1]?.trim();
+      return {
+        message: { number, direction: raw.includes('Sent to') ? 'TX' : 'RX', method: cseq?.[2], cseq: Number(cseq?.[1]), status: Number(first.match(/^SIP\/2.0 (\d+)/)?.[1]) || null, dialog: dialog ? sha256(dialog).slice(0, 20) : null, authorizationPresent: /^(?:Proxy-)?Authorization:/mi.test(raw) },
+        wire: redactSipEntry(raw),
+      };
+    });
+    return { messages: entries.map(entry => entry.message), entries };
+  }
+  const trace = since => traceEvidence(since).messages;
+  const exchange = (messages, method, status) => messages.some(request => request.direction === 'RX' && request.method === method && request.status === null && messages.some(reply => reply.direction === 'TX' && reply.method === method && reply.status === status && reply.cseq === request.cseq && reply.dialog === request.dialog));
+  async function callTone() {
+    check(ui.state().call === 'none' && !channels().length, 'Call precondition is not idle');
+    ownedCall = true;
+    ui.tap('Call tone'); const connected = await wait(value => value.call === 'connected', 8000);
+    const peer = channels(); row.observations.push({ pbx: peer });
+    check(peer.length === 1 && peer[0].state === 'Up' && peer[0].extension === '7190', 'One actual answered synthetic tone channel required');
+    return connected;
+  }
+  async function endOwnedCall() {
+    if (!ownedCall) return;
+    if (ui.state().call !== 'none') { ui.tap('Hang up'); await wait(value => value.call === 'none', 5000); }
+    await noChannels(); ownedCall = false;
+  }
+  const persist = () => {
+    if (row) write(attempts.get(row.test_id).file, row);
+    write(`${directory}/results.json`, { runId, results: rows, firstFailurePreserved: true, globalAttemptsModified: false, cleanup });
+  };
+  async function scenario(id, body) {
+    const record = attempts.get(id);
+    const lifecycleScope = {
+      'LIFE-01': 'Activity finish/relaunch within the existing app process; not process death, FCM or background wake acceptance',
+      'LIFE-02': 'HOME/background/foreground only; not process-death, rotation, FCM or background wake acceptance',
+      'LIFE-03': 'User-style Recents task removal only; not force-stop, process-death wake, FCM or service acceptance',
+    };
+    row = { test_id: id, run_id: runId, attempt: record.number, commit_sha: apk.commit, apk_sha256: expected, evidence_level: matrix.find(test => test.id === id).level, mode: 'real', emulator_serial: ui.serial, api_level: 35, abi: 'arm64-v8a', start: new Date().toISOString(), result: 'NOT_RUN', reason: 'Execution started', execution_started: true, assertions: [], observations: [], artifacts: [record.file.slice(5)], cleanup_result: 'pending', scope: lifecycleScope[id] || 'Dedicated synthetic lab runtime only' };
+    rows.push(row); persist();
+    try { row.assertions = await body(); row.result = 'PASS'; row.reason = ''; }
+    catch (error) { row.result = error instanceof Gap ? 'BLOCKED' : 'FAIL'; row.reason = clean(error instanceof Error && !('stdout' in error) && !('stderr' in error) ? error.message : 'Harness operation failed; raw command output withheld'); }
+    finally {
+      try {
+        if (ownedCall) { ui.openLab(); await ui.waitFor(() => true, 8000); }
+        await endOwnedCall(); row.cleanup_result = 'completed';
+      }
+      catch { row.cleanup_result = 'failed'; if (row.result === 'PASS') { row.result = 'FAIL'; row.reason = 'Scenario cleanup failed'; } }
+      row.end = new Date().toISOString(); validateAttempt(row); persist();
+      console.log(JSON.stringify({ test: id, attempt: row.attempt, result: row.result, artifact: record.file }));
+    }
+    if (row.result === 'FAIL' || row.cleanup_result === 'failed') throw new Error('Stopped after first failure; evidence retained');
+  }
+  try {
+    // Also take the SIP lock so the existing SIP runner cannot start concurrently.
+    const conflicts = fs.readdirSync('.lab').filter(name => /^(?:sip|media|error).*\.lock$/.test(name));
+    check(!conflicts.length, 'Another SIP/media/error run owns the lab; no device touched');
+    for (const name of ['sip-run.lock', 'media-run.lock', 'error-run.lock']) {
+      const file = `.lab/${name}`; const fd = fs.openSync(file, 'wx', 0o600);
+      fs.writeFileSync(fd, JSON.stringify({ runId, pid: process.pid })); fs.closeSync(fd); heldLocks.push(file);
+    }
+    fs.mkdirSync(directory, { mode: 0o700 });
+    for (const id of ids) {
+      // Attempts are bounded per exact APK. Legacy candidates remain immutable in
+      // their existing directories and cannot consume a new candidate's budget.
+      const base = attemptDirectory(expected, id); fs.mkdirSync(base, { recursive: true, mode: 0o700 });
+      const number = nextAttempt(fs.readdirSync(base), priorGlobal.filter(entry => entry.test_id === id && entry.apk_sha256 === expected)); const file = `${base}/attempt-${number}.json`;
+      fs.writeFileSync(file, JSON.stringify({ test_id: id, attempt: number, run_id: runId, result: 'NOT_RUN', reason: 'Reserved before device preflight', execution_started: false }), { flag: 'wx', mode: 0o600 });
+      attempts.set(id, { number, file });
+    }
+    assertFixture();
+    ui = await import('./ui.mjs'); // First possible ADB access; only under --execute and locks.
+    const packagePaths = ui.shell('pm', 'path', pkg).trim().split(/\r?\n/);
+    check(packagePaths.length === 1 && /^package:\/data\/app\/[A-Za-z0-9_/.+=~-]+\/base\.apk$/.test(packagePaths[0]), 'Installed lab APK path is unexpected');
+    const installedHash = ui.shell('sha256sum', packagePaths[0].slice(8)).trim().split(/\s+/)[0];
+    check(installedHash === expected, 'Installed APK differs from final reviewed APK');
+    write(`${directory}/identity.json`, { apk_sha256: expected, installed_apk_sha256: installedHash, source_sha: apk.commit, source_dirty: apk.sourceDirty, fixture_run: fixture.runId, serial: ui.serial });
+    check(!channels().length, 'Existing synthetic call found; refusing takeover');
+    const initialState = await openLabReady();
+    check(initialState.call === 'none' && !initialState.labMedia?.active, 'Existing native call or media capture found; refusing takeover');
+    touched = true;
+    check(pbx('pjsip set history on').includes('enabled'), 'PBX sanitized SIP history unavailable'); historyOn = true;
+    for (const id of ids) {
+      if (id === 'SIP-02') await scenario(id, async () => {
+        const before = mark(); await resetAndRegister(wrong);
+        const failed = await wait(value => value.registration === 'failed', 15000);
+        check(failed.call === 'none' && !channels().length, 'Bad registration created a call');
+        const rejected = trace(before); row.observations.push({ rejectedSip: rejected });
+        proof(rejected.some(message => message.method === 'REGISTER' && message.authorizationPresent) && (exchange(rejected, 'REGISTER', 401) || exchange(rejected, 'REGISTER', 403)), 'Authenticated bad REGISTER rejection not observed');
+        check(!exchange(rejected, 'REGISTER', 200), 'Bad credentials were accepted');
+        const recovery = mark(); await resetAndRegister(); await wait(value => value.registration === 'registered');
+        const restored = trace(recovery); row.observations.push({ recoverySip: restored });
+        proof(exchange(restored, 'REGISTER', 200), 'Correct registration recovery lacks actual200');
+        return ['SDK visibly failed bad authentication without false registered state', 'Correlated authenticated REGISTER rejection; no raw credentials persisted', 'Visible Destroy/Initialize/Register recovery received REGISTER200; retry observation is bounded, not proof about infinite future behavior'];
+      });
+      if (id === 'PERM-01') await scenario(id, async () => {
+        await visiblePermissionRecovery();
+        row.observations.push({ processBeforeRevoke: processIdentity(), permissionBefore: hasMicrophone() });
+        ui.shell('pm', 'revoke', pkg, permission); permissionChanged = true;
+        check(!hasMicrophone(), 'Microphone revoke did not take effect');
+        // Android may kill this lab app on permission revocation. Record, do not hide it.
+        ui.openLab(); await ui.waitFor(() => true, 8000);
+        row.observations.push({ processAfterRevoke: processIdentity(), permissionAfterRevoke: false });
+        await resetAndRegister(); await wait(value => value.registration === 'registered');
+        const deniedMark = mark(); ui.tap('Call tone');
+        const denied = await wait(value => Boolean(value.error), 5000);
+        check(denied.call === 'none' && denied.callCount === 0, 'Denied microphone still created a native call');
+        row.observations.push({ deniedSip: trace(deniedMark), pbxAfterDenied: await noChannels() });
+        check(!trace(deniedMark).some(message => message.method === 'INVITE' && message.direction === 'RX' && message.status === null), 'Denied microphone sent INVITE');
+        const clearDenial = /MICROPHONE|PERMISSION|RECORD_AUDIO/.test(denied.error || '');
+        await visiblePermissionRecovery();
+        row.observations.push({ permissionRecoveredVisibly: hasMicrophone() });
+        await callTone(); await endOwnedCall();
+        row.assertions = ['Microphone permission was actually revoked', 'Denied call produced no native call, INVITE, or PBX channel', 'Visible Android permission dialog restored access and an actual synthetic call connected'];
+        proof(clearDenial, 'Recovery works, but denial lacks a microphone-specific actionable message (generic E_LAB_SCOPE is not permission clarity)');
+        return row.assertions;
+      });
+      if (id === 'LIFE-01') await scenario(id, async () => {
+        await visiblePermissionRecovery(); await resetAndRegister(); await wait(value => value.registration === 'registered');
+        const active = await callTone(); const processBefore = processIdentity(); const activityBefore = activityIdentity();
+        // Do not ask Activity Manager to wait for two full draws: that can consume
+        // the fixture's bounded20-second call and test call expiry instead of recreation.
+        const launchStarted = Date.now();
+        const launch = execFileSync(adb, ['-s', ui.serial, 'shell', 'am', 'start', '-R', '2', '-a', 'android.intent.action.VIEW', '-d', 'phone11://android-lab', pkg],
+          { cwd: root, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'pipe'] });
+        proof((launch.match(/^Starting:/gm) || []).length === 2, 'Android did not accept both repeated activity launches');
+        // Check the independent PBX immediately. Accessibility snapshots are
+        // intentionally slower and may outlive the fixture's20-second call cap.
+        const activityAfter = activityIdentity(); const processAfter = processIdentity(); const peerAfterRelaunch = channels();
+        check(peerAfterRelaunch.length === 1 && peerAfterRelaunch[0].state === 'Up', 'Activity relaunch duplicated or lost the bounded PBX call');
+        const after = await wait(value => value.generation === active.generation && (value.call === 'connected' || value.call === 'none'), 10000);
+        const peerAfterControls = channels();
+        row.observations.push({ activityRecreation: { activityBefore, activityAfter, processBefore, processAfter,
+          activityChanged: activityBefore.token !== activityAfter.token, sameTask: activityBefore.taskId === activityAfter.taskId,
+          sameProcess: processBefore.pid === processAfter.pid && processBefore.startTicks === processAfter.startTicks,
+          nativeGenerationBefore: active.generation, nativeGenerationAfter: after.generation, callBefore: active.call,
+          callAfterControlsReturn: after.call, callCountAfterControlsReturn: after.callCount,
+          relaunchElapsedMs: Date.now() - launchStarted }, pbxImmediatelyAfterRelaunch: peerAfterRelaunch, pbxAfterControlsReturn: peerAfterControls });
+        check(after.callCount <= 1, 'Activity relaunch duplicated native call state');
+        if (after.call === 'connected') check(after.callCount === 1 && peerAfterControls.length === 1, 'Connected native/PBX state diverged after controls returned');
+        else await noChannels();
+        await endOwnedCall();
+        proof(activityBefore.token !== activityAfter.token, 'Activity token did not change; recreation was not proven');
+        proof(processBefore.pid === processAfter.pid && processBefore.startTicks === processAfter.startTicks, 'Process changed; this is not same-process activity recreation evidence');
+        proof(active.generation === after.generation, 'Native runtime generation changed across activity recreation');
+        return ['Android -R finished and relaunched MainActivity; ActivityRecord token changed', 'PID and process starttime stayed constant', `One connected native call and one PBX channel survived the relaunch with the same generation; controls returned with call=${after.call} and cleanup completed`];
+      });
+      if (id === 'LIFE-02') await scenario(id, async () => {
+        await visiblePermissionRecovery(); await resetAndRegister(); await wait(value => value.registration === 'registered');
+        const active = await callTone(); const before = processIdentity();
+        ui.shell('input', 'keyevent', 'KEYCODE_HOME');
+        // HOME delivery is asynchronous. Observe only the system activity
+        // manager until the launcher resumes; never dump/poll the app UI here.
+        let home = []; const transitionDeadline = Date.now() + 3000;
+        do {
+          home = ui.shell('dumpsys', 'activity', 'activities').split('\n').filter(line => /mResumedActivity|topResumedActivity/.test(line));
+          if (home.length > 0 && home.every(line => !line.includes(pkg))) break;
+          await delay(150);
+        } while (Date.now() < transitionDeadline);
+        row.observations.push({ homeTransition: { resumedActivities: home.map(line => line.trim()), observation: 'bounded system dumpsys only; no background app UI polling' } });
+        proof(home.length > 0 && home.every(line => !line.includes(pkg)), 'HOME did not produce an observed background transition');
+        // One quiet background interval begins only after HOME is confirmed.
+        // No ADB query, UI dump, tap, poll, or process query during these3seconds.
+        await delay(3000);
+        ui.openLab(); const after = await wait(() => true, 8000); const returned = processIdentity();
+        row.observations.push({ lifecycle: { before, after: returned, homeObserved: true, quietBackgroundMs: 3000, sameProcess: before.pid === returned.pid && before.startTicks === returned.startTicks, sameGeneration: active.generation === after.generation, callBefore: active.call, callAfter: after.call }, pbxAfterForeground: channels() });
+        if (after.call === 'none') await noChannels();
+        else check(after.call === 'connected' && after.callCount === 1 && channels().length === 1, 'Foreground native/PBX call state diverged');
+        await endOwnedCall();
+        proof(before.pid === returned.pid && before.startTicks === returned.startTicks, 'App process changed during HOME transition; no same-process lifecycle claim');
+        return ['Actual HOME/background followed by foreground; three seconds with zero background UI polling', `Native call outcome on return: ${after.call}; peer state recorded and cleanup verified`, 'PID and process starttime unchanged; no process-death, FCM, or rotation acceptance claimed'];
+      });
+      if (id === 'LIFE-03') await scenario(id, async () => {
+        await visiblePermissionRecovery(); await resetAndRegister(); await wait(value => value.registration === 'registered');
+        const active = await callTone(); const processBefore = processIdentity(); const activityBefore = activityIdentity();
+        ui.shell('input', 'keyevent', 'KEYCODE_APP_SWITCH');
+        let recentsRows = [], recentsNodes = [], card;
+        const recentsDeadline = Date.now() + 5000;
+        do {
+          recentsRows = ui.shell('dumpsys', 'activity', 'activities').split('\n').filter(line => /topResumedActivity|mResumedActivity/.test(line));
+          recentsNodes = ui.nodes();
+          card = recentsNodes.find(node => node['content-desc'] === 'Phone11 Lab' && /:id\/task$/.test(node['resource-id'] || ''));
+          if (resumedLauncher(recentsRows) && card?.bounds) break;
+          await delay(150);
+        } while (Date.now() < recentsDeadline);
+        proof(Boolean(card?.bounds), 'Phone11 task card was not visible in Android Recents');
+        proof(resumedLauncher(recentsRows), 'Android Recents surface was not fully resumed before the removal gesture');
+        const beforeScreenshot = `${directory}/LIFE-03-recents-before.png`; ui.screenshot(beforeScreenshot); row.artifacts.push(beforeScreenshot.slice(5));
+        const gesture = recentsGesture(card.bounds);
+        row.observations.push({ recentsSurface: { launcherResumed: true, cardBounds: card.bounds, gesture } });
+        ui.shell('input', 'swipe', String(gesture.startX), String(gesture.startY), String(gesture.endX), String(gesture.endY), String(gesture.durationMs));
+        let taskRows = []; const removalDeadline = Date.now() + 5000;
+        do {
+          taskRows = phone11TaskRows(ui.shell('dumpsys', 'activity', 'activities').split('\n'));
+          if (!taskRows.length) break;
+          await delay(150);
+        } while (Date.now() < removalDeadline);
+        row.observations.push({ removalConfirmation: { taskRows: taskRows.map(line => line.trim()), confirmation: 'Android task manager; no UIAutomator query during task-dismiss animation' } });
+        proof(!taskRows.length, 'Phone11 Android task or MainActivity remained after its Recents card disappeared');
+        // Do not call UIAutomator or screencap after dismissal. On this API35
+        // emulator, either can block while Launcher settles and turn a proven
+        // task removal into a harness timeout. The task manager dump above is
+        // the sole post-gesture dismissal proof; the following queries observe
+        // package/process/service/PBX ownership without touching app UI.
+        const stoppedAfterRemoval = packageStopped();
+        row.observations.push({ postRemovalPackage: { stopped: stoppedAfterRemoval } }); persist();
+        const serviceRows = services();
+        row.observations.push({ postRemovalServices: serviceRows }); persist();
+        // `pidof` exits non-zero when task removal also ends the process. Run it
+        // through a bounded shell fallback so expected process exit is recorded
+        // as null instead of being misclassified as a harness failure.
+        const pidText = ui.shell('sh', '-c', `pidof ${pkg} || true`).trim();
+        check(pidText === '' || /^\d+$/.test(pidText), 'Unexpected post-removal process identity');
+        const processAfterRemoval = pidText ? processIdentity(pidText) : null;
+        row.observations.push({ postRemovalProcess: processAfterRemoval }); persist();
+        const peerAfterRemoval = channels();
+        row.observations.push({ postRemovalPbx: peerAfterRemoval }); persist();
+        row.observations.push({ taskRemoval: { activityBefore, processBefore, processAfterRemoval,
+          packageStopped: stoppedAfterRemoval, services: serviceRows, taskAndActivityAbsent: true,
+          callBefore: active.call }, pbxAfterRemoval: peerAfterRemoval });
+        check(!stoppedAfterRemoval, 'Recents task removal incorrectly entered force-stopped package state');
+        check(serviceRows.length === 0, 'Unexpected Phone11 service existed after task removal');
+        ui.openLab(); const relaunched = await wait(() => true, 10000);
+        const activityAfter = activityIdentity(); const peerAfterRelaunch = channels();
+        row.observations.push({ explicitRelaunch: { activityAfter, process: processIdentity(), native: safeSnapshot(relaunched) }, pbxAfterRelaunch: peerAfterRelaunch });
+        if (relaunched.call === 'connected') {
+          check(relaunched.callCount === 1 && peerAfterRelaunch.length === 1, 'Relaunched call state diverged from PBX');
+          await endOwnedCall();
+        } else {
+          ownedCall = false;
+          await noChannels();
+        }
+        return ['Phone11 card was removed through Android Recents and its task/activity became absent', 'Package stopped=false proved task removal was distinct from force-stop', `Observed process ${processAfterRemoval ? 'survival' : 'exit'}, zero app services, PBX state, explicit relaunch state, and complete owned-call cleanup`];
+      });
+      if (id === 'SIP-11') await scenario(id, async () => {
+        await visiblePermissionRecovery(); await resetAndRegister(); await wait(value => value.registration === 'registered');
+        const preserveSipTrace = (phase, since) => {
+          const evidence = traceEvidence(since);
+          const artifact = `${directory}/SIP-11-${phase}-sip-trace.json`;
+          write(artifact, { phase, capturedAt: new Date().toISOString(), messages: evidence.entries });
+          row.artifacts.push(artifact.slice(5));
+          return evidence.messages;
+        };
+        let before = safeSnapshot(ui.state()); const firstCallMark = mark(); let sipMark = firstCallMark;
+        ownedCall = true; tapBurst('Call tone'); const connected = await wait(value => value.call === 'connected', 8000);
+        let messages = trace(sipMark); let peer = channels();
+        check(peer.length === 1 && peer[0].state === 'Up', 'Rapid duplicate dial did not yield exactly one connected PBX call');
+        let matching = messages.filter(message => message.direction === 'RX' && message.method === 'INVITE' && message.status === null);
+        check(logicalDialogs(matching).size === 1, 'Rapid duplicate dial emitted more than one logical SIP Call-ID');
+        check(eventCount(connected, 'callDialing', before.sequence) === 1 && connected.callCount === 1, 'Rapid duplicate dial created duplicated native call state');
+        const dialingEvents = (connected.events || []).filter(event => event.generation === connected.generation && event.sequence > before.sequence && event.type === 'callDialing');
+        check(new Set(dialingEvents.map(event => event.callId)).size === 1, 'Rapid duplicate dial created more than one logical Siprix call');
+        check(connected.error === 'E_STATE', 'Second rapid dial command was not explicitly rejected by native state ownership');
+        row.observations.push({ rapidDial: { beforeSequence: before.sequence, after: connected, sip: messages, pbx: peer, invitePackets: matching.length, uniqueInviteTransactions: uniqueTransactions(matching).size, logicalSipDialogs: logicalDialogs(matching).size, nativeDialStarts: dialingEvents.length, logicalNativeCallIds: new Set(dialingEvents.map(event => event.callId)).size, secondCommandRejection: connected.error } });
+
+        const endedBefore = connected.ended; sipMark = mark(); tapBurst('Hang up'); const idle = await wait(value => value.call === 'none', 8000);
+        messages = trace(sipMark); await noChannels(); ownedCall = false;
+        matching = messages.filter(message => message.direction === 'RX' && message.method === 'BYE' && message.status === null);
+        check(uniqueTransactions(matching).size === 1, 'Rapid duplicate hangup emitted more than one unique BYE transaction');
+        check(idle.ended === endedBefore + 1 && eventCount(idle, 'callTerminated', connected.sequence) === 1, 'Rapid duplicate hangup produced missing or duplicated termination');
+        row.observations.push({ rapidHangup: { beforeSequence: connected.sequence, after: idle, sip: messages, byePackets: matching.length, uniqueByeTransactions: uniqueTransactions(matching).size } });
+
+        // Capture the first logical call only after termination so the artifact
+        // retains the complete authenticated INVITE, dialog and BYE exchange.
+        const firstCallMessages = preserveSipTrace('rapid-dial-complete', firstCallMark);
+        const firstDialogs = logicalDialogs(firstCallMessages);
+        check(firstDialogs.size === 1, 'Complete rapid-dial trace did not retain exactly one logical SIP Call-ID');
+
+        // A clean, single-command retry must work after the rejected duplicate
+        // and terminal cleanup. Its SIP Call-ID must be distinct from call one.
+        before = safeSnapshot(idle); const retryMark = mark();
+        ownedCall = true; ui.tap('Call tone'); const retried = await wait(value => value.call === 'connected', 8000);
+        peer = channels();
+        check(peer.length === 1 && peer[0].state === 'Up', 'Post-termination retry did not yield exactly one connected PBX call');
+        check(eventCount(retried, 'callDialing', before.sequence) === 1 && retried.callCount === 1, 'Post-termination retry did not create exactly one native call');
+        const retryEndedBefore = retried.ended;
+        ui.tap('Hang up'); const retryIdle = await wait(value => value.call === 'none', 8000);
+        await noChannels(); ownedCall = false;
+        const retryMessages = preserveSipTrace('clean-retry-complete', retryMark);
+        const retryDialogs = logicalDialogs(retryMessages);
+        check(retryDialogs.size === 1 && [...retryDialogs].every(dialog => !firstDialogs.has(dialog)), 'Post-termination retry did not use one fresh logical SIP Call-ID');
+        check(retryIdle.ended === retryEndedBefore + 1 && eventCount(retryIdle, 'callTerminated', retried.sequence) === 1, 'Post-termination retry did not terminate cleanly once');
+        row.observations.push({ cleanRetry: { beforeSequence: before.sequence, connected: retried, idle: retryIdle, pbxWhileConnected: peer, sip: retryMessages, logicalSipDialogs: retryDialogs.size, freshDialog: true, pbxAfterTermination: channels() } });
+
+        before = safeSnapshot(ui.state()); sipMark = mark();
+        execFileSync(process.execPath, ['lab/android/fixture.mjs', 'incoming'], { cwd: root, encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
+        const ringing = await wait(value => value.call === 'ringing', 8000); ownedCall = true;
+        tapBurst('Answer'); const answered = await wait(value => value.call === 'connected', 8000);
+        messages = trace(sipMark); peer = channels();
+        check(peer.length === 1 && peer[0].state === 'Up', 'Rapid duplicate answer did not yield exactly one connected PBX call');
+        check(eventCount(answered, 'callIncoming', before.sequence) === 1 && eventCount(answered, 'callConnected', ringing.sequence) === 1 && answered.callCount === 1, 'Rapid duplicate answer corrupted native call state');
+        const inviteResponses = messages.filter(message => message.direction === 'RX' && message.method === 'INVITE' && message.status === 200);
+        check(uniqueTransactions(inviteResponses).size === 1, 'Rapid duplicate answer emitted missing or multiple unique final INVITE responses');
+        row.observations.push({ rapidAnswer: { beforeSequence: before.sequence, ringingSequence: ringing.sequence, after: answered, sip: messages, pbx: peer, finalInviteResponsePackets: inviteResponses.length, uniqueFinalInviteResponses: uniqueTransactions(inviteResponses).size } });
+        await endOwnedCall();
+        preserveSipTrace('rapid-answer-complete', sipMark);
+        return ['Two rapid dial taps produced one native start and one logical SIP Call-ID; the second native command was rejected with E_STATE', 'Authenticated INVITE transactions and the complete dialog trace were retained without miscounting the challenge retry as another call', 'One PBX channel connected; rapid hangup terminated once', 'A subsequent outgoing call used one fresh SIP Call-ID and completed cleanly after prior termination', 'Two rapid answer taps produced one connected native call and one unique final INVITE response transaction; cleanup completed'];
+      });
+    }
+  } finally {
+    if (touched && ui) {
+      cleanup = 'completed';
+      try {
+        ui.openLab(); await ui.waitFor(() => true, 8000);
+        await endOwnedCall();
+        if (permissionChanged) await visiblePermissionRecovery();
+        if (ui.state().initialized && ui.state().call === 'none') { ui.tap('Destroy'); await ui.waitFor(value => !value.initialized, 5000); }
+        await noChannels();
+      } catch {
+        cleanup = 'failed';
+        // Only this run's call on this owned fixture may be forcibly ended.
+        if (ownedCall) try { for (const channel of channels()) pbx(`channel request hangup ${channel.name}`); await noChannels(); } catch {}
+      }
+    }
+    if (historyOn) try { pbx('pjsip set history off'); } catch { cleanup = 'failed'; }
+    if (fs.existsSync(directory)) persist();
+    for (const file of heldLocks.reverse()) {
+      try { if (JSON.parse(fs.readFileSync(file)).runId === runId) fs.unlinkSync(file); } catch {}
+    }
+    if (rows.some(result => result.result !== 'PASS') || cleanup === 'failed') process.exitCode = 1;
+  }
+}
+main().catch(error => { console.error(error instanceof Gap ? 'Runtime proof blocked; inspect the private per-test evidence.' : 'Error harness stopped; no raw command output printed. Inspect private per-test evidence and lab locks.'); process.exitCode = 1; });

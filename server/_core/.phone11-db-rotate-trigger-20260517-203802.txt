@@ -1,0 +1,2 @@
+Trigger safe Phone11 DB password rotation and backend redeploy after scoped IAM RDS ModifyDBInstance permission was added.
+Time Asia/Bangkok: 2026-05-17 20:38:02

@@ -1,0 +1,323 @@
+name: Phone11 EC2 Deploy Mobile Branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: 'EC2 public IP or DNS'
+        required: true
+        default: '43.210.122.111'
+      ec2_user:
+        description: 'SSH/Linux user'
+        required: true
+        default: 'ubuntu'
+      live_project_path:
+        description: 'Existing live Phone11 path on EC2'
+        required: true
+        default: '/opt/phone11ai/cloudphone11'
+      deploy_checkout:
+        description: 'Deployment checkout path on EC2'
+        required: true
+        default: '/opt/phone11ai/codex-phone11-deploy'
+      pilot_user_id:
+        description: 'Phone11 app user id to verify/provision'
+        required: true
+        default: '1'
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-ec2-deploy-mobile-branch.yml'
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: ${{ github.event.inputs.ec2_host || '43.210.122.111' }}
+  EC2_USER: ${{ github.event.inputs.ec2_user || 'ubuntu' }}
+  LIVE_PROJECT_PATH: ${{ github.event.inputs.live_project_path || '/opt/phone11ai/cloudphone11' }}
+  DEPLOY_CHECKOUT: ${{ github.event.inputs.deploy_checkout || '/opt/phone11ai/codex-phone11-deploy' }}
+  PILOT_USER_ID: ${{ github.event.inputs.pilot_user_id || '1' }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package source
+        run: |
+          tar \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='.expo' \
+            --exclude='ios' \
+            --exclude='android' \
+            -czf /tmp/phone11-source.tgz .
+
+      - name: Prepare remote deployment script
+        run: |
+          cat > /tmp/phone11-deploy-mobile-branch.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          echo "=== Phone11 mobile branch backend deployment ==="
+          echo "Host: $(hostname)"
+          echo "Time: $(date -Iseconds)"
+          echo "GitHub SHA: ${GITHUB_SHA:-unknown}"
+          echo "Deploy checkout: ${DEPLOY_CHECKOUT:?missing DEPLOY_CHECKOUT}"
+          echo "Live project path: ${LIVE_PROJECT_PATH:?missing LIVE_PROJECT_PATH}"
+          echo "Pilot user id: ${PILOT_USER_ID:-1}"
+
+          SOURCE_TARBALL=/tmp/phone11-source.tgz
+          if [ ! -f "$SOURCE_TARBALL" ]; then
+            echo "ERROR: source tarball was not uploaded to EC2."
+            exit 50
+          fi
+
+          ENV_FILE=""
+          for candidate in \
+            "$DEPLOY_CHECKOUT/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env" \
+            "$LIVE_PROJECT_PATH/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
+            "$LIVE_PROJECT_PATH/.env.production" \
+            "/opt/phone11ai/.env" \
+            "/opt/phone11ai/cloudphone11/.env"; do
+            if [ -f "$candidate" ]; then ENV_FILE="$candidate"; break; fi
+          done
+
+          if [ -z "$ENV_FILE" ]; then
+            echo "ERROR: no runtime .env file found on EC2."
+            exit 51
+          fi
+          echo "Using runtime env path: $ENV_FILE"
+
+          SAVED_ENV=/tmp/phone11-runtime.env
+          cp "$ENV_FILE" "$SAVED_ENV"
+
+          mkdir -p "$DEPLOY_CHECKOUT"
+          find "$DEPLOY_CHECKOUT" -mindepth 1 -maxdepth 1 ! -name '.env' -exec rm -rf {} +
+          tar -xzf "$SOURCE_TARBALL" -C "$DEPLOY_CHECKOUT"
+          cp "$SAVED_ENV" "$DEPLOY_CHECKOUT/.env"
+          ENV_FILE="$DEPLOY_CHECKOUT/.env"
+
+          read_env_file() {
+            awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+          }
+
+          DB_NAME_VALUE="$(read_env_file DB_NAME)"
+          DB_USER_VALUE="$(read_env_file DB_USER)"
+          DB_PASSWORD_VALUE="$(read_env_file DB_PASSWORD)"
+          DB_NAME_VALUE="${DB_NAME_VALUE:-cloudphone11}"
+          DB_USER_VALUE="${DB_USER_VALUE:-cloudphone11}"
+
+          if [ -z "$DB_PASSWORD_VALUE" ]; then
+            echo "ERROR: DB_PASSWORD is missing in runtime env."
+            exit 52
+          fi
+
+          if docker ps --format '{{.Names}}' | grep -qx 'cp11-postgres'; then
+            echo "--- Aligning Postgres role password with runtime env ---"
+            docker exec -i -u postgres cp11-postgres psql -U "$DB_USER_VALUE" -d "$DB_NAME_VALUE" -v ON_ERROR_STOP=1 -v db_user="$DB_USER_VALUE" -v db_password="$DB_PASSWORD_VALUE" <<'SQL'
+          ALTER ROLE :"db_user" WITH PASSWORD :'db_password';
+          SQL
+            echo "Database role password aligned."
+          else
+            echo "ERROR: cp11-postgres is not running."
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+            exit 53
+          fi
+
+          cd "$DEPLOY_CHECKOUT"
+          echo "--- Validating compose config ---"
+          docker compose --env-file "$ENV_FILE" -f infra/compose/docker-compose.prod.yml config >/tmp/phone11-compose-config.yml
+
+          echo "--- Rebuilding and restarting backend from mobile branch ---"
+          docker compose --env-file "$ENV_FILE" -f infra/compose/docker-compose.prod.yml up -d --build --force-recreate backend
+          sleep 8
+
+          if ! docker ps --format '{{.Names}}' | grep -qx 'cp11-backend'; then
+            echo "ERROR: cp11-backend is not running after deploy."
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+            docker compose --env-file "$ENV_FILE" -f infra/compose/docker-compose.prod.yml logs --tail=120 backend || true
+            exit 54
+          fi
+
+          echo "--- Backend environment and DB verification ---"
+          docker exec -i -e PILOT_USER_ID="${PILOT_USER_ID:-1}" cp11-backend node --input-type=module - <<'NODE'
+          import crypto from 'crypto';
+          import pg from 'pg';
+
+          const pilotUserId = Number.parseInt(process.env.PILOT_USER_ID || '1', 10);
+          const required = ['PG_HOST', 'PG_USER', 'PG_PASSWORD', 'PG_DATABASE'];
+          const missing = required.filter((key) => !process.env[key]);
+          if (missing.length) throw new Error(`Missing backend PG env: ${missing.join(', ')}`);
+
+          console.log(`Backend PG env present: host=${process.env.PG_HOST}, user=${process.env.PG_USER}, database=${process.env.PG_DATABASE}, password=<set>`);
+
+          const sipDomain = process.env.SIP_DOMAIN || 'sip.phone11.ai';
+          const pool = new pg.Pool({
+            host: process.env.PG_HOST,
+            port: Number(process.env.PG_PORT || 5432),
+            user: process.env.PG_USER,
+            password: process.env.PG_PASSWORD,
+            database: process.env.PG_DATABASE,
+            ssl: false,
+            connectionTimeoutMillis: 5000,
+          });
+
+          const md5 = (value) => crypto.createHash('md5').update(value).digest('hex');
+          const makePassword = () => crypto.randomBytes(18).toString('base64url');
+          const client = await pool.connect();
+
+          try {
+            const auth = await client.query('select current_user, current_database()');
+            console.log(`Backend PG auth OK as ${auth.rows[0].current_user} on ${auth.rows[0].current_database}`);
+
+            await client.query('BEGIN');
+            await client.query(`CREATE TABLE IF NOT EXISTS did_numbers (id SERIAL PRIMARY KEY, org_id INTEGER DEFAULT 1, tenant_id INTEGER DEFAULT 1, number VARCHAR(64) NOT NULL, description TEXT, destination_type VARCHAR(32) NOT NULL DEFAULT 'extension', destination_value VARCHAR(64), status VARCHAR(32) NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
+
+            const existing = await client.query(`
+              SELECT e.id, e.extension_number, e.sip_password
+              FROM extensions e
+              LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+              LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+              WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
+                AND COALESCE(e.status, 'active') = 'active'
+                AND e.deleted_at IS NULL
+              ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
+              LIMIT 1
+            `, [pilotUserId]);
+
+            let extensionId;
+            let extensionNumber;
+            let sipPassword;
+            let created = false;
+
+            if (existing.rows.length) {
+              extensionId = existing.rows[0].id;
+              extensionNumber = existing.rows[0].extension_number;
+              sipPassword = existing.rows[0].sip_password || makePassword();
+            } else {
+              const seed = Number.parseInt(process.env.PILOT_EXTENSION_START || '1020', 10);
+              const maxResult = await client.query(`SELECT MAX(extension_number::integer) AS max_extension FROM extensions WHERE extension_number ~ '^[0-9]+$' AND deleted_at IS NULL`);
+              const currentMax = Number.parseInt(maxResult.rows[0]?.max_extension || '', 10);
+              extensionNumber = String(Math.max(Number.isFinite(currentMax) ? currentMax + 1 : seed, seed));
+              sipPassword = makePassword();
+              const extResult = await client.query(`INSERT INTO extensions (org_id, tenant_id, user_id, extension_number, sip_username, sip_domain, sip_password, display_name, transport, status, type) VALUES (1, 1, $1, $2, $2, $3, $4, $5, 'TLS', 'active', 'user') RETURNING id`, [pilotUserId, extensionNumber, sipDomain, sipPassword, `Phone11 Pilot ${extensionNumber}`]);
+              extensionId = extResult.rows[0].id;
+              created = true;
+            }
+
+            const ha1 = md5(`${extensionNumber}:${sipDomain}:${sipPassword}`);
+            const ha1b = md5(`${extensionNumber}@${sipDomain}:${sipDomain}:${sipPassword}`);
+
+            await client.query(`INSERT INTO subscriber (username, domain, password, ha1, ha1b) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b`, [extensionNumber, sipDomain, sipPassword, ha1, ha1b]);
+            await client.query(`UPDATE extensions SET user_id = $1, sip_username = $2, sip_domain = $3, sip_password = $4, transport = 'TLS', status = 'active', updated_at = NOW() WHERE id = $5`, [pilotUserId, extensionNumber, sipDomain, sipPassword, extensionId]);
+            await client.query(`INSERT INTO user_extensions (user_id, extension_id, is_primary) VALUES ($1, $2, true) ON CONFLICT (user_id, extension_id) DO UPDATE SET is_primary = true`, [pilotUserId, extensionId]);
+            await client.query(`INSERT INTO sip_accounts (tenant_id, org_id, extension_id, user_id, sip_username, sip_domain, ha1, ha1b, transport_preference, status) VALUES (1, 1, $1, $2, $3, $4, $5, $6, 'TLS', 'active') ON CONFLICT DO NOTHING`, [extensionId, pilotUserId, extensionNumber, sipDomain, ha1, ha1b]);
+            await client.query(`UPDATE sip_accounts SET user_id = $1, ha1 = $2, ha1b = $3, transport_preference = 'TLS', status = 'active', updated_at = NOW() WHERE extension_id = $4 AND deleted_at IS NULL`, [pilotUserId, ha1, ha1b, extensionId]);
+            await client.query('COMMIT');
+            console.log(`${created ? 'Created' : 'Verified'} pilot extension ${extensionNumber} for user ${pilotUserId} on ${sipDomain}`);
+          } catch (error) {
+            await client.query('ROLLBACK').catch(() => {});
+            throw error;
+          } finally {
+            client.release();
+            await pool.end();
+          }
+          NODE
+
+          echo "--- Restarting backend after final DB alignment ---"
+          docker restart cp11-backend >/dev/null
+          sleep 6
+          curl -fsS http://127.0.0.1:3000/health
+          echo ""
+          echo "--- Recent backend log tail ---"
+          docker logs cp11-backend --tail 80 2>&1 | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(password authentication failed for user )"[^"]+"#\1"<db-user>"#g' || true
+          echo "Deployment finished. iPhone should now sync provisioning from the rebuilt backend."
+          SCRIPT
+          chmod +x /tmp/phone11-deploy-mobile-branch.sh
+
+      - name: Locate EC2 instance through AWS
+        id: ec2
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured."
+            exit 30
+          fi
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find a running EC2 instance with public IP $EC2_HOST"
+            exit 31
+          fi
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Deploy through EC2 Instance Connect
+        id: deploy
+        continue-on-error: true
+        run: |
+          set +e
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+          AZ='${{ steps.ec2.outputs.az }}'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-source.tgz /tmp/phone11-deploy-mobile-branch.sh "$EC2_USER@$EC2_HOST:/tmp/"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "GITHUB_SHA='$GITHUB_SHA' LIVE_PROJECT_PATH='$LIVE_PROJECT_PATH' DEPLOY_CHECKOUT='$DEPLOY_CHECKOUT' PILOT_USER_ID='$PILOT_USER_ID' bash /tmp/phone11-deploy-mobile-branch.sh" 2>&1 | tee /tmp/phone11-deploy-output.log
+          status=${PIPESTATUS[0]}
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit sanitized deployment status
+        if: always()
+        run: |
+          mkdir -p ops
+          status='${{ steps.deploy.outputs.status }}'
+          if [ -z "$status" ]; then status=99; fi
+          result="success"
+          if [ "$status" != "0" ]; then result="failure"; fi
+          {
+            echo "# Phone11 Mobile Branch Deploy Status"
+            echo ""
+            echo "- Time UTC: $(date -u -Iseconds)"
+            echo "- Workflow commit: $GITHUB_SHA"
+            echo "- Branch: $GITHUB_REF_NAME"
+            echo "- EC2 host: $EC2_HOST"
+            echo "- Pilot user id: $PILOT_USER_ID"
+            echo "- Result: $result"
+            echo "- Exit code: $status"
+            echo ""
+            echo "## Sanitized output"
+            echo '```text'
+            sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(password authentication failed for user )"[^"]+"#\1"<db-user>"#g; s#(PGPASSWORD|DB_PASSWORD|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)=([^[:space:]]+)#\1=<redacted>#g' /tmp/phone11-deploy-output.log 2>/dev/null || true
+            echo '```'
+          } > ops/phone11-mobile-branch-deploy-status.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ops/phone11-mobile-branch-deploy-status.md
+          if git diff --cached --quiet; then
+            echo "No status file changes to commit."
+          else
+            git commit -m "Update Phone11 mobile branch deploy status"
+            git push
+          fi
+
+      - name: Fail if deployment failed
+        if: always()
+        run: |
+          status='${{ steps.deploy.outputs.status }}'
+          if [ -z "$status" ]; then status=99; fi
+          exit "$status"

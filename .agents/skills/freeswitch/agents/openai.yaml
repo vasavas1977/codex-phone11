@@ -1,0 +1,6 @@
+interface:
+  display_name: "FreeSWITCH"
+  short_description: "FreeSWITCH docs-backed engineering help"
+  default_prompt: "Use $freeswitch to answer this FreeSWITCH configuration or troubleshooting question from the mirrored SignalWire docs."
+policy:
+  allow_implicit_invocation: true

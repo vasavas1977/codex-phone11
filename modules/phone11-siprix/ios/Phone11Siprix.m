@@ -1,0 +1,1266 @@
+#import "Phone11Siprix.h"
+#import <AVFoundation/AVFoundation.h>
+#import <siprix/Siprix.h>
+#import <limits.h>
+#import <math.h>
+#ifndef PHONE11_VOIP_WAKE_COMMISSIONED
+#define PHONE11_VOIP_WAKE_COMMISSIONED 0
+#endif
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+#import "Phone11WakeCoordinator.h"
+#endif
+
+static NSString *const P11EventName = @"Phone11SiprixEvent";
+
+// Native build configuration only. A configured string is not proof of a valid license;
+// SDK errors and onTrialModeNotified remain authoritative. Never return/log this value.
+static void P11ApplyBuildLicense(SiprixIniData *ini, id value) {
+  if (![value isKindOfClass:NSString.class]) return;
+  NSString *license = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (license.length > 0) ini.license = license;
+}
+
+// Completed wake calls outlive the native SDK; no credentials or session IDs
+// are written here. All disk IO is serialized off the call-control queue.
+static NSString *P11HistoryNumber(id uri) {
+  if (![uri isKindOfClass:NSString.class] || [uri length]>2048) return @"Unknown";
+  NSRegularExpression *sip=[NSRegularExpression regularExpressionWithPattern:@"^sips?:([+0-9A-Za-z*#_.-]{1,64})@[^\\s<>]+$" options:NSRegularExpressionCaseInsensitive error:nil];
+  NSTextCheckingResult *match=[sip firstMatchInString:uri options:0 range:NSMakeRange(0,[uri length])];
+  if (match) return [uri substringWithRange:[match rangeAtIndex:1]];
+  NSRegularExpression *plain=[NSRegularExpression regularExpressionWithPattern:@"^[+0-9*#]{1,64}$" options:0 error:nil];
+  return [plain firstMatchInString:uri options:0 range:NSMakeRange(0,[uri length])] ? uri : @"Unknown";
+}
+@interface P11WakeHistory : NSObject
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic, strong) dispatch_queue_t queue;
+@property(nonatomic, strong) NSMutableArray *pending;
+@property(atomic) NSUInteger epoch;
+@property(atomic) NSUInteger authorizationEpoch;
+@property(nonatomic) BOOL clearPending;
++ (instancetype)shared;
+- (void)append:(NSDictionary *)entry epoch:(NSUInteger)epoch;
+- (void)clear;
+- (void)perform:(NSDictionary *)scope ack:(NSArray *)ids completion:(void (^)(NSArray *, BOOL))completion;
+@end
+@implementation P11WakeHistory
++ (instancetype)shared { static P11WakeHistory *v; static dispatch_once_t once; dispatch_once(&once, ^{ v=[self new]; }); return v; }
+- (instancetype)init {
+  if ((self=[super init])) {
+    _queue=dispatch_queue_create("ai.phone11.wake-history", DISPATCH_QUEUE_SERIAL); _pending=[NSMutableArray new];
+    _url=[[[NSFileManager.defaultManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] firstObject] URLByAppendingPathComponent:@"phone11-completed-wake-calls-v1.json"];
+  } return self;
+}
+- (BOOL)valid:(id)e {
+  if (![e isKindOfClass:NSDictionary.class] || [e count] < 8 || [e count] > 9) return NO;
+  NSSet *allowed=[NSSet setWithArray:@[@"id",@"ownerUserId",@"tenantId",@"number",@"direction",@"startedAt",@"answeredAt",@"endedAt",@"updatedAt"]];
+  for (id key in e) if (![allowed containsObject:key]) return NO;
+  if (![e[@"id"] isKindOfClass:NSString.class] || ![e[@"id"] hasPrefix:@"native-wake:"] || [e[@"id"] length]!=48 ||
+      ![[NSUUID alloc] initWithUUIDString:[e[@"id"] substringFromIndex:12]] ||
+      ![e[@"number"] isKindOfClass:NSString.class] || [e[@"number"] length]>64 || [e[@"number"] length]==0 ||
+      [e[@"number"] rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"+0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz*#_.-"] invertedSet]].location!=NSNotFound || ![e[@"direction"] isEqual:@"inbound"]) return NO;
+  for (NSString *key in @[@"ownerUserId",@"tenantId",@"startedAt",@"endedAt",@"updatedAt"]) {
+    id n=e[key]; if (![n isKindOfClass:NSNumber.class] || !isfinite([n doubleValue]) || [n doubleValue]<=0) return NO;
+  }
+  for (NSString *key in @[@"ownerUserId",@"tenantId"]) if ([e[key] doubleValue] != floor([e[key] doubleValue])) return NO;
+  if ([e[@"endedAt"] doubleValue]<[e[@"startedAt"] doubleValue]) return NO;
+  return !e[@"answeredAt"] || ([e[@"answeredAt"] isKindOfClass:NSNumber.class] &&
+    [e[@"answeredAt"] doubleValue]>=[e[@"startedAt"] doubleValue] && [e[@"answeredAt"] doubleValue]<=[e[@"endedAt"] doubleValue]);
+}
+- (NSArray *)bounded:(NSArray *)rows {
+  NSMutableDictionary *unique=[NSMutableDictionary new]; double cutoff=NSDate.date.timeIntervalSince1970*1000-30*86400000.0;
+  for (NSDictionary *e in rows) if ([self valid:e] && [e[@"endedAt"] doubleValue]>=cutoff) unique[e[@"id"]]=e;
+  NSArray *sorted=[unique.allValues sortedArrayUsingComparator:^NSComparisonResult(id a,id b){return [b[@"endedAt"] compare:a[@"endedAt"]];}];
+  return sorted.count>100 ? [sorted subarrayWithRange:NSMakeRange(0,100)] : sorted;
+}
+- (BOOL)write:(NSArray *)rows {
+  NSError *error=nil;
+  [NSFileManager.defaultManager createDirectoryAtURL:self.url.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:&error];
+  NSData *bytes=[NSJSONSerialization dataWithJSONObject:rows options:0 error:&error];
+  BOOL ok=bytes && bytes.length<=262144 && [bytes writeToURL:self.url options:NSDataWritingAtomic|NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication error:&error];
+  if (!ok) NSLog(@"Phone11Wake history_write_failed"); return ok;
+}
+- (NSArray *)load {
+  if (self.clearPending) { if (![self write:@[]]) return nil; self.clearPending=NO; }
+  if (![NSFileManager.defaultManager fileExistsAtPath:self.url.path]) return @[];
+  NSError *error=nil; NSData *data=[NSData dataWithContentsOfURL:self.url options:0 error:&error];
+  if (!data || data.length>262144) return nil;
+  id rows=[NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+  if (![rows isKindOfClass:NSArray.class]) return nil;
+  for (id row in rows) if (![self valid:row]) return nil;
+  return rows;
+}
+- (void)append:(NSDictionary *)entry epoch:(NSUInteger)epoch {
+  dispatch_async(self.queue, ^{
+    if (epoch!=self.epoch || ![self valid:entry]) return;
+    [self.pending addObject:entry]; self.pending=[[self bounded:self.pending] mutableCopy];
+    NSArray *saved=[self load]; if (!saved) { NSLog(@"Phone11Wake history_read_failed"); return; }
+    if ([self write:[self bounded:[saved arrayByAddingObjectsFromArray:self.pending]]]) [self.pending removeAllObjects];
+  });
+}
+- (void)clear { self.epoch++; dispatch_async(self.queue, ^{ [self.pending removeAllObjects]; self.clearPending=![self write:@[]]; }); }
+- (void)perform:(NSDictionary *)scope ack:(NSArray *)ids completion:(void (^)(NSArray *, BOOL))completion {
+  NSUInteger epoch=self.epoch, authorizationEpoch=self.authorizationEpoch;
+  dispatch_async(self.queue, ^{
+    NSArray *saved=[self load]; BOOL ok=saved!=nil && epoch==self.epoch && authorizationEpoch==self.authorizationEpoch;
+    NSArray *rows=ok ? [self bounded:[saved arrayByAddingObjectsFromArray:self.pending]] : @[];
+    NSMutableArray *visible=[NSMutableArray new], *kept=[NSMutableArray new];
+    for (NSDictionary *e in rows) {
+      BOOL own=[e[@"ownerUserId"] isEqual:scope[@"ownerUserId"]] && [e[@"tenantId"] isEqual:scope[@"tenantId"]];
+      if (own) [visible addObject:e];
+      if (!own || !ids || ![ids containsObject:e[@"id"]]) [kept addObject:e];
+    }
+    // Enrollment rotation/logout invalidate queued acknowledgement before deletion.
+    if (ok) ok=epoch==self.epoch && authorizationEpoch==self.authorizationEpoch && [self write:kept];
+    if (ok) [self.pending removeAllObjects];
+    dispatch_async(dispatch_get_main_queue(), ^{ completion(visible,ok && epoch==self.epoch && authorizationEpoch==self.authorizationEpoch); });
+  });
+}
+@end
+
+@interface Phone11Siprix ()
+@property(nonatomic, copy) NSString *lease;
+@property(nonatomic) BOOL observing;
+@end
+
+@class P11SiprixDelegate;
+
+@interface P11SiprixRuntime : NSObject
+@property(nonatomic, strong) SiprixModule *sdk;
+@property(nonatomic, strong) P11SiprixDelegate *delegate;
+@property(nonatomic, weak) Phone11Siprix *sink;
+@property(nonatomic, copy) NSString *lease;
+@property(nonatomic, copy) NSString *sdkVersion;
+@property(nonatomic) NSUInteger generation;
+@property(nonatomic) NSUInteger sequence;
+@property(nonatomic) BOOL initialized;
+@property(nonatomic) BOOL quarantined;
+@property(nonatomic) BOOL audioSessionActive;
+@property(nonatomic) BOOL trialNotified;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableDictionary *> *accounts;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableDictionary *> *calls;
+@property(nonatomic, strong) NSMutableSet<NSString *> *pendingHolds;
+@property(nonatomic, strong) NSMutableSet<NSString *> *acceptedCalls;
+@property(nonatomic, strong) NSMutableSet<NSString *> *retiredCallIDs;
+@property(nonatomic) BOOL accountCreated;
+// These values are native RAM only; credentials are never included in a snapshot/event.
+@property(nonatomic, copy) NSDictionary *accountConfig;
+@property(nonatomic, copy) NSDictionary *wakeOwner;
+@property(nonatomic, copy) NSDictionary *wakeContext;
+@property(nonatomic, strong) Phone11Siprix *wakeBridge;
+@property(nonatomic, copy) NSString *wakeCallId;
+@property(nonatomic, copy) void (^wakeEvent)(NSDictionary *event);
+@property(nonatomic, copy) void (^wakeReady)(NSError *error);
+@property(nonatomic) BOOL wakeRetryableRegistrationFailure;
+@property(nonatomic) NSUInteger wakeRegistrationBoundary;
+@property(nonatomic) NSTimeInterval wakeReceivedAt;
+@property(nonatomic, copy) dispatch_block_t pendingWakeRefresh;
+@property(nonatomic, copy) NSDictionary *registrationProof;
+@property(nonatomic) NSUInteger processedRegistrationIngress;
+@property(nonatomic) BOOL wakeStartedRuntime;
+@property(nonatomic) BOOL wakeEnding;
+@property(nonatomic, copy) NSString *wakeAudioUUID;
+@property(nonatomic, copy) NSDictionary *wakeAudioOwner;
+@property(nonatomic) NSUInteger wakeAudioGeneration;
++ (instancetype)shared;
+- (NSDictionary *)snapshot;
+- (void)scheduleWakeRefreshAfter:(double)delay block:(dispatch_block_t)block;
+- (void)emit:(NSString *)type data:(NSDictionary *)data;
+- (void)receive:(NSString *)type data:(NSDictionary *)data generation:(NSUInteger)generation;
+- (int)shutdown;
+- (void)clearWake:(BOOL)failed;
+- (void)wakeNotify:(NSString *)type;
+- (void)cleanupWake:(NSString *)uuid generation:(NSUInteger)generation;
+@end
+
+@interface P11SiprixDelegate : NSObject <SiprixEventDelegate>
+@property(nonatomic) NSUInteger registrationIngress;
+@property(atomic, copy) NSString *registrationLease;
+@property(atomic, copy) NSDictionary *registrationOwner;
+- (NSUInteger)registrationBoundary;
+@property(nonatomic, weak) P11SiprixRuntime *runtime;
+@property(nonatomic) NSUInteger generation;
+@end
+
+static BOOL P11String(id value, NSUInteger maxLength) {
+  return [value isKindOfClass:NSString.class] && [value length] > 0 &&
+    [value length] <= maxLength &&
+    [value rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location == NSNotFound;
+}
+
+static BOOL P11Integer(id value, int minimum, int maximum) {
+  if (![value isKindOfClass:NSNumber.class]) return NO;
+  double n = [value doubleValue];
+  return isfinite(n) && floor(n) == n && n >= minimum && n <= maximum;
+}
+
+static void P11Reject(RCTPromiseRejectBlock reject, NSString *code, NSString *message) {
+  reject(code, message, nil);
+}
+
+static BOOL P11PinnedSDKVersion(NSString *version) {
+  if (![version isKindOfClass:NSString.class]) return NO;
+  NSString *normalized = [version stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  // The checksum-pinned vendor binary returns its product name and build date.
+  return [normalized isEqualToString:@"1.0.40"] ||
+    [normalized isEqualToString:@"1.0.40 from 20260620_1419"] ||
+    [normalized isEqualToString:@"siprix 1.0.40 from 20260620_1419"];
+}
+
+static NSString *P11ID(NSInteger value) {
+  return [NSString stringWithFormat:@"%ld", (long)value];
+}
+
+static NSNumber *P11StatusCode(NSString *response) {
+  if (![response isKindOfClass:NSString.class] || response.length > 4096) return nil;
+  NSUInteger offset = [response hasPrefix:@"SIP/2.0 "] ? 8 : 0;
+  if (response.length < offset+4 || [response characterAtIndex:offset+3] != ' ') return nil;
+  NSString *digits = [response substringWithRange:NSMakeRange(offset, 3)];
+  for (NSUInteger i=0; i<3; i++) {
+    unichar digit=[digits characterAtIndex:i];
+    if (digit<'0' || digit>'9') return nil;
+  }
+  int code = digits.intValue;
+  return code >= 100 && code <= 699 ? @(code) : nil;
+}
+
+// Never return SIP passwords, URI parameters, or raw server response/header text.
+static NSString *P11RemoteURI(NSString *value) {
+  NSRange start = [value rangeOfString:@"sip:" options:NSCaseInsensitiveSearch];
+  if (start.location == NSNotFound) start = [value rangeOfString:@"sips:" options:NSCaseInsensitiveSearch];
+  NSString *uri = start.location == NSNotFound ? value : [value substringFromIndex:start.location];
+  NSCharacterSet *end = [NSCharacterSet characterSetWithCharactersInString:@";?<>\" \t\r\n"];
+  NSRange endRange = [uri rangeOfCharacterFromSet:end];
+  if (endRange.location != NSNotFound) uri = [uri substringToIndex:endRange.location];
+  NSRange at = [uri rangeOfString:@"@" options:NSBackwardsSearch];
+  if (at.location != NSNotFound) {
+    NSString *user = [uri substringToIndex:at.location];
+    NSString *scheme = @"";
+    if ([user.lowercaseString hasPrefix:@"sip:"]) { scheme = @"sip:"; user = [user substringFromIndex:4]; }
+    else if ([user.lowercaseString hasPrefix:@"sips:"]) { scheme = @"sips:"; user = [user substringFromIndex:5]; }
+    user = [user componentsSeparatedByString:@":"][0];
+    uri = [NSString stringWithFormat:@"%@%@%@", scheme, user, [uri substringFromIndex:at.location]];
+  }
+  return uri.length <= 512 ? uri : @"";
+}
+
+static NSError *P11WakeError(NSString *message) {
+  return [NSError errorWithDomain:@"Phone11Wake" code:1 userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+static double P11NowMs(void) { return NSDate.date.timeIntervalSince1970 * 1000; }
+static BOOL P11WakeBinding(NSDictionary *binding) {
+  if (![binding isKindOfClass:NSDictionary.class]) return NO;
+  for (NSString *key in @[@"bindingId", @"deviceId", @"sessionBinding"]) if (!P11String(binding[key], 256)) return NO;
+  if (!P11Integer(binding[@"ownerUserId"], 1, INT_MAX) || !P11Integer(binding[@"tenantId"], 1, INT_MAX)) return NO;
+  id expiry = binding[@"expiresAt"];
+  return [expiry isKindOfClass:NSNumber.class] && isfinite([expiry doubleValue]) && [expiry doubleValue] > P11NowMs();
+}
+static BOOL P11SameWakeOwner(NSDictionary *first, NSDictionary *second) {
+  if (!first || !second) return NO;
+  for (NSString *key in @[@"bindingId", @"ownerUserId", @"tenantId", @"deviceId", @"sessionBinding"]) {
+    if (![first[key] isEqual:second[key]]) return NO;
+  }
+  return YES;
+}
+static NSDictionary *P11AccountIdentity(NSDictionary *config) {
+  if (![config isKindOfClass:NSDictionary.class]) return @{};
+  NSMutableDictionary *identity = [NSMutableDictionary new];
+  for (NSString *key in @[@"sipServer", @"sipExtension", @"sipPassword", @"transport", @"sipProxy", @"stunServer", @"aCodecs"]) {
+    if (config[key]) identity[key] = config[key];
+  }
+  identity[@"sipAuthId"] = config[@"sipAuthId"] ?: config[@"sipExtension"] ?: @"";
+  identity[@"port"] = config[@"port"] ?: ([config[@"transport"] isEqual:@"TLS"] ? @5061 : @5060);
+  identity[@"secureMedia"] = config[@"secureMedia"] ?: @0;
+  for (NSString *key in @[@"iceEnabled", @"rtcpMuxEnabled", @"rewriteContactIp", @"verifyIncomingCall", @"forceSipProxy"]) {
+    if (config[key]) identity[key] = config[key];
+  }
+  return identity;
+}
+static void P11OnMain(void (^block)(void)) {
+  if (NSThread.isMainThread) block(); else dispatch_async(dispatch_get_main_queue(), block);
+}
+
+static BOOL P11Speaker(void) {
+  for (AVAudioSessionPortDescription *output in AVAudioSession.sharedInstance.currentRoute.outputs) {
+    if ([output.portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) return YES;
+  }
+  return NO;
+}
+
+static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSString *direction,
+                                     NSString *state, NSString *remote) {
+  return [@{@"id": callId, @"callId": callId, @"accountId": accountId,
+            @"direction": direction, @"state": state, @"remoteUri": P11RemoteURI(remote),
+            @"hasVideo": @NO, @"muted": @NO, @"held": @NO, @"holdState": @0} mutableCopy];
+}
+
+@implementation P11SiprixRuntime
++ (instancetype)shared {
+  static P11SiprixRuntime *runtime;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ runtime = [P11SiprixRuntime new]; });
+  return runtime;
+}
+
+- (instancetype)init {
+  if ((self = [super init])) {
+    _accounts = [NSMutableDictionary new];
+    _calls = [NSMutableDictionary new];
+    _pendingHolds = [NSMutableSet new];
+    _acceptedCalls = [NSMutableSet new];
+    _retiredCallIDs = [NSMutableSet new];
+  }
+  return self;
+}
+
+- (NSDictionary *)snapshot {
+  NSMutableArray *accounts = [NSMutableArray new];
+  NSMutableArray *calls = [NSMutableArray new];
+  for (NSDictionary *account in self.accounts.allValues) [accounts addObject:[account copy]];
+  for (NSDictionary *call in self.calls.allValues) { NSMutableDictionary *visible=[call mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [calls addObject:visible]; }
+  NSMutableDictionary *snapshot = [@{@"initialized": @(self.initialized && !self.quarantined),
+           @"generation": @(self.generation), @"sequence": @(self.sequence),
+           @"sdkVersion": self.sdkVersion ?: NSNull.null, @"accounts": accounts, @"calls": calls,
+           @"audioSessionActive": @(self.audioSessionActive), @"speaker": @(P11Speaker()),
+           @"trialNotified": @(self.trialNotified)} mutableCopy];
+  if (self.wakeContext) snapshot[@"nativeWake"] = self.wakeContext;
+  return snapshot;
+}
+- (void)scheduleWakeRefreshAfter:(double)delay block:(dispatch_block_t)block {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
+}
+- (void)wakeNotify:(NSString *)type {
+  if (self.wakeEvent && self.wakeContext) self.wakeEvent(@{@"type":type, @"callUUID":self.wakeContext[@"callUUID"]});
+}
+- (void)clearWake:(BOOL)failed {
+  void (^event)(NSDictionary *) = self.wakeEvent;
+  void (^ready)(NSError *) = self.wakeReady;
+  NSString *uuid = self.wakeContext[@"callUUID"];
+  self.wakeReceivedAt = 0; self.pendingWakeRefresh = nil;
+  self.wakeEvent = nil; self.wakeReady = nil; self.wakeContext = nil; self.wakeCallId = nil;
+  self.wakeBridge = nil; self.wakeStartedRuntime = NO; self.wakeEnding = NO;
+  if (ready) ready(P11WakeError(@"Incoming wake ended before registration completed."));
+  if (event && uuid && failed) event(@{@"type":@"failed", @"callUUID":uuid});
+}
+
+- (void)emit:(NSString *)type data:(NSDictionary *)data {
+  self.sequence += 1;
+  NSMutableDictionary *event = [data mutableCopy];
+  if (event[@"call"]) { NSMutableDictionary *visible=[event[@"call"] mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; event[@"call"]=visible; }
+  event[@"type"] = type;
+  event[@"generation"] = @(self.generation);
+  event[@"sequence"] = @(self.sequence);
+  if (self.sink.observing) [self.sink sendEventWithName:P11EventName body:event];
+}
+
+- (void)receive:(NSString *)type data:(NSDictionary *)data generation:(NSUInteger)generation {
+  if (!self.initialized || self.quarantined || generation != self.generation) return;
+  NSString *callId = data[@"callId"];
+  NSMutableDictionary *call = self.calls[callId ?: @""];
+  if ([type isEqualToString:@"registration"]) {
+    NSMutableDictionary *account = self.accounts[data[@"accountId"]];
+    if (!account) return;
+    NSUInteger ingress = [data[@"registrationIngress"] unsignedIntegerValue];
+    if (ingress <= self.processedRegistrationIngress) return;
+    self.processedRegistrationIngress = ingress;
+    NSInteger state = [data[@"regState"] integerValue];
+    switch (state) {
+      case RegStateSuccess: account[@"registrationState"] = @"registered"; break;
+      case RegStateFailed: account[@"registrationState"] = @"failed"; break;
+      case RegStateRemoved: account[@"registrationState"] = @"unregistered"; break;
+      case RegStateInProgress: account[@"registrationState"] = @"registering"; break;
+      default: return;
+    }
+    account[@"regState"] = @(state);
+    [account removeObjectForKey:@"sipStatusCode"];
+    if (data[@"sipStatusCode"]) account[@"sipStatusCode"] = data[@"sipStatusCode"];
+    self.registrationProof = @{ @"accountId":data[@"accountId"], @"state":@(state), @"serial":@(ingress),
+      @"at":data[@"registrationAt"] ?: @0, @"lease":data[@"registrationLease"] ?: @"",
+      @"owner":data[@"registrationOwner"] ?: @{} };
+    NSUInteger registrationGeneration = self.generation;
+    NSString *registrationLease = self.lease;
+    NSString *registrationUUID = self.wakeContext[@"callUUID"];
+    [self emit:type data:@{@"account": [account copy]}];
+    if (self.generation != registrationGeneration || ![self.lease isEqual:registrationLease] ||
+        ![self.wakeContext[@"callUUID"] isEqual:registrationUUID]) return;
+    BOOL fresh = [data[@"registrationIngress"] isKindOfClass:NSNumber.class] &&
+      [data[@"registrationLease"] isEqual:self.lease] && P11SameWakeOwner(data[@"registrationOwner"], self.wakeOwner) &&
+      ([data[@"registrationIngress"] unsignedIntegerValue] > self.wakeRegistrationBoundary ||
+       (self.wakeReceivedAt > 0 && [data[@"registrationAt"] doubleValue] >= self.wakeReceivedAt &&
+        [data[@"registrationLease"] isEqual:self.lease] &&
+        P11SameWakeOwner(data[@"registrationOwner"], self.wakeOwner)));
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+    if (self.wakeReady) {
+      [Phone11WakeCoordinator recordRegistrationState:state fresh:fresh];
+      if (fresh && state == RegStateFailed) [Phone11WakeCoordinator recordRegistrationFailureStatus:data[@"sipStatusCode"]];
+    }
+#endif
+    if (self.wakeReady && fresh && state == RegStateSuccess && ingress == [self.delegate registrationBoundary]) {
+      void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
+      ready([self.wakeContext[@"expiresAt"] doubleValue] > P11NowMs() ? nil : P11WakeError(@"Incoming wake expired."));
+    } else if (self.wakeReady && fresh && state == RegStateFailed) {
+      // Missing status is unclassified, not proof of a transport error. Permit
+      // only the existing one-shot refresh budget; never complete ready here.
+      NSNumber *status = data[@"sipStatusCode"];
+      BOOL retryable = !status || status.integerValue == 408 || status.integerValue == 503;
+      self.wakeRetryableRegistrationFailure = retryable;
+      if (!retryable) {
+      void (^ready)(NSError *) = self.wakeReady; self.wakeReady = nil;
+      ready(P11WakeError(@"Incoming wake registration failed."));
+      }
+    }
+    dispatch_block_t pendingRefresh = self.pendingWakeRefresh;
+    if (pendingRefresh) pendingRefresh();
+  } else if ([type isEqualToString:@"callIncoming"]) {
+    if (call) return;
+    if ([self.retiredCallIDs containsObject:callId]) {
+      self.quarantined = YES;
+      [self emit:@"error" data:@{@"operation": @"reusedCallId", @"code": @-1}];
+      return;
+    }
+    if (!self.accounts[data[@"accountId"]] || self.calls.count > 0) {
+      int code = [self.sdk callReject:callId.intValue statusCode:486];
+      if (code != kErrorCodeEOK) [self emit:@"error" data:@{@"operation": @"rejectExtraIncoming", @"code": @(code)}];
+      return;
+    }
+    if (self.wakeContext) {
+      NSString *header = [self.sdk callGetSipHeader:callId.intValue hdrName:@"X-Phone11-Wake-ID"];
+      if (![header isEqualToString:self.wakeContext[@"callUUID"]] || [self.wakeContext[@"expiresAt"] doubleValue] <= P11NowMs()) {
+        [self.sdk callReject:callId.intValue statusCode:403];
+        [self emit:@"error" data:@{@"operation":@"wakeCorrelation", @"code":@-1}];
+        return;
+      }
+    }
+    call = P11Call(callId, data[@"accountId"], @"incoming", @"ringing", data[@"remoteUri"]);
+    if (self.wakeContext) {
+      self.wakeCallId = callId; call[@"wakeCallUUID"] = self.wakeContext[@"callUUID"];
+      call[@"wakeSystemAnswered"] = @NO;
+      call[@"historyId"] = [@"native-wake:" stringByAppendingString:[self.wakeContext[@"callUUID"] lowercaseString]];
+      call[@"startedAt"] = @(P11NowMs());
+      call[@"historyOwner"] = @{ @"ownerUserId":self.wakeContext[@"ownerUserId"], @"tenantId":self.wakeContext[@"tenantId"] };
+      call[@"historyEpoch"] = @(P11WakeHistory.shared.epoch);
+    }
+    self.calls[callId] = call;
+    [self emit:type data:@{@"call": [call copy]}];
+    if (self.wakeCallId) [self wakeNotify:@"incoming"];
+  } else if ([type isEqualToString:@"callProceeding"] || [type isEqualToString:@"callConnected"] ||
+             [type isEqualToString:@"callTerminated"] || [type isEqualToString:@"callHeld"]) {
+    if (!call) return;
+    if ([type isEqualToString:@"callProceeding"]) {
+      if (![call[@"state"] isEqualToString:@"dialing"] && ![call[@"state"] isEqualToString:@"proceeding"]) return;
+      call[@"state"] = @"proceeding";
+    } else if ([type isEqualToString:@"callConnected"]) {
+      call[@"state"] = [call[@"held"] boolValue] ? @"held" : @"connected";
+      if (call[@"historyId"] && !call[@"answeredAt"]) call[@"answeredAt"]=@(MAX(P11NowMs(),[call[@"startedAt"] doubleValue]));
+    } else if ([type isEqualToString:@"callTerminated"]) {
+      call[@"state"] = @"terminated";
+      call[@"statusCode"] = data[@"statusCode"];
+      if (call[@"historyId"]) {
+        double ended=MAX(MAX(P11NowMs(),[call[@"startedAt"] doubleValue]),[call[@"answeredAt"] doubleValue]);
+        NSMutableDictionary *entry=[call[@"historyOwner"] mutableCopy];
+        NSString *number=P11HistoryNumber(call[@"remoteUri"]);
+        [entry addEntriesFromDictionary:@{@"id":call[@"historyId"],@"number":number,@"direction":@"inbound",@"startedAt":call[@"startedAt"],@"endedAt":@(ended),@"updatedAt":@(ended)}];
+        if (call[@"answeredAt"]) entry[@"answeredAt"]=call[@"answeredAt"];
+        [P11WakeHistory.shared append:entry epoch:[call[@"historyEpoch"] unsignedIntegerValue]];
+      }
+      [self.calls removeObjectForKey:callId];
+      [self.pendingHolds removeObject:callId];
+      [self.acceptedCalls removeObject:callId];
+      [self.retiredCallIDs addObject:callId];
+    } else {
+      NSInteger state = [data[@"holdState"] integerValue];
+      call[@"held"] = @(state != HoldStateNone);
+      call[@"holdState"] = @(state);
+      call[@"state"] = state == HoldStateNone ? @"connected" : @"held";
+      [self.pendingHolds removeObject:callId];
+    }
+    // Snapshot before either callback: notification can synchronously adopt,
+    // clean up, or replace the runtime without necessarily changing generation.
+    BOOL nativeOwned = self.wakeStartedRuntime && self.wakeBridge && self.sink == self.wakeBridge;
+    NSUInteger endedGeneration = self.generation;
+    NSString *endedUUID = self.wakeContext[@"callUUID"];
+    NSString *endedLease = self.lease;
+    [self emit:type data:@{@"call": [call copy]}];
+    if (self.generation == endedGeneration && [self.wakeContext[@"callUUID"] isEqual:endedUUID] && [self.wakeCallId isEqualToString:callId]) {
+      if ([type isEqualToString:@"callConnected"]) [self wakeNotify:@"connected"];
+      if ([type isEqualToString:@"callTerminated"]) {
+        [self wakeNotify:@"terminated"];
+        if (self.generation == endedGeneration && [self.wakeContext[@"callUUID"] isEqual:endedUUID]) {
+          // Only the unadopted native owner ends with its completed cold call.
+          BOOL endNativeRuntime = nativeOwned && self.wakeStartedRuntime &&
+            self.wakeBridge && self.sink == self.wakeBridge && [self.lease isEqual:endedLease];
+          [self clearWake:NO];
+          if (endNativeRuntime && self.generation == endedGeneration &&
+              [self.lease isEqual:endedLease] && !self.wakeContext) [self shutdown];
+        }
+      }
+    }
+  } else if ([type isEqualToString:@"devicesAudioChanged"]) {
+    [self emit:type data:@{@"audioSessionActive": @(self.audioSessionActive), @"speaker": @(P11Speaker())}];
+  } else if ([type isEqualToString:@"trial"]) {
+    self.trialNotified = YES;
+    [self emit:type data:@{}];
+  } else if ([type isEqualToString:@"network"]) {
+    [self emit:type data:data];
+  } else if ([type isEqualToString:@"dtmf"] && call) {
+    [self emit:type data:data];
+  }
+}
+
+- (void)cleanupWake:(NSString *)uuid generation:(NSUInteger)generation {
+  // The fallback never tears down a replacement runtime or another call. The
+  // single-call invariant keeps this cleanup restricted to the canceled wake.
+  if (generation != self.generation || !self.wakeEnding || ![self.wakeContext[@"callUUID"] isEqual:uuid]) return;
+  [self emit:@"error" data:@{@"operation":@"wakeCleanup", @"code":@-1}];
+  [self shutdown]; // Existing shutdown quarantines SDK resources on failure.
+}
+
+- (int)shutdown {
+  self.generation += 1;
+  self.registrationProof = nil; self.processedRegistrationIngress = 0;
+  [self clearWake:YES];
+  self.wakeOwner = nil; self.accountConfig = nil; self.wakeAudioUUID = nil; self.wakeAudioOwner = nil;
+  if (self.audioSessionActive) {
+    [self.sdk deactivateSession:AVAudioSession.sharedInstance];
+    self.audioSessionActive = NO;
+  }
+  int code = (self.sdk && [self.sdk isInitialized]) ? [self.sdk unInitialize] : kErrorCodeEOK;
+  if (code != kErrorCodeEOK) {
+    // Retain SDK and delegate until cleanup succeeds. No second runtime may start.
+    self.quarantined = YES;
+    return code;
+  }
+  self.initialized = NO;
+  self.quarantined = NO;
+  self.sdk = nil;
+  self.delegate = nil;
+  self.lease = nil;
+  self.sink = nil;
+  self.sdkVersion = nil;
+  self.trialNotified = NO;
+  self.accountCreated = NO;
+  [self.accounts removeAllObjects];
+  [self.calls removeAllObjects];
+  [self.pendingHolds removeAllObjects];
+  [self.acceptedCalls removeAllObjects];
+  [self.retiredCallIDs removeAllObjects];
+  return kErrorCodeEOK;
+}
+@end
+
+@implementation P11SiprixDelegate
+- (NSUInteger)registrationBoundary { @synchronized(self) { return self.registrationIngress; } }
+- (void)post:(NSString *)type data:(NSDictionary *)data {
+  // SDK callbacks may arrive on worker threads or inline in an SDK method.
+  // Always enqueue so account/call IDs are recorded before callbacks are applied.
+  if ([type isEqualToString:@"registration"]) {
+    @synchronized(self) {
+      NSMutableDictionary *entry = [data mutableCopy];
+      entry[@"registrationIngress"] = @(++self.registrationIngress);
+      entry[@"registrationAt"] = @(NSProcessInfo.processInfo.systemUptime);
+      entry[@"registrationLease"] = self.registrationLease ?: @"";
+      entry[@"registrationOwner"] = self.registrationOwner ?: @{};
+      data = entry;
+    }
+  }
+  NSUInteger generation = self.generation;
+  __weak P11SiprixRuntime *runtime = self.runtime;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [runtime receive:type data:data generation:generation];
+  });
+}
+- (void)onTrialModeNotified { [self post:@"trial" data:@{}]; }
+- (void)onDevicesAudioChanged { [self post:@"devicesAudioChanged" data:@{}]; }
+- (void)onAccountRegState:(NSInteger)accId regState:(RegState)state response:(NSString *)response {
+  NSMutableDictionary *data = [@{@"accountId": P11ID(accId), @"regState": @(state)} mutableCopy];
+  NSNumber *statusCode = P11StatusCode(response);
+  if (statusCode) data[@"sipStatusCode"] = statusCode;
+  [self post:@"registration" data:data];
+}
+- (void)onNetworkState:(NSString *)name netState:(NetworkState)state {
+  [self post:@"network" data:@{@"networkState": @(state)}];
+}
+- (void)onCallIncoming:(NSInteger)callId accId:(NSInteger)accId withVideo:(BOOL)video
+               hdrFrom:(NSString *)from hdrTo:(NSString *)to {
+  [self post:@"callIncoming" data:@{@"callId": P11ID(callId), @"accountId": P11ID(accId), @"remoteUri": P11RemoteURI(from)}];
+}
+- (void)onCallProceeding:(NSInteger)callId response:(NSString *)response {
+  [self post:@"callProceeding" data:@{@"callId": P11ID(callId)}];
+}
+- (void)onCallConnected:(NSInteger)callId hdrFrom:(NSString *)from hdrTo:(NSString *)to withVideo:(BOOL)video {
+  [self post:@"callConnected" data:@{@"callId": P11ID(callId)}];
+}
+- (void)onCallTerminated:(NSInteger)callId statusCode:(NSInteger)code {
+  [self post:@"callTerminated" data:@{@"callId": P11ID(callId), @"statusCode": @(code)}];
+}
+- (void)onCallHeld:(NSInteger)callId holdState:(HoldState)state {
+  [self post:@"callHeld" data:@{@"callId": P11ID(callId), @"holdState": @(state)}];
+}
+- (void)onCallDtmfReceived:(NSInteger)callId tone:(NSInteger)tone {
+  [self post:@"dtmf" data:@{@"callId": P11ID(callId), @"tone": @(tone)}];
+}
+// Required SDK callbacks outside this audio-only bridge's advertised capabilities.
+- (void)onSubscriptionState:(NSInteger)subscrId subscrState:(SubscrState)state response:(NSString *)response {}
+- (void)onPlayerState:(NSInteger)playerId playerState:(PlayerState)state {}
+- (void)onRingerState:(BOOL)started {}
+- (void)onCallSwitched:(NSInteger)callId {}
+- (void)onCallTransferred:(NSInteger)callId statusCode:(NSInteger)code {}
+- (void)onCallRedirected:(NSInteger)callId relatedCallId:(NSInteger)relatedId referTo:(NSString *)to {}
+- (void)onCallVideoUpgraded:(NSInteger)callId withVideo:(BOOL)video {}
+- (void)onCallVideoUpgradeRequested:(NSInteger)callId {}
+- (void)onMessageSentState:(NSInteger)messageId success:(BOOL)success response:(NSString *)response {}
+- (void)onMessageIncoming:(NSInteger)messageId accId:(NSInteger)accId hdrFrom:(NSString *)from body:(NSString *)body {}
+- (void)onSipNotify:(NSInteger)accId hdrEvent:(NSString *)event body:(NSString *)body {}
+- (void)onVuMeterLevel:(NSInteger)micLevel spkLevel:(NSInteger)spkLevel {}
+@end
+
+@implementation Phone11Siprix
+RCT_EXPORT_MODULE(Phone11Siprix)
+
++ (BOOL)requiresMainQueueSetup { return YES; }
+- (dispatch_queue_t)methodQueue { return dispatch_get_main_queue(); }
+- (NSArray<NSString *> *)supportedEvents { return @[P11EventName]; }
+- (instancetype)init {
+  if ((self = [super init])) _lease = NSUUID.UUID.UUIDString;
+  return self;
+}
+- (void)startObserving { self.observing = YES; }
+- (void)stopObserving { self.observing = NO; }
+- (void)invalidate {
+  NSString *lease = self.lease;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    if ([runtime.lease isEqualToString:lease]) {
+      runtime.sink = nil;
+      if (runtime.wakeContext) runtime.lease = nil;
+      else [runtime shutdown];
+    }
+  });
+  [super invalidate];
+}
+
+- (BOOL)checkSDK:(int)code operation:(NSString *)operation reject:(RCTPromiseRejectBlock)reject {
+  if (code == kErrorCodeEOK) return YES;
+  // Numeric SDK code is actionable without echoing arbitrary SIP response text.
+  P11Reject(reject, [NSString stringWithFormat:@"E_SIPRIX_%d", code],
+            [NSString stringWithFormat:@"Siprix %@ failed (SDK code %d).", operation, code]);
+  return NO;
+}
+- (P11SiprixRuntime *)ready:(RCTPromiseRejectBlock)reject {
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.quarantined) {
+    P11Reject(reject, @"E_CLEANUP_REQUIRED", @"Siprix cleanup failed. Retry destroy before initialization.");
+    return nil;
+  }
+  if (!runtime.initialized) {
+    P11Reject(reject, @"E_NOT_INITIALIZED", @"Initialize Siprix before using this operation.");
+    return nil;
+  }
+  if (![runtime.lease isEqualToString:self.lease]) {
+    P11Reject(reject, @"E_RUNTIME_IN_USE", @"Another native bridge owns the Siprix runtime.");
+    return nil;
+  }
+  return runtime;
+}
+- (BOOL)hasID:(NSString *)identifier in:(NSDictionary *)items reject:(RCTPromiseRejectBlock)reject {
+  if (!P11String(identifier, 10) || !items[identifier]) {
+    P11Reject(reject, @"E_UNKNOWN_ID", @"The account or call ID is not owned by this runtime.");
+    return NO;
+  }
+  return YES;
+}
+
+// Native-only facade: the coordinator has already verified the grant and reported
+// the existing RNCallKeep provider's call UUID before invoking these methods.
++ (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip
+                     event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion {
+  [self prepareIncomingWake:context sip:sip receivedAt:0 event:event completion:completion];
+}
++ (void)prepareIncomingWake:(NSDictionary *)context sip:(NSDictionary *)sip receivedAt:(NSTimeInterval)receivedAt
+                     event:(void (^)(NSDictionary *))event completion:(void (^)(NSError *))completion {
+  P11OnMain(^{
+#if !PHONE11_VOIP_WAKE_COMMISSIONED
+    completion(P11WakeError(@"Background calling is not commissioned."));
+#else
+    if (![context isKindOfClass:NSDictionary.class] || ![sip isKindOfClass:NSDictionary.class]) {
+      completion(P11WakeError(@"Invalid incoming wake configuration.")); return;
+    }
+    NSString *uuid = context[@"callUUID"];
+    NSNumber *grantExpiry = context[@"grantExpiresAt"];
+    if (!P11WakeBinding(context) || !P11String(uuid, 36) || ![[NSUUID alloc] initWithUUIDString:uuid] ||
+        [context[@"v"] integerValue] != 1 || [context[@"expiresAt"] doubleValue] > P11NowMs()+30000 ||
+        ![grantExpiry isKindOfClass:NSNumber.class] || !isfinite([grantExpiry doubleValue]) || [grantExpiry doubleValue] <= P11NowMs()) {
+      completion(P11WakeError(@"Invalid or expired incoming wake.")); return;
+    }
+    P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    if (runtime.wakeContext || runtime.calls.count || runtime.quarantined) {
+      completion(P11WakeError(@"The phone runtime is already busy.")); return;
+    }
+    NSMutableDictionary *publicContext = [NSMutableDictionary new];
+    for (NSString *key in @[@"v", @"callUUID", @"bindingId", @"ownerUserId", @"tenantId", @"deviceId", @"sessionBinding", @"expiresAt", @"grantExpiresAt"]) publicContext[key] = context[key];
+    NSMutableDictionary *owner = [publicContext mutableCopy];
+    [owner removeObjectForKey:@"callUUID"]; owner[@"expiresAt"] = grantExpiry;
+    void (^arm)(NSString *, BOOL) = ^(NSString *accountId, BOOL needsInitialRegistration) {
+      runtime.wakeContext = publicContext; runtime.wakeOwner = owner; runtime.delegate.registrationOwner = owner;
+      NSDictionary *armedContext = runtime.wakeContext;
+      // Exclude callbacks already queued before this registration attempt.
+      runtime.wakeRegistrationBoundary = [runtime.delegate registrationBoundary];
+      runtime.wakeReceivedAt = isfinite(receivedAt) && receivedAt > 0 && receivedAt <= NSProcessInfo.processInfo.systemUptime ? receivedAt : 0;
+      runtime.wakeEvent = event; runtime.wakeReady = completion;
+      runtime.wakeRetryableRegistrationFailure = NO;
+      runtime.accounts[accountId][@"registrationState"] = @"registering";
+      [runtime.sdk handleIncomingPush];
+      // Give SDK push recovery its first opportunity. The one-shot fallback
+      // delay exceeds its documented <1s refresh suppression window; it is not
+      // proof that SDK recovery has become quiescent.
+      {
+        NSUInteger generation = runtime.generation; NSString *lease = runtime.lease;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          NSDictionary *proof = runtime.registrationProof;
+          if (!runtime.wakeReady || runtime.generation != generation || ![runtime.lease isEqual:lease] ||
+              runtime.wakeContext != armedContext || runtime.wakeReceivedAt <= 0 ||
+              ![proof[@"accountId"] isEqual:accountId] || ![proof[@"lease"] isEqual:lease] ||
+              !P11SameWakeOwner(proof[@"owner"], owner) || [proof[@"state"] integerValue] != RegStateSuccess ||
+              [proof[@"at"] doubleValue] < runtime.wakeReceivedAt ||
+              [proof[@"serial"] unsignedIntegerValue] != [runtime.delegate registrationBoundary]) return;
+          void (^ready)(NSError *) = runtime.wakeReady; runtime.wakeReady = nil;
+          ready([runtime.wakeContext[@"expiresAt"] doubleValue] > P11NowMs() ? nil : P11WakeError(@"Incoming wake expired."));
+        });
+        __block BOOL refreshIssued = NO;
+        dispatch_block_t attemptRefresh = ^{
+          if (runtime.generation != generation || ![runtime.lease isEqual:lease] ||
+              runtime.wakeContext != armedContext) return;
+          NSDictionary *proof = runtime.registrationProof;
+          if (refreshIssued || !runtime.wakeReady || !runtime.initialized || runtime.quarantined ||
+              [runtime.wakeContext[@"expiresAt"] doubleValue] <= P11NowMs() ||
+              !P11SameWakeOwner(runtime.wakeOwner, owner) || runtime.accounts.count != 1 ||
+              !runtime.accounts[accountId] || ![runtime.accountConfig isEqual:P11AccountIdentity(sip)]) {
+            runtime.pendingWakeRefresh = nil; return;
+          }
+          // The worker may have assigned ingress but not enqueued delivery yet.
+          // Keep one continuation; the latest callback resumes it without a loop.
+          if (runtime.processedRegistrationIngress != [runtime.delegate registrationBoundary]) return;
+          if (needsInitialRegistration && !runtime.wakeRetryableRegistrationFailure) return;
+          if ([proof[@"state"] integerValue] == RegStateInProgress &&
+              ([proof[@"serial"] unsignedIntegerValue] > runtime.wakeRegistrationBoundary ||
+               (runtime.wakeReceivedAt > 0 && [proof[@"at"] doubleValue] >= runtime.wakeReceivedAt))) return;
+          runtime.pendingWakeRefresh = nil;
+          refreshIssued = YES;
+          int result = [runtime.sdk accountRegister:accountId.intValue expireTime:300];
+          [Phone11WakeCoordinator recordRefreshResult:result];
+          if (runtime.generation != generation || ![runtime.lease isEqual:lease] || runtime.wakeContext != armedContext) return;
+          if (result != kErrorCodeEOK) {
+            void (^ready)(NSError *) = runtime.wakeReady; runtime.wakeReady = nil;
+            if (ready) ready(P11WakeError(@"Incoming wake registration request failed."));
+            if (runtime.generation == generation && [runtime.lease isEqual:lease] && runtime.wakeContext == armedContext)
+              [self endIncomingWake:uuid];
+          }
+        };
+        [runtime scheduleWakeRefreshAfter:1.1 block:^{
+          dispatch_async(dispatch_get_main_queue(), ^{
+            if (runtime.generation != generation || ![runtime.lease isEqual:lease] || runtime.wakeContext != armedContext) return;
+            runtime.pendingWakeRefresh = attemptRefresh;
+            attemptRefresh();
+          });
+        }];
+        if (!needsInitialRegistration) return;
+      }
+      int code = [runtime.sdk accountRegister:accountId.intValue expireTime:300];
+      if (code != kErrorCodeEOK) {
+        void (^ready)(NSError *) = runtime.wakeReady; runtime.wakeReady = nil;
+        if (ready) ready(P11WakeError(@"Incoming wake registration request failed."));
+        [self endIncomingWake:uuid];
+      }
+    };
+    if (runtime.initialized) {
+      if (!runtime.wakeOwner) {
+        completion(P11WakeError(@"Incoming wake owner missing.")); return;
+      }
+      if (!P11SameWakeOwner(runtime.wakeOwner, owner)) {
+        completion(P11WakeError(@"Incoming wake owner mismatch.")); return;
+      }
+      if (![runtime.accountConfig isEqual:P11AccountIdentity(sip)]) {
+        completion(P11WakeError(@"Incoming wake account configuration mismatch.")); return;
+      }
+      if (runtime.accounts.count != 1) {
+        completion(P11WakeError(@"Incoming wake account count mismatch.")); return;
+      }
+      if (!runtime.sink) {
+        completion(P11WakeError(@"Incoming wake runtime sink missing.")); return;
+      }
+      arm(runtime.accounts.allKeys.firstObject, NO); return;
+    }
+    Phone11Siprix *bridge = [Phone11Siprix new];
+    // The bridge owns no second SDK; all work uses P11SiprixRuntime.shared.
+    void (^failure)(NSString *, NSString *, NSError *) = ^(NSString *code, NSString *message, NSError *error) {
+      if ([runtime.lease isEqualToString:bridge.lease]) [runtime shutdown];
+      completion(P11WakeError(@"Could not prepare the incoming phone runtime."));
+    };
+    [bridge initialize:@{} resolver:^(id snapshot) {
+      runtime.wakeBridge = bridge;
+      [bridge createAccount:sip resolver:^(id account) {
+        runtime.wakeStartedRuntime = YES;
+        arm(account[@"accountId"], YES);
+      } rejecter:failure];
+    } rejecter:failure];
+#endif
+  });
+}
+
++ (void)answerIncomingWake:(NSString *)callUUID completion:(void (^)(NSError *))completion {
+  P11OnMain(^{
+#if !PHONE11_VOIP_WAKE_COMMISSIONED
+    completion(P11WakeError(@"Background calling is not commissioned."));
+#else
+    P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    NSDictionary *call = runtime.calls[runtime.wakeCallId ?: @""];
+    if (!runtime.initialized || runtime.quarantined || ![runtime.wakeContext[@"callUUID"] isEqual:callUUID] ||
+        ![call[@"state"] isEqual:@"ringing"] || [runtime.wakeContext[@"expiresAt"] doubleValue] <= P11NowMs()) {
+      completion(P11WakeError(@"This incoming wake is no longer ringing.")); return;
+    }
+    if ([runtime.acceptedCalls containsObject:runtime.wakeCallId]) { completion(nil); return; }
+    int code = [runtime.sdk callAccept:runtime.wakeCallId.intValue withVideo:NO];
+    if (code != kErrorCodeEOK) { completion(P11WakeError(@"The SDK did not accept the incoming wake.")); return; }
+    [runtime.acceptedCalls addObject:runtime.wakeCallId];
+    runtime.calls[runtime.wakeCallId][@"wakeSystemAnswered"] = @YES;
+    completion(nil); // Connected event and actual CallKit audio activation remain separate.
+#endif
+  });
+}
+
++ (void)endIncomingWake:(NSString *)callUUID {
+  P11OnMain(^{
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+    P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    if (![runtime.wakeContext[@"callUUID"] isEqual:callUUID] || runtime.wakeEnding) return;
+    runtime.wakeEnding = YES;
+    NSDictionary *call = runtime.calls[runtime.wakeCallId ?: @""];
+    if (call) {
+      BOOL ringing = [call[@"state"] isEqual:@"ringing"] && ![runtime.acceptedCalls containsObject:runtime.wakeCallId];
+      NSUInteger generation = runtime.generation;
+      int code = ringing ? [runtime.sdk callReject:runtime.wakeCallId.intValue statusCode:486] : [runtime.sdk callBye:runtime.wakeCallId.intValue];
+      if (code != kErrorCodeEOK) [runtime cleanupWake:callUUID generation:generation];
+      else dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        [runtime cleanupWake:callUUID generation:generation];
+      });
+    } else {
+      BOOL cold = runtime.wakeStartedRuntime;
+      [runtime clearWake:NO];
+      if (cold) [runtime shutdown];
+    }
+#endif
+  });
+}
+
++ (void)setIncomingWakeAudioSession:(AVAudioSession *)session active:(BOOL)active {
+  P11OnMain(^{
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+    P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    if (!runtime.initialized || runtime.quarantined || session != AVAudioSession.sharedInstance) return;
+    if (active) {
+      if (!runtime.wakeContext) return;
+      runtime.wakeAudioUUID = runtime.wakeContext[@"callUUID"];
+      runtime.wakeAudioOwner = runtime.wakeOwner; runtime.wakeAudioGeneration = runtime.generation;
+    } else {
+      if (!runtime.wakeAudioUUID || runtime.wakeAudioGeneration != runtime.generation ||
+          !P11SameWakeOwner(runtime.wakeAudioOwner, runtime.wakeOwner) ||
+          (runtime.wakeContext && ![runtime.wakeContext[@"callUUID"] isEqual:runtime.wakeAudioUUID]) ||
+          (!runtime.wakeContext && runtime.calls.count)) return;
+      runtime.wakeAudioUUID = nil; runtime.wakeAudioOwner = nil;
+    }
+    if (runtime.audioSessionActive == active) return;
+    if (active) [runtime.sdk activateSession:session]; else [runtime.sdk deactivateSession:session];
+    runtime.audioSessionActive = active;
+    [runtime emit:@"audioSession" data:@{@"audioSessionActive":@(active), @"speaker":@(P11Speaker())}];
+#endif
+  });
+}
+
+ + (void)completedWakeBindingDidChange { P11WakeHistory.shared.authorizationEpoch++; }
++ (void)clearCompletedWakeCalls { [P11WakeHistory.shared clear]; }
+- (BOOL)historyAuthorized:(NSDictionary *)binding {
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+  NSDictionary *current=[Phone11WakeCoordinator.shared publicBinding];
+  return P11WakeBinding(binding) && P11SameWakeOwner(current,binding) && [current[@"expiresAt"] isEqual:binding[@"expiresAt"]];
+#else
+  return NO;
+#endif
+}
+RCT_EXPORT_METHOD(readCompletedWakeCalls:(NSDictionary *)binding resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (![self historyAuthorized:binding]) { P11Reject(reject,@"E_HISTORY_OWNER",@"Call history owner could not be verified."); return; }
+  [P11WakeHistory.shared perform:binding ack:nil completion:^(NSArray *rows,BOOL ok) {
+    if (!ok || ![self historyAuthorized:binding]) { P11Reject(reject,@"E_HISTORY_UNAVAILABLE",@"Completed call history is unavailable."); return; }
+    resolve(rows);
+  }];
+}
+RCT_EXPORT_METHOD(ackCompletedWakeCalls:(NSDictionary *)binding ids:(NSArray *)ids resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (![self historyAuthorized:binding] || ![ids isKindOfClass:NSArray.class] || ids.count>100) { P11Reject(reject,@"E_HISTORY_OWNER",@"Call history owner could not be verified."); return; }
+  for (id value in ids) if (![value isKindOfClass:NSString.class] || ![value hasPrefix:@"native-wake:"]) { P11Reject(reject,@"E_HISTORY_ID",@"Invalid completed call identifier."); return; }
+  [P11WakeHistory.shared perform:binding ack:ids completion:^(NSArray *rows,BOOL ok) {
+    if (!ok || ![self historyAuthorized:binding]) { P11Reject(reject,@"E_HISTORY_UNAVAILABLE",@"Completed call history is unavailable."); return; }
+    resolve(nil);
+  }];
+}
+
+RCT_EXPORT_METHOD(bindForegroundWakeContext:(NSDictionary *)binding sip:(NSDictionary *)config resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+#if !PHONE11_VOIP_WAKE_COMMISSIONED
+  P11Reject(reject, @"E_WAKE_DISABLED", @"Background calling is not commissioned.");
+#else
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime) return;
+  if (!P11WakeBinding(binding) || ![runtime.accountConfig isEqual:P11AccountIdentity(config)] ||
+      (runtime.wakeContext && !P11SameWakeOwner(runtime.wakeContext, binding))) {
+    P11Reject(reject, @"E_WAKE_OWNER", @"The verified wake binding does not match this phone session."); return;
+  }
+  NSMutableDictionary *owner = [NSMutableDictionary new];
+  for (NSString *key in @[@"bindingId", @"ownerUserId", @"tenantId", @"deviceId", @"sessionBinding", @"expiresAt"]) owner[key] = binding[key];
+  runtime.wakeOwner = owner; runtime.delegate.registrationOwner = owner; resolve(nil);
+#endif
+}
+
+RCT_EXPORT_METHOD(adoptIncomingWake:(NSDictionary *)binding sip:(NSDictionary *)config resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+#if !PHONE11_VOIP_WAKE_COMMISSIONED
+  P11Reject(reject, @"E_WAKE_DISABLED", @"Background calling is not commissioned.");
+#else
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (!runtime.initialized || runtime.quarantined || !P11WakeBinding(binding) ||
+      !P11SameWakeOwner(runtime.wakeContext, binding) || ![runtime.accountConfig isEqual:P11AccountIdentity(config)]) {
+    P11Reject(reject, @"E_WAKE_OWNER", @"The incoming wake belongs to another phone session."); return;
+  }
+  if (runtime.sink && runtime.sink != runtime.wakeBridge && runtime.sink != self) {
+    P11Reject(reject, @"E_RUNTIME_IN_USE", @"Another JavaScript bridge owns this phone runtime."); return;
+  }
+  runtime.lease = self.lease; runtime.delegate.registrationLease = self.lease; runtime.sink = self; runtime.wakeBridge = nil;
+  runtime.wakeStartedRuntime = NO;
+  resolve([runtime snapshot]);
+#endif
+}
+
+RCT_EXPORT_METHOD(restoreIncomingWakeDelegate:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime) return;
+  if (runtime.wakeContext) [Phone11WakeCoordinator restoreCallKitDelegate];
+#endif
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(initialize:(NSDictionary *)options resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (![options isKindOfClass:NSDictionary.class] || options.count != 0) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"This pinned trial accepts an empty initialization options object."); return;
+  }
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.wakeContext && ![runtime.lease isEqualToString:self.lease]) {
+    P11Reject(reject, @"E_WAKE_ADOPTION_REQUIRED", @"Validate the phone session before adopting this incoming wake."); return;
+  }
+  if (runtime.lease && ![runtime.lease isEqualToString:self.lease] && runtime.sink) {
+    P11Reject(reject, @"E_RUNTIME_IN_USE", @"Another native bridge owns the Siprix runtime."); return;
+  }
+  if (runtime.quarantined || (runtime.sdk && !runtime.sink)) {
+    if (![self checkSDK:[runtime shutdown] operation:@"cleanup" reject:reject]) return;
+  }
+  if (runtime.initialized) { runtime.sink = self; resolve([runtime snapshot]); return; }
+  runtime.generation += 1;
+  runtime.lease = self.lease;
+  runtime.sink = self;
+  runtime.sdk = [SiprixModule new];
+  runtime.delegate = [P11SiprixDelegate new];
+  runtime.delegate.runtime = runtime;
+  runtime.delegate.generation = runtime.generation;
+  runtime.delegate.registrationLease = runtime.lease;
+  SiprixIniData *ini = [SiprixIniData new];
+  P11ApplyBuildLicense(ini, [NSBundle.mainBundle objectForInfoDictionaryKey:@"Phone11SiprixLicense"]);
+  ini.logLevelFile = @(LogLevelNoLog);
+  ini.logLevelIde = @(LogLevelNoLog);
+  ini.tlsVerifyServer = @YES;
+  ini.singleCallMode = @YES;
+  ini.enableVideoCall = @NO;
+  ini.unregOnDestroy = @YES;
+  int code = [runtime.sdk initialize:runtime.delegate iniData:ini];
+  if (code != kErrorCodeEOK) {
+    // SDK may retain native resources even after failed initialize.
+    [runtime shutdown];
+    [self checkSDK:code operation:@"initialize" reject:reject]; return;
+  }
+  runtime.initialized = YES;
+  runtime.sdkVersion = [runtime.sdk version];
+  if (!P11PinnedSDKVersion(runtime.sdkVersion)) {
+    [runtime shutdown];
+    P11Reject(reject, @"E_SDK_VERSION", @"This bridge requires pinned Siprix SDK 1.0.40."); return;
+  }
+  // Enables external CallKit-managed audio; it does not create an OS provider.
+  [runtime.sdk enableCallKit:YES];
+  resolve([runtime snapshot]);
+}
+
+RCT_EXPORT_METHOD(getSnapshot:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.wakeContext && ![runtime.lease isEqualToString:self.lease]) {
+    NSMutableDictionary *snapshot = [[runtime snapshot] mutableCopy]; snapshot[@"calls"] = @[];
+    resolve(snapshot); return;
+  }
+  if (runtime.lease && ![runtime.lease isEqualToString:self.lease] && runtime.sink) {
+    P11Reject(reject, @"E_RUNTIME_IN_USE", @"Another native bridge owns the Siprix runtime."); return;
+  }
+  if (runtime.quarantined) {
+    P11Reject(reject, @"E_CLEANUP_REQUIRED", @"Siprix cleanup failed. Retry destroy before reading state."); return;
+  }
+  resolve([runtime snapshot]);
+}
+
+RCT_EXPORT_METHOD(createAccount:(NSDictionary *)config resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime) return;
+  if (![config isKindOfClass:NSDictionary.class] ||
+      !P11String(config[@"sipServer"], 512) || !P11String(config[@"sipExtension"], 256) ||
+      !P11String(config[@"sipPassword"], 4096) || !P11String(config[@"transport"], 3)) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Account requires SIP server, extension, password, and UDP/TCP/TLS transport."); return;
+  }
+  if (runtime.accountCreated) {
+    P11Reject(reject, @"E_ACCOUNT_EXISTS", @"Destroy and reinitialize before replacing the trial account."); return;
+  }
+  NSSet *keys = [NSSet setWithArray:@[@"sipServer", @"sipExtension", @"sipPassword", @"sipAuthId", @"sipProxy", @"stunServer",
+    @"displName", @"transport", @"port", @"expireTime", @"secureMedia", @"iceEnabled", @"rtcpMuxEnabled", @"rewriteContactIp",
+    @"verifyIncomingCall", @"forceSipProxy", @"aCodecs"]];
+  for (NSString *key in config) {
+    if (![keys containsObject:key]) {
+      P11Reject(reject, @"E_INVALID_ARGUMENT", @"Unsupported account configuration field."); return;
+    }
+  }
+  NSString *transport = config[@"transport"];
+  if (![@[@"UDP", @"TCP", @"TLS"] containsObject:transport]) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Transport must be UDP, TCP, or TLS."); return;
+  }
+  for (NSString *key in @[@"sipAuthId", @"sipProxy", @"stunServer", @"displName"]) {
+    if (config[key] && !P11String(config[key], 512)) {
+      P11Reject(reject, @"E_INVALID_ARGUMENT", @"Optional account strings must be nonempty text."); return;
+    }
+  }
+  for (NSString *key in @[@"iceEnabled", @"rtcpMuxEnabled", @"rewriteContactIp", @"verifyIncomingCall", @"forceSipProxy"]) {
+    if (config[key] && !P11Integer(config[key], 0, 1)) {
+      P11Reject(reject, @"E_INVALID_ARGUMENT", @"Account boolean options must be true or false."); return;
+    }
+  }
+  if ((config[@"port"] && !P11Integer(config[@"port"], 1, 65535)) ||
+      (config[@"expireTime"] && !P11Integer(config[@"expireTime"], 0, 86400)) ||
+      (config[@"secureMedia"] && !P11Integer(config[@"secureMedia"], 0, 2))) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Invalid account port, expiry, or media security mode."); return;
+  }
+  if (config[@"aCodecs"]) {
+    if (![config[@"aCodecs"] isKindOfClass:NSArray.class] || [config[@"aCodecs"] count] == 0) {
+      P11Reject(reject, @"E_INVALID_ARGUMENT", @"Audio codecs must be a nonempty array of SDK codec IDs."); return;
+    }
+    for (id codec in config[@"aCodecs"]) {
+      if (!P11Integer(codec, AudioCodecsOpus, AudioCodecsG729)) {
+        P11Reject(reject, @"E_INVALID_ARGUMENT", @"Invalid pinned SDK audio codec ID."); return;
+      }
+    }
+  }
+  SiprixAccData *account = [SiprixAccData new];
+  account.sipServer = config[@"sipServer"];
+  account.sipExtension = config[@"sipExtension"];
+  account.sipPassword = config[@"sipPassword"];
+  account.sipAuthId = config[@"sipAuthId"];
+  account.sipProxy = config[@"sipProxy"];
+  account.stunServer = config[@"stunServer"];
+  account.displName = config[@"displName"];
+  account.transport = [transport isEqualToString:@"TLS"] ? SipTransportTls :
+                      [transport isEqualToString:@"TCP"] ? SipTransportTcp : SipTransportUdp;
+  account.port = config[@"port"];
+  account.expireTime = @0;
+  account.secureMedia = config[@"secureMedia"];
+  account.iceEnabled = config[@"iceEnabled"];
+  account.rtcpMuxEnabled = config[@"rtcpMuxEnabled"];
+  account.rewriteContactIp = config[@"rewriteContactIp"];
+  account.verifyIncomingCall = config[@"verifyIncomingCall"];
+  account.forceSipProxy = config[@"forceSipProxy"];
+  account.aCodecs = config[@"aCodecs"];
+  int code = [runtime.sdk accountAdd:account];
+  account.sipPassword = @"";
+  account.sipAuthId = nil;
+  if (![self checkSDK:code operation:@"accountAdd" reject:reject]) return;
+  if (account.myAccId <= kInvalidId) {
+    runtime.quarantined = YES;
+    P11Reject(reject, @"E_SDK_INVALID_ID", @"SDK accountAdd returned an invalid ID. Destroy is required."); return;
+  }
+  NSString *accountId = P11ID(account.myAccId);
+  NSMutableDictionary *state = [@{@"id": accountId, @"accountId": accountId, @"registrationState": @"unregistered"} mutableCopy];
+  runtime.accounts[accountId] = state;
+  runtime.accountCreated = YES;
+#if PHONE11_VOIP_WAKE_COMMISSIONED
+  runtime.accountConfig = P11AccountIdentity(config);
+#endif
+  resolve([state copy]);
+}
+
+RCT_EXPORT_METHOD(registerAccount:(NSString *)accountId expireTime:(NSNumber *)expireTime resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:accountId in:runtime.accounts reject:reject]) return;
+  if (!P11Integer(expireTime, 1, 86400)) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Registration expiry must be between 1 and 86400 seconds."); return;
+  }
+  if (![self checkSDK:[runtime.sdk accountRegister:accountId.intValue expireTime:expireTime.intValue] operation:@"accountRegister" reject:reject]) return;
+  // Command acceptance is pending, not registration success. The lifecycle must
+  // allow its registration grace instead of restarting an unregistered snapshot.
+  // SDK callbacks (including inline callbacks) are queued on this main queue and
+  // apply their authoritative success/failure after this command finishes.
+  NSMutableDictionary *account = runtime.accounts[accountId];
+  account[@"registrationState"] = @"registering";
+  [account removeObjectForKey:@"regState"];
+  [account removeObjectForKey:@"sipStatusCode"];
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(unregisterAccount:(NSString *)accountId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:accountId in:runtime.accounts reject:reject]) return;
+  if ([self checkSDK:[runtime.sdk accountUnRegister:accountId.intValue] operation:@"accountUnRegister" reject:reject]) resolve(nil);
+}
+
+RCT_EXPORT_METHOD(deleteAccount:(NSString *)accountId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:accountId in:runtime.accounts reject:reject]) return;
+  if (runtime.calls.count) { P11Reject(reject, @"E_CALL_ACTIVE", @"End calls before deleting the SIP account."); return; }
+  if (![self checkSDK:[runtime.sdk accountDelete:accountId.intValue] operation:@"accountDelete" reject:reject]) return;
+  [runtime.accounts removeObjectForKey:accountId];
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(makeCall:(NSString *)accountId destination:(NSString *)destination resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (P11SiprixRuntime.shared.wakeContext) { P11Reject(reject, @"E_WAKE_PENDING", @"An incoming wake owns the phone runtime."); return; }
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:accountId in:runtime.accounts reject:reject]) return;
+  if (!P11String(destination, 512)) { P11Reject(reject, @"E_INVALID_ARGUMENT", @"Destination must be nonempty SIP destination text."); return; }
+  if (runtime.calls.count) { P11Reject(reject, @"E_CALL_ACTIVE", @"This trial supports one active call."); return; }
+  if (![runtime.accounts[accountId][@"registrationState"] isEqualToString:@"registered"]) {
+    P11Reject(reject, @"E_NOT_REGISTERED", @"Wait for SDK-confirmed SIP registration before calling."); return;
+  }
+  SiprixDestData *dest = [SiprixDestData new];
+  dest.fromAccId = accountId.intValue;
+  dest.toExt = destination;
+  dest.withVideo = @NO;
+  if (![self checkSDK:[runtime.sdk callInvite:dest] operation:@"callInvite" reject:reject]) return;
+  if (dest.myCallId <= kInvalidId) {
+    runtime.quarantined = YES;
+    P11Reject(reject, @"E_SDK_INVALID_ID", @"SDK callInvite returned an invalid ID. Destroy is required."); return;
+  }
+  NSString *callId = P11ID(dest.myCallId);
+  if ([runtime.retiredCallIDs containsObject:callId]) {
+    runtime.quarantined = YES;
+    P11Reject(reject, @"E_SDK_INVALID_ID", @"SDK reused a retired call ID. Destroy is required."); return;
+  }
+  NSMutableDictionary *call = P11Call(callId, accountId, @"outgoing", @"dialing", destination);
+  runtime.calls[callId] = call;
+  resolve([call copy]);
+}
+
+RCT_EXPORT_METHOD(answerCall:(NSString *)callId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSDictionary *call = runtime.calls[callId];
+  if ([runtime.wakeCallId isEqual:callId]) {
+    P11Reject(reject, @"E_WAKE_SYSTEM_ANSWER", @"The native wake coordinator owns this system answer action."); return;
+  }
+  if (![call[@"direction"] isEqualToString:@"incoming"] || ![call[@"state"] isEqualToString:@"ringing"] ||
+      [runtime.acceptedCalls containsObject:callId]) {
+    P11Reject(reject, @"E_CALL_STATE", @"Only a ringing incoming call can be answered."); return;
+  }
+  if ([self checkSDK:[runtime.sdk callAccept:callId.intValue withVideo:NO] operation:@"callAccept" reject:reject]) {
+    [runtime.acceptedCalls addObject:callId];
+    resolve(nil);
+  }
+}
+
+RCT_EXPORT_METHOD(hangupCall:(NSString *)callId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSDictionary *call = runtime.calls[callId];
+  if ([runtime.wakeCallId isEqual:callId] && runtime.wakeEnding) { resolve(nil); return; }
+  BOOL ringing = [call[@"direction"] isEqualToString:@"incoming"] && [call[@"state"] isEqualToString:@"ringing"] &&
+                 ![runtime.acceptedCalls containsObject:callId];
+  int code = ringing ? [runtime.sdk callReject:callId.intValue statusCode:486] : [runtime.sdk callBye:callId.intValue];
+  if ([self checkSDK:code operation:ringing ? @"callReject" : @"callBye" reject:reject]) {
+    if ([runtime.wakeCallId isEqual:callId]) {
+      runtime.wakeEnding = YES;
+      NSUInteger generation = runtime.generation; NSString *uuid = runtime.wakeContext[@"callUUID"];
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ [runtime cleanupWake:uuid generation:generation]; });
+    }
+    resolve(nil);
+  }
+}
+
+RCT_EXPORT_METHOD(setMute:(NSString *)callId muted:(BOOL)muted resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  if (![self checkSDK:[runtime.sdk callMuteMic:callId.intValue mute:muted] operation:@"callMuteMic" reject:reject]) return;
+  runtime.calls[callId][@"muted"] = @(muted);
+  [runtime emit:@"callMuted" data:@{@"call": [runtime.calls[callId] copy]}];
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(setHold:(NSString *)callId held:(BOOL)held resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  if ([runtime.pendingHolds containsObject:callId]) {
+    P11Reject(reject, @"E_HOLD_PENDING", @"Wait for the SDK hold callback before another hold command."); return;
+  }
+  SiprixHoldData *data = [SiprixHoldData new];
+  if (![self checkSDK:[runtime.sdk callGetHoldState:callId.intValue holdState:data] operation:@"callGetHoldState" reject:reject]) return;
+  BOOL localHeld = (data.holdState & HoldStateLocal) != 0;
+  if (localHeld == held) { resolve(nil); return; }
+  if (![self checkSDK:[runtime.sdk callHold:callId.intValue] operation:@"callHold" reject:reject]) return;
+  [runtime.pendingHolds addObject:callId];
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(sendDtmf:(NSString *)callId digits:(NSString *)digits resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  if (!P11String(digits, 32) || [digits rangeOfCharacterFromSet:
+      [[NSCharacterSet characterSetWithCharactersInString:@"0123456789*#ABCD"] invertedSet]].location != NSNotFound) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"DTMF requires 1-32 digits from 0-9, *, #, A-D."); return;
+  }
+  if ([self checkSDK:[runtime.sdk callSendDtmf:callId.intValue dtmfs:digits durationMs:160 intertoneGapMs:80 method:DtmfMethodRtp]
+          operation:@"callSendDtmf" reject:reject]) resolve(nil);
+}
+
+// Recording playback owns media audio only while no native call/wake owns it.
+// Keep this on methodQueue (main), alongside Siprix callbacks and CallKit state.
+RCT_EXPORT_METHOD(setRecordingPlaybackSpeaker:(BOOL)speaker resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.calls.count || runtime.wakeContext || runtime.audioSessionActive) {
+    P11Reject(reject, @"E_CALL_ACTIVE", @"Recording playback is unavailable during a call."); return;
+  }
+  AVAudioSession *session = AVAudioSession.sharedInstance;
+  NSError *error = nil;
+  // Media mode clears a stale voice-chat/receiver route. An explicit speaker
+  // choice uses the category required by Apple's speaker override API.
+  NSString *category = speaker ? AVAudioSessionCategoryPlayAndRecord : AVAudioSessionCategoryPlayback;
+  if (![session setCategory:category mode:AVAudioSessionModeDefault options:0 error:&error] ||
+      (speaker && ![session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&error])) {
+    P11Reject(reject, @"E_PLAYBACK_ROUTE", @"Unable to change recording audio output."); return;
+  }
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(setSpeaker:(BOOL)enabled resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime) return;
+  if (!runtime.audioSessionActive) {
+    P11Reject(reject, @"E_AUDIO_INACTIVE", @"Wait for CallKeep audio-session activation before changing speaker."); return;
+  }
+  if (![runtime.sdk overrideAudioOutputToSpeaker:enabled]) {
+    P11Reject(reject, @"E_AUDIO_ROUTE", @"Siprix rejected the speaker audio-route request."); return;
+  }
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(handleNativeAudioSession:(BOOL)active resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime) return;
+  if (active && !runtime.wakeContext) { runtime.wakeAudioUUID = nil; runtime.wakeAudioOwner = nil; }
+  if (runtime.audioSessionActive == active) { resolve(nil); return; }
+  if (active) [runtime.sdk activateSession:AVAudioSession.sharedInstance];
+  else [runtime.sdk deactivateSession:AVAudioSession.sharedInstance];
+  runtime.audioSessionActive = active;
+  [runtime emit:@"audioSession" data:@{@"audioSessionActive": @(active), @"speaker": @(P11Speaker())}];
+  resolve(nil);
+}
+
+RCT_EXPORT_METHOD(destroy:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.wakeContext && ![runtime.lease isEqualToString:self.lease]) {
+    P11Reject(reject, @"E_WAKE_ADOPTION_REQUIRED", @"This incoming wake belongs to its validated native owner."); return;
+  }
+  if (runtime.lease && ![runtime.lease isEqualToString:self.lease] && runtime.sink) {
+    P11Reject(reject, @"E_RUNTIME_IN_USE", @"Another native bridge owns the Siprix runtime."); return;
+  }
+  if (!runtime.sdk) { resolve(nil); return; }
+  if ([self checkSDK:[runtime shutdown] operation:@"unInitialize" reject:reject]) resolve(nil);
+}
+@end

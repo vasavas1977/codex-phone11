@@ -1,0 +1,112 @@
+name: Phone11 parse last register capture v44
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-parse-last-register-capture-v44.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  parse-last-register-capture-v44:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v44_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v44_key.pub" >/dev/null
+
+      - name: Parse previous raw capture safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_v44_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN=sip.phone11.ai
+          EXT=1001
+          OUT=/tmp/phone11-v43-register.pcap.txt
+          test -s "$OUT" || { echo V44_NO_PREVIOUS_CAPTURE_FILE=yes; exit 0; }
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+          PASS="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT password FROM subscriber WHERE username='$EXT' AND domain='$DOMAIN' LIMIT 1")"
+
+          echo "===== V44 raw capture size ====="
+          wc -c "$OUT"
+          echo "===== V44 first redacted SIP lines ====="
+          grep -aE "REGISTER sip:|SIP/2.0 (100|200|401|403|407)|Call-ID:|CSeq:|From:|To:|WWW-Authenticate:|Proxy-Authenticate:|Authorization:|Proxy-Authorization:" "$OUT" \
+            | sed -E 's/(response=")[^"]+/\1<redacted>/Ig; s/(nonce=")[^"]+/\1<redacted>/Ig; s/(cnonce=")[^"]+/\1<redacted>/Ig; s/(Authorization: Digest ).*/\1<redacted>/Ig; s/(Proxy-Authorization: Digest ).*/\1<redacted>/Ig' \
+            | head -n 220 || true
+
+          PHONE11_CAPTURE="$OUT" PHONE11_TEST_USER="$EXT" PHONE11_TEST_DOMAIN="$DOMAIN" PHONE11_TEST_PASS="$PASS" python3 - <<'PY'
+          import hashlib, os, re
+          path=os.environ['PHONE11_CAPTURE']; user=os.environ['PHONE11_TEST_USER']; domain=os.environ['PHONE11_TEST_DOMAIN']; password=os.environ['PHONE11_TEST_PASS']
+          text=open(path,'rb').read().decode('latin1','ignore')
+          starts=[]
+          for m in re.finditer(r'(REGISTER sip:[\s\S]*?Content-Length:\s*0)', text, re.I):
+              msg=m.group(1)
+              if user in msg and domain in msg:
+                  starts.append(msg)
+          replies=[]
+          for m in re.finditer(r'(SIP/2.0\s+\d+[\s\S]*?Content-Length:\s*0)', text, re.I):
+              msg=m.group(1)
+              if user in msg and domain in msg:
+                  replies.append(msg)
+          def md5(s): return hashlib.md5(s.encode()).hexdigest()
+          def fields(auth):
+              return {k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', auth)}
+          auth_headers=[]; proxy_auth_headers=[]; matching=0; bad=0
+          for msg in starts:
+              for header_name in ('Authorization','Proxy-Authorization'):
+                  for m in re.finditer(header_name + r':\s*Digest\s+([^\r\n]+)', msg, re.I):
+                      if header_name == 'Authorization': auth_headers.append(msg)
+                      else: proxy_auth_headers.append(msg)
+                      f=fields(m.group(1)); uri=f.get('uri','sip:'+domain); realm=f.get('realm',domain); nonce=f.get('nonce',''); resp=f.get('response',''); qop=f.get('qop',''); nc=f.get('nc',''); cnonce=f.get('cnonce','')
+                      ha1=md5(f'{user}:{realm}:{password}'); ha2=md5(f'REGISTER:{uri}')
+                      exp=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+                      if resp and exp == resp: matching += 1
+                      elif resp: bad += 1
+          status={}
+          for msg in replies:
+              m=re.search(r'SIP/2.0\s+(\d+)', msg)
+              if m: status[m.group(1)] = status.get(m.group(1),0)+1
+          callids=sorted(set(re.findall(r'Call-ID:\s*([^\r\n]+)', '\n'.join(starts+replies), re.I)))
+          print(f'V44_REGISTER_REQUESTS={len(starts)}')
+          print(f'V44_REPLIES={len(replies)}')
+          print(f'V44_AUTHORIZATION_HEADERS={len(auth_headers)}')
+          print(f'V44_PROXY_AUTHORIZATION_HEADERS={len(proxy_auth_headers)}')
+          print(f'V44_AUTH_MATCHES_CURRENT_PASSWORD={matching}')
+          print(f'V44_AUTH_BAD_DIGESTS={bad}')
+          print('V44_STATUS_COUNTS=' + ','.join(f'{k}:{v}' for k,v in sorted(status.items())))
+          print('V44_CALLIDS=' + ' | '.join(callids[:20]))
+          if not starts:
+              print('V44_CLASSIFICATION=no_register_requests_in_capture')
+          elif not (auth_headers or proxy_auth_headers):
+              print('V44_CLASSIFICATION=no_client_authorization')
+          elif matching:
+              print('V44_CLASSIFICATION=client_auth_matches_current_password')
+          else:
+              print('V44_CLASSIFICATION=client_auth_wrong_password_or_realm')
+          PY
+          echo V44_PARSE_COMPLETE=yes
+          REMOTE

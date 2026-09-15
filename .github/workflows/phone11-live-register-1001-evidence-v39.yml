@@ -1,0 +1,220 @@
+name: Phone11 live REGISTER auth evidence v39
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-register-1001-evidence-v39.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+  SIP_DOMAIN: sip.phone11.ai
+  SIP_USER: "1001"
+
+jobs:
+  register-auth-evidence-v39:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v39_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v39_key.pub" >/dev/null
+
+      - name: Collect live 1001 REGISTER auth evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_v39_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          USER="1001"
+          OUT=/tmp/phone11-v39-register.out
+          sudo rm -f "$OUT" /tmp/phone11-v39-reg.pcap.txt
+
+          echo "===== V39 live target ====="
+          echo "EC2_HOST=43.210.122.111"
+          echo "SIP_USER=$USER"
+          echo "SIP_DOMAIN=$DOMAIN"
+          echo "APP_DIAG_BUILD=dc9be27e-9156-4494-a283-1584923b4e8b"
+          echo "APP_DIAG_COMMIT=df16ce3fad5d7314c327fbf0eda2f63d5664a28c"
+          echo "APP_DIAG_401_TIME_UTC=2026-05-24T08:40:51Z"
+
+          echo "===== Containers ====="
+          docker ps --format '{{.Names}} {{.Status}}' | sort
+
+          echo "===== Kamailio auth configuration ====="
+          docker exec p11-kamailio sh -lc 'grep -nE "calculate_ha1|password_column|use_domain|auth_check|www_challenge|consume_credentials|REGISTER" /etc/kamailio/kamailio.cfg | sed -n "1,220p"' || true
+          docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg >/dev/null
+          echo "KAMAILIO_CONFIG_SYNTAX=pass"
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+
+          echo "===== Subscriber row evidence, redacted ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          SELECT
+            username,
+            domain,
+            length(coalesce(password,'')) AS password_len,
+            length(coalesce(ha1,'')) AS ha1_len,
+            length(coalesce(ha1b,'')) AS ha1b_len,
+            (coalesce(ha1,'') = md5(username || ':' || domain || ':' || coalesce(password,''))) AS ha1_matches_password,
+            (coalesce(ha1b,'') = md5(username || '@' || domain || ':' || domain || ':' || coalesce(password,''))) AS ha1b_matches_password
+          FROM subscriber
+          WHERE username = '$USER' AND domain = '$DOMAIN';
+SQL
+
+          PASS="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT coalesce(password,'') FROM subscriber WHERE username = '$USER' AND domain = '$DOMAIN' LIMIT 1;")"
+          if [ -z "$PASS" ]; then
+            echo "V39_BLOCKER=no_plaintext_password_for_subscriber_1001"
+            exit 31
+          fi
+          echo "SUBSCRIBER_PASSWORD_PRESENT=yes"
+          echo "SUBSCRIBER_PASSWORD_REDACTED=yes"
+
+          echo "===== Recent real iPhone REGISTER evidence from Kamailio logs ====="
+          docker logs --since '2026-05-24T08:39:30Z' --until '2026-05-24T08:43:20Z' --timestamps p11-kamailio 2>&1 \
+            | grep -Eia 'REGISTER|1001|401|200 OK|auth|Unauthorized|nonce|error|warning|failed' \
+            | sed -E 's/(Authorization: Digest username="[^"]+", realm="[^"]+", nonce=")[^"]+(".*response=")[^"]+(".*)/\1<redacted>\2<redacted>\3/g' \
+            | tail -n 400 || true
+
+          echo "===== Synthetic REGISTER with live 1001 credentials ====="
+          sudo sh -lc 'nohup timeout 45 tcpdump -i any -nn -s0 -A "udp port 5060" > /tmp/phone11-v39-reg.pcap.txt 2>&1 &' || true
+          sleep 2
+          set +e
+          PHONE11_TEST_PASS="$PASS" python3 - <<'PY' | tee "$OUT"
+          import hashlib, os, random, re, secrets, select, socket, sys, time
+          DOMAIN='sip.phone11.ai'
+          USER='1001'
+          PASS=os.environ['PHONE11_TEST_PASS']
+          SERVER=('10.0.1.69',5060)
+          IP='10.0.1.69'
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def h(txt,n):
+              m=re.search(rf'^{re.escape(n)}:\s*(.+)$',txt,re.I|re.M)
+              return m.group(1).strip() if m else ''
+          def code(txt):
+              first=txt.splitlines()[0] if txt.splitlines() else ''
+              m=re.match(r'SIP/2.0\s+(\d+)\s*(.*)', first)
+              return (int(m.group(1)), m.group(2).strip()) if m else (0, first)
+          def parse_challenge(ch):
+              d={k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))',ch.replace('Digest','',1))}
+              return d
+          def digest(ch, method, uri):
+              d=parse_challenge(ch)
+              realm=d.get('realm', DOMAIN)
+              nonce=d['nonce']
+              qop='auth' if 'auth' in d.get('qop','') else ''
+              nc='00000001'
+              cnonce=secrets.token_hex(8)
+              ha1=md5(f'{USER}:{realm}:{PASS}')
+              ha2=md5(f'{method}:{uri}')
+              resp=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+              parts=[f'username="{USER}"',f'realm="{realm}"',f'nonce="{nonce}"',f'uri="{uri}"',f'response="{resp}"','algorithm=MD5']
+              if qop:
+                  parts += [f'qop={qop}',f'nc={nc}',f'cnonce="{cnonce}"']
+              print(f'V39_CHALLENGE_REALM={realm}')
+              print(f'V39_CHALLENGE_HAS_QOP={bool(qop)}')
+              return 'Digest '+', '.join(parts)
+          sip=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          sip.bind((IP, random.randint(27000,27999)))
+          sip.setblocking(False)
+          sport=sip.getsockname()[1]
+          cid=f'phone11-v39-register-{secrets.token_hex(8)}@ec2'
+          uri=f'sip:{DOMAIN}'
+          tag=secrets.token_hex(6)
+          contact=f'<sip:{USER}@{IP}:{sport};transport=udp>'
+          def send(msg):
+              sip.sendto(msg.encode(), SERVER)
+          def recv(timeout=10):
+              end=time.time()+timeout
+              while time.time()<end:
+                  r,_,_=select.select([sip],[],[],0.2)
+                  if r:
+                      data,addr=sip.recvfrom(65535)
+                      txt=data.decode(errors='replace')
+                      if cid in txt:
+                          return txt,addr
+              raise TimeoutError(cid)
+          def reg(cseq, auth_header=''):
+              lines=[
+                  f'REGISTER {uri} SIP/2.0',
+                  f'Via: SIP/2.0/UDP {IP}:{sport};branch=z9hG4bKv39r{secrets.token_hex(6)};rport',
+                  'Max-Forwards: 70',
+                  f'From: <sip:{USER}@{DOMAIN}>;tag={tag}',
+                  f'To: <sip:{USER}@{DOMAIN}>',
+                  f'Call-ID: {cid}',
+                  f'CSeq: {cseq} REGISTER',
+                  f'Contact: {contact};expires=300',
+                  'Expires: 300',
+                  'User-Agent: Phone11V39AuthEvidence'
+              ]
+              if auth_header:
+                  lines.append(auth_header)
+              return '\r\n'.join(lines+['Content-Length: 0','',''])
+          print(f'V39_SYNTH_CALL_ID={cid}')
+          send(reg(1))
+          txt,_=recv()
+          c,reason=code(txt)
+          print(f'V39_REGISTER_FIRST_STATUS={c}')
+          print(f'V39_REGISTER_FIRST_REASON={reason}')
+          if c not in (401,407):
+              print('V39_UNEXPECTED_FIRST_STATUS=yes')
+              sys.exit(40 if c != 200 else 0)
+          challenge=h(txt,'WWW-Authenticate') or h(txt,'Proxy-Authenticate')
+          if not challenge:
+              print('V39_BLOCKER=no_auth_challenge_header')
+              sys.exit(41)
+          auth_header=('Proxy-Authorization' if c==407 else 'Authorization')+': '+digest(challenge,'REGISTER',uri)
+          send(reg(2, auth_header))
+          txt,_=recv()
+          c,reason=code(txt)
+          print(f'V39_REGISTER_FINAL_STATUS={c}')
+          print(f'V39_REGISTER_FINAL_REASON={reason}')
+          if c == 200:
+              print('V39_SYNTH_REGISTER_RESULT=pass')
+              sys.exit(0)
+          print('V39_SYNTH_REGISTER_RESULT=fail')
+          sys.exit(42)
+PY
+          PY_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "PY_EXIT=$PY_EXIT"
+          echo "===== Synthetic REGISTER summary ====="
+          cat "$OUT" || true
+          echo "===== Synthetic REGISTER packet evidence, redacted ====="
+          if [ -s /tmp/phone11-v39-reg.pcap.txt ]; then
+            grep -aE 'SIP/2.0|REGISTER|Call-ID:|CSeq:|WWW-Authenticate|Authorization|To:|From:|Contact:|phone11-v39|Phone11V39AuthEvidence' /tmp/phone11-v39-reg.pcap.txt \
+              | sed -E 's/(nonce=")[^"]+(".*response=")[^"]+(".*)/\1<redacted>\2<redacted>\3/g' \
+              | tail -n 260 || true
+          else
+            echo no_packet_capture
+          fi
+          echo "===== Recent Kamailio logs for synthetic REGISTER ====="
+          SYNTH_CID="$(grep -E '^V39_SYNTH_CALL_ID=' "$OUT" | tail -1 | cut -d= -f2-)"
+          docker logs --since 120s --timestamps p11-kamailio 2>&1 \
+            | grep -Eia "$SYNTH_CID|1001|REGISTER|401|200 OK|auth|Unauthorized|error|warning|failed" \
+            | sed -E 's/(Authorization: Digest username="[^"]+", realm="[^"]+", nonce=")[^"]+(".*response=")[^"]+(".*)/\1<redacted>\2<redacted>\3/g' \
+            | tail -n 300 || true
+          echo "V39_REGISTER_EVIDENCE_COMPLETE=yes"
+          exit "$PY_EXIT"
+          REMOTE

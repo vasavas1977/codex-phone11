@@ -1,3 +1,4 @@
+import { bindAuthenticatedOutbound } from "../cloud-recordings/correlation";
 /**
  * FreeSWITCH REST Callback Routes
  * 
@@ -10,8 +11,10 @@
  * 3. POST /api/freeswitch/cdr       — CDR webhook (call end)
  * 4. POST /api/freeswitch/event     — Event socket webhook
  */
-import { Router, Request, Response } from "express";
+import { Router, Request, Response, json, urlencoded } from "express";
+import { CdrInputError, parseCdrBody, requireCdrAuth, resolveCdrTenant } from "./cdr-input";
 import { query } from "./db";
+import { requireIntegrationSecret } from "./integration-auth";
 import { cacheGetOrSet, rateLimitCheck, invalidateCache } from "./redis";
 import { normalizeToE164, THAI_EMERGENCY_NUMBERS } from "./e164";
 import { processCdr } from "./cdr-processor";
@@ -20,19 +23,7 @@ import { generateIvrDialplan, generateRingGroupDialplan, generateQueueDialplan, 
 const router = Router();
 
 // Shared secret for FS → Backend auth
-const FS_SHARED_SECRET = process.env.FS_SHARED_SECRET || "phone11-fs-secret-change-me";
-
-/**
- * Middleware: verify FreeSWITCH shared secret
- */
-function verifyFsAuth(req: Request, res: Response, next: Function) {
-  const authHeader = req.headers["x-fs-secret"] || req.body?.secret || req.query?.secret;
-  if (authHeader !== FS_SHARED_SECRET) {
-    console.warn("[FS Routes] Unauthorized request from:", req.ip);
-    return res.status(403).send("Forbidden");
-  }
-  next();
-}
+const verifyFsAuth = requireIntegrationSecret("FS_SHARED_SECRET", "x-fs-secret");
 
 // ============================================================================
 // 1. Directory Lookup (mod_xml_curl)
@@ -65,7 +56,8 @@ router.post("/directory", verifyFsAuth, async (req: Request, res: Response) => {
          JOIN extensions e ON sa.extension_id = e.id
          JOIN tenants t ON sa.tenant_id = t.id
          WHERE sa.sip_username = $1 AND sa.sip_domain = $2 
-               AND sa.status = 'active' AND sa.deleted_at IS NULL`,
+               AND sa.status = 'active' AND sa.deleted_at IS NULL
+               AND e.tenant_id = sa.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL AND t.status = 'active'`,
         [user, domain]
       );
 
@@ -113,7 +105,7 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
     const ivrMatch = destNumber.match(/^\*9(\d{1,4})$/);
     if (ivrMatch) {
       const menuId = parseInt(ivrMatch[1], 10);
-      const tenantId = await getTenantIdFromCaller(fromUser);
+      const tenantId = await getTenantIdFromCaller(fromUser, domain);
       if (tenantId) {
         const xml = await generateIvrDialplan(menuId, tenantId);
         return res.type("xml").send(xml);
@@ -124,7 +116,7 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
     const rgMatch = destNumber.match(/^\*7(\d{1,4})$/);
     if (rgMatch) {
       const groupId = parseInt(rgMatch[1], 10);
-      const tenantId = await getTenantIdFromCaller(fromUser);
+      const tenantId = await getTenantIdFromCaller(fromUser, domain);
       if (tenantId) {
         const xml = await generateRingGroupDialplan(groupId, tenantId);
         return res.type("xml").send(xml);
@@ -135,7 +127,7 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
     const queueMatch = destNumber.match(/^\*8(\d{1,4})$/);
     if (queueMatch) {
       const queueId = parseInt(queueMatch[1], 10);
-      const tenantId = await getTenantIdFromCaller(fromUser);
+      const tenantId = await getTenantIdFromCaller(fromUser, domain);
       if (tenantId) {
         const xml = await generateQueueDialplan(queueId, tenantId);
         return res.type("xml").send(xml);
@@ -146,7 +138,7 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
     const tcMatch = destNumber.match(/^\*6(\d{1,4})$/);
     if (tcMatch) {
       const tcId = parseInt(tcMatch[1], 10);
-      const tenantId = await getTenantIdFromCaller(fromUser);
+      const tenantId = await getTenantIdFromCaller(fromUser, domain);
       if (tenantId) {
         const result = await evaluateTimeCondition(tcId, tenantId);
         // Route based on time condition result
@@ -163,15 +155,17 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
       }
     }
 
-    // Internal extension routing (3-4 digit)
+    // Internal extension routing is scoped to the active caller assignment.
     if (normalized.type === "extension") {
+      const tenantId = await getTenantIdFromCaller(fromUser, domain);
+      if (!tenantId) return res.type("xml").send(emptyDialplanXml());
       const extResult = await query(
         `SELECT e.*, sa.sip_username, sa.sip_domain
          FROM extensions e
          JOIN sip_accounts sa ON e.id = sa.extension_id AND sa.deleted_at IS NULL
-         WHERE e.extension_number = $1 AND e.status = 'active' AND e.deleted_at IS NULL
+         WHERE e.extension_number = $1 AND e.tenant_id = $2 AND sa.tenant_id = e.tenant_id AND sa.status = 'active' AND e.status = 'active' AND e.deleted_at IS NULL
          LIMIT 1`,
-        [destNumber]
+        [destNumber, tenantId]
       );
 
       if (extResult.rows.length > 0) {
@@ -183,14 +177,9 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
     // PSTN outbound routing
     if (normalized.type === "mobile" || normalized.type === "landline" || normalized.type === "international") {
       // Check fraud controls
-      const callerResult = await query(
-        `SELECT sa.tenant_id FROM sip_accounts sa WHERE sa.sip_username = $1 AND sa.deleted_at IS NULL LIMIT 1`,
-        [fromUser]
-      );
-      
-      if (callerResult.rows.length > 0) {
-        const tenantId = callerResult.rows[0].tenant_id;
-        
+      const tenantId = await getTenantIdFromCaller(fromUser, domain);
+      if (!tenantId) return res.type("xml").send(emptyDialplanXml());
+      {
         // Rate limit check
         const allowed = await rateLimitCheck(`fraud:cpm:${tenantId}`, 10, 60);
         if (!allowed) {
@@ -221,6 +210,8 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
         }
       }
 
+      // Optional recording metadata must not disturb ordinary call routing.
+      try { await bindAuthenticatedOutbound(req.body, normalized.e164); } catch { /* Capture remains unavailable without trusted metadata. */ }
       return res.type("xml").send(pstnDialplanXml(normalized.e164, callerIdNumber));
     }
 
@@ -235,18 +226,24 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
 // ============================================================================
 // 3. CDR Webhook (Enhanced — uses call_records + call_legs + call_events)
 // ============================================================================
-router.post("/cdr", verifyFsAuth, async (req: Request, res: Response) => {
-  try {
-    // Handle both: {cdr: {variables: ...}} (test/wrapper) and {variables: ...} (direct FS)
-    const cdr = req.body.cdr || req.body;
-    const result = await processCdr(cdr);
-    console.log(`[FS CDR] Processed: record=${result.callRecordId}, leg=${result.callLegId}`);
-    res.json({ ok: true, ...result });
-  } catch (error: any) {
-    console.error("[FS CDR] Error:", error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
+// Also mounted before the application-wide body parsers so this limit is real.
+export const freeswitchCdrRouter = Router();
+freeswitchCdrRouter.post("/", requireCdrAuth,
+  json({ limit: "1mb" }), urlencoded({ limit: "1mb", extended: false, parameterLimit: 4 }),
+  async (req: Request, res: Response) => {
+    try {
+      const cdr = parseCdrBody(req.body);
+      await resolveCdrTenant(cdr);
+      const result = await processCdr(cdr);
+      res.json({ ok: true, ...result });
+    } catch (error: unknown) {
+      if (error instanceof CdrInputError) return res.status(error.status).json({ error: error.message });
+      // CDRs and database errors may contain numbers or credentials.
+      console.error("[FS CDR] Processing failed");
+      res.status(500).json({ error: "CDR processing failed" });
+    }
+  });
+router.use("/cdr", freeswitchCdrRouter);
 
 // ============================================================================
 // 4. Event Webhook (registration, BLF, etc.)
@@ -396,13 +393,15 @@ function emptyDialplanXml(): string {
 // ============================================================================
 // Helper: Get tenant ID from caller SIP username
 // ============================================================================
-async function getTenantIdFromCaller(fromUser: string): Promise<number | null> {
-  if (!fromUser) return null;
+async function getTenantIdFromCaller(fromUser: string, domain: string): Promise<number | null> {
+  if (!fromUser || !domain) return null;
   const result = await query(
-    `SELECT tenant_id FROM sip_accounts WHERE sip_username = $1 AND deleted_at IS NULL LIMIT 1`,
-    [fromUser]
+    `SELECT sa.tenant_id FROM sip_accounts sa JOIN extensions e ON e.id = sa.extension_id AND e.tenant_id = sa.tenant_id
+     JOIN tenants t ON t.id = e.tenant_id WHERE sa.sip_username = $1 AND sa.sip_domain = $2
+       AND sa.status = 'active' AND sa.deleted_at IS NULL AND e.status = 'active' AND e.deleted_at IS NULL AND t.status = 'active'`,
+    [fromUser, domain]
   );
-  return result.rows.length > 0 ? result.rows[0].tenant_id : null;
+  return result.rows.length === 1 ? result.rows[0].tenant_id : null;
 }
 
 function voicemailDialplanXml(extension: string, domain: string): string {

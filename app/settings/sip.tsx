@@ -1,170 +1,358 @@
-import { useState } from "react";
-import { View, Text, TouchableOpacity, ScrollView, TextInput, StyleSheet } from "react-native";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { SIGN_IN_ROUTE } from "@/constants/oauth";
+import { useAuth } from "@/hooks/use-auth";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useColors } from "@/hooks/use-colors";
+import { trpc } from "@/lib/trpc";
+import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
+import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
+import { type PhoneProvisioningConfig, sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
 
-type Transport = "UDP" | "TCP" | "TLS";
+function registrationLabel(state: RegistrationState): string {
+  switch (state) {
+    case "registered":
+      return "SIP Registered";
+    case "registering":
+      return "Registering";
+    case "failed":
+      return "Registration Failed";
+    case "network_error":
+      return "Network Error";
+    default:
+      return "Not Registered";
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function pilotExtensionCandidates(userId: number): string[] {
+  const userBased = 1000 + userId;
+  const timeBased = 3000 + (Date.now() % 6000);
+  return Array.from(new Set([userBased, 2000 + userId, timeBased, timeBased + 1].map(String)));
+}
 
 export default function SIPAccountScreen() {
   const colors = useColors();
-  const [server, setServer] = useState("sip.yourserver.com");
-  const [port, setPort] = useState("5060");
-  const [username, setUsername] = useState("1001");
-  const [password, setPassword] = useState("••••••••");
-  const [domain, setDomain] = useState("yourserver.com");
-  const [transport, setTransport] = useState<Transport>("TLS");
-  const [showPassword, setShowPassword] = useState(false);
+  const { user, loading: authLoading, isAuthenticated, refresh: refreshAuth } = useAuth();
+  const [accountLoaded, setAccountLoaded] = useState(false);
+  const autoProvisionAttempted = useRef(false);
+  const account = useSipAccountStore((s) => s.account);
+  const loadAccount = useSipAccountStore((s) => s.loadAccount);
+  const setAccount = useSipAccountStore((s) => s.setAccount);
+  const setRegistrationState = useSipAccountStore((s) => s.setRegistrationState);
+  const registrationState = useSipAccountStore((s) => s.registrationState);
+  const registrationError = useSipAccountStore((s) => s.registrationError);
+  const addDiagnosticEvent = useSipDiagnosticsStore((s) => s.addEvent);
+  const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
+  const ensurePilotConfig = trpc.phone.ensurePilotConfig.useMutation();
+  const createExtension = trpc.phone.createExtension.useMutation();
+  const assignExtension = trpc.phone.assignExtension.useMutation();
 
-  const TRANSPORTS: Transport[] = ["UDP", "TCP", "TLS"];
+  useEffect(() => {
+    let cancelled = false;
+    loadAccount()
+      .catch(console.error)
+      .finally(() => {
+        if (!cancelled) setAccountLoaded(true);
+      });
 
-  const InputField = ({
-    label, value, onChangeText, placeholder, secureTextEntry, keyboardType, rightElement
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAccount]);
+
+  const statusColor =
+    registrationState === "registered"
+      ? colors.success
+      : registrationState === "registering"
+      ? colors.warning
+      : registrationState === "failed" || registrationState === "network_error"
+      ? colors.error
+      : colors.muted;
+
+  const handleSignIn = () => router.push(SIGN_IN_ROUTE);
+
+  const applyProvisioningConfig = async (config: PhoneProvisioningConfig, title: string) => {
+    if (!config.configured || !config.sip) {
+      throw new Error("No SIP extension was returned by admin management.");
+    }
+
+    const provisionedAccount = sipAccountFromPhoneConfig(config, account?.id);
+    if (!user?.id || getAuthSnapshot().user?.id !== user.id) {
+      throw new Error("Please sign in before saving your phone account.");
+    }
+    await setAccount({ ...provisionedAccount, ownerUserId: user.id });
+    setRegistrationState("unregistered");
+    addDiagnosticEvent({
+      level: "info",
+      category: "registration",
+      message: "Phone account provisioned from admin",
+      detail:
+        "Native SIP registration was not started automatically. Open SIP Diagnostics and run an explicit registration test if needed.",
+      context: {
+        username: provisionedAccount.username,
+        domain: provisionedAccount.domain,
+        proxy: provisionedAccount.proxy || provisionedAccount.domain,
+        port: provisionedAccount.port,
+        transport: provisionedAccount.transport,
+        srtp: provisionedAccount.srtp,
+      },
+    });
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert(
+      title,
+      `Extension ${provisionedAccount.username} is saved on ${provisionedAccount.domain}. SIP registration will only start from a call or an explicit diagnostics test.`
+    );
+  };
+
+  const refetchAssignedConfig = async (): Promise<PhoneProvisioningConfig> => {
+    const refreshed = await phoneConfigQuery.refetch();
+    if (refreshed.error) throw refreshed.error;
+    if (!refreshed.data?.configured || !refreshed.data.sip) {
+      throw new Error("Extension was created, but the server still did not return SIP settings for this user.");
+    }
+    return refreshed.data;
+  };
+
+  const createPilotWithExistingAdminApi = async (): Promise<PhoneProvisioningConfig> => {
+    if (!user?.id) {
+      throw new Error("The signed-in user ID is missing. Sign out and sign in again, then retry.");
+    }
+
+    let lastError: unknown;
+    for (const extensionNumber of pilotExtensionCandidates(user.id)) {
+      try {
+        const created = await createExtension.mutateAsync({
+          orgId: 1,
+          extensionNumber,
+          displayName: `Phone11 Pilot ${extensionNumber}`,
+        });
+
+        if (!created?.id) {
+          throw new Error("Admin API created an extension without returning an extension ID.");
+        }
+
+        await assignExtension.mutateAsync({ userId: user.id, extensionId: created.id, isPrimary: true });
+        return refetchAssignedConfig();
+      } catch (error) {
+        lastError = error;
+        const message = errorMessage(error).toLowerCase();
+        if (message.includes("forbidden") || message.includes("not_admin") || message.includes("not admin")) {
+          break;
+        }
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Could not create a pilot extension with the deployed admin API.");
+  };
+
+  const createOrSyncPilotConfig = async (): Promise<PhoneProvisioningConfig> => {
+    try {
+      return await ensurePilotConfig.mutateAsync();
+    } catch (newEndpointError) {
+      console.warn("[Phone Provisioning] ensurePilotConfig failed, falling back to admin APIs:", newEndpointError);
+      return createPilotWithExistingAdminApi();
+    }
+  };
+
+  const handleSyncFromAdmin = async () => {
+    if (authLoading && !user) {
+      Alert.alert("Account is still loading", "Please wait a moment, then sync again.");
+      return;
+    }
+
+    if (!isAuthenticated) {
+      Alert.alert("Sign in required", "Sign in first so Phone11 can load the extension assigned to this user.", [
+        { text: "Cancel", style: "cancel" },
+        { text: "Sign In", onPress: handleSignIn },
+      ]);
+      return;
+    }
+
+    try {
+      await refreshAuth();
+      const result = await phoneConfigQuery.refetch();
+
+      if (result.error) throw result.error;
+
+      if (result.data?.configured && result.data.sip) {
+        await applyProvisioningConfig(result.data, "Provisioning synced");
+        return;
+      }
+
+      const pilotConfig = await createOrSyncPilotConfig();
+      await applyProvisioningConfig(pilotConfig, "Pilot extension created");
+    } catch (error) {
+      Alert.alert(
+        "Pilot provisioning failed",
+        `The phone is signed in as User ID ${user?.id ?? "unknown"}, but the backend did not return a SIP account. ${errorMessage(error)}`,
+      );
+    }
+  };
+
+  useEffect(() => {
+    if (!accountLoaded || !isAuthenticated || !user?.id || account) return;
+    if (autoProvisionAttempted.current) return;
+    if (
+      phoneConfigQuery.isFetching ||
+      ensurePilotConfig.isPending ||
+      createExtension.isPending ||
+      assignExtension.isPending
+    ) {
+      return;
+    }
+
+    autoProvisionAttempted.current = true;
+    handleSyncFromAdmin().catch((error) => {
+      console.warn("[Phone Provisioning] automatic provisioning failed:", error);
+    });
+  }, [
+    account,
+    accountLoaded,
+    isAuthenticated,
+    user?.id,
+    phoneConfigQuery.isFetching,
+    ensurePilotConfig.isPending,
+    createExtension.isPending,
+    assignExtension.isPending,
+  ]);
+
+  const ReadOnlyField = ({
+    label,
+    value,
+    secureTextEntry,
+    rightElement,
   }: {
-    label: string; value: string; onChangeText: (v: string) => void;
-    placeholder?: string; secureTextEntry?: boolean; keyboardType?: any; rightElement?: React.ReactNode;
+    label: string;
+    value?: string | number | null;
+    secureTextEntry?: boolean;
+    rightElement?: ReactNode;
   }) => (
     <View style={styles.inputGroup}>
       <Text style={[styles.inputLabel, { color: colors.muted }]}>{label}</Text>
-      <View style={[styles.inputWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}>
+      <View style={[styles.inputWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}> 
         <TextInput
           style={[styles.input, { color: colors.foreground }]}
-          value={value}
-          onChangeText={onChangeText}
-          placeholder={placeholder}
-          placeholderTextColor={colors.muted}
-          secureTextEntry={secureTextEntry && !showPassword}
-          keyboardType={keyboardType}
-          autoCapitalize="none"
-          autoCorrect={false}
+          value={value === undefined || value === null || value === "" ? "Not provisioned" : String(value)}
+          editable={false}
+          secureTextEntry={secureTextEntry}
+          selectTextOnFocus={false}
         />
         {rightElement}
       </View>
     </View>
   );
 
+  const syncing =
+    phoneConfigQuery.isFetching ||
+    ensurePilotConfig.isPending ||
+    createExtension.isPending ||
+    assignExtension.isPending;
+  const userLabel = isAuthenticated
+    ? `${user?.email || user?.name || "Signed-in user"} - User ID ${user?.id}`
+    : authLoading
+    ? "Checking sign-in..."
+    : "Not signed in";
+
   return (
     <ScreenContainer>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
+        <View style={[styles.header, { borderBottomColor: colors.border }]}> 
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <IconSymbol name="chevron.left" size={20} color={colors.primary} />
             <Text style={[styles.backText, { color: colors.primary }]}>Settings</Text>
           </TouchableOpacity>
-          <Text style={[styles.title, { color: colors.foreground }]}>SIP Account</Text>
-          <TouchableOpacity
-            style={[styles.saveBtn, { backgroundColor: colors.primary }]}
-            onPress={() => {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              router.back();
-            }}
-          >
-            <Text style={styles.saveBtnText}>Save</Text>
-          </TouchableOpacity>
+          <Text style={[styles.title, { color: colors.foreground }]}>Phone Provisioning</Text>
+          <View style={styles.headerSpacer} />
         </View>
 
-        {/* Status Banner */}
-        <View style={[styles.statusBanner, { backgroundColor: colors.success + "15", borderColor: colors.success + "40" }]}>
-          <View style={[styles.statusDot, { backgroundColor: colors.success }]} />
-          <Text style={[styles.statusText, { color: colors.success }]}>SIP Registered — Connected to {server}</Text>
+        <View style={[styles.statusBanner, { backgroundColor: statusColor + "15", borderColor: statusColor + "40" }]}> 
+          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+          <Text style={[styles.statusText, { color: statusColor }]}> 
+            {registrationLabel(registrationState)}
+            {registrationError ? ` - ${registrationError}` : account ? ` - ${account.domain}` : ""}
+          </Text>
         </View>
 
-        {/* Server Section */}
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server Configuration</Text>
-
-          <InputField
-            label="SIP Server / Proxy"
-            value={server}
-            onChangeText={setServer}
-            placeholder="sip.yourserver.com"
-            keyboardType="url"
-          />
-          <InputField
-            label="SIP Domain"
-            value={domain}
-            onChangeText={setDomain}
-            placeholder="yourserver.com"
-            keyboardType="url"
-          />
-          <InputField
-            label="Port"
-            value={port}
-            onChangeText={setPort}
-            placeholder="5060"
-            keyboardType="numeric"
-          />
-
-          {/* Transport */}
-          <View style={styles.inputGroup}>
-            <Text style={[styles.inputLabel, { color: colors.muted }]}>Transport Protocol</Text>
-            <View style={styles.transportRow}>
-              {TRANSPORTS.map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  style={[
-                    styles.transportBtn,
-                    { borderColor: transport === t ? colors.primary : colors.border },
-                    transport === t && { backgroundColor: colors.primary + "15" }
-                  ]}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setTransport(t);
-                    setPort(t === "TLS" ? "5061" : "5060");
-                  }}
-                >
-                  <Text style={[styles.transportText, { color: transport === t ? colors.primary : colors.muted }]}>{t}</Text>
-                </TouchableOpacity>
-              ))}
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+          <View style={styles.accountHeader}>
+            <View style={styles.accountIdentity}>
+              <Text style={[styles.cardTitle, { color: colors.foreground }]}>Phone11 Account</Text>
+              <Text style={[styles.accountSub, { color: colors.muted }]}>{userLabel}</Text>
             </View>
-          </View>
-        </View>
-
-        {/* Credentials */}
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Credentials</Text>
-
-          <InputField
-            label="Username / Extension"
-            value={username}
-            onChangeText={setUsername}
-            placeholder="1001"
-            keyboardType="default"
-          />
-          <InputField
-            label="Password"
-            value={password}
-            onChangeText={setPassword}
-            placeholder="SIP password"
-            secureTextEntry
-            rightElement={
-              <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={{ padding: 8 }}>
-                <IconSymbol name={showPassword ? "eye.slash" as any : "lock.fill"} size={16} color={colors.muted} />
+            {authLoading && !isAuthenticated ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : isAuthenticated ? (
+              <View style={[styles.statusPill, { backgroundColor: colors.success + "18" }]}> 
+                <Text style={[styles.statusPillText, { color: colors.success }]}>Signed In</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={[styles.signInButton, { backgroundColor: colors.primary }]}
+                onPress={handleSignIn}
+                accessibilityRole="button"
+              >
+                <Text style={styles.signInText}>Sign In</Text>
               </TouchableOpacity>
-            }
-          />
+            )}
+          </View>
+          <Text style={[styles.infoBody, { color: colors.muted }]}>Registration only starts after the phone is signed in and an extension is assigned in admin management.</Text>
         </View>
 
-        {/* Open Source Stack Info */}
-        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}>
+        <TouchableOpacity
+          style={[styles.syncCard, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}
+          onPress={handleSyncFromAdmin}
+          disabled={syncing}
+        >
+          <View style={styles.syncText}>
+            <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync or Create Pilot Extension</Text>
+            <Text style={[styles.syncSub, { color: colors.muted }]}>Loads admin settings, or creates a first-device pilot extension for this signed-in user.</Text>
+          </View>
+          {syncing ? (
+            <ActivityIndicator size="small" color={colors.primary} />
+          ) : (
+            <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
+          )}
+        </TouchableOpacity>
+
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Server</Text>
+          <ReadOnlyField label="SIP Domain" value={account?.domain} />
+          <ReadOnlyField label="SIP Proxy" value={account?.proxy || account?.domain} />
+          <ReadOnlyField label="Port" value={account?.port} />
+          <ReadOnlyField label="Transport" value={account?.transport} />
+        </View>
+
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Assigned Extension</Text>
+          <ReadOnlyField label="Display Name" value={account?.displayName} />
+          <ReadOnlyField label="Username / Extension" value={account?.username} />
+          <ReadOnlyField label="Password" value={account?.password ? "Stored securely" : ""} rightElement={<IconSymbol name="lock.fill" size={15} color={colors.muted} />} />
+        </View>
+
+        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
+          <Text style={[styles.cardTitle, { color: colors.foreground }]}>Calling Policy</Text>
+          <ReadOnlyField label="SIP Account Enabled" value={account?.enabled ? "Enabled" : "Not provisioned"} />
+          <ReadOnlyField label="Secure Media" value={account?.srtp ? "SRTP enabled" : "Not provisioned"} />
+          <ReadOnlyField label="STUN Server" value={account?.stun} />
+        </View>
+
+        <View style={[styles.infoCard, { backgroundColor: colors.primary + "08", borderColor: colors.primary + "20" }]}> 
           <View style={styles.infoHeader}>
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
-            <Text style={[styles.infoTitle, { color: colors.primary }]}>Open Source Backend Stack</Text>
+            <Text style={[styles.infoTitle, { color: colors.primary }]}>Admin-managed configuration</Text>
           </View>
-          <Text style={[styles.infoBody, { color: colors.muted }]}>
-            CloudPhone11 connects to any standard SIP server. Recommended open-source backends: FreeSWITCH, Asterisk, or Kamailio. No vendor lock-in — you own the infrastructure.
-          </Text>
-          <TouchableOpacity
-            style={[styles.docsBtn, { borderColor: colors.primary + "40" }]}
-            onPress={() => router.push("/settings/about")}
-          >
-            <IconSymbol name="doc.text.fill" size={14} color={colors.primary} />
-            <Text style={[styles.docsBtnText, { color: colors.primary }]}>View Architecture Docs</Text>
-          </TouchableOpacity>
+          <Text style={[styles.infoBody, { color: colors.muted }]}>Create or assign the user&apos;s extension in Admin Portal &gt; Phone Provisioning. For pilot testing, this screen can request a server-created pilot extension for the signed-in user.</Text>
         </View>
 
         <View style={{ height: 32 }} />
@@ -182,11 +370,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 0.5,
   },
-  backBtn: { flexDirection: "row", alignItems: "center", gap: 4, width: 80 },
+  backBtn: { flexDirection: "row", alignItems: "center", gap: 4, width: 92 },
   backText: { fontSize: 16, fontWeight: "500" },
   title: { fontSize: 17, fontWeight: "700" },
-  saveBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20 },
-  saveBtnText: { color: "#fff", fontSize: 14, fontWeight: "600" },
+  headerSpacer: { width: 92 },
   statusBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -198,6 +385,19 @@ const styles = StyleSheet.create({
   },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusText: { fontSize: 13, fontWeight: "600", flex: 1 },
+  syncCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginHorizontal: 16,
+    marginBottom: 16,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  syncText: { flex: 1, gap: 3 },
+  syncTitle: { fontSize: 14, fontWeight: "700" },
+  syncSub: { fontSize: 12, lineHeight: 17 },
   card: {
     marginHorizontal: 16,
     marginBottom: 16,
@@ -207,8 +407,27 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   cardTitle: { fontSize: 15, fontWeight: "700", marginBottom: 4 },
+  accountHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  accountIdentity: { flex: 1 },
+  accountSub: { fontSize: 13, marginTop: 2 },
+  statusPill: { borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
+  statusPillText: { fontSize: 12, fontWeight: "700" },
+  signInButton: {
+    minWidth: 84,
+    minHeight: 38,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  signInText: { color: "#fff", fontSize: 13, fontWeight: "700" },
   inputGroup: { gap: 6 },
-  inputLabel: { fontSize: 12, fontWeight: "600", letterSpacing: 0.3 },
+  inputLabel: { fontSize: 12, fontWeight: "600" },
   inputWrapper: {
     flexDirection: "row",
     alignItems: "center",
@@ -217,15 +436,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   input: { flex: 1, fontSize: 15, paddingVertical: 12 },
-  transportRow: { flexDirection: "row", gap: 8 },
-  transportBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    alignItems: "center",
-  },
-  transportText: { fontSize: 14, fontWeight: "700" },
   infoCard: {
     marginHorizontal: 16,
     marginBottom: 16,
@@ -237,15 +447,4 @@ const styles = StyleSheet.create({
   infoHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
   infoTitle: { fontSize: 14, fontWeight: "700" },
   infoBody: { fontSize: 13, lineHeight: 19 },
-  docsBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    alignSelf: "flex-start",
-  },
-  docsBtnText: { fontSize: 13, fontWeight: "600" },
 });
