@@ -41,14 +41,14 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
   async capabilities(channelUuid:string,actorUserId:number){
    const none={canStart:false,canStop:false};
    if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true'||!/^[0-9a-f-]{36}$/i.test(channelUuid)||!Number.isSafeInteger(actorUserId)||actorUserId<=0)return none;
-   const found=await db.query(`SELECT r.recording_status,r.capture_stopped_at,p.mode FROM phone11_cloud_recordings r
+   const found=await db.query(`SELECT r.recording_status,r.capture_stop_requested_at,r.capture_stopped_at,p.mode FROM phone11_cloud_recordings r
     JOIN phone11_recording_routes rr ON rr.channel_uuid::text=r.call_uuid AND rr.tenant_id=r.tenant_id AND rr.extension_id=r.extension_id
     JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id JOIN user_extensions ue ON ue.extension_id=r.extension_id
     JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id JOIN tenants t ON t.id=r.tenant_id
     WHERE r.call_uuid=$1 AND ue.user_id=$2 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active' AND r.expires_at>clock_timestamp()`,[channelUuid,actorUserId]);
    if(found.rows.length!==1)return none;
    try{if((await transport.api(`uuid_exists ${channelUuid}`)).trim()!=='true')return none;
-    if(found.rows[0].recording_status==='recording')return {canStart:false,canStop:!found.rows[0].capture_stopped_at};
+    if(found.rows[0].recording_status==='recording')return {canStart:false,canStop:!found.rows[0].capture_stop_requested_at&&!found.rows[0].capture_stopped_at};
     const peer=(await transport.api(`uuid_getvar ${channelUuid} signal_bond`)).trim();
     return {canStart:found.rows[0].mode!=='off'&&['off','failed'].includes(found.rows[0].recording_status)&&/^[0-9a-f-]{36}$/i.test(peer)&&peer!==channelUuid,canStop:false};
    }catch{return none;}
@@ -62,13 +62,17 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
    // detail refresh then reports finalization and cannot expose Stop again,
    // even if upload or CDR correlation needs a durable retry. If a concurrent
    // stop callback already finalized it, the PBX-confirmed stop still succeeds.
-   try{await ledger.stopped(lease);}catch{/* Completion callback/reconciler owns the same durable token. */}
-   // The authenticated stop transport waits for the exact RECORD_STOP event,
-   // so the call has stopped even when the WAV upload or CDR correlation is
-   // still temporarily unavailable. Finish asynchronously; the durable
-   // stopped marker lets the reconciliation loop retry without making the
-   // user tap Stop again or showing a false failure after a successful stop.
-   void capture.recordingStopped(id,lease.path).catch(()=>{});
+   // The PBX accepted the exact stop command. Persist that request before the
+   // response reaches the handset so a reload cannot offer a second Stop while
+   // the authenticated RECORD_STOP event, WAV upload, or CDR are pending.
+   // `stopRequested` is idempotent for this exact capture lease; a database
+   // failure is surfaced as a failed mutation rather than pretending the UI is
+   // settled.
+   try{await ledger.stopRequested(lease);}catch{return false;}
+   // `startRecording` already subscribed to the exact RECORD_STOP event. Do
+   // not synthesize completion from this command acknowledgement: a live call
+   // may keep running while FreeSWITCH flushes its recorder. The event or the
+   // bounded reconciler records `capture_stopped_at` and starts upload.
    return true;
   },
   onAuthenticatedRecordStop:capture.recordingStopped,
@@ -94,7 +98,7 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
       }catch{/* Unmapped channels remain excluded. */}
      }
     }
-    const rows=await db.query(`SELECT r.call_uuid,r.tenant_id,r.extension_id,r.capture_token,r.capture_stopped_at,r.recording_status,p.mode,(r.expires_at<=clock_timestamp()) AS expired,(r.capture_pending_until<clock_timestamp()) AS pending_expired FROM phone11_cloud_recordings r
+    const rows=await db.query(`SELECT r.call_uuid,r.tenant_id,r.extension_id,r.capture_token,r.capture_stop_requested_at,r.capture_stopped_at,r.recording_status,p.mode,(r.expires_at<=clock_timestamp()) AS expired,(r.capture_pending_until<clock_timestamp()) AS pending_expired FROM phone11_cloud_recordings r
      JOIN phone11_recording_routes rr ON rr.channel_uuid::text=r.call_uuid AND rr.tenant_id=r.tenant_id AND rr.extension_id=r.extension_id
      JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id
      WHERE r.recording_status IN ('recording','pending') OR (r.expires_at>clock_timestamp() AND r.recording_status='off' AND p.mode='automatic') ORDER BY r.started_at LIMIT 20`);
@@ -102,12 +106,17 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
      if(!/^[0-9a-f-]{36}$/i.test(r.call_uuid))continue;
      try{
       const exists=(await transport.api(`uuid_exists ${r.call_uuid}`)).trim();
-      if(r.recording_status==='recording'&&r.capture_stopped_at&&(r.mode==='off'||r.expired||process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true')){
+      if(r.recording_status==='recording'&&(r.capture_stop_requested_at||r.capture_stopped_at)&&(r.mode==='off'||r.expired||process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true')){
        const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};await spool.discardCompleted(lease);await ledger.failed(lease,'policy_revoked');continue;
       }
       if(r.recording_status==='pending'&&r.pending_expired){
        if(exists==='true')await transport.api(`uuid_record ${r.call_uuid} stop /var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`);
        if(exists==='false'||exists==='true'){const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};await spool.discardCompleted(lease);await ledger.failed(lease,'capture_failed');}
+      }else if(r.recording_status==='recording'&&exists==='true'&&r.capture_stop_requested_at&&!r.capture_stopped_at){
+       // The request was committed before the handset was told it succeeded.
+       // Reissue only the exact private stop while waiting for RECORD_STOP;
+       // the user never needs to tap Stop again after a reconnect.
+       await transport.api(`uuid_record ${r.call_uuid} stop /var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`);
       }else if(r.recording_status==='recording'&&exists==='true'&&(r.mode==='off'||r.expired||process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED!=='true')){
        await transport.api(`uuid_record ${r.call_uuid} stop /var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`);
        const lease={channelUuid:r.call_uuid,callUuid:r.call_uuid,tenantId:Number(r.tenant_id),extensionId:Number(r.extension_id),token:r.capture_token,path:`/var/lib/freeswitch/recordings/phone11/${r.tenant_id}/${r.capture_token}.wav`};await spool.discardCompleted(lease);await ledger.failed(lease,'policy_revoked');

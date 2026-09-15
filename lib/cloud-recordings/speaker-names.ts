@@ -39,26 +39,22 @@ export function normalizeAssignedSpeakerNames(
 }
 
 /**
- * Gemini's recording contract labels the caller as Speaker 1 and the receiver
- * as Speaker 2. Resolve those labels locally from the signed-in Phone11 owner
- * and the device address book. A recording's own number is used only when the
- * owner has no matching contact; no address-book data is sent to the server.
+ * A contact and the signed-in owner identify the two call participants, but
+ * they do not identify Gemini's generic Speaker 1 / Speaker 2 labels. Until
+ * the capture pipeline persists a verified channel-role map, returning names
+ * here would silently misattribute speech. Keep the generic labels and let a
+ * user make an explicit, recording-local correction instead.
+ *
+ * Kept as a compatibility export while older callers are migrated to a
+ * verified mapping supplied by the server.
  */
 export function defaultCallSpeakerNames(
-  direction: "inbound" | "outbound",
-  contactName?: string,
-  ownerName?: string,
-  remoteNumber?: string,
+  _direction: "inbound" | "outbound",
+  _contactName?: string,
+  _ownerName?: string,
+  _remoteNumber?: string,
 ): TranscriptSpeakerNames {
-  const remote = normalizeAssignedSpeakerNames({
-    speaker1: contactName || remoteNumber || "Other party",
-  }).speaker1!;
-  const owner = normalizeAssignedSpeakerNames({
-    speaker1: ownerName || "Phone11",
-  }).speaker1!;
-  return direction === "inbound"
-    ? { speaker1: remote, speaker2: owner }
-    : { speaker1: owner, speaker2: remote };
+  return {};
 }
 
 export function validateAssignedSpeakerNames(input: TranscriptSpeakerNames) {

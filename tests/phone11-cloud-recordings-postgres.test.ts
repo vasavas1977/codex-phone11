@@ -45,11 +45,11 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
   await expect(repo.updatePolicy(3,{tenantId:10,mode:'automatic',aiEnabled:true,retentionDays:30})).rejects.toMatchObject({code:'FORBIDDEN'});
  });
  it('only assigned extension sees call; tenant admin is not media permission',async()=>{await ready();expect((await repo.list(2)).items).toHaveLength(1);expect((await repo.list(1)).items).toHaveLength(0);await expect(repo.detail(3,'call1')).rejects.toMatchObject({code:'NOT_FOUND'});await pool.query("DELETE FROM user_extensions WHERE user_id=2");await expect(repo.detail(2,'call1')).rejects.toMatchObject({code:'NOT_FOUND'});});
- it('returns persisted participant names for transcript labeling',async()=>{
+ it('does not infer diarized participant names from caller ID or direction',async()=>{
   await pool.query("UPDATE extensions SET display_name='Vasavas' WHERE id=11");
   await pool.query("UPDATE call_records SET metadata=$1::jsonb WHERE call_uuid='call1'", [JSON.stringify({caller_name:'Somchai'})]);
   await repo.registerCall('call1');
-  expect((await repo.detail(2,'call1')).participantNames).toEqual({speaker1:'Somchai',speaker2:'Vasavas'});
+  expect((await repo.detail(2,'call1')).participantNames).toBeUndefined();
  });
  it('fails closed for missing or conflicting extension ownership',async()=>{await pool.query('UPDATE call_legs SET extension_id=NULL');expect(await repo.registerCall('call1')).toBe(false);});
  it('requires finalized exact storage and capture gate',async()=>{await repo.registerCall('call1');expect(await repo.recordingStored('call1','wrong','00000000-0000-4000-8000-000000000000')).toBe(false);await ready();const off=createCloudRecordingRepository(pool,()=>false);expect(await off.recordingStored('call1','/private/test.wav','00000000-0000-4000-8000-000000000000')).toBe(false);});

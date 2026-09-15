@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS phone11_cloud_recordings (
  capture_token UUID,
  manual_actor_user_id INTEGER REFERENCES users(id),
  capture_pending_until TIMESTAMPTZ,
+ capture_stop_requested_at TIMESTAMPTZ,
  capture_stopped_at TIMESTAMPTZ,
  capture_cleaned_at TIMESTAMPTZ,
  capture_upload_lease_until TIMESTAMPTZ,
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS phone11_recording_routes (
 );
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS purge_token UUID;
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS purge_until TIMESTAMPTZ;
+ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS capture_stop_requested_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS phone11_recording_wake_links (
  wake_uuid UUID PRIMARY KEY, binding_id UUID NOT NULL,
  tenant_id INTEGER NOT NULL REFERENCES tenants(id), extension_id INTEGER NOT NULL REFERENCES extensions(id),
