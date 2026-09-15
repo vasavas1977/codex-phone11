@@ -162,3 +162,28 @@ The removal contains no native changes.
 - iPhone Mirroring remains behind the owner's private Mac unlock screen.
   Physical receiver/Speaker/Bluetooth switching and audible playback have not
   been verified by this installation or the browser preview.
+
+## Parallel QA checkpoint
+
+- Focused automated QA passed 11 test files and 68 tests with zero failures:
+  Recents UI, cloud recording, playback/focus, playback controls, output
+  picker, summary actions, transcript speakers, and Billable call removal.
+- The broader native/readiness review passed 48 Vitest files and 565 tests,
+  including CallKit answer/end/mute/hold/DTMF, incoming retry and navigation,
+  recording start/stop reconciliation, playback and seeking, summaries and
+  transcripts, call history, push/wake behavior, and output picker behavior.
+- Recording announcement validation passed 1/1. Native checks passed 9/9,
+  including 188 bridge assertions, 247 wake-runtime assertions, PushKit/CallKit
+  lifecycle checks, and AVRoutePickerView compilation/integration. SIPrix
+  packaging/wake/config checks passed 31/31.
+- The preview was interacted with directly: Play changed to Pause, skip
+  buttons moved the seek position, the seek slider changed position by
+  keyboard, the output picker opened, Summary and Transcription switched, and
+  the actions menu contained no Billable call item.
+
+The remaining acceptance gates require a live handset interaction: a real
+locked-screen incoming call with reject/continue-ringing controls, a two-way
+PSTN call exercising mute/hold/hangup and repeated ringing, live recording
+start/stop settlement, and physical iPhone/Speaker/Bluetooth playback. The
+private iPhone Mirroring unlock screen currently prevents those checks from
+being observed remotely.
