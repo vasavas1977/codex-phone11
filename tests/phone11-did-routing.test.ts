@@ -199,6 +199,18 @@ describe("inbound DID routing", () => {
     expect(db.query).toHaveBeenCalledTimes(1);
   });
 
+  it("fails closed when a corrupt inbound DID lookup returns more than one tenant", async () => {
+    db.query.mockResolvedValueOnce({
+      rows: [did({ tenant_id: 7 }), did({ id: 12, tenant_id: 8 })],
+    });
+
+    const response = await post({ ruri_user: "+6620303001" });
+
+    expect(await response.json()).toEqual({ action: "reject", code: 404 });
+    expect(db.query).toHaveBeenCalledTimes(1);
+    expect(db.query.mock.calls[0][0]).toContain("LIMIT 2");
+  });
+
   it("fails closed when a configured extension is inactive, missing, or cross-tenant", async () => {
     db.query
       .mockResolvedValueOnce({

@@ -143,11 +143,17 @@ router.post("/route", verifyKamAuth, async (req: Request, res: Response) => {
       `SELECT pn.*, t.slug as tenant_slug
        FROM phone_numbers pn
        JOIN tenants t ON pn.tenant_id = t.id
-       WHERE pn.number_e164 = $1 AND pn.status = 'active' AND pn.deleted_at IS NULL AND t.status = 'active'`,
+       WHERE pn.number_e164 = $1 AND pn.status = 'active' AND pn.deleted_at IS NULL AND t.status = 'active'
+       LIMIT 2`,
       [ruri_user]
     );
 
     if (didResult.rows.length > 0) {
+      // An inbound DID must identify exactly one active tenant. Do not let a
+      // corrupt or incomplete uniqueness constraint choose the first tenant.
+      if (didResult.rows.length !== 1) {
+        return res.json({ action: "reject", code: 404 });
+      }
       const did = didResult.rows[0];
       
       if (did.assigned_route_type === "extension" && did.assigned_route_id) {
