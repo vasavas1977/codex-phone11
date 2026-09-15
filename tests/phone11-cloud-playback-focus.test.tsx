@@ -43,6 +43,7 @@ const m = vi.hoisted(() => ({
   },
   routeListener: undefined as undefined | ((event: unknown) => void),
   token: vi.fn(async () => "token"),
+  share: vi.fn(async () => {}),
 }));
 vi.mock("react-native", () => ({
   ActivityIndicator: () => createElement("span", null),
@@ -102,6 +103,9 @@ vi.mock("../lib/_core/auth", () => ({
   getAuthSnapshot: () => ({ user: m.identity }),
   getSessionToken: () => m.token(),
   addAuthChangeListener: () => vi.fn(),
+}));
+vi.mock("../lib/cloud-recordings/recording-share", () => ({
+  shareAuthenticatedRecording: (options: unknown) => m.share(options),
 }));
 vi.mock("../constants/oauth", () => ({
   getApiBaseUrl: () => "https://api.phone11.ai",
@@ -201,6 +205,21 @@ it("changes the native media route only while no Phone11 call is active", async 
   await m.buttons.get("Play through speaker").onPress();
   expect(m.nativeRoute.setPlaybackAudioRoute).not.toHaveBeenCalled();
   expect(m.player.pause).toHaveBeenCalled();
+  blur();
+});
+
+it("pauses playback before securely sharing the exact recording", async () => {
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.controls.onShare();
+  expect(m.player.pause).toHaveBeenCalled();
+  expect(m.share).toHaveBeenCalledWith({
+    callUuid: props.callUuid,
+    path: props.path,
+    platform: "ios",
+  });
   blur();
 });
 

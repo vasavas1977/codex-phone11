@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Platform } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { useSipCallStore } from "@/lib/sip/call-store";
@@ -17,6 +18,7 @@ import {
 } from "@/lib/cloud-recordings/playback-route";
 import { PlaybackControls } from "./playback-controls";
 import { createPlaybackController } from "@/lib/cloud-recordings/playback-controller";
+import { shareAuthenticatedRecording } from "@/lib/cloud-recordings/recording-share";
 const earpieceOutput: PlaybackAudioRouteStatus = {
   route: "earpiece",
   label: "Earpiece",
@@ -64,7 +66,9 @@ export function Playback({
     [route, setRoute] = useState<PlaybackAudioRoute>("earpiece"),
     [output, setOutput] = useState<PlaybackAudioRouteStatus>(earpieceOutput),
     [routeChanging, setRouteChanging] = useState(false),
-    [routeError, setRouteError] = useState<string>();
+    [routeError, setRouteError] = useState<string>(),
+    [sharing, setSharing] = useState(false),
+    [shareError, setShareError] = useState<string>();
   const routeChangeInFlight = useRef<symbol | null>(null);
   const routeIntent = useRef(0);
   const focusGeneration = useRef(0);
@@ -104,6 +108,8 @@ export function Playback({
       routeChangeInFlight.current = operation;
       setRouteChanging(true);
       setRouteError(undefined);
+      setSharing(false);
+      setShareError(undefined);
       try {
         const nextOutput = await setPlaybackAudioRoute(
           nextRoute,
@@ -283,6 +289,8 @@ export function Playback({
       output={output}
       routeChanging={routeChanging}
       routeError={routeError}
+      sharing={sharing}
+      shareError={shareError}
       error={error ? "Playback unavailable. Refresh and try again." : undefined}
       onToggle={() => {
         const playback = controller.current;
@@ -336,6 +344,27 @@ export function Playback({
         setRouteError(undefined);
         const effectiveOutput = normalizePlaybackAudioRoute(selectedOutput);
         if (effectiveOutput.route !== "unknown") setOutput(effectiveOutput);
+      }}
+      onShare={async () => {
+        if (sharing || callBusy()) return;
+        controller.current?.pause();
+        setSharing(true);
+        setShareError(undefined);
+        try {
+          await shareAuthenticatedRecording({
+            callUuid,
+            path,
+            platform: Platform.OS,
+          });
+        } catch (error) {
+          setShareError(
+            error instanceof Error
+              ? error.message
+              : "Recording could not be shared.",
+          );
+        } finally {
+          setSharing(false);
+        }
       }}
     />
   );

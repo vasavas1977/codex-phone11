@@ -73,7 +73,10 @@ export function PlaybackControls({
   onOutputPickerOpened,
   availableOutputs,
   onOutputSelect,
+  onShare,
+  sharing = false,
   error,
+  shareError,
   routeError,
   colors = defaultPlaybackColors,
 }: {
@@ -92,7 +95,10 @@ export function PlaybackControls({
   onOutputPickerOpened?(output: PlaybackAudioRouteStatus): void | Promise<void>;
   availableOutputs?: readonly PlaybackExternalOutput[];
   onOutputSelect?(output: PlaybackExternalOutput): void | Promise<void>;
+  onShare?(): void | Promise<void>;
+  sharing?: boolean;
   error?: string;
+  shareError?: string;
   routeError?: string;
   colors?: PlaybackControlColors;
 }) {
@@ -332,17 +338,43 @@ export function PlaybackControls({
               onOutputPickerOpened={onOutputPickerOpened}
               colors={colors}
             />
+            {onShare && (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Share recording"
+                accessibilityHint="Downloads this recording and opens the share sheet"
+                accessibilityState={{ disabled: !loaded || sharing }}
+                disabled={!loaded || sharing}
+                onPress={onShare}
+                style={{
+                  height: 44,
+                  width: 44,
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                {sharing ? (
+                  <ActivityIndicator size="small" color={colors.muted} />
+                ) : (
+                  <IconSymbol
+                    name="square.and.arrow.up"
+                    size={23}
+                    color={loaded ? colors.primary : colors.muted}
+                  />
+                )}
+              </TouchableOpacity>
+            )}
           </View>
-          {(routeError || output.route === "external") && (
+          {(shareError || routeError || output.route === "external") && (
             <Text
               accessibilityLiveRegion="polite"
               style={{
                 textAlign: "center",
                 fontSize: 12,
-                color: routeError ? colors.error : colors.muted,
+                color: shareError || routeError ? colors.error : colors.muted,
               }}
             >
-              {routeError || `Connected to ${output.label}`}
+              {shareError || routeError || `Connected to ${output.label}`}
             </Text>
           )}
         </>
