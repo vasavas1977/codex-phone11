@@ -13,6 +13,31 @@ const recentRequests = new Map<number, number[]>();
 const limit = 6;
 const windowMs = 60_000;
 
+function translationFailure(error: unknown): {
+  code: "PRECONDITION_FAILED" | "BAD_GATEWAY";
+  message: string;
+} {
+  if (error instanceof RecordingTranslationError) {
+    if (error.code === "not_configured") {
+      return {
+        code: "PRECONDITION_FAILED",
+        message:
+          "Translation needs Gemini setup. Ask a Phone11 administrator to configure it.",
+      };
+    }
+    if (error.code === "invalid_result") {
+      return {
+        code: "BAD_GATEWAY",
+        message: "Translation returned an incomplete result. Please try again.",
+      };
+    }
+  }
+  return {
+    code: "BAD_GATEWAY",
+    message: "Translation service could not complete this request. Please try again.",
+  };
+}
+
 function permit(userId: number, now = Date.now()) {
   const recent = (recentRequests.get(userId) ?? []).filter(
     (value) => now - value < windowMs,
@@ -61,13 +86,10 @@ export const cloudRecordingSummaryToolsRouter = router({
           },
         });
       } catch (error) {
+        const failure = translationFailure(error);
         throw new TRPCError({
-          code:
-            error instanceof RecordingTranslationError &&
-            error.code === "not_configured"
-              ? "PRECONDITION_FAILED"
-              : "BAD_GATEWAY",
-          message: "Translation is unavailable.",
+          code: failure.code,
+          message: failure.message,
         });
       }
     }),

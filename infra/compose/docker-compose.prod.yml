@@ -229,6 +229,11 @@ services:
       FREESWITCH_ESL_PORT: 8021
       FREESWITCH_ESL_PASSWORD: ${FS_ESL_PASSWORD}
       FCM_API_KEY: ${FCM_API_KEY}
+      # Recording analysis and translation stay server-side. Keep the key in
+      # the private runtime .env; never put it in the mobile bundle.
+      PHONE11_RECORDING_AI_ENABLED: ${PHONE11_RECORDING_AI_ENABLED:-false}
+      PHONE11_RECORDING_GEMINI_MODEL: ${PHONE11_RECORDING_GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       JWT_SECRET: ${JWT_SECRET}
       PHONE11_AUTH_SECRET: ${PHONE11_AUTH_SECRET:?Set a new Phone11 auth secret}
       PHONE11_AUTH_BASE_URL: ${PHONE11_AUTH_BASE_URL:-https://api.phone11.ai}

@@ -2,6 +2,18 @@ import { TRPCError } from "@trpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cloudRecordingSummaryToolsRouter } from "../server/cloud-recordings/summary-tools-router";
 
+const recordingTranslationError = vi.hoisted(() =>
+  class extends Error {
+    constructor(
+      public readonly code:
+        | "not_configured"
+        | "provider_failed"
+        | "invalid_result",
+    ) {
+      super(`Recording translation ${code}`);
+    }
+  },
+);
 const mocks = vi.hoisted(() => ({
   detail: vi.fn(),
   getPolicy: vi.fn(),
@@ -16,18 +28,8 @@ vi.mock("../server/cloud-recordings/repository", () => ({
 }));
 
 vi.mock("../server/cloud-recordings/summary-translation", () => {
-  class RecordingTranslationError extends Error {
-    constructor(
-      public readonly code:
-        | "not_configured"
-        | "provider_failed"
-        | "invalid_result",
-    ) {
-      super(`Recording translation ${code}`);
-    }
-  }
   return {
-    RecordingTranslationError,
+    RecordingTranslationError: recordingTranslationError,
     translateRecordingSummary: mocks.translate,
   };
 });
@@ -154,6 +156,47 @@ describe("Phone11 summary translation authorization", () => {
       }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(mocks.translate).not.toHaveBeenCalled();
+  });
+
+  it("explains when the server-side Gemini translation setup is missing", async () => {
+    const error = new recordingTranslationError("not_configured");
+    mocks.translate.mockRejectedValueOnce(error);
+
+    await expect(
+      caller(9407).translate({
+        callUuid: "translation-not-configured",
+        targetLanguage: "th",
+      }),
+    ).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+      message:
+        "Translation needs Gemini setup. Ask a Phone11 administrator to configure it.",
+    });
+  });
+
+  it("keeps provider and malformed-result failures retryable", async () => {
+    mocks.translate.mockRejectedValueOnce(new Error("provider down"));
+    await expect(
+      caller(9408).translate({
+        callUuid: "translation-provider-failed",
+        targetLanguage: "en",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_GATEWAY",
+      message: "Translation service could not complete this request. Please try again.",
+    });
+
+    const invalid = new recordingTranslationError("invalid_result");
+    mocks.translate.mockRejectedValueOnce(invalid);
+    await expect(
+      caller(9409).translate({
+        callUuid: "translation-invalid-result",
+        targetLanguage: "ja",
+      }),
+    ).rejects.toMatchObject({
+      code: "BAD_GATEWAY",
+      message: "Translation returned an incomplete result. Please try again.",
+    });
   });
 
   it("bounds translation requests per authenticated user", async () => {

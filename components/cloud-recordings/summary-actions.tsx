@@ -53,6 +53,22 @@ export interface SummaryActionsViewProps {
 
 type Editor = "actions" | "summary" | "task" | "language" | "copy" | null;
 
+const safeTranslationErrors = new Set([
+  "Translation needs Gemini setup. Ask a Phone11 administrator to configure it.",
+  "Translation returned an incomplete result. Please try again.",
+  "Translation service could not complete this request. Please try again.",
+]);
+
+function translationErrorMessage(error: unknown) {
+  const message =
+    error && typeof error === "object" && "message" in error
+      ? (error as { message?: unknown }).message
+      : undefined;
+  return typeof message === "string" && safeTranslationErrors.has(message)
+    ? message
+    : "Translation is unavailable. Please try again.";
+}
+
 function MenuRow({
   label,
   description,
@@ -973,9 +989,9 @@ export function RecordingSummaryActions({
       setTranslations((current) => ({ ...current, [language]: result }));
       setSelectedLanguage(language);
       onContentChange?.(result, language);
-    } catch {
+    } catch (error) {
       if (generation.current === revision) {
-        setTranslationError("Translation is unavailable. Please try again.");
+        setTranslationError(translationErrorMessage(error));
         throw new Error("translation_failed");
       }
     } finally {

@@ -26,6 +26,13 @@ FCM_API_KEY=your-firebase-cloud-messaging-server-key
 JWT_SECRET=CHANGE_ME_JWT_SECRET_MIN_32_CHARS
 STORAGE_BUCKET=cloudphone11-recordings
 
+# ---- Recording AI and translation (optional; server-only) ----
+# Set all three values to enable Gemini transcription, summaries, and
+# translation. Never put GEMINI_API_KEY in the mobile app or source control.
+PHONE11_RECORDING_AI_ENABLED=false
+PHONE11_RECORDING_GEMINI_MODEL=
+GEMINI_API_KEY=
+
 # ---- TLS (place cert files in ./tls/) ----
 # fullchain.pem  — Full certificate chain
 # privkey.pem    — Private key

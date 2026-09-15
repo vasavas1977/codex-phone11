@@ -1,8 +1,10 @@
 import { isMissingCloudProcedure } from "@/hooks/use-cloud-recordings";
 import { useColors } from "@/hooks/use-colors";
 import { useEffect, useState } from "react";
-import { ScrollView, Text, TouchableOpacity } from "react-native";
+import { ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useDirectory } from "@/hooks/use-directory";
 import { useAuth } from "@/hooks/use-auth";
 import * as Auth from "@/lib/_core/auth";
@@ -85,9 +87,44 @@ export default function RecordingSettings() {
   return (
     <ScreenContainer>
       <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
-        <Text style={{ fontSize: 24, color: colors.foreground }}>
-          Recording settings
-        </Text>
+        <View
+          style={{
+            minHeight: 44,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Back to settings"
+            onPress={() =>
+              router.canGoBack() ? router.back() : router.replace("/(tabs)/settings")
+            }
+            hitSlop={10}
+            style={{
+              minHeight: 44,
+              minWidth: 92,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <IconSymbol name="chevron.left" size={20} color={colors.primary} />
+            <Text style={{ color: colors.primary, fontSize: 16 }}>Settings</Text>
+          </TouchableOpacity>
+          <Text
+            style={{
+              flex: 1,
+              fontSize: 22,
+              textAlign: "center",
+              color: colors.foreground,
+            }}
+          >
+            Recording settings
+          </Text>
+          <View style={{ width: 92 }} />
+        </View>
         <Text style={{ color: colors.foreground }}>Choose your workspace</Text>
         {directory.workspaces.map((workspace) => (
           <TouchableOpacity
