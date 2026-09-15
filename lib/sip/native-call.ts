@@ -690,11 +690,19 @@ class NativeCallManager {
       "didToggleHoldCallAction",
       async ({ callUUID, hold }: any) => {
         const sipCallId = uuidToCallId.get(callUUID);
-        if (!sipCallId) return;
+        if (!sipCallId || typeof hold !== "boolean") return;
 
         console.log(`[NativeCall] Hold toggled: ${hold}`);
-        await sipEngine.setHold(sipCallId, hold);
-        useSipCallStore.getState().setHeld(sipCallId, hold);
+        try {
+          await sipEngine.setHold(sipCallId, hold);
+          if (uuidToCallId.get(callUUID) === sipCallId) {
+            useSipCallStore.getState().setHeld(sipCallId, hold);
+          }
+        } catch {
+          addNativeCallDiagnostic("error", "CallKit hold change failed", {
+            callId: sipCallId, context: { hold },
+          });
+        }
       }
     );
 
@@ -734,10 +742,16 @@ class NativeCallManager {
       "didPerformDTMFAction",
       async ({ callUUID, digits }: any) => {
         const sipCallId = uuidToCallId.get(callUUID);
-        if (!sipCallId) return;
+        if (!sipCallId || typeof digits !== "string" || !/^[0-9*#A-D]+$/i.test(digits)) return;
 
         console.log(`[NativeCall] DTMF: ${digits}`);
-        await sipEngine.sendDtmf(sipCallId, digits);
+        try {
+          await sipEngine.sendDtmf(sipCallId, digits);
+        } catch {
+          addNativeCallDiagnostic("error", "CallKit keypad tone failed", {
+            callId: sipCallId,
+          });
+        }
       }
     );
 
@@ -790,17 +804,25 @@ class NativeCallManager {
               },
             });
 
-            const callId = await sipEngine.makeCall(handle);
-            if (callId) {
-              callIdToUuid.set(callId, callUUID);
-              uuidToCallId.set(callUUID, callId);
-              addNativeCallDiagnostic("info", "CallKit callback SIP call created", {
-                callId,
-                destination: handle,
-                context: {
-                  callUUID: callUUID ?? "none",
-                },
-              });
+            try {
+              const callId = await sipEngine.makeCall(handle);
+              if (callId) {
+                callIdToUuid.set(callId, callUUID);
+                uuidToCallId.set(callUUID, callId);
+                addNativeCallDiagnostic("info", "CallKit callback SIP call created", {
+                  callId,
+                  destination: handle,
+                  context: {
+                    callUUID: callUUID ?? "none",
+                  },
+                });
+              }
+            } catch {
+              addNativeCallDiagnostic("error", "CallKit callback could not create SIP call");
+              if (callUUID) {
+                try { callKeep.reportEndCallWithUUID(callUUID, 1); }
+                catch { addNativeCallDiagnostic("error", "CallKit callback cleanup failed"); }
+              }
             }
           }
         }

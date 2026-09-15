@@ -2,8 +2,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (data?: any) => unknown>(),
   keep: { setup: vi.fn(async (_options?: any) => {}), startCall: vi.fn(), answerIncomingCall: vi.fn(), displayIncomingCall: vi.fn(), reportConnectedOutgoingCallWithUUID: vi.fn(), setCurrentCallActive: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn(), reportEndCallWithUUID: vi.fn() },
-  engine: { setMute: vi.fn(async (_id: string, _muted: boolean) => {}), handleNativeAudioSession: vi.fn(async (_active: boolean) => {}), answerCall: vi.fn(async (_id: string) => {}), hangupCall: vi.fn(async (_id: string) => {}) },
-  setMuted: vi.fn(), terminate: vi.fn(), diagnostic: vi.fn(),
+  engine: { setMute: vi.fn(async (_id: string, _muted: boolean) => {}), setHold: vi.fn(async (_id: string, _held: boolean) => {}), sendDtmf: vi.fn(async (_id: string, _digits: string) => {}), makeCall: vi.fn(async (_handle: string) => "outbound-1" as string | null), handleNativeAudioSession: vi.fn(async (_active: boolean) => {}), answerCall: vi.fn(async (_id: string) => {}), hangupCall: vi.fn(async (_id: string) => {}) },
+  setMuted: vi.fn(), setHeld: vi.fn(), terminate: vi.fn(), diagnostic: vi.fn(),
   alert: vi.fn(), appState: { currentState: "active", addEventListener: () => ({ remove: vi.fn() }) },
   owner: { id: 1 } as { id: number } | null,
   activeCalls: {} as Record<string, { isMuted: boolean }>,
@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("react-native", () => ({ Alert: { alert: mocks.alert }, Platform: { OS: "ios" }, AppState: mocks.appState }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: mocks.owner }) }));
 vi.mock("../lib/sip/engine", () => ({ sipEngine: mocks.engine }));
-vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ setMuted: mocks.setMuted, activeCalls: mocks.activeCalls, incomingCall: mocks.incoming, terminateCall: mocks.terminate }) } }));
+vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: { getState: () => ({ setMuted: mocks.setMuted, setHeld: mocks.setHeld, activeCalls: mocks.activeCalls, incomingCall: mocks.incoming, terminateCall: mocks.terminate }) } }));
 vi.mock("../lib/sip/diagnostics-store", () => ({ formatSipError: String, useSipDiagnosticsStore: { getState: () => ({ addEvent: mocks.diagnostic }) } }));
 
 // NativeCallManager loads CallKeep with CommonJS require; inject that package's cached export.
@@ -395,4 +395,40 @@ it("rejects malformed mute values instead of coercing them into a microphone com
   const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
   await mocks.handlers.get("didPerformSetMutedCallAction")!({ callUUID, muted: "false" });
   expect(mocks.engine.setMute).not.toHaveBeenCalled();
+});
+
+it("contains late native hold rejection without changing state or exposing SDK text", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("326", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  mocks.engine.setHold.mockRejectedValueOnce(new Error("private SDK response"));
+  await expect(mocks.handlers.get("didToggleHoldCallAction")!({ callUUID, hold: true })).resolves.toBeUndefined();
+  expect(mocks.setHeld).not.toHaveBeenCalled();
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "CallKit hold change failed", callId: "326", context: { hold: true } }));
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private SDK");
+});
+it("does not apply a late native hold result after the mapped call ends", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("327", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0]; let finish!: () => void;
+  mocks.engine.setHold.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  const pending = mocks.handlers.get("didToggleHoldCallAction")!({ callUUID, hold: true });
+  nativeCallManager.reportCallEnded("327"); finish(); await pending;
+  expect(mocks.setHeld).not.toHaveBeenCalled();
+});
+it("contains native keypad rejection and rejects malformed digits", async () => {
+  await nativeCallManager.initialize(); nativeCallManager.displayIncomingCall("328", "3001");
+  const callUUID = mocks.keep.displayIncomingCall.mock.calls[0][0];
+  mocks.engine.sendDtmf.mockRejectedValueOnce(new Error("private SDK response"));
+  await expect(mocks.handlers.get("didPerformDTMFAction")!({ callUUID, digits: "12#" })).resolves.toBeUndefined();
+  await mocks.handlers.get("didPerformDTMFAction")!({ callUUID, digits: "private digits" });
+  expect(mocks.engine.sendDtmf).toHaveBeenCalledTimes(1);
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "CallKit keypad tone failed", callId: "328" }));
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private SDK");
+});
+it("contains CallKit callback dialing failure and closes only its failed system call", async () => {
+  await nativeCallManager.initialize();
+  mocks.engine.makeCall.mockRejectedValueOnce(new Error("private SDK response"));
+  await expect(mocks.handlers.get("didReceiveStartCallAction")!({ callUUID: "11111111-1111-4111-8111-111111111111", handle: "3001" })).resolves.toBeUndefined();
+  expect(mocks.keep.reportEndCallWithUUID).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111", 1);
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({ message: "CallKit callback could not create SIP call" }));
+  expect(JSON.stringify(mocks.diagnostic.mock.calls)).not.toContain("private SDK");
 });
