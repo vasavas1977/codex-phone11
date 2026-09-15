@@ -199,6 +199,14 @@ describe("Siprix native adapter", () => {
     expect(config).not.toHaveProperty("stunServer");
   });
 
+  it("preserves proxy, STUN and secure media for the iOS Siprix adapter", async () => {
+    useSipAccountStore.setState({ account: { ...account, proxy: "edge.example.test" } });
+    await engine.initialize();
+    expect(bridge.createAccount).toHaveBeenCalledWith(expect.objectContaining({
+      sipProxy: "edge.example.test", stunServer: account.stun, secureMedia: 1,
+    }));
+  });
+
   it("records native SDK version and numeric SIP status without raw response text", async () => {
     await engine.initialize();
     expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
@@ -282,6 +290,24 @@ describe("Siprix native adapter", () => {
     expect(bridge.initialize).toHaveBeenCalledOnce();
     expect(runtime.callManager.initialize).not.toHaveBeenCalled();
     expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+
+  it("adapts only unsupported NAT and secure-media preferences for the scoped Android lab", async () => {
+    runtime.platform.OS = "android";
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_LAB", "1");
+    useSipAccountStore.setState({ account: {
+      ...account, domain: "sip.stage.phone11.test", proxy: "sip.stage.phone11.test",
+      transport: "UDP", port: 15060, srtp: true, stun: "stun.example.test",
+    } });
+
+    await engine.initialize();
+
+    expect(bridge.createAccount).toHaveBeenCalledWith({
+      sipServer: "sip.stage.phone11.test", sipExtension: account.username,
+      sipPassword: account.password, sipAuthId: account.username,
+      displName: account.displayName, transport: "UDP", port: 15060,
+      secureMedia: 0,
+    });
   });
 
   it("keeps Android lab native module absence fatal without fallback", async () => {

@@ -47,12 +47,16 @@ const accountFields = [
 ] as const satisfies ReadonlyArray<keyof SipAccount>;
 
 function nativeAccount(account: SipAccount): AccountConfig {
+  // The isolated Android fixture terminates direct UDP and plain RTP itself.
+  // Do not pass the shared production NAT/media preferences to that scoped
+  // adapter; the native bridge still enforces host, port, extension and transport.
+  const androidLab = Platform.OS === "android" && isPhone11AndroidLab();
   return {
     sipServer: account.domain, sipExtension: account.username, sipPassword: account.password,
-    sipAuthId: account.username, ...(account.proxy ? { sipProxy: account.proxy } : {}),
+    sipAuthId: account.username, ...(!androidLab && account.proxy ? { sipProxy: account.proxy } : {}),
     displName: account.displayName || account.username, transport: account.transport,
-    port: account.port, secureMedia: account.srtp ? 1 : 0,
-    ...(account.stun ? { stunServer: account.stun } : {}),
+    port: account.port, secureMedia: androidLab ? 0 : account.srtp ? 1 : 0,
+    ...(!androidLab && account.stun ? { stunServer: account.stun } : {}),
   };
 }
 function sameWake(binding: WakeBinding, snapshot: SiprixSnapshot): boolean {
