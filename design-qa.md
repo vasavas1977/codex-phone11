@@ -98,6 +98,7 @@ handset acceptance checks.
 
 Additional evidence:
 
+- `design-qa-evidence/recents-controls-final.png`
 - `design-qa-evidence/call-actions-final.png`
 - `design-qa-evidence/summary-actions-final.png`
 - `design-qa-evidence/audio-output-final.png`
