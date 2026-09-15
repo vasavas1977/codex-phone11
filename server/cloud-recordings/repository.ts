@@ -4,6 +4,7 @@ import { TRPCError } from "@trpc/server";
 import type { CloudRecording, CloudRecordingDetail, CloudRecordingPolicy, RecordingPolicyMode } from "../../shared/cloud-recordings";
 import { getPool } from "../pbx/db";
 import { recordingFailureCode, recordingRetryDelaySeconds, type RecordingFailure } from "./failure";
+import { parseVerifiedStereoSpeakerIdentity } from "./speaker-identity";
 
 type DB = Pick<Pool, "connect" | "query">;
 const uuid = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -61,7 +62,9 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
     FROM phone11_cloud_recordings r
     WHERE ${owned} AND r.call_uuid=$2 AND r.expires_at>clock_timestamp()`,[userId,callUuid]);
    const r=result.rows[0]; if(!r)throw unavailable();
+   const speakerRoles=parseVerifiedStereoSpeakerIdentity(r.speaker_identity,callUuid);
    return {...dto(r),...(r.recording_status==='ready'?{playbackPath:`/api/recordings/play/${encodeURIComponent(callUuid)}`} : {}),
+    ...(speakerRoles?{speakerRoles}:{}),
     ...(r.summary_status==='ready'?{transcript:r.transcript,summary:r.summary}: {})};
   },
   /** Internal only: trusted PBX adapter supplies IDs, never a mobile request. Verifies explicit assigned leg. */
@@ -161,7 +164,7 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
     const found=await c.query(`SELECT * FROM phone11_cloud_recordings WHERE expires_at<=clock_timestamp() AND recording_status NOT IN ('pending','recording') AND (capture_token IS NULL OR capture_cleaned_at IS NOT NULL)
      AND (purge_until IS NULL OR purge_until<clock_timestamp()) ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT 1`);
     const r=found.rows[0];if(!r)return null;const token=randomUUID();
-    await c.query("UPDATE phone11_cloud_recordings SET purge_token=$2,purge_until=clock_timestamp()+interval '5 minutes',transcript=NULL,summary=NULL,summary_status='off' WHERE call_uuid=$1",[r.call_uuid,token]);
+    await c.query("UPDATE phone11_cloud_recordings SET purge_token=$2,purge_until=clock_timestamp()+interval '5 minutes',transcript=NULL,summary=NULL,speaker_identity=NULL,summary_status='off' WHERE call_uuid=$1",[r.call_uuid,token]);
     await c.query("UPDATE phone11_recording_jobs SET state='failed',lease_token=NULL,lease_until=NULL,worker_id=NULL,failure_code='expired' WHERE call_uuid=$1",[r.call_uuid]);
     return {callUuid:r.call_uuid,tenantId:Number(r.tenant_id),storageKey:r.storage_key,purgeToken:token};
    });

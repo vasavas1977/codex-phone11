@@ -4,6 +4,7 @@ import {
   mergeTranscriptSpeakerNames,
   type TranscriptSpeakerNames,
 } from "./transcript";
+import type { VerifiedSpeakerRoleMap } from "@/shared/cloud-recordings";
 
 export function speakerNamesStorageKey(ownerId: number, callUuid: string) {
   if (
@@ -55,6 +56,41 @@ export function defaultCallSpeakerNames(
   _remoteNumber?: string,
 ): TranscriptSpeakerNames {
   return {};
+}
+
+/**
+ * Converts already-verified server roles into device-local display names. This
+ * function intentionally has no direction argument: a caller/callee relation
+ * alone must never decide which diarized label belongs to whom.
+ */
+export function verifiedCallSpeakerNames(
+  roles: VerifiedSpeakerRoleMap | undefined,
+  identities: { extensionName?: string; remoteName?: string },
+): TranscriptSpeakerNames {
+  if (
+    !roles ||
+    roles.schemaVersion !== 1 ||
+    roles.verified !== true ||
+    roles.speaker1Role === roles.speaker2Role
+  )
+    return {};
+  const nameFor = (role: "extension" | "remote") =>
+    role === "extension" ? identities.extensionName : identities.remoteName;
+  const names = normalizeAssignedSpeakerNames({
+    speaker1: nameFor(roles.speaker1Role),
+    speaker2: nameFor(roles.speaker2Role),
+  });
+  // Identical local/contact names cannot distinguish the voices. Preserve the
+  // generic labels instead of making a false attribution look authoritative.
+  if (
+    names.speaker1 &&
+    names.speaker2 &&
+    names.speaker1.localeCompare(names.speaker2, undefined, {
+      sensitivity: "accent",
+    }) === 0
+  )
+    return {};
+  return names;
 }
 
 export function validateAssignedSpeakerNames(input: TranscriptSpeakerNames) {

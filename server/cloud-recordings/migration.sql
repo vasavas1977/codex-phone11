@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS phone11_cloud_recordings (
  expires_at TIMESTAMPTZ NOT NULL,
  transcript TEXT,
  summary JSONB,
+ -- Capture evidence only; never contact names, caller IDs, or Gemini labels.
+ speaker_identity JSONB,
  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
  CHECK(ended_at IS NULL OR ended_at >= started_at)
 );
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS phone11_recording_routes (
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS purge_token UUID;
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS purge_until TIMESTAMPTZ;
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS capture_stop_requested_at TIMESTAMPTZ;
+ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS speaker_identity JSONB;
 CREATE TABLE IF NOT EXISTS phone11_recording_wake_links (
  wake_uuid UUID PRIMARY KEY, binding_id UUID NOT NULL,
  tenant_id INTEGER NOT NULL REFERENCES tenants(id), extension_id INTEGER NOT NULL REFERENCES extensions(id),
