@@ -321,6 +321,13 @@ class NativeCallManager {
         detail: formatSipError(error),
         context: { callUUID: uuid },
       });
+      // `displayIncomingCall` is synchronous but can reject a duplicate or an
+      // invalid CallKit transaction. Do not retain a mapping for a call that
+      // CallKit never accepted: doing so makes a later retry of this same SIP
+      // call look like it is already displayed and drops its native lifecycle.
+      callIdToUuid.delete(sipCallId);
+      uuidToCallId.delete(uuid);
+      this.incomingOwners.delete(uuid);
       return;
     }
 
@@ -373,6 +380,13 @@ class NativeCallManager {
         detail: formatSipError(error),
         context: { callUUID: uuid },
       });
+      // Match the incoming path: a rejected CallKit transaction must remain
+      // retryable and must not leave a stale call UUID associated with this
+      // SIP call.
+      callIdToUuid.delete(sipCallId);
+      uuidToCallId.delete(uuid);
+      outgoingCalls.delete(sipCallId);
+      outgoingHandleEchoes.delete(normalizeHandle(callerNumber));
       return;
     }
 

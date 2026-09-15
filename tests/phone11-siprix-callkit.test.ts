@@ -44,6 +44,30 @@ it("reports real outgoing connection using the iOS method", async () => {
   expect(mocks.keep.reportConnectedOutgoingCallWithUUID).toHaveBeenCalledTimes(1);
   expect(mocks.keep.setCurrentCallActive).not.toHaveBeenCalled();
 });
+it("retries a CallKit display after the first native transaction is rejected", async () => {
+  await nativeCallManager.initialize();
+  mocks.keep.displayIncomingCall.mockImplementationOnce(() => {
+    throw new Error("CallKit rejected the first presentation");
+  });
+  nativeCallManager.displayIncomingCall("display-retry", "3001");
+  nativeCallManager.displayIncomingCall("display-retry", "3001");
+  expect(mocks.keep.displayIncomingCall).toHaveBeenCalledTimes(2);
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({
+    level: "error", message: "CallKit incoming call display failed", callId: "display-retry",
+  }));
+});
+it("retries an outgoing CallKit report after the first native transaction is rejected", async () => {
+  await nativeCallManager.initialize();
+  mocks.keep.startCall.mockImplementationOnce(() => {
+    throw new Error("CallKit rejected the first outgoing report");
+  });
+  nativeCallManager.reportOutgoingCall("outbound-retry", "3001");
+  nativeCallManager.reportOutgoingCall("outbound-retry", "3001");
+  expect(mocks.keep.startCall).toHaveBeenCalledTimes(2);
+  expect(mocks.diagnostic).toHaveBeenCalledWith(expect.objectContaining({
+    level: "error", message: "CallKit outgoing call report failed", callId: "outbound-retry",
+  }));
+});
 it("forwards CallKit audio activation and deactivation to the selected SDK", async () => {
   await nativeCallManager.initialize();
   await mocks.handlers.get("didActivateAudioSession")?.();
