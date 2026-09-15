@@ -42,11 +42,13 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
   });
   async function authenticate(client: PoolClient, bindingId: string, grant?: string, session?: { id: string; userId: number }) {
     // Logout cascades session -> push -> binding; token refresh locks push ->
-    // binding. Acquire authority rows first, then push, then binding explicitly.
+    // binding. Acquire writable authority rows first, then push, then binding
+    // explicitly. Canonical identity/assignment rows are read-only to this
+    // runtime, so revalidate them without a row lock.
     await client.query(`SELECT auths.id FROM phone11_auth_session auths
       JOIN phone11_wake_bindings b ON b.session_id=auths.id WHERE b.id=$1 FOR SHARE OF auths`, [bindingId]);
     await client.query(`SELECT p.revision FROM phone11_wake_bindings b ${liveBinding}
-      WHERE b.id=$1 FOR SHARE OF ai,ue,e,t,sa`, [bindingId]);
+      WHERE b.id=$1`, [bindingId]);
     await client.query(`SELECT p.revision FROM phone11_push_devices p
       JOIN phone11_wake_bindings b ON p.session_id=b.session_id AND p.user_id=b.user_id
         AND p.tenant_id=b.tenant_id AND p.extension_id=b.extension_id AND p.device_id=b.device_id
@@ -54,7 +56,7 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
     const rows = await client.query(`SELECT b.*,p.sip_uri FROM phone11_wake_bindings b ${liveBinding}
       WHERE b.id=$1 AND b.expires_at>clock_timestamp()
       AND (($2::text IS NOT NULL AND b.grant_hash=$2) OR ($3::text IS NOT NULL AND b.session_id=$3 AND b.user_id=$4))
-      FOR SHARE OF b,p,auths,ai,ue,e,t,sa`, [bindingId, grant ? hash(grant) : null, session?.id ?? null, session?.userId ?? null]);
+      FOR SHARE OF b,p,auths`, [bindingId, grant ? hash(grant) : null, session?.id ?? null, session?.userId ?? null]);
     if (rows.rows.length !== 1) throw new WakeError(403);
     return rows.rows[0];
   }
@@ -79,11 +81,10 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`phone11-wake:${pilotUri}`]);
         await client.query('SELECT id FROM phone11_auth_session WHERE id=$1 FOR SHARE', [sessionId]);
         await client.query(`SELECT p.revision FROM phone11_push_devices p ${livePush}
-          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.sip_uri=$4
-          FOR SHARE OF ai,ue,e,t,sa`, [sessionId,userId,deviceId,pilotUri]);
+          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.sip_uri=$4`, [sessionId,userId,deviceId,pilotUri]);
         const result = await client.query(`SELECT p.*,auths."expiresAt" AS session_expiry FROM phone11_push_devices p ${livePush}
           WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.platform=$5 AND p.token_type=$6
-          AND p.sip_uri=$4 FOR SHARE OF p,auths,ai,ue,e,t,sa`, [sessionId,userId,deviceId,pilotUri,platform,tokenType]);
+          AND p.sip_uri=$4 FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUri,platform,tokenType]);
         if (result.rows.length !== 1) throw new WakeError(403, "Register this phone before enabling incoming call wake");
         const p = result.rows[0];
         // Reclaim revoked/expired enrollment; an invalid grant must not lock out a new phone.
@@ -131,10 +132,10 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
         await client.query(`SELECT auths.id FROM phone11_auth_session auths
           JOIN phone11_push_devices p ON p.session_id=auths.id WHERE p.sip_uri=$1 ORDER BY auths.id FOR SHARE OF auths`, [sipUri]);
         await client.query(`SELECT p.revision FROM phone11_push_devices p ${livePush}
-          WHERE p.sip_uri=$1 FOR SHARE OF ai,ue,e,t,sa`, [sipUri]);
+          WHERE p.sip_uri=$1`, [sipUri]);
         await client.query("SELECT revision FROM phone11_push_devices WHERE sip_uri=$1 FOR SHARE", [sipUri]);
         const rows = await client.query(`SELECT b.*,p.sip_uri FROM phone11_wake_bindings b ${liveBinding}
-          WHERE p.sip_uri=$1 AND b.expires_at>clock_timestamp() FOR SHARE OF b,p,auths,ai,ue,e,t,sa`, [sipUri]);
+          WHERE p.sip_uri=$1 AND b.expires_at>clock_timestamp() FOR SHARE OF b,p,auths`, [sipUri]);
         if (rows.rows.length !== 1) throw new WakeError(404, "No enrolled phone is available");
         const b = rows.rows[0];
         // Row update lock serializes call creation without reversing enrollment's account-lock order.
@@ -211,7 +212,7 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
         const sipRows=await client.query(`SELECT sa.sip_username,sa.sip_domain,sa.transport_preference,sub.password
           FROM sip_accounts sa JOIN subscriber sub ON sub.username=sa.sip_username AND lower(sub.domain)=lower(sa.sip_domain)
           WHERE sa.extension_id=$1 AND sa.tenant_id=$2 AND sa.status='active' AND sa.deleted_at IS NULL
-          AND ('sip:'||sa.sip_username||'@'||lower(sa.sip_domain))=$3 FOR SHARE OF sa,sub`, [b.extension_id,b.tenant_id,b.sip_uri]);
+          AND ('sip:'||sa.sip_username||'@'||lower(sa.sip_domain))=$3`, [b.extension_id,b.tenant_id,b.sip_uri]);
         if (sipRows.rows.length!==1 || !sipRows.rows[0].password) throw new WakeError(503);
         await authenticate(client,bindingId,grant);
         if ((await client.query("SELECT expires_at<=clock_timestamp() AS expired FROM phone11_wake_calls WHERE id=$1",[callUUID])).rows[0].expired) throw new WakeError(410);
