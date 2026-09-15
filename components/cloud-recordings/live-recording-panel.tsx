@@ -11,7 +11,6 @@ import { normalizeAssignedSpeakerNames } from "@/lib/cloud-recordings/speaker-na
 import { SpeakerNamesEditor } from "./speaker-names-editor";
 import { useColors } from "@/hooks/use-colors";
 import { useSipCallStore } from "@/lib/sip/call-store";
-import { recordingLabels } from "@/lib/cloud-recordings/presentation";
 import { RecordingPanel } from "./call-history-view";
 import { Playback } from "./cloud-playback";
 import { CaptureControls } from "./capture-controls";
@@ -129,7 +128,8 @@ export function LiveRecordingPanel({
         </TouchableOpacity>
       </View>
     );
-  const summaryNeedsRefresh =
+  const statusNeedsRefresh =
+    recordingStatusNeedsRefresh(detail) ||
     detail.summaryStatus === "queued" ||
     detail.summaryStatus === "processing" ||
     detail.summaryStatus === "failed" ||
@@ -171,14 +171,7 @@ export function LiveRecordingPanel({
           cloud.error ||
           (busy
             ? "Playback is paused while you are on a call."
-            : detail.recordingFinalizing
-              ? "Saving recording…"
-              : detail.recordingStatus !== "ready"
-                ? detail.recordingStatus === "failed" &&
-                  detail.manualControls?.canStart
-                  ? "Recording off"
-                  : recordingLabels[detail.recordingStatus]
-                : undefined)
+            : recordingStatusMessage(detail))
         }
         player={
           detail.recordingStatus === "ready" && detail.playbackPath && !busy ? (
@@ -255,11 +248,11 @@ export function LiveRecordingPanel({
           })
         }
       />
-      {summaryNeedsRefresh && (
+      {statusNeedsRefresh && (
         <View style={{ paddingHorizontal: 20, paddingBottom: 20 }}>
           <TouchableOpacity
             accessibilityRole="button"
-            accessibilityLabel="Refresh AI summary status"
+            accessibilityLabel="Refresh recording and AI status"
             disabled={cloud.loading}
             style={{ minHeight: 48, justifyContent: "center" }}
             onPress={() => void cloud.reload()}
@@ -267,7 +260,7 @@ export function LiveRecordingPanel({
             <Text
               style={{ color: cloud.loading ? colors.muted : colors.primary }}
             >
-              {cloud.loading ? "Refreshing AI status…" : "Refresh AI status"}
+              {cloud.loading ? "Refreshing status…" : "Refresh status"}
             </Text>
           </TouchableOpacity>
         </View>

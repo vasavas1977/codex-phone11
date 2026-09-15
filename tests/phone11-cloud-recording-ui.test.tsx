@@ -136,8 +136,9 @@ beforeEach(() => {
 it("shows real pending statuses without creating playback", () => {
   mocks.cloud.detail = item;
   const html = renderToStaticMarkup(createElement(Detail));
-  expect(html).toContain("Recording pending");
-  expect(html).toContain("Your summary is being prepared.");
+  expect(html).toContain("Preparing recording");
+  expect(html).toContain("Preparing transcription before the AI summary");
+  expect(html).toContain("Refresh status");
   expect(html).not.toContain("Play recording");
   expect(mocks.playback).not.toHaveBeenCalled();
 });
@@ -148,13 +149,13 @@ it("offers a manual AI refresh for failed or stale detail", async () => {
     summaryStatus: "failed",
   };
   let html = renderToStaticMarkup(createElement(Detail));
-  expect(html).toContain("Summary unavailable");
-  expect(html).toContain("Refresh AI status");
-  await mocks.press.get("Refresh AI status")?.();
+  expect(html).toContain("AI summary could not be created");
+  expect(html).toContain("Refresh status");
+  await mocks.press.get("Refresh status")?.();
   expect(mocks.cloud.reload).toHaveBeenCalledOnce();
   mocks.cloud.loading = true;
   html = renderToStaticMarkup(createElement(Detail));
-  expect(html).toContain("Refreshing AI status");
+  expect(html).toContain("Refreshing status");
 });
 it("distinguishes recording preparation, readiness, and durable failure", () => {
   const statusDetail: CloudRecordingDetail = {
@@ -217,6 +218,7 @@ it("shows explicit transcript processing and failure states", () => {
   );
   expect(html).toContain("Transcription could not be created");
   expect(html).toContain("Refresh status to check again");
+});
 it("renders server summary and transcript only when provided", () => {
   mocks.cloud.detail = {
     ...item,
@@ -527,8 +529,8 @@ it("ready without returned summary never claims AI is off", () => {
       onTabChange: vi.fn(),
     }),
   );
-  expect(html).toContain("Summary unavailable");
-  expect(html).not.toContain("AI summary is off");
+  expect(html).toContain("AI summary is still processing");
+  expect(html).not.toContain("AI summary was not enabled");
 });
 
 it("full call detail offers a working explicit Back control", () => {
