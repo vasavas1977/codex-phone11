@@ -156,3 +156,46 @@ it("opens the audio output chooser instead of changing route directly", () => {
     ui.buttons.get("Choose audio output").accessibilityState.selected,
   ).toBe(true);
 });
+
+it("offers sharing only for a loaded recording and reports share failures", () => {
+  const share = vi.fn();
+  let html = renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 1,
+      duration: 10,
+      playing: false,
+      loaded: true,
+      route: "earpiece",
+      output: { route: "earpiece", label: "Earpiece" },
+      onToggle: vi.fn(),
+      onSeek: vi.fn(),
+      onRouteChange: vi.fn(),
+      onShare: share,
+    }),
+  );
+  expect(html).toContain('data-icon="square.and.arrow.up"');
+  expect(ui.buttons.get("Share recording").disabled).toBe(false);
+  ui.buttons.get("Share recording").onPress();
+  expect(share).toHaveBeenCalledOnce();
+
+  ui.buttons.clear();
+  html = renderToStaticMarkup(
+    createElement(PlaybackControls, {
+      currentTime: 1,
+      duration: 10,
+      playing: false,
+      loaded: true,
+      route: "earpiece",
+      output: { route: "earpiece", label: "Earpiece" },
+      onToggle: vi.fn(),
+      onSeek: vi.fn(),
+      onRouteChange: vi.fn(),
+      onShare: share,
+      sharing: true,
+      shareError: "Recording could not be downloaded.",
+    }),
+  );
+  expect(ui.buttons.get("Share recording").disabled).toBe(true);
+  expect(html).toContain("Recording could not be downloaded");
+  expect(html).toContain('data-loading="true"');
+});

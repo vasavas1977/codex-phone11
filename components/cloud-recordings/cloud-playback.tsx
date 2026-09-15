@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Platform } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { useSipCallStore } from "@/lib/sip/call-store";
@@ -22,6 +23,7 @@ import {
 } from "@/lib/cloud-recordings/playback-route";
 import { PlaybackControls } from "./playback-controls";
 import { createPlaybackController } from "@/lib/cloud-recordings/playback-controller";
+import { shareAuthenticatedRecording } from "@/lib/cloud-recordings/recording-share";
 const earpieceOutput: PlaybackAudioRouteStatus = {
   route: "earpiece",
   label: "Earpiece",
@@ -75,7 +77,9 @@ export function Playback({
     [route, setRoute] = useState<PlaybackAudioRoute>("earpiece"),
     [output, setOutput] = useState<PlaybackAudioRouteStatus>(earpieceOutput),
     [routeChanging, setRouteChanging] = useState(false),
-    [routeError, setRouteError] = useState<string>();
+    [routeError, setRouteError] = useState<string>(),
+    [sharing, setSharing] = useState(false),
+    [shareError, setShareError] = useState<string>();
   const [availableOutputs, setAvailableOutputs] = useState<
     readonly PlaybackAudioOutput[]
   >([]);
@@ -86,6 +90,7 @@ export function Playback({
   const routeApplied = useRef(false);
   const routePreference = useRef<PlaybackAudioRoute>("earpiece");
   const resumeAfterScrub = useRef(false);
+  const shareInFlight = useRef(false);
   const controller = useRef<{
     play(route: PlaybackAudioRoute, restart: boolean): Promise<void>;
     isPending(): boolean;
@@ -242,6 +247,8 @@ export function Playback({
       setOutput(earpieceOutput);
       setAvailableOutputs([]);
       setRouteError(undefined);
+      setSharing(false);
+      setShareError(undefined);
       const unsubscribeRoute = subscribeToPlaybackAudioRoute((nextOutput) => {
         if (
           focusGeneration.current === generation &&
@@ -381,6 +388,8 @@ export function Playback({
       output={output}
       routeChanging={routeChanging}
       routeError={routeError}
+      sharing={sharing}
+      shareError={shareError}
       availableOutputs={availableOutputs.filter(
         (candidate) => candidate.kind === "bluetooth",
       )}
@@ -440,6 +449,36 @@ export function Playback({
         setRouteError(undefined);
         const effectiveOutput = normalizePlaybackAudioRoute(selectedOutput);
         if (effectiveOutput.route !== "unknown") setOutput(effectiveOutput);
+      }}
+      onShare={async () => {
+        if (shareInFlight.current || !playbackAuthorized.current || callBusy())
+          return;
+        const generation = focusGeneration.current;
+        shareInFlight.current = true;
+        controller.current?.pause();
+        setSharing(true);
+        setShareError(undefined);
+        try {
+          await shareAuthenticatedRecording({
+            callUuid,
+            path,
+            platform: Platform.OS,
+            canShare: () =>
+              focusGeneration.current === generation &&
+              playbackAuthorized.current &&
+              !callBusy(),
+          });
+        } catch (error) {
+          if (focusGeneration.current === generation)
+            setShareError(
+              error instanceof Error
+                ? error.message
+                : "Recording could not be shared.",
+            );
+        } finally {
+          shareInFlight.current = false;
+          if (focusGeneration.current === generation) setSharing(false);
+        }
       }}
     />
   );

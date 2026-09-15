@@ -77,6 +77,7 @@ const m = vi.hoisted(() => ({
   },
   routeListener: undefined as undefined | ((event: unknown) => void),
   token: vi.fn(async () => "token"),
+  share: vi.fn(async (_options: unknown) => {}),
 }));
 vi.mock("react-native", () => ({
   ActivityIndicator: () => createElement("span", null),
@@ -141,6 +142,9 @@ vi.mock("../lib/_core/auth", () => ({
   getSessionToken: () => m.token(),
   addAuthChangeListener: () => vi.fn(),
 }));
+vi.mock("../lib/cloud-recordings/recording-share", () => ({
+  shareAuthenticatedRecording: (options: unknown) => m.share(options),
+}));
 vi.mock("../constants/oauth", () => ({
   getApiBaseUrl: () => "https://api.phone11.ai",
 }));
@@ -173,6 +177,7 @@ beforeEach(() => {
   m.controls = undefined;
   m.routeListener = undefined;
   m.token.mockResolvedValue("token");
+  m.share.mockResolvedValue(undefined);
   m.status.currentTime = 0;
   m.status.duration = 100;
   m.status.playing = false;
@@ -264,6 +269,38 @@ it("changes the native media route only while no Phone11 call is active", async 
   await m.buttons.get("Play through speaker").onPress();
   expect(m.nativeRoute.setPlaybackAudioRoute).not.toHaveBeenCalled();
   expect(m.player.pause).toHaveBeenCalled();
+  blur();
+});
+
+it("pauses playback and preserves Android output state while sharing once", async () => {
+  m.platform = "android";
+  let finish!: () => void;
+  m.share.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  const first = m.controls.onShare();
+  await m.controls.onShare();
+  expect(m.player.pause).toHaveBeenCalled();
+  expect(m.share).toHaveBeenCalledOnce();
+  expect(m.share).toHaveBeenCalledWith(
+    expect.objectContaining({
+      callUuid: props.callUuid,
+      path: props.path,
+      platform: "android",
+      canShare: expect.any(Function),
+    }),
+  );
+  expect(m.nativeRoute.selectPlaybackAudioOutput).not.toHaveBeenCalled();
+  finish();
+  await first;
   blur();
 });
 
