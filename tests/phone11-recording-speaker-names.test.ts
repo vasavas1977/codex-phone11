@@ -87,6 +87,7 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 beforeEach(() => {
+  for (const value of m.frame.values) value?.cleanup?.();
   m.frame = { index: 0, values: [] };
   m.owner = { id: 7 };
   m.authListeners.clear();
@@ -255,3 +256,72 @@ it.each([
     ).toEqual({ speaker2: "Pat" });
   },
 );
+
+it("synchronizes saved and cleared names across mounted views only for the same account, call, and transcript", async () => {
+  const inline = { index: 0, values: [] as any[] };
+  const detail = { index: 0, values: [] as any[] };
+  const otherCall = { index: 0, values: [] as any[] };
+  const otherTranscript = { index: 0, values: [] as any[] };
+  const useView = (
+    frame: typeof inline,
+    owner = 7,
+    call = callUuid,
+    text = transcript,
+  ) => {
+    m.frame = frame;
+    return render(owner, call, text);
+  };
+  useView(inline);
+  useView(detail);
+  useView(otherCall, 7, "other-call");
+  useView(otherTranscript, 7, callUuid, transcript + " changed");
+  await settle();
+  expect(await useView(detail).save({ speaker1: "Nathasa" })).toBe(true);
+  expect(useView(inline).names).toEqual({ speaker1: "Nathasa" });
+  expect(useView(otherCall, 7, "other-call").names).toEqual({});
+  expect(
+    useView(otherTranscript, 7, callUuid, transcript + " changed").names,
+  ).toEqual({});
+  expect(await useView(detail).save({})).toBe(true);
+  expect(useView(inline).names).toEqual({});
+  expect(await useView(detail).save({ speaker1: "Private seven" })).toBe(true);
+  m.owner = { id: 8 };
+  for (const listener of m.authListeners) listener();
+  expect(useView(inline).names).toEqual({});
+  useView(detail, 8);
+  await settle();
+  expect(await useView(detail, 8).save({ speaker1: "Private eight" })).toBe(
+    true,
+  );
+  expect(useView(inline).names).toEqual({});
+  for (const frame of [inline, detail, otherCall, otherTranscript])
+    for (const value of frame.values) value?.cleanup?.();
+});
+it("does not overwrite a notified save with an older pending read or broadcast a failed save", async () => {
+  const inline = { index: 0, values: [] as any[] };
+  const detail = { index: 0, values: [] as any[] };
+  let finish!: (value: string | null) => void;
+  m.getItem.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  m.frame = inline;
+  render();
+  m.frame = detail;
+  render();
+  await settle();
+  expect(await render().save({ speaker1: "Latest" })).toBe(true);
+  finish(null);
+  await settle();
+  m.frame = inline;
+  expect(render().names).toEqual({ speaker1: "Latest" });
+  m.frame = detail;
+  m.setItem.mockRejectedValueOnce(new Error("disk error"));
+  expect(await render().save({ speaker1: "Failed" })).toBe(false);
+  m.frame = inline;
+  expect(render().names).toEqual({ speaker1: "Latest" });
+  for (const frame of [inline, detail])
+    for (const value of frame.values) value?.cleanup?.();
+});

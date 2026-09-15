@@ -9,6 +9,31 @@ import {
   validateAssignedSpeakerNames,
 } from "@/lib/cloud-recordings/speaker-names";
 
+// Keep inline and full-screen views of the same recording synchronized without
+// retaining a global copy of personal names after their views are unmounted.
+const listeners = new Map<
+  string,
+  Set<(names: TranscriptSpeakerNames) => void>
+>();
+const notificationScope = (
+  ownerId: number,
+  callUuid: string,
+  transcript: string,
+) =>
+  `${speakerNamesStorageKey(ownerId, callUuid)}:${transcriptFingerprint(transcript)}`;
+function subscribeToNames(
+  scope: string,
+  listener: (names: TranscriptSpeakerNames) => void,
+) {
+  const subscribers = listeners.get(scope) ?? new Set();
+  subscribers.add(listener);
+  listeners.set(scope, subscribers);
+  return () => {
+    subscribers.delete(listener);
+    if (!subscribers.size) listeners.delete(scope);
+  };
+}
+
 export function useRecordingSpeakerNames(
   ownerId: number | undefined,
   callUuid: string,
@@ -35,6 +60,8 @@ export function useRecordingSpeakerNames(
       generationRef.current === revision &&
       currentScope.current === scope &&
       Auth.getAuthSnapshot().user?.id === ownerId;
+    let unsubscribeNames = () => {};
+    let receivedSave = false;
     const unsubscribe = Auth.addAuthChangeListener(() => {
       if (Auth.getAuthSnapshot().user?.id === ownerId) return;
       generationRef.current++;
@@ -47,9 +74,22 @@ export function useRecordingSpeakerNames(
       } catch {
         return unsubscribe;
       }
+      unsubscribeNames = subscribeToNames(
+        notificationScope(ownerId, callUuid, transcript),
+        (names) => {
+          if (!valid()) return;
+          receivedSave = true;
+          setState((current) => ({
+            scope,
+            names,
+            ready: true,
+            saving: current.saving,
+          }));
+        },
+      );
       void AsyncStorage.getItem(key)
         .then((raw) => {
-          if (valid())
+          if (valid() && !receivedSave)
             setState({
               scope,
               names: decodeAssignedSpeakerNames(raw, transcript),
@@ -58,7 +98,7 @@ export function useRecordingSpeakerNames(
             });
         })
         .catch(() => {
-          if (valid())
+          if (valid() && !receivedSave)
             setState({
               scope,
               names: {},
@@ -72,6 +112,7 @@ export function useRecordingSpeakerNames(
     return () => {
       generationRef.current++;
       unsubscribe();
+      unsubscribeNames();
     };
   }, [ownerId, callUuid, transcript, scope]);
 
@@ -114,6 +155,10 @@ export function useRecordingSpeakerNames(
           Auth.getAuthSnapshot().user?.id !== ownerId
         )
           return false;
+        for (const notify of listeners.get(
+          notificationScope(ownerId, callUuid, transcript),
+        ) ?? [])
+          notify(names);
         setState({ scope, names, ready: true, saving: false });
         return true;
       } catch {
