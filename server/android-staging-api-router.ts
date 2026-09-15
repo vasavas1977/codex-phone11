@@ -18,7 +18,10 @@ export const androidStagingRegisterSchema = registerTokenSchema
     tokenType: z.literal("fcm"),
     platform: z.literal("android"),
     bundleId: z.literal(ANDROID_STAGING_PACKAGE),
-    sandbox: z.undefined().optional(),
+    // The shared mobile client models Android as the production FCM
+    // environment and therefore sends `false`. Keep `true` impossible while
+    // accepting both the current client payload and older clients that omit it.
+    sandbox: z.literal(false).optional(),
   })
   .strict();
 

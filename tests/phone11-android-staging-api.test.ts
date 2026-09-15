@@ -153,8 +153,11 @@ describe("isolated authenticated Android staging API", () => {
         bundleId: "ai.phone11.mobile",
       }),
     ).toThrow();
-    expect(() =>
+    expect(
       androidStagingRegisterSchema.parse({ ...valid, sandbox: false }),
+    ).toEqual({ ...valid, sandbox: false });
+    expect(() =>
+      androidStagingRegisterSchema.parse({ ...valid, sandbox: true }),
     ).toThrow();
     expect(() =>
       androidStagingRegisterSchema.parse({ ...valid, extra: true }),
