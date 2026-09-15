@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { ScrollView, Text, TextInput, TouchableOpacity, View } from "react-native";
 import { Redirect } from "expo-router";
 import {
   CallHistoryRow,
@@ -11,15 +11,27 @@ import { SummaryActionsView } from "@/components/cloud-recordings/summary-action
 import { emptyPersonalRecordingMetadata } from "@/lib/cloud-recordings/summary-actions";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { SchemeColors } from "@/constants/theme";
+import type {
+  PlaybackAudioRoute,
+  PlaybackAudioRouteStatus,
+} from "@/lib/cloud-recordings/playback-route";
+import type { PlaybackExternalOutput } from "@/components/cloud-recordings/playback-output-picker";
 
 /** Development-only fixture: renders the real components without private calls or API access. */
 export default function RecentsPreview() {
   const [tab, setTab] = useState<"summary" | "transcription">("summary");
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [route, setRoute] = useState<"speaker" | "earpiece">("earpiece");
+  const [route, setRoute] = useState<PlaybackAudioRoute>("earpiece");
+  const [output, setOutput] = useState<PlaybackAudioRouteStatus>({
+    route: "earpiece",
+    label: "Earpiece",
+  });
   const [expanded, setExpanded] = useState(true);
   const [menu, setMenu] = useState(false);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "recorded" | "summary">("all");
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [personal, setPersonal] = useState(emptyPersonalRecordingMetadata);
   const sample = {
     summary:
@@ -31,6 +43,30 @@ export default function RecentsPreview() {
       "Speaker 1: Can we make the product clearer in each conversation?\nSpeaker 2: Yes, I’ll review the details and add a product label.",
   };
   const colors = SchemeColors.dark;
+  const sampleCall = {
+    id: "preview",
+    name: "Nathasa",
+    number: "+6620303001",
+    direction: "outgoing" as const,
+    time: "16:50",
+    duration: "3:37",
+    recordingReady: true,
+    summaryReady: true,
+  };
+  const visibleSample =
+    (filter === "all" ||
+      (filter === "recorded" && sampleCall.recordingReady) ||
+      (filter === "summary" && sampleCall.summaryReady)) &&
+    `${sampleCall.name} ${sampleCall.number}`
+      .toLocaleLowerCase()
+      .includes(search.trim().toLocaleLowerCase());
+  const outputs: readonly PlaybackExternalOutput[] = [
+    {
+      id: "bluetooth-preview",
+      label: "Bluetooth headset",
+      icon: "bluetooth-audio",
+    },
+  ];
   if (!__DEV__) return <Redirect href="/(tabs)/recents" />;
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
@@ -64,28 +100,58 @@ export default function RecentsPreview() {
               Recording settings
             </Text>
           </View>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <View
-              style={{
-                backgroundColor: colors.primary,
-                borderRadius: 24,
-                paddingHorizontal: 25,
-                paddingVertical: 14,
-              }}
-            >
-              <Text style={{ color: "white", fontWeight: "600" }}>All</Text>
-            </View>
-            <View
-              style={{
-                backgroundColor: colors.surface,
-                borderRadius: 24,
-                paddingHorizontal: 25,
-                paddingVertical: 14,
-              }}
-            >
-              <Text style={{ color: colors.muted }}>Missed</Text>
-            </View>
-          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 8 }}
+          >
+            {([
+              ["all", "All"],
+              ["recorded", "Recorded"],
+              ["summary", "AI summary"],
+            ] as const).map(([value, label]) => (
+              <TouchableOpacity
+                key={value}
+                accessibilityRole="button"
+                accessibilityLabel={`Show ${label.toLocaleLowerCase()} calls`}
+                accessibilityState={{ selected: filter === value }}
+                onPress={() => setFilter(value)}
+                style={{
+                  minHeight: 44,
+                  backgroundColor:
+                    filter === value ? colors.primary : colors.surface,
+                  borderRadius: 24,
+                  paddingHorizontal: 18,
+                  justifyContent: "center",
+                }}
+              >
+                <Text
+                  style={{
+                    color: filter === value ? "white" : colors.muted,
+                    fontWeight: "600",
+                  }}
+                >
+                  {label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <TextInput
+            accessibilityLabel="Search recent calls"
+            placeholder="Search name or number"
+            placeholderTextColor={colors.muted}
+            value={search}
+            onChangeText={setSearch}
+            autoCorrect={false}
+            style={{
+              minHeight: 44,
+              borderRadius: 14,
+              paddingHorizontal: 14,
+              fontSize: 15,
+              color: colors.foreground,
+              backgroundColor: colors.surface,
+            }}
+          />
         </View>
         <ScrollView style={{ flex: 1 }}>
           <Text
@@ -98,85 +164,104 @@ export default function RecentsPreview() {
           >
             Today
           </Text>
-          <CallHistoryRow
-            colors={colors}
-            call={{
-              id: "preview",
-              name: "Nathasa",
-              number: "+6620303001",
-              direction: "outgoing",
-              time: "16:50",
-              duration: "3:37",
-              recordingReady: true,
-              summaryReady: true,
-            }}
-            expanded={expanded}
-            onToggle={() => setExpanded(!expanded)}
-            onCall={() => {}}
-            onMore={() => setMenu(true)}
-          >
-            <RecordingPanel
+          {visibleSample ? (
+            <CallHistoryRow
               colors={colors}
-              actions={
-                <SummaryActionsView
-                  title="Call with Nathasa"
-                  startedAt={1789383000000}
-                  original={sample}
-                  content={sample}
-                  speakerNames={{ speaker1: "Vasavas", speaker2: "Nathasa" }}
-                  personal={personal}
-                  ready
-                  selectedLanguage="original"
-                  onOriginal={() => {}}
-                  onUpdate={async (change) => {
-                    setPersonal(change);
-                    return true;
-                  }}
-                  colors={colors}
-                />
-              }
-              dateLabel="Today, 16:50"
-              activeTab={tab}
-              onTabChange={setTab}
-              summaryStatus="ready"
-              summary={{
-                summary:
-                  "The team discussed making customer conversations easier to follow. They agreed to show the product and service beside each enquiry so colleagues can respond with the right context.",
-                actionItems: [
-                  "Review the conversation details and add a clear product label.",
-                ],
-              }}
-              transcript={
-                "Speaker 1: Can we make the product clearer in each conversation?\nSpeaker 2: Yes, I’ll review the details and add a product label."
-              }
-              speakerNames={{ speaker1: "Vasavas", speaker2: "Nathasa" }}
-              player={
-                <PlaybackControls
-                  colors={colors}
-                  route={route}
-                  output={{
-                    route,
-                    label: route === "speaker" ? "Speaker" : "Earpiece",
-                  }}
-                  onRouteChange={(nextRoute) => {
-                    if (nextRoute !== "system") setRoute(nextRoute);
-                  }}
-                  currentTime={time}
-                  duration={217}
-                  playing={playing}
-                  loaded
-                  onToggle={() => setPlaying(!playing)}
-                  onSeek={setTime}
-                />
-              }
-            />
-          </CallHistoryRow>
+              call={sampleCall}
+              expanded={expanded}
+              onToggle={() => setExpanded(!expanded)}
+              onCall={() => {}}
+              onMore={() => setMenu(true)}
+            >
+              <RecordingPanel
+                colors={colors}
+                actions={
+                  <SummaryActionsView
+                    title="Call with Nathasa"
+                    startedAt={1789383000000}
+                    original={sample}
+                    content={sample}
+                    speakerNames={{ speaker1: "Vasavas", speaker2: "Nathasa" }}
+                    personal={personal}
+                    ready
+                    selectedLanguage="original"
+                    onOriginal={() => {}}
+                    onUpdate={async (change) => {
+                      setPersonal(change);
+                      return true;
+                    }}
+                    colors={colors}
+                  />
+                }
+                dateLabel="Today, 16:50"
+                activeTab={tab}
+                onTabChange={setTab}
+                summaryStatus="ready"
+                summary={sample}
+                transcript={sample.transcript}
+                speakerNames={{ speaker1: "Vasavas", speaker2: "Nathasa" }}
+                player={
+                  <PlaybackControls
+                    colors={colors}
+                    route={route}
+                    output={output}
+                    availableOutputs={outputs}
+                    onOutputSelect={(selected) => {
+                      setOutput({ route: "external", label: selected.label });
+                    }}
+                    onRouteChange={(nextRoute) => {
+                      if (nextRoute !== "system") {
+                        setRoute(nextRoute);
+                        setOutput({
+                          route: nextRoute,
+                          label: nextRoute === "speaker" ? "Speaker" : "Earpiece",
+                        });
+                      }
+                    }}
+                    currentTime={time}
+                    duration={217}
+                    playing={playing}
+                    loaded
+                    onToggle={() => setPlaying(!playing)}
+                    onSeek={setTime}
+                    onShare={() => {
+                      setShareNotice("Recording sharing is ready on supported devices.");
+                    }}
+                  />
+                }
+              />
+            </CallHistoryRow>
+          ) : (
+            <Text style={{ padding: 24, color: colors.muted, textAlign: "center" }}>
+              No calls match this view
+            </Text>
+          )}
         </ScrollView>
+        {shareNotice ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss share notice"
+            onPress={() => setShareNotice(null)}
+            style={{
+              position: "absolute",
+              left: 20,
+              right: 20,
+              bottom: 74,
+              padding: 12,
+              borderRadius: 12,
+              backgroundColor: colors.surface,
+            }}
+          >
+            <Text style={{ color: colors.foreground, textAlign: "center" }}>
+              {shareNotice}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
         <CallActionsSheet
           visible={menu}
           call={{
             id: "preview",
-            ownerUserId: 0,
+            ownerUserId: 1,
             name: "Nathasa",
             number: "+6620303001",
             direction: "outgoing",
@@ -188,6 +273,24 @@ export default function RecentsPreview() {
           onToggleStar={() => {}}
           onDeleteHistory={() => {}}
           onClose={() => setMenu(false)}
+          extraActions={[
+            {
+              id: "share-recording",
+              label: "Share recording",
+              description: "Open the secure system share sheet",
+              icon: "square.and.arrow.up",
+              onPress: () => {
+                setShareNotice("Recording sharing is ready on supported devices.");
+              },
+            },
+            {
+              id: "copy-transcript",
+              label: "Copy transcript",
+              description: "Copy the speaker-labeled transcript",
+              icon: "doc.on.clipboard",
+              onPress: () => setShareNotice("Transcript copied in the full app."),
+            },
+          ]}
         />
         <View
           style={{
