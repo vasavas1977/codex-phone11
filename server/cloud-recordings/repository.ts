@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { TRPCError } from "@trpc/server";
 import type { CloudRecording, CloudRecordingDetail, CloudRecordingPolicy, RecordingPolicyMode } from "../../shared/cloud-recordings";
-import { recordingFailureCode, type RecordingFailure } from "./failure";
+import {
+  recordingFailureCode,
+  recordingRetryDelaySeconds,
+  type RecordingFailure,
+} from "./failure";
 import { getPool } from "../pbx/db";
 
 type DB = Pick<Pool, "connect" | "query">;
@@ -206,8 +210,9 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
      AND EXISTS(SELECT 1 FROM extensions e JOIN tenants t ON t.id=e.tenant_id WHERE e.id=r.extension_id AND e.tenant_id=r.tenant_id AND e.status='active' AND e.deleted_at IS NULL AND t.status='active') AND r.expires_at>clock_timestamp() AND r.recording_status='ready' AND r.storage_key=$4 FOR UPDATE OF j,r`,[job.callUuid,job.tenantId,job.leaseToken,job.storageKey]);
     if(!found.rows.length)return false;
     const state=result?'ready':found.rows[0].attempts<3?'queued':'failed';
+    const retryDelaySeconds=result?0:recordingRetryDelaySeconds(failure,Number(found.rows[0].attempts));
     await c.query(`UPDATE phone11_recording_jobs SET state=$2,lease_token=NULL,lease_until=NULL,worker_id=NULL,
-     available_at=clock_timestamp()+interval '30 seconds',failure_code=$3 WHERE call_uuid=$1`,[job.callUuid,state,result?null:recordingFailureCode(failure)]);
+     available_at=clock_timestamp()+$4::integer*interval '1 second',failure_code=$3 WHERE call_uuid=$1`,[job.callUuid,state,result?null:recordingFailureCode(failure),retryDelaySeconds]);
     await c.query("UPDATE phone11_cloud_recordings SET summary_status=$2,transcript=$3,summary=$4 WHERE call_uuid=$1",[job.callUuid,state,result?.transcript??null,result?JSON.stringify(result.summary):null]);return true;
    });
   }

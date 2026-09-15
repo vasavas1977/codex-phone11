@@ -158,6 +158,11 @@ export function transcriptSpeakerLabel(
   names: TranscriptSpeakerNames = {},
 ) {
   if (speaker === "speaker1") return cleanName(names.speaker1) ?? "Speaker 1";
-  if (speaker === "speaker2") return cleanName(names.speaker2) ?? "Speaker 2";
+  if (speaker === "speaker2") {
+    const speaker2 = cleanName(names.speaker2);
+    return !duplicateParticipantNames(names) && speaker2
+      ? speaker2
+      : "Speaker 2";
+  }
   return "Transcript";
 }
