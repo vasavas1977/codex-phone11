@@ -14,13 +14,19 @@ Do not submit until every P0 gate below is closed against one exact commit and o
 - Local derived iOS directories and Python bytecode caches are ignored. The two derived directories currently occupy about 6.2 GB and contain local signed products; they must never enter an EAS source archive.
 - Fourteen focused packaging/wake tests pass, including rejection of an unlicensed store configuration and verification that a fake test license is absent from public config.
 
+## Latest signed-build checkpoint
+
+Internal Build **53** completed successfully in [workflow 34960284262](https://github.com/vasavas1977/codex-phone11/actions/runs/34960284262) from exact source `4b87e4e58735e9bd25aca8977451e872fa4c6127`. Its EAS build ID is `18f2f0d2-9d93-4c6b-b89b-f90e692993f0`; the retained IPA has SHA256 `03657a446196541141688e03fa38f30ac005c7a684487bb3e8b3670e31faa8c4`.
+
+The native IPA verifier and all 18 release-package checks passed: production APNs, debugging disabled, embedded application code, Siprix frameworks, expected bundle identity and valid signing/provisioning were present. This is useful internal distribution evidence, but it is still a `preview-ios-siprix-daily-pilot` build, uses the trial Siprix state and is not an App Store/TestFlight artifact. It also predates later PBX/admin work on this branch and has not received final handset acceptance. Do not upload it to App Store Connect.
+
 ## Artifact and configuration evidence
 
 | Check | Current evidence | App Store implication |
 |---|---|---|
 | Required toolchain | Store profile pins `macos-sequoia-15.6-xcode-26.0`. | Meets Apple's current Xcode 26 / iOS 26 SDK upload floor in configuration. Prove the SDK again from the delivered archive. |
-| Latest local Release product | Version 1.0.0, build 5; Xcode 16.4 / iOS 18.5 SDK; development provisioning; `get-task-allow=true`; `aps-environment=development`. | Not uploadable as the release candidate and below Apple's current SDK floor. |
-| Existing signed pilot builds | Internal/ad hoc profiles. Prior verified production APNs pilots remain internal builds. | Internal installation and physical call success do not prove App Store signing or TestFlight processing. |
+| Latest verified signed pilot | Version 1.0.0, build 53, exact source `4b87e4e58735e9bd25aca8977451e872fa4c6127`; internal distribution, production APNs, `get-task-allow=false`, Siprix frameworks present. | Strong package evidence, but still trial/internal and older than the current working tree. It is not the store candidate. |
+| Older local Release product | Version 1.0.0, build 5; Xcode 16.4 / iOS 18.5 SDK; development provisioning; `get-task-allow=true`; `aps-environment=development`. | Not uploadable and must not replace a verified Siprix build on the handset. |
 | Bundle identifier | Store candidate currently uses `space.manus.phone11ai.t20260425073427`. | The owner must confirm this permanent identifier before the first App Store upload. Apple does not allow changing the bundle ID after a build is uploaded. |
 | App icon | Generated iOS catalog contains a 1024×1024 RGB icon with no alpha. Its source is only 192×192 and already contains a rounded tile/shadow. | Mechanically valid, but replace with a native 1024×1024 master without baked platform rounding for a professional listing. |
 | Privacy manifest | Aggregated manifest has required-reason API entries and tracking false, but `NSPrivacyCollectedDataTypes` is empty. | This conflicts with the service's account, call, recording, transcript, summary, chat and push-token data flow. Reconcile the manifest and App Store privacy answers from one approved data inventory. |
@@ -80,4 +86,3 @@ Do not submit until every P0 gate below is closed against one exact commit and o
 - [Apple submitting an app](https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-an-app)
 - [Expo production iOS builds](https://docs.expo.dev/tutorial/eas/ios-production-build/)
 - [Expo EAS Submit for iOS](https://docs.expo.dev/submit/ios/)
-
