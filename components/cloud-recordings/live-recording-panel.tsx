@@ -100,16 +100,18 @@ export function LiveRecordingPanel({
     : undefined;
   const ownerName = getAuthSnapshot().user?.name || undefined;
   const automaticSpeakerNames = detail
-    ? defaultCallSpeakerNames(detail.direction, matchedContactName, ownerName)
+    ? defaultCallSpeakerNames(
+        detail.direction,
+        matchedContactName,
+        ownerName,
+        detail.number,
+      )
     : undefined;
   const speakerNames = mergeTranscriptSpeakerNames(
     assigned.names,
     mergeTranscriptSpeakerNames(trustedSpeakerNames, automaticSpeakerNames),
   );
-  const candidates = normalizeAssignedSpeakerNames({
-    speaker1: ownerName || "Me",
-    speaker2: matchedContactName,
-  });
+  const candidates = normalizeAssignedSpeakerNames(automaticSpeakerNames);
   const suggestions = [...new Set(Object.values(candidates))];
   const translated =
     translation?.owner === cloud.owner && translation?.callUuid === callUuid

@@ -95,17 +95,17 @@ beforeEach(() => {
   m.getItem.mockReset().mockResolvedValue(null);
   m.setItem.mockReset().mockResolvedValue(undefined);
 });
-it("defaults inbound and outbound calls to Me and the matched contact", () => {
+it("defaults inbound and outbound calls to Phone11 and the matched contact", () => {
   expect(defaultCallSpeakerNames("inbound", "Somchai")).toEqual({
     speaker1: "Somchai",
-    speaker2: "Me",
+    speaker2: "Phone11",
   });
   expect(defaultCallSpeakerNames("outbound", "Somchai")).toEqual({
-    speaker1: "Me",
+    speaker1: "Phone11",
     speaker2: "Somchai",
   });
   expect(defaultCallSpeakerNames("outbound")).toEqual({
-    speaker1: "Me",
+    speaker1: "Phone11",
     speaker2: "Other party",
   });
   expect(defaultCallSpeakerNames("outbound", "Somchai", "Vasavas")).toEqual({
@@ -115,6 +115,12 @@ it("defaults inbound and outbound calls to Me and the matched contact", () => {
   expect(defaultCallSpeakerNames("inbound", "Somchai", "Vasavas")).toEqual({
     speaker1: "Somchai",
     speaker2: "Vasavas",
+  });
+  expect(
+    defaultCallSpeakerNames("outbound", undefined, undefined, "02 030 3001"),
+  ).toEqual({
+    speaker1: "Phone11",
+    speaker2: "+6620303001",
   });
 });
 it("saves confirmed names and loads them when the same recording is reopened", async () => {

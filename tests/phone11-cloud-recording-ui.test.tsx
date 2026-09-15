@@ -598,6 +598,35 @@ it("uses the same confirmed speaker mapping for the transcript and copy/export a
   expect(copied).toContain("Nathasa: Hello");
   expect(copied).toContain("Vasavas: Sawasdee");
   expect(copied).not.toContain("Speaker 1:");
-  expect(html.indexOf("Name speakers")).toBeLessThan(html.indexOf("Hello"));
-  expect(html).toContain("Name speakers");
+  expect(html.indexOf("Correct speaker labels")).toBeLessThan(
+    html.indexOf("Hello"),
+  );
+  expect(html).toContain("Correct speaker labels");
+});
+
+it("uses the recording number automatically when a remote contact is unavailable", () => {
+  mocks.identity = { id: 1, name: "Vasavas" };
+  mocks.cloud.detail = {
+    ...item,
+    number: "02 030 3001",
+    direction: "outbound",
+    summaryStatus: "ready",
+    transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+    summary: {
+      summary: "Speaker 1 called Speaker 2.",
+      actionItems: [],
+      language: "en",
+    },
+  };
+  const html = renderToStaticMarkup(
+    createElement(LiveRecordingPanel, {
+      callUuid: item.callUuid,
+      full: true,
+      initialTab: "transcription",
+    }),
+  );
+  expect(html).toContain("Vasavas");
+  expect(html).toContain("+6620303001");
+  expect(html).not.toContain("Speaker 1");
+  expect(html).not.toContain("Speaker 2");
 });
