@@ -60,3 +60,64 @@ screenshots establish the fallback design only.
 - `docs/phone11-daily-use/recents-design-qa-20260915/output-picker-small.png`
 
 Preview: `http://127.0.0.1:8087/dev/recents-preview`. It is development-only and uses synthetic content, with no actual call or recording API requests.
+
+## Recents completion verification — 2026-09-15
+
+Result: passed
+
+The completed menu and playback work was compared again with the supplied Zoom
+Phone call-action, audio-output, summary-action, and named-transcript
+references. The review used an 851×938 browser viewport; the 1320×2868 phone
+references were normalized to the same height in the side-by-side evidence.
+
+Verified interactions:
+
+- Dragged the recording slider from 0:00 to 1:50; the remaining time changed to
+  1:46.
+- Toggled Play to Pause and back.
+- Opened the output sheet and verified Phone and Speaker. Native Bluetooth
+  devices appear only when iOS reports an available route; the browser fixture
+  correctly does not fabricate one.
+- Opened the call sheet and verified Call, Call details, Copy number, Share call
+  details, Star, and reversible Remove from Recents. Removing history preserves
+  the cloud recording.
+- Opened Summary actions and verified Copy, Share, Export, Edit personal
+  summary, Translate, Save task, and feedback controls. Translation is disabled
+  in this fixture because it has no translation-service callback.
+- Switched to Transcription and verified the visible names are Vasavas and
+  Nathasa rather than Speaker 1 and Speaker 2.
+- Confirmed no browser console errors. Development-only React Native Web and
+  Expo warnings remain.
+
+Automated verification: 9 focused files and 71 tests passed. Targeted ESLint
+completed with zero errors, and `git diff --check` passed.
+
+No P0, P1, or P2 issue remains in the shared UI scope. The web preview cannot
+prove a physical Bluetooth route or native iOS share sheet; those remain
+handset acceptance checks.
+
+Additional evidence:
+
+- `design-qa-evidence/recents-controls-final.png`
+- `design-qa-evidence/recents-filter-fixtures-final.png`
+- `design-qa-evidence/call-actions-final.png`
+- `design-qa-evidence/summary-actions-final.png`
+- `design-qa-evidence/audio-output-final.png`
+- `design-qa-evidence/transcription-names-final.png`
+- `design-qa-evidence/call-actions-comparison.png`
+- `design-qa-evidence/summary-actions-comparison.png`
+- `design-qa-evidence/audio-output-comparison.png`
+
+## Preview visibility follow-up — 2026-09-15
+
+The development fixture now exposes the completed controls directly at the
+same URL: `http://127.0.0.1:8087/dev/recents-preview`. It visibly includes
+name/number search, Recorded and AI summary filters, Share recording, and a
+Bluetooth headset row in the fallback output picker. The fixture remains a
+phone-width responsive surface inside a desktop browser; the production
+desktop dial pad is a separate route and keeps its own layout.
+
+The Android background push enrollment permission regression was also fixed in
+`4865442` by removing row locks from read-only assignment tables while keeping
+locks on service-owned push, wake, and auth-session rows. Focused push tests
+pass.
