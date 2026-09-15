@@ -37,7 +37,12 @@ export function createPushRepository(transaction: Transaction = withTransaction)
           WHERE ue.user_id = $1 AND e.tenant_id = $2 AND e.id = $3
             AND ('sip:' || sa.sip_username || '@' || lower(sa.sip_domain)) = $4
             AND t.status = 'active' AND e.status = 'active' AND e.deleted_at IS NULL
-            AND sa.status = 'active' AND sa.deleted_at IS NULL FOR SHARE OF ue, e, t, sa, ai, auths`,
+            AND sa.status = 'active' AND sa.deleted_at IS NULL
+            -- The API role has read access to the legacy assignment tables but
+            -- intentionally cannot UPDATE them. Keep the session lock (owned by
+            -- this service) and read assignments without row locks: PostgreSQL
+            -- requires UPDATE privilege for SELECT ... FOR SHARE.
+            FOR SHARE OF auths`,
           [token.owner.userId, token.owner.tenantId, token.owner.extensionId, token.sipUri, token.sessionId]);
         if (assignment.rows.length !== 1) throw new Error("This phone account is not assigned to you");
         // Expired/disabled sessions must not permanently consume this owner's quota.
