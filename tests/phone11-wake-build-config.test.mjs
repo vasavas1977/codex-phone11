@@ -106,3 +106,22 @@ test('explicit daily pilot isolates ordinary alerts and preserves production cal
   delete process.env.PHONE11_APNS_ENVIRONMENT;
   assert.throws(()=>getConfig(root,{isModdedConfig:true}),/production incoming-call pilot/);
 }));
+
+test('App Store config fails closed without a license and resolves as licensed with the protected secret',()=>{
+  const store=profile('production-ios-siprix-store');
+  const evaluate=`const {createRequire}=require('node:module');const load=createRequire(require.resolve('expo/package.json'));const {exp}=load('@expo/config').getConfig(process.cwd(),{isPublicConfig:true});process.stdout.write(JSON.stringify(exp));`;
+  const command=['-e',evaluate];
+  const baseEnv={...process.env,...store.env,CI:'1',EXPO_NO_TELEMETRY:'1'};
+  const missing=spawnSync(process.execPath,command,{cwd:root,encoding:'utf8',env:{...baseEnv,PHONE11_SIPRIX_LICENSE:''}});
+  assert.notEqual(missing.status,0);
+  assert.match(`${missing.stdout}\n${missing.stderr}`,/production Siprix license/);
+  const configured=spawnSync(process.execPath,command,{cwd:root,encoding:'utf8',env:{...baseEnv,PHONE11_SIPRIX_LICENSE:'fake-native-license-test-only'}});
+  assert.equal(configured.status,0,configured.stderr || configured.stdout);
+  const resolved=JSON.parse(configured.stdout);
+  assert.equal(resolved.ios.bundleIdentifier,store.env.PHONE11_BUNDLE_ID);
+  assert.equal(resolved.ios.entitlements['aps-environment'],'production');
+  assert.equal(resolved.extra.phone11ChatNotificationsEnabled,true);
+  assert.equal(resolved.extra.buildInfo.appStoreBuild,true);
+  assert.equal(resolved.extra.buildInfo.sipSdkVersion,'1.0.40-licensed');
+  assert.ok(!configured.stdout.includes('fake-native-license-test-only'));
+});

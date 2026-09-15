@@ -63,6 +63,25 @@
       "channel": "production",
       "autoIncrement": true
     },
+    "production-ios-siprix-store": {
+      "distribution": "store",
+      "environment": "production",
+      "channel": "production",
+      "autoIncrement": true,
+      "env": {
+        "PHONE11_APP_STORE_BUILD": "1",
+        "PHONE11_BUNDLE_ID": "space.manus.phone11ai.t20260425073427",
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.phone11.ai",
+        "EXPO_PUBLIC_DEEP_LINK_SCHEME": "phone11",
+        "EXPO_PUBLIC_SIP_ENGINE": "siprix",
+        "PHONE11_VOIP_WAKE_COMMISSIONED": "1",
+        "PHONE11_APNS_ENVIRONMENT": "production",
+        "PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED": "1"
+      },
+      "ios": {
+        "image": "macos-sequoia-15.6-xcode-26.0"
+      }
+    },
     "preview-ios-siprix-wake-pilot": {
       "extends": "preview-ios-siprix",
       "channel": "siprix-wake-pilot",

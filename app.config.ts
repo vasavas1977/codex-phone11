@@ -15,6 +15,9 @@ const chatNotificationsEnabled = chatCommissioned === "1";
 const rawBundleId = process.env.PHONE11_BUNDLE_ID ?? "ai.phone11.mobile";
 const sipEngine = process.env.EXPO_PUBLIC_SIP_ENGINE ?? "pjsip";
 if (!["siprix", "pjsip"].includes(sipEngine)) throw new Error("Invalid SIP engine selection");
+const appStoreBuild = process.env.PHONE11_APP_STORE_BUILD ?? "0";
+if (!["0", "1"].includes(appStoreBuild)) throw new Error("Invalid App Store build flag");
+const siprixLicenseConfigured = Boolean(process.env.PHONE11_SIPRIX_LICENSE?.trim());
 const bundleId =
   rawBundleId
     .replace(/[-_]/g, ".") // Replace hyphens/underscores with dots
@@ -29,6 +32,20 @@ const bundleId =
       return /^[a-zA-Z]/.test(segment) ? segment : "x" + segment;
     })
     .join(".") || "space.manus.app";
+if (appStoreBuild === "1") {
+  if (!process.env.PHONE11_BUNDLE_ID?.trim() || bundleId === "ai.phone11.mobile") {
+    throw new Error("Phone11 App Store builds require the explicit registered bundle identifier");
+  }
+  if (sipEngine !== "siprix") {
+    throw new Error("Phone11 App Store builds require the reviewed Siprix calling engine");
+  }
+  if (!siprixLicenseConfigured) {
+    throw new Error("Phone11 App Store builds require a production Siprix license");
+  }
+  if (wakeSettings.gate !== "1" || wakeSettings.environment !== "production" || !chatNotificationsEnabled) {
+    throw new Error("Phone11 App Store builds require production call and chat notification commissioning");
+  }
+}
 const env = {
   // App branding - update these values directly (do not use env vars)
   appName: "Phone11",
@@ -152,7 +169,10 @@ const config: ExpoConfig = {
     },
     buildInfo: {
       sipEngine,
-      sipSdkVersion: sipEngine === "siprix" ? "1.0.40-trial" : "react-native-pjsip-2.7.4",
+      sipSdkVersion: sipEngine === "siprix"
+        ? `1.0.40-${siprixLicenseConfigured ? "licensed" : "trial"}`
+        : "react-native-pjsip-2.7.4",
+      appStoreBuild: appStoreBuild === "1",
       easBuildId: process.env.EAS_BUILD_ID ?? "local",
       easBuildProfile: process.env.EAS_BUILD_PROFILE ?? "unknown",
       gitCommitHash: process.env.EAS_BUILD_GIT_COMMIT_HASH ?? process.env.GITHUB_SHA ?? "unknown",

@@ -33,6 +33,22 @@ test("Siprix preview preserves bundle identity and separates update channel", ()
   assert.notEqual(siprix.channel, profiles[siprix.extends].channel);
   assert.equal(profiles[siprix.extends].env.PHONE11_BUNDLE_ID, "space.manus.phone11ai.t20260425073427");
 });
+test("App Store profile is isolated, store signed, and production commissioned", () => {
+  const profiles = require("../eas.json").build;
+  const store = profiles["production-ios-siprix-store"];
+  assert.equal(store.distribution, "store");
+  assert.equal(store.environment, "production");
+  assert.notEqual(store.developmentClient, true);
+  assert.equal(store.autoIncrement, true);
+  assert.equal(store.env.PHONE11_APP_STORE_BUILD, "1");
+  assert.equal(store.env.PHONE11_BUNDLE_ID, "space.manus.phone11ai.t20260425073427");
+  assert.equal(store.env.EXPO_PUBLIC_SIP_ENGINE, "siprix");
+  assert.equal(store.env.PHONE11_VOIP_WAKE_COMMISSIONED, "1");
+  assert.equal(store.env.PHONE11_APNS_ENVIRONMENT, "production");
+  assert.equal(store.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED, "1");
+  assert.match(store.ios.image, /xcode-26/);
+  assert.ok(!Object.hasOwn(store.env, "PHONE11_SIPRIX_LICENSE"));
+});
 test("diagnostics include engine and SDK build identity", () => {
   const source = readFileSync(new URL("../app/settings/sip-diagnostics.tsx", import.meta.url), "utf8");
   assert.match(source, /sipSdkVersion=/);

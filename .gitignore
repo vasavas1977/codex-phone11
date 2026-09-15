@@ -49,6 +49,8 @@ android/app/build/
 *.ipa
 *.apk
 *.aab
+.phone11-derived/
+.phone11-derived-release/
 .metro-health-check*
 /ios
 /android
@@ -89,6 +91,7 @@ Thumbs.db
 
 # === TypeScript ===
 *.tsbuildinfo
+**/__pycache__/
 
 # === Misc ===
 .npmrc
