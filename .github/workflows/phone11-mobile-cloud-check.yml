@@ -46,8 +46,18 @@ jobs:
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run tests
-        run: pnpm test
+      - name: Run Vitest tests
+        run: pnpm exec vitest run --exclude "**/*.test.mjs"
+
+      - name: Run Node tests
+        run: |
+          node_tests=()
+          while IFS= read -r -d '' test_file; do
+            node_tests+=("$test_file")
+          done < <(find lab/android modules/phone11-siprix/tests tests \
+            -type f -name '*.test.mjs' -print0)
+          ((${#node_tests[@]} > 0))
+          node --test "${node_tests[@]}"
 
       - name: Validate Expo config
         run: pnpm exec expo config --type public

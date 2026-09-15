@@ -8,6 +8,13 @@
     <condition field="destination_number" expression="^0(\d{8,9})$">
       <action application="set" data="domain_name=$${domain}"/>
       <action application="set" data="call_direction=outbound"/>
+      <!-- Keep authenticated recording identity on the A-leg; never send it to the carrier. -->
+      <action application="set" data="phone11_outbound_id=${sip_h_X-Phone11-Outbound-ID}"/>
+      <action application="set" data="phone11_authenticated_user=${sip_h_X-Phone11-Authenticated-User}"/>
+      <action application="set" data="phone11_authenticated_realm=${sip_h_X-Phone11-Authenticated-Realm}"/>
+      <action application="unset" data="sip_h_X-Phone11-Outbound-ID"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-User"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-Realm"/>
       <action application="log" data="INFO [kamailio-outbound] Thailand local call to 0$1, transferring to default context"/>
       <action application="transfer" data="0$1 XML default"/>
     </condition>
@@ -18,6 +25,13 @@
     <condition field="destination_number" expression="^(66\d{8,9})$">
       <action application="set" data="domain_name=$${domain}"/>
       <action application="set" data="call_direction=outbound"/>
+      <!-- Keep authenticated recording identity on the A-leg; never send it to the carrier. -->
+      <action application="set" data="phone11_outbound_id=${sip_h_X-Phone11-Outbound-ID}"/>
+      <action application="set" data="phone11_authenticated_user=${sip_h_X-Phone11-Authenticated-User}"/>
+      <action application="set" data="phone11_authenticated_realm=${sip_h_X-Phone11-Authenticated-Realm}"/>
+      <action application="unset" data="sip_h_X-Phone11-Outbound-ID"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-User"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-Realm"/>
       <action application="log" data="INFO [kamailio-outbound] Thailand E.164 call to $1, transferring to default context"/>
       <action application="transfer" data="$1 XML default"/>
     </condition>
@@ -28,6 +42,13 @@
     <condition field="destination_number" expression="^\+(\d{7,15})$">
       <action application="set" data="domain_name=$${domain}"/>
       <action application="set" data="call_direction=outbound"/>
+      <!-- Keep authenticated recording identity on the A-leg; never send it to the carrier. -->
+      <action application="set" data="phone11_outbound_id=${sip_h_X-Phone11-Outbound-ID}"/>
+      <action application="set" data="phone11_authenticated_user=${sip_h_X-Phone11-Authenticated-User}"/>
+      <action application="set" data="phone11_authenticated_realm=${sip_h_X-Phone11-Authenticated-Realm}"/>
+      <action application="unset" data="sip_h_X-Phone11-Outbound-ID"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-User"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-Realm"/>
       <action application="log" data="INFO [kamailio-outbound] Plus-prefix call to +$1, transferring to default context"/>
       <action application="transfer" data="+$1 XML default"/>
     </condition>
@@ -38,6 +59,13 @@
     <condition field="destination_number" expression="^(\d{7,15})$">
       <action application="set" data="domain_name=$${domain}"/>
       <action application="set" data="call_direction=outbound"/>
+      <!-- Keep authenticated recording identity on the A-leg; never send it to the carrier. -->
+      <action application="set" data="phone11_outbound_id=${sip_h_X-Phone11-Outbound-ID}"/>
+      <action application="set" data="phone11_authenticated_user=${sip_h_X-Phone11-Authenticated-User}"/>
+      <action application="set" data="phone11_authenticated_realm=${sip_h_X-Phone11-Authenticated-Realm}"/>
+      <action application="unset" data="sip_h_X-Phone11-Outbound-ID"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-User"/>
+      <action application="unset" data="sip_h_X-Phone11-Authenticated-Realm"/>
       <action application="log" data="INFO [kamailio-outbound] General outbound call to $1, transferring to default context"/>
       <action application="transfer" data="$1 XML default"/>
     </condition>
