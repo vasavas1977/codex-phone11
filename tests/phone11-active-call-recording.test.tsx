@@ -77,6 +77,13 @@ it("shows stop only after server grants it and reports genuine recording status"
   expect(render()).toContain("Recording in progress");
   expect(render()).toContain("Stop recording exact-cloud-call");
 });
+it("shows durable finalization without exposing Stop again", () => {
+  mocks.detail.detail.recordingStatus = "recording";
+  mocks.detail.detail.recordingFinalizing = true;
+  mocks.detail.detail.manualControls = { canStart: false, canStop: false };
+  expect(render()).toContain("Saving recording");
+  expect(render()).not.toContain("Stop recording");
+});
 it("does not show recording or buttons while detail is unavailable", () => {
   mocks.detail = { loading: true, reload: vi.fn() };
   expect(render()).toContain("Checking recording status");

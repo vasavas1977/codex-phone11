@@ -82,14 +82,23 @@ function MatchedRecording({
         }
       />
     );
-  const status = {
-    off: "Not recording",
-    pending: "Preparing recording…",
-    recording: "Recording in progress",
-    ready: "Recording saved. Available in Recents after the call.",
-    failed: "Recording unavailable",
-  }[detail.recordingStatus];
+  const status = detail.recordingFinalizing
+    ? "Saving recording…"
+    : {
+        off: "Not recording",
+        pending: "Preparing recording…",
+        recording: "Recording in progress",
+        ready: "Recording saved. Available in Recents after the call.",
+        failed: detail.manualControls?.canStart
+          ? "Not recording"
+          : "Recording unavailable",
+      }[detail.recordingStatus];
   const controls = detail.manualControls;
+  const explainUnavailable =
+    !detail.recordingFinalizing &&
+    !controls?.canStart &&
+    !controls?.canStop &&
+    (detail.recordingStatus === "off" || detail.recordingStatus === "failed");
   return (
     <View style={{ gap: 4 }}>
       <Text accessibilityLiveRegion="polite" style={{ color: "#B4BAC6" }}>
@@ -102,11 +111,11 @@ function MatchedRecording({
           controls={controls}
           refresh={cloud.reload}
         />
-      ) : (
+      ) : explainUnavailable ? (
         <Text style={{ color: "#B4BAC6" }}>
           Recording controls are unavailable for this call.
         </Text>
-      )}
+        ) : null}
     </View>
   );
 }
