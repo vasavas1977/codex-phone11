@@ -25,3 +25,7 @@ test('only synthetic dialplan destinations exist and every call is bounded', () 
 test('config generator rejects injected SIP passwords', () => {
   assert.throws(()=>configs({'7101':{password:'injected\n[trunk]'},'7102':{password:'b'.repeat(48)}}));
 });
+test('config generator accepts the commissioned 32-byte base64url credential format', () => {
+  assert.doesNotThrow(()=>configs({'7101':{password:'A'.repeat(42)+'_'},'7102':{password:'b'.repeat(48)}}));
+  assert.throws(()=>configs({'7101':{password:'A'.repeat(44)},'7102':{password:'b'.repeat(48)}}));
+});

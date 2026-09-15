@@ -6,6 +6,7 @@ This disposable local PBX exercises the app's **Siprix** engine. Asterisk's serv
 
 ```sh
 node lab/android/fixture.mjs up
+node lab/android/align-staging-fixture.mjs --execute
 node lab/android/pbx/probe.mjs
 node lab/android/fixture.mjs incoming
 node lab/android/fixture.mjs incoming-cancel
@@ -29,6 +30,14 @@ The host probe temporarily registers synthetic **7102**, authenticates an INVITE
 - Allowed dialplan: **7101**, **7102**, **7190** (440 Hz tone), **7191** (echo). All calls have an absolute 20-second answered-call limit. There are no wildcard or external routes.
 
 `.lab/fixture.json` is mode 0600 within `.lab` mode 0700. It contains `runId`, ownership/resource names, `imageId`, `sip`, `rtp`, and `accounts["7101"].password` / `accounts["7102"].password`. Generated PBX configuration is also mode 0600. Provision the lab app at runtime using this private file; never print its password, copy it into source, commit it, bake it into an APK, or include it in screenshots. Docker logging is disabled. The build context contains only the Dockerfile and startup script, and never the runtime configuration.
+
+`align-staging-fixture.mjs --execute` signs in as the single synthetic Android
+pilot using the existing mode-0600 private login file, reads `phone.getConfig`,
+updates only extension 7101 in this checkout's owned fixture, reloads Asterisk,
+and revokes the temporary session. Its output and private evidence omit the SIP
+password and session token. It refuses an active 7101 call or registration, a
+different staging identity/route, unsafe private-file modes, or an unrelated
+Docker resource.
 
 ## Isolation and reproducibility
 

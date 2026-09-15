@@ -14,7 +14,10 @@ const docker = args => execFileSync('docker', args, { encoding: 'utf8', timeout:
 const privateWrite = (file, data) => { fs.writeFileSync(file, data, { mode: 0o600 }); fs.chmodSync(file, 0o600); };
 
 export function configs(accounts) {
-  for (const id of ['7101', '7102']) if (!/^[a-f0-9]{48}$/.test(accounts[id]?.password || '')) throw new Error('Invalid fixture password');
+  // Random local credentials use 24-byte hex; the commissioned staging seed
+  // uses 32-byte base64url. Keep the accepted formats exact so configuration
+  // generation cannot become a general string-injection path.
+  for (const id of ['7101', '7102']) if (!/^(?:[a-f0-9]{48}|[A-Za-z0-9_-]{43})$/.test(accounts[id]?.password || '')) throw new Error('Invalid fixture password');
   const endpoint = id => `[${id}]\ntype=endpoint\ncontext=lab\ndisallow=all\nallow=ulaw,alaw\nauth=${id}-auth\naors=${id}\ndirect_media=no\nforce_rport=yes\nrewrite_contact=yes\nrtp_symmetric=yes\nmedia_address=10.0.2.2\ncallerid=Lab ${id} <${id}>\n\n[${id}-auth]\ntype=auth\nauth_type=userpass\nusername=${id}\npassword=${accounts[id].password}\n\n[${id}]\ntype=aor\nmax_contacts=1\nremove_existing=yes\nqualify_frequency=0\n`;
   return {
     'asterisk.conf': `[directories]\nastetcdir => /etc/asterisk\nastmoddir => /usr/lib/asterisk/modules\nastvarlibdir => /var/lib/asterisk\nastdbdir => /var/lib/asterisk\nastkeydir => /var/lib/asterisk\nastdatadir => /var/lib/asterisk\nastagidir => /var/lib/asterisk/agi-bin\nastspooldir => /var/spool/asterisk\nastrundir => /var/run/asterisk\nastlogdir => /var/log/asterisk\n[options]\nverbose=0\ndebug=0\n` ,
