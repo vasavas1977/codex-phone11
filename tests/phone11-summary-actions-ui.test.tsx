@@ -181,6 +181,37 @@ it("shows progress only beside the language being translated", () => {
   expect(html.match(/Translating…/gu)).toHaveLength(1);
 });
 
+it("does not request every language when the translation picker opens", () => {
+  resetView();
+  const onTranslate = vi.fn(async () => undefined);
+  render({ ...base, onTranslate });
+  m.handlers.get("More summary actions")?.();
+  render({ ...base, onTranslate });
+  m.handlers.get("Translate")?.();
+  const html = render({ ...base, onTranslate });
+  expect(onTranslate).not.toHaveBeenCalled();
+  expect(html).toContain(
+    "Choose one language. The original call stays unchanged.",
+  );
+  m.handlers.get("Show ไทย")?.();
+  expect(onTranslate).toHaveBeenCalledWith("th");
+  expect(onTranslate).toHaveBeenCalledTimes(1);
+});
+
+it("returns from the language picker to the summary actions menu", () => {
+  resetView();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("More summary actions")?.();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("Translate")?.();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  expect(m.buttons).toContain("Back to summary actions");
+  m.handlers.get("Back to summary actions")?.();
+  m.menuItems.clear();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  expect(m.menuItems).toContain("Translate");
+});
+
 it("shows a recoverable translation error beside the language choices", () => {
   resetView();
   render({ ...base, onTranslate: vi.fn(async () => undefined) });
@@ -193,4 +224,19 @@ it("shows a recoverable translation error beside the language choices", () => {
     onTranslate: vi.fn(async () => undefined),
   });
   expect(html).toContain("Translation is unavailable. Please try again.");
+});
+
+it("marks only the failed language as retryable", () => {
+  resetView();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("More summary actions")?.();
+  render({ ...base, onTranslate: vi.fn(async () => undefined) });
+  m.handlers.get("Translate")?.();
+  const html = render({
+    ...base,
+    onTranslate: vi.fn(async () => undefined),
+    translationErrorLanguage: "th",
+  });
+  expect(html.match(/Could not translate/gu)).toHaveLength(1);
+  expect(html.match(/>Retry</gu)).toHaveLength(1);
 });

@@ -42,6 +42,8 @@ export interface SummaryActionsViewProps {
   selectedLanguage: RecordingTranslationLanguage;
   translatingLanguage?: TranslatableRecordingLanguage;
   translationError?: string;
+  translationErrorLanguage?: TranslatableRecordingLanguage;
+  availableTranslationLanguages?: readonly TranslatableRecordingLanguage[];
   showTranslatedContent?: boolean;
   onTranslate?(language: TranslatableRecordingLanguage): Promise<void>;
   onOriginal(): void;
@@ -547,12 +549,16 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
             >
               <TouchableOpacity
                 accessibilityRole="button"
-                accessibilityLabel="Cancel"
-                onPress={closeEditor}
+                accessibilityLabel={
+                  editor === "language" ? "Back to summary actions" : "Cancel"
+                }
+                onPress={() =>
+                  editor === "language" ? setEditor("actions") : closeEditor()
+                }
                 style={{ minHeight: 48, justifyContent: "center" }}
               >
                 <Text style={{ color: props.colors.primary, fontSize: 16 }}>
-                  Cancel
+                  {editor === "language" ? "Back" : "Cancel"}
                 </Text>
               </TouchableOpacity>
               <Text
@@ -788,6 +794,16 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
               </View>
             ) : editor === "language" ? (
               <View style={{ gap: 4 }}>
+                <Text
+                  style={{
+                    color: props.colors.muted,
+                    fontSize: 13,
+                    lineHeight: 20,
+                    paddingBottom: 8,
+                  }}
+                >
+                  Choose one language. The original call stays unchanged.
+                </Text>
                 {recordingTranslationLanguages.map((language) => (
                   <TouchableOpacity
                     key={language.code}
@@ -798,11 +814,19 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                       busy: props.translatingLanguage === language.code,
                       disabled:
                         Boolean(props.translatingLanguage) &&
-                        language.code !== "original",
+                        language.code !== "original" &&
+                        language.code !== props.translatingLanguage &&
+                        !props.availableTranslationLanguages?.includes(
+                          language.code,
+                        ),
                     }}
                     disabled={
                       Boolean(props.translatingLanguage) &&
-                      language.code !== "original"
+                      language.code !== "original" &&
+                      language.code !== props.translatingLanguage &&
+                      !props.availableTranslationLanguages?.includes(
+                        language.code,
+                      )
                     }
                     onPress={() => {
                       if (language.code === "original") {
@@ -825,16 +849,34 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                       opacity:
                         props.translatingLanguage &&
                         language.code !== "original" &&
-                        language.code !== props.translatingLanguage
+                        language.code !== props.translatingLanguage &&
+                        !props.availableTranslationLanguages?.includes(
+                          language.code,
+                        )
                           ? 0.45
                           : 1,
                     }}
                   >
-                    <Text
-                      style={{ color: props.colors.foreground, fontSize: 16 }}
-                    >
-                      {language.label}
-                    </Text>
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text
+                        style={{ color: props.colors.foreground, fontSize: 16 }}
+                      >
+                        {language.label}
+                      </Text>
+                      <Text style={{ color: props.colors.muted, fontSize: 12 }}>
+                        {language.code === "original"
+                          ? "Keep the source summary and transcript"
+                          : props.translatingLanguage === language.code
+                            ? "Translating…"
+                            : props.translationErrorLanguage === language.code
+                              ? "Could not translate"
+                              : props.availableTranslationLanguages?.includes(
+                                    language.code,
+                                  )
+                                ? "Ready"
+                                : "Translate"}
+                      </Text>
+                    </View>
                     {props.translatingLanguage === language.code ? (
                       <View
                         style={{
@@ -843,11 +885,6 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                           gap: 8,
                         }}
                       >
-                        <Text
-                          style={{ color: props.colors.muted, fontSize: 12 }}
-                        >
-                          Translating…
-                        </Text>
                         <ActivityIndicator
                           size="small"
                           color={props.colors.primary}
@@ -855,6 +892,8 @@ export function SummaryActionsView(props: SummaryActionsViewProps) {
                       </View>
                     ) : props.selectedLanguage === language.code ? (
                       <Text style={{ color: props.colors.primary }}>✓</Text>
+                    ) : props.translationErrorLanguage === language.code ? (
+                      <Text style={{ color: props.colors.primary }}>Retry</Text>
                     ) : null}
                   </TouchableOpacity>
                 ))}
@@ -957,6 +996,8 @@ export function RecordingSummaryActions({
   const [translatingLanguage, setTranslatingLanguage] =
     useState<TranslatableRecordingLanguage>();
   const [translationError, setTranslationError] = useState<string>();
+  const [translationErrorLanguage, setTranslationErrorLanguage] =
+    useState<TranslatableRecordingLanguage>();
   const generation = useRef(0);
   const original = { ...summary, transcript };
   useEffect(() => {
@@ -966,6 +1007,7 @@ export function RecordingSummaryActions({
     setTranslations({});
     setTranslatingLanguage(undefined);
     setTranslationError(undefined);
+    setTranslationErrorLanguage(undefined);
     return () => {
       generationRef.current++;
     };
@@ -976,22 +1018,27 @@ export function RecordingSummaryActions({
     if (cached) {
       generation.current++;
       setSelectedLanguage(language);
+      setTranslatingLanguage(undefined);
       setTranslationError(undefined);
+      setTranslationErrorLanguage(undefined);
       onContentChange?.(cached, language);
       return;
     }
     const revision = ++generation.current;
     setTranslatingLanguage(language);
     setTranslationError(undefined);
+    setTranslationErrorLanguage(undefined);
     try {
       const result = await onTranslate(language);
       if (generation.current !== revision) return;
       setTranslations((current) => ({ ...current, [language]: result }));
       setSelectedLanguage(language);
+      setTranslationErrorLanguage(undefined);
       onContentChange?.(result, language);
     } catch (error) {
       if (generation.current === revision) {
         setTranslationError(translationErrorMessage(error));
+        setTranslationErrorLanguage(language);
         throw new Error("translation_failed");
       }
     } finally {
@@ -1016,6 +1063,10 @@ export function RecordingSummaryActions({
       selectedLanguage={selectedLanguage}
       translatingLanguage={translatingLanguage}
       translationError={translationError}
+      translationErrorLanguage={translationErrorLanguage}
+      availableTranslationLanguages={
+        Object.keys(translations) as TranslatableRecordingLanguage[]
+      }
       showTranslatedContent={!onContentChange}
       onTranslate={onTranslate ? translate : undefined}
       onOriginal={() => {
@@ -1023,6 +1074,7 @@ export function RecordingSummaryActions({
         setSelectedLanguage("original");
         setTranslatingLanguage(undefined);
         setTranslationError(undefined);
+        setTranslationErrorLanguage(undefined);
         onContentChange?.(original, "original");
       }}
       onUpdate={personal.update}
