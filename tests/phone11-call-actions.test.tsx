@@ -73,6 +73,7 @@ vi.mock("../lib/_core/auth", () => ({
 // eslint-disable-next-line import/first
 import {
   CallActionsSheet,
+  callDetailsText,
   callShareText,
   type CallActionCall,
 } from "../components/cloud-recordings/call-actions-sheet";
@@ -217,6 +218,47 @@ describe("call actions sheet", () => {
       .onPress();
     await tick();
     expect(remove).toHaveBeenCalledOnce();
+  });
+
+  it("shows independent recording and AI summary status in call details", async () => {
+    const detailed = {
+      ...call,
+      recordingStatus: "ready",
+      summaryStatus: "processing",
+    };
+    const { html } = render({ call: detailed });
+    expect(html).toContain("Call details");
+    await mocks.presses.get("Call details")!();
+    expect(mocks.alerts[0]).toMatchObject({
+      title: "Call details",
+      message: callDetailsText(detailed),
+    });
+    expect(mocks.alerts[0].message).toContain("Recording: Ready");
+    expect(mocks.alerts[0].message).toContain("AI summary: Processing");
+  });
+
+  it("blocks, reports spam, and unblocks through the local blocklist", async () => {
+    const setBlock = vi.fn();
+    render({ onSetBlock: setBlock });
+    expect(mocks.presses.has("Block or report spam")).toBe(true);
+    await mocks.presses.get("Block or report spam")!();
+    expect(mocks.alerts[0].title).toBe("Block or report spam");
+    await mocks.alerts[0].buttons.find(
+      (button) => button.text === "Report spam & block",
+    ).onPress();
+    await tick();
+    expect(setBlock).toHaveBeenCalledWith("spam");
+
+    mocks.alerts.length = 0;
+    setBlock.mockClear();
+    render({ blockReason: "spam", onSetBlock: setBlock });
+    expect(mocks.presses.has("Unblock number")).toBe(true);
+    await mocks.presses.get("Unblock number")!();
+    await mocks.alerts[0].buttons.find(
+      (button) => button.text === "Unblock",
+    ).onPress();
+    await tick();
+    expect(setBlock).toHaveBeenCalledWith(null);
   });
 
   it("rejects a stale menu action after the signed-in owner changes", async () => {
