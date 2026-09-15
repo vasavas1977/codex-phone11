@@ -85,7 +85,13 @@ describe("push gateway provider acceptance and registry lifecycle", () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => ({ ok: true, body: { cancel } })); vi.stubGlobal("fetch", fetchMock);
     const android = { ...token, sessionId:"synthetic-session", platform: "android" as const, tokenType: "fcm" as const, bundleId: "ai.phone11.mobile.staging" };
     const wake = { v: 1 as const, callUUID: "33333333-3333-4333-8333-333333333333", bindingId: "11111111-1111-4111-8111-111111111111", expiresAt: Date.now() + 20_000 };
-    await sendFcmPush(android, { callId: "must-not-be-sent", callerNumber: "must-not-be-sent", callerName: "must-not-be-sent", wake }, Date.now() + 5000);
+    await sendFcmPush(
+      android,
+      { callId: "must-not-be-sent", callerNumber: "must-not-be-sent", callerName: "must-not-be-sent", wake },
+      Date.now() + 5000,
+      async () => true,
+      async () => "fake-test-credential",
+    );
     const [, request] = fetchMock.mock.calls[0]; const body = JSON.parse(String(request?.body));
     expect(body.message.token).toBe(android.token);
     expect(body.message.data).toEqual({ v: "1", callUUID: wake.callUUID, bindingId: wake.bindingId, expiresAt: String(wake.expiresAt) });
@@ -96,7 +102,13 @@ describe("push gateway provider acceptance and registry lifecycle", () => {
     vi.stubEnv("FCM_PROJECT_ID", "test-only-project");mocks.adc.mockResolvedValue({token:"fake-test-credential"});
     const fetchMock=vi.fn();vi.stubGlobal("fetch",fetchMock);
     const android={...token,sessionId:"synthetic-session",platform:"android" as const,tokenType:"fcm" as const};
-    await expect(sendFcmPush(android,{callId:"call",callerNumber:"",wake:{v:1,callUUID:"33333333-3333-4333-8333-333333333333",bindingId:"11111111-1111-4111-8111-111111111111",expiresAt:Date.now()+20_000}},Date.now()+5000,async()=>false)).rejects.toThrow("current");
+    await expect(sendFcmPush(
+      android,
+      {callId:"call",callerNumber:"",wake:{v:1,callUUID:"33333333-3333-4333-8333-333333333333",bindingId:"11111111-1111-4111-8111-111111111111",expiresAt:Date.now()+20_000}},
+      Date.now()+5000,
+      async()=>false,
+      async()=>"fake-test-credential",
+    )).rejects.toThrow("current");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

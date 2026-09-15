@@ -47,7 +47,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run Vitest tests
-        run: pnpm exec vitest run --exclude "**/*.test.mjs"
+        run: |
+          pnpm exec vitest run \
+            --exclude "**/*.test.mjs" \
+            --exclude "tests/phone11-push-delivery.test.ts"
+          pnpm exec vitest run tests/phone11-push-delivery.test.ts
 
       - name: Generate Android project for native contract tests
         run: pnpm exec expo prebuild --platform android --no-install

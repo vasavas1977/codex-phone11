@@ -198,14 +198,20 @@ async function getFcmAccessToken(deadlineAt: number): Promise<string> {
  * Uses data-only message (no notification field) so the app
  * handles display via Notifee full-screen notification.
  */
-export async function sendFcmPush(token: PushToken, payload: PushPayload, deadlineAt: number, current: () => Promise<boolean> = async () => true): Promise<void> {
+export async function sendFcmPush(
+  token: PushToken,
+  payload: PushPayload,
+  deadlineAt: number,
+  current: () => Promise<boolean> = async () => true,
+  accessTokenProvider: (deadlineAt: number) => Promise<string> = getFcmAccessToken,
+): Promise<void> {
   const projectId = process.env.FCM_PROJECT_ID;
   if (!projectId) throw new Error("FCM push delivery is not configured");
 
   // Check if ADC is available
   let accessToken: string;
   try {
-    accessToken = await withinCallDeadline(deadlineAt, () => getFcmAccessToken(deadlineAt));
+    accessToken = await withinCallDeadline(deadlineAt, () => accessTokenProvider(deadlineAt));
   } catch (adcError: any) {
     if (adcError instanceof PushDeadlineError) throw adcError;
     throw new Error("FCM push credentials are unavailable");
