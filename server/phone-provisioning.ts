@@ -383,34 +383,6 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       );
     }
 
-    const isOwner = process.env.OWNER_OPEN_ID && openId === process.env.OWNER_OPEN_ID;
-
-    if (isOwner) {
-      const ownerExt = await db.query(`
-        SELECT e.*, o.name as org_name, o.plan as org_plan,
-               t.name as tenant_name, t.plan as tenant_plan,
-               sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
-               sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference,
-               sub.password as subscriber_password
-        FROM extensions e
-        LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
-        LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
-        LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
-        LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
-          AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $1)
-        WHERE (e.sip_username = '1020' OR e.extension_number = '1020')
-          AND COALESCE(e.status, 'active') = 'active'
-          AND e.deleted_at IS NULL
-        LIMIT 1
-      `, [DEFAULT_SIP_DOMAIN]);
-
-      if (ownerExt.rows.length > 0) {
-        const ext = ownerExt.rows[0];
-        await assignExtensionToUser(userId, ext.id, true);
-        return buildConfig({ ...ext, display_name: ext.display_name || "Owner" });
-      }
-    }
-
     return { configured: false };
   } catch (error) {
     console.error("[PhoneProvisioning] getPhoneConfig error:", error);
