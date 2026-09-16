@@ -11,6 +11,7 @@ const row = {
   role: "member", grant_profile: "interactive", listen_language: "th",
   room_revision: "22345678-1234-4234-8234-123456789012",
   member_revision: "32345678-1234-4234-8234-123456789012",
+  receipt_revision: "42345678-1234-4234-8234-123456789012",
   consent_policy_version: "phone11-conference-consent.v1",
   meeting_notice_version: "meeting-notice.v1",
   accepted_at: new Date("2026-09-16T00:00:00.000Z"),

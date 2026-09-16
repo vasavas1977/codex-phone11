@@ -11,6 +11,7 @@ const admissionRowSchema = z.object({
   listen_language: z.enum(["th", "en", "zh", "ja", "ko", "fr", "de", "es"]),
   room_revision: z.string().uuid(),
   member_revision: z.string().uuid(),
+  receipt_revision: z.string().uuid(),
   consent_policy_version: z.string().min(1).max(128),
   meeting_notice_version: z.string().min(1).max(128),
   accepted_at: z.coerce.date(),
@@ -35,6 +36,7 @@ export function createMeetingAdmissionRepository() {
         `SELECT r.id AS meeting_id, r.tenant_id, m.user_id, m.participant_id,
                 m.role, m.grant_profile, m.listen_language,
                 r.revision AS room_revision, m.revision AS member_revision,
+                c.receipt_revision,
                 r.consent_policy_version, r.meeting_notice_version,
                 c.accepted_at, c.announcement_acknowledged_at
            FROM phone11_meeting_admission_rooms r
