@@ -100,6 +100,14 @@ describe("Team Chat network state", () => {
     vi.mocked(api.list).mockRejectedValue({ data: { code: "FORBIDDEN" } }); await store.getState().loadChannels();
     expect(store.getState().channels).toEqual([]); expect(store.getState().workspace).toBeNull(); expect(store.getState().error).toContain("no longer have access");
   });
+  it("keeps the last authorized teammate directory when a refresh fails", async () => {
+    const people = [{ id: 2, name: "Bob", extension: "1002" }];
+    const { store, api } = setup({ directory: vi.fn().mockResolvedValueOnce(people).mockRejectedValueOnce(new Error("offline")) });
+    await store.getState().loadChannels();
+    await store.getState().loadDirectory();
+    await expect(store.getState().loadDirectory()).rejects.toThrow("offline");
+    expect(store.getState().people).toEqual(people);
+  });
   it("recovers a history gap after a long disconnection", async () => {
     const { store, api } = setup({ history: vi.fn().mockResolvedValueOnce({ messages: [saved({ sequence: 1 })], hasMore: false }) });
     await store.getState().loadChannels(); await store.getState().loadMessages("room");

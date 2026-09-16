@@ -167,7 +167,10 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       loadDirectory: async () => {
         const state = get(), current = generation;
         if (!state.workspace || !state.userId) return;
-        set({ people: [] });
+        // Keep the most recently authorized directory visible while refreshing.
+        // A temporary network failure must not turn an open composer into an
+        // empty picker or make a user lose the context for a selected teammate.
+        // Workspace/account changes still reset people through empty().
         const people = await api.directory(state.workspace.id);
         if (current === generation) set({ people });
       },
