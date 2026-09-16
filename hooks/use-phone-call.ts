@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert } from "react-native";
 import { router } from "expo-router";
 import { useAuth } from "@/hooks/use-auth";
@@ -13,7 +13,17 @@ export function usePhoneCall() {
   const { user } = useAuth({ autoFetch: false });
   const { makeCall } = useSip();
   const busy = useRef(false);
+  // A successful call navigates away from the dial screen. Do not update that
+  // screen after it has unmounted while the native call command settles.
+  const mounted = useRef(true);
   const [calling, setCalling] = useState(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const placeCall = async (number: string, video = false) => {
     const target = number.trim();
@@ -37,7 +47,7 @@ export function usePhoneCall() {
       return;
     }
     busy.current = true;
-    setCalling(true);
+    if (mounted.current) setCalling(true);
     const stillCurrent = () => getAuthSnapshot().user?.id === user.id && useSipAccountStore.getState().account === account;
     try {
       const id = await makeCall(target, video);
@@ -52,7 +62,7 @@ export function usePhoneCall() {
       Alert.alert("Call could not start", "Check your connection and try again. Your call history will show calls that actually started.");
     } finally {
       busy.current = false;
-      setCalling(false);
+      if (mounted.current) setCalling(false);
     }
   };
   return { placeCall, calling };
