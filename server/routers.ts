@@ -1,3 +1,4 @@
+import { meetingsRouter } from "./meetings/router";
 import { conferenceRouter } from "./conference/router";
 import { cloudRecordingsRouter } from "./cloud-recordings/router";
 import { chatNotificationsRouter } from "./chat-notifications/router";
@@ -38,6 +39,7 @@ import {
 } from "./push-gateway";
 
 export const appRouter = router({
+  meetings: meetingsRouter,
   conference: conferenceRouter,
   cloudRecordings: cloudRecordingsRouter,
   system: systemRouter,

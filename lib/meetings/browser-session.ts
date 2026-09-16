@@ -1,0 +1,151 @@
+/** Browser-only controller. The adapter must create a fresh, unpublished room per call. */
+export interface BrowserParticipant {
+  identity: string;
+  name?: string;
+  isSpeaking?: boolean;
+  isMicrophoneEnabled?: boolean;
+  isCameraEnabled?: boolean;
+  attributes?: Readonly<Record<string, string>>;
+}
+export interface BrowserLocalParticipant extends BrowserParticipant {
+  setMicrophoneEnabled(enabled: boolean): Promise<unknown>;
+  setCameraEnabled(enabled: boolean): Promise<unknown>;
+  setAttributes?(attributes: Record<string, string>): Promise<unknown>;
+}
+export interface BrowserRoom {
+  localParticipant: BrowserLocalParticipant;
+  remoteParticipants: ReadonlyMap<string, BrowserParticipant>;
+  connect(url: string, token: string): Promise<unknown>;
+  /** Must stop local tracks (LiveKit's disconnect(true)). */
+  disconnect(stopTracks?: boolean): Promise<unknown> | void;
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  off(event: string, listener: (...args: unknown[]) => void): unknown;
+}
+export interface MeetingParticipant {
+  identity: string; name: string; local: boolean; speaking: boolean;
+  microphone: boolean; camera: boolean; attributes: Readonly<Record<string, string>>;
+}
+export interface BrowserSessionSnapshot {
+  status: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
+  participants: readonly MeetingParticipant[];
+  error: string | null;
+}
+export interface BrowserSessionCapabilities { languageAttribute?: string }
+const refreshEvents = ['participantConnected', 'participantDisconnected', 'participantNameChanged',
+  'participantAttributesChanged', 'activeSpeakersChanged', 'trackMuted', 'trackUnmuted',
+  'trackPublished', 'trackUnpublished', 'localTrackPublished', 'localTrackUnpublished',
+  'trackSubscribed', 'trackUnsubscribed'];
+
+export class BrowserMeetingSession {
+  private room?: BrowserRoom;
+  private generation = 0;
+  private cleanup?: () => void;
+  private listeners = new Set<() => void>();
+  private snapshot: BrowserSessionSnapshot = { status: 'idle', participants: [], error: null };
+  private mediaQueue: Promise<unknown> = Promise.resolve();
+  constructor(private readonly createRoom: () => BrowserRoom,
+    private readonly capabilities: BrowserSessionCapabilities = {}) {}
+  getSnapshot = (): BrowserSessionSnapshot => this.snapshot;
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  };
+  private update(patch: Partial<BrowserSessionSnapshot>) {
+    this.snapshot = Object.freeze({ ...this.snapshot, ...patch });
+    this.listeners.forEach(listener => listener());
+  }
+  private refresh(room: BrowserRoom) {
+    const map = (p: BrowserParticipant, local: boolean): MeetingParticipant => Object.freeze({
+      identity: p.identity, name: p.name || p.identity, local, speaking: !!p.isSpeaking,
+      microphone: !!p.isMicrophoneEnabled, camera: !!p.isCameraEnabled,
+      attributes: Object.freeze({ ...p.attributes }),
+    });
+    this.update({ participants: Object.freeze([map(room.localParticipant, true),
+      ...Array.from(room.remoteParticipants.values(), p => map(p, false))]) });
+  }
+  private fail(error: unknown) {
+    // Do not expose SDK error strings, which can contain credential-bearing URLs.
+    this.update({ error: 'Meeting operation failed. Check permissions and connection, then retry.' });
+    return error instanceof Error ? error : new Error('Meeting operation failed');
+  }
+  async connect(options: { url: string; token: string; microphone?: boolean; camera?: boolean }): Promise<void> {
+    const generation = ++this.generation;
+    const previous = this.room;
+    this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
+    this.update({ status: 'connecting', participants: [], error: null });
+    let room: BrowserRoom | undefined;
+    try {
+      if (previous) await previous.disconnect(true);
+      if (generation !== this.generation) throw new Error('Meeting connection cancelled');
+      room = this.createRoom();
+      this.room = room;
+      const current = () => generation === this.generation && room === this.room;
+      const bindings: Array<[string, (...args: unknown[]) => void]> = [];
+      const bind = (event: string, fn: (...args: unknown[]) => void) => {
+        const listener = (...args: unknown[]) => { if (current()) fn(...args); };
+        bindings.push([event, listener]); room!.on(event, listener);
+      };
+      this.cleanup = () => bindings.forEach(([event, fn]) => room!.off(event, fn));
+      refreshEvents.forEach(event => bind(event, () => this.refresh(room!)));
+      bind('reconnecting', () => this.update({ status: 'reconnecting' }));
+      bind('reconnected', () => { this.refresh(room!); this.update({ status: 'connected' }); });
+      bind('disconnected', () => {
+        ++this.generation; this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
+        this.update({ status: 'disconnected', participants: [], error: 'Meeting disconnected.' });
+      });
+      await room.connect(options.url, options.token);
+      if (!current()) throw new Error('Meeting connection cancelled');
+      // No capture is requested until an explicit opt-in is provided.
+      if (options.microphone === true) await room.localParticipant.setMicrophoneEnabled(true);
+      if (!current()) throw new Error('Meeting connection cancelled');
+      if (options.camera === true) await room.localParticipant.setCameraEnabled(true);
+      if (!current()) throw new Error('Meeting connection cancelled');
+      this.refresh(room); this.update({ status: 'connected' });
+    } catch (error) {
+      if (generation === this.generation) {
+        this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
+        this.update({ status: 'error', participants: [] }); this.fail(error);
+      }
+      // A delayed connect/capture can complete after disconnect. Stop it again.
+      if (room) await Promise.resolve(room.disconnect(true)).catch(() => undefined);
+      throw error;
+    }
+  }
+  async disconnect(): Promise<void> {
+    const generation = ++this.generation, room = this.room;
+    this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
+    this.update({ status: 'disconnected', participants: [], error: null });
+    try { if (room) await room.disconnect(true); }
+    catch (error) { if (generation === this.generation) this.fail(error); throw error; }
+  }
+  private operation(action: (participant: BrowserLocalParticipant) => Promise<unknown>): Promise<void> {
+    const generation = this.generation, room = this.room;
+    const run = async () => {
+      if (!room || room !== this.room || generation !== this.generation || this.snapshot.status !== 'connected') {
+        const error = new Error('Meeting is not connected');
+        if (generation === this.generation) this.fail(error);
+        throw error;
+      }
+      try {
+        await action(room.localParticipant);
+        if (generation !== this.generation || room !== this.room) {
+          await room.disconnect(true); throw new Error('Meeting operation cancelled');
+        }
+        this.refresh(room); this.update({ error: null });
+      } catch (error) { if (generation === this.generation) this.fail(error); throw error; }
+    };
+    const result = this.mediaQueue.then(run, run);
+    this.mediaQueue = result.catch(() => undefined);
+    return result;
+  }
+  setMicrophone(enabled: boolean) { return this.operation(p => p.setMicrophoneEnabled(enabled)); }
+  setCamera(enabled: boolean) { return this.operation(p => p.setCameraEnabled(enabled)); }
+  setLanguage(language: string): Promise<void> {
+    return this.operation(async p => {
+      const key = this.capabilities.languageAttribute;
+      if (!key || !p.setAttributes) throw new Error('Language attributes are unsupported');
+      if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(language)) throw new Error('Invalid language tag');
+      await p.setAttributes({ [key]: language });
+    });
+  }
+}
