@@ -103,7 +103,9 @@ function MatchedRecording({
       <Text accessibilityLiveRegion="polite" style={{ color: "#B4BAC6" }}>
         {status}
       </Text>
-      {controls && (controls.canStart || controls.canStop) ? (
+      {controls &&
+      !detail.recordingFinalizing &&
+      (controls.canStart || controls.canStop) ? (
         <CaptureControls
           key={callUuid}
           callUuid={callUuid}

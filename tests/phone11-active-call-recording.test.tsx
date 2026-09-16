@@ -80,9 +80,22 @@ it("shows stop only after server grants it and reports genuine recording status"
 it("shows durable finalization without exposing Stop again", () => {
   mocks.detail.detail.recordingStatus = "recording";
   mocks.detail.detail.recordingFinalizing = true;
-  mocks.detail.detail.manualControls = { canStart: false, canStop: false };
-  expect(render()).toContain("Saving recording");
-  expect(render()).not.toContain("Stop recording");
+  // The runtime capability check is deliberately stale here. The durable
+  // record marker wins, so a user cannot submit Stop twice while the PBX
+  // flushes the authenticated capture.
+  mocks.detail.detail.manualControls = { canStart: false, canStop: true };
+  const html = render();
+  expect(html).toContain("Saving recording");
+  expect(html).not.toContain("Stop recording");
+  expect(html).not.toContain("controls are unavailable");
+});
+it("presents a retryable failed start as not recording", () => {
+  mocks.detail.detail.recordingStatus = "failed";
+  mocks.detail.detail.manualControls = { canStart: true, canStop: false };
+  const html = render();
+  expect(html).toContain("Not recording");
+  expect(html).toContain("Start recording exact-cloud-call");
+  expect(html).not.toContain("Recording unavailable");
 });
 it("does not show recording or buttons while detail is unavailable", () => {
   mocks.detail = { loading: true, reload: vi.fn() };

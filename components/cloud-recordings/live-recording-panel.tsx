@@ -189,6 +189,7 @@ export function LiveRecordingPanel({
         }
         controls={
           detail.manualControls &&
+          !detail.recordingFinalizing &&
           (detail.manualControls.canStart || detail.manualControls.canStop) ? (
             <CaptureControls
               callUuid={detail.callUuid}
