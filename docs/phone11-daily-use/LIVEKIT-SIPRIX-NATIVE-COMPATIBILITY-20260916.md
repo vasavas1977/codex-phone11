@@ -39,3 +39,31 @@ The official Expo plugin contains native lifecycle setup, not merely app configu
 - Official WebRTC fork: https://github.com/livekit/react-native-webrtc
 - Exact published npm metadata and tarballs for the versions listed above (registry.npmjs.org).
 - Local Phone11 `package.json`, `app.config.ts`, `modules/phone11-siprix/Phone11Siprix.podspec`, and staged pinned arm64 Siprix frameworks. `otool -L` confirms Siprix embeds its media framework instead of depending on an external WebRTC.framework.
+
+## Exact namespaced binary audit and remaining limitation
+
+The actual `LiveKitWebRTC.xcframework.zip` release 144.7559.15 was downloaded to temporary storage (66,615,427 bytes; SHA-256 `2edf0cd197590157d5f07c1c619d6eab302711c5e9a6dc0e81b08c7989375821`). Its arm64 binary SHA-256 is `f21ef36eb8cf510c90f30dbacee3f757d89b2591e7fdc9ca427feddb83522f89`.
+
+`otool -ov` finds 132 LKRTC-prefixed metadata names. The only RTC-prefixed metadata name still shared with Siprix is `RTCDevice`, an Objective-C category on `UIDevice`, not an RTC class. However, namespacing RTC classes does **not** remove shared categories on Apple classes. Both binaries define:
+
+| Apple class/category | Shared selectors |
+| --- | --- |
+| NSString / StdString | `stdString`, `stdStringForString:`, `stringForStdString:` |
+| NSString / AbslStringView | `stringForAbslStringView:` |
+| AVCaptureSession / DevicePosition | `devicePositionForSampleBuffer:` |
+| UIDevice / RTCDevice | `machineName` |
+| UIDevice / H264Profile | `maxSupportedH264Profile` |
+
+The `stringForAbslStringView:` Objective-C type encoding differs: Siprix `{string_view=*Q}`, LiveKit `{basic_string_view<char, std::char_traits<char>>=*Q}`. Both contain a pointer and length in the metadata; this does not prove equivalent semantic or ABI behavior. Objective-C category methods can replace each other at runtime regardless of symbol visibility. Do not label the namespaced pair safe based solely on successful linking. Vendor confirmation, a combined-process runtime/media probe, or a WebRTC build that namespaces these category selectors is still required. Avoid attempting unreviewed binary symbol patches.
+
+## Concrete package/plugin proposal (not installed)
+
+Use exact candidate pins `@livekit/react-native=3.0.0`, `@livekit/react-native-webrtc=144.2.0`, `livekit-client=2.22.3`, `@config-plugins/react-native-webrtc=13.0.0`. Do not add the currently incompatible official Expo plugin package to production until its peer range is corrected upstream or a reviewed local derivative is used.
+
+A local `modules/phone11-livekit-expo` derivative of official plugin1.0.2 can retain its license, configuration metadata and Expo lifecycle classes, declare exact LiveKit3 peers, and disable screen sharing/multitasking camera access by default. Source comparison confirms these public native setup entry points still exist in3.0:
+
+- iOS module `livekit_react_native`, public Objective-C `LivekitReactNative.setup()`, called once by an `ExpoAppDelegateSubscriber`. `livekit_react_native_webrtc.WebRTCModuleOptions.sharedInstance()` remains available. Keep `enableMultitaskingCameraAccess=false`.
+- Android `com.livekit.reactnative.LiveKitReactNative.setup(application, AudioType.CommunicationAudioType())` and `com.oney.WebRTCModule.WebRTCModuleOptions.getInstance()` remain available. Explicitly set `enableMediaProjectionService=false` after setup for a camera-only first version, because SDK3 setup sets it true.
+- SDK3 iOS podspec is unchanged from2.12 and still supports the legacy React module path via `install_modules_dependencies`. This is source-level compatibility evidence, not a verified Expo54/RN0.81 compile.
+
+Before modifying the app dependency graph, validate the proposed module in a disposable checkout with Expo54, RN0.81.5 and `newArchEnabled=false`. Required tests: peer closure without overrides; config plugin idempotence and microphone/camera permissions; prebuild preserving the Siprix and RNCallKeep hooks; iOS arm64/simulator compile; Android compile; combined ObjC category audit; both framework load orders and media operations; native missing-module fallback; and exclusive media ownership across incoming SIP and conference. No source-only test can establish camera/audio crash freedom.
