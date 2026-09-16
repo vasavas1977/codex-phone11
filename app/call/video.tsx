@@ -5,7 +5,6 @@ import {
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
   requireNativeComponent,
   type ViewProps,
@@ -14,7 +13,6 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { FeatureUnavailable } from "@/components/feature-unavailable";
 import { useVideoCapability } from "@/hooks/use-video-capability";
-import { usePhoneCall } from "@/hooks/use-phone-call";
 import { useSip } from "@/lib/sip/sip-provider";
 import { siprixEngine } from "@/lib/sip/siprix-engine";
 import { useSipCallStore } from "@/lib/sip/call-store";
@@ -36,14 +34,12 @@ function VideoSurface({ callId, local }: { callId: string; local: boolean }) {
   );
 }
 export default function VideoCallScreen() {
-  const params = useLocalSearchParams<{ callId?: string; number?: string }>();
+  const params = useLocalSearchParams<{ callId?: string }>();
   const available = useVideoCapability();
   const insets = useSafeAreaInsets();
   const call = useSipCallStore((state) =>
     resolveCurrentCall(state, params.callId),
   );
-  const [number, setNumber] = useState(params.number ?? "");
-  const { placeCall, calling } = usePhoneCall();
   const { setMute, setSpeaker, hangupCall } = useSip();
   const lock = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -219,32 +215,16 @@ export default function VideoCallScreen() {
       ) : (
         <View style={styles.empty}>
           <Text style={styles.body}>
-            Enter the other person’s video-enabled work extension. Regular
-            mobile and landline numbers support voice calls only.
+            Choose a person from Contacts. Video will appear when their account
+            supports video calls.
           </Text>
-          <TextInput
-            accessibilityLabel="Video call number or extension"
-            value={number}
-            onChangeText={setNumber}
-            keyboardType="phone-pad"
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder="Work extension"
-            placeholderTextColor="#AAB2C0"
-            style={styles.input}
-          />
           <Pressable
             accessibilityRole="button"
-            disabled={calling || !number.trim()}
-            onPress={() => placeCall(number, true)}
-            style={[
-              styles.button,
-              (calling || !number.trim()) && styles.disabled,
-            ]}
+            accessibilityLabel="Choose a contact"
+            onPress={() => router.replace("/(tabs)/contacts")}
+            style={styles.button}
           >
-            <Text style={styles.buttonText}>
-              {calling ? "Starting…" : "Start video call"}
-            </Text>
+            <Text style={styles.buttonText}>Choose a contact</Text>
           </Pressable>
         </View>
       )}

@@ -99,7 +99,7 @@ export function ContactDetails({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back to contacts"
-          onPress={() => router.back()}
+          onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/contacts")}
           style={styles.back}
         >
           <IconSymbol name="chevron.left" size={20} color={colors.primary} />

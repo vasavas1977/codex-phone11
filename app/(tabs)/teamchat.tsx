@@ -1,3 +1,4 @@
+import { MeetAction } from "@/components/meet-action";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, AppState, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
@@ -74,8 +75,7 @@ export default function TeamChatScreen() {
   return <ScreenContainer>
     <View style={styles.header}>
       <View style={{ flex: 1 }}><Text style={[styles.title, fg]}>Team Chat</Text><Text style={{ color: colors.muted }}>{ownsWorkspace ? chat.workspace?.name : "Your work conversations"}</Text></View>
-      <Pressable accessibilityRole="button" accessibilityLabel="Video meetings" onPress={() => router.push("/conference")}
-        style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 8 }}><Text style={{ color: colors.primary, fontWeight: "600" }}>Meetings</Text></Pressable>
+      <MeetAction />
       <Pressable accessibilityRole="button" accessibilityLabel="New conversation" disabled={!ownsWorkspace} onPress={openComposer}
         style={[styles.button, { backgroundColor: colors.primary, opacity: chat.workspace && user ? 1 : 0.4 }]}><Text style={styles.buttonText}>New</Text></Pressable>
     </View>

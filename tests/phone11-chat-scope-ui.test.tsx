@@ -1,3 +1,4 @@
+vi.mock("../components/meet-action", () => ({ MeetAction: () => null }));
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
