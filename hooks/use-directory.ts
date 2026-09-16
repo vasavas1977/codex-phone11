@@ -4,43 +4,36 @@ import * as Auth from "@/lib/_core/auth";
 import { createTRPCClient } from "@/lib/trpc";
 import {
   readDirectory,
-  type DirectoryContact,
-  type DirectoryWorkspace,
 } from "@/lib/phone/directory";
+import {
+  beginDirectoryRefresh,
+  emptyDirectoryState as empty,
+  failDirectoryRefresh,
+  type DirectoryState,
+} from "@/lib/phone/directory-sync";
+
+export type { DirectoryState } from "@/lib/phone/directory-sync";
 
 let client: ReturnType<typeof createTRPCClient> | null = null;
 const api = () => (client ??= createTRPCClient()).chat;
-interface DirectoryState {
-  owner: number | null;
-  requestedTenant?: number;
-  workspace: DirectoryWorkspace | null;
-  workspaces: DirectoryWorkspace[];
-  people: DirectoryContact[];
-  loading: boolean;
-  error: string | null;
-}
-const empty: DirectoryState = {
-  owner: null,
-  workspace: null,
-  workspaces: [],
-  people: [],
-  loading: false,
-  error: null,
-};
-
 /** No persistent/shared directory cache: an old owner's response cannot reach the next account. */
 export function useDirectory(tenantId?: number) {
   const { user } = useAuth({ autoFetch: false });
   const owner = user?.id ?? null;
   const [state, setState] = useState<DirectoryState>(empty);
+  const stateRef = useRef<DirectoryState>(empty);
   const generation = useRef(0);
+  const replaceState = useCallback((next: DirectoryState) => {
+    stateRef.current = next;
+    setState(next);
+  }, []);
   const reload = useCallback(async () => {
     const revision = ++generation.current;
     if (!owner) {
-      setState(empty);
+      replaceState(empty);
       return;
     }
-    setState({ ...empty, owner, requestedTenant: tenantId, loading: true });
+    replaceState(beginDirectoryRefresh(stateRef.current, owner, tenantId));
     const current = () =>
       revision === generation.current &&
       Auth.getAuthSnapshot().user?.id === owner;
@@ -53,7 +46,7 @@ export function useDirectory(tenantId?: number) {
         await api().directory.query({ tenantId: result.workspace.id }),
       );
       if (!current()) return;
-      setState({
+      replaceState({
         owner,
         requestedTenant: tenantId,
         workspace: result.workspace,
@@ -64,15 +57,9 @@ export function useDirectory(tenantId?: number) {
       });
     } catch {
       if (current())
-        setState({
-          ...empty,
-          owner,
-          requestedTenant: tenantId,
-          error:
-            "Could not load your contacts. Check your connection and try again.",
-        });
+        replaceState(failDirectoryRefresh(stateRef.current, owner, tenantId));
     }
-  }, [owner, tenantId]);
+  }, [owner, replaceState, tenantId]);
   useEffect(() => {
     void reload();
     return () => {
