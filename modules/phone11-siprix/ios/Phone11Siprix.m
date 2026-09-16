@@ -468,15 +468,27 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     _pendingHolds = [NSMutableSet new];
     _acceptedCalls = [NSMutableSet new];
     _retiredCallIDs = [NSMutableSet new];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(suspendCamera) name:UIApplicationDidEnterBackgroundNotification object:nil];
   }
   return self;
 }
 
+- (void)suspendCamera {
+  for (NSMutableDictionary *call in self.calls.allValues) {
+    [call removeObjectForKey:@"videoAnswerPrepared"];
+    if ((! [call[@"hasVideo"] boolValue] && ![call[@"videoRequested"] boolValue]) || [call[@"cameraMuted"] boolValue]) continue;
+    int code=[self.sdk callMuteCam:[call[@"id"] intValue] mute:YES];
+    if (code == kErrorCodeEOK) {
+      call[@"cameraMuted"]=@YES;
+      [self emit:@"callVideoChanged" data:@{@"call":[call copy]}];
+    } else [self emit:@"error" data:@{@"operation":@"backgroundCameraMute", @"code":@(code)}];
+  }
+}
 - (NSDictionary *)snapshot {
   NSMutableArray *accounts = [NSMutableArray new];
   NSMutableArray *calls = [NSMutableArray new];
   for (NSDictionary *account in self.accounts.allValues) [accounts addObject:[account copy]];
-  for (NSDictionary *call in self.calls.allValues) { NSMutableDictionary *visible=[call mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [visible removeObjectForKey:@"videoAnswerPrepared"]; [calls addObject:visible]; }
+  for (NSDictionary *call in self.calls.allValues) { NSMutableDictionary *visible=[call mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [visible removeObjectForKey:@"videoAnswerPrepared"]; [visible removeObjectForKey:@"videoRequested"]; [calls addObject:visible]; }
   NSMutableDictionary *snapshot = [@{@"initialized": @(self.initialized && !self.quarantined),
            @"generation": @(self.generation), @"sequence": @(self.sequence),
            @"sdkVersion": self.sdkVersion ?: NSNull.null, @"accounts": accounts, @"calls": calls,
@@ -506,7 +518,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
   [[NSNotificationCenter defaultCenter] postNotificationName:@"P11VideoRefresh" object:nil];
   self.sequence += 1;
   NSMutableDictionary *event = [data mutableCopy];
-  if (event[@"call"]) { NSMutableDictionary *visible=[event[@"call"] mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [visible removeObjectForKey:@"videoAnswerPrepared"]; event[@"call"]=visible; }
+  if (event[@"call"]) { NSMutableDictionary *visible=[event[@"call"] mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [visible removeObjectForKey:@"videoAnswerPrepared"]; [visible removeObjectForKey:@"videoRequested"]; event[@"call"]=visible; }
   event[@"type"] = type;
   event[@"generation"] = @(self.generation);
   event[@"sequence"] = @(self.sequence);
@@ -613,6 +625,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     } else if ([type isEqualToString:@"callConnected"]) {
       call[@"state"] = [call[@"held"] boolValue] ? @"held" : @"connected";
       call[@"hasVideo"] = @([data[@"hasVideo"] boolValue]);
+      call[@"videoRequested"] = call[@"hasVideo"];
       if (call[@"historyId"] && !call[@"answeredAt"]) call[@"answeredAt"]=@(MAX(P11NowMs(),[call[@"startedAt"] doubleValue]));
     } else if ([type isEqualToString:@"callTerminated"]) {
       call[@"state"] = @"terminated";
@@ -1349,6 +1362,7 @@ RCT_EXPORT_METHOD(makeVideoCall:(NSString *)accountId destination:(NSString *)de
   }
   NSMutableDictionary *call = P11Call(callId, accountId, @"outgoing", @"dialing", destination);
   call[@"videoOffered"] = @(video);
+  call[@"videoRequested"] = @(video);
   call[@"historyId"] = [@"native-outbound:" stringByAppendingString:outboundUUID];
   call[@"startedAt"] = @(P11NowMs());
   runtime.calls[callId] = call;
@@ -1369,6 +1383,7 @@ RCT_EXPORT_METHOD(answerCall:(NSString *)callId resolver:(RCTPromiseResolveBlock
   [runtime.calls[callId] removeObjectForKey:@"videoAnswerPrepared"];
   if (video && ![self cameraAuthorized:reject]) return;
   if ([self checkSDK:[runtime.sdk callAccept:callId.intValue withVideo:video] operation:@"callAccept" reject:reject]) {
+    runtime.calls[callId][@"videoRequested"] = @(video);
     [runtime.acceptedCalls addObject:callId];
     resolve(nil);
   }

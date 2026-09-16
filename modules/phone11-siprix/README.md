@@ -113,7 +113,9 @@ transaction; cancel the preparation if that transaction fails. Normal `makeCall`
 normal answers, and native wake answers stay audio-only. Account video upgrades
 are inactive so a remote re-INVITE cannot automatically activate the camera.
 `videoOffered` describes the offer; `hasVideo` becomes true only on SDK-confirmed
-negotiation. Connected audio fallback remains usable. Camera mute events follow
+negotiation. Connected audio fallback remains usable. Entering the background clears prepared answer consent and requests camera mute;
+foregrounding does not automatically unmute. SDK failures remain visible as an
+error event and require real-device verification. Camera mute events follow
 successful SDK acceptance and do not change microphone mute.
 
 The SDK's `enableVideoCall` initialization flag enables capability, not camera
@@ -121,7 +123,7 @@ capture. Actual camera capture begins only after an explicit video call operatio
 Video controls use the exact pinned v1.0.40 APIs; the vendor reports a later fix
 for camera mute following video upgrades, so this bridge does not expose upgrades.
 
-Validation: all 10 native test cases pass (233 bridge and 247 wake-runtime
+Validation: all 10 native test cases pass (238 bridge and 247 wake-runtime
 assertions, plus push/wake suites). Video cases cover denied/revoked permission,
 negotiation versus offer, audio fallback, cancelled answer consent, camera SDK
 failure, renderer attachment/detachment, and stale terminated-call callbacks.

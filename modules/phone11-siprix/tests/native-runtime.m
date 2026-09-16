@@ -22,6 +22,7 @@ NSString *const AVAudioSessionRouteChangeNotification = @"routeChange";
 static int playbackCategories, playbackOverrides, playbackActivations;
 static NSString *lastPlaybackMode;
 static AVAudioSessionCategoryOptions lastPlaybackOptions;
+NSString *const UIApplicationDidEnterBackgroundNotification = @"background";
 NSString *const AVMediaTypeVideo = @"video";
 static AVAuthorizationStatus cameraAuthorization = AVAuthorizationStatusDenied;
 @implementation AVCaptureDevice
@@ -511,6 +512,9 @@ int main(void) {
     CHECK([error isEqual:@"E_CAMERA_PERMISSION"] && cameraMutes == priorMutes);
     cameraAuthorization=AVAuthorizationStatusAuthorized;
     [bridge switchCamera:videoId resolver:resolve rejecter:reject]; CHECK(!error && cameraSwitches == 1);
+    [bridge setCameraMuted:videoId muted:NO resolver:resolve rejecter:reject]; CHECK(!error);
+    [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidEnterBackgroundNotification object:nil];
+    CHECK([P11SiprixRuntime.shared.calls[videoId][@"cameraMuted"] boolValue]);
     [sdkDelegate onCallTerminated:videoId.intValue statusCode:200]; flush();
     CHECK(videoDetaches == 2 && !remote.attachedSDK && !local.attachedSDK);
     [sdkDelegate onCallVideoUpgraded:videoId.intValue withVideo:YES]; flush();
@@ -518,6 +522,8 @@ int main(void) {
     [sdkDelegate onCallIncoming:61 accId:10 withVideo:YES hdrFrom:@"sip:video@invalid.example" hdrTo:@""]; flush();
     CHECK([P11SiprixRuntime.shared.calls[@"61"][@"videoOffered"] boolValue] && ![P11SiprixRuntime.shared.calls[@"61"][@"hasVideo"] boolValue]);
     [bridge prepareVideoAnswer:@"61" resolver:resolve rejecter:reject]; CHECK(!error);
+    [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidEnterBackgroundNotification object:nil];
+    CHECK(!P11SiprixRuntime.shared.calls[@"61"][@"videoAnswerPrepared"]);
     [bridge cancelVideoAnswer:@"61" resolver:resolve rejecter:reject]; CHECK(!error);
     [bridge answerCall:@"61" resolver:resolve rejecter:reject]; CHECK(!error && !lastAcceptVideo);
     [sdkDelegate onCallTerminated:61 statusCode:200]; flush();

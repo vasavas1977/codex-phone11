@@ -20,6 +20,7 @@ typedef NS_ENUM(NSInteger, UIEventType) { UIEventTypeTouches = 0 };
 @property(nonatomic, strong) UIColor *tintColor;
 @end
 
+extern NSString *const UIApplicationDidEnterBackgroundNotification;
 @interface UIApplication : NSObject
 @end
 typedef NSString *UIApplicationOpenURLOptionsKey;
