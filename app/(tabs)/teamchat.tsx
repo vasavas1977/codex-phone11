@@ -14,6 +14,7 @@ export default function TeamChatScreen() {
   const { user } = useAuth({ autoFetch: false });
   const chat = useChatStore();
   const [search, setSearch] = useState("");
+  const [peopleSearch, setPeopleSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [composing, setComposing] = useState(false);
   const [kind, setKind] = useState<ChatKind>("direct");
@@ -35,7 +36,7 @@ export default function TeamChatScreen() {
   };
   useEffect(() => { setComposing(false); setSelected([]); setName(""); setSearch(""); setCreateError(null); setDirectoryLoading(false); }, [user, chat.workspace?.id]);
   useFocusEffect(useCallback(() => {
-    chat.setUser(user?.id ?? null);
+    useChatStore.getState().setUser(user?.id ?? null);
     if (!user) return;
     const refresh = () => { if (getAuthSnapshot().user === user && AppState.currentState === "active") void useChatStore.getState().loadChannels(); };
     refresh();
@@ -52,7 +53,7 @@ export default function TeamChatScreen() {
   const openComposer = () => {
     const state = currentScope(); if (!state?.workspace) return;
     setComposerScope({ owner: user, workspaceId: state.workspace.id });
-    setComposing(true); setSelected([]); setName(""); setKind("direct"); void refreshDirectory();
+    setComposing(true); setPeopleSearch(""); setSelected([]); setName(""); setKind("direct"); void refreshDirectory();
   };
   const create = async () => {
     const state = currentScope();
@@ -68,7 +69,7 @@ export default function TeamChatScreen() {
     finally { if (creatingRef.current === action) { creatingRef.current = null; setCreatingAction(null); } }
   };
   const rows = (ownsWorkspace ? chat.channels : []).filter(c => c.name.toLowerCase().includes(search.toLowerCase()) &&
-    (filter === "all" || (filter === "unread" ? c.unreadCount > 0 : c.kind === filter)));
+    (filter === "all" || (filter === "unread" ? c.unreadCount > 0 : filter === "drafts" ? Boolean(chat.drafts[c.id]?.trim()) : c.kind === filter)));
   const fg = { color: colors.foreground };
   return <ScreenContainer>
     <View style={styles.header}>
@@ -81,14 +82,16 @@ export default function TeamChatScreen() {
     {!user ? <View style={styles.empty}><Text style={[styles.emptyTitle, fg]}>Sign in to use Team Chat</Text><Text style={{ color: colors.muted }}>Your conversations are shared with your workspace.</Text></View> : <>
       {ownsWorkspace && chat.workspaces.length > 1 && <ScrollView horizontal style={{ maxHeight: 48 }} contentContainerStyle={styles.filters}>{chat.workspaces.map(w => <Pressable key={w.id} onPress={() => currentScope()?.loadChannels(w.id)} style={[styles.chip, { borderColor: colors.border, backgroundColor: w.id === chat.workspace?.id ? colors.primary : colors.surface }]}><Text style={{ color: w.id === chat.workspace?.id ? "white" : colors.foreground }}>{w.name}</Text></Pressable>)}</ScrollView>}
       <TextInput accessibilityLabel="Search conversations" value={search} onChangeText={setSearch} placeholder="Search conversations" placeholderTextColor={colors.muted} style={[styles.search, fg, { backgroundColor: colors.surface, borderColor: colors.border }]} />
-      <View style={styles.filters}>{["all", "direct", "group", "channel", "unread"].map(f => <Pressable key={f} onPress={() => setFilter(f)} style={[styles.chip, { borderColor: colors.border, backgroundColor: filter === f ? colors.primary : colors.surface }]}><Text style={{ color: filter === f ? "white" : colors.foreground, textTransform: "capitalize", fontSize: 12 }}>{f === "channel" ? "Channels" : f}</Text></Pressable>)}</View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ maxHeight: 76 }} contentContainerStyle={styles.filters}>{[
+        ["all", "All"], ["unread", "Unread"], ["direct", "Chats"], ["group", "Groups"], ["channel", "Channels"], ["drafts", "Drafts"],
+      ].map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${label} conversations`} accessibilityState={{ selected: filter === value }} onPress={() => setFilter(value)} style={[styles.chip, { borderColor: colors.border, backgroundColor: filter === value ? colors.primary : colors.surface }]}><Text style={{ color: filter === value ? "white" : colors.foreground, fontSize: 14 }}>{label}</Text></Pressable>)}</ScrollView>
       {(chat.error || chat.storageError) && <Pressable onPress={() => chat.loadChannels()} style={styles.error}><Text style={{ color: colors.error }}>{chat.storageError || chat.error} Tap to retry.</Text></Pressable>}
       <FlatList data={rows} keyExtractor={item => item.id} refreshing={chat.loading} onRefresh={() => chat.loadChannels()} renderItem={({ item }) => <Pressable
         accessibilityRole="button" onPress={() => { const state = currentScope(); if (state?.channels.some(c => c.id === item.id)) router.push({ pathname: "/chat/[id]", params: { id: item.id, tenantId: String(state.workspace?.id) } }); }}
         style={[styles.row, { borderBottomColor: colors.border }]}>
         <View style={[styles.avatar, { backgroundColor: colors.primary + "18" }]}><Text style={[styles.avatarText, { color: colors.primary }]}>{item.kind === "channel" ? "#" : item.name.charAt(0).toUpperCase()}</Text></View>
         <View style={{ flex: 1, gap: 5 }}><View style={styles.rowHeading}><Text numberOfLines={1} style={[styles.rowName, fg, item.unreadCount > 0 && { fontWeight: "700" }]}>{item.name}</Text><Text style={{ color: colors.muted, fontSize: 12 }}>{formatChatTime(item.lastMessageAt)}</Text></View>
-        <Text numberOfLines={1} style={{ color: colors.muted }}>{item.lastMessage || "No messages yet"}</Text></View>
+        <Text numberOfLines={1} style={{ color: colors.muted }}>{chat.drafts[item.id]?.trim() ? `Draft: ${chat.drafts[item.id]}` : item.lastMessage || "No messages yet"}</Text></View>
         {item.unreadCount > 0 && <View style={[styles.badge, { backgroundColor: colors.primary }]}><Text style={styles.buttonText}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</Text></View>}
       </Pressable>} ListEmptyComponent={<View style={styles.empty}>{chat.loading ? <ActivityIndicator color={colors.primary} /> : <><Text style={[styles.emptyTitle, fg]}>{chat.error ? "Chat is unavailable" : search || filter !== "all" ? "No matching conversations" : "Start a conversation"}</Text><Text style={{ color: colors.muted, textAlign: "center" }}>{chat.error ? "Your messages will appear when the connection is restored." : "Choose New to message someone in your workspace."}</Text></>}</View>} />
     </>}
@@ -99,8 +102,9 @@ export default function TeamChatScreen() {
         <Text style={{ paddingHorizontal: 20, paddingVertical: 12, color: colors.muted }}>Choose {kind === "direct" ? "one teammate" : "teammates"}. Conversations are private to these members.</Text>
         {createError && <Pressable accessibilityLabel="Refresh teammates" onPress={refreshDirectory} style={styles.error}><Text style={{ color: colors.error }}>{createError} Tap to refresh teammates; your selection and name are kept.</Text></Pressable>}
         {directoryLoading && <ActivityIndicator color={colors.primary} />}
-        <FlatList data={ownsWorkspace ? chat.people : []} keyExtractor={p => String(p.id)} renderItem={({ item }) => <Pressable accessibilityLabel={`Select teammate ${item.name}`} disabled={creating || directoryLoading} onPress={() => { if (currentScope()) setSelected(previous => kind === "direct" ? [item.id] : previous.includes(item.id) ? previous.filter(id => id !== item.id) : previous.length < 49 ? [...previous, item.id] : previous); }} style={[styles.row, { borderBottomColor: colors.border }]}><Text style={[fg, { flex: 1 }]}>{item.name}</Text><Text style={{ color: colors.primary }}>{selected.includes(item.id) ? "Selected ✓" : "Select"}</Text></Pressable>}
-          ListEmptyComponent={!directoryLoading ? <Text style={{ color: colors.muted, padding: 20 }}>No other teammates are available. Your administrator must add another active workspace member.</Text> : null} />
+        <TextInput accessibilityLabel="Search teammates" value={peopleSearch} onChangeText={setPeopleSearch} placeholder="Search name or extension" placeholderTextColor={colors.muted} style={[styles.search, fg, { backgroundColor: colors.surface, borderColor: colors.border }]} />
+        <FlatList data={ownsWorkspace ? chat.people.filter(person => `${person.name} ${person.extension || ""}`.toLowerCase().includes(peopleSearch.trim().toLowerCase())) : []} keyExtractor={p => String(p.id)} renderItem={({ item }) => <Pressable accessibilityLabel={`Select teammate ${item.name}`} disabled={creating || directoryLoading} onPress={() => { if (currentScope()) setSelected(previous => kind === "direct" ? [item.id] : previous.includes(item.id) ? previous.filter(id => id !== item.id) : previous.length < 49 ? [...previous, item.id] : previous); }} style={[styles.row, { borderBottomColor: colors.border }]}><Text style={[fg, { flex: 1 }]}>{item.name}</Text><Text style={{ color: colors.primary }}>{selected.includes(item.id) ? "Selected ✓" : "Select"}</Text></Pressable>}
+          ListEmptyComponent={!directoryLoading ? <Text style={{ color: colors.muted, padding: 20 }}>{peopleSearch.trim() ? "No teammates match your search." : "No other teammates are available. Your administrator must add another active workspace member."}</Text> : null} />
         <Pressable accessibilityLabel="Start conversation" disabled={creating || directoryLoading || selected.length === 0 || (kind !== "direct" && !name.trim())} onPress={create} style={[styles.button, { margin: 20, backgroundColor: colors.primary, opacity: selected.length && (kind === "direct" || name.trim()) && !creating ? 1 : 0.4 }]}><Text style={styles.buttonText}>{creating ? "Creating…" : "Start conversation"}</Text></Pressable>
       </ScreenContainer>
     </Modal>
@@ -111,7 +115,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: "700", marginBottom: 3 },
   button: { borderRadius: 12, paddingVertical: 12, paddingHorizontal: 18, alignItems: "center" }, buttonText: { color: "white", fontWeight: "600" },
   search: { marginHorizontal: 16, borderWidth: 1, borderRadius: 12, padding: 12, fontSize: 16 },
-  filters: { flexDirection: "row", gap: 7, padding: 16 }, chip: { borderWidth: 1, borderRadius: 18, paddingVertical: 8, paddingHorizontal: 11 },
+  filters: { flexDirection: "row", gap: 7, padding: 16 }, chip: { minHeight: 44, justifyContent: "center", borderWidth: 1, borderRadius: 18, paddingVertical: 8, paddingHorizontal: 11 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, borderBottomWidth: StyleSheet.hairlineWidth },
   rowHeading: { flexDirection: "row", alignItems: "center", gap: 6 }, rowName: { flex: 1, fontSize: 16 },
   avatar: { width: 46, height: 46, borderRadius: 23, justifyContent: "center", alignItems: "center" }, avatarText: { fontSize: 20, fontWeight: "600" },
