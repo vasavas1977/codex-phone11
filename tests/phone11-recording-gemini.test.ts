@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { analyzeRecordingAudio } from "../server/cloud-recordings/gemini";
+import { analyzeRecordingAudio, completeRecordingAnalysis } from "../server/cloud-recordings/gemini";
 const origin = "https://generativelanguage.googleapis.com";
 const audio = Buffer.alloc(44); audio.write("RIFF"); audio.write("WAVE", 8);
 const analysis = { transcript: "Speaker 1: สวัสดี\nSpeaker 2: ตกลงส่งใบเสนอราคา", summary: { summary: "ตกลงส่งใบเสนอราคา", actionItems: ["ส่งใบเสนอราคา"], language: "th" } };
@@ -15,6 +15,15 @@ function fixture(result: unknown = analysis, finishReason = "STOP") {
   return { request, calls, options: { apiKey: "fixture-key", model: "fixture-model", fetch: request as typeof fetch } };
 }
 describe("Gemini call analysis boundary", () => {
+  it.each([
+    {summary:'   ',actionItems:[],language:'en'},
+    {summary:'Recap',actionItems:['  '],language:'en'},
+    {summary:'Recap',actionItems:[],language:' '},
+  ])('rejects incomplete summary fields at generation and persistence boundary', async summary => {
+    const partial={...analysis,summary};
+    expect(completeRecordingAnalysis(partial)).toBeNull();
+    await expect(analyzeRecordingAudio({bytes:audio,mimeType:'audio/wav'},fixture(partial).options)).rejects.toMatchObject({code:'invalid_result'});
+  });
   it("uploads server audio, validates Thai output and deletes the provider file", async () => {
     const f = fixture();
     expect(await analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options)).toEqual(analysis);

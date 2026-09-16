@@ -8,6 +8,7 @@ import {
   type RecordingFailure,
 } from "./failure";
 import { getPool } from "../pbx/db";
+import { completeRecordingAnalysis, type RecordingAnalysis } from "./gemini";
 
 type DB = Pick<Pool, "connect" | "query">;
 const uuid = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -45,9 +46,11 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
   return r.rows.some(row=>["owner","admin"].includes(row.role));
  }
  function dto(r:any):CloudRecording {
+  const analysis=completeRecordingAnalysis({transcript:r.transcript,summary:r.summary});
+  const summaryStatus=r.summary_status==='ready'&&!analysis?'failed':r.summary_status;
   return {callUuid:r.call_uuid,tenantId:Number(r.tenant_id),...(r.native_history_id?{nativeHistoryId:r.native_history_id}:{}),
    number:r.number,direction:r.direction,startedAt:new Date(r.started_at).getTime(),
-   ...(r.ended_at?{endedAt:new Date(r.ended_at).getTime()}:{}),recordingStatus:r.recording_status,summaryStatus:r.summary_status,
+   ...(r.ended_at?{endedAt:new Date(r.ended_at).getTime()}:{}),recordingStatus:r.recording_status,summaryStatus,
    ...(r.recording_status==='recording'&&r.capture_stopped_at?{recordingFinalizing:true}:{} )};
  }
  return {
@@ -83,8 +86,9 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
     WHERE ${owned} AND r.call_uuid=$2 AND r.expires_at>clock_timestamp()`,[userId,callUuid]);
    const r=result.rows[0]; if(!r)throw unavailable();
    const names=persistedParticipantNames(r);
-   return {...dto(r),...(names?{participantNames:names}:{}),...(r.recording_status==='ready'?{playbackPath:`/api/recordings/play/${encodeURIComponent(callUuid)}`} : {}),
-    ...(r.summary_status==='ready'?{transcript:r.transcript,summary:r.summary}: {})};
+   const record=dto(r);
+   return {...record,...(names?{participantNames:names}:{}),...(r.recording_status==='ready'?{playbackPath:`/api/recordings/play/${encodeURIComponent(callUuid)}`} : {}),
+    ...(record.summaryStatus==='ready'?{transcript:r.transcript,summary:r.summary}: {})};
   },
   /** Internal only: trusted PBX adapter supplies IDs, never a mobile request. Verifies explicit assigned leg. */
   async registerCall(callUuid:string):Promise<boolean>{
@@ -201,7 +205,7 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
     AND p.mode<>'off' AND p.ai_enabled AND e.status='active' AND e.deleted_at IS NULL AND t.status='active'`,
     [job.callUuid,job.tenantId,job.leaseToken,job.storageKey]);return r.rows.length===1;
   },
-  async finishJob(job:RecordingJob,result:{transcript:string;summary:{summary:string;actionItems:string[];language:string}}|null,failure?:RecordingFailure):Promise<boolean>{
+  async finishJob(job:RecordingJob,result:RecordingAnalysis|null,failure?:RecordingFailure):Promise<boolean>{
    return transaction(async c=>{
     const policy=await c.query("SELECT 1 FROM phone11_recording_policies WHERE tenant_id=$1 AND mode<>'off' AND ai_enabled FOR SHARE",[job.tenantId]);
     if(!policy.rows.length)return false;
@@ -209,11 +213,13 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
      WHERE j.call_uuid=$1 AND r.tenant_id=$2 AND j.lease_token=$3 AND j.state='processing' AND j.lease_until>clock_timestamp()
      AND EXISTS(SELECT 1 FROM extensions e JOIN tenants t ON t.id=e.tenant_id WHERE e.id=r.extension_id AND e.tenant_id=r.tenant_id AND e.status='active' AND e.deleted_at IS NULL AND t.status='active') AND r.expires_at>clock_timestamp() AND r.recording_status='ready' AND r.storage_key=$4 FOR UPDATE OF j,r`,[job.callUuid,job.tenantId,job.leaseToken,job.storageKey]);
     if(!found.rows.length)return false;
-    const state=result?'ready':found.rows[0].attempts<3?'queued':'failed';
-    const retryDelaySeconds=result?0:recordingRetryDelaySeconds(failure,Number(found.rows[0].attempts));
+    const complete=result?completeRecordingAnalysis(result):null;
+    const completionFailure:RecordingFailure|undefined=result&&!complete?{code:'invalid_result',stage:'parse'}:failure;
+    const state=complete?'ready':found.rows[0].attempts<3?'queued':'failed';
+    const retryDelaySeconds=complete?0:recordingRetryDelaySeconds(completionFailure,Number(found.rows[0].attempts));
     await c.query(`UPDATE phone11_recording_jobs SET state=$2,lease_token=NULL,lease_until=NULL,worker_id=NULL,
-     available_at=clock_timestamp()+$4::integer*interval '1 second',failure_code=$3 WHERE call_uuid=$1`,[job.callUuid,state,result?null:recordingFailureCode(failure),retryDelaySeconds]);
-    await c.query("UPDATE phone11_cloud_recordings SET summary_status=$2,transcript=$3,summary=$4 WHERE call_uuid=$1",[job.callUuid,state,result?.transcript??null,result?JSON.stringify(result.summary):null]);return true;
+     available_at=clock_timestamp()+$4::integer*interval '1 second',failure_code=$3 WHERE call_uuid=$1`,[job.callUuid,state,complete?null:recordingFailureCode(completionFailure),retryDelaySeconds]);
+    await c.query("UPDATE phone11_cloud_recordings SET summary_status=$2,transcript=$3,summary=$4 WHERE call_uuid=$1",[job.callUuid,state,complete?.transcript??null,complete?JSON.stringify(complete.summary):null]);return true;
    });
   }
  };
