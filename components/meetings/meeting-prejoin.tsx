@@ -24,6 +24,8 @@ export interface MeetingPrejoinProps {
   /** Omit until an authenticated meeting admission and media path are available. */
   onJoin?: (preferences: MeetingJoinPreferences) => Promise<void>;
   unavailableReason?: string;
+  onRetryAvailability?: () => void;
+  checkingAvailability?: boolean;
   joinLabel?: string;
   onBack: () => void;
 }
@@ -34,6 +36,8 @@ export function MeetingPrejoin({
   initialDisplayName = "",
   onJoin,
   unavailableReason,
+  onRetryAvailability,
+  checkingAvailability = false,
   joinLabel = "Join meeting",
   onBack,
 }: MeetingPrejoinProps) {
@@ -89,21 +93,50 @@ export function MeetingPrejoin({
             ‹ Back
           </Text>
         </Pressable>
-        <Text
-          accessibilityRole="header"
-          style={[styles.title, { color: colors.foreground }]}
-        >
-          Join a meeting
-        </Text>
-        <Text style={[styles.description, { color: colors.muted }]}>
-          Meet face to face with your team.
-        </Text>
-        <View
-          style={[
-            styles.card,
-            { borderColor: colors.border, backgroundColor: colors.surface },
-          ]}
-        >
+        {unavailable ? (
+          <View
+            style={[
+              styles.unavailableCard,
+              { borderColor: colors.border, backgroundColor: colors.surface },
+            ]}
+          >
+            <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>
+              Meetings aren’t available
+            </Text>
+            <Text style={[styles.description, { color: colors.muted }]}>
+              {unavailable}
+            </Text>
+            {onRetryAvailability && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ busy: checkingAvailability }}
+                disabled={checkingAvailability}
+                onPress={onRetryAvailability}
+                style={[styles.retry, { borderColor: colors.primary }]}
+              >
+                {checkingAvailability && <ActivityIndicator color={colors.primary} />}
+                <Text style={[styles.retryText, { color: colors.primary }]}>
+                  {checkingAvailability ? "Checking…" : "Check again"}
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        ) : <>
+          <Text
+            accessibilityRole="header"
+            style={[styles.title, { color: colors.foreground }]}
+          >
+            Join a meeting
+          </Text>
+          <Text style={[styles.description, { color: colors.muted }]}>
+            Meet face to face with your team.
+          </Text>
+          <View
+            style={[
+              styles.card,
+              { borderColor: colors.border, backgroundColor: colors.surface },
+            ]}
+          >
           <Text
             nativeID="meeting-code-label"
             style={[styles.label, { color: colors.foreground }]}
@@ -188,18 +221,7 @@ export function MeetingPrejoin({
             Your microphone and camera are off on this screen. Permission may be
             requested when you join.
           </Text>
-        </View>
-        {unavailable && (
-          <Text
-            accessibilityRole="text"
-            style={[
-              styles.notice,
-              { color: colors.foreground, backgroundColor: colors.surface },
-            ]}
-          >
-            {unavailable}
-          </Text>
-        )}
+          </View>
         {error && (
           <Text
             accessibilityRole="alert"
@@ -209,7 +231,7 @@ export function MeetingPrejoin({
             {error}
           </Text>
         )}
-        <Pressable
+          <Pressable
           accessibilityRole="button"
           accessibilityState={{ disabled, busy: joining }}
           disabled={disabled}
@@ -228,11 +250,12 @@ export function MeetingPrejoin({
           >
             {joining ? "Opening meeting…" : joinLabel}
           </Text>
-        </Pressable>
-        <Text style={[styles.note, { color: colors.muted }]}>
-          Video meetings are separate from Phone calls. Finish any phone call
-          before joining a meeting.
-        </Text>
+          </Pressable>
+          <Text style={[styles.note, { color: colors.muted }]}>
+            Video meetings are separate from Phone calls. Finish any phone call
+            before joining a meeting.
+          </Text>
+        </>}
       </View>
     </ScrollView>
   );
@@ -251,6 +274,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 30, fontWeight: "700" },
   description: { fontSize: 16, lineHeight: 24 },
   card: { borderWidth: 1, borderRadius: 20, padding: 20, gap: 14 },
+  unavailableCard: { borderWidth: 1, borderRadius: 20, padding: 20, gap: 16 },
   label: { fontSize: 16, fontWeight: "600" },
   input: {
     minHeight: 50,
@@ -268,7 +292,18 @@ const styles = StyleSheet.create({
   },
   mediaText: { flex: 1, gap: 5 },
   note: { fontSize: 14, lineHeight: 21 },
-  notice: { borderRadius: 12, padding: 16, fontSize: 15, lineHeight: 23 },
+  retry: {
+    minHeight: 46,
+    alignSelf: "flex-start",
+    borderWidth: 1,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  retryText: { fontSize: 16, fontWeight: "700" },
   join: {
     minHeight: 52,
     borderRadius: 14,

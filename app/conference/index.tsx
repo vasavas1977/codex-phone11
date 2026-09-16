@@ -18,6 +18,8 @@ export default function ConferenceScreen() {
         key={user?.id ?? "signed-out"}
         initialDisplayName={user?.name ?? ""}
         unavailableReason={reason}
+        onRetryAvailability={user && !capabilities.isLoading ? () => { void capabilities.refetch(); } : undefined}
+        checkingAvailability={capabilities.isFetching}
         onBack={() =>
           router.canGoBack() ? router.back() : router.replace("/(tabs)")
         }

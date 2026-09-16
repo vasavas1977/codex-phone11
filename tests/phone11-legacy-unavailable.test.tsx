@@ -15,9 +15,17 @@ vi.mock("../hooks/use-colors", () => ({ useColors: vi.fn() }));
 vi.mock("../components/screen-container", () => ({
   ScreenContainer: ({ children }: { children: ReactNode }) => createElement("main", null, children),
 }));
-vi.mock("../lib/trpc", () => ({ trpc: { meetings: { capabilities: { useQuery: vi.fn() } } } }));
+vi.mock("../lib/trpc", () => ({
+  trpc: {
+    meetings: {
+      capabilities: {
+        useQuery: vi.fn(() => ({ isLoading: false, isFetching: false, data: undefined, error: null, refetch: vi.fn() })),
+      },
+    },
+  },
+}));
 vi.mock("../components/meetings/meeting-prejoin", () => ({
-  MeetingPrejoin: ({ unavailableReason }: any) => createElement("main", null, "Join a meeting", unavailableReason),
+  MeetingPrejoin: ({ unavailableReason }: any) => createElement("main", null, unavailableReason ? "Meetings aren’t available" : "Join a meeting", unavailableReason),
 }));
 vi.mock("../components/meetings/meeting-room-state", () => ({
   MeetingRoomState: ({ unavailableReason }: any) => createElement("main", null, unavailableReason),
@@ -33,7 +41,7 @@ it.each([
   [Notifications, "Notification center is not available yet"],
   [Preferences, "Notification settings are not available yet"],
   [Billing, "Billing is not available in the app"],
-  [Conference, "Join a meeting"],
+  [Conference, "Meetings aren’t available"],
   [Room, "Meetings are still being configured for this workspace"],
 ] as const)("legacy route stays safe without starting demo services (%#)", (Component, title) => {
   const html = renderToStaticMarkup(createElement(Component)); expect(html).toContain(title);

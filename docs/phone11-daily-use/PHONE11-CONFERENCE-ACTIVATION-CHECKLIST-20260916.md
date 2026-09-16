@@ -19,14 +19,18 @@ Phone11 derives tenant, room, and participant identity after checking an active
 tenant membership, active meeting membership, non-revocation, and a meeting
 that has not ended. Application administrators have no bypass.
 
-The canonical coordinates are:
+The current Phone11 authorization inputs are:
 
 | Field | Exact value | Authority |
 | --- | --- | --- |
-| Room | `conf-p11-t<tenantId>-<meetingId>` | Phone11 server |
-| Participant identity | `p11-t<tenantId>-u<userId>` | Phone11 server |
+| Meeting reference | Opaque Phone11 meeting ID after membership authorization | Phone11 server |
+| Participant reference | Opaque, meeting-bound participant ID | Future Phone11 admission resolver |
 | Join input | `{ "meetingId": "UUID" }` | Authenticated Phone11 client |
 | Join result | `{ "url": "wss://…", "token": "…" }` | Phone11 server, after provider validation |
+
+Connect11 derives the actual media room and LiveKit identity from these trusted
+opaque values using its isolated namespace. Phone11 must not construct or
+guess a room name or media identity.
 
 The checked-in provider adapter is not wired into the router. It always reports
 `available`, `video`, `interpretation`, `voiceBot`, and `recording` as `false`.
@@ -34,7 +38,16 @@ An authenticated join therefore returns the safe setup-pending failure rather
 than a token. Keep this behaviour until every applicable item below is
 evidenced.
 
-## 2. Exact Connect11 facade dependency
+## 2. Historical CoreGuard design note — not an activation contract
+
+The detailed CoreGuard wire example below is retained only as historical design
+context. It is superseded by
+[`CONNECT11-PHONE11-ADAPTER-HANDOFF-20260916.md`](CONNECT11-PHONE11-ADAPTER-HANDOFF-20260916.md),
+which is the canonical `phone11-conference.v1` contract. Do **not** implement
+the old `/get-livekit-token` endpoint, `conf-p11-*` coordinates, or a direct
+Phone11-to-CoreGuard connection. The current source adapter remains unmounted.
+
+### Retired predecessor wire shape
 
 Phone11 may call a Connect11 facade only from its server. The facade must be a
 versioned, authenticated service boundary around the existing CoreGuard
