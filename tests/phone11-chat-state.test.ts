@@ -108,6 +108,14 @@ describe("Team Chat network state", () => {
     await expect(store.getState().loadDirectory()).rejects.toThrow("offline");
     expect(store.getState().people).toEqual(people);
   });
+  it("clears cached teammate identities when directory access is revoked", async () => {
+    const people = [{ id: 2, name: "Bob", extension: "1002" }];
+    const { store } = setup({ directory: vi.fn().mockResolvedValueOnce(people).mockRejectedValueOnce({ data: { code: "FORBIDDEN" } }) });
+    await store.getState().loadChannels(); await store.getState().loadDirectory();
+    await expect(store.getState().loadDirectory()).rejects.toMatchObject({ data: { code: "FORBIDDEN" } });
+    expect(store.getState().people).toEqual([]); expect(store.getState().channels).toEqual([]);
+    expect(store.getState().workspace).toBeNull(); expect(store.getState().error).toContain("no longer have access");
+  });
   it("recovers a history gap after a long disconnection", async () => {
     const { store, api } = setup({ history: vi.fn().mockResolvedValueOnce({ messages: [saved({ sequence: 1 })], hasMore: false }) });
     await store.getState().loadChannels(); await store.getState().loadMessages("room");
