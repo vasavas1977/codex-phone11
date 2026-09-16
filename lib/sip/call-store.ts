@@ -174,6 +174,16 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
     const newStatus = statusMap[pjState];
     if (!newStatus) return;
 
+    // A disconnected INVITE state is terminal. Some native stacks deliver the
+    // separate termination callback later (or after a foreground transition),
+    // so retaining this call until that second callback can leave stale call
+    // controls visible and incorrectly block the next call. `terminateCall`
+    // is idempotent, so the later callback remains safe.
+    if (newStatus === "disconnected") {
+      get().terminateCall(id);
+      return;
+    }
+
     set((state) => {
       const existing = state.activeCalls[id];
       const incoming = state.incomingCall?.id === id ? state.incomingCall : null;

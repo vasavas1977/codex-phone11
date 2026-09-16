@@ -98,6 +98,29 @@ describe("real call history", () => {
     calls.getState().addOutgoingCall(native, "2003"); calls.getState().terminateCall("1");
     await flush(); expect(store.getState().entries).toHaveLength(2);
   });
+  it("finalizes a call from a terminal state event when the separate termination callback is delayed", async () => {
+    let state = "PJSIP_INV_STATE_CALLING";
+    const native = {
+      getId: () => "terminal-event",
+      getState: () => state,
+      getInfo: () => ({ state }),
+    };
+
+    calls.getState().addOutgoingCall(native, "2002");
+    state = "PJSIP_INV_STATE_DISCONNECTED";
+    calls.getState().updateCallState(native);
+
+    expect(calls.getState().activeCalls).toEqual({});
+    expect(calls.getState().incomingCall).toBeNull();
+    await flush();
+    expect(store.getState().entries).toHaveLength(1);
+    expect(store.getState().entries[0]?.endedAt).toEqual(expect.any(Number));
+
+    // The subsequent native termination callback must remain harmless.
+    calls.getState().terminateCall("terminal-event");
+    await flush();
+    expect(store.getState().entries).toHaveLength(1);
+  });
   it("persists an exact outbound correlation ID and authoritative native times", async () => {
     const id = "native-outbound:11111111-2222-4333-8444-555555555555";
     let info = {
