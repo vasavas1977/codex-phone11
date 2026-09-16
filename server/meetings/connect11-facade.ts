@@ -125,7 +125,10 @@ export function createConnect11ConferenceFacade(
   };
   return {
     capabilities,
-    async admit(raw: Connect11Admission): Promise<Connect11MeetingToken> {
+    // `raw` comes only from a server-side admission resolver. Parse it before
+    // any network request so a caller cannot turn this facade into a token
+    // oracle with arbitrary client-selected coordinates.
+    async admit(raw: unknown): Promise<Connect11MeetingToken> {
       const admission = admissionSchema.parse(raw);
       const status = await capabilities();
       if (!status.available || !status.supported_listen_languages.includes(admission.listenLanguage) ||

@@ -10,9 +10,18 @@ vi.mock("../lib/notifications/client", () => ({ chatNotificationClientEnabled: (
 vi.mock("../lib/notifications/chat-notifications", () => ({ enableChatNotifications: vi.fn() }));
 vi.mock("../lib/chat/store", () => ({ useChatStore: vi.fn() }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: vi.fn() }));
-vi.mock("../hooks/use-auth", () => ({ useAuth: vi.fn() }));
+vi.mock("../hooks/use-auth", () => ({ useAuth: vi.fn(() => ({ user: null })) }));
 vi.mock("../hooks/use-colors", () => ({ useColors: vi.fn() }));
-vi.mock("../components/screen-container", () => ({ ScreenContainer: () => null }));
+vi.mock("../components/screen-container", () => ({
+  ScreenContainer: ({ children }: { children: ReactNode }) => createElement("main", null, children),
+}));
+vi.mock("../lib/trpc", () => ({ trpc: { meetings: { capabilities: { useQuery: vi.fn() } } } }));
+vi.mock("../components/meetings/meeting-prejoin", () => ({
+  MeetingPrejoin: ({ unavailableReason }: any) => createElement("main", null, "Join a meeting", unavailableReason),
+}));
+vi.mock("../components/meetings/meeting-room-state", () => ({
+  MeetingRoomState: ({ unavailableReason }: any) => createElement("main", null, unavailableReason),
+}));
 vi.mock("expo-router", () => ({ router: {} }));
 vi.mock("react-native", () => ({ StyleSheet: { create: (x: unknown) => x } }));
 import Notifications from "../app/notifications";
@@ -24,9 +33,9 @@ it.each([
   [Notifications, "Notification center is not available yet"],
   [Preferences, "Notification settings are not available yet"],
   [Billing, "Billing is not available in the app"],
-  [Conference, "Conference calls are not available yet"],
-  [Room, "Conference calls are not available yet"],
-] as const)("legacy route renders an unavailable state without starting demo services (%#)", (Component, title) => {
+  [Conference, "Join a meeting"],
+  [Room, "Meetings are still being configured for this workspace"],
+] as const)("legacy route stays safe without starting demo services (%#)", (Component, title) => {
   const html = renderToStaticMarkup(createElement(Component)); expect(html).toContain(title);
   expect(html).not.toMatch(/INV-2026|David Kim|47\.32|current_user/);
 });

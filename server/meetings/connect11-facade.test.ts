@@ -33,6 +33,11 @@ describe("Connect11 conference facade", () => {
     await expect(facade.admit({ ...admission, listenLanguage: "ja" })).rejects.toThrow("unavailable");
     expect(request).toHaveBeenCalledTimes(1);
   });
+  it("rejects an invalid admission before a capability or token request", async () => {
+    const request = responses(capability, token); const facade = createConnect11ConferenceFacade(config, request);
+    await expect(facade.admit({ ...admission, room: "client-selected" })).rejects.toThrow();
+    expect(request).not.toHaveBeenCalled();
+  });
   it("does not mint while Connect11 reports deployment gates unavailable", async () => {
     const request = responses({ ...capability, available: false, unavailable_reasons: ["issuer_isolation_unverified"] });
     await expect(createConnect11ConferenceFacade(config, request).admit(admission)).rejects.toThrow("unavailable");
