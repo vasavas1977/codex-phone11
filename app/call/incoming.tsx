@@ -179,7 +179,8 @@ export default function IncomingCallScreen() {
   const handleDecline = async () => {
     if (pending.current?.kind === "decline") return;
     if (!callId) {
-      router.canGoBack() ? router.back() : router.replace("/(tabs)");
+      if (router.canGoBack()) router.back();
+      else router.replace("/(tabs)");
       return;
     }
     if (!currentOwnedCall()) return;

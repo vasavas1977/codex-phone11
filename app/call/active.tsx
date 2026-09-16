@@ -78,7 +78,8 @@ export default function ActiveCallScreen() {
   const handleEndCall = useCallback(async () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     if (!callId) {
-      router.canGoBack() ? router.back() : router.replace("/(tabs)");
+      if (router.canGoBack()) router.back();
+      else router.replace("/(tabs)");
       return;
     }
     if (ending) return;

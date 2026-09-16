@@ -2,9 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "./use-auth";
 import * as Auth from "@/lib/_core/auth";
 import { createTRPCClient } from "@/lib/trpc";
-import {
-  readDirectory,
-} from "@/lib/phone/directory";
+import { readDirectory } from "@/lib/phone/directory";
 import {
   beginDirectoryRefresh,
   clearDirectory,
@@ -27,6 +25,9 @@ export function useDirectory(tenantId?: number, enabled = true) {
   const replaceState = useCallback((next: DirectoryState) => {
     stateRef.current = next;
     setState(next);
+  }, []);
+  const invalidate = useCallback(() => {
+    generation.current++;
   }, []);
   const reload = useCallback(async () => {
     const revision = ++generation.current;
@@ -66,10 +67,8 @@ export function useDirectory(tenantId?: number, enabled = true) {
   }, [enabled, owner, replaceState, tenantId]);
   useEffect(() => {
     void reload();
-    return () => {
-      generation.current++;
-    };
-  }, [reload]);
+    return invalidate;
+  }, [invalidate, reload]);
   const visible =
     enabled && state.owner === owner && state.requestedTenant === tenantId
       ? state
