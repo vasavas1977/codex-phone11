@@ -782,14 +782,19 @@ export const pbxRouter = router({
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
         const tc = await getTenantCtx(ctx);
-        
-        const [recordResult, legsResult, eventsResult] = await Promise.all([
-          query(`SELECT * FROM call_records WHERE id = $1 AND tenant_id = $2`, [input.id, tc.tenantId]),
+        // Resolve the tenant-scoped parent first. Apart from avoiding needless
+        // cross-workspace reads, this keeps child call metadata inaccessible
+        // until ownership of the parent record is established.
+        const recordResult = await query(
+          `SELECT * FROM call_records WHERE id = $1 AND tenant_id = $2`,
+          [input.id, tc.tenantId],
+        );
+        if (!recordResult.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
+
+        const [legsResult, eventsResult] = await Promise.all([
           query(`SELECT * FROM call_legs WHERE call_record_id = $1 ORDER BY started_at`, [input.id]),
           query(`SELECT * FROM call_events WHERE call_record_id = $1 ORDER BY event_timestamp`, [input.id]),
         ]);
-
-        if (!recordResult.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
 
         return {
           ...recordResult.rows[0],

@@ -259,3 +259,26 @@ describe("DID route assignment", () => {
     expect(db.query.mock.calls[2][0]).toContain("UPDATE phone_numbers");
   });
 });
+
+describe("PBX call-record isolation", () => {
+  it("does not read call legs or events before confirming the record belongs to the active workspace", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("user")] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context()).callRecords.get({ id: 44 }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    expect(db.query).toHaveBeenCalledTimes(2);
+    expect(db.query.mock.calls[1]).toEqual([
+      expect.stringContaining("FROM call_records WHERE id = $1 AND tenant_id = $2"),
+      [44, 7],
+    ]);
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        /FROM call_(legs|events)/.test(String(sql)),
+      ),
+    ).toBe(false);
+  });
+});
