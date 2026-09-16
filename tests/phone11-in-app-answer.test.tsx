@@ -9,7 +9,13 @@ const m = vi.hoisted(() => ({
   nativeInit: vi.fn(async () => {}), pushInit: vi.fn(async () => {}),
   systemAnswer: vi.fn(async (_id: string) => {}), sdkAnswer: vi.fn(async (_id: string, _video?: boolean) => {}), connected: vi.fn(),
 }));
-vi.mock("react-native", () => ({ Platform: m.platform, AppState: { currentState: "active" } }));
+vi.mock("react-native", () => ({
+  Platform: m.platform,
+  AppState: { currentState: "active" },
+  // Model an installed voice-only binary without the optional native video bridge.
+  NativeModules: {},
+  UIManager: { getViewManagerConfig: () => null },
+}));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.owner, loading: m.loading }), addAuthChangeListener: vi.fn() }));
 vi.mock("../lib/sip/registration-lifecycle", () => ({ createRegistrationLifecycle: vi.fn() }));
 vi.mock("../lib/sip/account-store", () => ({ useSipAccountStore: Object.assign(() => ({ loadAccount: m.loadAccount }), { getState: () => ({ account: m.account }) }) }));
@@ -67,9 +73,11 @@ it("preserves non-iOS Siprix engine handling without reporting legacy connection
   await renderProvider().answerCall("201", false);
   expect(m.sdkAnswer).toHaveBeenCalledWith("201", false); expect(m.connected).not.toHaveBeenCalled(); expect(m.systemAnswer).not.toHaveBeenCalled();
 });
-it("rejects Siprix video before opening system controls or accepting the SDK", async () => {
-  await expect(renderProvider().answerCall("201", true)).rejects.toThrow("does not support video calls");
-  expect(m.systemAnswer).not.toHaveBeenCalled(); expect(m.sdkAnswer).not.toHaveBeenCalled(); expect(m.nativeInit).not.toHaveBeenCalled();
+it("rejects Siprix video on a voice-only binary without accepting or reporting a connected call", async () => {
+  await expect(renderProvider().answerCall("201", true)).rejects.toThrow("Video requires a Phone11 update.");
+  expect(m.systemAnswer).not.toHaveBeenCalled();
+  expect(m.sdkAnswer).not.toHaveBeenCalled();
+  expect(m.connected).not.toHaveBeenCalled();
 });
 it.each(["owner", "same-owner-session", "call", "ended", "answered"])("blocks delayed initialization after %s changes", async change => {
   const init = deferred(); m.nativeInit.mockReturnValueOnce(init.promise);

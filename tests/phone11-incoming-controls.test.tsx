@@ -10,7 +10,8 @@ const m = vi.hoisted(() => ({
   state: {} as any,
   params: { callId: "incoming-1" } as any,
   press: new Map<string, { run: () => Promise<void>; disabled: boolean }>(),
-  answer: vi.fn(async (_id: string) => {}),
+  answer: vi.fn(async (_id: string, _video?: boolean) => {}),
+  videoAvailable: false,
   hangup: vi.fn(async (_id: string) => {}),
   alert: vi.fn(),
   diagnostics: vi.fn(),
@@ -76,6 +77,9 @@ vi.mock("expo-haptics", () => ({
   NotificationFeedbackType: { Success: "success", Warning: "warning" },
 }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("../hooks/use-video-capability", () => ({
+  useVideoCapability: () => m.videoAvailable,
+}));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
     primary: "#008877",
@@ -109,6 +113,7 @@ beforeEach(() => {
   m.press.clear();
   m.params = { callId: "incoming-1" };
   m.canGoBack = true;
+  m.videoAvailable = false;
   m.answer.mockResolvedValue(undefined);
   m.hangup.mockResolvedValue(undefined);
   m.state = {
@@ -150,7 +155,42 @@ it("answers the real incoming ID once, including while awaiting the connected ca
   await answer();
   await answer();
   expect(m.answer).toHaveBeenCalledOnce();
-  expect(m.answer).toHaveBeenCalledWith("incoming-1");
+  expect(m.answer).toHaveBeenCalledWith("incoming-1", false);
+  expect(m.replace).not.toHaveBeenCalled();
+});
+it.each([
+  [false, false, false],
+  [false, true, false],
+  [true, false, false],
+  [true, true, true],
+])("offers video only when available=%s and offered=%s", (available, offered, visible) => {
+  m.videoAvailable = available;
+  m.state.incomingCall.videoOffered = offered;
+  render();
+  expect(m.press.has("Answer call with video")).toBe(visible);
+  expect(m.press.get("Answer call")!.disabled).toBe(false);
+});
+
+it("keeps ordinary Answer voice-only even when the caller offers video", async () => {
+  m.videoAvailable = true;
+  m.state.incomingCall.videoOffered = true;
+  render();
+  await m.press.get("Answer call")!.run();
+  expect(m.answer).toHaveBeenCalledOnce();
+  expect(m.answer).toHaveBeenCalledWith("incoming-1", false);
+});
+
+it("answers with video only on explicit video selection and blocks duplicate voice answers", async () => {
+  m.videoAvailable = true;
+  m.state.incomingCall.videoOffered = true;
+  persistentRender();
+  await m.press.get("Answer call with video")!.run();
+  persistentRender();
+  expect(m.press.get("Answer call with video")!.disabled).toBe(true);
+  expect(m.press.get("Answer call")!.disabled).toBe(true);
+  await m.press.get("Answer call")!.run();
+  expect(m.answer).toHaveBeenCalledOnce();
+  expect(m.answer).toHaveBeenCalledWith("incoming-1", true);
   expect(m.replace).not.toHaveBeenCalled();
 });
 it("allows retry after rejected Answer without faking a connected call", async () => {
