@@ -5,6 +5,7 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup(node: ReactNode): string };
 const mocks = vi.hoisted(() => ({
+  width: 390,
   source: "device" as "device" | "team",
   device: {} as any,
   settings: vi.fn(async () => {}),
@@ -37,6 +38,7 @@ vi.mock("../hooks/use-device-contacts", () => ({
   useDeviceContacts: () => mocks.device,
 }));
 vi.mock("react-native", () => ({
+  useWindowDimensions: () => ({ width: mocks.width, height: 844 }),
   Linking: { openSettings: mocks.settings },
   Alert: { alert: mocks.alert },
   StyleSheet: { create: (s: any) => s },
@@ -246,4 +248,20 @@ it("shows denied access recovery and limited contact selection", async () => {
   expect(html).not.toContain("สมชาย");
   await mocks.press.get("Call Local friend, Mobile, 0825826667")!();
   expect(mocks.call).toHaveBeenCalledWith("+66825826667");
+});
+
+it("keeps video unavailable without verified recipient support", () => {
+  const html = renderToStaticMarkup(<ContactDetailScreen />);
+  expect(html).toContain('aria-label="Call สมชาย"');
+  expect(html).toContain('aria-label="Message สมชาย"');
+  expect(html).not.toContain("Video");
+});
+it("offers a desktop contact detail pane without replacing the mobile route", () => {
+  mocks.width = 1200;
+  selectTeam();
+  const html = renderToStaticMarkup(<ContactsScreen />);
+  expect(html).toContain("Select a contact to call or message.");
+  mocks.press.get("Open contact สมชาย")!();
+  expect(mocks.push).not.toHaveBeenCalled();
+  mocks.width = 390;
 });

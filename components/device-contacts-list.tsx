@@ -9,6 +9,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { usePhoneCall } from "@/hooks/use-phone-call";
@@ -37,8 +38,7 @@ export function DeviceContactsList() {
   return (
     <View style={{ flex: 1 }}>
       <Text style={[styles.note, { color: colors.muted }]}>
-        Phone contacts stay on this device. Changes refresh when you return to
-        Phone11 or pull down.
+        Contacts stay on your device.
       </Text>
       {contacts.permission === "limited" && (
         <Pressable
@@ -78,27 +78,49 @@ export function DeviceContactsList() {
         keyboardShouldPersistTaps="handled"
         renderItem={({ item }) => (
           <View style={[styles.row, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.name, { color: colors.foreground }]}>
-              {item.name}
-            </Text>
-            {item.phones.map((phone) => (
-              <Pressable
-                key={phone.key}
-                accessibilityRole="button"
-                accessibilityLabel={`Call ${item.name}, ${phone.label}, ${phone.number}`}
-                disabled={calling}
-                onPress={() => void placeCall(phone.key)}
-                style={styles.phone}
+            <View
+              style={[
+                styles.avatar,
+                { backgroundColor: colors.primary + "18" },
+              ]}
+            >
+              <Text style={[styles.initial, { color: colors.primary }]}>
+                {Array.from(item.name)[0]}
+              </Text>
+            </View>
+            <View style={styles.details}>
+              <Text
+                style={[styles.name, { color: colors.foreground }]}
+                numberOfLines={2}
               >
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: colors.muted }}>{phone.label}</Text>
-                  <Text style={{ color: colors.primary, fontSize: 17 }}>
-                    {phone.number}
-                  </Text>
-                </View>
-                <Text style={{ color: colors.primary }}>Call</Text>
-              </Pressable>
-            ))}
+                {item.name}
+              </Text>
+              {item.phones.map((phone) => (
+                <Pressable
+                  key={phone.key}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Call ${item.name}, ${phone.label}, ${phone.number}`}
+                  accessibilityState={{ disabled: calling }}
+                  disabled={calling}
+                  onPress={() => void placeCall(phone.key)}
+                  style={styles.phone}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.label, { color: colors.muted }]}>
+                      {phone.label}
+                    </Text>
+                    <Text style={[styles.number, { color: colors.muted }]}>
+                      {phone.number}
+                    </Text>
+                  </View>
+                  <IconSymbol
+                    name="phone.fill"
+                    size={20}
+                    color={calling ? colors.muted : colors.primary}
+                  />
+                </Pressable>
+              ))}
+            </View>
           </View>
         )}
         ListEmptyComponent={
@@ -166,22 +188,40 @@ const styles = StyleSheet.create({
   note: {
     paddingHorizontal: 20,
     paddingBottom: 12,
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 12,
+    lineHeight: 18,
   },
   search: {
     marginHorizontal: 20,
     marginBottom: 12,
     padding: 14,
+    fontSize: 16,
     borderRadius: 12,
     minHeight: 48,
   },
-  row: { paddingHorizontal: 20, paddingTop: 16, borderBottomWidth: 0.5 },
-  name: { fontSize: 18, fontWeight: "600" },
+  row: {
+    flexDirection: "row",
+    gap: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderBottomWidth: 0.5,
+  },
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  initial: { fontSize: 19, fontWeight: "600" },
+  details: { flex: 1, minWidth: 0 },
+  name: { fontSize: 17, fontWeight: "600" },
+  label: { fontSize: 12, lineHeight: 17 },
+  number: { fontSize: 14, lineHeight: 20 },
   phone: {
     flexDirection: "row",
     alignItems: "center",
-    minHeight: 58,
+    minHeight: 44,
     paddingVertical: 8,
     gap: 10,
   },

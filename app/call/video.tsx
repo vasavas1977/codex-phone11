@@ -219,7 +219,8 @@ export default function VideoCallScreen() {
       ) : (
         <View style={styles.empty}>
           <Text style={styles.body}>
-            Call an extension or SIP number that supports video.
+            Enter the other person’s video-enabled work extension. Regular
+            mobile and landline numbers support voice calls only.
           </Text>
           <TextInput
             accessibilityLabel="Video call number or extension"
@@ -228,7 +229,7 @@ export default function VideoCallScreen() {
             keyboardType="phone-pad"
             autoCapitalize="none"
             autoCorrect={false}
-            placeholder="Number or extension"
+            placeholder="Work extension"
             placeholderTextColor="#AAB2C0"
             style={styles.input}
           />
@@ -307,7 +308,7 @@ const styles = StyleSheet.create({
     borderColor: "#63748A",
     padding: 16,
     borderRadius: 14,
-    fontSize: 20,
+    fontSize: 16,
     color: "white",
   },
 });

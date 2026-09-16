@@ -7,17 +7,22 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useDirectory } from "@/hooks/use-directory";
+import { ContactDetails } from "@/components/contact-details";
 import { DeviceContactsList } from "@/components/device-contacts-list";
 import { filterDirectory } from "@/lib/phone/directory";
 
 export default function ContactsScreen() {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  const wide = width >= 900;
+  const [selectedId, setSelectedId] = useState<number>();
   const [source, setSource] = useState<"device" | "team">("device");
   const [query, setQuery] = useState("");
   const [tenantId, setTenantId] = useState<number>();
@@ -29,7 +34,9 @@ export default function ContactsScreen() {
     [directory.people, query],
   );
   return (
-    <ScreenContainer>
+    <ScreenContainer
+      style={{ width: "100%", maxWidth: 1200, alignSelf: "center" }}
+    >
       <View style={styles.header}>
         <Text
           accessibilityRole="header"
@@ -49,16 +56,25 @@ export default function ContactsScreen() {
             key={value}
             accessibilityRole="button"
             accessibilityState={{ selected: source === value }}
-            onPress={() => setSource(value)}
+            onPress={() => {
+              setSelectedId(undefined);
+              setSource(value);
+            }}
             style={[
               styles.workspace,
               {
                 backgroundColor:
-                  source === value ? colors.primary + "20" : colors.surface,
+                  source === value ? colors.primary : colors.surface,
               },
             ]}
           >
-            <Text style={{ color: colors.foreground }}>
+            <Text
+              style={{
+                color: source === value ? "white" : colors.muted,
+                fontSize: 15,
+                fontWeight: "600",
+              }}
+            >
               {value === "device" ? "Phone contacts" : "Team"}
             </Text>
           </Pressable>
@@ -78,6 +94,7 @@ export default function ContactsScreen() {
                     selected: directory.workspace?.id === workspace.id,
                   }}
                   onPress={() => {
+                    setSelectedId(undefined);
                     setQuery("");
                     setTenantId(workspace.id);
                   }}
@@ -116,106 +133,159 @@ export default function ContactsScreen() {
               ]}
             />
           )}
-          <FlatList
-            data={people}
-            keyExtractor={(item) => String(item.id)}
-            refreshing={directory.loading}
-            onRefresh={() => void directory.reload()}
-            keyboardShouldPersistTaps="handled"
-            renderItem={({ item }) => (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Open contact ${item.name}`}
-                onPress={() => {
-                  if (directory.workspace)
+          <View style={{ flex: 1, flexDirection: "row" }}>
+            <FlatList
+              style={{ flex: 1 }}
+              data={people}
+              keyExtractor={(item) => String(item.id)}
+              refreshing={directory.loading}
+              onRefresh={() => void directory.reload()}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open contact ${item.name}`}
+                  onPress={() => {
+                    if (!directory.workspace) return;
+                    if (wide) {
+                      setSelectedId(item.id);
+                      return;
+                    }
                     router.push({
                       pathname: "/contacts/[id]",
                       params: { id: item.id, tenantId: directory.workspace.id },
                     });
-                }}
-                style={[styles.row, { borderBottomColor: colors.border }]}
-              >
-                <View
+                  }}
                   style={[
-                    styles.avatar,
-                    { backgroundColor: colors.primary + "18" },
+                    styles.row,
+                    {
+                      borderBottomColor: colors.border,
+                      backgroundColor:
+                        wide && selectedId === item.id
+                          ? colors.surface
+                          : undefined,
+                    },
                   ]}
                 >
-                  <Text style={[styles.initial, { color: colors.primary }]}>
-                    {Array.from(item.name)[0]}
-                  </Text>
+                  <View
+                    style={[
+                      styles.avatar,
+                      { backgroundColor: colors.primary + "18" },
+                    ]}
+                  >
+                    <Text style={[styles.initial, { color: colors.primary }]}>
+                      {Array.from(item.name)[0]}
+                    </Text>
+                  </View>
+                  <View style={{ flex: 1, gap: 4 }}>
+                    <Text style={[styles.name, { color: colors.foreground }]}>
+                      {item.name}
+                    </Text>
+                    <Text style={{ color: colors.muted, fontSize: 14 }}>
+                      {item.extension
+                        ? `Ext. ${item.extension}`
+                        : "Team member"}
+                    </Text>
+                  </View>
+                  <IconSymbol
+                    name="chevron.right"
+                    size={18}
+                    color={colors.muted}
+                  />
+                </Pressable>
+              )}
+              ListEmptyComponent={
+                <View style={styles.empty}>
+                  {directory.loading ? (
+                    <ActivityIndicator
+                      color={colors.primary}
+                      accessibilityLabel="Loading contacts"
+                    />
+                  ) : (
+                    <>
+                      <IconSymbol
+                        name="person.2.fill"
+                        size={36}
+                        color={colors.muted}
+                      />
+                      <Text
+                        style={[
+                          styles.emptyTitle,
+                          { color: colors.foreground },
+                        ]}
+                      >
+                        {!directory.signedIn
+                          ? "Your team directory"
+                          : directory.error
+                            ? "Contacts unavailable"
+                            : query.trim()
+                              ? "No matching contacts"
+                              : "No team contacts yet"}
+                      </Text>
+                      <Text
+                        style={[styles.description, { color: colors.muted }]}
+                      >
+                        {!directory.signedIn
+                          ? "Sign in to find people in your workspace."
+                          : directory.error ||
+                            (query.trim()
+                              ? "Try another name or extension."
+                              : "Other members of your workspace will appear here.")}
+                      </Text>
+                      {(!directory.signedIn || directory.error) && (
+                        <Pressable
+                          accessibilityRole="button"
+                          style={[
+                            styles.button,
+                            { backgroundColor: colors.primary },
+                          ]}
+                          onPress={() =>
+                            directory.signedIn
+                              ? void directory.reload()
+                              : router.push("/auth/sign-in")
+                          }
+                        >
+                          <Text style={styles.buttonText}>
+                            {directory.signedIn ? "Try again" : "Sign in"}
+                          </Text>
+                        </Pressable>
+                      )}
+                    </>
+                  )}
                 </View>
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={[styles.name, { color: colors.foreground }]}>
-                    {item.name}
-                  </Text>
-                  <Text style={{ color: colors.muted }}>
-                    {item.extension ? `Ext. ${item.extension}` : "Team member"}
-                  </Text>
-                </View>
-                <IconSymbol
-                  name="chevron.right"
-                  size={18}
-                  color={colors.muted}
-                />
-              </Pressable>
-            )}
-            ListEmptyComponent={
-              <View style={styles.empty}>
-                {directory.loading ? (
-                  <ActivityIndicator
-                    color={colors.primary}
-                    accessibilityLabel="Loading contacts"
+              }
+            />
+            {wide && (
+              <View
+                style={{
+                  flex: 1.2,
+                  borderLeftWidth: 0.5,
+                  borderLeftColor: colors.border,
+                }}
+              >
+                {directory.workspace &&
+                directory.people.some((person) => person.id === selectedId) ? (
+                  <ContactDetails
+                    key={`${directory.owner}:${directory.workspace.id}:${selectedId}`}
+                    id={String(selectedId)}
+                    tenantId={String(directory.workspace.id)}
+                    embedded
                   />
                 ) : (
-                  <>
+                  <View style={styles.empty}>
                     <IconSymbol
-                      name="person.2.fill"
+                      name="person.fill"
                       size={36}
                       color={colors.muted}
                     />
-                    <Text
-                      style={[styles.emptyTitle, { color: colors.foreground }]}
-                    >
-                      {!directory.signedIn
-                        ? "Your team directory"
-                        : directory.error
-                          ? "Contacts unavailable"
-                          : query.trim()
-                            ? "No matching contacts"
-                            : "No team contacts yet"}
-                    </Text>
                     <Text style={[styles.description, { color: colors.muted }]}>
-                      {!directory.signedIn
-                        ? "Sign in to find people in your workspace."
-                        : directory.error ||
-                          (query.trim()
-                            ? "Try another name or extension."
-                            : "Other members of your workspace will appear here.")}
+                      Select a contact to call or message.
                     </Text>
-                    {(!directory.signedIn || directory.error) && (
-                      <Pressable
-                        accessibilityRole="button"
-                        style={[
-                          styles.button,
-                          { backgroundColor: colors.primary },
-                        ]}
-                        onPress={() =>
-                          directory.signedIn
-                            ? void directory.reload()
-                            : router.push("/auth/sign-in")
-                        }
-                      >
-                        <Text style={styles.buttonText}>
-                          {directory.signedIn ? "Try again" : "Sign in"}
-                        </Text>
-                      </Pressable>
-                    )}
-                  </>
+                  </View>
                 )}
               </View>
-            }
-          />
+            )}
+          </View>
         </>
       )}
     </ScreenContainer>
@@ -236,7 +306,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    borderRadius: 12,
+    borderRadius: 24,
   },
   search: {
     marginHorizontal: 20,
@@ -257,9 +327,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0.5,
   },
   avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
   },
