@@ -67,3 +67,43 @@ A local `modules/phone11-livekit-expo` derivative of official plugin1.0.2 can re
 - SDK3 iOS podspec is unchanged from2.12 and still supports the legacy React module path via `install_modules_dependencies`. This is source-level compatibility evidence, not a verified Expo54/RN0.81 compile.
 
 Before modifying the app dependency graph, validate the proposed module in a disposable checkout with Expo54, RN0.81.5 and `newArchEnabled=false`. Required tests: peer closure without overrides; config plugin idempotence and microphone/camera permissions; prebuild preserving the Siprix and RNCallKeep hooks; iOS arm64/simulator compile; Android compile; combined ObjC category audit; both framework load orders and media operations; native missing-module fallback; and exclusive media ownership across incoming SIP and conference. No source-only test can establish camera/audio crash freedom.
+
+## Reproduction and primary references
+
+Read-only steps (use your staged paths; do not install either SDK into the release app):
+
+```sh
+# Hidden Objective-C metadata is essential; exported symbols alone miss the issue.
+otool -ov modules/phone11-siprix/vendor/siprixMedia.xcframework/ios-arm64/siprixMedia.framework/siprixMedia > /tmp/siprix-objc.txt
+otool -L modules/phone11-siprix/vendor/siprixMedia.xcframework/ios-arm64/siprixMedia.framework/siprixMedia
+# Download the fixed vendor release to temporary storage, extract its ios-arm64
+# binary, then inspect with otool -ov/-L and compare class/category selectors.
+# Never copy these audit binaries over the staged Siprix release frameworks.
+```
+
+The audit extracted exact npm tarballs from registry metadata for each pinned version, without running package lifecycle scripts or changing package.json/pnpm-lock.yaml. Inspect `livekit-react-native-webrtc.podspec`, SDK iOS imports, `LiveKitReactNativeModule.swift`, Android `LiveKitReactNative.kt`, and Expo plugin native lifecycle files. For ObjC categories, compare metadata blocks containing `cls ... _OBJC_CLASS_$_NSString`, `...UIDevice`, or `...AVCaptureSession`, including the methods and type encodings. A zero-overlap RTC class list is insufficient.
+
+Primary fixed artifacts:
+
+- [LiveKit 144.7559.15 framework release](https://github.com/livekit/webrtc-xcframework/releases/tag/144.7559.15)
+- [Framework zip](https://github.com/livekit/webrtc-xcframework/releases/download/144.7559.15/LiveKitWebRTC.xcframework.zip)
+- [SDK3 published metadata](https://registry.npmjs.org/@livekit/react-native/3.0.0)
+- [WebRTC144.2 published metadata](https://registry.npmjs.org/@livekit/react-native-webrtc/144.2.0)
+- [Expo plugin1.0.2 metadata](https://registry.npmjs.org/@livekit/react-native-expo-plugin/1.0.2)
+- [Expo54 config plugin13.0.0 metadata](https://registry.npmjs.org/@config-plugins/react-native-webrtc/13.0.0)
+- [Pinned Siprix source/framework revision](https://github.com/siprix/SampleSwiftUI/tree/53ae99e16531f64cf6e7832ed9e5d126a7e2d4ce)
+- [LiveKit connection and server-token guidance](https://docs.livekit.io/intro/basics/connect/)
+
+## Temporary system-browser conference client
+
+An authenticated Connect11 conference page in the system browser is a reasonable interim path for foreground group video and interpreter UI. It keeps the WebRTC code in the browser process instead of loading a second WebRTC implementation into Phone11's Siprix process. It does not provide equivalent native CallKit, background audio, push acceptance, camera lifecycle, or seamless in-app UX; label it explicitly as opening the conference in the browser.
+
+Use this sequence:
+
+1. Phone11 makes an authenticated POST to Connect11 to create or select a meeting launch request scoped to the current user and tenant. A non-secret request identifier may appear in the launch URL; it must confer no access on its own.
+2. Open the approved Connect11 HTTPS origin in the system browser. Authenticate there through an existing same-origin secure HttpOnly session or normal sign-in. Do not copy the app JWT, LiveKit token, API key, or a bearer-equivalent handoff secret into query strings/fragments.
+3. Browser submits an authenticated same-origin POST to redeem the launch request once. The server checks user/tenant binding, membership, expiry and replay before minting a short-lived room/identity-scoped LiveKit token in the response body. Keep the room token in memory; never persist it in localStorage or URL history.
+4. Only then request browser camera/microphone permission and join. The meeting page can display captions/interpreter output using the agreed Connect11 contract. A native app return link contains no credentials.
+5. Block launch during a SIP call and explain that joining opens the browser. Browser process isolation eliminates the duplicate in-process ObjC classes, but OS microphone/audio interruptions still require explicit testing. Do not imply that two simultaneous calls are supported.
+
+This is a proposed integration pending the actual Connect11 admission contract; no launch endpoint, browser meeting or native SDK dependency was added by this audit. Recommendation: use vendor-confirmed full namespacing or combined runtime/link/media proof before embedding LiveKit3 beside Siprix. Use a separately authenticated browser meeting only if its reduced behavior is accepted and verified.
