@@ -53,7 +53,7 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
  });
  it('fails closed for missing or conflicting extension ownership',async()=>{await pool.query('UPDATE call_legs SET extension_id=NULL');expect(await repo.registerCall('call1')).toBe(false);});
  it('requires finalized exact storage and capture gate',async()=>{await repo.registerCall('call1');expect(await repo.recordingStored('call1','wrong','00000000-0000-4000-8000-000000000000')).toBe(false);await ready();const off=createCloudRecordingRepository(pool,()=>false);expect(await off.recordingStored('call1','/private/test.wav','00000000-0000-4000-8000-000000000000')).toBe(false);});
- it('leases once concurrently and rejects wrong/stale token',async()=>{await ready();const jobs=await Promise.all([repo.claimJob('a'),repo.claimJob('b')]);expect(jobs.filter(Boolean)).toHaveLength(1);const j=jobs.find(Boolean)!;expect(await repo.finishJob({...j,leaseToken:'00000000-0000-4000-8000-000000000000'},null)).toBe(false);expect(await repo.finishJob(j,{transcript:'Actual',summary:{summary:'Actual summary',actionItems:[],language:'th'}})).toBe(true);expect((await repo.detail(2,'call1')).summary?.summary).toBe('Actual summary');expect(await repo.finishJob(j,null)).toBe(false);});
+ it('leases once concurrently and rejects wrong/stale token',async()=>{await ready();const jobs=await Promise.all([repo.claimJob('a'),repo.claimJob('b')]);expect(jobs.filter(Boolean)).toHaveLength(1);const j=jobs.find(Boolean)!;expect(await repo.finishJob({...j,leaseToken:'00000000-0000-4000-8000-000000000000'},null)).toBe(false);expect(await repo.finishJob(j,{transcript:'Speaker 1: Actual',summary:{summary:'Actual summary',actionItems:[],language:'th'}})).toBe(true);expect((await repo.detail(2,'call1')).summary?.summary).toBe('Actual summary');expect(await repo.finishJob(j,null)).toBe(false);});
  it('revocation invalidates lease and blocks provider result persistence',async()=>{await ready();const j=(await repo.claimJob('a'))!;await repo.updatePolicy(1,{tenantId:10,mode:'off',aiEnabled:false,retentionDays:30});expect(await repo.finishJob(j,{transcript:'private',summary:{summary:'private',actionItems:[],language:'th'}})).toBe(false);expect(await repo.claimJob('b')).toBeNull();});
  it('expired lease can be reclaimed; former worker cannot finish',async()=>{await ready();const a=(await repo.claimJob('a'))!;await pool.query("UPDATE phone11_recording_jobs SET lease_until=now()-interval '1 second'");const b=(await repo.claimJob('b'))!;expect(b.leaseToken).not.toBe(a.leaseToken);expect(await repo.finishJob(a,null)).toBe(false);expect(await repo.finishJob(b,null)).toBe(true);});
  it('three failed attempts end permanently and do not fake a summary',async()=>{await ready();for(let i=0;i<3;i++){const j=(await repo.claimJob('a'))!;expect(j).toBeTruthy();await repo.finishJob(j,null);await pool.query("UPDATE phone11_recording_jobs SET available_at=now()-interval '1 second'");}expect(await repo.claimJob('a')).toBeNull();expect(await repo.detail(2,'call1')).toMatchObject({summaryStatus:'failed'});expect((await repo.detail(2,'call1')).summary).toBeUndefined();});
@@ -67,8 +67,14 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
   const secondFailure=(await pool.query("SELECT failure_code,extract(epoch FROM available_at-clock_timestamp()) AS retry_seconds FROM phone11_recording_jobs")).rows[0];
   expect(secondFailure.failure_code).toBe('provider_timeout:generate');expect(Number(secondFailure.retry_seconds)).toBeGreaterThan(295);expect(Number(secondFailure.retry_seconds)).toBeLessThanOrEqual(300);
   await pool.query("UPDATE phone11_recording_jobs SET available_at=now()-interval '1 second'");
-  const retry=(await repo.claimJob('c'))!;expect(await repo.finishJob(retry,{transcript:'Actual',summary:{summary:'Actual summary',actionItems:[],language:'en'}})).toBe(true);
-  expect((await pool.query('SELECT failure_code FROM phone11_recording_jobs')).rows[0].failure_code).toBeNull();
+  const retry=(await repo.claimJob('c'))!;expect(await repo.finishJob(retry,{transcript:'Speaker 1: Actual',summary:{summary:'Actual summary',actionItems:[],language:'en'}})).toBe(true);
+ expect((await pool.query('SELECT failure_code FROM phone11_recording_jobs')).rows[0].failure_code).toBeNull();
+ });
+ it('does not present an incomplete persisted result as an AI summary',async()=>{await ready();const job=(await repo.claimJob('a'))!;
+  expect(await repo.finishJob(job,{transcript:'Speaker 1: complete',summary:{summary:'   ',actionItems:[],language:'en'}})).toBe(true);
+  const detail=await repo.detail(2,'call1');expect(detail.summaryStatus).toBe('queued');expect(detail.summary).toBeUndefined();
+  const stored=await pool.query('SELECT r.transcript,r.summary,j.failure_code FROM phone11_cloud_recordings r JOIN phone11_recording_jobs j USING(call_uuid)');
+  expect(stored.rows[0]).toMatchObject({transcript:null,summary:null,failure_code:'invalid_result:parse'});
  });
  it('rejects arbitrary diagnostic text at the database persistence boundary',async()=>{
   await ready();const job=(await repo.claimJob('a'))!;

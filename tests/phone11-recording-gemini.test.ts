@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { analyzeRecordingAudio } from "../server/cloud-recordings/gemini";
+import {
+  analyzeRecordingAudio,
+  completeRecordingAnalysis,
+} from "../server/cloud-recordings/gemini";
 const origin = "https://generativelanguage.googleapis.com";
 const audio = Buffer.alloc(44);
 audio.write("RIFF");
@@ -12,6 +15,20 @@ const analysis = {
     language: "th",
   },
 };
+it("rejects a partial analysis at the shared completion boundary", () => {
+  expect(
+    completeRecordingAnalysis({
+      transcript: "Speaker 1: hello\nSpeaker 2: hi",
+      summary: { summary: "   ", actionItems: [], language: "en" },
+    }),
+  ).toBeNull();
+  expect(
+    completeRecordingAnalysis({
+      transcript: "Speaker 1: hello\ncontinuation without a speaker",
+      summary: analysis.summary,
+    }),
+  ).toBeNull();
+});
 function fixture(result: unknown = analysis, finishReason = "STOP") {
   const calls: string[] = [];
   let generations = 0;

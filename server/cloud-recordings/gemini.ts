@@ -39,6 +39,33 @@ function hasStrictSpeakerTurns(transcript: string): boolean {
   return turns > 0;
 }
 export type RecordingAnalysis = z.infer<typeof resultSchema>;
+
+/**
+ * The worker and persistence boundary both use this check. Keeping it here
+ * prevents a future worker from publishing a partial transcript or empty
+ * recap as a completed call analysis.
+ */
+export function completeRecordingAnalysis(
+  value: unknown,
+): RecordingAnalysis | null {
+  const parsed = resultSchema.safeParse(value);
+  if (
+    !parsed.success ||
+    !hasStrictSpeakerTurns(parsed.data.transcript) ||
+    !parsed.data.summary.summary.trim() ||
+    !parsed.data.summary.language.trim() ||
+    parsed.data.summary.actionItems.some((item) => !item.trim())
+  )
+    return null;
+  return {
+    transcript: parsed.data.transcript.trim(),
+    summary: {
+      summary: parsed.data.summary.summary.trim(),
+      actionItems: parsed.data.summary.actionItems.map((item) => item.trim()),
+      language: parsed.data.summary.language.trim(),
+    },
+  };
+}
 export type RecordingAnalysisFailureCode =
   | "not_configured"
   | "invalid_audio"
@@ -292,13 +319,13 @@ export async function analyzeRecordingAudio(
     );
     if (!summary.success)
       throw new RecordingAnalysisError("invalid_result", stage);
-    const parsed = resultSchema.safeParse({
+    const parsed = completeRecordingAnalysis({
       ...transcript.data,
       ...summary.data,
     });
-    if (!parsed.success)
+    if (!parsed)
       throw new RecordingAnalysisError("invalid_result", stage);
-    return parsed.data;
+    return parsed;
   } catch (error) {
     if (error instanceof RecordingAnalysisError) throw error;
     throw new RecordingAnalysisError(
