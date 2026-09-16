@@ -9,14 +9,14 @@ Scope: Phone11 only. This matrix records the current implementation boundary and
 | --- | --- | --- | --- |
 | One-to-one SIP voice | Available on the commissioned iOS Siprix path | `lib/phone/capabilities.ts` sets `voice: true`; the Siprix adapter handles registration, one call, answer, mute, hold, DTMF, route, and hangup | Yes, on a compatible native build and real device |
 | Recording and AI history | Separate voice-call feature | Recording controls and Recents are separate from the media bridge | Yes, only where the build has a server-confirmed recording and completed transcript/summary |
-| SIP video | Unavailable | `lib/phone/capabilities.ts` sets `video: false`; `modules/phone11-siprix/index.d.ts` fixes `hasVideo: false`; `Phone11Siprix.m` sets `enableVideoCall = NO`, sends `withVideo = NO`, and discards video-upgrade callbacks | No; the video route intentionally shows an unavailable state |
+| SIP video | Implemented in source; not handset-proven | Optional native capability detection, explicit camera permission/video invite and answer, camera controls, negotiated events and local/remote views | Only after a new signed native build and two-endpoint media verification; older builds stay voice-only |
 | Audio conference / consultation | Unavailable in the active Phone11 adapter | Siprix native runtime is single-call mode; the JS engine rejects a second active call; `lib/phone/capabilities.ts` sets `conference: false` | No; do not use the local conference engine as live evidence |
-| Group video | Not implemented | No native video renderer, camera controls, SFU/MCU room contract, or participant stream contract is connected | No |
+| Group video | Connect11 LiveKit selected; integration pending | Shared room/token/interpreter contract coordinated with Connect11; SDK coexistence review required | No; not deployed or linked into the installed app |
 | Desktop video or native desktop calling | Not proven | Browser/desktop preview is UI evidence only; native Siprix acceptance is separate | No live media proof |
 
 The legacy `lib/sip/pjsip-engine.ts` contains older voice/video-oriented comments and methods, but it is not evidence that the current Phone11 iOS Siprix build supports video. Testing that path would produce a result for a different adapter and could obscure the active production boundary.
 
-The files under `lib/conference/` describe a future FreeSWITCH adapter. They create local conference records and a mock `You` participant, and may fall back to local mode when the configured REST middleware is unavailable. The routes deliberately do not import that store. A local record or a successful mock action must not be reported as a live conference.
+The files under `lib/conference/` now use an authenticated server adapter. Synthetic rooms, mock self-participants and mobile ESL credentials were removed. Provisioned FreeSWITCH audio-room controls are separate from the selected Connect11 LiveKit group-meeting path. No room creation, join routing or live deployment is implied by adapter tests.
 
 ## What can be tested now
 
@@ -26,7 +26,7 @@ Use a Phone11 native build on a real iPhone. Expo Go, the web preview, screensho
 2. Place one outbound voice call to the second endpoint. Confirm two-way audio, mute/unmute, hold/resume, DTMF, speaker/Bluetooth route selection, and hangup.
 3. Repeat as an inbound call. Answer from the foreground and locked-screen system UI. Confirm audio returns after the app is foregrounded and after a Wi-Fi/cellular transition.
 4. End the call, open Recents, and verify the recording, playback, transcript, speaker names, summary, and retry/empty states according to the recording policy.
-5. Open the video and conference routes only to verify the honest unavailable state. Do not place a video or conference test call from these routes; there is no connected media path behind them.
+5. On older installed builds, video/conference remain unavailable. After installing a newly signed video-capable build, follow the two-device video sequence below; conference remains unavailable until the Connect11 integration is commissioned.
 
 For every native call, record the app build, platform, direction, network, account/tenant, endpoint, and result. A UI state such as “connected” is not enough without bidirectional sound on both endpoints.
 
@@ -43,7 +43,7 @@ Video should remain hidden until every prerequisite below is proven in the same 
 | Controls | Mute, camera, audio route, camera switch, More, and End call remain accessible | Test touch, keyboard/accessibility labels, lock/background, route changes, and repeated calls |
 | Server media | Verified SIP video codec path or a tenant-scoped video service | Confirm actual remote frames and audio on two real endpoints; source XML or SDK capability alone does not pass |
 
-Once these gates pass, the practical two-device sequence is: call voice → choose **Video** → approve camera → verify local preview → obtain remote approval/answer → verify both live frames → turn camera off/on → switch camera → change audio route → lock/unlock → end → confirm the call remains in history with the correct media type.
+Once these gates pass, the practical two-device sequence is: choose **Video call** from Phone → approve camera → dial a video-capable extension → remote party deliberately answers with video → verify both live frames and sound → turn camera off/on → switch camera → change audio route → background/foreground (camera stays muted until explicitly resumed) → end → verify history. Ordinary voice calls are not silently upgraded; in-call upgrade is not implemented.
 
 ## Conference readiness matrix
 
@@ -60,7 +60,7 @@ Conference testing needs at least three real endpoints for three-way audio and a
 
 ## Current user-facing test result
 
-The current user can safely test Phone11's single-call voice, recording, playback, transcript, summary, mute, hold, DTMF, audio route, and locked-screen behavior. The user cannot yet test SIP video, audio conferencing, or group video because those capabilities are correctly gated off in the current Phone11 bridge. Enabling a button or navigating to a mock conference would create a false acceptance signal.
+The current user can safely test Phone11's single-call voice, recording, playback, transcript, summary, mute, hold, DTMF, audio route, and locked-screen behavior. The user cannot yet test SIP video, audio conferencing, or group video because those capabilities have not been built, installed and commissioned together on the handset. Enabling a button or navigating to a mock conference would create a false acceptance signal.
 
-The implementation sequence remains: preserve voice regressions → add and prove one-to-one video → add multi-call consultation/audio merge → connect a server-backed group-video room. Each stage requires a new native build and real-device evidence before the next control is exposed.
+The implementation sequence is: preserve voice regressions → sign and prove one-to-one video → integrate Connect11 LiveKit meetings and interpreter → commission multi-device meetings. PBX consultation/audio merge is a separate feature. Native SDK changes require a new signed build; source tests cannot establish device acceptance.
 
