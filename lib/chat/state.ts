@@ -163,9 +163,22 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       loadDirectory: async () => {
         const state = get(), current = generation;
         if (!state.workspace || !state.userId) return;
-        set({ people: [] });
-        const people = await api.directory(state.workspace.id);
-        if (current === generation) set({ people });
+        // Keep the most recently authorized directory visible while refreshing.
+        // A temporary network failure must not turn an open composer into an
+        // empty picker or make a user lose the context for a selected teammate.
+        // An authorization failure is different: cached teammate identities
+        // must not remain visible after workspace access has been revoked.
+        try {
+          const people = await api.directory(state.workspace.id);
+          if (current === generation) set({ people });
+        } catch (error) {
+          if (current !== generation) throw error;
+          if (["FORBIDDEN", "UNAUTHORIZED"].includes((error as any)?.data?.code)) {
+            generation++; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false;
+            set({ ...empty(), error: chatError(error) });
+          }
+          throw error;
+        }
       },
       createConversation: async (kind, name, members) => {
         const state = get(), current = generation;
