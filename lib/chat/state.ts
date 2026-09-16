@@ -56,10 +56,13 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
   let restoreInFlight: Promise<void> | null = null;
   let restoreFailed = false;
   let requestedWorkspace: number | undefined;
+  let channelRefreshInFlight: Promise<void> | null = null;
+  let readRefreshQueue: Promise<void> = Promise.resolve();
   // A room screen and the foreground refresh can both notice the same unread
   // message. Keep one acknowledgement in flight for that room so opening a
   // chat never produces duplicate read receipts.
   const readRequests = new Map<string, Promise<void>>();
+  const readCursors = new Map<string, number>();
   const empty = () => ({ workspace: null, workspaces: [], channels: [], messages: {}, people: [], drafts: {}, storageError: null, loading: false, error: null, roomErrors: {}, roomLoading: {}, hasMore: {} });
   return create<ChatState>((set, get) => {
     const persist = async () => {
@@ -78,6 +81,26 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         if (current === generation) set({ storageError: "Could not save your draft on this phone. Keep this screen open and try again." });
         return false;
       }
+    };
+    const refreshChannelsAfterRead = async (current: number) => {
+      if (current !== generation) return;
+      // A foreground refresh may have started before the read acknowledgement.
+      // Its response reflects the old cursor, so invalidate it and wait for it
+      // to finish before fetching the authoritative unread count.
+      const inFlight = channelRefreshInFlight;
+      if (get().loading && inFlight) {
+        const staleRequest = channelRequest;
+        channelRequest++;
+        await inFlight;
+        if (current !== generation) return;
+        if (channelRequest === staleRequest + 1 && get().loading) set({ loading: false });
+      }
+      if (current === generation) await get().loadChannels();
+    };
+    const queueReadRefresh = (current: number) => {
+      const refresh = readRefreshQueue.then(() => refreshChannelsAfterRead(current), () => refreshChannelsAfterRead(current));
+      readRefreshQueue = refresh.catch(() => { /* A stale generation cannot block later reads. */ });
+      return refresh;
     };
     const deliver = async (id: string, pending: ChatMessage) => {
       const state = get();
@@ -108,7 +131,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       setUser: id => {
         const previous = get().userId;
         if (id !== previous) {
-          generation++; readRequests.clear(); requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ userId: id, ...empty() });
+          generation++; readRequests.clear(); readCursors.clear(); readRefreshQueue = Promise.resolve(); channelRefreshInFlight = null; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ userId: id, ...empty() });
           if (previous && persistence) void persistence.clearOwner(previous).catch(() => {
             set({ storageError: "Could not clear saved chat drafts. Sign out again before sharing this phone." });
           });
@@ -127,7 +150,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       loadChannels: async tenantId => {
         if (!get().userId) return;
         if (tenantId !== undefined && tenantId !== (requestedWorkspace ?? get().workspace?.id)) {
-          generation++; readRequests.clear(); restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty() });
+          generation++; readRequests.clear(); readCursors.clear(); readRefreshQueue = Promise.resolve(); channelRefreshInFlight = null; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty() });
         }
         requestedWorkspace = tenantId ?? requestedWorkspace ?? get().workspace?.id;
         const current = generation;
@@ -135,34 +158,39 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         const request = ++channelRequest;
         const currentRequest = () => current === generation && request === channelRequest;
         set({ loading: true, error: null });
-        try {
-          const data = await api.list(requestedWorkspace);
-          if (!currentRequest()) return;
-          requestedWorkspace = data.workspace.id;
-          set({ ...data, loading: false });
-          if (persistence && restoredWorkspace !== data.workspace.id) {
-            restoredWorkspace = data.workspace.id;
-            restoreFailed = false;
-            restoreInFlight = (async () => {
-              try {
-                const saved = await persistence.load(get().userId!, data.workspace.id);
-                if (current !== generation) return;
-                set(s => ({ drafts: { ...saved.drafts, ...s.drafts }, messages: Object.fromEntries(
-                  [...new Set([...Object.keys(saved.messages), ...Object.keys(s.messages)])].map(id =>
-                    [id, mergeMessages(saved.messages[id] || [], s.messages[id] || [])])) }));
-              } catch {
-                if (current === generation) { restoredWorkspace = null; restoreFailed = true; set({ storageError: "Could not restore saved drafts. Try refreshing before writing a new message." }); }
-              }
-            })();
-            await restoreInFlight;
+        const refresh = (async () => {
+          try {
+            const data = await api.list(requestedWorkspace);
+            if (!currentRequest()) return;
+            requestedWorkspace = data.workspace.id;
+            set({ ...data, loading: false });
+            if (persistence && restoredWorkspace !== data.workspace.id) {
+              restoredWorkspace = data.workspace.id;
+              restoreFailed = false;
+              restoreInFlight = (async () => {
+                try {
+                  const saved = await persistence.load(get().userId!, data.workspace.id);
+                  if (current !== generation) return;
+                  set(s => ({ drafts: { ...saved.drafts, ...s.drafts }, messages: Object.fromEntries(
+                    [...new Set([...Object.keys(saved.messages), ...Object.keys(s.messages)])].map(id =>
+                      [id, mergeMessages(saved.messages[id] || [], s.messages[id] || [])])) }));
+                } catch {
+                  if (current === generation) { restoredWorkspace = null; restoreFailed = true; set({ storageError: "Could not restore saved drafts. Try refreshing before writing a new message." }); }
+                }
+              })();
+              await restoreInFlight;
+            }
+          } catch (error) {
+            if (currentRequest()) {
+              const denied = ["FORBIDDEN", "UNAUTHORIZED"].includes((error as any)?.data?.code);
+              if (denied) { generation++; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty(), error: chatError(error) }); }
+              else set({ loading: false, error: chatError(error) });
+            }
           }
-        } catch (error) {
-          if (currentRequest()) {
-            const denied = ["FORBIDDEN", "UNAUTHORIZED"].includes((error as any)?.data?.code);
-            if (denied) { generation++; requestedWorkspace = undefined; restoredWorkspace = null; restoreInFlight = null; restoreFailed = false; set({ ...empty(), error: chatError(error) }); }
-            else set({ loading: false, error: chatError(error) });
-          }
-        }
+        })();
+        channelRefreshInFlight = refresh;
+        try { await refresh; }
+        finally { if (channelRefreshInFlight === refresh) channelRefreshInFlight = null; }
       },
       loadDirectory: async () => {
         const state = get(), current = generation;
@@ -225,23 +253,26 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       markAsRead: async id => {
         const state = get(), current = generation;
         if (!state.userId || !state.workspace) return;
-        // Do not manufacture read receipts for a room that the authoritative
-        // list already says is clear. This also avoids acknowledging a just
-        // sent local message as though it were incoming.
         const channel = state.channels.find(candidate => candidate.id === id);
-        if (!channel || channel.unreadCount <= 0) return;
-        const through = Math.max(0, ...(state.messages[id] || []).filter(m => m.status === "sent").map(m => m.sequence));
-        if (!through) return;
-        const key = `${current}:${state.workspace.id}:${id}`;
+        const sent = (state.messages[id] || []).filter(m => m.status === "sent");
+        const hasIncoming = sent.some(message => message.senderId !== state.userId);
+        const through = Math.max(0, ...sent.map(m => m.sequence));
+        const scope = `${current}:${state.workspace.id}:${id}`;
+        // A cached list can report zero while a just-loaded history page already
+        // contains the incoming message. Keep the zero guard for local-only
+        // history so sending a message cannot create a read receipt for itself.
+        if (!channel || !through || (channel.unreadCount <= 0 && (!hasIncoming || through <= (readCursors.get(scope) || 0)))) return;
+        const key = `${scope}:${through}`;
         const existing = readRequests.get(key);
         if (existing) return existing;
         let request!: Promise<void>;
         request = (async () => {
           try {
             await api.read(state.workspace!.id, id, through);
+            if (current === generation) readCursors.set(scope, Math.max(readCursors.get(scope) || 0, through));
             // New messages may arrive after the acknowledged cursor. Fetch the
             // server's remaining count instead of erasing those unread messages.
-            if (current === generation) await get().loadChannels();
+            await queueReadRefresh(current);
           } catch { /* Keep the unread marker until the server acknowledges it. */ }
           finally { if (readRequests.get(key) === request) readRequests.delete(key); }
         })();

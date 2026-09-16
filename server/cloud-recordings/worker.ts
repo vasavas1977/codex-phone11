@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
+import { clearInterval, setInterval } from "node:timers";
 import { analyzeRecordingAudio, RecordingAnalysisError, type RecordingAnalysis } from "./gemini";
 import type { RecordingFailure } from "./failure";
 import { createCloudRecordingRepository, type RecordingJob } from "./repository";
@@ -77,7 +78,7 @@ export function startRecordingAnalysisWorker() {
     catch { console.warn("[RecordingAnalysis] Worker tick unavailable"); }
     finally { running = false; }
   };
-  const timer = setInterval(() => void tick(), 5000);
+  const timer = setInterval(() => void tick(), 5000) as unknown as NodeJS.Timeout;
   timer.unref();
   void tick();
   return () => { stopped = true; clearInterval(timer); };
@@ -117,6 +118,6 @@ export function startRecordingRetentionWorker() {
     catch { console.warn("[RecordingRetention] Cleanup unavailable; lease will retry"); }
     finally { running = false; }
   };
-  const timer = setInterval(() => void tick(), 60_000); timer.unref(); void tick();
+  const timer = setInterval(() => void tick(), 60_000) as unknown as NodeJS.Timeout; timer.unref(); void tick();
   return () => { stopped = true; clearInterval(timer); };
 }

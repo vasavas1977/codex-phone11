@@ -1,5 +1,6 @@
 import { chatNotificationRepository, chatNotificationsEnabled } from './repository';
 import { sendApnsAlert, PushProviderError } from '../push/apns';
+import { clearTimeout, setTimeout } from 'node:timers';
 export function createChatNotificationDispatcher(repository=chatNotificationRepository,send=sendApnsAlert,enabled=chatNotificationsEnabled) {
  return async function dispatchOne() {
   if(!enabled())return false;
@@ -22,15 +23,15 @@ export function createChatNotificationDispatcher(repository=chatNotificationRepo
  * fail without changing committed chat messages or replaying uncertain pushes. */
 export function startChatNotificationDispatcher() {
  if(!chatNotificationsEnabled())return ()=>{};
- let stopped=false,busy=false,timer:ReturnType<typeof setTimeout>;
+ let stopped=false,busy=false,timer:NodeJS.Timeout;
  const dispatch=createChatNotificationDispatcher();
  const tick=async()=>{
   if(stopped||busy)return;busy=true;
   try {for(let i=0;i<10&&!stopped&&chatNotificationsEnabled();i++)if(!await dispatch())break;
    await chatNotificationRepository.prune();
   }catch{/* bounded worker failure; no raw token/provider/DB logging */}
-  finally {busy=false;if(!stopped){timer=setTimeout(tick,5000);timer.unref();}}
+  finally {busy=false;if(!stopped){timer=setTimeout(tick,5000) as unknown as NodeJS.Timeout;timer.unref();}}
  };
- timer=setTimeout(tick,1000);timer.unref();
+ timer=setTimeout(tick,1000) as unknown as NodeJS.Timeout;timer.unref();
  return ()=>{stopped=true;clearTimeout(timer);};
 }

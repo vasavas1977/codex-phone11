@@ -238,7 +238,7 @@ export default function IncomingCallScreen() {
         {/* Caller Info */}
         <View style={styles.callerSection}>
           <Text
-            accessibilityRole="status"
+            accessibilityRole="text"
             accessibilityLiveRegion="polite"
             style={styles.incomingLabel}
           >

@@ -10,6 +10,7 @@
 
 import { Server as HttpServer } from "http";
 import { WebSocket, WebSocketServer } from "ws";
+import { clearInterval, setInterval } from "node:timers";
 import { getRedis } from "./redis";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -52,7 +53,7 @@ export interface WsEvent {
 class WebSocketManager {
   private wss: WebSocketServer | null = null;
   private clients: Map<string, WsClient> = new Map();
-  private pingInterval: NodeJS.Timer | null = null;
+  private pingInterval: NodeJS.Timeout | null = null;
   private presenceState: Map<string, { status: string; since: number }> = new Map();
 
   /**
@@ -146,7 +147,7 @@ class WebSocketManager {
           client.ws.ping();
         }
       }
-    }, 30000);
+    }, 30000) as unknown as NodeJS.Timeout;
 
     console.log("[WS] WebSocket server initialized on /ws");
   }
@@ -391,7 +392,7 @@ class WebSocketManager {
    */
   shutdown(): void {
     if (this.pingInterval) {
-      clearInterval(this.pingInterval as any);
+      clearInterval(this.pingInterval);
     }
     for (const [, client] of this.clients) {
       client.ws.close(1001, "Server shutting down");

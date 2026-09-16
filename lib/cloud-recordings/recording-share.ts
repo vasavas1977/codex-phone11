@@ -55,7 +55,7 @@ async function saveWebRecording(
 ) {
   if (typeof document === "undefined" || typeof URL === "undefined")
     throw new Error("Saving is unavailable in this preview.");
-  const blob = new Blob([bytes], { type: mimeType });
+  const blob = new Blob([new Uint8Array(bytes).buffer], { type: mimeType });
   const url = URL.createObjectURL(blob);
   try {
     const link = document.createElement("a");

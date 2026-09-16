@@ -95,6 +95,52 @@ describe("Team Chat network state", () => {
     finish(); await Promise.all([first, second]);
     expect(api.read).toHaveBeenCalledWith(10, "room", 1);
   });
+  it("refreshes after a read instead of accepting a pre-read list response", async () => {
+    let finishRead!: () => void;
+    let finishStaleList!: (value: Awaited<ReturnType<ChatTransport["list"]>>) => void;
+    let finishFreshList!: (value: Awaited<ReturnType<ChatTransport["list"]>>) => void;
+    const { store, api } = setup({
+      history: vi.fn(async () => ({ messages: [saved()], hasMore: false })),
+      read: vi.fn(() => new Promise<void>(resolve => { finishRead = resolve; })),
+    });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room");
+    vi.mocked(api.list).mockImplementationOnce(() => new Promise(resolve => { finishStaleList = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishFreshList = resolve; }));
+    const preReadRefresh = store.getState().loadChannels();
+    const reading = store.getState().markAsRead("room");
+    finishRead(); await Promise.resolve(); await Promise.resolve();
+    finishStaleList({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [channel] });
+    await vi.waitFor(() => expect(api.list).toHaveBeenCalledTimes(3));
+    expect(store.getState().channels[0].unreadCount).toBe(2);
+    finishFreshList({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [{ ...channel, unreadCount: 0 }] });
+    await Promise.all([preReadRefresh, reading]);
+    expect(store.getState().channels[0].unreadCount).toBe(0);
+  });
+  it("reads newly loaded incoming history when a cached list says clear", async () => {
+    const { store, api } = setup({
+      list: vi.fn(async () => ({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [{ ...channel, unreadCount: 0 }] })),
+      history: vi.fn(async () => ({ messages: [saved({ senderId: 2, sequence: 4 })], hasMore: false })),
+    });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().markAsRead("room");
+    await store.getState().markAsRead("room");
+    expect(api.read).toHaveBeenCalledOnce(); expect(api.read).toHaveBeenCalledWith(10, "room", 4);
+  });
+  it("does not coalesce a newer read cursor into an older pending acknowledgement", async () => {
+    let finishFirst!: () => void;
+    let finishSecond!: () => void;
+    const { store, api } = setup({
+      history: vi.fn().mockResolvedValueOnce({ messages: [saved({ sequence: 1 })], hasMore: false })
+        .mockResolvedValueOnce({ messages: [saved({ id: "new", clientId: "new", sequence: 2 })], hasMore: false }),
+      read: vi.fn((_tenant, _id, through) => new Promise<void>(resolve => { if (through === 1) finishFirst = resolve; else finishSecond = resolve; })),
+    });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room");
+    const first = store.getState().markAsRead("room"); await store.getState().loadMessages("room");
+    const second = store.getState().markAsRead("room");
+    expect(api.read).toHaveBeenCalledTimes(2);
+    finishFirst(); finishSecond(); await Promise.all([first, second]);
+    expect(api.read).toHaveBeenNthCalledWith(1, 10, "room", 1);
+    expect(api.read).toHaveBeenNthCalledWith(2, 10, "room", 2);
+  });
   it("clears revoked workspace data instead of showing cached conversations", async () => {
     const { store, api } = setup(); await store.getState().loadChannels();
     vi.mocked(api.list).mockRejectedValue({ data: { code: "FORBIDDEN" } }); await store.getState().loadChannels();

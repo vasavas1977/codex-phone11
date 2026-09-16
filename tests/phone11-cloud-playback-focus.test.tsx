@@ -43,7 +43,7 @@ const m = vi.hoisted(() => ({
   },
   routeListener: undefined as undefined | ((event: unknown) => void),
   token: vi.fn(async () => "token"),
-  share: vi.fn(async () => {}),
+  share: vi.fn(async (_options: unknown) => {}),
 }));
 vi.mock("react-native", () => ({
   ActivityIndicator: () => createElement("span", null),

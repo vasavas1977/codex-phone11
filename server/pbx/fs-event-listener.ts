@@ -15,6 +15,7 @@
  */
 
 import net from "net";
+import { clearTimeout, setTimeout } from "node:timers";
 import { wsManager } from "./websocket";
 import { getFreeSwitchConfig } from "./fs-config";
 
@@ -37,7 +38,7 @@ interface FsEvent {
 class FreeSwitchEventListener {
   private socket: net.Socket | null = null;
   private connected = false;
-  private reconnectTimer: NodeJS.Timer | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private buffer = "";
   private host = "";
   private port = 8021;
@@ -89,7 +90,7 @@ class FreeSwitchEventListener {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect();
-    }, 5000);
+    }, 5000) as unknown as NodeJS.Timeout;
   }
 
   private processBuffer(): void {
@@ -251,7 +252,7 @@ class FreeSwitchEventListener {
    */
   stop(): void {
     if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer as any);
+      clearTimeout(this.reconnectTimer);
     }
     if (this.socket) {
       this.socket.destroy();

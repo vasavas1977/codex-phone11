@@ -1,4 +1,5 @@
 import { connect, type Socket } from 'node:net';
+import { clearTimeout, setTimeout } from 'node:timers';
 import { RECORDING_MAX_SECONDS, type CaptureLease, type CaptureTransport } from './capture';
 export interface EslFrame { headers: Record<string,string>; body: string }
 /** Bounded ESL framing, including frames split across TCP packets. */
@@ -33,7 +34,7 @@ export function createEslCaptureTransport(config:EslConfig):CaptureTransport & {
   return new Promise((resolve,reject)=>{
    const socket:Socket=connect({host:config.host,port:config.port});const parser=new EslFrames();let authenticated=false;let sent=false;let done=false;
    const finish=(error?:Error,value?:T)=>{if(done)return;done=true;clearTimeout(timer);socket.destroy();error?reject(error):resolve(value as T);};
-   const timer=setTimeout(()=>finish(new Error('Capture transport timeout')),limit);
+   const timer=setTimeout(()=>finish(new Error('Capture transport timeout')),limit) as unknown as NodeJS.Timeout;
    socket.on('error',()=>finish(new Error('Capture transport unavailable')));socket.on('end',()=>finish(new Error('Capture transport ended')));
    const send=(s:string)=>{if(/[\r\n]/.test(s))throw new Error('Invalid ESL command');socket.write(s+'\n\n');};
    socket.on('data',data=>{try{for(const frame of parser.push(data)){
@@ -56,12 +57,12 @@ export function createEslCaptureTransport(config:EslConfig):CaptureTransport & {
    await new Promise<void>((resolve,reject)=>{
     const socket=connect({host:config.host,port:config.port}),parser=new EslFrames();
     let phase='auth',accepted=false,ended=false,closed=false;
-    let timer:ReturnType<typeof setTimeout>;
+    let timer:NodeJS.Timeout;
     const close=()=>{if(closed)return;closed=true;clearTimeout(timer);socket.destroy();};
     const fail=()=>{close();if(!accepted)reject(new Error('Recording start observation failed'));};
     const complete=()=>{if(!accepted||!ended||closed)return;close();void onStopped().catch(()=>{/* Durable completion lease permits retry. */});};
     const send=(command:string)=>socket.write(command+'\n\n');
-    timer=setTimeout(fail,limit);
+    timer=setTimeout(fail,limit) as unknown as NodeJS.Timeout;
     socket.on('error',fail);socket.on('end',fail);
     socket.on('data',chunk=>{try{for(const frame of parser.push(chunk)){
      if(closed)return;
@@ -74,7 +75,7 @@ export function createEslCaptureTransport(config:EslConfig):CaptureTransport & {
      }
      if(phase==='start'&&frame.headers['content-type']==='api/response'){
       if(!frame.body.startsWith('+OK'))throw new Error();accepted=true;phase='watch';clearTimeout(timer);
-      timer=setTimeout(close,(seconds+60)*1000);timer.unref();resolve();complete();continue;
+      timer=setTimeout(close,(seconds+60)*1000) as unknown as NodeJS.Timeout;timer.unref();resolve();complete();continue;
      }
      const e=event(frame);
      if((phase==='start'||phase==='watch')&&e['Event-Name']==='RECORD_STOP'&&e['Unique-ID']===lease.channelUuid&&e['Record-File-Path']===lease.path){ended=true;complete();}

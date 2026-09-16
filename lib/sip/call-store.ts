@@ -226,7 +226,7 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
     });
     const current = get().activeCalls[id] ?? (get().incomingCall?.id === id ? get().incomingCall : null);
     if (current) {
-      const saved = rememberCall(current, newStatus === "disconnected");
+      const saved = rememberCall(current, false);
       if (get().activeCalls[id]) set((state) => ({ activeCalls: { ...state.activeCalls, [id]: saved } }));
       else set({ incomingCall: saved });
     }

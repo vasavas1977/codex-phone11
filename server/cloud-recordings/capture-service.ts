@@ -7,6 +7,7 @@ import { createEslCaptureTransport,type EslConfig } from './esl-capture';
 import { createCaptureSpool } from './capture-spool';
 import { constants, promises as fs } from 'node:fs';
 import { join } from 'node:path';
+import { clearInterval, setInterval } from 'node:timers';
 const STOP_FINALIZATION_GRACE_MS=60_000;
 async function captureFileExists(path:string):Promise<boolean>{
  try{const file=await fs.open(path,constants.O_RDONLY|constants.O_NOFOLLOW);try{const stat=await file.stat();return stat.isFile()&&stat.size>=44;}finally{await file.close();}}
@@ -169,5 +170,5 @@ export function startRecordingCaptureService():()=>void {
  try{instance=configuredRecordingCapture(true);}catch{console.warn('[Recordings] Capture configuration unavailable');return ()=>{};}
  if(!instance)return ()=>{};
  let stopped=false;const tick=()=>{if(!stopped)void instance!.tick().catch(()=>console.warn('[Recordings] Capture reconciliation unavailable'));};
- const timer=setInterval(tick,2000);timer.unref();tick();return ()=>{stopped=true;clearInterval(timer);};
+ const timer=setInterval(tick,2000) as unknown as NodeJS.Timeout;timer.unref();tick();return ()=>{stopped=true;clearInterval(timer);};
 }

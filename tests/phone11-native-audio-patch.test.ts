@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 import { patchCallKitAudioStartup } from "../scripts/pjsip-callkit-patch.mjs";
 
 const startup = `status = pjsua_start();
