@@ -77,6 +77,7 @@ export default function SettingsScreen() {
       </View>
     </View>
     {row("Recording & AI", "Recording policy, AI summaries and retention", () => router.push("/call-recording/settings"))}
+    {row("Today & calendar", "Scheduled calls and meetings from Super Number", () => router.push("/calendar" as any))}
     {row("Call history", "Calls placed and received on this phone", () => router.push("/(tabs)/recents"))}
     {row("Team Chat", "Conversations in your work account", () => router.push("/(tabs)/teamchat"))}
     {chatNotificationClientEnabled() && row("Message alerts", "Choose alerts for your selected workspace", () => router.push("/notifications/preferences"))}
