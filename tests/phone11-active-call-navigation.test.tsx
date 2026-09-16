@@ -1,3 +1,6 @@
+vi.mock("../hooks/use-device-contacts", () => ({
+  useDeviceContacts: () => ({ people: [] }),
+}));
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";

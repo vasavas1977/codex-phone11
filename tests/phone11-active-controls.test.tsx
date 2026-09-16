@@ -1,3 +1,6 @@
+vi.mock("../hooks/use-device-contacts", () => ({
+  useDeviceContacts: () => ({ people: [] }),
+}));
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
@@ -6,6 +9,9 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
 ) as { renderToStaticMarkup(node: ReactNode): string };
 const mocks = vi.hoisted(() => ({
   state: {} as any,
+  themeOverride: undefined as unknown,
+  background: "#ffffff",
+  rootStyle: {} as any,
   params: { callId: "call-1" } as any,
   press: new Map<string, { run: () => unknown; disabled: boolean }>(),
   hangup: vi.fn(async () => {}),
@@ -22,7 +28,12 @@ vi.mock("react-native", () => ({
   StyleSheet: { create: (s: any) => s },
   ScrollView: ({ children }: any) =>
     createElement("section", { "data-call-scroll": true }, children),
-  View: ({ children }: any) => createElement("div", null, children),
+  View: ({ children, style }: any) => {
+    const flat = Object.assign({}, ...[style].flat().filter(Boolean));
+    if (flat.paddingTop !== undefined && flat.backgroundColor)
+      mocks.rootStyle = flat;
+    return createElement("div", null, children);
+  },
   Text: ({ children }: any) => createElement("span", null, children),
   TouchableOpacity: ({
     children,
@@ -54,12 +65,19 @@ vi.mock("expo-haptics", () => ({
 }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
 vi.mock("../hooks/use-colors", () => ({
-  useColors: () => ({
-    primary: "#008877",
-    error: "#bb0000",
-    warning: "#bb8800",
-    success: "#008877",
-  }),
+  useColors: (override: unknown) => {
+    mocks.themeOverride = override;
+    return {
+      background: mocks.background,
+      foreground: "#222222",
+      surface: "#eeeeee",
+      muted: "#666666",
+      primary: "#008877",
+      error: "#bb0000",
+      warning: "#bb8800",
+      success: "#008877",
+    };
+  },
 }));
 vi.mock("../lib/sip/sip-provider", () => ({
   useSip: () => ({
@@ -78,9 +96,12 @@ vi.mock("../lib/sip/diagnostics-store", () => ({
 }));
 // Recording has separate component tests; keep these media-control tests
 // independent of its native authentication and Expo dependencies.
-vi.mock("../components/cloud-recordings/active-call-recording-controls", () => ({
-  ActiveCallRecordingControls: () => null,
-}));
+vi.mock(
+  "../components/cloud-recordings/active-call-recording-controls",
+  () => ({
+    ActiveCallRecordingControls: () => null,
+  }),
+);
 import ActiveCallScreen from "../app/call/active";
 beforeEach(() => {
   vi.clearAllMocks();
@@ -158,7 +179,27 @@ it("keeps microphone, hold, speaker and End outside scrolling call details", () 
   const html = renderToStaticMarkup(<ActiveCallScreen />);
   const scrollEnd = html.indexOf("</section>");
   expect(scrollEnd).toBeGreaterThan(0);
-  for (const label of ["Mute microphone", "Hold call", "Use speaker", "End call"]) {
+  for (const label of [
+    "Mute microphone",
+    "Hold call",
+    "Use speaker",
+    "End call",
+  ]) {
     expect(html.indexOf(`aria-label="${label}"`)).toBeGreaterThan(scrollEnd);
   }
 });
+
+it.each(["#ffffff", "#0d0f14"])(
+  "respects current theme %s and hides the SIP domain",
+  (background) => {
+    mocks.background = background;
+    mocks.state.activeCalls["call-1"].remoteNumber =
+      "sip:+66625503222@sip.phone11.ai";
+    const html = renderToStaticMarkup(<ActiveCallScreen />);
+    expect(mocks.themeOverride).toBeUndefined();
+    expect(mocks.rootStyle.backgroundColor).toBe(background);
+    expect(html).toContain("+66625503222");
+    expect(html).not.toContain("sip.phone11.ai");
+    expect(html).not.toContain("sip:");
+  },
+);

@@ -37,10 +37,10 @@ function RecordingStatus({
   message: string;
   refresh(): Promise<void>;
 }) {
-  const colors = useColors("dark");
+  const colors = useColors();
   return (
     <View style={{ gap: 4 }}>
-      <Text accessibilityLiveRegion="polite" style={{ color: "#B4BAC6" }}>
+      <Text accessibilityLiveRegion="polite" style={{ color: colors.muted }}>
         {message}
       </Text>
       <TouchableOpacity
@@ -61,6 +61,7 @@ function MatchedRecording({
   callUuid: string;
   nativeHistoryId: string;
 }) {
+  const colors = useColors();
   const cloud = useCloudRecordings(callUuid);
   useActiveRefresh(cloud);
   const detail = cloud.detail;
@@ -100,7 +101,7 @@ function MatchedRecording({
     (detail.recordingStatus === "off" || detail.recordingStatus === "failed");
   return (
     <View style={{ gap: 4 }}>
-      <Text accessibilityLiveRegion="polite" style={{ color: "#B4BAC6" }}>
+      <Text accessibilityLiveRegion="polite" style={{ color: colors.muted }}>
         {status}
       </Text>
       {controls &&
@@ -113,7 +114,7 @@ function MatchedRecording({
           refresh={cloud.reload}
         />
       ) : explainUnavailable ? (
-        <Text style={{ color: "#B4BAC6" }}>
+        <Text style={{ color: colors.muted }}>
           Recording controls are unavailable for this call.
         </Text>
       ) : null}

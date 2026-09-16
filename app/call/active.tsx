@@ -13,6 +13,8 @@ import { router, useLocalSearchParams } from "expo-router";
 
 import { ActiveCallRecordingControls } from "@/components/cloud-recordings/active-call-recording-controls";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { useDeviceContacts } from "@/hooks/use-device-contacts";
+import { callDisplayIdentity } from "@/lib/phone/call-display";
 import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore } from "@/lib/sip/call-store";
@@ -20,7 +22,7 @@ import { resolveCurrentCall } from "@/lib/sip/current-call";
 import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 
 export default function ActiveCallScreen() {
-  const colors = useColors("dark");
+  const colors = useColors();
   const insets = useSafeAreaInsets();
   const { number, callId: requestedCallId } = useLocalSearchParams<{
     number?: string;
@@ -39,7 +41,12 @@ export default function ActiveCallScreen() {
   const muted = call?.isMuted ?? false;
   const held = call?.isHeld ?? false;
   const speaker = call?.isSpeaker ?? false;
-  const remoteNumber = call?.remoteNumber ?? number ?? "Unknown";
+  const contacts = useDeviceContacts();
+  const identity = callDisplayIdentity(
+    call?.remoteNumber ?? number,
+    call?.remoteName,
+    contacts.people,
+  );
   const callMissing = !call;
 
   useEffect(() => {
@@ -131,12 +138,54 @@ export default function ActiveCallScreen() {
 
   const KEYPAD = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 
+  const callControl = (
+    key: string,
+    label: string,
+    icon: Parameters<typeof IconSymbol>[0]["name"],
+    onPress: () => unknown,
+    selected: boolean,
+    title = key,
+  ) => (
+    <TouchableOpacity
+      key={key}
+      style={styles.controlBtn}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{
+        disabled: !controlsReady,
+        selected,
+        ...(key === "Keypad" ? { expanded: showKeypad } : {}),
+      }}
+      disabled={!controlsReady}
+      onPress={onPress}
+    >
+      <View
+        style={[
+          styles.controlCircle,
+          {
+            backgroundColor: selected ? colors.primary : colors.surface,
+            opacity: controlsReady ? 1 : 0.45,
+          },
+        ]}
+      >
+        <IconSymbol
+          name={icon}
+          size={26}
+          color={selected ? "#fff" : colors.foreground}
+        />
+      </View>
+      <Text style={[styles.controlLabel, { color: colors.muted }]}>
+        {title}
+      </Text>
+    </TouchableOpacity>
+  );
+
   return (
     <View
       style={[
         styles.container,
         {
-          backgroundColor: "#0D0F14",
+          backgroundColor: colors.background,
           paddingTop: Math.max(insets.top, 12),
           paddingBottom: Math.max(insets.bottom, 12),
         },
@@ -149,8 +198,14 @@ export default function ActiveCallScreen() {
         style={styles.minimizeButton}
         onPress={() => router.replace("/(tabs)/recents")}
       >
-        <Text style={styles.minimizeLabel}>‹ Recents</Text>
-        <Text style={styles.minimizeHint}>Call continues</Text>
+        <Text style={[styles.minimizeLabel, { color: colors.primary }]}>
+          ‹ Recents
+        </Text>
+        {!callMissing && (
+          <Text style={[styles.minimizeHint, { color: colors.muted }]}>
+            Call continues
+          </Text>
+        )}
       </TouchableOpacity>
       <ScrollView
         style={styles.scroll}
@@ -160,25 +215,21 @@ export default function ActiveCallScreen() {
       >
         {/* Caller Info */}
         <View style={styles.callerSection}>
-          <View
-            style={[
-              styles.callerAvatar,
-              { backgroundColor: colors.primary + "30" },
-            ]}
-          >
-            <Text style={styles.callerInitial}>
-              {remoteNumber.charAt(0).toUpperCase()}
-            </Text>
-          </View>
           <Text
             accessibilityRole="header"
-            accessibilityLabel={`Call with ${remoteNumber}`}
-            style={styles.callerName}
+            accessibilityLabel={`Call with ${identity.title}`}
+            numberOfLines={2}
+            style={[styles.callerName, { color: colors.foreground }]}
           >
-            {remoteNumber}
+            {identity.title}
           </Text>
+          {identity.title !== identity.number && (
+            <Text style={{ color: colors.muted, fontSize: 16 }}>
+              {identity.number}
+            </Text>
+          )}
           <Text
-            accessibilityRole="status"
+            accessibilityRole="text"
             accessibilityLiveRegion="polite"
             style={[
               styles.callStatus,
@@ -202,7 +253,9 @@ export default function ActiveCallScreen() {
             }
             style={styles.openVideoButton}
           >
-            <Text style={styles.openVideoLabel}>Open video</Text>
+            <Text style={[styles.openVideoLabel, { color: colors.primary }]}>
+              Open video
+            </Text>
           </TouchableOpacity>
         )}
         {/* Keypad overlay */}
@@ -214,10 +267,17 @@ export default function ActiveCallScreen() {
                   key={k}
                   accessibilityRole="button"
                   accessibilityLabel={`Send ${k}`}
-                  style={[styles.keypadKey, { backgroundColor: "#ffffff15" }]}
+                  style={[
+                    styles.keypadKey,
+                    { backgroundColor: colors.surface },
+                  ]}
                   onPress={() => handleDtmf(k)}
                 >
-                  <Text style={styles.keypadDigit}>{k}</Text>
+                  <Text
+                    style={[styles.keypadDigit, { color: colors.foreground }]}
+                  >
+                    {k}
+                  </Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -229,92 +289,44 @@ export default function ActiveCallScreen() {
         )}
       </ScrollView>
 
-      {/* Keep microphone controls outside the moving recording/scroll area. */}
+      {/* Essential media controls do not move with recording status updates. */}
       <View style={styles.controls}>
         <View style={styles.controlRow}>
-          <TouchableOpacity
-            style={[
-              styles.controlBtn,
-              muted && { backgroundColor: colors.primary + "40" },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={muted ? "Unmute microphone" : "Mute microphone"}
-            accessibilityState={{ disabled: !controlsReady, selected: muted }}
-            disabled={!controlsReady}
-            onPress={handleMute}
-          >
-            <IconSymbol
-              name={muted ? "mic.slash.fill" : "mic.fill"}
-              size={24}
-              color={muted ? colors.primary : "#fff"}
-            />
-            <Text style={styles.controlLabel}>{muted ? "Unmute" : "Mute"}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.controlBtn,
-              held && { backgroundColor: colors.warning + "40" },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={held ? "Resume call" : "Hold call"}
-            accessibilityState={{ disabled: !controlsReady, selected: held }}
-            disabled={!controlsReady}
-            onPress={handleHold}
-          >
-            <IconSymbol
-              name="pause.fill"
-              size={24}
-              color={held ? colors.warning : "#fff"}
-            />
-            <Text style={styles.controlLabel}>{held ? "Resume" : "Hold"}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.controlBtn,
-              speaker && { backgroundColor: colors.primary + "40" },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel={speaker ? "Use earpiece" : "Use speaker"}
-            accessibilityState={{ disabled: !controlsReady, selected: speaker }}
-            disabled={!controlsReady}
-            onPress={handleSpeaker}
-          >
-            <IconSymbol
-              name={speaker ? "speaker.wave.3.fill" : "speaker.slash.fill"}
-              size={24}
-              color={speaker ? colors.primary : "#fff"}
-            />
-            <Text style={styles.controlLabel}>Speaker</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.controlRow}>
-          <TouchableOpacity
-            style={[
-              styles.controlBtn,
-              showKeypad && { backgroundColor: colors.primary + "40" },
-            ]}
-            accessibilityRole="button"
-            accessibilityLabel="Show call keypad"
-            accessibilityState={{
-              disabled: !controlsReady,
-              expanded: showKeypad,
-            }}
-            disabled={!controlsReady}
-            onPress={() => {
+          {callControl(
+            "Mute",
+            muted ? "Unmute microphone" : "Mute microphone",
+            muted ? "mic.slash.fill" : "mic.fill",
+            handleMute,
+            muted,
+            muted ? "Unmute" : "Mute",
+          )}
+          {callControl(
+            "Keypad",
+            "Show call keypad",
+            "rectangle.grid.3x2.fill",
+            () => {
               setShowKeypad(!showKeypad);
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            }}
-          >
-            <IconSymbol
-              name="rectangle.grid.3x2.fill"
-              size={24}
-              color={showKeypad ? colors.primary : "#fff"}
-            />
-            <Text style={styles.controlLabel}>Keypad</Text>
-          </TouchableOpacity>
+              void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            },
+            showKeypad,
+          )}
+          {callControl(
+            "Speaker",
+            speaker ? "Use earpiece" : "Use speaker",
+            "speaker.wave.3.fill",
+            handleSpeaker,
+            speaker,
+          )}
+        </View>
+        <View style={styles.controlRow}>
+          {callControl(
+            "Hold",
+            held ? "Resume call" : "Hold call",
+            "pause.fill",
+            handleHold,
+            held,
+            held ? "Resume" : "Hold",
+          )}
         </View>
       </View>
 
@@ -332,7 +344,12 @@ export default function ActiveCallScreen() {
         >
           <IconSymbol name="phone.down.fill" size={30} color="#fff" />
         </TouchableOpacity>
-        <Text style={[styles.controlLabel, { textAlign: "center" }]}>
+        <Text
+          style={[
+            styles.controlLabel,
+            { color: colors.foreground, textAlign: "center" },
+          ]}
+        >
           {ending ? "Ending…" : call ? "End call" : "Close"}
         </Text>
       </View>
@@ -352,31 +369,24 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  minimizeLabel: { color: "#FFFFFF", fontSize: 17, fontWeight: "600" },
-  minimizeHint: { color: "#B4BAC6", fontSize: 13 },
+  minimizeLabel: { fontSize: 17, fontWeight: "600" },
+  minimizeHint: { fontSize: 13 },
   scroll: { flex: 1 },
-  scrollContent: { paddingTop: 16, paddingBottom: 20, gap: 24 },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingTop: 24,
+    paddingBottom: 20,
+    gap: 24,
+  },
   endFooter: { alignItems: "center", paddingTop: 12, gap: 8, flexShrink: 0 },
   callerSection: {
     alignItems: "center",
     gap: 12,
   },
-  callerAvatar: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  callerInitial: {
-    fontSize: 40,
-    fontWeight: "700",
-    color: "#fff",
-  },
   callerName: {
     fontSize: 28,
     fontWeight: "600",
-    color: "#fff",
     letterSpacing: 0.3,
     textAlign: "center",
     paddingHorizontal: 24,
@@ -395,7 +405,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  openVideoLabel: { color: "white", fontSize: 17, fontWeight: "600" },
+  openVideoLabel: { fontSize: 17, fontWeight: "600" },
   keypadGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -413,7 +423,6 @@ const styles = StyleSheet.create({
   keypadDigit: {
     fontSize: 22,
     fontWeight: "300",
-    color: "#fff",
   },
   controls: {
     paddingHorizontal: 24,
@@ -431,20 +440,22 @@ const styles = StyleSheet.create({
   controlBtn: {
     flex: 1,
     minWidth: 72,
-    maxWidth: 120,
-    minHeight: 80,
-    paddingVertical: 12,
-    paddingHorizontal: 6,
-    borderRadius: 24,
-    backgroundColor: "#ffffff18",
+    maxWidth: 104,
+    minHeight: 94,
     alignItems: "center",
     justifyContent: "center",
-    gap: 4,
+    gap: 8,
+  },
+  controlCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
   },
   controlLabel: {
     fontSize: 13,
     textAlign: "center",
-    color: "#fff",
     fontWeight: "500",
   },
   endCallBtn: {
@@ -455,8 +466,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     shadowColor: "#FF3B30",
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
+    shadowOpacity: 0,
     shadowRadius: 8,
-    elevation: 6,
+    elevation: 0,
   },
 });
