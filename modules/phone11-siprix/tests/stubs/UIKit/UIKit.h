@@ -10,6 +10,13 @@ typedef NS_ENUM(NSInteger, UIEventType) { UIEventTypeTouches = 0 };
 - (instancetype)initWithFrame:(CGRect)frame;
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event;
 - (BOOL)accessibilityActivate;
+- (void)didMoveToWindow;
+- (void)layoutSubviews;
+- (void)addSubview:(UIView *)view;
+- (void)removeFromSuperview;
+@property(nonatomic) CGRect frame;
+@property(nonatomic) CGRect bounds;
+@property(nonatomic, weak) UIView *window;
 @property(nonatomic, strong) UIColor *tintColor;
 @end
 

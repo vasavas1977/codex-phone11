@@ -38,7 +38,9 @@ export interface Call {
   direction: 'incoming' | 'outgoing';
   state: 'dialing' | 'ringing' | 'proceeding' | 'connected' | 'held' | 'terminated';
   remoteUri: string;
-  hasVideo: false;
+  hasVideo: boolean;
+  videoOffered?: boolean;
+  cameraMuted?: boolean;
   muted: boolean;
   held: boolean;
   holdState: number;
@@ -71,7 +73,7 @@ export interface PlaybackAudioRouteStatus {
 
 type EventData =
   | { type: 'registration'; account: Account }
-  | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted' | 'callTransferred'; call: Call }
+  | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted' | 'callTransferred' | 'callVideoChanged'; call: Call }
   | { type: 'devicesAudioChanged' | 'audioSession'; audioSessionActive: boolean; speaker: boolean }
   | ({ type: 'playbackAudioRoute' } & PlaybackAudioRouteStatus)
   | { type: 'trial' }
@@ -98,6 +100,14 @@ export interface Phone11SiprixModule {
   registerAccount(accountId: string, expireTime: number): Promise<void>;
   unregisterAccount(accountId: string): Promise<void>;
   deleteAccount(accountId: string): Promise<void>;
+  getVideoCapabilities?(): Promise<{ oneToOne: boolean; cameraMute: boolean; cameraSwitch: boolean; nativeView: boolean }>;
+  requestCameraPermission?(): Promise<boolean>;
+  makeVideoCall?(accountId: string, destination: string): Promise<Call>;
+  /** Prepare explicit consent, then answer via the existing CallKit transaction. */
+  prepareVideoAnswer?(callId: string): Promise<void>;
+  cancelVideoAnswer?(callId: string): Promise<void>;
+  setCameraMuted?(callId: string, muted: boolean): Promise<void>;
+  switchCamera?(callId: string): Promise<void>;
   makeCall(accountId: string, destination: string): Promise<Call>;
   answerCall(callId: string): Promise<void>;
   hangupCall(callId: string): Promise<void>;

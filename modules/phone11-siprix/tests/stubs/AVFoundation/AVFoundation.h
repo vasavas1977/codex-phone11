@@ -36,3 +36,10 @@ typedef NS_ENUM(NSUInteger, AVAudioSessionPortOverride) { AVAudioSessionPortOver
 @property(nonatomic, copy, readonly) NSString *mode;
 @property(nonatomic, readonly) AVAudioSessionCategoryOptions categoryOptions;
 @end
+
+extern NSString *const AVMediaTypeVideo;
+typedef NS_ENUM(NSInteger, AVAuthorizationStatus) { AVAuthorizationStatusNotDetermined, AVAuthorizationStatusRestricted, AVAuthorizationStatusDenied, AVAuthorizationStatusAuthorized };
+@interface AVCaptureDevice : NSObject
++ (AVAuthorizationStatus)authorizationStatusForMediaType:(NSString *)type;
++ (void)requestAccessForMediaType:(NSString *)type completionHandler:(void (^)(BOOL granted))handler;
+@end

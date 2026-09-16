@@ -22,6 +22,12 @@ NSString *const AVAudioSessionRouteChangeNotification = @"routeChange";
 static int playbackCategories, playbackOverrides, playbackActivations;
 static NSString *lastPlaybackMode;
 static AVAudioSessionCategoryOptions lastPlaybackOptions;
+NSString *const AVMediaTypeVideo = @"video";
+static AVAuthorizationStatus cameraAuthorization = AVAuthorizationStatusDenied;
+@implementation AVCaptureDevice
++ (AVAuthorizationStatus)authorizationStatusForMediaType:(NSString *)type { return cameraAuthorization; }
++ (void)requestAccessForMediaType:(NSString *)type completionHandler:(void (^)(BOOL))handler { handler(cameraAuthorization == AVAuthorizationStatusAuthorized); }
+@end
 @implementation UIEvent
 @end
 @implementation UIColor
@@ -31,6 +37,10 @@ static AVAudioSessionCategoryOptions lastPlaybackOptions;
 - (instancetype)initWithFrame:(CGRect)frame { return [self init]; }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { return point.x < 0 ? nil : self; }
 - (BOOL)accessibilityActivate { return YES; }
+- (void)didMoveToWindow {}
+- (void)layoutSubviews {}
+- (void)addSubview:(UIView *)view {}
+- (void)removeFromSuperview {}
 @end
 @implementation AVRoutePickerView
 @end
@@ -99,7 +109,8 @@ static int pushRegistrationState = -1;
 static int registrationCode;
 static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, deactivations;
 static int nextAccount = 10, nextCall = 20, lastMuteCall;
-static BOOL lastMuteValue;
+static BOOL lastMuteValue, lastAcceptVideo;
+static int cameraMutes, cameraSwitches, videoAttaches, videoDetaches;
 static BOOL sdkInitialized, speakerOK = YES, callKitEnabled;
 static HoldState mockHold = HoldStateNone;
 static NSString *wakeHeader;
@@ -153,7 +164,11 @@ static id<SiprixEventDelegate> sdkDelegate;
   }
   return sdkCode;
 }
-- (int)callAccept:(int)callId withVideo:(BOOL)video { accepts++; return sdkCode; }
+- (int)callAccept:(int)callId withVideo:(BOOL)video { accepts++; lastAcceptVideo=video; return sdkCode; }
+- (int)callMuteCam:(int)callId mute:(BOOL)mute { cameraMutes++; return sdkCode; }
+- (int)switchCamera { cameraSwitches++; return sdkCode; }
+- (UIView *)createVideoWindow { return [UIView new]; }
+- (int)callSetVideoWindow:(int)callId view:(UIView *)view { if (view) videoAttaches++; else videoDetaches++; return sdkCode; }
 - (int)callReject:(int)callId statusCode:(int)statusCode { rejects++; return sdkCode; }
 - (int)callBye:(int)callId { byes++; return sdkCode; }
 - (int)callTransferBlind:(int)callId toExt:(NSString *)toExt { return sdkCode; }
@@ -211,7 +226,7 @@ int main(void) {
     CHECK(!error && [result[@"initialized"] boolValue] && initializes == 1);
     CHECK([result[@"sdkVersion"] isEqualToString:@"siprix 1.0.40 from 20260620_1419"] && callKitEnabled);
     CHECK(lastInit.logLevelFile.intValue == LogLevelNoLog && lastInit.logLevelIde.intValue == LogLevelNoLog);
-    CHECK(lastInit.tlsVerifyServer.boolValue && lastInit.singleCallMode.boolValue && !lastInit.enableVideoCall.boolValue);
+    CHECK(lastInit.tlsVerifyServer.boolValue && lastInit.singleCallMode.boolValue && lastInit.enableVideoCall.boolValue);
     CHECK(lastInit.license == nil && lastInit.homeFolder == nil);
     NSUInteger generation = [result[@"generation"] unsignedIntegerValue];
     [bridge initialize:@{} resolver:resolve rejecter:reject];
@@ -468,6 +483,54 @@ int main(void) {
     CHECK(!error && rejects == 2 && byes == 2);
     [sdkDelegate onCallTerminated:52 statusCode:486];
     flush();
+    // Explicit video intent and negotiated state are distinct from camera permission.
+    int priorInvites=invites;
+    [bridge makeVideoCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CAMERA_PERMISSION"] && invites == priorInvites);
+    cameraAuthorization=AVAuthorizationStatusAuthorized;
+    [bridge makeVideoCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
+    CHECK(!error && lastDestination.withVideo.boolValue && ![result[@"hasVideo"] boolValue]);
+    NSString *videoId=result[@"id"];
+    [bridge setCameraMuted:videoId muted:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CALL_STATE"] && cameraMutes == 0);
+    [sdkDelegate onCallConnected:videoId.intValue hdrFrom:@"" hdrTo:@"" withVideo:YES]; flush();
+    CHECK([bridge.testEvents.lastObject[@"call"][@"hasVideo"] boolValue]);
+    P11VideoView *remote=[[P11VideoView alloc] initWithFrame:(CGRect){0}];
+    P11VideoView *local=[[P11VideoView alloc] initWithFrame:(CGRect){0}];
+    UIView *window=[UIView new]; remote.window=window; local.window=window;
+    local.local=YES; remote.callId=videoId; local.callId=videoId;
+    CHECK(videoAttaches == 2 && remote.attachedId == videoId.intValue && local.attachedId == 0);
+    [bridge setCameraMuted:videoId muted:YES resolver:resolve rejecter:reject];
+    CHECK(!error && [bridge.testEvents.lastObject[@"call"][@"cameraMuted"] boolValue]);
+    sdkCode=-7;
+    [bridge setCameraMuted:videoId muted:NO resolver:resolve rejecter:reject];
+    CHECK(error && [P11SiprixRuntime.shared.calls[videoId][@"cameraMuted"] boolValue]);
+    sdkCode=0; cameraAuthorization=AVAuthorizationStatusDenied;
+    int priorMutes=cameraMutes;
+    [bridge setCameraMuted:videoId muted:NO resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CAMERA_PERMISSION"] && cameraMutes == priorMutes);
+    cameraAuthorization=AVAuthorizationStatusAuthorized;
+    [bridge switchCamera:videoId resolver:resolve rejecter:reject]; CHECK(!error && cameraSwitches == 1);
+    [sdkDelegate onCallTerminated:videoId.intValue statusCode:200]; flush();
+    CHECK(videoDetaches == 2 && !remote.attachedSDK && !local.attachedSDK);
+    [sdkDelegate onCallVideoUpgraded:videoId.intValue withVideo:YES]; flush();
+    CHECK(P11SiprixRuntime.shared.calls.count == 0);
+    [sdkDelegate onCallIncoming:61 accId:10 withVideo:YES hdrFrom:@"sip:video@invalid.example" hdrTo:@""]; flush();
+    CHECK([P11SiprixRuntime.shared.calls[@"61"][@"videoOffered"] boolValue] && ![P11SiprixRuntime.shared.calls[@"61"][@"hasVideo"] boolValue]);
+    [bridge prepareVideoAnswer:@"61" resolver:resolve rejecter:reject]; CHECK(!error);
+    [bridge cancelVideoAnswer:@"61" resolver:resolve rejecter:reject]; CHECK(!error);
+    [bridge answerCall:@"61" resolver:resolve rejecter:reject]; CHECK(!error && !lastAcceptVideo);
+    [sdkDelegate onCallTerminated:61 statusCode:200]; flush();
+    [sdkDelegate onCallIncoming:62 accId:10 withVideo:YES hdrFrom:@"sip:video@invalid.example" hdrTo:@""]; flush();
+    [bridge prepareVideoAnswer:@"62" resolver:resolve rejecter:reject]; CHECK(!error);
+    cameraAuthorization=AVAuthorizationStatusDenied;
+    [bridge answerCall:@"62" resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_CAMERA_PERMISSION"]);
+    cameraAuthorization=AVAuthorizationStatusAuthorized;
+    [bridge prepareVideoAnswer:@"62" resolver:resolve rejecter:reject];
+    [bridge answerCall:@"62" resolver:resolve rejecter:reject]; CHECK(!error && lastAcceptVideo);
+    [sdkDelegate onCallConnected:62 hdrFrom:@"" hdrTo:@"" withVideo:NO]; flush();
+    CHECK(![P11SiprixRuntime.shared.calls[@"62"][@"hasVideo"] boolValue]); // Remote may negotiate audio only.
+    [sdkDelegate onCallTerminated:62 statusCode:200]; flush();
     [bridge unregisterAccount:@"10" resolver:resolve rejecter:reject];
     CHECK(!error && [P11SiprixRuntime.shared.accounts[@"10"][@"registrationState"] isEqualToString:@"registered"]);
     [sdkDelegate onAccountRegState:10 regState:RegStateRemoved response:@"200 OK"];

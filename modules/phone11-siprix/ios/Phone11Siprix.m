@@ -376,11 +376,81 @@ RCT_EXPORT_VIEW_PROPERTY(disabled, BOOL)
 RCT_EXPORT_VIEW_PROPERTY(onPickerOpened, RCTDirectEventBlock)
 @end
 
+// Siprix uses call ID 0 for local preview; real call IDs are strictly positive.
+// UI attachment alone never starts capture: a negotiated, explicitly accepted video call is required.
+@interface P11VideoView : UIView
+@property(nonatomic, copy) NSString *callId;
+@property(nonatomic) BOOL local;
+@property(nonatomic, strong) UIView *renderView;
+@property(nonatomic, strong) SiprixModule *attachedSDK;
+@property(nonatomic) int attachedId;
+@property(nonatomic) NSUInteger attachedGeneration;
+- (void)refreshVideo;
+- (void)detachVideo;
+@end
+static NSMapTable<NSNumber *, P11VideoView *> *P11VideoOwners(void) {
+  static NSMapTable *owners;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ owners = [NSMapTable strongToWeakObjectsMapTable]; });
+  return owners;
+}
+@implementation P11VideoView
+- (instancetype)initWithFrame:(CGRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshVideo) name:@"P11VideoRefresh" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(detachVideo) name:@"P11VideoStop" object:nil];
+  }
+  return self;
+}
+- (void)setCallId:(NSString *)callId { if ([_callId isEqual:callId]) return; [self detachVideo]; _callId=[callId copy]; [self refreshVideo]; }
+- (void)setLocal:(BOOL)local { if (_local == local) return; [self detachVideo]; _local=local; [self refreshVideo]; }
+- (void)didMoveToWindow { [super didMoveToWindow]; [self refreshVideo]; }
+- (void)layoutSubviews { [super layoutSubviews]; self.renderView.frame=self.bounds; }
+- (void)refreshVideo {
+  P11SiprixRuntime *runtime=P11SiprixRuntime.shared;
+  NSDictionary *call=runtime.calls[self.callId ?: @""];
+  if (!self.window || !runtime.initialized || runtime.quarantined || ![call[@"hasVideo"] boolValue]) { [self detachVideo]; return; }
+  int target=self.local ? 0 : self.callId.intValue;
+  if (self.attachedSDK == runtime.sdk && self.attachedGeneration == runtime.generation && self.attachedId == target) return;
+  [self detachVideo];
+  // Do not let an older view steal the slot back when a replacement mounts.
+  P11VideoView *owner=[P11VideoOwners() objectForKey:@(target)];
+  if (owner && owner != self) return;
+  UIView *view=[runtime.sdk createVideoWindow];
+  int code=[runtime.sdk callSetVideoWindow:target view:view];
+  if (code != kErrorCodeEOK) return;
+  self.attachedSDK=runtime.sdk; self.attachedGeneration=runtime.generation; self.attachedId=target;
+  self.renderView=view; view.frame=self.bounds; [self addSubview:view];
+  [P11VideoOwners() setObject:self forKey:@(target)];
+}
+- (void)detachVideo {
+  if (self.attachedSDK && [P11VideoOwners() objectForKey:@(self.attachedId)] == self) {
+    [self.attachedSDK callSetVideoWindow:self.attachedId view:nil];
+    [P11VideoOwners() removeObjectForKey:@(self.attachedId)];
+  }
+  [self.renderView removeFromSuperview]; self.renderView=nil; self.attachedSDK=nil;
+}
+- (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
+  // didMoveToWindow detaches before release during normal React unmount.
+  if (self.attachedSDK) [self.attachedSDK callSetVideoWindow:self.attachedId view:nil];
+}
+@end
+@interface Phone11VideoViewManager : RCTViewManager
+@end
+@implementation Phone11VideoViewManager
+RCT_EXPORT_MODULE(Phone11VideoView)
++ (BOOL)requiresMainQueueSetup { return YES; }
+- (UIView *)view { return [[P11VideoView alloc] initWithFrame:(CGRect){0}]; }
+RCT_EXPORT_VIEW_PROPERTY(callId, NSString)
+RCT_EXPORT_VIEW_PROPERTY(local, BOOL)
+@end
+
 static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSString *direction,
                                      NSString *state, NSString *remote) {
   return [@{@"id": callId, @"callId": callId, @"accountId": accountId,
             @"direction": direction, @"state": state, @"remoteUri": P11RemoteURI(remote),
-            @"hasVideo": @NO, @"muted": @NO, @"held": @NO, @"holdState": @0} mutableCopy];
+            @"hasVideo": @NO, @"cameraMuted": @NO, @"muted": @NO, @"held": @NO, @"holdState": @0} mutableCopy];
 }
 
 @implementation P11SiprixRuntime
@@ -406,7 +476,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
   NSMutableArray *accounts = [NSMutableArray new];
   NSMutableArray *calls = [NSMutableArray new];
   for (NSDictionary *account in self.accounts.allValues) [accounts addObject:[account copy]];
-  for (NSDictionary *call in self.calls.allValues) { NSMutableDictionary *visible=[call mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [calls addObject:visible]; }
+  for (NSDictionary *call in self.calls.allValues) { NSMutableDictionary *visible=[call mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [visible removeObjectForKey:@"videoAnswerPrepared"]; [calls addObject:visible]; }
   NSMutableDictionary *snapshot = [@{@"initialized": @(self.initialized && !self.quarantined),
            @"generation": @(self.generation), @"sequence": @(self.sequence),
            @"sdkVersion": self.sdkVersion ?: NSNull.null, @"accounts": accounts, @"calls": calls,
@@ -433,9 +503,10 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 }
 
 - (void)emit:(NSString *)type data:(NSDictionary *)data {
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"P11VideoRefresh" object:nil];
   self.sequence += 1;
   NSMutableDictionary *event = [data mutableCopy];
-  if (event[@"call"]) { NSMutableDictionary *visible=[event[@"call"] mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; event[@"call"]=visible; }
+  if (event[@"call"]) { NSMutableDictionary *visible=[event[@"call"] mutableCopy]; [visible removeObjectForKey:@"historyOwner"]; [visible removeObjectForKey:@"historyEpoch"]; [visible removeObjectForKey:@"videoAnswerPrepared"]; event[@"call"]=visible; }
   event[@"type"] = type;
   event[@"generation"] = @(self.generation);
   event[@"sequence"] = @(self.sequence);
@@ -521,6 +592,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
       }
     }
     call = P11Call(callId, data[@"accountId"], @"incoming", @"ringing", data[@"remoteUri"]);
+    call[@"videoOffered"] = @([data[@"hasVideo"] boolValue]);
     if (self.wakeContext) {
       self.wakeCallId = callId; call[@"wakeCallUUID"] = self.wakeContext[@"callUUID"];
       call[@"wakeSystemAnswered"] = @NO;
@@ -540,6 +612,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
       call[@"state"] = @"proceeding";
     } else if ([type isEqualToString:@"callConnected"]) {
       call[@"state"] = [call[@"held"] boolValue] ? @"held" : @"connected";
+      call[@"hasVideo"] = @([data[@"hasVideo"] boolValue]);
       if (call[@"historyId"] && !call[@"answeredAt"]) call[@"answeredAt"]=@(MAX(P11NowMs(),[call[@"startedAt"] doubleValue]));
     } else if ([type isEqualToString:@"callTerminated"]) {
       call[@"state"] = @"terminated";
@@ -587,6 +660,9 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
         }
       }
     }
+  } else if ([type isEqualToString:@"callVideoChanged"] && call) {
+    call[@"hasVideo"] = @([data[@"hasVideo"] boolValue]);
+    [self emit:type data:@{@"call": [call copy]}];
   } else if ([type isEqualToString:@"callTransferred"] && call && [call[@"transferPending"] boolValue]) {
     call[@"transferPending"] = @NO;
     call[@"transferStatusCode"] = data[@"statusCode"];
@@ -612,6 +688,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 }
 
 - (int)shutdown {
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"P11VideoStop" object:nil];
   self.generation += 1;
   self.registrationProof = nil; self.processedRegistrationIngress = 0;
   self.playbackRouteActive = NO; self.playbackSystemPickerActive = NO;
@@ -679,13 +756,13 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 }
 - (void)onCallIncoming:(NSInteger)callId accId:(NSInteger)accId withVideo:(BOOL)video
                hdrFrom:(NSString *)from hdrTo:(NSString *)to {
-  [self post:@"callIncoming" data:@{@"callId": P11ID(callId), @"accountId": P11ID(accId), @"remoteUri": P11RemoteURI(from)}];
+  [self post:@"callIncoming" data:@{@"callId": P11ID(callId), @"accountId": P11ID(accId), @"remoteUri": P11RemoteURI(from), @"hasVideo": @(video)}];
 }
 - (void)onCallProceeding:(NSInteger)callId response:(NSString *)response {
   [self post:@"callProceeding" data:@{@"callId": P11ID(callId)}];
 }
 - (void)onCallConnected:(NSInteger)callId hdrFrom:(NSString *)from hdrTo:(NSString *)to withVideo:(BOOL)video {
-  [self post:@"callConnected" data:@{@"callId": P11ID(callId)}];
+  [self post:@"callConnected" data:@{@"callId": P11ID(callId), @"hasVideo": @(video)}];
 }
 - (void)onCallTerminated:(NSInteger)callId statusCode:(NSInteger)code {
   [self post:@"callTerminated" data:@{@"callId": P11ID(callId), @"statusCode": @(code)}];
@@ -705,7 +782,9 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
   [self post:@"callTransferred" data:@{@"callId": P11ID(callId), @"statusCode": @(code)}];
 }
 - (void)onCallRedirected:(NSInteger)callId relatedCallId:(NSInteger)relatedId referTo:(NSString *)to {}
-- (void)onCallVideoUpgraded:(NSInteger)callId withVideo:(BOOL)video {}
+- (void)onCallVideoUpgraded:(NSInteger)callId withVideo:(BOOL)video {
+  [self post:@"callVideoChanged" data:@{@"callId": P11ID(callId), @"hasVideo": @(video)}];
+}
 - (void)onCallVideoUpgradeRequested:(NSInteger)callId {}
 - (void)onMessageSentState:(NSInteger)messageId success:(BOOL)success response:(NSString *)response {}
 - (void)onMessageIncoming:(NSInteger)messageId accId:(NSInteger)accId hdrFrom:(NSString *)from body:(NSString *)body {}
@@ -1086,7 +1165,7 @@ RCT_EXPORT_METHOD(initialize:(NSDictionary *)options resolver:(RCTPromiseResolve
   ini.logLevelIde = @(LogLevelNoLog);
   ini.tlsVerifyServer = @YES;
   ini.singleCallMode = @YES;
-  ini.enableVideoCall = @NO;
+  ini.enableVideoCall = @YES; // Media capability only; voice invite/answer still explicitly use NO.
   ini.unregOnDestroy = @YES;
   int code = [runtime.sdk initialize:runtime.delegate iniData:ini];
   if (code != kErrorCodeEOK) {
@@ -1186,6 +1265,7 @@ RCT_EXPORT_METHOD(createAccount:(NSDictionary *)config resolver:(RCTPromiseResol
   account.verifyIncomingCall = config[@"verifyIncomingCall"];
   account.forceSipProxy = config[@"forceSipProxy"];
   account.aCodecs = config[@"aCodecs"];
+  account.upgradeToVideo = @(UpgradeToVideoModeInactive); // Never accept unsolicited camera activation.
   int code = [runtime.sdk accountAdd:account];
   account.sipPassword = @"";
   account.sipAuthId = nil;
@@ -1235,6 +1315,13 @@ RCT_EXPORT_METHOD(deleteAccount:(NSString *)accountId resolver:(RCTPromiseResolv
 }
 
 RCT_EXPORT_METHOD(makeCall:(NSString *)accountId destination:(NSString *)destination resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  [self invite:accountId destination:destination video:NO resolver:resolve rejecter:reject];
+}
+RCT_EXPORT_METHOD(makeVideoCall:(NSString *)accountId destination:(NSString *)destination resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  [self invite:accountId destination:destination video:YES resolver:resolve rejecter:reject];
+}
+- (void)invite:(NSString *)accountId destination:(NSString *)destination video:(BOOL)video resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject {
+  if (video && ![self cameraAuthorized:reject]) return;
   if (P11SiprixRuntime.shared.wakeContext) { P11Reject(reject, @"E_WAKE_PENDING", @"An incoming wake owns the phone runtime."); return; }
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:accountId in:runtime.accounts reject:reject]) return;
   if (!P11String(destination, 512)) { P11Reject(reject, @"E_INVALID_ARGUMENT", @"Destination must be nonempty SIP destination text."); return; }
@@ -1245,7 +1332,7 @@ RCT_EXPORT_METHOD(makeCall:(NSString *)accountId destination:(NSString *)destina
   SiprixDestData *dest = [SiprixDestData new];
   dest.fromAccId = accountId.intValue;
   dest.toExt = destination;
-  dest.withVideo = @NO;
+  dest.withVideo = @(video);
   // This fixed, bridge-owned header is the only mobile-to-PBX correlation
   // input. The public JS API cannot inject arbitrary SIP headers.
   NSString *outboundUUID = NSUUID.UUID.UUIDString.lowercaseString;
@@ -1261,6 +1348,7 @@ RCT_EXPORT_METHOD(makeCall:(NSString *)accountId destination:(NSString *)destina
     P11Reject(reject, @"E_SDK_INVALID_ID", @"SDK reused a retired call ID. Destroy is required."); return;
   }
   NSMutableDictionary *call = P11Call(callId, accountId, @"outgoing", @"dialing", destination);
+  call[@"videoOffered"] = @(video);
   call[@"historyId"] = [@"native-outbound:" stringByAppendingString:outboundUUID];
   call[@"startedAt"] = @(P11NowMs());
   runtime.calls[callId] = call;
@@ -1277,10 +1365,59 @@ RCT_EXPORT_METHOD(answerCall:(NSString *)callId resolver:(RCTPromiseResolveBlock
       [runtime.acceptedCalls containsObject:callId]) {
     P11Reject(reject, @"E_CALL_STATE", @"Only a ringing incoming call can be answered."); return;
   }
-  if ([self checkSDK:[runtime.sdk callAccept:callId.intValue withVideo:NO] operation:@"callAccept" reject:reject]) {
+  BOOL video = [call[@"videoAnswerPrepared"] boolValue];
+  [runtime.calls[callId] removeObjectForKey:@"videoAnswerPrepared"];
+  if (video && ![self cameraAuthorized:reject]) return;
+  if ([self checkSDK:[runtime.sdk callAccept:callId.intValue withVideo:video] operation:@"callAccept" reject:reject]) {
     [runtime.acceptedCalls addObject:callId];
     resolve(nil);
   }
+}
+
+// These additions are optional in JS so an OTA update can still run on older binaries.
+RCT_EXPORT_METHOD(getVideoCapabilities:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  resolve(@{@"oneToOne": @YES, @"cameraMute": @YES, @"cameraSwitch": @YES, @"nativeView": @YES});
+}
+- (BOOL)cameraAuthorized:(RCTPromiseRejectBlock)reject {
+  if ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo] == AVAuthorizationStatusAuthorized) return YES;
+  P11Reject(reject, @"E_CAMERA_PERMISSION", @"Allow camera access before starting video."); return NO;
+}
+RCT_EXPORT_METHOD(requestCameraPermission:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  if (![NSBundle.mainBundle objectForInfoDictionaryKey:@"NSCameraUsageDescription"]) {
+    P11Reject(reject, @"E_CAMERA_CONFIGURATION", @"This build does not configure camera access."); return;
+  }
+  [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
+    dispatch_async(dispatch_get_main_queue(), ^{ resolve(@(granted)); });
+  }];
+}
+RCT_EXPORT_METHOD(prepareVideoAnswer:(NSString *)callId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSMutableDictionary *call = runtime.calls[callId];
+  if ([runtime.wakeCallId isEqual:callId] || ![call[@"direction"] isEqual:@"incoming"] ||
+      ![call[@"state"] isEqual:@"ringing"] || ![call[@"videoOffered"] boolValue] || [runtime.acceptedCalls containsObject:callId]) {
+    P11Reject(reject, @"E_CALL_STATE", @"Only a foreground ringing video offer can be answered with video."); return;
+  }
+  if (![self cameraAuthorized:reject]) return;
+  call[@"videoAnswerPrepared"] = @YES;
+  resolve(nil);
+}
+RCT_EXPORT_METHOD(cancelVideoAnswer:(NSString *)callId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  [runtime.calls[callId] removeObjectForKey:@"videoAnswerPrepared"]; resolve(nil);
+}
+RCT_EXPORT_METHOD(setCameraMuted:(NSString *)callId muted:(BOOL)muted resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSMutableDictionary *call = runtime.calls[callId];
+  if (![call[@"hasVideo"] boolValue]) { P11Reject(reject, @"E_CALL_STATE", @"Video is not connected."); return; }
+  if (!muted && ![self cameraAuthorized:reject]) return;
+  if (![self checkSDK:[runtime.sdk callMuteCam:callId.intValue mute:muted] operation:@"callMuteCam" reject:reject]) return;
+  call[@"cameraMuted"] = @(muted); [runtime emit:@"callVideoChanged" data:@{@"call": [call copy]}]; resolve(nil);
+}
+RCT_EXPORT_METHOD(switchCamera:(NSString *)callId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  if (![runtime.calls[callId][@"hasVideo"] boolValue]) { P11Reject(reject, @"E_CALL_STATE", @"Video is not connected."); return; }
+  if (![self cameraAuthorized:reject]) return;
+  if ([self checkSDK:[runtime.sdk switchCamera] operation:@"switchCamera" reject:reject]) resolve(nil);
 }
 
 RCT_EXPORT_METHOD(hangupCall:(NSString *)callId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {

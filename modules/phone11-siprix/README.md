@@ -96,10 +96,42 @@ generation rejection, snapshots without listeners, call ordering, single-call
 rejection, mute/hold/DTMF, audio activation idempotence, failed shutdown, privacy,
 and numeric SIP status parsing. No SIP traffic or real credentials are used.
 
-2026-09-09 local verification: both test cases passed, with 95 native assertions.
-This is NOT an iOS SDK compile/link, device install, CallKit/PushKit acceptance,
-registration, PSTN, or audio proof. This Mac has Command Line Tools, not Xcode;
-the parent cloud signed build is the next compile/link gate. There is no Android
-implementation, transfer/video support, or background/cold-start push adapter.
-The pinned SDK trial limits calls to 60 seconds according to its bundled README.
-No license purchase, auth change, production action, or commit is performed here.
+### One-to-one video (2026-09-16)
+
+The bridge now exposes optional `getVideoCapabilities`, `requestCameraPermission`,
+`makeVideoCall`, `prepareVideoAnswer`, `cancelVideoAnswer`, `setCameraMuted`, and
+`switchCamera` methods. Older installed binaries lack these methods: callers must
+check the methods and native `Phone11VideoView` manager before displaying controls.
+The view accepts `callId: string` and `local: boolean`; SDK-owned UIView rendering
+uses a positive remote call ID and the SDK's documented local-preview ID `0`.
+Views detach on call termination, removal from the window, and runtime shutdown.
+
+Camera permission and explicit user video intent are required before inviting or
+answering with video. Configure `NSCameraUsageDescription` in the host app. For an
+incoming foreground offer, prepare consent, then use the existing CallKit answer
+transaction; cancel the preparation if that transaction fails. Normal `makeCall`,
+normal answers, and native wake answers stay audio-only. Account video upgrades
+are inactive so a remote re-INVITE cannot automatically activate the camera.
+`videoOffered` describes the offer; `hasVideo` becomes true only on SDK-confirmed
+negotiation. Connected audio fallback remains usable. Camera mute events follow
+successful SDK acceptance and do not change microphone mute.
+
+The SDK's `enableVideoCall` initialization flag enables capability, not camera
+capture. Actual camera capture begins only after an explicit video call operation.
+Video controls use the exact pinned v1.0.40 APIs; the vendor reports a later fix
+for camera mute following video upgrades, so this bridge does not expose upgrades.
+
+Validation: all 10 native test cases pass (233 bridge and 247 wake-runtime
+assertions, plus push/wake suites). Video cases cover denied/revoked permission,
+negotiation versus offer, audio fallback, cancelled answer consent, camera SDK
+failure, renderer attachment/detachment, and stale terminated-call callbacks.
+The bridge and view also pass arm64 iOS 15.1 syntax compilation using the installed
+iPhoneOS18.5 SDK, real React/RNCallKeep Pod headers, and the pinned Siprix framework.
+This is not a linked app, signed build, installed handset, or video media proof.
+No Android native implementation or multiparty video mixer is added here. The
+pinned SDK trial limits calls to 60 seconds according to its bundled README.
+
+Vendor references:
+- https://docs.siprix-voip.com/rst/integration.html (SDK UIView rendering)
+- https://docs.siprix-voip.com/rst/api.html (accept, mute camera, video state)
+- https://pub.dev/documentation/siprix_voip_sdk/latest/siprix_voip_sdk/SiprixVoipSdk/kLocalVideoCallId-constant.html (local-preview ID)
