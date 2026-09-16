@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 
+import { useVideoCapability } from "@/hooks/use-video-capability";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
@@ -21,6 +22,7 @@ import { resolveCurrentCall } from "@/lib/sip/current-call";
 import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 
 export default function IncomingCallScreen() {
+  const videoAvailable = useVideoCapability();
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const owner = getAuthSnapshot().user;
@@ -114,13 +116,13 @@ export default function IncomingCallScreen() {
       (incomingCall?.status === "active" || incomingCall?.status === "held")
     ) {
       router.replace({
-        pathname: "/call/active",
+        pathname: incomingCall?.isVideo ? "/call/video" : "/call/active",
         params: { callId, number: callerNumber, type: "voice" },
       });
     }
-  }, [callId, incomingCall?.status, callerNumber]);
+  }, [callId, incomingCall?.status, incomingCall?.isVideo, callerNumber]);
 
-  const handleAccept = async () => {
+  const handleAccept = async (video = false) => {
     const eligible = !!callId && !pending.current && stillRinging();
     useSipDiagnosticsStore.getState().addEvent({
       level: "info", category: "call", message: "Incoming Answer tapped",
@@ -136,7 +138,7 @@ export default function IncomingCallScreen() {
       Haptics.NotificationFeedbackType.Success,
     ).catch(() => {});
     try {
-      await answerCall(callId);
+      await answerCall(callId, video);
       action.deadlineAt = Date.now() + 20_000;
       if (pending.current === action && currentOwnedCall()) armDeadline(action);
       // Command acceptance is not a connected call. Wait for the native state
@@ -279,7 +281,7 @@ export default function IncomingCallScreen() {
               }}
               disabled={operation !== null || !ringing}
               style={[styles.actionBtn, { backgroundColor: colors.success }]}
-              onPress={handleAccept}
+              onPress={() => handleAccept()}
               activeOpacity={0.8}
             >
               <IconSymbol name="phone.fill" size={30} color="#fff" />
@@ -290,6 +292,7 @@ export default function IncomingCallScreen() {
           </View>
         </View>
 
+        {videoAvailable && incomingCall?.videoOffered && ringing && <TouchableOpacity accessibilityRole="button" disabled={operation !== null} onPress={() => handleAccept(true)} style={{ padding: 16, alignItems: "center" }}><Text style={{ color: "white", fontWeight: "600" }}>Answer with video</Text></TouchableOpacity>}
         {incomingCall && !settled && (
           <Text style={[styles.hint, { color: "#ffffff80" }]}>
             {operation === "decline"

@@ -174,6 +174,7 @@ export default function ActiveCallScreen() {
           </Text>
         </View>
 
+        {call?.isVideo && <TouchableOpacity accessibilityRole="button" onPress={() => router.replace({ pathname: "/call/video", params: { callId: call.id } })} style={{ padding: 20 }}><Text style={{ color: "white", fontSize: 17 }}>Open video</Text></TouchableOpacity>}
         {/* Keypad overlay */}
         {showKeypad && controlsReady && (
           <View style={styles.keypadOverlay}>

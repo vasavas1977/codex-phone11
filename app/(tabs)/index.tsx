@@ -9,6 +9,7 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useVideoCapability } from "@/hooks/use-video-capability";
 import { usePhoneCall } from "@/hooks/use-phone-call";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
@@ -71,6 +72,7 @@ export default function DialpadScreen() {
     .filter((entry, index, all) => entry.ownerUserId === user?.id && all.findIndex(other => other.number === entry.number) === index)
     .slice(0, 3)
     .map(entry => ({ ...entry, name: deviceContactName(deviceContacts.people, entry.number) || entry.name }));
+  const videoAvailable = useVideoCapability();
   const { placeCall, calling } = usePhoneCall();
   const { reconnectPhone } = useSip();
   const [reconnecting, setReconnecting] = useState(false);
@@ -117,6 +119,7 @@ export default function DialpadScreen() {
           )}
         </View>
 
+        {videoAvailable && <TouchableOpacity accessibilityRole="button" accessibilityLabel="Start a video call" onPress={() => router.push({ pathname: "/call/video", params: { number: input } })} style={{ padding: 16 }}><Text style={{ color: colors.primary, fontWeight: "600" }}>Video call</Text></TouchableOpacity>}
         {/* Number Input */}
         <View style={styles.inputRow}>
           <TextInput

@@ -28,6 +28,8 @@ export interface SipCall {
   isHeld: boolean;
   isSpeaker: boolean;
   isVideo: boolean;
+  videoOffered?: boolean;
+  cameraMuted?: boolean;
   // Raw PJSIP call object (native only)
   _nativeCall?: any;
   history?: CallHistoryEntry;
@@ -114,7 +116,9 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
       isMuted: false,
       isHeld: false,
       isSpeaker: false,
-      isVideo: false,
+      isVideo: callInfoFromNative(nativeCall).hasVideo === true,
+      videoOffered: callInfoFromNative(nativeCall).videoOffered === true,
+      cameraMuted: callInfoFromNative(nativeCall).cameraMuted !== false,
       startTime: new Date(),
       _nativeCall: nativeCall,
     };
@@ -144,7 +148,9 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
       isMuted: false,
       isHeld: false,
       isSpeaker: false,
-      isVideo: false,
+      isVideo: callInfoFromNative(nativeCall).hasVideo === true,
+      videoOffered: callInfoFromNative(nativeCall).videoOffered === true,
+      cameraMuted: callInfoFromNative(nativeCall).cameraMuted !== false,
       startTime: new Date(),
       _nativeCall: nativeCall,
     };
@@ -175,7 +181,7 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
 
       if (incoming && newStatus !== "active") {
         return {
-          incomingCall: { ...incoming, status: newStatus, _nativeCall: nativeCall },
+          incomingCall: { ...incoming, status: newStatus, isVideo: info.hasVideo === true, videoOffered: info.videoOffered === true, cameraMuted: info.cameraMuted !== false, _nativeCall: nativeCall },
         };
       }
 
@@ -184,6 +190,9 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
       const updated: SipCall = {
         ...existing,
         status: newStatus,
+        isVideo: info.hasVideo === true,
+        videoOffered: info.videoOffered === true,
+        cameraMuted: info.cameraMuted !== false,
         connectTime: newStatus === "active" && !existing.connectTime ? new Date() : existing.connectTime,
         _nativeCall: nativeCall,
       };
@@ -199,7 +208,7 @@ export const useSipCallStore = create<SipCallState>((set, get) => ({
           incomingCall: null,
           activeCalls: {
             ...state.activeCalls,
-            [id]: { ...call, status: "active", connectTime: new Date(), _nativeCall: nativeCall },
+            [id]: { ...call, status: "active", isVideo: info.hasVideo === true, videoOffered: info.videoOffered === true, cameraMuted: info.cameraMuted !== false, connectTime: new Date(), _nativeCall: nativeCall },
           },
         };
       }

@@ -14,6 +14,7 @@ const runtime = vi.hoisted(() => ({
   },
 }));
 vi.mock("react-native", () => ({
+  UIManager: { getViewManagerConfig: () => ({}) },
   Platform: runtime.platform, NativeModules: runtime.modules,
   NativeEventEmitter: class {
     addListener(name: string, listener: (event: SiprixEvent) => void) {
@@ -130,9 +131,46 @@ beforeEach(() => {
     useSipCallStore.setState({ activeCalls: {}, incomingCall: null });
     engine = new SiprixEngine();
   });
-afterEach(async () => { await engine.destroy(); });
+afterEach(async () => { await engine.destroy(); vi.unstubAllEnvs(); });
 
 describe("Siprix native adapter", () => {
+  it("negotiates video only after runtime support and camera permission, then consumes real video events", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const camera = vi.fn(async () => true);
+    const makeVideoCall = vi.fn(async () => newCall());
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission: camera, makeVideoCall, prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(),
+      setCameraMuted: vi.fn(), switchCamera: vi.fn(),
+    };
+    await ready();
+    await engine.makeCall("2002", true);
+    expect(camera).toHaveBeenCalledOnce();
+    expect(makeVideoCall).toHaveBeenCalledWith("1", "sip:2002@sip.example.test");
+    expect(bridge.makeCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"].isVideo).toBe(false);
+    emit({ type: "callConnected", call: { ...newCall({ state: "connected" }), hasVideo: true, cameraMuted: false } });
+    expect(useSipCallStore.getState().activeCalls["11"].isVideo).toBe(true);
+    emit({ type: "callVideoChanged", call: { ...newCall({ state: "connected" }), hasVideo: true, cameraMuted: true } });
+    expect(useSipCallStore.getState().activeCalls["11"].cameraMuted).toBe(true);
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeUndefined();
+  });
+
+  it("does not start a call after camera permission is denied", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const makeVideoCall = vi.fn();
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission: async () => false, makeVideoCall, prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(),
+      setCameraMuted: vi.fn(), switchCamera: vi.fn(),
+    };
+    await ready();
+    await expect(engine.makeCall("2002", true)).rejects.toThrow();
+    expect(makeVideoCall).not.toHaveBeenCalled();
+    expect(bridge.makeCall).not.toHaveBeenCalled();
+  });
+
 
   it.each(["callback", "stalled"])("gives the real initialized native snapshot its registration grace (%s)", async (outcome) => {
     vi.useFakeTimers();
@@ -549,7 +587,7 @@ describe("Siprix native adapter", () => {
 
   it("rejects video, attended transfer, and transfer before connection", async () => {
     await ready();
-    await expect(engine.makeCall("2002", true)).rejects.toThrow("video");
+    await expect(engine.makeCall("2002", true)).rejects.toThrow("outbound call failed");
     await engine.makeCall("2002");
     await expect(engine.answerCall("11", true)).rejects.toThrow("video");
     await expect(engine.transferCall("11", "2003")).rejects.toThrow("transfer");

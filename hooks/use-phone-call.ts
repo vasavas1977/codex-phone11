@@ -15,7 +15,7 @@ export function usePhoneCall() {
   const busy = useRef(false);
   const [calling, setCalling] = useState(false);
 
-  const placeCall = async (number: string) => {
+  const placeCall = async (number: string, video = false) => {
     const target = number.trim();
     if (!target || busy.current) return;
     if (!user || getAuthSnapshot().user?.id !== user.id) { router.push("/auth/sign-in"); return; }
@@ -40,13 +40,13 @@ export function usePhoneCall() {
     setCalling(true);
     const stillCurrent = () => getAuthSnapshot().user?.id === user.id && useSipAccountStore.getState().account === account;
     try {
-      const id = await makeCall(target, false);
+      const id = await makeCall(target, video);
       if (!stillCurrent()) return;
       if (!id) {
         Alert.alert("Call could not start", "The call ended before it connected. Please try again.");
         return;
       }
-      router.push({ pathname: "/call/active", params: { callId: id, number: target, type: "voice" } });
+      router.push({ pathname: video ? "/call/video" : "/call/active", params: { callId: id, number: target, type: video ? "video" : "voice" } });
     } catch {
       if (!stillCurrent()) return;
       Alert.alert("Call could not start", "Check your connection and try again. Your call history will show calls that actually started.");

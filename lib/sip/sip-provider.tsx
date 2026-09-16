@@ -9,6 +9,7 @@ import { AppState, Platform } from "react-native";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { createRegistrationLifecycle } from "./registration-lifecycle";
 import { createVoipEnrollmentLifecycle } from "../push/enrollment-lifecycle";
+import { getVideoBridge } from "./video-runtime";
 import { sipEngine } from "./engine";
 import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
@@ -214,7 +215,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     },
     answerCall: async (id, video) => {
       const systemAnswer = Platform.OS === "ios" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix";
-      if (systemAnswer && video) throw new Error("Siprix iOS voice trial does not support video calls");
+
       const owner = getAuthSnapshot().user;
       const incoming = useSipCallStore.getState().incomingCall;
       // Initialization can cross a logout or a replacement call with a reused native ID.
@@ -233,7 +234,23 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       await ensureNativeStackInitialized();
       if (systemAnswer) {
         if (!stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
-        await nativeCallManager.answerIncomingCall(id);
+        const videoBridge = video ? await getVideoBridge() : null;
+        if (video) {
+          const bridge = videoBridge;
+          if (!bridge) throw new Error("Video requires a Phone11 update.");
+          if (!await bridge.requestCameraPermission()) throw new Error("Camera permission is required.");
+          if (!stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
+          await bridge.prepareVideoAnswer(id);
+          if (!stillThisIncomingCall()) {
+            await bridge.cancelVideoAnswer(id).catch(() => undefined);
+            throw new Error("This incoming call is no longer available.");
+          }
+        }
+        try { await nativeCallManager.answerIncomingCall(id); }
+        catch (error) {
+          if (videoBridge) await videoBridge.cancelVideoAnswer(id).catch(() => undefined);
+          throw error;
+        }
         return;
       }
       await sipEngine.answerCall(id, video);

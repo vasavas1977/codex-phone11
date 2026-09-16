@@ -1,3 +1,4 @@
+import { getVideoBridge } from "./video-runtime";
 import { NativeEventEmitter, NativeModules, Platform } from "react-native";
 import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { useSipAccountStore, type SipAccount } from "./account-store";
@@ -27,7 +28,7 @@ function nativeCall(call: SiprixCall) {
     getId: () => call.callId,
     getState: () => storeStates[call.state],
     getRemoteUri: () => call.remoteUri,
-    getInfo: () => ({ state: storeStates[call.state], remoteUri: call.remoteUri, historyId: call.historyId, startedAt: call.startedAt, answeredAt: call.answeredAt }),
+    getInfo: () => ({ state: storeStates[call.state], remoteUri: call.remoteUri, historyId: call.historyId, startedAt: call.startedAt, answeredAt: call.answeredAt, hasVideo: call.hasVideo, cameraMuted: (call as SiprixCall & { cameraMuted?: boolean }).cameraMuted, videoOffered: (call as SiprixCall & { videoOffered?: boolean }).videoOffered }),
     xferReplaces: async () => { throw unsupported("attended transfer"); },
   };
 }
@@ -282,7 +283,7 @@ export class SiprixEngine {
       this.registration(event.account);
     } else if (event.type === "callTransferred" && "call" in event) {
       this.transferOutcome(event.call);
-    } else if (["callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted"].includes(event.type) && "call" in event) {
+    } else if (["callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted", "callVideoChanged"].includes(event.type) && "call" in event) {
       this.applyCall(event.call, event.type === "callConnected");
     } else if (event.type === "network" && "networkState" in event && event.networkState === 0) {
       this.networkLost = true;
@@ -360,7 +361,7 @@ export class SiprixEngine {
     if (call.accountId !== this.session?.accountId || !call.callId || !(call.state in storeStates)) return;
     if (call.state === "terminated") { this.endCall(call.callId); return; }
     if (this.terminated.has(call.callId)) return;
-    if (call.hasVideo || (this.calls.size > 0 && !this.calls.has(call.callId))) {
+    if (this.calls.size > 0 && !this.calls.has(call.callId)) {
       void this.bridge?.hangupCall(call.callId).catch(() => this.failure("reject unsupported call"));
       return;
     }
@@ -393,7 +394,6 @@ export class SiprixEngine {
   }
 
   makeCall(destination: string, video = false): Promise<string | null> {
-    if (video) return Promise.reject(unsupported("video calls"));
     const revision = this.revision;
     return this.serialize(async () => {
       if (revision !== this.revision) throw new Error("Siprix phone session changed");
@@ -404,7 +404,12 @@ export class SiprixEngine {
       if (!target || /[\r\n\s]/.test(target)) throw new Error("Invalid SIP destination");
       const uri = /^sips?:/i.test(target) ? target : `sip:${target}@${session.account.domain}`;
       try {
-        const call = await this.bridge!.makeCall(session.accountId!, uri);
+        const videoBridge = video ? await getVideoBridge() : null;
+        if (video && !videoBridge) throw unsupported("video calls in this installed build");
+        if (!this.current(session)) throw new Error("Your phone session changed");
+        if (videoBridge && !await videoBridge.requestCameraPermission()) throw new Error("Allow camera access in Settings to make a video call");
+        if (!this.current(session)) throw new Error("Your phone session changed");
+        const call = videoBridge ? await videoBridge.makeVideoCall(session.accountId!, uri) : await this.bridge!.makeCall(session.accountId!, uri);
         if (!this.current(session)) return null;
         // Delegate events can precede Promise resolution, including remote termination.
         if (this.terminated.has(call.callId)) return null;
@@ -488,6 +493,25 @@ export class SiprixEngine {
       });
     });
   }
+  setCameraMuted(callId: string, muted: boolean): Promise<void> {
+    return this.command(callId, "camera mute", async () => {
+      const session = this.requireSession();
+      const bridge = await getVideoBridge();
+      if (!this.current(session)) throw new Error("Your phone session changed");
+      if (!bridge || !this.calls.get(callId)?.hasVideo) throw unsupported("camera controls");
+      await bridge.setCameraMuted(callId, muted);
+    });
+  }
+  switchCamera(callId: string): Promise<void> {
+    return this.command(callId, "camera switch", async () => {
+      const session = this.requireSession();
+      const bridge = await getVideoBridge();
+      if (!this.current(session)) throw new Error("Your phone session changed");
+      if (!bridge || !this.calls.get(callId)?.hasVideo) throw unsupported("camera controls");
+      await bridge.switchCamera(callId);
+    });
+  }
+
   setHold(callId: string, held: boolean): Promise<void> {
     return this.command(callId, "hold", bridge => bridge.setHold(callId, held));
   }
