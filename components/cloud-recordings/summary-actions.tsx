@@ -59,7 +59,41 @@ const safeTranslationErrors = new Set([
   "Translation needs Gemini setup. Ask a Phone11 administrator to configure it.",
   "Translation returned an incomplete result. Please try again.",
   "Translation service could not complete this request. Please try again.",
+  "Translation took too long. Please try again.",
 ]);
+
+// The server applies its own provider deadline. This shorter client-side
+// boundary also releases the picker when a mobile network loses the mutation
+// response, so a single language cannot appear to translate indefinitely.
+export const translationAttemptTimeoutMs = 35_000;
+
+export class TranslationAttemptTimeoutError extends Error {
+  constructor() {
+    super("Translation took too long. Please try again.");
+  }
+}
+
+export function withTranslationDeadline<T>(
+  operation: Promise<T>,
+  timeoutMs = translationAttemptTimeoutMs,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new TranslationAttemptTimeoutError()),
+      timeoutMs,
+    );
+    operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
 
 function translationErrorMessage(error: unknown) {
   const message =
@@ -1029,7 +1063,7 @@ export function RecordingSummaryActions({
     setTranslationError(undefined);
     setTranslationErrorLanguage(undefined);
     try {
-      const result = await onTranslate(language);
+      const result = await withTranslationDeadline(onTranslate(language));
       if (generation.current !== revision) return;
       setTranslations((current) => ({ ...current, [language]: result }));
       setSelectedLanguage(language);

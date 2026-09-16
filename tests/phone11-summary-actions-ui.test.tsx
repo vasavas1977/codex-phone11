@@ -71,7 +71,11 @@ vi.mock("react-native", () => ({
   },
 }));
 
-import { SummaryActionsView } from "../components/cloud-recordings/summary-actions";
+import {
+  SummaryActionsView,
+  TranslationAttemptTimeoutError,
+  withTranslationDeadline,
+} from "../components/cloud-recordings/summary-actions";
 
 const colors = {
   foreground: "#111",
@@ -239,4 +243,10 @@ it("marks only the failed language as retryable", () => {
   });
   expect(html.match(/Could not translate/gu)).toHaveLength(1);
   expect(html.match(/>Retry</gu)).toHaveLength(1);
+});
+
+it("bounds a lost translation response so the selected language can be retried", async () => {
+  await expect(
+    withTranslationDeadline(new Promise<never>(() => undefined), 1),
+  ).rejects.toBeInstanceOf(TranslationAttemptTimeoutError);
 });
