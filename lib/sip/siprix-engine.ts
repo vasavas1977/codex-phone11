@@ -409,6 +409,7 @@ export class SiprixEngine {
         if (!this.current(session)) throw new Error("Your phone session changed");
         if (videoBridge && !await videoBridge.requestCameraPermission()) throw new Error("Allow camera access in Settings to make a video call");
         if (!this.current(session)) throw new Error("Your phone session changed");
+        if (this.calls.size) throw new Error("Another call arrived while camera permission was pending");
         const call = videoBridge ? await videoBridge.makeVideoCall(session.accountId!, uri) : await this.bridge!.makeCall(session.accountId!, uri);
         if (!this.current(session)) return null;
         // Delegate events can precede Promise resolution, including remote termination.
@@ -493,23 +494,24 @@ export class SiprixEngine {
       });
     });
   }
+  private async videoCommand(callId: string, operation: "camera mute" | "camera switch", invoke: (bridge: NonNullable<Awaited<ReturnType<typeof getVideoBridge>>>) => Promise<void>): Promise<void> {
+    // Capability discovery and camera SDK promises must never block the voice
+    // command queue: the user must be able to hang up during a stuck camera call.
+    const session = this.requireSession();
+    const bridge = await getVideoBridge();
+    if (!this.current(session)) throw new Error("Your phone session changed");
+    const call = this.calls.get(callId);
+    if (!bridge || !call?.hasVideo || call.state !== "connected" || call.held) throw unsupported("camera controls");
+    try {
+      await invoke(bridge);
+      if (!this.current(session) || !this.calls.has(callId)) throw new Error("Your phone session changed");
+    } catch (error) { throw this.failure(operation, error); }
+  }
   setCameraMuted(callId: string, muted: boolean): Promise<void> {
-    return this.command(callId, "camera mute", async () => {
-      const session = this.requireSession();
-      const bridge = await getVideoBridge();
-      if (!this.current(session)) throw new Error("Your phone session changed");
-      if (!bridge || !this.calls.get(callId)?.hasVideo) throw unsupported("camera controls");
-      await bridge.setCameraMuted(callId, muted);
-    });
+    return this.videoCommand(callId, "camera mute", bridge => bridge.setCameraMuted(callId, muted));
   }
   switchCamera(callId: string): Promise<void> {
-    return this.command(callId, "camera switch", async () => {
-      const session = this.requireSession();
-      const bridge = await getVideoBridge();
-      if (!this.current(session)) throw new Error("Your phone session changed");
-      if (!bridge || !this.calls.get(callId)?.hasVideo) throw unsupported("camera controls");
-      await bridge.switchCamera(callId);
-    });
+    return this.videoCommand(callId, "camera switch", bridge => bridge.switchCamera(callId));
   }
 
   setHold(callId: string, held: boolean): Promise<void> {

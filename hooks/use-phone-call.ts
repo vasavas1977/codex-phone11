@@ -29,7 +29,7 @@ export function usePhoneCall() {
     }
     const current = resolveCurrentCall(useSipCallStore.getState());
     if (current) {
-      router.push({ pathname: current.status === "incoming" ? "/call/incoming" : "/call/active", params: { callId: current.id } });
+      router.push({ pathname: current.status === "incoming" ? "/call/incoming" : current.isVideo ? "/call/video" : "/call/active", params: { callId: current.id } });
       return;
     }
     if (registrationState !== "registered") {

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import {
   Alert,
+  ActivityIndicator,
   Pressable,
   StyleSheet,
   Text,
@@ -46,6 +47,24 @@ export default function VideoCallScreen() {
   const { setMute, setSpeaker, hangupCall } = useSip();
   const lock = useRef(false);
   const [busy, setBusy] = useState(false);
+  const endingLock = useRef(false);
+  const [ending, setEnding] = useState(false);
+  const endCall = async () => {
+    if (!call || endingLock.current) return;
+    endingLock.current = true;
+    setEnding(true);
+    try {
+      await hangupCall(call.id);
+    } catch {
+      Alert.alert(
+        "Could not end call",
+        "The call may still be connected. Please try End call again.",
+      );
+    } finally {
+      endingLock.current = false;
+      setEnding(false);
+    }
+  };
   const run = async (action: () => Promise<void>) => {
     if (lock.current) return;
     lock.current = true;
@@ -62,6 +81,16 @@ export default function VideoCallScreen() {
       setBusy(false);
     }
   };
+  if (available === null)
+    return (
+      <View style={[styles.root, styles.empty]}>
+        <ActivityIndicator
+          color="white"
+          accessibilityLabel="Checking video support"
+        />
+        <Text style={styles.body}>Checking video support…</Text>
+      </View>
+    );
   if (!available)
     return (
       <FeatureUnavailable
@@ -169,7 +198,18 @@ export default function VideoCallScreen() {
                 () => siprixEngine.switchCamera(call.id),
                 !!connected && !call.cameraMuted,
               )}
-            {control("End call", () => hangupCall(call.id), true, true)}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="End call"
+              accessibilityState={{ disabled: ending, busy: ending }}
+              disabled={ending}
+              onPress={endCall}
+              style={[styles.button, styles.end, ending && styles.disabled]}
+            >
+              <Text style={styles.buttonText}>
+                {ending ? "Ending…" : "End call"}
+              </Text>
+            </Pressable>
           </View>
         </>
       ) : params.callId ? (

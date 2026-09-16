@@ -157,6 +157,44 @@ describe("Siprix native adapter", () => {
     expect(useSipCallStore.getState().activeCalls["11"]).toBeUndefined();
   });
 
+  it("keeps hangup available while a native camera operation is pending", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const camera = deferred<void>();
+    const setCameraMuted = vi.fn(() => camera.promise);
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission: async () => true, makeVideoCall: async () => newCall(),
+      prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(), setCameraMuted, switchCamera: vi.fn(),
+    };
+    await ready(); await engine.makeCall("2002", true);
+    emit({ type: "callConnected", call: { ...newCall({ state: "connected" }), hasVideo: true, cameraMuted: false } });
+    const pending = engine.setCameraMuted("11", true);
+    await vi.waitFor(() => expect(setCameraMuted).toHaveBeenCalled());
+    await engine.hangupCall("11");
+    expect(bridge.hangupCall).toHaveBeenCalledWith("11");
+    camera.resolve(); await pending;
+  });
+
+  it("does not dial over an incoming call received during camera permission", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const permission = deferred<boolean>();
+    const requestCameraPermission = vi.fn(() => permission.promise);
+    const makeVideoCall = vi.fn();
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission, makeVideoCall, prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(),
+      setCameraMuted: vi.fn(), switchCamera: vi.fn(),
+    };
+    await ready();
+    const pending = engine.makeCall("2002", true);
+    await vi.waitFor(() => expect(requestCameraPermission).toHaveBeenCalled());
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    permission.resolve(true);
+    await expect(pending).rejects.toThrow();
+    expect(makeVideoCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().incomingCall?.id).toBe("11");
+  });
+
   it("does not start a call after camera permission is denied", async () => {
     vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
     const makeVideoCall = vi.fn();

@@ -29,7 +29,7 @@ export function CurrentCallBanner() {
   const belongsToCurrentCall = (action: EndAction | null) => !!action && action.owner === owner && sameCall(action.call, call);
   const ending = belongsToCurrentCall(endingAction);
   const incoming = call.status === "incoming";
-  const currentPath = incoming ? "/call/incoming" : "/call/active";
+  const currentPath = incoming ? "/call/incoming" : call.isVideo ? "/call/video" : "/call/active";
   if (path === currentPath && displayedCall?.id === call.id) return null;
   const current = () => {
     if (!owner || getAuthSnapshot().user !== owner) return null;
@@ -55,7 +55,7 @@ export function CurrentCallBanner() {
       <Pressable style={styles.details} accessibilityRole="button" accessibilityLabel="Return to current call"
         onPress={() => {
           const live = current();
-          if (live) router.push({ pathname: live.status === "incoming" ? "/call/incoming" : "/call/active", params: { callId: live.id, number: live.remoteNumber, type: "voice" } });
+          if (live) router.push({ pathname: live.status === "incoming" ? "/call/incoming" : live.isVideo ? "/call/video" : "/call/active", params: { callId: live.id, number: live.remoteNumber, type: live.isVideo ? "video" : "voice" } });
         }}>
         <Text style={styles.title}>{incoming ? "Incoming call" : "Call in progress"}</Text>
         <Text numberOfLines={1} style={styles.number}>{call.remoteName || call.remoteNumber}</Text>
