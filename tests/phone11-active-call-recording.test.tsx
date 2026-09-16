@@ -92,7 +92,10 @@ it("shows stop only after server grants it and reports genuine recording status"
 it("shows durable finalization without exposing stale Stop or unavailable copy", () => {
   mocks.detail.detail.recordingStatus = "recording";
   mocks.detail.detail.recordingFinalizing = true;
-  mocks.detail.detail.manualControls = { canStart: false, canStop: false };
+  // The runtime capability check is deliberately stale here. The durable
+  // record marker wins, so a user cannot submit Stop twice while the PBX
+  // flushes the authenticated capture.
+  mocks.detail.detail.manualControls = { canStart: false, canStop: true };
   const html = render();
   expect(html).toContain("Saving recording");
   expect(html).not.toContain("Stop recording");

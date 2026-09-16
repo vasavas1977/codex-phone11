@@ -470,6 +470,18 @@ it("shows manual controls only when server explicitly permits them", () => {
   expect(html).toContain("Start recording");
   expect(html).not.toContain("Stop recording");
 });
+it("hides a stale stop action once durable finalization has started", () => {
+  mocks.cloud.detail = {
+    ...item,
+    recordingStatus: "recording",
+    recordingFinalizing: true,
+    summaryStatus: "off",
+    manualControls: { canStart: false, canStop: true },
+  };
+  const html = renderToStaticMarkup(createElement(Detail));
+  expect(html).toContain("Saving recording");
+  expect(html).not.toContain("Stop recording");
+});
 it("manual capture sends only exact UUID and drops a result after account change", async () => {
   let resolve!: (value: any) => void;
   mocks.start.mockImplementation(
