@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   beginDirectoryRefresh,
+  clearDirectory,
   failDirectoryRefresh,
 } from "../lib/phone/directory-sync";
 import type { DirectoryState } from "../lib/phone/directory-sync";
@@ -32,5 +33,16 @@ describe("tenant directory refresh", () => {
     expect(beginDirectoryRefresh(authorized, 11, 4).people).toEqual([]);
     expect(beginDirectoryRefresh(authorized, 10, 5).workspace).toBeNull();
     expect(failDirectoryRefresh(authorized, 11, 4).people).toEqual([]);
+  });
+
+  it("clears the snapshot when the Team directory is no longer in use", () => {
+    // The hook applies this empty state while the Contacts tab is on the
+    // private device-contact source. It prevents an old team snapshot from
+    // remaining visible or being refreshed without an explicit Team choice.
+    const disabled = clearDirectory();
+    expect(disabled.people).toEqual([]);
+    expect(disabled.workspace).toBeNull();
+    expect(disabled.owner).toBeNull();
+    expect(disabled).not.toBe(authorized);
   });
 });

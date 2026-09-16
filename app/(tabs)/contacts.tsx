@@ -21,7 +21,9 @@ export default function ContactsScreen() {
   const [source, setSource] = useState<"device" | "team">("device");
   const [query, setQuery] = useState("");
   const [tenantId, setTenantId] = useState<number>();
-  const directory = useDirectory(tenantId);
+  // Local address-book access is separate from the tenant directory. Do not
+  // request or retain team data until the user explicitly opens Team.
+  const directory = useDirectory(tenantId, source === "team");
   const people = useMemo(
     () => filterDirectory(directory.people, query),
     [directory.people, query],

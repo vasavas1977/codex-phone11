@@ -19,6 +19,11 @@ export const emptyDirectoryState: DirectoryState = {
   error: null,
 };
 
+/** Discard a directory when its explicit Team source is no longer selected. */
+export function clearDirectory(): DirectoryState {
+  return { ...emptyDirectoryState };
+}
+
 /**
  * Keep an already-authorized workspace directory on screen while it refreshes.
  * A contact list belongs to exactly one account/workspace scope, so switching

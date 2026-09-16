@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   openMessage: vi.fn(async () => "channel-1"),
   push: vi.fn(),
   alert: vi.fn(),
+  directoryCalls: [] as unknown[][],
 }));
 vi.mock("react", async (original) => {
   const actual = await original<typeof import("react")>();
@@ -86,7 +87,10 @@ vi.mock("../hooks/use-colors", () => ({
   }),
 }));
 vi.mock("../hooks/use-directory", () => ({
-  useDirectory: () => mocks.directory,
+  useDirectory: (...args: unknown[]) => {
+    mocks.directoryCalls.push(args);
+    return mocks.directory;
+  },
   openDirectConversation: mocks.openMessage,
 }));
 vi.mock("../hooks/use-phone-call", () => ({
@@ -106,6 +110,7 @@ import ContactDetailScreen from "../app/contacts/[id]";
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.press.clear();
+  mocks.directoryCalls = [];
   mocks.source = "device";
   mocks.device = {
     permission: "unknown",
@@ -143,6 +148,14 @@ it("lists real contacts without simulated presence or demo people", () => {
     pathname: "/contacts/[id]",
     params: { id: 5, tenantId: 1 },
   });
+});
+
+it("does not activate the tenant directory until Team is selected", () => {
+  renderToStaticMarkup(<ContactsScreen />);
+  expect(mocks.directoryCalls.at(-1)).toEqual([undefined, false]);
+  mocks.press.get("Team")!();
+  renderToStaticMarkup(<ContactsScreen />);
+  expect(mocks.directoryCalls.at(-1)).toEqual([undefined, true]);
 });
 it("distinguishes signed-out, empty and failed directory states", () => {
   selectTeam();

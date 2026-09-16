@@ -7,6 +7,7 @@ import {
 } from "@/lib/phone/directory";
 import {
   beginDirectoryRefresh,
+  clearDirectory,
   emptyDirectoryState as empty,
   failDirectoryRefresh,
   type DirectoryState,
@@ -17,7 +18,7 @@ export type { DirectoryState } from "@/lib/phone/directory-sync";
 let client: ReturnType<typeof createTRPCClient> | null = null;
 const api = () => (client ??= createTRPCClient()).chat;
 /** No persistent/shared directory cache: an old owner's response cannot reach the next account. */
-export function useDirectory(tenantId?: number) {
+export function useDirectory(tenantId?: number, enabled = true) {
   const { user } = useAuth({ autoFetch: false });
   const owner = user?.id ?? null;
   const [state, setState] = useState<DirectoryState>(empty);
@@ -29,8 +30,11 @@ export function useDirectory(tenantId?: number) {
   }, []);
   const reload = useCallback(async () => {
     const revision = ++generation.current;
-    if (!owner) {
-      replaceState(empty);
+    // Do not enumerate an enterprise directory while the user is viewing only
+    // private device contacts. Disabling also discards any prior in-memory
+    // directory snapshot instead of leaving coworker data on an unrelated tab.
+    if (!enabled || !owner) {
+      replaceState(clearDirectory());
       return;
     }
     replaceState(beginDirectoryRefresh(stateRef.current, owner, tenantId));
@@ -59,7 +63,7 @@ export function useDirectory(tenantId?: number) {
       if (current())
         replaceState(failDirectoryRefresh(stateRef.current, owner, tenantId));
     }
-  }, [owner, replaceState, tenantId]);
+  }, [enabled, owner, replaceState, tenantId]);
   useEffect(() => {
     void reload();
     return () => {
@@ -67,10 +71,10 @@ export function useDirectory(tenantId?: number) {
     };
   }, [reload]);
   const visible =
-    state.owner === owner && state.requestedTenant === tenantId
+    enabled && state.owner === owner && state.requestedTenant === tenantId
       ? state
-      : { ...empty, loading: Boolean(owner) };
-  return { ...visible, signedIn: Boolean(owner), reload };
+      : { ...empty, loading: Boolean(enabled && owner) };
+  return { ...visible, signedIn: Boolean(enabled && owner), reload };
 }
 
 export async function openDirectConversation(
