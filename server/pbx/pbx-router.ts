@@ -67,6 +67,36 @@ async function requireDidRouteTarget(routeType: AssignableDidRouteType, routeId:
   }
 }
 
+type SqlQuery = (sql: string, parameters: unknown[]) => Promise<{ rows: unknown[] }>;
+
+/**
+ * An extension can only be assigned to an active member of the same workspace.
+ *
+ * User IDs are global, so extension ownership alone does not establish that the
+ * assignee belongs to the active tenant. Keep this check beside every write
+ * path to prevent an administrator from accidentally assigning an extension to
+ * a person in another workspace.
+ */
+async function requireAssignableTenantMember(
+  execute: SqlQuery,
+  userId: number,
+  tenantId: number,
+) {
+  const result = await execute(
+    `SELECT 1 FROM tenant_memberships
+     WHERE user_id = $1 AND tenant_id = $2 AND status = 'active'
+     LIMIT 1`,
+    [userId, tenantId],
+  );
+
+  if (result.rows.length !== 1) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "The selected person is not an active member of this workspace",
+    });
+  }
+}
+
 // ============================================================================
 // PBX Router
 // ============================================================================
@@ -208,7 +238,7 @@ export const pbxRouter = router({
         extensionNumber: z.string().min(2).max(10),
         displayName: z.string().optional(),
         type: z.enum(["user", "shared", "queue", "ivr", "ring_group", "voicemail", "parking"]).default("user"),
-        userId: z.number().optional(),
+        userId: z.number().int().positive().optional(),
         callerIdName: z.string().optional(),
         callerIdNumber: z.string().optional(),
         transport: z.string().default("UDP"),
@@ -218,6 +248,14 @@ export const pbxRouter = router({
         if (!hasRole(tc.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
 
         return withTransaction(async (client) => {
+          if (input.userId !== undefined) {
+            await requireAssignableTenantMember(
+              (sql, parameters) => client.query(sql, parameters),
+              input.userId,
+              tc.tenantId,
+            );
+          }
+
           // Check uniqueness
           const existing = await client.query(
             `SELECT id FROM extensions WHERE tenant_id = $1 AND extension_number = $2 AND deleted_at IS NULL`,
@@ -291,7 +329,7 @@ export const pbxRouter = router({
         callerIdName: z.string().optional(),
         callerIdNumber: z.string().optional(),
         status: z.enum(["active", "suspended", "disabled"]).optional(),
-        userId: z.number().nullable().optional(),
+        userId: z.number().int().positive().nullable().optional(),
         dndEnabled: z.boolean().optional(),
         callForwardingEnabled: z.boolean().optional(),
         cfuDestination: z.string().nullable().optional(),
@@ -303,6 +341,13 @@ export const pbxRouter = router({
         const tc = await getTenantAdminCtx(ctx);
         if (!await validateTenantOwnership("extensions", input.id, tc.tenantId)) {
           throw new TRPCError({ code: "NOT_FOUND" });
+        }
+        if (input.userId !== undefined && input.userId !== null) {
+          await requireAssignableTenantMember(
+            (sql, parameters) => query(sql, parameters as any[]),
+            input.userId,
+            tc.tenantId,
+          );
         }
 
         // Get old values for audit

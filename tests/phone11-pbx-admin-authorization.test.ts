@@ -108,6 +108,75 @@ describe("PBX workspace administrator authorization", () => {
     expect(source).not.toContain("adminProcedure");
     expect(source.match(/await getTenantAdminCtx\(ctx/g)).toHaveLength(14);
   });
+
+  it("rejects creating an extension for a person outside the active workspace", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context("user")).extensions.create({
+        extensionNumber: "3101",
+        userId: 88,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(db.query.mock.calls[1]).toEqual([
+      expect.stringContaining("FROM tenant_memberships"),
+      [88, 7],
+    ]);
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        String(sql).includes("INSERT INTO extensions"),
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects assigning an existing extension to a person outside the active workspace", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context("user")).extensions.update({
+        id: 44,
+        userId: 88,
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    expect(db.query.mock.calls[2]).toEqual([
+      expect.stringContaining("FROM tenant_memberships"),
+      [88, 7],
+    ]);
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        String(sql).includes("UPDATE extensions"),
+      ),
+    ).toBe(false);
+  });
+
+  it("allows assigning an existing extension to an active workspace member", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [{ exists: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 44, tenant_id: 7 }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context("user")).extensions.update({
+        id: 44,
+        userId: 88,
+      }),
+    ).resolves.toEqual({ success: true });
+
+    expect(db.query.mock.calls[2]).toEqual([
+      expect.stringContaining("FROM tenant_memberships"),
+      [88, 7],
+    ]);
+    expect(db.query.mock.calls[4][0]).toContain("UPDATE extensions");
+  });
 });
 
 describe("DID route assignment", () => {
