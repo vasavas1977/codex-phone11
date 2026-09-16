@@ -1,4 +1,22 @@
 /** Serialize route setup and reject late work after pause, blur, sign-out, or a call. */
+export function safePause(player: { pause(): void }) {
+  try {
+    player.pause();
+    return true;
+  } catch {
+    // expo-audio releases the native shared object before React focus cleanup.
+    return false;
+  }
+}
+
+export function safeReplace(player: { replace(source: null): void }) {
+  try {
+    player.replace(null);
+  } catch {
+    // Clearing a released player is best effort during lifecycle cleanup.
+  }
+}
+
 export function createPlaybackController<Route>(options: {
   player: {
     play(): void;
@@ -47,13 +65,13 @@ export function createPlaybackController<Route>(options: {
     pause() {
       generation++;
       pending = false;
-      options.player.pause();
+      if (!safePause(options.player) && alive) options.failed();
     },
     dispose() {
       alive = false;
       generation++;
       pending = false;
-      options.player.pause();
+      safePause(options.player);
     },
   };
 }

@@ -209,10 +209,10 @@ export function nameSummaryParticipants(
 }
 
 export function nameCallSummaryParticipants(
-  summary: CallSummary | undefined,
+  summary: unknown,
   names: TranscriptSpeakerNames = {},
 ): CallSummary | undefined {
-  if (!summary) return undefined;
+  if (!isCallSummary(summary)) return undefined;
   return {
     ...summary,
     summary: nameSummaryParticipants(summary.summary, names),
@@ -220,4 +220,23 @@ export function nameCallSummaryParticipants(
       nameSummaryParticipants(item, names),
     ),
   };
+}
+
+function isCallSummary(value: unknown): value is CallSummary {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.summary !== "string") return false;
+  if (!Array.isArray(candidate.actionItems)) return false;
+  for (let index = 0; index < candidate.actionItems.length; index += 1) {
+    if (
+      !(index in candidate.actionItems) ||
+      typeof candidate.actionItems[index] !== "string"
+    )
+      return false;
+  }
+  return (
+    candidate.language === undefined || typeof candidate.language === "string"
+  );
 }

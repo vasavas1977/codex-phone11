@@ -138,4 +138,17 @@ describe("Phone11 transcript speaker labels", () => {
       language: "en",
     });
   });
+
+  it("returns no summary for malformed payloads instead of throwing", () => {
+    expect(
+      nameCallSummaryParticipants({ summary: null, actionItems: [] }),
+    ).toBeUndefined();
+    expect(
+      nameCallSummaryParticipants({ summary: "Recap", actionItems: null }),
+    ).toBeUndefined();
+    expect(
+      nameCallSummaryParticipants({ summary: "Recap", actionItems: [42] }),
+    ).toBeUndefined();
+    expect(nameCallSummaryParticipants(null)).toBeUndefined();
+  });
 });

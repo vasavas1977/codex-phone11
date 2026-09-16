@@ -71,3 +71,26 @@ it("does not play when the platform route adapter refuses the change", async () 
   expect(playback.player.play).not.toHaveBeenCalled();
   expect(playback.failed).not.toHaveBeenCalled();
 });
+
+it("reports a user initiated play failure", async () => {
+  const playback = setup();
+  playback.player.play.mockImplementationOnce(() => {
+    throw new Error("native play failed");
+  });
+
+  await playback.controller.play("earpiece", false);
+
+  expect(playback.failed).toHaveBeenCalledOnce();
+});
+
+it("reports an active pause failure while keeping disposal safe", () => {
+  const playback = setup();
+  playback.player.pause.mockImplementation(() => {
+    throw new Error("native shared object released");
+  });
+
+  expect(() => playback.controller.pause()).not.toThrow();
+  expect(playback.failed).toHaveBeenCalledOnce();
+  expect(() => playback.controller.dispose()).not.toThrow();
+  expect(playback.failed).toHaveBeenCalledOnce();
+});

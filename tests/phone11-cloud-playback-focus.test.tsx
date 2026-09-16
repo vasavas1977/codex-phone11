@@ -144,6 +144,8 @@ beforeEach(() => {
   m.status.playbackState = "ready";
   m.player.volume = 1;
   m.player.muted = false;
+  m.player.pause.mockImplementation(() => {});
+  m.player.replace.mockImplementation(() => {});
   m.player.seekTo.mockResolvedValue(undefined);
   m.nativeRoute.getPlaybackAudioRoute.mockResolvedValue({
     route: "earpiece",
@@ -183,6 +185,27 @@ it("revokes playback authorization before clearing a failed source", () => {
   revokePlaybackAuthorization(authorization, player, setReady, setError);
   expect(player.pause).toHaveBeenCalledOnce();
   expect(player.replace).toHaveBeenCalledWith(null);
+  expect(setReady).toHaveBeenCalledWith(false);
+  expect(setError).toHaveBeenCalledWith(true);
+});
+
+it("tolerates an expo-audio player released before focus cleanup", () => {
+  const authorization = { current: true };
+  const player = {
+    pause: vi.fn(() => {
+      throw new Error("native shared object released");
+    }),
+    replace: vi.fn(() => {
+      throw new Error("native shared object released");
+    }),
+  };
+  const setReady = vi.fn();
+  const setError = vi.fn();
+
+  expect(() =>
+    revokePlaybackAuthorization(authorization, player, setReady, setError),
+  ).not.toThrow();
+  expect(authorization.current).toBe(false);
   expect(setReady).toHaveBeenCalledWith(false);
   expect(setError).toHaveBeenCalledWith(true);
 });
@@ -385,6 +408,33 @@ it("fails closed when a playback seek is rejected", async () => {
   await m.controls.onSeek(15);
   expect(m.player.replace).toHaveBeenLastCalledWith(null);
   blur();
+});
+
+it("fails closed when a released player throws synchronously on seek", async () => {
+  m.player.seekTo.mockImplementationOnce(() => {
+    throw new Error("native shared object released");
+  });
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(() => m.controls.onSeek(15)).not.toThrow();
+  expect(m.player.replace).toHaveBeenLastCalledWith(null);
+  blur();
+});
+
+it("does not throw when the native player is released before blur cleanup", async () => {
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  m.player.pause.mockImplementation(() => {
+    throw new Error("native shared object released");
+  });
+  m.player.replace.mockImplementation(() => {
+    throw new Error("native shared object released");
+  });
+  expect(() => blur()).not.toThrow();
 });
 it("a mounted screen loads only on focus and clears audio on blur without autoplaying on return", async () => {
   renderToStaticMarkup(createElement(Playback, props));

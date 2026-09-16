@@ -17,7 +17,11 @@ import {
   type PlaybackAudioRouteStatus,
 } from "@/lib/cloud-recordings/playback-route";
 import { PlaybackControls } from "./playback-controls";
-import { createPlaybackController } from "@/lib/cloud-recordings/playback-controller";
+import {
+  createPlaybackController,
+  safePause,
+  safeReplace,
+} from "@/lib/cloud-recordings/playback-controller";
 import { shareAuthenticatedRecording } from "@/lib/cloud-recordings/recording-share";
 const earpieceOutput: PlaybackAudioRouteStatus = {
   route: "earpiece",
@@ -36,8 +40,8 @@ export function revokePlaybackAuthorization(
   setError: (failed: boolean) => void,
 ) {
   authorization.current = false;
-  player.pause();
-  player.replace(null);
+  safePause(player);
+  safeReplace(player);
   setReady(false);
   setError(true);
 }
@@ -100,7 +104,7 @@ export function Playback({
         !playbackAuthorized.current ||
         callBusy()
       ) {
-        player.pause();
+        safePause(player);
         return false;
       }
       const operation = Symbol("route");
@@ -141,7 +145,7 @@ export function Playback({
           focusGeneration.current === generation &&
           routeIntent.current === intent
         ) {
-          player.pause();
+          safePause(player);
           setRouteError(
             callBusy()
               ? "Playback stopped because a call is active."
@@ -311,8 +315,15 @@ export function Playback({
         );
       }}
       onSeek={(seconds) => {
-        if (!callBusy())
-          return player.seekTo(seconds).catch(() => failPlayback());
+        if (!callBusy()) {
+          try {
+            return Promise.resolve(player.seekTo(seconds)).catch(() =>
+              failPlayback(),
+            );
+          } catch {
+            failPlayback();
+          }
+        }
       }}
       onScrubStart={() => {
         resumeAfterScrub.current = status.playing;
