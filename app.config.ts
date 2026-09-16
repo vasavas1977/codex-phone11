@@ -78,6 +78,7 @@ const config: ExpoConfig = {
       Phone11ChatNotificationsCommissioned: chatNotificationsEnabled ? 1 : 0,
       ITSAppUsesNonExemptEncryption: false,
       NSMicrophoneUsageDescription: "Allow Phone11 to access your microphone for voice and video calls.",
+      NSCameraUsageDescription: "Allow Phone11 to use your camera when you choose a video call.",
       UIBackgroundModes: ["audio", "voip", "remote-notification"],
     },
   },
