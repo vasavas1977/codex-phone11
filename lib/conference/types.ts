@@ -42,6 +42,10 @@ export interface ConferenceConfig {
 export interface Conference {
   id: string;
   name: string;
+  canManage?: boolean;
+  joinAvailable?: boolean;
+  isLocked?: boolean;
+  mediaMode?: "audio" | "video-mcu";
   type: ConferenceType;
   state: ConferenceState;
   bridgeNumber: string;
