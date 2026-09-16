@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS phone11_meeting_admission_rooms (
   state TEXT NOT NULL DEFAULT 'scheduled' CHECK (state IN ('scheduled', 'open', 'ended')),
   lobby_mode TEXT NOT NULL DEFAULT 'required' CHECK (lobby_mode IN ('disabled', 'required')),
   consent_policy_version VARCHAR(128) NOT NULL,
-  recording_announcement_version VARCHAR(128) NOT NULL,
+  meeting_notice_version VARCHAR(128) NOT NULL,
   revision UUID NOT NULL,
   ended_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS phone11_meeting_admission_members (
   meeting_id UUID NOT NULL,
   tenant_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL REFERENCES users(id),
-  participant_id VARCHAR(96) NOT NULL,
+  participant_id VARCHAR(96) NOT NULL CHECK (participant_id ~ '^[A-Za-z0-9_-]+$'),
   role TEXT NOT NULL CHECK (role IN ('host', 'cohost', 'member', 'guest')),
   grant_profile TEXT NOT NULL CHECK (grant_profile IN ('interactive', 'listener')),
   listen_language VARCHAR(2) NOT NULL CHECK (listen_language IN ('th', 'en', 'zh', 'ja', 'ko', 'fr', 'de', 'es')),
@@ -43,8 +43,9 @@ CREATE INDEX IF NOT EXISTS phone11_meeting_admission_members_lookup
   ON phone11_meeting_admission_members(tenant_id, user_id, meeting_id)
   WHERE revoked_at IS NULL;
 
--- Each receipt is pinned to both the server-generated participant identity and
--- the recording announcement acknowledged by that participant.
+-- Each interpreter receipt is pinned to both the server-generated participant
+-- identity and the meeting notice acknowledged by that participant. Recording
+-- remains a separate consent/session contract.
 CREATE TABLE IF NOT EXISTS phone11_meeting_consent_receipts (
   id UUID PRIMARY KEY,
   meeting_id UUID NOT NULL,
@@ -53,12 +54,13 @@ CREATE TABLE IF NOT EXISTS phone11_meeting_consent_receipts (
   participant_id VARCHAR(96) NOT NULL,
   purpose TEXT NOT NULL CHECK (purpose IN ('live_interpretation')),
   policy_version VARCHAR(128) NOT NULL,
-  announcement_version VARCHAR(128) NOT NULL,
+  meeting_notice_version VARCHAR(128) NOT NULL,
   accepted_at TIMESTAMPTZ NOT NULL,
   announcement_acknowledged_at TIMESTAMPTZ NOT NULL,
+  withdrawn_at TIMESTAMPTZ,
   receipt_revision UUID NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-  UNIQUE (meeting_id, user_id, participant_id, purpose, policy_version, announcement_version),
+  UNIQUE (meeting_id, user_id, participant_id, purpose, policy_version, meeting_notice_version),
   FOREIGN KEY (meeting_id, tenant_id, user_id)
     REFERENCES phone11_meeting_admission_members(meeting_id, tenant_id, user_id) ON DELETE CASCADE
 );

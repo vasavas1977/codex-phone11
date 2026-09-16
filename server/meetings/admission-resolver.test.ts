@@ -7,12 +7,12 @@ import { createMeetingAdmissionRepository, createPostgresReadOnlyTransaction } f
 
 const grant = { meetingId: "12345678-1234-4234-8234-123456789012", tenantId: 41, userId: 7 };
 const row = {
-  meeting_id: grant.meetingId, tenant_id: 41, user_id: 7, participant_id: "phone11:41:7",
+  meeting_id: grant.meetingId, tenant_id: 41, user_id: 7, participant_id: "participant_41_7",
   role: "member", grant_profile: "interactive", listen_language: "th",
   room_revision: "22345678-1234-4234-8234-123456789012",
   member_revision: "32345678-1234-4234-8234-123456789012",
   consent_policy_version: "phone11-conference-consent.v1",
-  recording_announcement_version: "recording-announcement.v1",
+  meeting_notice_version: "meeting-notice.v1",
   accepted_at: new Date("2026-09-16T00:00:00.000Z"),
   announcement_acknowledged_at: new Date("2026-09-16T00:00:01.000Z"),
 };
@@ -24,14 +24,16 @@ describe("meeting admission resolver", () => {
     const resolver = createMeetingAdmissionResolver(transaction, createMeetingAdmissionRepository(), () => new Date("2026-09-16T00:05:00.000Z"));
 
     await expect(resolver.resolve(grant)).resolves.toEqual({
-      meetingId: grant.meetingId, participantId: "phone11:41:7", grantProfile: "interactive", listenLanguage: "th",
+      meetingId: grant.meetingId, participantId: "participant_41_7", grantProfile: "interactive", listenLanguage: "th",
       consent: { accepted: true, purpose: "live_interpretation", policyVersion: "phone11-conference-consent.v1", assertedAt: "2026-09-16T00:05:00.000Z" },
     });
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(query.mock.calls[0][1]).toEqual([grant.meetingId, grant.tenantId, grant.userId]);
     expect(query.mock.calls[0][0]).toContain("m.revoked_at IS NULL");
     expect(query.mock.calls[0][0]).toContain("m.lobby_state = 'admitted'");
-    expect(query.mock.calls[0][0]).toContain("c.announcement_version = r.recording_announcement_version");
+    expect(query.mock.calls[0][0]).toContain("tm.status = 'active'");
+    expect(query.mock.calls[0][0]).toContain("c.meeting_notice_version = r.meeting_notice_version");
+    expect(query.mock.calls[0][0]).toContain("c.withdrawn_at IS NULL");
   });
 
   it("fails closed before a database read for malformed grants", async () => {
@@ -42,7 +44,7 @@ describe("meeting admission resolver", () => {
   });
 
   it("fails closed for revoked, waiting, malformed, or absent durable records", async () => {
-    for (const result of [{ rows: [] }, { rows: [{ ...row, grant_profile: "admin" }] }]) {
+    for (const result of [{ rows: [] }, { rows: [{ ...row, grant_profile: "admin" }] }, { rows: [{ ...row, participant_id: "display name" }] }]) {
       const transaction = vi.fn(async (fn) => fn({ query: vi.fn().mockResolvedValue(result) }));
       await expect(createMeetingAdmissionResolver(transaction).resolve(grant)).rejects.toBeInstanceOf(MeetingAdmissionUnavailableError);
     }

@@ -5,14 +5,14 @@ const admissionRowSchema = z.object({
   meeting_id: z.string().uuid(),
   tenant_id: z.coerce.number().int().positive(),
   user_id: z.coerce.number().int().positive(),
-  participant_id: z.string().min(1).max(96),
+  participant_id: z.string().regex(/^[A-Za-z0-9_-]{1,96}$/),
   role: z.enum(["host", "cohost", "member", "guest"]),
   grant_profile: z.enum(["interactive", "listener"]),
   listen_language: z.enum(["th", "en", "zh", "ja", "ko", "fr", "de", "es"]),
   room_revision: z.string().uuid(),
   member_revision: z.string().uuid(),
   consent_policy_version: z.string().min(1).max(128),
-  recording_announcement_version: z.string().min(1).max(128),
+  meeting_notice_version: z.string().min(1).max(128),
   accepted_at: z.coerce.date(),
   announcement_acknowledged_at: z.coerce.date(),
 }).strict();
@@ -35,10 +35,12 @@ export function createMeetingAdmissionRepository() {
         `SELECT r.id AS meeting_id, r.tenant_id, m.user_id, m.participant_id,
                 m.role, m.grant_profile, m.listen_language,
                 r.revision AS room_revision, m.revision AS member_revision,
-                r.consent_policy_version, r.recording_announcement_version,
+                r.consent_policy_version, r.meeting_notice_version,
                 c.accepted_at, c.announcement_acknowledged_at
            FROM phone11_meeting_admission_rooms r
            JOIN tenants t ON t.id = r.tenant_id AND t.status = 'active'
+           JOIN tenant_memberships tm
+             ON tm.tenant_id = r.tenant_id AND tm.user_id = $3 AND tm.status = 'active'
            JOIN phone11_meeting_admission_members m
              ON m.meeting_id = r.id AND m.tenant_id = r.tenant_id
            JOIN phone11_meeting_consent_receipts c
@@ -46,7 +48,8 @@ export function createMeetingAdmissionRepository() {
             AND c.user_id = m.user_id AND c.participant_id = m.participant_id
             AND c.purpose = 'live_interpretation' AND c.accepted_at IS NOT NULL
             AND c.policy_version = r.consent_policy_version
-            AND c.announcement_version = r.recording_announcement_version
+            AND c.meeting_notice_version = r.meeting_notice_version
+            AND c.withdrawn_at IS NULL
           WHERE r.id = $1 AND r.tenant_id = $2 AND m.user_id = $3
             AND r.state = 'open' AND r.ended_at IS NULL
             AND m.revoked_at IS NULL AND m.lobby_state = 'admitted'`,
