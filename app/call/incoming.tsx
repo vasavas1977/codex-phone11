@@ -51,8 +51,13 @@ export default function IncomingCallScreen() {
   const [connectionDelayed, setConnectionDelayed] = useState(false);
   const deadline = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ringing = incomingCall?.status === "incoming";
-  const identity = incomingCall?.history?.id ?? incomingCall?.startTime?.getTime() ?? incomingCall;
-  const settled = !incomingCall || ["active", "held", "disconnected"].includes(incomingCall.status);
+  const identity =
+    incomingCall?.history?.id ??
+    incomingCall?.startTime?.getTime() ??
+    incomingCall;
+  const settled =
+    !incomingCall ||
+    ["active", "held", "disconnected"].includes(incomingCall.status);
   const clearDeadline = () => {
     if (deadline.current !== null) clearTimeout(deadline.current);
     deadline.current = null;
@@ -60,7 +65,8 @@ export default function IncomingCallScreen() {
   const currentOwnedCall = () => {
     if (!owner || getAuthSnapshot().user !== owner || !callId) return null;
     const live = resolveCurrentCall(useSipCallStore.getState(), callId);
-    const liveIdentity = live?.history?.id ?? live?.startTime?.getTime() ?? live;
+    const liveIdentity =
+      live?.history?.id ?? live?.startTime?.getTime() ?? live;
     return liveIdentity === identity ? live : null;
   };
   const stillRinging = () => currentOwnedCall()?.status === "incoming";
@@ -68,16 +74,26 @@ export default function IncomingCallScreen() {
   const armDeadline = (action: Action) => {
     clearDeadline();
     if (action.deadlineAt === undefined) return;
-    deadline.current = setTimeout(() => {
-      deadline.current = null;
-      const live = currentOwnedCall();
-      if (pending.current !== action || !live || !["incoming", "connecting"].includes(live.status)) return;
-      setConnectionDelayed(true);
-      useSipDiagnosticsStore.getState().addEvent({
-        level: "warning", category: "call", message: "Incoming connection still pending after Answer",
-        context: { hasCall: true },
-      });
-    }, Math.max(0, action.deadlineAt - Date.now()));
+    deadline.current = setTimeout(
+      () => {
+        deadline.current = null;
+        const live = currentOwnedCall();
+        if (
+          pending.current !== action ||
+          !live ||
+          !["incoming", "connecting"].includes(live.status)
+        )
+          return;
+        setConnectionDelayed(true);
+        useSipDiagnosticsStore.getState().addEvent({
+          level: "warning",
+          category: "call",
+          message: "Incoming connection still pending after Answer",
+          context: { hasCall: true },
+        });
+      },
+      Math.max(0, action.deadlineAt - Date.now()),
+    );
   };
 
   useEffect(() => {
@@ -112,7 +128,8 @@ export default function IncomingCallScreen() {
 
   useEffect(() => {
     if (
-      callId && pending.current?.kind !== "decline" &&
+      callId &&
+      pending.current?.kind !== "decline" &&
       (incomingCall?.status === "active" || incomingCall?.status === "held")
     ) {
       router.replace({
@@ -125,7 +142,9 @@ export default function IncomingCallScreen() {
   const handleAccept = async (video = false) => {
     const eligible = !!callId && !pending.current && stillRinging();
     useSipDiagnosticsStore.getState().addEvent({
-      level: "info", category: "call", message: "Incoming Answer tapped",
+      level: "info",
+      category: "call",
+      message: "Incoming Answer tapped",
       context: { eligible, pending: !!pending.current, hasCall: !!callId },
     });
     if (!eligible || !callId) return;
@@ -217,7 +236,11 @@ export default function IncomingCallScreen() {
       >
         {/* Caller Info */}
         <View style={styles.callerSection}>
-          <Text style={styles.incomingLabel}>
+          <Text
+            accessibilityRole="status"
+            accessibilityLiveRegion="polite"
+            style={styles.incomingLabel}
+          >
             {ringing
               ? "Incoming Call"
               : incomingCall
@@ -231,7 +254,13 @@ export default function IncomingCallScreen() {
               {callerName.charAt(0).toUpperCase()}
             </Text>
           </View>
-          <Text style={styles.callerName}>{callerName}</Text>
+          <Text
+            accessibilityRole="header"
+            accessibilityLabel={`Incoming call from ${callerName}`}
+            style={styles.callerName}
+          >
+            {callerName}
+          </Text>
           <Text style={[styles.callerNumber, { color: "#ffffff80" }]}>
             {callerNumber}
           </Text>
@@ -252,6 +281,10 @@ export default function IncomingCallScreen() {
                     ? "End call"
                     : "Close ended call"
               }
+              accessibilityState={{
+                disabled: operation === "decline",
+                busy: operation === "decline",
+              }}
               disabled={operation === "decline"}
               style={[styles.actionBtn, { backgroundColor: colors.error }]}
               onPress={handleDecline}
@@ -287,12 +320,31 @@ export default function IncomingCallScreen() {
               <IconSymbol name="phone.fill" size={30} color="#fff" />
             </TouchableOpacity>
             <Text style={styles.actionLabel}>
-              {operation === "answer" ? connectionDelayed ? "Not connected" : "Answering…" : "Answer"}
+              {operation === "answer"
+                ? connectionDelayed
+                  ? "Not connected"
+                  : "Answering…"
+                : "Answer"}
             </Text>
           </View>
         </View>
 
-        {videoAvailable && incomingCall?.videoOffered && ringing && <TouchableOpacity accessibilityRole="button" disabled={operation !== null} onPress={() => handleAccept(true)} style={{ padding: 16, alignItems: "center" }}><Text style={{ color: "white", fontWeight: "600" }}>Answer with video</Text></TouchableOpacity>}
+        {videoAvailable && incomingCall?.videoOffered && ringing && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Answer call with video"
+            accessibilityHint="Answers this incoming call and enables video"
+            accessibilityState={{
+              disabled: operation !== null,
+              busy: operation === "answer",
+            }}
+            disabled={operation !== null}
+            onPress={() => handleAccept(true)}
+            style={styles.videoAnswerButton}
+          >
+            <Text style={styles.videoAnswerLabel}>Answer with video</Text>
+          </TouchableOpacity>
+        )}
         {incomingCall && !settled && (
           <Text style={[styles.hint, { color: "#ffffff80" }]}>
             {operation === "decline"
@@ -360,6 +412,8 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#fff",
     marginTop: 8,
+    paddingHorizontal: 24,
+    textAlign: "center",
   },
   callerNumber: {
     fontSize: 16,
@@ -391,7 +445,16 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
     fontWeight: "500",
+    textAlign: "center",
   },
+  videoAnswerButton: {
+    minHeight: 44,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoAnswerLabel: { color: "white", fontWeight: "600" },
   hint: {
     textAlign: "center",
     fontSize: 13,

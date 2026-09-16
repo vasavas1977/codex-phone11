@@ -111,8 +111,14 @@ export default function ActiveCallScreen() {
   };
   const handleMute = () => {
     useSipDiagnosticsStore.getState().addEvent({
-      level: "info", category: "media", message: "In-app microphone control tapped",
-      context: { ...(callId && /^\d{1,10}$/.test(callId) ? { callId } : {}), muted: !muted, controlsReady },
+      level: "info",
+      category: "media",
+      message: "In-app microphone control tapped",
+      context: {
+        ...(callId && /^\d{1,10}$/.test(callId) ? { callId } : {}),
+        muted: !muted,
+        controlsReady,
+      },
     });
     return callId && control(() => setMute(callId, !muted));
   };
@@ -163,8 +169,16 @@ export default function ActiveCallScreen() {
               {remoteNumber.charAt(0).toUpperCase()}
             </Text>
           </View>
-          <Text style={styles.callerName}>{remoteNumber}</Text>
           <Text
+            accessibilityRole="header"
+            accessibilityLabel={`Call with ${remoteNumber}`}
+            style={styles.callerName}
+          >
+            {remoteNumber}
+          </Text>
+          <Text
+            accessibilityRole="status"
+            accessibilityLiveRegion="polite"
             style={[
               styles.callStatus,
               { color: held ? colors.warning : colors.success },
@@ -174,7 +188,22 @@ export default function ActiveCallScreen() {
           </Text>
         </View>
 
-        {call?.isVideo && <TouchableOpacity accessibilityRole="button" onPress={() => router.replace({ pathname: "/call/video", params: { callId: call.id } })} style={{ padding: 20 }}><Text style={{ color: "white", fontSize: 17 }}>Open video</Text></TouchableOpacity>}
+        {call?.isVideo && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Open video call"
+            accessibilityHint="Opens the video controls for this call"
+            onPress={() =>
+              router.replace({
+                pathname: "/call/video",
+                params: { callId: call.id },
+              })
+            }
+            style={styles.openVideoButton}
+          >
+            <Text style={styles.openVideoLabel}>Open video</Text>
+          </TouchableOpacity>
+        )}
         {/* Keypad overlay */}
         {showKeypad && controlsReady && (
           <View style={styles.keypadOverlay}>
@@ -199,93 +228,94 @@ export default function ActiveCallScreen() {
         )}
       </ScrollView>
 
-        {/* Keep microphone controls outside the moving recording/scroll area. */}
-        <View style={styles.controls}>
-          <View style={styles.controlRow}>
-            <TouchableOpacity
-              style={[
-                styles.controlBtn,
-                muted && { backgroundColor: colors.primary + "40" },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={
-                muted ? "Unmute microphone" : "Mute microphone"
-              }
-              disabled={!controlsReady}
-              onPress={handleMute}
-            >
-              <IconSymbol
-                name={muted ? "mic.slash.fill" : "mic.fill"}
-                size={24}
-                color={muted ? colors.primary : "#fff"}
-              />
-              <Text style={styles.controlLabel}>
-                {muted ? "Unmute" : "Mute"}
-              </Text>
-            </TouchableOpacity>
+      {/* Keep microphone controls outside the moving recording/scroll area. */}
+      <View style={styles.controls}>
+        <View style={styles.controlRow}>
+          <TouchableOpacity
+            style={[
+              styles.controlBtn,
+              muted && { backgroundColor: colors.primary + "40" },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={muted ? "Unmute microphone" : "Mute microphone"}
+            accessibilityState={{ disabled: !controlsReady, selected: muted }}
+            disabled={!controlsReady}
+            onPress={handleMute}
+          >
+            <IconSymbol
+              name={muted ? "mic.slash.fill" : "mic.fill"}
+              size={24}
+              color={muted ? colors.primary : "#fff"}
+            />
+            <Text style={styles.controlLabel}>{muted ? "Unmute" : "Mute"}</Text>
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.controlBtn,
-                held && { backgroundColor: colors.warning + "40" },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={held ? "Resume call" : "Hold call"}
-              disabled={!controlsReady}
-              onPress={handleHold}
-            >
-              <IconSymbol
-                name="pause.fill"
-                size={24}
-                color={held ? colors.warning : "#fff"}
-              />
-              <Text style={styles.controlLabel}>
-                {held ? "Resume" : "Hold"}
-              </Text>
-            </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.controlBtn,
+              held && { backgroundColor: colors.warning + "40" },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={held ? "Resume call" : "Hold call"}
+            accessibilityState={{ disabled: !controlsReady, selected: held }}
+            disabled={!controlsReady}
+            onPress={handleHold}
+          >
+            <IconSymbol
+              name="pause.fill"
+              size={24}
+              color={held ? colors.warning : "#fff"}
+            />
+            <Text style={styles.controlLabel}>{held ? "Resume" : "Hold"}</Text>
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.controlBtn,
-                speaker && { backgroundColor: colors.primary + "40" },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel={speaker ? "Use earpiece" : "Use speaker"}
-              disabled={!controlsReady}
-              onPress={handleSpeaker}
-            >
-              <IconSymbol
-                name={speaker ? "speaker.wave.3.fill" : "speaker.slash.fill"}
-                size={24}
-                color={speaker ? colors.primary : "#fff"}
-              />
-              <Text style={styles.controlLabel}>Speaker</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.controlRow}>
-            <TouchableOpacity
-              style={[
-                styles.controlBtn,
-                showKeypad && { backgroundColor: colors.primary + "40" },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Show call keypad"
-              disabled={!controlsReady}
-              onPress={() => {
-                setShowKeypad(!showKeypad);
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              }}
-            >
-              <IconSymbol
-                name="rectangle.grid.3x2.fill"
-                size={24}
-                color={showKeypad ? colors.primary : "#fff"}
-              />
-              <Text style={styles.controlLabel}>Keypad</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={[
+              styles.controlBtn,
+              speaker && { backgroundColor: colors.primary + "40" },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={speaker ? "Use earpiece" : "Use speaker"}
+            accessibilityState={{ disabled: !controlsReady, selected: speaker }}
+            disabled={!controlsReady}
+            onPress={handleSpeaker}
+          >
+            <IconSymbol
+              name={speaker ? "speaker.wave.3.fill" : "speaker.slash.fill"}
+              size={24}
+              color={speaker ? colors.primary : "#fff"}
+            />
+            <Text style={styles.controlLabel}>Speaker</Text>
+          </TouchableOpacity>
         </View>
+
+        <View style={styles.controlRow}>
+          <TouchableOpacity
+            style={[
+              styles.controlBtn,
+              showKeypad && { backgroundColor: colors.primary + "40" },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Show call keypad"
+            accessibilityState={{
+              disabled: !controlsReady,
+              expanded: showKeypad,
+            }}
+            disabled={!controlsReady}
+            onPress={() => {
+              setShowKeypad(!showKeypad);
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            }}
+          >
+            <IconSymbol
+              name="rectangle.grid.3x2.fill"
+              size={24}
+              color={showKeypad ? colors.primary : "#fff"}
+            />
+            <Text style={styles.controlLabel}>Keypad</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {/* Essential controls stay visible while call details and recording scroll. */}
       <View style={styles.endFooter}>
@@ -313,7 +343,14 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  minimizeButton: { minHeight: 48, paddingHorizontal: 24, paddingVertical: 8, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  minimizeButton: {
+    minHeight: 48,
+    paddingHorizontal: 24,
+    paddingVertical: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   minimizeLabel: { color: "#FFFFFF", fontSize: 17, fontWeight: "600" },
   minimizeHint: { color: "#B4BAC6", fontSize: 13 },
   scroll: { flex: 1 },
@@ -350,6 +387,14 @@ const styles = StyleSheet.create({
   keypadOverlay: {
     paddingHorizontal: 32,
   },
+  openVideoButton: {
+    minHeight: 44,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  openVideoLabel: { color: "white", fontSize: 17, fontWeight: "600" },
   keypadGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
