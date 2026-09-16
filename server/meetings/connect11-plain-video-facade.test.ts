@@ -85,6 +85,16 @@ describe("Connect11 plain video facade", () => {
     ).toThrow("unavailable");
   });
 
+  it("does not mint when readiness contradicts an isolation failure", async () => {
+    const request = responses({
+      ...capability,
+      unavailable_reasons: ["issuer_isolation_unverified"],
+    }, token);
+    await expect(createConnect11PlainVideoFacade(config, request).admit(admission))
+      .rejects.toThrow("unavailable");
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("does not expose malformed configuration or transport failures", async () => {
     expect(() =>
       createConnect11PlainVideoFacade({ ...config, baseUrl: "not a URL" }),

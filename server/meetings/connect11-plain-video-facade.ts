@@ -139,6 +139,7 @@ export function createConnect11PlainVideoFacade(
       const status = await capabilities();
       if (
         !status.available ||
+        status.unavailable_reasons.length !== 0 ||
         !status.grant_profiles.includes(admission.grantProfile)
       )
         throw unavailable();
