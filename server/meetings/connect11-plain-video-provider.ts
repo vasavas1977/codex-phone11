@@ -1,3 +1,4 @@
+import type { Connect11PlainVideoToken } from "./connect11-plain-video-facade";
 import type { MeetingGrant, MeetingProvider } from "./service";
 
 export type TrustedConnect11PlainVideoAdmission = {
@@ -11,10 +12,9 @@ export interface Connect11PlainVideoAdmissionResolver {
 }
 
 export interface Connect11PlainVideoAdmissionClient {
-  admit(admission: TrustedConnect11PlainVideoAdmission): Promise<{
-    rtc_url: string;
-    access_token: string;
-  }>;
+  admit(
+    admission: TrustedConnect11PlainVideoAdmission,
+  ): Promise<Connect11PlainVideoToken>;
 }
 
 /**
@@ -30,7 +30,12 @@ export function createConnect11PlainVideoProvider(
     async join(grant) {
       const admission = await resolver.resolve(grant);
       const token = await client.admit(admission);
-      return { url: token.rtc_url, token: token.access_token };
+      return {
+        url: token.rtc_url,
+        token: token.access_token,
+        contract_version: token.contract_version,
+        expires_at: token.expires_at,
+      };
     },
   };
 }

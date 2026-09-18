@@ -13,13 +13,24 @@ const admission = {
   participantId: "member_7_8",
   grantProfile: "interactive" as const,
 };
+const facadeToken = {
+  contract_version: "phone11-plain-video.v1" as const,
+  rtc_url: "wss://media.example",
+  access_token: "token",
+  expires_at: Math.floor(Date.now() / 1000) + 300,
+};
 
 describe("Connect11 plain video provider", () => {
   it("passes only a trusted admission to the media facade", async () => {
     const resolve = vi.fn().mockResolvedValue(admission);
-    const admit = vi.fn().mockResolvedValue({ rtc_url: "wss://media.example", access_token: "token" });
+    const admit = vi.fn().mockResolvedValue(facadeToken);
     const provider = createConnect11PlainVideoProvider({ admit }, { resolve });
-    await expect(provider.join(grant)).resolves.toEqual({ url: "wss://media.example", token: "token" });
+    await expect(provider.join(grant)).resolves.toEqual({
+      url: "wss://media.example",
+      token: "token",
+      contract_version: "phone11-plain-video.v1",
+      expires_at: facadeToken.expires_at,
+    });
     expect(resolve).toHaveBeenCalledWith(grant);
     expect(admit).toHaveBeenCalledWith(admission);
   });

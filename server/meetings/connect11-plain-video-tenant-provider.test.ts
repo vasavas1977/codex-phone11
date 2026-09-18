@@ -6,6 +6,7 @@ import {
   readConnect11PlainVideoTenantConfiguration,
 } from "./connect11-plain-video-tenant-provider";
 import type { Connect11PlainVideoTenantExternalConfig } from "./connect11-plain-video-tenant-provider";
+import { createConnect11PlainVideoFacade } from "./connect11-plain-video-facade";
 
 const firstGrant = {
   meetingId: "12345678-1234-4234-8234-123456789012",
@@ -40,6 +41,15 @@ const externalConfiguration = {
   ],
 };
 
+const capabilities = {
+  contract_version: "phone11-plain-video.v1",
+  available: true,
+  unavailable_reasons: [],
+  grant_profiles: ["interactive", "listener"],
+  token_ttl_seconds: 300,
+  interpreter: { enabled: false, dispatch: "none", status: "not_applicable" },
+};
+
 function admissionFor(grant = firstGrant) {
   return {
     meetingId: grant.meetingId,
@@ -60,8 +70,10 @@ function providerFor(
   const admit =
     options.admit ??
     vi.fn().mockResolvedValue({
+      contract_version: "phone11-plain-video.v1",
       rtc_url: "wss://media-41.connect11.example/join",
       access_token: "short-lived-synthetic-token",
+      expires_at: Math.floor(Date.now() / 1000) + 300,
     });
   const create = options.create ?? vi.fn().mockReturnValue({ admit });
   const configuration = readConnect11PlainVideoTenantConfiguration(
@@ -99,8 +111,10 @@ describe("Connect11 plain-video tenant provider", () => {
       return admissionFor();
     });
     const admit = vi.fn(async () => ({
+      contract_version: "phone11-plain-video.v1" as const,
       rtc_url: "wss://media-41.connect11.example/join",
       access_token: "short-lived-synthetic-token",
+      expires_at: Math.floor(Date.now() / 1000) + 300,
     }));
     const create = vi.fn((config: Connect11PlainVideoTenantExternalConfig) => {
       calls.push(`config:${config.tenantId}`);
@@ -111,6 +125,8 @@ describe("Connect11 plain-video tenant provider", () => {
     await expect(provider.join(firstGrant)).resolves.toEqual({
       url: "wss://media-41.connect11.example/join",
       token: "short-lived-synthetic-token",
+      contract_version: "phone11-plain-video.v1",
+      expires_at: expect.any(Number),
     });
     expect(calls).toEqual(["admission", "config:41"]);
     expect(create).toHaveBeenCalledWith(
@@ -220,8 +236,10 @@ describe("Connect11 plain-video tenant provider", () => {
   it("rejects a cross-tenant RTC endpoint and malformed trusted admission before exposing a token", async () => {
     const wrongRtc = providerFor({
       admit: vi.fn().mockResolvedValue({
+        contract_version: "phone11-plain-video.v1",
         rtc_url: "wss://media-42.connect11.example/join",
         access_token: "short-lived-synthetic-token",
+        expires_at: Math.floor(Date.now() / 1000) + 300,
       }),
     });
     await expect(wrongRtc.provider.join(firstGrant)).rejects.toBeInstanceOf(
@@ -240,5 +258,112 @@ describe("Connect11 plain-video tenant provider", () => {
       malformedAdmission.provider.join(firstGrant),
     ).rejects.toBeInstanceOf(PlainVideoTenantProviderUnavailableError);
     expect(malformedAdmission.create).not.toHaveBeenCalled();
+  });
+
+  it("uses the actual facade contract and preserves its version and expiry", async () => {
+    const expiresAt = Math.floor(Date.now() / 1000) + 300;
+    const request = vi
+      .fn()
+      .mockImplementationOnce(async () => new Response(JSON.stringify(capabilities)))
+      .mockImplementationOnce(
+        async () =>
+          new Response(
+            JSON.stringify({
+              contract_version: "phone11-plain-video.v1",
+              rtc_url: "wss://media-41.connect11.example/join",
+              access_token: "short-lived-synthetic-token",
+              expires_at: expiresAt,
+            }),
+          ),
+      );
+    const create = vi.fn((config: Connect11PlainVideoTenantExternalConfig) =>
+      createConnect11PlainVideoFacade(
+        {
+          baseUrl: config.apiBaseUrl,
+          statusCredential: config.statusCredential,
+          joinCredential: config.joinCredential,
+        },
+        request,
+      ),
+    );
+    const resolve = vi.fn().mockResolvedValue(admissionFor());
+    const provider = createConnect11PlainVideoTenantProvider(
+      readConnect11PlainVideoTenantConfiguration(externalConfiguration),
+      { resolve },
+      { create },
+    );
+
+    await expect(provider.join(firstGrant)).resolves.toEqual({
+      url: "wss://media-41.connect11.example/join",
+      token: "short-lived-synthetic-token",
+      contract_version: "phone11-plain-video.v1",
+      expires_at: expiresAt,
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[0][1].headers.authorization).toBe(
+      "Bearer synthetic-status-credential-41",
+    );
+    expect(request.mock.calls[1][1].headers.authorization).toBe(
+      "Bearer synthetic-join-credential-41",
+    );
+    expect(JSON.parse(request.mock.calls[1][1].body)).toEqual({
+      meeting_id: firstGrant.meetingId,
+      participant_id: "participant_41_7",
+      grant_profile: "interactive",
+    });
+  });
+
+  it("rejects duplicate join credentials and facade-contract deviations", async () => {
+    expect(
+      readConnect11PlainVideoTenantConfiguration({
+        ...externalConfiguration,
+        tenants: [
+          externalConfiguration.tenants[0],
+          {
+            ...externalConfiguration.tenants[1],
+            joinCredential: externalConfiguration.tenants[0].joinCredential,
+          },
+        ],
+      }),
+    ).toEqual({ enabled: false });
+
+    for (const malformedToken of [
+      {
+        rtc_url: "wss://media-41.connect11.example/join",
+        access_token: "short-lived-synthetic-token",
+      },
+      {
+        contract_version: "phone11-plain-video.v2",
+        rtc_url: "wss://media-41.connect11.example/join",
+        access_token: "short-lived-synthetic-token",
+        expires_at: Math.floor(Date.now() / 1000) + 300,
+      },
+      {
+        contract_version: "phone11-plain-video.v1",
+        rtc_url: "wss://media-41.connect11.example/join",
+        access_token: "short-lived-synthetic-token",
+        expires_at: Math.floor(Date.now() / 1000) + 300,
+        unexpected: true,
+      },
+      {
+        contract_version: "phone11-plain-video.v1",
+        rtc_url: "wss://media-41.connect11.example/join",
+        access_token: "short-lived-synthetic-token",
+        expires_at: Math.floor(Date.now() / 1000) - 1,
+      },
+      {
+        contract_version: "phone11-plain-video.v1",
+        rtc_url: "wss://media-41.connect11.example/join",
+        access_token: "short-lived-synthetic-token",
+        expires_at: Math.floor(Date.now() / 1000) + 3_600,
+      },
+    ]) {
+      const { provider } = providerFor({
+        admit: vi.fn().mockResolvedValue(malformedToken),
+      });
+      await expect(provider.join(firstGrant)).rejects.toBeInstanceOf(
+        PlainVideoTenantProviderUnavailableError,
+      );
+    }
   });
 });

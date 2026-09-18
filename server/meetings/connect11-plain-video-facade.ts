@@ -29,7 +29,8 @@ const admissionSchema = z
   })
   .strict();
 
-const tokenSchema = z
+/** The exact token contract returned by the plain-video facade. */
+export const connect11PlainVideoTokenSchema = z
   .object({
     contract_version: z.literal(contractVersion),
     rtc_url: z.string().url(),
@@ -40,7 +41,9 @@ const tokenSchema = z
 
 export type Connect11PlainVideoCapabilities = z.infer<typeof capabilitiesSchema>;
 export type Connect11PlainVideoAdmission = z.infer<typeof admissionSchema>;
-export type Connect11PlainVideoToken = z.infer<typeof tokenSchema>;
+export type Connect11PlainVideoToken = z.infer<
+  typeof connect11PlainVideoTokenSchema
+>;
 
 export type Connect11PlainVideoConfig = {
   baseUrl: string;
@@ -143,7 +146,7 @@ export function createConnect11PlainVideoFacade(
         !status.grant_profiles.includes(admission.grantProfile)
       )
         throw unavailable();
-      const parsed = tokenSchema.safeParse(
+      const parsed = connect11PlainVideoTokenSchema.safeParse(
         await call("tokens", config.joinCredential, {
           method: "POST",
           headers: { "content-type": "application/json" },

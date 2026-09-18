@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { connect11PlainVideoTokenSchema } from "./connect11-plain-video-facade";
 import type {
   Connect11PlainVideoAdmissionClient,
   Connect11PlainVideoAdmissionResolver,
@@ -101,15 +102,18 @@ export function readConnect11PlainVideoTenantConfiguration(
 
   const tenantIds = new Set<number>();
   const customerKeys = new Set<string>();
+  const joinCredentials = new Set<string>();
   for (const tenant of parsed.data.tenants) {
     if (
       tenantIds.has(tenant.tenantId) ||
-      customerKeys.has(tenant.customerKey)
+      customerKeys.has(tenant.customerKey) ||
+      joinCredentials.has(tenant.joinCredential)
     ) {
       return { enabled: false };
     }
     tenantIds.add(tenant.tenantId);
     customerKeys.add(tenant.customerKey);
+    joinCredentials.add(tenant.joinCredential);
   }
   return { enabled: true, tenants: parsed.data.tenants };
 }
@@ -130,15 +134,16 @@ const trustedAdmissionSchema = z
   })
   .strict();
 
-const tokenSchema = z
-  .object({
-    rtc_url: z.string().refine((value) => secureUrl(value, "wss:")),
-    access_token: z.string().min(1).max(16_384),
-  })
-  .strict();
-
 function matchingRtcOrigin(actual: string, configured: string): boolean {
   return new URL(actual).origin === new URL(configured).origin;
+}
+
+function validFacadeExpiry(expiresAt: number): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  // Recheck the facade's five-minute token envelope at this composition
+  // boundary. A factory must not be able to turn a stale or long-lived token
+  // into a tenant admission merely by claiming the facade interface.
+  return expiresAt > now && expiresAt <= now + 330;
 }
 
 function trustedAdmissionFor(
@@ -195,16 +200,22 @@ export function createConnect11PlainVideoTenantProvider(
       );
       if (!tenant) throw new PlainVideoTenantProviderUnavailableError();
 
-      const token = tokenSchema.safeParse(
+      const token = connect11PlainVideoTokenSchema.safeParse(
         await clientFactory.create(tenant).admit(admission),
       );
       if (
         !token.success ||
-        !matchingRtcOrigin(token.data.rtc_url, tenant.rtcUrl)
+        !matchingRtcOrigin(token.data.rtc_url, tenant.rtcUrl) ||
+        !validFacadeExpiry(token.data.expires_at)
       ) {
         throw new PlainVideoTenantProviderUnavailableError();
       }
-      return { url: token.data.rtc_url, token: token.data.access_token };
+      return {
+        url: token.data.rtc_url,
+        token: token.data.access_token,
+        contract_version: token.data.contract_version,
+        expires_at: token.data.expires_at,
+      };
     },
   };
 }
