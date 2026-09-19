@@ -36,9 +36,10 @@ describe.skipIf(!connectionString)("Push migration with the actual installed Pho
       CREATE TABLE tenants (id INTEGER PRIMARY KEY, status TEXT);
       CREATE TABLE extensions (id INTEGER PRIMARY KEY, tenant_id INTEGER REFERENCES tenants(id), status TEXT, deleted_at TIMESTAMPTZ);
       CREATE TABLE user_extensions (user_id INTEGER REFERENCES users(id), extension_id INTEGER REFERENCES extensions(id));
+      CREATE TABLE tenant_memberships (user_id INTEGER REFERENCES users(id), tenant_id INTEGER REFERENCES tenants(id), status TEXT, PRIMARY KEY(user_id,tenant_id));
       CREATE TABLE sip_accounts (extension_id INTEGER REFERENCES extensions(id), tenant_id INTEGER REFERENCES tenants(id), sip_username TEXT, sip_domain TEXT, status TEXT, deleted_at TIMESTAMPTZ);
       INSERT INTO users VALUES (1,'synthetic-owner','Synthetic owner','push-schema@example.test','user');
-      INSERT INTO tenants VALUES (10,'active'); INSERT INTO extensions VALUES (1,10,'active',NULL);
+      INSERT INTO tenants VALUES (10,'active'); INSERT INTO tenant_memberships VALUES (1,10,'active'); INSERT INTO extensions VALUES (1,10,'active',NULL);
       INSERT INTO user_extensions VALUES (1,1); INSERT INTO sip_accounts VALUES (1,10,'1001','test.invalid','active',NULL);`);
     await applyAuthMigration(database, config);
     await createExistingUserIdentity(database, { userId: 1, email: "push-schema@example.test", password });

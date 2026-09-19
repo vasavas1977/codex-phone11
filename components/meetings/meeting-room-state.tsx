@@ -9,8 +9,10 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/use-colors";
+import { NativeVideoStage } from "@/components/meetings/native-video-stage";
 import {
   type BrowserMeetingSession,
+  type BrowserRoom,
   type BrowserSessionSnapshot,
   type MeetingParticipant,
 } from "@/lib/meetings/browser-session";
@@ -25,13 +27,19 @@ export interface MeetingRoomCaption {
 export interface MeetingRoomStateProps {
   /** A session created and owned by the authenticated meeting adapter. */
   session?: BrowserMeetingSession;
+  /** Existing native room from NativeMeetingLifecycle; never URL/token input. */
+  nativeRoom?: BrowserRoom;
+  /** Server-derived receive-only membership. */
+  receiveOnly?: boolean;
+  /** Reads the lifecycle interruption flag after its session event re-renders this view. */
+  isSipInterrupted?: () => boolean;
   /** Captions from the authenticated meeting service. No caption data is invented here. */
   captions?: readonly MeetingRoomCaption[];
   roomName?: string;
   unavailableReason?: string;
   onBack: () => void;
-  /** Called after a connected session has been disconnected successfully. */
-  onLeave?: () => void;
+  /** Owns the complete leave sequence when media has extra cleanup requirements. */
+  onLeave?: () => void | Promise<void>;
 }
 
 const unavailableSnapshot: BrowserSessionSnapshot = Object.freeze({
@@ -47,6 +55,7 @@ function statusCopy(
   snapshot: BrowserSessionSnapshot,
   hasSession: boolean,
   unavailableReason?: string,
+  sipInterrupted = false,
 ) {
   if (unavailableReason) return { label: "Unavailable", description: unavailableReason };
   if (!hasSession) {
@@ -54,6 +63,12 @@ function statusCopy(
       label: "Setting up meeting",
       description:
         "This room is still being configured. Media, participants, and captions will appear when a secure meeting session is available.",
+    };
+  }
+  if (sipInterrupted) {
+    return {
+      label: "Meeting paused for Phone call",
+      description: "Meeting microphone, camera, and audio were stopped before your Phone call. Rejoin after the call ends.",
     };
   }
   if (snapshot.status === "connecting") {
@@ -85,6 +100,9 @@ function participantState(participant: MeetingParticipant) {
  */
 export function MeetingRoomState({
   session,
+  nativeRoom,
+  receiveOnly = false,
+  isSipInterrupted,
   captions = [],
   roomName = "Meeting room",
   unavailableReason,
@@ -100,9 +118,10 @@ export function MeetingRoomState({
   const [busyControl, setBusyControl] = useState<"microphone" | "camera" | null>(null);
   const [leaving, setLeaving] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const status = statusCopy(snapshot, Boolean(session), unavailableReason);
+  const sipInterrupted = isSipInterrupted?.() ?? false;
+  const status = statusCopy(snapshot, Boolean(session), unavailableReason, sipInterrupted);
   const localParticipant = snapshot.participants.find((participant) => participant.local);
-  const mediaReady = snapshot.status === "connected" && !!session && !!localParticipant && !leaving;
+  const mediaReady = snapshot.status === "connected" && !!session && !!localParticipant && !leaving && !receiveOnly;
   const participantsByIdentity = useMemo(
     () => new Map(snapshot.participants.map((participant) => [participant.identity, participant.name])),
     [snapshot.participants],
@@ -133,8 +152,8 @@ export function MeetingRoomState({
     setLeaving(true);
     setFeedback(null);
     try {
-      await session.disconnect();
-      onLeave?.();
+      if (onLeave) await onLeave();
+      else await session.disconnect();
     } catch {
       setFeedback("Could not leave the meeting. Please try again.");
     } finally {
@@ -167,11 +186,19 @@ export function MeetingRoomState({
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.stage}>
-          <Text style={styles.stageEyebrow}>Meeting</Text>
-          <Text style={styles.stageTitle}>{status.label}</Text>
-          <Text accessibilityLiveRegion="polite" style={styles.stageDescription}>{status.description}</Text>
-        </View>
+        {nativeRoom ? (
+          <NativeVideoStage
+            room={nativeRoom}
+            reconnecting={snapshot.status === "reconnecting"}
+            receiveOnly={receiveOnly}
+          />
+        ) : (
+          <View style={styles.stage}>
+            <Text style={styles.stageEyebrow}>Meeting</Text>
+            <Text style={styles.stageTitle}>{status.label}</Text>
+            <Text accessibilityLiveRegion="polite" style={styles.stageDescription}>{status.description}</Text>
+          </View>
+        )}
 
         <View style={styles.section}>
           <View style={styles.sectionHeading}>
@@ -221,7 +248,11 @@ export function MeetingRoomState({
 
       <View style={[styles.controls, { borderTopColor: "#FFFFFF1F" }]}>
         <Text style={styles.controlsHint}>
-          {mediaReady ? "Media controls affect only your connection." : "Media controls are unavailable until the meeting is connected."}
+          {receiveOnly
+            ? "Listen-only membership receives shared audio and video. Microphone and camera are unavailable."
+            : sipInterrupted
+              ? "Meeting media was stopped before your Phone call. Rejoin after the call ends."
+              : mediaReady ? "Media controls affect only your connection." : "Media controls are unavailable until the meeting is connected."}
         </Text>
         <View style={styles.controlRow}>
           <Pressable

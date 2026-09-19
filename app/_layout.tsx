@@ -6,7 +6,8 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import "@/lib/_core/nativewind-pressable";
-import { ThemeProvider } from "@/lib/theme-provider";
+import { ThemeProvider, useThemeContext } from "@/lib/theme-provider";
+import { useColors } from "@/hooks/use-colors";
 import {
   SafeAreaProvider,
   initialWindowMetrics,
@@ -27,13 +28,18 @@ SplashScreen.preventAutoHideAsync().catch(() => {
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
-const ROOT_BACKGROUND = "#0D0F14";
 
 export const unstable_settings = {
   anchor: "(tabs)",
 };
 
 export default function RootLayout() {
+  return <ThemeProvider><RootNavigator /></ThemeProvider>;
+}
+
+function RootNavigator() {
+  const colors = useColors();
+  const { colorScheme } = useThemeContext();
   const initialInsets = initialWindowMetrics?.insets ?? DEFAULT_WEB_INSETS;
   const initialFrame = initialWindowMetrics?.frame ?? DEFAULT_WEB_FRAME;
 
@@ -88,7 +94,7 @@ export default function RootLayout() {
   }, [initialInsets, initialFrame]);
 
   const content = (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: ROOT_BACKGROUND }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <SipProvider>
         <trpc.Provider client={trpcClient} queryClient={queryClient}>
           <QueryClientProvider client={queryClient}>
@@ -97,13 +103,13 @@ export default function RootLayout() {
             <ChatNotifications />
             {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
             {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: ROOT_BACKGROUND } }}>
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="auth/sign-in" />
               <Stack.Screen name="oauth/callback" />
             </Stack>
             <CurrentCallBanner />
-            <StatusBar style="light" backgroundColor={ROOT_BACKGROUND} />
+            <StatusBar style={colorScheme === "dark" ? "light" : "dark"} backgroundColor={colors.background} />
           </QueryClientProvider>
         </trpc.Provider>
       </SipProvider>
@@ -111,8 +117,6 @@ export default function RootLayout() {
   );
 
   return (
-    <ThemeProvider>
-      <SafeAreaProvider initialMetrics={providerInitialMetrics}>{content}</SafeAreaProvider>
-    </ThemeProvider>
+    <SafeAreaProvider initialMetrics={providerInitialMetrics}>{content}</SafeAreaProvider>
   );
 }

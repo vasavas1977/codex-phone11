@@ -4,7 +4,7 @@
  * Phone11 Cloud PBX — Milestone 7
  */
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList,
   Alert, TextInput, Modal, ActivityIndicator,
@@ -13,52 +13,215 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { useRingGroups, useCreateRingGroup, useDeleteRingGroup, useTenant } from "@/hooks/use-pbx-admin";
+import {
+  useCreateRingGroup,
+  useDeleteRingGroup,
+  useExtensions,
+  useRingGroup,
+  useRingGroups,
+  useSetRingGroupMembers,
+  useTenant,
+  useUpdateRingGroup,
+} from "@/hooks/use-pbx-admin";
+import {
+  normalizeRingGroupMember,
+  validateRingGroupMembers,
+  type RingGroupMemberDraft,
+} from "@/lib/pbx/ring-group-members";
 
 const STRATEGIES = [
   { value: "simultaneous", label: "Ring All", desc: "Ring all members at once" },
   { value: "sequential", label: "Sequential", desc: "Ring members in order" },
-  { value: "round_robin", label: "Round Robin", desc: "Rotate through members" },
-  { value: "longest_idle", label: "Longest Idle", desc: "Ring least-recently-used" },
-  { value: "random", label: "Random", desc: "Random member selection" },
-];
+] as const;
+
+type RingStrategy = (typeof STRATEGIES)[number]["value"];
+const FALLBACKS = [
+  { value: "hangup", label: "End call" },
+  { value: "voicemail", label: "Voicemail" },
+  { value: "transfer", label: "Extension" },
+  { value: "ivr", label: "IVR" },
+] as const;
+type FallbackAction = (typeof FALLBACKS)[number]["value"];
+
+function isSupportedStrategy(value: string): value is RingStrategy {
+  return STRATEGIES.some((strategy) => strategy.value === value);
+}
+
+function asFallbackAction(value: unknown): FallbackAction {
+  return FALLBACKS.some((fallback) => fallback.value === value)
+    ? (value as FallbackAction)
+    : "hangup";
+}
 
 export default function AdminRingGroups() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
   const ringGroupsQuery = useRingGroups(tenantId);
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
+  const groupDetailQuery = useRingGroup(editingGroupId ?? 0);
+  const [editingSettingsId, setEditingSettingsId] = useState<number | null>(null);
+  const settingsQuery = useRingGroup(editingSettingsId ?? 0);
+  const extensionsQuery = useExtensions(1, 100, editingGroupId !== null && tenantId > 0);
   const createMutation = useCreateRingGroup();
+  const updateMutation = useUpdateRingGroup();
   const deleteMutation = useDeleteRingGroup();
+  const membersMutation = useSetRingGroupMembers();
 
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState("");
   const [newExt, setNewExt] = useState("");
-  const [newStrategy, setNewStrategy] = useState("simultaneous");
+  const [newStrategy, setNewStrategy] = useState<RingStrategy>("simultaneous");
   const [newTimeout, setNewTimeout] = useState("25");
+  const [newFallbackAction, setNewFallbackAction] = useState<FallbackAction>("hangup");
+  const [newFallbackTarget, setNewFallbackTarget] = useState("");
+  const [draftMembers, setDraftMembers] = useState<RingGroupMemberDraft[]>([]);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const initializedEditor = useRef<number | null>(null);
+  const initializedSettings = useRef<number | null>(null);
 
   const groups = ringGroupsQuery.data || [];
+  const extensionRows = (extensionsQuery.data?.data || []) as Array<{
+    id?: number | string;
+    extension_number?: string | null;
+    display_name?: string | null;
+    status?: string | null;
+    deleted_at?: string | null;
+  }>;
+  const availableExtensions = useMemo(() => {
+    const selected = new Set(draftMembers.map((member) => member.extensionId));
+    return extensionRows.filter((extension) =>
+      Number.isSafeInteger(Number(extension.id)) &&
+      extension.extension_number &&
+      extension.status === "active" &&
+      !extension.deleted_at &&
+      !selected.has(Number(extension.id)),
+    );
+  }, [draftMembers, extensionRows]);
 
-  const handleCreate = async () => {
+  useEffect(() => {
+    if (
+      editingGroupId === null ||
+      initializedEditor.current === editingGroupId ||
+      Number(groupDetailQuery.data?.id) !== editingGroupId
+    ) return;
+    setDraftMembers((groupDetailQuery.data.members || []).map(normalizeRingGroupMember));
+    initializedEditor.current = editingGroupId;
+    setMembersError(null);
+  }, [editingGroupId, groupDetailQuery.data]);
+
+  useEffect(() => {
+    if (
+      editingSettingsId === null ||
+      initializedSettings.current === editingSettingsId ||
+      Number(settingsQuery.data?.id) !== editingSettingsId
+    ) return;
+    const group = settingsQuery.data as any;
+    setNewName(group.name || "");
+    setNewExt(group.extension || "");
+    setNewStrategy(isSupportedStrategy(String(group.strategy)) ? group.strategy : "simultaneous");
+    setNewTimeout(String(group.ring_timeout || 25));
+    setNewFallbackAction(asFallbackAction(group.fallback_action));
+    setNewFallbackTarget(group.fallback_target || "");
+    initializedSettings.current = editingSettingsId;
+  }, [editingSettingsId, settingsQuery.data]);
+
+  const openMembers = (groupId: number) => {
+    const normalizedGroupId = Number(groupId);
+    if (!Number.isSafeInteger(normalizedGroupId) || normalizedGroupId < 1) {
+      setMembersError("This ring group has an invalid identifier. Refresh and try again.");
+      return;
+    }
+    setDraftMembers([]);
+    setMembersError(null);
+    initializedEditor.current = null;
+    setEditingGroupId(normalizedGroupId);
+  };
+
+  const closeMembers = () => {
+    if (membersMutation.isPending) return;
+    setEditingGroupId(null);
+    setDraftMembers([]);
+    setMembersError(null);
+    initializedEditor.current = null;
+  };
+
+  const resetSettingsForm = () => {
+    setNewName("");
+    setNewExt("");
+    setNewStrategy("simultaneous");
+    setNewTimeout("25");
+    setNewFallbackAction("hangup");
+    setNewFallbackTarget("");
+  };
+
+  const closeSettings = () => {
+    if (createMutation.isPending || updateMutation.isPending) return;
+    setShowCreate(false);
+    setEditingSettingsId(null);
+    initializedSettings.current = null;
+    resetSettingsForm();
+  };
+
+  const openCreate = () => {
+    resetSettingsForm();
+    setEditingSettingsId(null);
+    setShowCreate(true);
+  };
+
+  const openSettings = (groupId: number) => {
+    if (!Number.isSafeInteger(groupId) || groupId < 1) return;
+    resetSettingsForm();
+    initializedSettings.current = null;
+    setEditingSettingsId(groupId);
+  };
+
+  const saveMembers = async () => {
+    if (editingGroupId === null) return;
+    const validationError = validateRingGroupMembers(draftMembers);
+    if (validationError) {
+      setMembersError(validationError);
+      return;
+    }
+    try {
+      await membersMutation.mutateAsync({
+        ring_group_id: editingGroupId,
+        members: draftMembers.map((member, index) => ({
+          extension_id: member.extensionId,
+          priority: member.priority,
+          delay_seconds: member.delaySeconds,
+          is_active: member.isActive,
+        })),
+      });
+      closeMembers();
+      void Promise.all([groupDetailQuery.refetch(), ringGroupsQuery.refetch()]).catch(() => undefined);
+    } catch (error: any) {
+      setMembersError(error?.message || "Members could not be saved. Your changes are still here; try again.");
+    }
+  };
+
+  const handleSaveSettings = async () => {
     if (!newName.trim()) {
       Alert.alert("Error", "Ring group name is required.");
       return;
     }
     try {
-      await createMutation.mutateAsync({
-        tenant_id: tenantId,
+      const settings = {
         name: newName.trim(),
-        extension: newExt.trim() || undefined,
-        strategy: newStrategy as any,
+        extension: newExt.trim() || null,
+        strategy: newStrategy,
         ring_timeout: parseInt(newTimeout) || 25,
-      });
-      setShowCreate(false);
-      setNewName("");
-      setNewExt("");
-      setNewStrategy("simultaneous");
-      setNewTimeout("25");
+        fallback_action: newFallbackAction,
+        fallback_target: newFallbackAction === "hangup" ? undefined : newFallbackTarget.trim(),
+      };
+      if (editingSettingsId !== null) {
+        await updateMutation.mutateAsync({ id: editingSettingsId, ...settings });
+      } else {
+        await createMutation.mutateAsync({ tenant_id: tenantId, ...settings });
+      }
+      closeSettings();
     } catch (e: any) {
-      Alert.alert("Error", e.message || "Failed to create ring group");
+      Alert.alert("Error", e.message || "Failed to save ring group");
     }
   };
 
@@ -79,9 +242,12 @@ export default function AdminRingGroups() {
     );
   };
 
-  const strategyLabel = (s: string) => STRATEGIES.find(x => x.value === s)?.label || s;
+  const strategyLabel = (strategy: string) =>
+    STRATEGIES.find((item) => item.value === strategy)?.label || `Legacy: ${strategy}`;
 
-  const renderGroup = ({ item }: { item: any }) => (
+  const renderGroup = ({ item }: { item: any }) => {
+    const supportedStrategy = isSupportedStrategy(String(item.strategy));
+    return (
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <View style={styles.cardHeader}>
         <View style={[styles.cardIcon, { backgroundColor: "#10B98115" }]}>
@@ -92,6 +258,11 @@ export default function AdminRingGroups() {
           <Text style={[styles.cardSub, { color: colors.muted }]}>
             Ext: {item.extension || "—"} · {strategyLabel(item.strategy)}
           </Text>
+          {!supportedStrategy ? (
+            <Text style={styles.legacyWarning}>
+              Legacy strategy is not supported by the current call runtime.
+            </Text>
+          ) : null}
         </View>
         <View style={[styles.badge, { backgroundColor: item.is_active ? "#10B98120" : "#6B728020" }]}>
           <Text style={[styles.badgeText, { color: item.is_active ? "#10B981" : "#6B7280" }]}>
@@ -110,17 +281,25 @@ export default function AdminRingGroups() {
           <Text style={[styles.statLabel, { color: colors.muted }]}>Timeout</Text>
         </View>
         <View style={styles.stat}>
-          <Text style={[styles.statValue, { color: colors.foreground }]}>{item.fallback_action || "voicemail"}</Text>
+          <Text style={[styles.statValue, { color: colors.foreground }]}>{item.fallback_action || "hangup"}</Text>
           <Text style={[styles.statLabel, { color: colors.muted }]}>Fallback</Text>
         </View>
       </View>
 
       <View style={[styles.cardActions, { borderTopColor: colors.border }]}>
-        <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.primary + "15" }]}>
+        <TouchableOpacity
+          style={[styles.actionBtn, { backgroundColor: colors.primary + "15" }]}
+          onPress={() => openSettings(Number(item.id))}
+          accessibilityLabel={`Edit ${item.name}`}
+        >
           <IconSymbol name="pencil" size={14} color={colors.primary} />
           <Text style={[styles.actionText, { color: colors.primary }]}>Edit</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.actionBtn, { backgroundColor: "#10B98115" }]}>
+        <TouchableOpacity
+          style={[styles.actionBtn, { backgroundColor: "#10B98115" }]}
+          onPress={() => openMembers(Number(item.id))}
+          accessibilityLabel={`Edit members for ${item.name}`}
+        >
           <IconSymbol name="person.badge.plus" size={14} color="#10B981" />
           <Text style={[styles.actionText, { color: "#10B981" }]}>Members</Text>
         </TouchableOpacity>
@@ -133,7 +312,8 @@ export default function AdminRingGroups() {
         </TouchableOpacity>
       </View>
     </View>
-  );
+    );
+  };
 
   return (
     <ScreenContainer>
@@ -144,7 +324,7 @@ export default function AdminRingGroups() {
         <Text style={[styles.title, { color: colors.foreground }]}>Ring Groups</Text>
         <TouchableOpacity
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
-          onPress={() => setShowCreate(true)}
+          onPress={openCreate}
           disabled={!tenantId}
         >
           <IconSymbol name="plus" size={18} color="#fff" />
@@ -194,7 +374,7 @@ export default function AdminRingGroups() {
           </Text>
           <TouchableOpacity
             style={[styles.emptyBtn, { backgroundColor: colors.primary }]}
-            onPress={() => setShowCreate(true)}
+            onPress={openCreate}
           >
             <Text style={styles.emptyBtnText}>Create Ring Group</Text>
           </TouchableOpacity>
@@ -209,18 +389,41 @@ export default function AdminRingGroups() {
         />
       )}
 
-      {/* Create Modal */}
-      <Modal visible={showCreate} animationType="slide" transparent>
+      <Modal
+        visible={showCreate || editingSettingsId !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={closeSettings}
+      >
         <View style={styles.modalOverlay}>
           <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.foreground }]}>New Ring Group</Text>
-              <TouchableOpacity onPress={() => setShowCreate(false)}>
+              <Text style={[styles.modalTitle, { color: colors.foreground }]}>
+                {editingSettingsId === null ? "New Ring Group" : "Edit Ring Group"}
+              </Text>
+              <TouchableOpacity onPress={closeSettings}>
                 <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={styles.modalBody}>
+            {editingSettingsId !== null && settingsQuery.isLoading ? (
+              <View style={styles.emptyState}>
+                <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : editingSettingsId !== null && settingsQuery.isError ? (
+              <View style={styles.emptyState}>
+                <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load this ring group</Text>
+                <TouchableOpacity onPress={() => settingsQuery.refetch()}>
+                  <Text style={[styles.retryText, { color: colors.primary }]}>Try again</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+            <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
+              {editingSettingsId !== null && !isSupportedStrategy(String(settingsQuery.data?.strategy)) ? (
+                <Text style={styles.legacyWarning}>
+                  This legacy strategy is unsupported. Save Ring All or Sequential to repair it.
+                </Text>
+              ) : null}
               <Text style={[styles.fieldLabel, { color: colors.muted }]}>Name *</Text>
               <TextInput
                 style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
@@ -260,6 +463,35 @@ export default function AdminRingGroups() {
                 ))}
               </View>
 
+              <Text style={[styles.fieldLabel, { color: colors.muted }]}>When no one answers</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.fallbackChoices}>
+                {FALLBACKS.map((fallback) => (
+                  <TouchableOpacity
+                    key={fallback.value}
+                    style={[
+                      styles.fallbackChoice,
+                      { borderColor: newFallbackAction === fallback.value ? colors.primary : colors.border },
+                      newFallbackAction === fallback.value && { backgroundColor: colors.primary + "10" },
+                    ]}
+                    onPress={() => setNewFallbackAction(fallback.value)}
+                  >
+                    <Text style={{ color: newFallbackAction === fallback.value ? colors.primary : colors.foreground }}>
+                      {fallback.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+              {newFallbackAction !== "hangup" ? (
+                <TextInput
+                  style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background, marginTop: 8 }]}
+                  value={newFallbackTarget}
+                  onChangeText={setNewFallbackTarget}
+                  placeholder={newFallbackAction === "ivr" ? "IVR menu ID" : "Extension number"}
+                  placeholderTextColor={colors.muted}
+                  keyboardType="number-pad"
+                />
+              ) : null}
+
               <Text style={[styles.fieldLabel, { color: colors.muted }]}>Ring Timeout (seconds)</Text>
               <TextInput
                 style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
@@ -270,26 +502,113 @@ export default function AdminRingGroups() {
                 keyboardType="number-pad"
               />
             </ScrollView>
+            )}
 
             <View style={styles.modalFooter}>
               <TouchableOpacity
                 style={[styles.cancelBtn, { borderColor: colors.border }]}
-                onPress={() => setShowCreate(false)}
+                onPress={closeSettings}
               >
                 <Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.createBtn, { backgroundColor: colors.primary }]}
-                onPress={handleCreate}
-                disabled={createMutation.isPending}
+                onPress={handleSaveSettings}
+                disabled={
+                  createMutation.isPending ||
+                  updateMutation.isPending ||
+                  (editingSettingsId !== null && (settingsQuery.isLoading || settingsQuery.isError))
+                }
               >
-                {createMutation.isPending ? (
+                {createMutation.isPending || updateMutation.isPending ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text style={styles.createText}>Create</Text>
+                  <Text style={styles.createText}>
+                    {editingSettingsId === null ? "Create" : "Save changes"}
+                  </Text>
                 )}
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={editingGroupId !== null} animationType="slide" transparent onRequestClose={closeMembers}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.modalTitle, { color: colors.foreground }]}>Ring group members</Text>
+                <Text style={[styles.modalSubtitle, { color: colors.muted }]}>Choose active workspace extensions and set their order.</Text>
+              </View>
+              <TouchableOpacity onPress={closeMembers} accessibilityLabel="Close ring group members">
+                <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
+              </TouchableOpacity>
+            </View>
+            {groupDetailQuery.isLoading ? (
+              <View style={styles.emptyState}><ActivityIndicator size="small" color={colors.primary} /><Text style={[styles.loadingText, { color: colors.muted }]}>Loading members…</Text></View>
+            ) : groupDetailQuery.isError ? (
+              <View style={styles.emptyState}><Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load members</Text><TouchableOpacity onPress={() => groupDetailQuery.refetch()}><Text style={[styles.retryText, { color: colors.primary }]}>Try again</Text></TouchableOpacity></View>
+            ) : (
+              <>
+                <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
+                  {draftMembers.map((member, index) => {
+                    const extension = extensionRows.find((row) => Number(row.id) === member.extensionId);
+                    return (
+                      <View key={String(member.extensionId)} style={[styles.memberCard, { borderColor: colors.border, backgroundColor: colors.background }]}>
+                        <View style={styles.memberHeader}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.memberName, { color: colors.foreground }]}>{extension?.display_name || "Extension " + String(extension?.extension_number || member.extensionId)}</Text>
+                            <Text style={[styles.memberNumber, { color: colors.muted }]}>{extension?.extension_number || "ID " + String(member.extensionId)}</Text>
+                          </View>
+                          <TouchableOpacity disabled={membersMutation.isPending} onPress={() => setDraftMembers((current) => current.filter((_, i) => i !== index))} accessibilityLabel={"Remove ring group member " + String(index + 1)}>
+                            <Text style={[styles.removeText, { color: colors.error }]}>Remove</Text>
+                          </TouchableOpacity>
+                        </View>
+                        <View style={styles.memberFields}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.fieldLabel, { color: colors.muted }]}>Priority</Text>
+                            <TextInput
+                              accessibilityLabel={"Priority for member " + String(index + 1)}
+                              editable={!membersMutation.isPending}
+                              keyboardType="number-pad"
+                              value={String(member.priority)}
+                              onChangeText={(value) => setDraftMembers((current) => current.map((item, i) => i === index ? { ...item, priority: Number(value.replace(/[^0-9]/g, "")) } : item))}
+                              style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
+                            />
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  })}
+                  {availableExtensions.length > 0 ? (
+                    <>
+                      <Text style={[styles.fieldLabel, { color: colors.muted }]}>Add workspace extension</Text>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.extensionChoices}>
+                        {availableExtensions.map((extension) => (
+                          <TouchableOpacity
+                            key={String(extension.id)}
+                            disabled={membersMutation.isPending}
+                            onPress={() => setDraftMembers((current) => [...current, { extensionId: Number(extension.id), priority: current.length + 1, delaySeconds: 0, isActive: true }])}
+                            style={[styles.extensionChoice, { borderColor: colors.primary, backgroundColor: colors.primary + "10" }]}
+                            accessibilityLabel={"Add extension " + String(extension.extension_number)}
+                          >
+                            <Text style={[styles.extensionChoiceText, { color: colors.primary }]}>{String(extension.extension_number) + (extension.display_name ? " · " + extension.display_name : "")}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </>
+                  ) : (
+                    <Text style={[styles.note, { color: colors.muted }]}>{draftMembers.length ? "All active workspace extensions are already members." : "No active workspace extensions are available."}</Text>
+                  )}
+                  {membersError ? <Text accessibilityRole="alert" style={[styles.editorError, { color: colors.error }]}>{membersError}</Text> : null}
+                </ScrollView>
+                <View style={styles.modalFooter}>
+                  <TouchableOpacity style={[styles.cancelBtn, { borderColor: colors.border }]} onPress={closeMembers}><Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text></TouchableOpacity>
+                  <TouchableOpacity style={[styles.createBtn, { backgroundColor: colors.primary, opacity: membersMutation.isPending ? 0.65 : 1 }]} onPress={saveMembers} disabled={membersMutation.isPending}><Text style={styles.createText}>{membersMutation.isPending ? "Saving…" : "Save members"}</Text></TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -320,6 +639,7 @@ const styles = StyleSheet.create({
   cardIcon: { width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   cardName: { fontSize: 15, fontWeight: "700" },
   cardSub: { fontSize: 12, marginTop: 2 },
+  legacyWarning: { color: "#D97706", fontSize: 11, fontWeight: "600", marginTop: 5 },
   badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   badgeText: { fontSize: 10, fontWeight: "700" },
   cardStats: { flexDirection: "row", paddingHorizontal: 14, paddingVertical: 10, borderTopWidth: 0.5 },
@@ -333,6 +653,7 @@ const styles = StyleSheet.create({
   modal: { borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 0.5, maxHeight: "85%" },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 0.5, borderBottomColor: "#333" },
   modalTitle: { fontSize: 18, fontWeight: "700" },
+  modalSubtitle: { fontSize: 12, marginTop: 3 },
   modalBody: { padding: 16 },
   fieldLabel: { fontSize: 12, fontWeight: "600", marginTop: 12, marginBottom: 6 },
   input: { borderWidth: 0.5, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
@@ -340,9 +661,22 @@ const styles = StyleSheet.create({
   strategyOption: { borderWidth: 1, borderRadius: 10, padding: 12 },
   strategyLabel: { fontSize: 14, fontWeight: "600" },
   strategyDesc: { fontSize: 11, marginTop: 2 },
+  fallbackChoices: { gap: 8, paddingVertical: 2 },
+  fallbackChoice: { borderWidth: 1, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 8 },
   modalFooter: { flexDirection: "row", padding: 16, gap: 12 },
   cancelBtn: { flex: 1, borderWidth: 1, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
   cancelText: { fontSize: 15, fontWeight: "600" },
   createBtn: { flex: 2, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
   createText: { color: "#fff", fontSize: 15, fontWeight: "600" },
+  memberCard: { borderWidth: 0.5, borderRadius: 12, padding: 12, marginBottom: 10, gap: 4 },
+  memberHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  memberName: { fontSize: 15, fontWeight: "600" },
+  memberNumber: { fontSize: 12, marginTop: 2 },
+  memberFields: { flexDirection: "row", gap: 10 },
+  removeText: { fontSize: 12, fontWeight: "600" },
+  extensionChoices: { gap: 8, paddingVertical: 2 },
+  extensionChoice: { borderWidth: 1, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 8 },
+  extensionChoiceText: { fontSize: 12, fontWeight: "600" },
+  note: { fontSize: 12, lineHeight: 18 },
+  editorError: { fontSize: 13, lineHeight: 19, marginTop: 4 },
 });

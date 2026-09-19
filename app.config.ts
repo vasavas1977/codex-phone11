@@ -62,7 +62,7 @@ const config: ExpoConfig = {
   name: env.appName,
   slug: env.appSlug,
   version: "1.0.0",
-  runtimeVersion: `1.0.0-${sipEngine}${chatNotificationsEnabled ? "-daily-pilot" : wakeSettings.gate === "1" ? "-wake-pilot" : ""}-1`,
+  runtimeVersion: `1.0.0-${sipEngine}${chatNotificationsEnabled ? "-daily-pilot" : wakeSettings.gate === "1" ? "-wake-pilot" : ""}-chat-media-2`,
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,
@@ -92,7 +92,7 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: env.androidPackage,
-    permissions: ["POST_NOTIFICATIONS", "RECORD_AUDIO", "READ_PHONE_STATE"],
+    permissions: ["POST_NOTIFICATIONS", "RECORD_AUDIO", "CAMERA", "READ_PHONE_STATE"],
     blockedPermissions: ["android.permission.WRITE_CONTACTS"],
     intentFilters: [
       {
@@ -115,10 +115,16 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    ["expo-image-picker", { photosPermission: "Choose photos to share in your Phone11 conversation.", cameraPermission: "Take a photo to share in your Phone11 conversation.", microphonePermission: "Allow Phone11 to use your microphone for calls and voice messages." }],
     ["expo-contacts", { contactsPermission: "Phone11 uses your contacts to show names and let you call people. Your address book stays on this device." }],
     ...(sipEngine === "siprix" ? [["./plugins/with-phone11-voip-wake.js", {
       origin: process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://api.phone11.ai",
     }] as [string, { origin: string }]] : []),
+    // This local derivative pins the RN3 lifecycle API. The published Expo
+    // plugin peers LiveKit RN2 and therefore cannot be used with the
+    // namespaced WebRTC framework required beside Siprix.
+    "./plugins/with-phone11-livekit.js",
+    "@config-plugins/react-native-webrtc",
     [
       "expo-audio",
       {

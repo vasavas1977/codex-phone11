@@ -239,7 +239,14 @@ services:
       PHONE11_AUTH_BASE_URL: ${PHONE11_AUTH_BASE_URL:-https://api.phone11.ai}
       PHONE11_AUTH_TRUSTED_ORIGINS: ${PHONE11_AUTH_TRUSTED_ORIGINS:-}
       PHONE11_TRUSTED_PROXY_CIDRS: ${PHONE11_TRUSTED_PROXY_CIDRS:?Set exact trusted reverse-proxy addresses}
+      # Server-only JSON mapping. Empty preserves unavailable meeting capability.
+      PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS: ${PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS:-}
       STORAGE_BUCKET: ${STORAGE_BUCKET}
+      PHONE11_CHAT_MEDIA_PATH: /var/lib/phone11/chat-media
+      PHONE11_CHAT_AI_ENABLED: ${PHONE11_CHAT_AI_ENABLED:-false}
+      PHONE11_CHAT_GEMINI_MODEL: ${PHONE11_CHAT_GEMINI_MODEL:-gemini-2.5-flash}
+    volumes:
+      - chat_media:/var/lib/phone11/chat-media
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -290,6 +297,7 @@ services:
         max-file: "5"
 
 volumes:
+  chat_media:
   pg_data:
     driver: local
   redis_data:

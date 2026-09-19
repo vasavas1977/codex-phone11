@@ -165,3 +165,61 @@ describe("media ownership", () => {
     expect(c.getSnapshot()).toEqual({ owner: null, interruptedMeetingId: null, resumeRequired: false, meetingPause: "none" });
   });
 });
+
+it("auth teardown retires an interrupted meeting so another account cannot resume it", async () => {
+  const c = new MediaOwnershipCoordinator();
+  const h = hooks();
+  c.requestMeeting("prior-account-meeting", h);
+  const sip = c.requestSip("sip:logout");
+  await sip.ready;
+  c.clearForAuth();
+
+  expect(c.getSnapshot().owner).toBeNull();
+  expect(c.getSnapshot().resumeRequired).toBe(false);
+  expect(() => c.resumeMeeting("prior-account-meeting", h)).toThrow("resume-required");
+});
+
+it("keeps every media engine blocked after a failed auth voice stop, then recovers only after retry acknowledgement", async () => {
+  const c = new MediaOwnershipCoordinator();
+  const stopForSip = vi.fn().mockRejectedValueOnce(new Error("recorder still active")).mockResolvedValue(undefined);
+  const voice = c.requestVoiceNote("prior-account-voice", { stopForSip }); await voice.ready;
+  c.clearForAuth();
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  const sip = c.requestSip("new-account-sip");
+  expect(c.isCurrent(sip.lease)).toBe(false);
+  expect(() => c.requestMeeting("new-account-meeting", hooks())).toThrow("pause-failed");
+  expect(() => c.requestVoiceNote("new-account-voice", { stopForSip })).toThrow("pause-failed");
+  await sip.ready;
+  expect(stopForSip).toHaveBeenCalledTimes(2);
+  c.release(sip.lease);
+  const meeting = c.requestMeeting("new-account-meeting", hooks()); await meeting.ready; c.release(meeting.lease);
+  const nextVoice = c.requestVoiceNote("new-account-voice", { stopForSip }); await nextVoice.ready;
+  expect(c.isCurrent(nextVoice.lease)).toBe(true);
+});
+
+it("does not grant a successor-account SIP while the predecessor voice stop is unresolved", async () => {
+  const c = new MediaOwnershipCoordinator();
+  const stopped = deferred();
+  const voice = c.requestVoiceNote("prior-account-voice", { stopForSip: () => stopped.promise }); await voice.ready;
+  c.clearForAuth();
+  const sip = c.requestSip("successor-account-sip");
+  expect(c.isCurrent(sip.lease)).toBe(false);
+  stopped.resolve(); await sip.ready;
+  expect(c.isCurrent(sip.lease)).toBe(true);
+});
+
+it("does not replace a pending SIP retry with a different incoming call", async () => {
+  const c = new MediaOwnershipCoordinator();
+  const secondStop = deferred();
+  const stopForSip = vi.fn().mockRejectedValueOnce(new Error("recorder still active")).mockImplementationOnce(() => secondStop.promise);
+  const voice = c.requestVoiceNote("prior-account-voice", { stopForSip }); await voice.ready;
+  c.clearForAuth(); await new Promise(resolve => setTimeout(resolve, 0));
+
+  const first = c.requestSip("first-retry");
+  expect(c.requestSip("first-retry")).toBe(first);
+  expect(() => c.requestSip("second-call")).toThrow("busy");
+  expect(c.isCurrent(first.lease)).toBe(false);
+  secondStop.resolve(); await first.ready;
+  expect(c.isCurrent(first.lease)).toBe(true);
+});

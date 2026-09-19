@@ -18,15 +18,28 @@ test('candidate is absent from both deployment configurations and fully gated',(
     for(const line of activeLines) assert.ok(source.indexOf(line)>gate&&source.indexOf(line)<end);
   }
 });
-test('only an initial exact-pilot INVITE enters suspension; no alternate call is originated',()=>{
+test('only an initial exact-pilot or pre-authorized local target enters suspension; no alternate call is originated',()=>{
   const start=body('PHONE11_WAKE_START');
-  assert.match(start,/!is_method\("INVITE"\).*has_totag\(\).*\$ru != PHONE11_WAKE_PILOT_URI/);
+  assert.match(start,/!is_method\("INVITE"\)[\s\S]*has_totag\(\)[\s\S]*\$ru != PHONE11_WAKE_PILOT_URI/);
+  assert.match(start,/\$dlg_var\(phone11_local_wake\) != "1"[\s\S]*!defined \$dlg_var\(phone11_wake_target\)[\s\S]*\$ru != \$dlg_var\(phone11_wake_target\)/);
+  assert.match(start,/\$dlg_var\(phone11_wake_target\) = \$ru/);
+  assert.match(start,/jansson_set\("string", "sipUri", "\$dlg_var\(phone11_wake_target\)"/);
   assert.ok(start.indexOf('t_newtran()')<start.indexOf('http_async_query('));
   assert.doesNotMatch(routes,/t_uac|t_suspend\(|t_continue\(|exec\(|system\(/);
   const resume=body('PHONE11_WAKE_RESUME');
   assert.ok(resume.indexOf('t_is_canceled()')<resume.indexOf('lookup("location")'));
   assert.ok(resume.indexOf('lookup("location")')<resume.indexOf('route(PHONE11_INBOUND_OFFER)'));
   assert.ok(resume.indexOf('route(PHONE11_INBOUND_OFFER)')<resume.indexOf('route(PHONE11_WAKE_RELAY)'));
+  assert.match(resume,/\$dlg_var\(phone11_local_wake\) == "1"/);
+  assert.doesNotMatch(resume,/\$avp\(phone11_local_wake\)/);
+  assert.match(resume,/route\(PHONE11_LOCAL_EXTENSION_MEDIA\)/);
+  const local=resume.indexOf('route(PHONE11_LOCAL_EXTENSION_MEDIA)'),allocated=resume.indexOf('$avp(phone11_wake_media_allocated) = 1');
+  assert.ok(local>=0&&local<allocated);
+  assert.match(resume,/route\(PHONE11_WAKE_MEDIA_CLEANUP\);[\s\S]*route\(PHONE11_WAKE_TERMINAL\);[\s\S]*t_reply\("488", "Secure local media required"\)/);
+  assert.match(resume,/Secure local media unavailable/);
+  assert.doesNotMatch(resume,/xlog\(|\$rb/);
+  assert.match(resume,/!defined \$dlg_var\(phone11_wake_target\)[\s\S]*t_reply\("480"/);
+  assert.match(resume,/\$ru = \$dlg_var\(phone11_wake_target\)/);
 });
 test('correlation discards spoofed headers and rejects invalid server UUID before forwarding',()=>{
   assert.ok(body('PHONE11_WAKE_START').indexOf('remove_hf("X-Phone11-Wake-ID")')<body('PHONE11_WAKE_START').indexOf('t_newtran()'));
@@ -44,6 +57,8 @@ test('JSON values are encoded and terminal callbacks cannot block or relay SIP',
     assert.doesNotMatch(source,/secret=|xlog\(/);
   }
   assert.match(body('PHONE11_WAKE_TERMINAL'),/\$http_req\(suspend\) = 0/);
+  assert.match(body('PHONE11_WAKE_TERMINAL'),/!defined \$dlg_var\(phone11_wake_target\).*return;/);
+  assert.match(body('PHONE11_WAKE_TERMINAL'),/jansson_set\("string", "sipUri", "\$dlg_var\(phone11_wake_target\)"/);
   assert.match(body('PHONE11_WAKE_TERMINAL'),/\$http_req\(timeout\) = 2000/);
   assert.doesNotMatch(body('PHONE11_WAKE_TERMINAL_RESULT'),/t_reply\(|t_relay\(|route\(RELAY\)/);
   assert.match(modules,/"curl_verbose", 0/);assert.match(modules,/"curl_follow_redirect", 0/);

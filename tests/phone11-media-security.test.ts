@@ -56,6 +56,7 @@ describe("recording ownership", () => {
     expect(sql).toContain("cl.tenant_id = cr.tenant_id");
     expect(sql).toContain("e.tenant_id = cr.tenant_id");
     expect(sql).toContain("e.id = cl.extension_id");
+    expect(sql).toContain("tm.tenant_id = cr.tenant_id AND tm.status = 'active'");
   });
   it("reports unavailable when this deployment has no recording tables", async () => {
     mocks.query.mockRejectedValueOnce(Object.assign(new Error("relation absent"), { code: "42P01" }));
@@ -74,9 +75,10 @@ describe("recording ownership", () => {
     mocks.query.mockResolvedValueOnce({ rows: [{ tenant_id: 29, recording_url: path.join(directory, "12", "call-1.wav") }] });
     expect((await fetch(`${base}/recordings/play/call-1`)).status).toBe(404);
   });
-  it("does not invent voicemail tables or a default tenant", async () => {
+  it("fails closed when voicemail inbox storage has not been migrated", async () => {
+    mocks.query.mockRejectedValueOnce(Object.assign(new Error("relation absent"), { code: "42P01" }));
     expect((await fetch(`${base}/recordings/voicemail/5`)).status).toBe(503);
-    expect(mocks.query).not.toHaveBeenCalled();
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("FROM voicemail_messages"), [17, 5]);
   });
   it("validates upload identifiers before filesystem writes", async () => {
     const { storeRecording } = await import("../server/pbx/recording-storage");

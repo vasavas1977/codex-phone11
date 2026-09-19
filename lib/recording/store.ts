@@ -215,6 +215,10 @@ export const useRecordingStore = create<RecordingState>((set, get) => ({
     }));
 
     try {
+      // This action is also the explicit Retry/Reanalyze affordance. Clear the
+      // client cache so it actually asks the server again; a failed retry must
+      // leave any previously completed server analysis visible.
+      aiAnalysisEngine.clearCache(recording.id);
       const analysis = await aiAnalysisEngine.analyzeTranscript({
         recordingId: recording.id,
         transcription: recording.transcription,

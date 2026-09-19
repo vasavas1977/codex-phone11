@@ -18,7 +18,13 @@ function config(engine) {
 test("Siprix iOS build excludes PJSIP and retains the new bridge", () => {
   const c = config("siprix");
   assert.equal(c.dependencies["react-native-pjsip"].platforms.ios, null);
-  assert.equal(c.dependencies["phone11-siprix"].platforms.ios, undefined);
+  // The Siprix Expo config plugin owns its static iOS Pod declaration so a
+  // later pod install cannot silently switch adapters when its shell lacks
+  // EXPO_PUBLIC_SIP_ENGINE.
+  assert.equal(c.dependencies["phone11-siprix"].platforms.ios, null);
+  const wakePlugin = readFileSync(new URL("../plugins/with-phone11-voip-wake.js", import.meta.url), "utf8");
+  assert.match(wakePlugin, /withPodfile/);
+  assert.match(wakePlugin, /pod 'Phone11Siprix', :path => '\.\.\/modules\/phone11-siprix'/);
 });
 test("legacy build excludes Siprix without changing PJSIP selection", () => {
   const c = config("pjsip");

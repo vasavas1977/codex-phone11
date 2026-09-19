@@ -4,7 +4,10 @@ module.exports = {
       platforms: process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" ? { ios: null } : {},
     },
     "phone11-siprix": {
-      platforms: process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" ? { android: null } : { ios: null, android: null },
+      // The Siprix config plugin owns the iOS Pod declaration. This prevents
+      // pod install from silently changing the native graph when the build
+      // environment no longer carries EXPO_PUBLIC_SIP_ENGINE.
+      platforms: { ios: null, android: null },
     },
     "react-native-reanimated": {
       platforms: {

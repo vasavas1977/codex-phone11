@@ -67,4 +67,146 @@ CREATE TABLE IF NOT EXISTS phone11_recording_wake_links (
  sip_call_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
  UNIQUE(tenant_id,extension_id,sip_call_id)
 );
+
+-- The referenced IDs are globally valid on their own, so ordinary foreign keys
+-- cannot prove that they describe the same workspace.  These guards are
+-- additive: existing historical rows are left intact, while every new or
+-- re-paired recording identity is checked at the database boundary.
+CREATE OR REPLACE FUNCTION phone11_recording_policy_actor_tenant_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM tenant_memberships tm
+    WHERE tm.user_id = NEW.updated_by
+      AND tm.tenant_id = NEW.tenant_id
+      AND tm.status = 'active'
+      AND tm.role IN ('owner', 'admin')
+  ) THEN
+    RAISE EXCEPTION 'recording policy actor must be an active tenant owner or admin'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION phone11_recording_tenant_pair_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM extensions e
+    WHERE e.id = NEW.extension_id
+      AND e.tenant_id = NEW.tenant_id
+  ) THEN
+    RAISE EXCEPTION 'recording extension must belong to the recording tenant'
+      USING ERRCODE = '23514';
+  END IF;
+
+  IF TG_TABLE_NAME = 'phone11_cloud_recordings' THEN
+    IF NEW.manual_actor_user_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM user_extensions ue
+      JOIN tenant_memberships tm
+        ON tm.user_id = ue.user_id
+       AND tm.tenant_id = NEW.tenant_id
+       AND tm.status = 'active'
+      WHERE ue.extension_id = NEW.extension_id
+        AND ue.user_id = NEW.manual_actor_user_id
+    ) THEN
+      RAISE EXCEPTION 'recording capture actor must be actively assigned in the recording tenant'
+        USING ERRCODE = '23514';
+    END IF;
+
+    IF EXISTS (
+      SELECT 1 FROM phone11_recording_routes rr
+      WHERE rr.channel_uuid::text = NEW.call_uuid
+        AND (rr.tenant_id, rr.extension_id) IS DISTINCT FROM (NEW.tenant_id, NEW.extension_id)
+    ) THEN
+      RAISE EXCEPTION 'recording route must match the cloud recording tenant and extension'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'phone11_recording_routes' AND EXISTS (
+    SELECT 1 FROM phone11_cloud_recordings r
+    WHERE r.call_uuid = NEW.channel_uuid::text
+      AND (r.tenant_id, r.extension_id) IS DISTINCT FROM (NEW.tenant_id, NEW.extension_id)
+  ) THEN
+    RAISE EXCEPTION 'recording route must match the cloud recording tenant and extension'
+      USING ERRCODE = '23514';
+  ELSIF TG_TABLE_NAME = 'phone11_recording_wake_links' AND NOT EXISTS (
+    SELECT 1 FROM phone11_wake_bindings wb
+    WHERE wb.id = NEW.binding_id
+      AND wb.tenant_id = NEW.tenant_id
+      AND wb.extension_id = NEW.extension_id
+  ) THEN
+    RAISE EXCEPTION 'recording wake link must match its wake binding tenant and extension'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION phone11_recording_extension_tenant_immutable()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id AND (
+    EXISTS (SELECT 1 FROM phone11_cloud_recordings r WHERE r.extension_id = OLD.id)
+    OR EXISTS (SELECT 1 FROM phone11_recording_routes rr WHERE rr.extension_id = OLD.id)
+    OR EXISTS (SELECT 1 FROM phone11_recording_wake_links w WHERE w.extension_id = OLD.id)
+  ) THEN
+    RAISE EXCEPTION 'recording extension tenant is immutable while recording identities exist'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION phone11_recording_wake_binding_tenant_immutable()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.tenant_id, NEW.extension_id) IS DISTINCT FROM (OLD.tenant_id, OLD.extension_id)
+    AND EXISTS (SELECT 1 FROM phone11_recording_wake_links w WHERE w.binding_id = OLD.id) THEN
+    RAISE EXCEPTION 'wake binding tenant and extension are immutable while recording links exist'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS phone11_recording_policy_actor_tenant_guard
+  ON phone11_recording_policies;
+CREATE TRIGGER phone11_recording_policy_actor_tenant_guard
+  BEFORE INSERT OR UPDATE OF tenant_id, updated_by ON phone11_recording_policies
+  FOR EACH ROW EXECUTE FUNCTION phone11_recording_policy_actor_tenant_guard();
+
+DROP TRIGGER IF EXISTS phone11_cloud_recording_tenant_pair_guard
+  ON phone11_cloud_recordings;
+CREATE TRIGGER phone11_cloud_recording_tenant_pair_guard
+  BEFORE INSERT OR UPDATE OF tenant_id, extension_id, manual_actor_user_id ON phone11_cloud_recordings
+  FOR EACH ROW EXECUTE FUNCTION phone11_recording_tenant_pair_guard();
+
+DROP TRIGGER IF EXISTS phone11_recording_route_tenant_pair_guard
+  ON phone11_recording_routes;
+CREATE TRIGGER phone11_recording_route_tenant_pair_guard
+  BEFORE INSERT OR UPDATE OF tenant_id, extension_id ON phone11_recording_routes
+  FOR EACH ROW EXECUTE FUNCTION phone11_recording_tenant_pair_guard();
+
+DROP TRIGGER IF EXISTS phone11_recording_wake_link_tenant_pair_guard
+  ON phone11_recording_wake_links;
+CREATE TRIGGER phone11_recording_wake_link_tenant_pair_guard
+  BEFORE INSERT OR UPDATE OF binding_id, tenant_id, extension_id ON phone11_recording_wake_links
+  FOR EACH ROW EXECUTE FUNCTION phone11_recording_tenant_pair_guard();
+
+DROP TRIGGER IF EXISTS phone11_recording_extension_tenant_immutable ON extensions;
+CREATE TRIGGER phone11_recording_extension_tenant_immutable
+  BEFORE UPDATE OF tenant_id ON extensions
+  FOR EACH ROW EXECUTE FUNCTION phone11_recording_extension_tenant_immutable();
+
+DO $$
+BEGIN
+  IF to_regclass('phone11_wake_bindings') IS NOT NULL THEN
+    EXECUTE 'DROP TRIGGER IF EXISTS phone11_recording_wake_binding_tenant_immutable ON phone11_wake_bindings';
+    EXECUTE 'CREATE TRIGGER phone11_recording_wake_binding_tenant_immutable
+      BEFORE UPDATE OF tenant_id, extension_id ON phone11_wake_bindings
+      FOR EACH ROW EXECUTE FUNCTION phone11_recording_wake_binding_tenant_immutable()';
+  END IF;
+END;
+$$;
 COMMIT;

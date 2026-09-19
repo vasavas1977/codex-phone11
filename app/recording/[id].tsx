@@ -404,7 +404,7 @@ export default function RecordingDetailScreen() {
               <View style={styles.failedContainer}>
                 <IconSymbol name="exclamationmark.triangle.fill" size={20} color={colors.error} />
                 <Text style={[styles.failedText, { color: colors.muted }]}>
-                  Analysis failed. Tap to retry.
+                  AI analysis is unavailable. Try again when the server is reachable.
                 </Text>
                 <TouchableOpacity
                   onPress={handleReanalyze}

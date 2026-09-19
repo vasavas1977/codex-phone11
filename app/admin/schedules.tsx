@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,9 +20,12 @@ import {
   useDeleteTimeCondition,
   useSetTimeConditionRules,
   useTenant,
+  useTimeCondition,
   useTimeConditions,
+  useUpdateTimeCondition,
 } from "@/hooks/use-pbx-admin";
 import {
+  businessHoursFromRules,
   buildBusinessHoursRule,
   describeSchedule,
   isValidBusinessHours,
@@ -43,10 +46,14 @@ export default function AdminSchedules() {
   const tenantId = tenantQuery.data?.id ?? 0;
   const schedulesQuery = useTimeConditions(tenantId);
   const createMutation = useCreateTimeCondition();
+  const updateMutation = useUpdateTimeCondition();
   const rulesMutation = useSetTimeConditionRules();
   const deleteMutation = useDeleteTimeCondition();
   const [showCreate, setShowCreate] = useState(false);
+  const [editingId, setEditingId] = useState<number>();
+  const scheduleQuery = useTimeCondition(editingId ?? 0);
   const [name, setName] = useState("");
+  const [timezone, setTimezone] = useState("Asia/Bangkok");
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("18:00");
   const [openAction, setOpenAction] = useState<RouteAction>("transfer");
@@ -55,10 +62,12 @@ export default function AdminSchedules() {
   const [closedTarget, setClosedTarget] = useState("");
 
   const schedules = schedulesQuery.data ?? [];
-  const isSaving = createMutation.isPending || rulesMutation.isPending;
+  const isSaving =
+    createMutation.isPending || rulesMutation.isPending || updateMutation.isPending;
 
   const resetForm = () => {
     setName("");
+    setTimezone(tenantQuery.data?.timezone || "Asia/Bangkok");
     setStartTime("09:00");
     setEndTime("18:00");
     setOpenAction("transfer");
@@ -67,7 +76,27 @@ export default function AdminSchedules() {
     setClosedTarget("");
   };
 
-  const handleCreate = async () => {
+  useEffect(() => {
+    if (!editingId || !scheduleQuery.data) return;
+    const schedule = scheduleQuery.data as any;
+    const hours = businessHoursFromRules(schedule.rules);
+    setName(schedule.name || "");
+    setTimezone(schedule.timezone || "Asia/Bangkok");
+    setStartTime(hours.startTime);
+    setEndTime(hours.endTime);
+    setOpenAction(asRouteAction(schedule.match_action, "transfer"));
+    setOpenTarget(schedule.match_target || "");
+    setClosedAction(asRouteAction(schedule.nomatch_action, "voicemail"));
+    setClosedTarget(schedule.nomatch_target || "");
+  }, [editingId, scheduleQuery.data]);
+
+  const closeForm = () => {
+    setShowCreate(false);
+    setEditingId(undefined);
+    resetForm();
+  };
+
+  const handleSave = async () => {
     if (!tenantId || !name.trim()) {
       Alert.alert("Missing details", "Enter a schedule name.");
       return;
@@ -77,6 +106,10 @@ export default function AdminSchedules() {
         "Invalid hours",
         "Use 24-hour times such as 09:00 and 18:00. Closing must be later than opening.",
       );
+      return;
+    }
+    if (!timezone.trim()) {
+      Alert.alert("Missing details", "Enter the schedule timezone.");
       return;
     }
     if (
@@ -92,25 +125,29 @@ export default function AdminSchedules() {
 
     let createdId: number | undefined;
     try {
-      const created = await createMutation.mutateAsync({
-        tenant_id: tenantId,
+      const schedule = {
         name: name.trim(),
         description: `Monday–Friday, ${startTime}–${endTime}`,
-        timezone: tenantQuery.data?.timezone || "Asia/Bangkok",
+        timezone: timezone.trim(),
         match_action: openAction,
         match_target: openAction === "hangup" ? undefined : openTarget.trim(),
         nomatch_action: closedAction,
         nomatch_target:
           closedAction === "hangup" ? undefined : closedTarget.trim(),
-      });
-      createdId = created.id;
-      await rulesMutation.mutateAsync({
-        time_condition_id: created.id,
-        rules: [buildBusinessHoursRule(startTime, endTime)],
-      });
-      await schedulesQuery.refetch();
-      setShowCreate(false);
-      resetForm();
+      };
+      const rules = [buildBusinessHoursRule(startTime, endTime)];
+      if (editingId) {
+        await updateMutation.mutateAsync({ id: editingId, ...schedule, rules });
+      } else {
+        const created = await createMutation.mutateAsync({ tenant_id: tenantId, ...schedule });
+        createdId = created.id;
+        await rulesMutation.mutateAsync({
+          time_condition_id: created.id,
+          rules,
+        });
+      }
+      closeForm();
+      void schedulesQuery.refetch().catch(() => undefined);
     } catch (error: any) {
       if (createdId) {
         try {
@@ -120,7 +157,7 @@ export default function AdminSchedules() {
         }
       }
       Alert.alert(
-        "Schedule not created",
+        editingId ? "Schedule not updated" : "Schedule not created",
         error?.message || "Please try again.",
       );
     }
@@ -193,6 +230,18 @@ export default function AdminSchedules() {
           </Text>
           <TouchableOpacity
             accessibilityRole="button"
+            accessibilityLabel={`Edit ${item.name}`}
+            style={[styles.editButton, { borderColor: colors.border }]}
+            onPress={() => {
+              resetForm();
+              setEditingId(item.id);
+              setShowCreate(true);
+            }}
+          >
+            <Text style={[styles.editText, { color: colors.primary }]}>Edit</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            accessibilityRole="button"
             accessibilityLabel={`Delete ${item.name}`}
             style={styles.deleteButton}
             onPress={() => handleDelete(item.id, item.name)}
@@ -229,7 +278,11 @@ export default function AdminSchedules() {
           accessibilityRole="button"
           accessibilityLabel="Create business hours"
           style={[styles.addButton, { backgroundColor: colors.primary }]}
-          onPress={() => setShowCreate(true)}
+          onPress={() => {
+            resetForm();
+            setEditingId(undefined);
+            setShowCreate(true);
+          }}
           disabled={!tenantId}
         >
           <IconSymbol name="plus" size={18} color="#fff" />
@@ -281,7 +334,7 @@ export default function AdminSchedules() {
         visible={showCreate}
         animationType="slide"
         transparent
-        onRequestClose={() => setShowCreate(false)}
+        onRequestClose={closeForm}
       >
         <View style={styles.overlay}>
           <View
@@ -294,9 +347,9 @@ export default function AdminSchedules() {
               style={[styles.modalHeader, { borderBottomColor: colors.border }]}
             >
               <Text style={[styles.modalTitle, { color: colors.foreground }]}>
-                New business hours
+                {editingId ? "Edit business hours" : "New business hours"}
               </Text>
-              <TouchableOpacity onPress={() => setShowCreate(false)}>
+              <TouchableOpacity onPress={closeForm}>
                 <IconSymbol
                   name="xmark.circle.fill"
                   size={24}
@@ -304,10 +357,21 @@ export default function AdminSchedules() {
                 />
               </TouchableOpacity>
             </View>
-            <ScrollView
-              style={styles.modalBody}
-              keyboardShouldPersistTaps="handled"
-            >
+            {editingId && scheduleQuery.isLoading ? (
+              <View style={styles.editorLoading}>
+                <ActivityIndicator color={colors.primary} />
+              </View>
+            ) : editingId && scheduleQuery.isError ? (
+              <View style={styles.editorLoading}>
+                <Text style={[styles.description, { color: colors.muted }]}>
+                  Couldn’t load this schedule. Close and try again.
+                </Text>
+              </View>
+            ) : (
+              <ScrollView
+                style={styles.modalBody}
+                keyboardShouldPersistTaps="handled"
+              >
               <Label text="Name" colors={colors} />
               <TextInput
                 style={inputStyle(colors)}
@@ -315,6 +379,15 @@ export default function AdminSchedules() {
                 onChangeText={setName}
                 placeholder="Main office"
                 placeholderTextColor={colors.muted}
+              />
+              <Label text="Timezone" colors={colors} />
+              <TextInput
+                style={inputStyle(colors)}
+                value={timezone}
+                onChangeText={setTimezone}
+                placeholder="Asia/Bangkok"
+                placeholderTextColor={colors.muted}
+                autoCapitalize="none"
               />
               <Text style={[styles.weekdays, { color: colors.foreground }]}>
                 Monday to Friday
@@ -359,11 +432,12 @@ export default function AdminSchedules() {
                 onTarget={setClosedTarget}
                 colors={colors}
               />
-            </ScrollView>
+              </ScrollView>
+            )}
             <View style={styles.modalFooter}>
               <TouchableOpacity
                 style={[styles.cancelButton, { borderColor: colors.border }]}
-                onPress={() => setShowCreate(false)}
+                onPress={closeForm}
               >
                 <Text style={[styles.cancelText, { color: colors.muted }]}>
                   Cancel
@@ -374,13 +448,18 @@ export default function AdminSchedules() {
                   styles.createButton,
                   { backgroundColor: colors.primary },
                 ]}
-                onPress={handleCreate}
-                disabled={isSaving}
+                onPress={handleSave}
+                disabled={
+                  isSaving ||
+                  (Boolean(editingId) && (scheduleQuery.isLoading || scheduleQuery.isError))
+                }
               >
                 {isSaving ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
-                  <Text style={styles.createText}>Create hours</Text>
+                  <Text style={styles.createText}>
+                    {editingId ? "Save changes" : "Create hours"}
+                  </Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -389,6 +468,12 @@ export default function AdminSchedules() {
       </Modal>
     </ScreenContainer>
   );
+}
+
+function asRouteAction(value: unknown, fallback: RouteAction): RouteAction {
+  return ROUTES.some((route) => route.value === value)
+    ? (value as RouteAction)
+    : fallback;
 }
 
 function RouteEditor(props: {
@@ -538,6 +623,14 @@ const styles = StyleSheet.create({
     borderTopWidth: 0.5,
   },
   ruleCount: { fontSize: 11 },
+  editButton: {
+    borderWidth: 1,
+    borderRadius: 7,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    marginLeft: "auto",
+  },
+  editText: { fontSize: 12, fontWeight: "600" },
   deleteButton: {
     flexDirection: "row",
     alignItems: "center",
@@ -570,6 +663,7 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontSize: 18, fontWeight: "700" },
   modalBody: { padding: 16 },
+  editorLoading: { minHeight: 180, alignItems: "center", justifyContent: "center", padding: 16 },
   label: { fontSize: 12, fontWeight: "600", marginTop: 12, marginBottom: 6 },
   input: {
     borderWidth: 0.5,

@@ -23,16 +23,20 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   await pool.query(`CREATE TABLE users(id INTEGER PRIMARY KEY,name TEXT);CREATE TABLE tenants(id INTEGER PRIMARY KEY,name TEXT,status TEXT);
    CREATE TABLE extensions(id INTEGER PRIMARY KEY,tenant_id INTEGER REFERENCES tenants(id),status TEXT,deleted_at TIMESTAMPTZ,extension_number TEXT);
    CREATE TABLE user_extensions(id SERIAL PRIMARY KEY,user_id INTEGER REFERENCES users(id),extension_id INTEGER REFERENCES extensions(id),is_primary BOOLEAN DEFAULT TRUE,created_at TIMESTAMPTZ DEFAULT NOW());
+   CREATE TABLE tenant_memberships(user_id INTEGER REFERENCES users(id),tenant_id INTEGER REFERENCES tenants(id),status TEXT,PRIMARY KEY(user_id,tenant_id));
    CREATE TABLE phone11_auth_session(id TEXT PRIMARY KEY,"userId" TEXT,"expiresAt" TIMESTAMPTZ);
    CREATE TABLE phone11_auth_identity(auth_user_id TEXT PRIMARY KEY,legacy_user_id INTEGER REFERENCES users(id),disabled_at TIMESTAMPTZ);`);
   await pool.query(await readFile(new URL('../server/chat/migration.sql',import.meta.url),'utf8'));
+  await pool.query(await readFile(new URL('../server/chat/collaboration-migration.sql',import.meta.url),'utf8'));
+  await pool.query(await readFile(new URL('../server/chat/media-migration.sql',import.meta.url),'utf8'));
   const sql=await readFile(new URL('../server/chat-notifications/migration.sql',import.meta.url),'utf8');await pool.query(sql);await pool.query(sql);
  });
  beforeEach(async()=>{
   vi.stubEnv('PHONE11_CHAT_NOTIFICATIONS_ENABLED','1');
-  await pool.query(`TRUNCATE users,tenants,extensions,user_extensions,phone11_auth_session,phone11_auth_identity,phone11_chat_conversations CASCADE;
+  await pool.query(`TRUNCATE users,tenants,extensions,user_extensions,tenant_memberships,phone11_auth_session,phone11_auth_identity,phone11_chat_conversations CASCADE;
    INSERT INTO users VALUES(1,'sender'),(2,'recipient'),(3,'outsider');INSERT INTO tenants VALUES(10,'first','active'),(20,'other','active');
    INSERT INTO extensions VALUES(1,10,'active',NULL,'1001'),(2,10,'active',NULL,'1002'),(3,20,'active',NULL,'2001');
+   INSERT INTO tenant_memberships VALUES(1,10,'active'),(2,10,'active'),(3,20,'active');
    INSERT INTO user_extensions(user_id,extension_id)VALUES(1,1),(2,2),(3,3);
    INSERT INTO phone11_auth_identity VALUES('auth1',1,NULL),('auth2',2,NULL),('auth3',3,NULL);
    INSERT INTO phone11_auth_session VALUES('s1','auth1',NOW()+INTERVAL '1 day'),('s2','auth2',NOW()+INTERVAL '1 day'),('s3','auth3',NOW()+INTERVAL '1 day');`);
@@ -72,7 +76,7 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
  });
  it('gate off performs ordinary chat commit with no notification rows',async()=>{vi.stubEnv('PHONE11_CHAT_NOTIFICATIONS_ENABLED','0');await repo.register(2,'s2',device);await message();expect(await count()).toBe(0);});
  it('claims once across concurrent workers, never reclaims attempted rows',async()=>{await repo.register(2,'s2',device);await message();const claims=await Promise.all(Array.from({length:8},()=>repo.claim()));expect(claims.filter(Boolean)).toHaveLength(1);expect(await repo.claim()).toBeNull();});
- it.each(["DELETE FROM phone11_auth_session WHERE id='s2'","UPDATE phone11_auth_session SET \"expiresAt\"=NOW()-INTERVAL '1 second' WHERE id='s2'","UPDATE phone11_auth_identity SET disabled_at=NOW() WHERE legacy_user_id=2","DELETE FROM user_extensions WHERE user_id=2","DELETE FROM phone11_chat_members WHERE user_id=2","UPDATE tenants SET status='inactive' WHERE id=10"])( 'rechecks dispatch/tap access after revocation: %s',async sql=>{
+ it.each(["DELETE FROM phone11_auth_session WHERE id='s2'","UPDATE phone11_auth_session SET \"expiresAt\"=NOW()-INTERVAL '1 second' WHERE id='s2'","UPDATE phone11_auth_identity SET disabled_at=NOW() WHERE legacy_user_id=2","DELETE FROM user_extensions WHERE user_id=2","UPDATE tenant_memberships SET status='inactive' WHERE user_id=2 AND tenant_id=10","DELETE FROM phone11_chat_members WHERE user_id=2","UPDATE tenants SET status='inactive' WHERE id=10"])( 'rechecks dispatch/tap access after revocation: %s',async sql=>{
   await repo.register(2,'s2',device);await message();const claim=(await repo.claim())!;expect(await repo.current(claim)).toBe(true);await pool.query(sql);expect(await repo.current(claim)).toBe(false);expect(await repo.resolve(2,'s2',claim.id)).toBeNull();
  });
  it('tap requires exact recipient and auth session plus unexpired event',async()=>{
@@ -95,6 +99,8 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   expect((await pool.query('SELECT session_id FROM phone11_chat_notification_devices')).rows[0].session_id).toBe('s-new');expect(await count()).toBe(0);
  });
  it('read messages do not dispatch later stale alerts',async()=>{await repo.register(2,'s2',device);const m=await message();await chat.read(2,10,conversation,m.sequence);expect(await repo.claim()).toBeNull();});
+ it('does not enqueue an alert for a member who muted this conversation',async()=>{await repo.register(2,'s2',device);await chat.setNotificationMute(2,10,conversation,true);await message();expect(await count()).toBe(0);});
+ it('rechecks a mute added after enqueue before claim or dispatch',async()=>{await repo.register(2,'s2',device);await message();expect(await count()).toBe(1);await chat.setNotificationMute(2,10,conversation,true);expect(await repo.claim()).toBeNull();});
  it('uncertain provider acceptance never retries or changes persisted message',async()=>{
   await repo.register(2,'s2',device);const msg=await message();const send=vi.fn(async()=>{throw new PushProviderError('transport');});const dispatch=createChatNotificationDispatcher(repo,send,()=>true);
   expect(await dispatch()).toBe(true);expect(await dispatch()).toBe(false);expect(send).toHaveBeenCalledOnce();expect((await chat.history(1,10,conversation)).messages[0].id).toBe(msg.id);

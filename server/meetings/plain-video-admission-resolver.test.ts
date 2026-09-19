@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  createPlainVideoAdmissionRepository,
-  createPlainVideoMeetingRepository,
-  createPlainVideoPostgresReadOnlyTransaction,
-} from "./plain-video-admission-repository";
+import type { PlainVideoAdmissionLease } from "./plain-video-admission-lease-repository";
 import {
   createPlainVideoAdmissionResolver,
   PlainVideoAdmissionUnavailableError,
@@ -16,7 +12,7 @@ const grant = {
   userId: 7,
 };
 
-const row = {
+const lease: PlainVideoAdmissionLease = {
   meeting_id: grant.meetingId,
   tenant_id: grant.tenantId,
   user_id: grant.userId,
@@ -24,95 +20,59 @@ const row = {
   grant_profile: "interactive",
   room_revision: "22345678-1234-4234-8234-123456789012",
   member_revision: "32345678-1234-4234-8234-123456789012",
+  leaseId: "42345678-1234-4234-8234-123456789012",
+  expiresAt: new Date("2026-09-19T00:05:00.000Z"),
 };
 
 describe("plain-video admission resolver", () => {
-  it("uses the same durable lifecycle for initial authorization and trusted admission", async () => {
-    const query = vi.fn().mockResolvedValue({ rows: [row] });
-    const transaction = vi.fn(async (fn) => fn({ query }));
-    const repository = createPlainVideoAdmissionRepository();
-    const initial = createPlainVideoMeetingRepository(transaction, repository);
-    const resolver = createPlainVideoAdmissionResolver(transaction, repository);
+  it("prepares and confirms one server-owned durable lease", async () => {
+    const repository = {
+      begin: vi.fn().mockResolvedValue(lease),
+      confirm: vi.fn().mockResolvedValue(lease),
+    };
+    const resolver = createPlainVideoAdmissionResolver(vi.fn(), repository);
 
-    await expect(initial.authorize(grant.userId, grant.meetingId)).resolves.toEqual(grant);
-    await expect(resolver.resolve(grant)).resolves.toEqual({
+    await expect(resolver.prepare(grant)).resolves.toEqual({
+      admission: {
+        meetingId: grant.meetingId,
+        participantId: "participant_41_7",
+        grantProfile: "interactive",
+      },
+      lease,
+    });
+    await expect(resolver.confirm(lease)).resolves.toEqual({
       meetingId: grant.meetingId,
       participantId: "participant_41_7",
       grantProfile: "interactive",
     });
-    expect(query.mock.calls[0][1]).toEqual([grant.meetingId, grant.userId]);
-    expect(query.mock.calls[1][1]).toEqual([grant.meetingId, grant.tenantId, grant.userId]);
-    const sql = query.mock.calls[1][0];
-    for (const predicate of [
-      "t.status = 'active'",
-      "tm.status = 'active'",
-      "ai.disabled_at IS NULL",
-      "r.state = 'open'",
-      "r.ended_at IS NULL",
-      "m.revoked_at IS NULL",
-      "m.lobby_state = 'admitted'",
-    ])
-      expect(sql).toContain(predicate);
-    expect(sql).not.toContain("consent");
-    expect(sql).not.toContain("interpret");
+    expect(repository.begin).toHaveBeenCalledWith(grant);
+    expect(repository.confirm).toHaveBeenCalledWith(lease);
   });
 
-  it("fails closed for an invalid grant before any database access", async () => {
-    const transaction = vi.fn();
-    const resolver = createPlainVideoAdmissionResolver(transaction);
-    await expect(resolver.resolve({ ...grant, meetingId: "client-room" }))
+  it("fails closed before any lease access for an invalid grant", async () => {
+    const repository = { begin: vi.fn(), confirm: vi.fn() };
+    const resolver = createPlainVideoAdmissionResolver(vi.fn(), repository);
+    await expect(resolver.prepare({ ...grant, meetingId: "client-room" }))
       .rejects.toBeInstanceOf(PlainVideoAdmissionUnavailableError);
-    await expect(resolver.resolve({ ...grant, tenantId: 0 }))
+    await expect(resolver.prepare({ ...grant, tenantId: 0 }))
       .rejects.toBeInstanceOf(PlainVideoAdmissionUnavailableError);
-    expect(transaction).not.toHaveBeenCalled();
+    expect(repository.begin).not.toHaveBeenCalled();
   });
 
-  it("rejects missing, malformed, untrusted-profile, and scope-mismatched records", async () => {
+  it("never turns a missing, malformed, or changed durable lease into admission", async () => {
     for (const result of [
-      { rows: [] },
-      { rows: [{ ...row, grant_profile: "host" }] },
-      { rows: [{ ...row, participant_id: "display name" }] },
-      { rows: [{ ...row, tenant_id: 99 }] },
-      { rows: [{ ...row, meeting_id: "22345678-1234-4234-8234-123456789012" }] },
-      { rows: [{ ...row, user_id: 99 }] },
-      { rows: [{ ...row, user_id: Number.MAX_SAFE_INTEGER + 1 }] },
-      { rows: [{ ...row }, { ...row }] },
+      null,
+      { ...lease, grant_profile: "host" },
+      { ...lease, participant_id: "display name" },
+      { ...lease, tenant_id: 99 },
     ]) {
-      const transaction = vi.fn(async (fn) => fn({ query: vi.fn().mockResolvedValue(result) }));
-      await expect(createPlainVideoAdmissionResolver(transaction).resolve(grant))
-        .rejects.toBeInstanceOf(PlainVideoAdmissionUnavailableError);
+      const repository = {
+        begin: vi.fn().mockResolvedValue(result),
+        confirm: vi.fn().mockResolvedValue(result),
+      };
+      const resolver = createPlainVideoAdmissionResolver(vi.fn(), repository as never);
+      await expect(resolver.prepare(grant)).rejects.toBeInstanceOf(PlainVideoAdmissionUnavailableError);
+      await expect(resolver.confirm(lease)).rejects.toBeInstanceOf(PlainVideoAdmissionUnavailableError);
     }
-  });
-
-  it("does not create a grant from a malformed or scope-mismatched initial row", async () => {
-    const repository = createPlainVideoAdmissionRepository();
-    await expect(repository.authorize(
-      { query: vi.fn().mockResolvedValue({ rows: [{ ...row, user_id: 99 }] }) },
-      grant.userId,
-      grant.meetingId,
-    )).resolves.toBeNull();
-  });
-
-  it("uses an explicit PostgreSQL read-only transaction and rolls back failures", async () => {
-    const query = vi.fn();
-    const release = vi.fn();
-    const transaction = createPlainVideoPostgresReadOnlyTransaction({
-      connect: vi.fn().mockResolvedValue({ query, release }),
-    } as never);
-    await expect(transaction(async () => "ok")).resolves.toBe("ok");
-    expect(query.mock.calls.map(([sql]) => sql)).toEqual([
-      "BEGIN READ ONLY",
-      "SET LOCAL statement_timeout = '3s'",
-      "COMMIT",
-    ]);
-
-    query.mockClear();
-    await expect(transaction(async () => { throw new Error("nope"); })).rejects.toThrow("nope");
-    expect(query.mock.calls.map(([sql]) => sql)).toEqual([
-      "BEGIN READ ONLY",
-      "SET LOCAL statement_timeout = '3s'",
-      "ROLLBACK",
-    ]);
-    expect(release).toHaveBeenCalledTimes(2);
   });
 });

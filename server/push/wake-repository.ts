@@ -24,6 +24,7 @@ const call = (r: any): WakeCall => ({ v: 1, callUUID: r.id, bindingId: r.binding
 const livePush = `JOIN phone11_auth_session auths ON auths.id=p.session_id AND auths."expiresAt">clock_timestamp()
  JOIN phone11_auth_identity ai ON ai.auth_user_id=auths."userId" AND ai.legacy_user_id=p.user_id AND ai.disabled_at IS NULL
  JOIN user_extensions ue ON ue.user_id=p.user_id AND ue.extension_id=p.extension_id
+ JOIN tenant_memberships tm ON tm.user_id=p.user_id AND tm.tenant_id=p.tenant_id AND tm.status='active'
  JOIN extensions e ON e.id=p.extension_id AND e.tenant_id=p.tenant_id AND e.status='active' AND e.deleted_at IS NULL
  JOIN tenants t ON t.id=p.tenant_id AND t.status='active'
  JOIN sip_accounts sa ON sa.extension_id=e.id AND sa.tenant_id=t.id AND sa.status='active' AND sa.deleted_at IS NULL
@@ -75,16 +76,21 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
   }
   return {
     pruneExpired,
-    async enroll(sessionId: string, userId: number, deviceId: string, pilotUri: string) {
+    async enroll(sessionId: string, userId: number, deviceId: string, configuredPilots: readonly string[] | string) {
       return transaction(async client => {
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`phone11-wake:${pilotUri}`]);
+        const pilotUris=typeof configuredPilots === "string" ? [configuredPilots] : configuredPilots;
+        // Lock every explicitly configured target in a stable order before
+        // authority rows. This keeps offer/enrollment ordering compatible
+        // while allowing exactly one owned target to be selected below.
+        for (const pilotUri of [...pilotUris].sort())
+          await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`phone11-wake:${pilotUri}`]);
         await client.query('SELECT id FROM phone11_auth_session WHERE id=$1 FOR SHARE', [sessionId]);
         await client.query(`SELECT p.revision FROM phone11_push_devices p ${livePush}
-          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.sip_uri=$4
-          FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUri]);
+          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.sip_uri=ANY($4::text[])
+          FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUris]);
         const result = await client.query(`SELECT p.*,auths."expiresAt" AS session_expiry FROM phone11_push_devices p ${livePush}
           WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.platform='ios' AND p.token_type='voip'
-          AND p.sip_uri=$4 FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUri]);
+          AND p.sip_uri=ANY($4::text[]) FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUris]);
         if (result.rows.length !== 1) throw new WakeError(403, "Register this phone before enabling incoming call wake");
         const p = result.rows[0];
         // Reclaim revoked/expired enrollment; an invalid grant must not lock out a new phone.

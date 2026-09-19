@@ -14,6 +14,10 @@ Prepare a private copy of the canonical active config, retaining its exact sourc
 
 Only in the reviewed private copy, define `WITH_PHONE11_WAKE_CANDIDATE`, the exact string macros `PHONE11_WAKE_PILOT_URI`, `PHONE11_WAKE_API` (ending `/api/phone11/wake`), `PHONE11_WAKE_SECRET`, and an independently checked unused integer `PHONE11_WAKE_FLAG`. Keep the secret in a private readable-by-Kamailio include. Never place it in a URL, log or source file. Include `modules.inc` after tm/pv and before other libcurl modules, and `routes.inc` after the existing route definitions. Never add a default enabled define.
 
+The legacy candidate uses only `PHONE11_WAKE_PILOT_URI`. To prepare the separately reviewed two-account local pilot, also define `PHONE11_WAKE_LOCAL_3001_URI` as the canonical SIP URI for account 3001 and `PHONE11_WAKE_LOCAL_1020_URI` as the canonical SIP URI for account 1020. The local patch accepts only authenticated `1020` calling `3001`, or authenticated `3001` calling `1020`, in the exact configured realm; every other destination, caller, realm, re-INVITE and unauthenticated request returns to ordinary routing. Each accepted pair stores its configured target on the dialog, and the candidate carries that exact target through offer, resume and terminal callbacks. Set the backend's two-entry `PHONE11_WAKE_PILOT_SIP_URIS` list to those same canonical values before enabling the pair mapping. Do not infer a tenant from an extension, substitute a caller-provided URI, or enable a general local-extension wake route.
+
+`scripts/phone11-native-local-sdes-patch.mjs` is an idempotent, fail-closed source patcher for the exact checked-in local-extension route shape. It adds only guarded hooks for the explicit authenticated `1020→3001` and `3001→1020` pairs, the original-transaction suspension point, matched-CANCEL terminal callback, and the matching in-dialog BYE callback. It also upgrades the existing local SDES route to report offer failure to the wake resume path. It does not copy the candidate include files, define the candidate macro, add a secret, or prove a running Kamailio configuration. Its deployment wrapper must therefore remain unused until a separately reviewed private complete configuration is prepared.
+
 In `PHONE11_INBOUND_PILOT`, insert this after its approved `$rU`/`$rd` rewrite and before its first location lookup:
 
 ```kamailio
@@ -22,7 +26,7 @@ In `PHONE11_INBOUND_PILOT`, insert this after its approved `$rU`/`$rd` rewrite a
 #!endif
 ```
 
-The candidate consumes only the exact pilot URI and an initial INVITE. It intentionally wakes the enrolled pilot even when an old registrar contact remains; registration presence alone does not prove that iOS can answer. If the gate is disabled, the existing pilot path remains unchanged. This hook does not apply to arbitrary authenticated extension calls, emergency routes, other DIDs, or re-INVITEs.
+The candidate consumes only an initial INVITE for the exact legacy pilot URI, or for a target already written by the closed local-pair gate. It intentionally wakes the enrolled target even when an old registrar contact remains; registration presence alone does not prove that iOS can answer. If the gate is disabled, the existing pilot path remains unchanged. This hook does not apply to arbitrary authenticated extension calls, emergency routes, other DIDs, or re-INVITEs.
 
 Inside the existing CANCEL handling, before its normal transaction check/relay, add:
 
@@ -38,7 +42,7 @@ Keep normal CANCEL processing. In the existing validated in-dialog BYE branch, a
 
 ## Transaction and backend contract
 
-`POST /offer` uses the original SIP Call-ID and the configured exact pilot URI. JSON values are encoded by `jansson_set`, including quotes/backslashes in a legal Call-ID. The HTTP request has a 28-second timeout beneath the transaction's 30-second initial timer; the backend has its own 25-second readiness budget. `http_async_query` suspends the existing transaction automatically, then continues it in `PHONE11_WAKE_RESUME`; there is no invented RPC or second INVITE. Redirects and verbose HTTP logging are disabled, and HTTPS peer/host verification stays enabled. [Official HTTP async module, 5.8 branch](https://raw.githubusercontent.com/kamailio/kamailio/5.8/src/modules/http_async_client/README).
+`POST /offer` uses the original SIP Call-ID and the exact target preserved on the dialog. JSON values are encoded by `jansson_set`, including quotes/backslashes in a legal Call-ID. The HTTP request has a 28-second timeout beneath the transaction's 30-second initial timer; the backend has its own 25-second readiness budget. `http_async_query` suspends the existing transaction automatically, then continues it in `PHONE11_WAKE_RESUME`; there is no invented RPC or second INVITE. Redirects and verbose HTTP logging are disabled, and HTTPS peer/host verification stays enabled. [Official HTTP async module, 5.8 branch](https://raw.githubusercontent.com/kamailio/kamailio/5.8/src/modules/http_async_client/README).
 
 Resume checks cancellation/expiration and requires a bounded successful JSON `v:1,status:ready` response with a strictly validated server-generated version-4 `callUUID`. It strips caller-supplied `X-Phone11-Wake-ID` headers and appends the validated UUID for exact native wake correlation. It performs a new location lookup and reuses `PHONE11_INBOUND_OFFER`, preserving the original SDP, Call-ID and existing media profile. A failed/expired wake produces a bounded unavailable response. Backend acceptance is not proof of SIP registration or handset audio.
 

@@ -1,13 +1,19 @@
 import { create } from "zustand";
 import type { ChatPersistence } from "./persistence";
-import type { ChatChannel, ChatKind, ChatMessage, ChatPerson, ChatWorkspace } from "./types";
+import type { ChatAttachment, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatParentPreview, ChatPerson, ChatWorkspace } from "./types";
+export interface ChatThread { root: ChatMessage; replies: ChatMessage[]; hasMore: boolean }
 export interface ChatTransport {
   list(tenantId?: number): Promise<{ workspace: ChatWorkspace; workspaces: ChatWorkspace[]; channels: ChatChannel[] }>;
   directory(tenantId: number): Promise<ChatPerson[]>;
   create(tenantId: number, kind: ChatKind, name: string, memberIds: number[]): Promise<{ id: string }>;
-  history(tenantId: number, id: string, before?: number): Promise<{ messages: ChatMessage[]; hasMore: boolean }>;
+  history(tenantId: number, id: string, before?: number): Promise<{ messages: ChatMessage[]; hasMore: boolean; latestSequence?: number }>;
   search(tenantId: number, id: string, text: string): Promise<{ messages: ChatMessage[]; hasMore: boolean }>;
-  send(tenantId: number, id: string, clientId: string, content: string): Promise<ChatMessage>;
+  thread(tenantId: number, id: string, parentMessageId: string, before?: number): Promise<ChatThread>;
+  send(tenantId: number, id: string, clientId: string, content: string, parentMessageId?: string, attachmentIds?: string[], mentions?: Pick<ChatMention, "userId" | "start" | "length">[]): Promise<ChatMessage>;
+  details?: (tenantId: number, id: string) => Promise<ChatConversationDetails>;
+  report(tenantId: number, id: string, category: "harassment" | "spam" | "safety" | "other", comment?: string, messageId?: string): Promise<{ recorded: true }>;
+  block(tenantId: number, userId: number): Promise<{ blocked: true }>;
+  unblock(tenantId: number, userId: number): Promise<{ blocked: false }>;
   read(tenantId: number, id: string, through: number): Promise<unknown>;
 }
 function newId() {
@@ -15,11 +21,13 @@ function newId() {
     const n = Math.floor(Math.random() * 16); return (c === "x" ? n : (n & 3) | 8).toString(16);
   });
 }
+export function chatDraftKey(roomId: string, rootId?: string) { return rootId ? `${roomId}:thread:${rootId}` : roomId; }
 export function chatError(error: unknown): string {
   const code = (error as any)?.data?.code;
   if (code === "UNAUTHORIZED") return "Your session expired. Sign in again to use Team Chat.";
   if (code === "FORBIDDEN") return "You no longer have access to this workspace. Contact your administrator.";
   if (code === "NOT_FOUND") return "Team Chat is not available for this conversation. Refresh or contact your administrator.";
+  if (code === "PRECONDITION_FAILED") return "Direct messaging is blocked for this workspace relationship.";
   // Do not expose raw server/SQL errors to the app.
   return "Could not connect to Team Chat. Check your connection and try again.";
 }
@@ -37,16 +45,21 @@ interface ChatState {
   drafts: Record<string, string>; storageError: string | null;
   setDraft: (id: string, text: string) => void;
   loading: boolean; error: string | null; roomErrors: Record<string, string | null>;
-  roomLoading: Record<string, boolean>; hasMore: Record<string, boolean>;
+  roomLoading: Record<string, boolean>; hasMore: Record<string, boolean>; latestSequences: Record<string, number>;
   setUser: (id: number | null) => void;
   loadChannels: (tenantId?: number) => Promise<void>;
   cancelChannelRefresh: () => void;
   loadDirectory: () => Promise<void>;
   createConversation: (kind: ChatKind, name: string, memberIds: number[]) => Promise<string>;
   loadMessages: (id: string, older?: boolean) => Promise<void>;
+  loadThread: (id: string, parentMessageId: string, before?: number) => Promise<ChatThread>;
+  reportMessage: (id: string, category: "harassment" | "spam" | "safety" | "other", comment?: string, messageId?: string) => Promise<void>;
+  blockMember: (userId: number) => Promise<void>;
+  unblockMember: (userId: number) => Promise<void>;
   markAsRead: (id: string) => Promise<void>;
   searchMessages: (id: string, text: string) => Promise<{ messages: ChatMessage[]; hasMore: boolean }>;
-  sendMessage: (id: string, content: string) => Promise<void>;
+  sendMessage: (id: string, content: string, parentMessageId?: string, attachments?: ChatAttachment[], mentions?: Pick<ChatMention, "userId" | "start" | "length">[]) => Promise<void>;
+  loadDetails: (id: string) => Promise<ChatConversationDetails>;
   retryMessage: (id: string, clientId: string) => Promise<void>;
 }
 export function createChatStore(api: ChatTransport, persistence?: ChatPersistence) {
@@ -63,7 +76,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
   // chat never produces duplicate read receipts.
   const readRequests = new Map<string, Promise<void>>();
   const readCursors = new Map<string, number>();
-  const empty = () => ({ workspace: null, workspaces: [], channels: [], messages: {}, people: [], drafts: {}, storageError: null, loading: false, error: null, roomErrors: {}, roomLoading: {}, hasMore: {} });
+  const empty = () => ({ workspace: null, workspaces: [], channels: [], messages: {}, people: [], drafts: {}, storageError: null, loading: false, error: null, roomErrors: {}, roomLoading: {}, hasMore: {}, latestSequences: {} });
   return create<ChatState>((set, get) => {
     const persist = async () => {
       const current = generation;
@@ -107,22 +120,30 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
       if (!state.userId || !state.workspace || pending.senderId !== state.userId || !state.channels.some(c => c.id === id)) return;
       const current = generation;
       const matchesPending = (m: ChatMessage) => m.senderId === pending.senderId && m.clientId === pending.clientId;
-      set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) ? { ...m, status: "sending" } : m) } }));
+      set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) ? { ...m, status: "sending" } : m) },
+        roomErrors: { ...s.roomErrors, [id]: null } }));
       if (!await persist()) {
         if (current === generation) set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) ? { ...m, status: "failed" } : m) } }));
         return;
       }
       if (current !== generation) return;
       try {
-        const sent = await api.send(state.workspace.id, id, pending.clientId, pending.content);
+        const attachmentIds = pending.attachments?.map(a => a.id) || [];
+        const mentions = pending.mentions?.map(({ userId, start, length }) => ({ userId, start, length })) || [];
+        // Retain the established five-argument call for legacy text retries.
+        // Optional metadata only crosses the wire when it exists.
+        const sent = attachmentIds.length || mentions.length
+          ? await api.send(state.workspace.id, id, pending.clientId, pending.content, pending.parent?.id, attachmentIds, mentions)
+          : await api.send(state.workspace.id, id, pending.clientId, pending.content, pending.parent?.id);
         if (current !== generation) return;
         set(s => ({ messages: { ...s.messages, [id]: mergeMessages(s.messages[id] || [], [sent]) },
           channels: s.channels.map(c => c.id === id && sent.timestamp >= c.lastMessageAt ? { ...c, lastMessage: sent.content, lastMessageAt: sent.timestamp } : c).sort((a, b) => b.lastMessageAt - a.lastMessageAt) }));
         await persist();
       } catch (error) {
         if (current !== generation) return;
+        const blocked = (error as any)?.data?.code === "PRECONDITION_FAILED";
         set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) && m.status !== "sent" ? { ...m, status: "failed" } : m) },
-          roomErrors: { ...s.roomErrors, [id]: chatError(error) } }));
+          roomErrors: { ...s.roomErrors, [id]: chatError(error) }, channels: blocked ? s.channels.map(channel => channel.id === id ? { ...channel, blocked: true } : channel) : s.channels }));
         await persist();
       }
     };
@@ -239,7 +260,8 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
             const gap = !older && data.hasMore && knownIds.size > 0 && !data.messages.some(m => knownIds.has(m.id));
             return { messages: { ...s.messages, [id]: mergeMessages(gap ? currentMessages.filter(m => m.status !== "sent") : currentMessages, data.messages) },
               roomErrors: { ...s.roomErrors, [id]: null }, roomLoading: { ...s.roomLoading, [id]: false },
-              hasMore: { ...s.hasMore, [id]: older || gap || s.hasMore[id] === undefined ? data.hasMore : s.hasMore[id] } };
+              hasMore: { ...s.hasMore, [id]: older || gap || s.hasMore[id] === undefined ? data.hasMore : s.hasMore[id] },
+              latestSequences: { ...s.latestSequences, [id]: Math.max(s.latestSequences[id] || 0, data.latestSequence || 0) } };
           });
           await persist();
         } catch (error) {
@@ -250,13 +272,48 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
             roomErrors: { ...s.roomErrors, [id]: chatError(error) }, roomLoading: { ...s.roomLoading, [id]: false } }));
         }
       },
+      loadThread: async (id, parentMessageId, before) => {
+        const state = get(), current = generation;
+        if (!state.userId || !state.workspace || !state.channels.some(channel => channel.id === id)) throw new Error("Conversation is unavailable.");
+        const result = await api.thread(state.workspace.id, id, parentMessageId, before);
+        if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
+        return result;
+      },
+      reportMessage: async (id, category, comment, messageId) => {
+        const state = get(), current = generation;
+        if (!state.userId || !state.workspace || !state.channels.some(channel => channel.id === id)) throw new Error("Conversation is unavailable.");
+        await api.report(state.workspace.id, id, category, comment, messageId);
+        if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
+      },
+      blockMember: async targetUserId => {
+        const state = get(), current = generation;
+        if (!state.userId || !state.workspace || targetUserId === state.userId) throw new Error("Workspace member is unavailable.");
+        await api.block(state.workspace.id, targetUserId);
+        if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
+        set(s => ({ people: s.people.filter(person => person.id !== targetUserId) }));
+        await get().loadChannels(state.workspace.id);
+        if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
+      },
+      unblockMember: async targetUserId => {
+        const state = get(), current = generation;
+        if (!state.userId || !state.workspace || targetUserId === state.userId) throw new Error("Workspace member is unavailable.");
+        await api.unblock(state.workspace.id, targetUserId);
+        if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
+        await get().loadChannels(state.workspace.id);
+        if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
+        await get().loadDirectory();
+        if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
+      },
       markAsRead: async id => {
         const state = get(), current = generation;
         if (!state.userId || !state.workspace) return;
         const channel = state.channels.find(candidate => candidate.id === id);
         const sent = (state.messages[id] || []).filter(m => m.status === "sent");
         const hasIncoming = sent.some(message => message.senderId !== state.userId);
-        const through = Math.max(0, ...sent.map(m => m.sequence));
+        // Root history intentionally excludes replies. The server supplies the
+        // room ceiling so viewing the current room can acknowledge newer thread
+        // activity instead of leaving its unread badge permanently stuck.
+        const through = Math.max(0, state.latestSequences[id] || 0, ...sent.map(m => m.sequence));
         const scope = `${current}:${state.workspace.id}:${id}`;
         // A cached list can report zero while a just-loaded history page already
         // contains the incoming message. Keep the zero guard for local-only
@@ -286,12 +343,27 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         if (current !== generation) throw new Error("Account changed.");
         return result;
       },
-      sendMessage: async (id, text) => {
+      loadDetails: async id => {
+        const state = get(), current = generation;
+        if (!state.userId || !state.workspace || !state.channels.some(channel => channel.id === id)) throw new Error("Conversation is unavailable.");
+        if (!api.details) throw new Error("Conversation details are unavailable until Team Chat is updated.");
+        const details = await api.details(state.workspace.id, id);
+        if (current !== generation) throw new Error("Account changed.");
+        return details;
+      },
+      sendMessage: async (id, text, parentMessageId, attachments = [], mentions = []) => {
         const state = get(), content = text.trim();
-        if (!state.userId || !state.workspace || !state.channels.some(c => c.id === id) || !content || content.length > 4000) return;
+        if (!state.userId || !state.workspace || !state.channels.some(c => c.id === id) || (!content && !attachments.length) || content.length > 4000 || attachments.length > 10) return;
+        const source = parentMessageId ? (state.messages[id] || []).find(message => message.id === parentMessageId && message.status === "sent") : undefined;
+        // The server remains authoritative. A local preview makes the optimistic
+        // bubble intelligible while a stale/deleted parent is rejected safely.
+        const parent: ChatParentPreview | null = parentMessageId ? source ? { id: source.id, senderName: source.senderName, content: source.content }
+          : { id: parentMessageId, senderName: "Team member", content: "Original message is unavailable." } : null;
         const pending: ChatMessage = { id: newId(), clientId: newId(), channelId: id, senderId: state.userId, senderName: "You",
-          content, timestamp: Date.now(), sequence: 0, status: "sending" };
-        set(s => ({ drafts: { ...s.drafts, [id]: "" }, messages: { ...s.messages, [id]: [...(s.messages[id] || []), pending] }, roomErrors: { ...s.roomErrors, [id]: null } }));
+          content, timestamp: Date.now(), sequence: 0, status: "sending", parent, attachments,
+          mentions: mentions.map(item => ({ ...item, name: (state.people.find(person => person.id === item.userId)?.name || "Team member") })) };
+        const threadRootId = source?.parent?.id || parentMessageId;
+        set(s => ({ drafts: { ...s.drafts, [chatDraftKey(id, threadRootId)]: "" }, messages: { ...s.messages, [id]: [...(s.messages[id] || []), pending] }, roomErrors: { ...s.roomErrors, [id]: null } }));
         await deliver(id, pending);
       },
       retryMessage: async (id, clientId) => {

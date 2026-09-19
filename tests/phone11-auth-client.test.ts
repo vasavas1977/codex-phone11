@@ -746,3 +746,25 @@ describe("bounded requests", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+it("clears and leaves the owner-bound native meeting during auth cleanup", async () => {
+  await signedIn();
+  const registry = await import("../lib/meetings/native-session-registry");
+  const leave = vi.fn(async () => {});
+  const meeting = {
+    ownerId: canonicalUser.id,
+    session: {} as any,
+    room: undefined,
+    receiveOnly: false,
+    wasInterruptedBySip: false,
+    leave,
+  };
+  registry.setActiveNativeMeeting(meeting);
+  expect(registry.getActiveNativeMeeting(canonicalUser.id)).toBe(meeting);
+  expect(registry.getActiveNativeMeeting(canonicalUser.id + 1)).toBeUndefined();
+
+  await auth.clearAuth();
+
+  expect(leave).toHaveBeenCalledOnce();
+  expect(registry.getActiveNativeMeeting()).toBeUndefined();
+});

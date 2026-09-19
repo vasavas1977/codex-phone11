@@ -51,6 +51,9 @@ describe("advanced PBX migration contract", () => {
     expect(sql).toContain("REFERENCES tenants(id) ON DELETE CASCADE");
     expect(sql).toContain("REFERENCES extensions(id) ON DELETE CASCADE");
     expect(sql).toContain("phone11_validate_advanced_pbx_member");
+    expect(sql).toContain("phone11_advanced_pbx_tenant_immutable");
+    expect(sql).toContain("CREATE TRIGGER phone11_ring_group_tenant_immutable");
+    expect(sql).toContain("CREATE TRIGGER phone11_queue_tenant_immutable");
   });
 });
 
@@ -183,6 +186,30 @@ describe.skipIf(!connectionString)(
           )
         ).rows[0],
       ).toEqual({ first_name: null, last_name: null });
+    });
+
+    it("rejects parent tenant moves that would stale child memberships", async () => {
+      const group = await database.query<{ id: number }>(`
+      INSERT INTO ring_groups(tenant_id,name) VALUES(10,'Immutable group') RETURNING id
+    `);
+      await database.query(
+        `INSERT INTO ring_group_members(ring_group_id,extension_id) VALUES($1,101)`,
+        [group.rows[0].id],
+      );
+      await expect(
+        database.query(`UPDATE ring_groups SET tenant_id=20 WHERE id=$1`, [group.rows[0].id]),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      const queue = await database.query<{ id: number }>(`
+      INSERT INTO call_queues(tenant_id,name) VALUES(10,'Immutable queue') RETURNING id
+    `);
+      await database.query(
+        `INSERT INTO queue_agents(queue_id,extension_id) VALUES($1,101)`,
+        [queue.rows[0].id],
+      );
+      await expect(
+        database.query(`UPDATE call_queues SET tenant_id=20 WHERE id=$1`, [queue.rows[0].id]),
+      ).rejects.toMatchObject({ code: "23514" });
     });
 
     it("rejects cross-tenant members and invalid routing values", async () => {

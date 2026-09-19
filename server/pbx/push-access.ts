@@ -9,6 +9,7 @@ export async function assignedPushOwners(sipUri: string, userId?: number): Promi
   const result = await query(
     `SELECT ue.user_id, e.tenant_id, e.id AS extension_id, sa.sip_username, sa.sip_domain
      FROM user_extensions ue JOIN extensions e ON e.id = ue.extension_id
+     JOIN tenant_memberships tm ON tm.user_id = ue.user_id AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
      JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
      JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
      WHERE sa.sip_username = $1 AND lower(sa.sip_domain) = $2

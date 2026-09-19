@@ -31,7 +31,7 @@ describe("call action resolution", () => {
           memberIds: [1, 2],
           lastMessage: null,
           lastMessageAt: 0,
-          unreadCount: 0,
+          unreadCount: 0, blocked: false,
         },
       ],
     };

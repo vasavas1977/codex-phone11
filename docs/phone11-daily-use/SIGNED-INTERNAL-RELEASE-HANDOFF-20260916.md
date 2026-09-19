@@ -19,9 +19,11 @@ candidate. It is an ad-hoc internal distribution build that retains:
 
 The GitHub Actions manual-build default is this same profile. It has no effect
 until an authorized operator dispatches the workflow. Do not use
-`development`, `development-ios-existing-credentials`, an Expo development
-client, Expo Go, a locally generated Debug app, PJSIP, or a store profile for
-this internal handset update.
+`development`, an Expo development client, Expo Go, a locally generated Debug
+app, PJSIP, or a store profile for this internal handset update. The two former
+development-client profiles that reused Phone11's production bundle identifier
+have been removed from `eas.json`; the automated release-profile guard rejects
+any future attempt to add that unsafe combination back.
 
 ## Before requesting the signed build
 

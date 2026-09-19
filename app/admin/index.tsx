@@ -46,12 +46,14 @@ export default function AdminDashboard() {
   const tenant = tenantQuery.data;
 
   const quickActions: QuickAction[] = [
-    { icon: "person.2.fill", iconColor: "#0057FF", label: "People & extensions", route: "/admin/extensions" },
+    { icon: "person.2.fill", iconColor: "#0057FF", label: "People", route: "/admin/users" },
+    { icon: "phone.fill", iconColor: "#0369A1", label: "Extensions", route: "/admin/extensions" },
     { icon: "number", iconColor: "#8B5CF6", label: "Phone numbers", route: "/admin/dids" },
     { icon: "rectangle.grid.3x2.fill", iconColor: "#FF9500", label: "IVR menus", route: "/admin/ivr" },
     { icon: "person.3.fill", iconColor: "#10B981", label: "Ring Groups", route: "/admin/ring-groups" },
     { icon: "person.line.dotted.person.fill", iconColor: "#F59E0B", label: "Queues", route: "/admin/queues" },
     { icon: "calendar.badge.clock", iconColor: "#F97316", label: "Business Hours", route: "/admin/schedules" },
+    { icon: "chart.bar.fill", iconColor: "#14B8A6", label: "Call analytics", route: "/admin/analytics" },
   ];
 
   const onRefresh = useCallback(async () => {

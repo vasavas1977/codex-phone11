@@ -57,7 +57,7 @@ test('actual default Expo mods and evaluated pod keep native wake disabled',asyn
   assert.equal(config.extra.phone11ApnsEnvironment,undefined);
   assert.equal(config.extra.phone11ChatNotificationsEnabled,false);
   assert.equal(config.ios.infoPlist.Phone11ChatNotificationsCommissioned,0);
-  assert.equal(config.runtimeVersion,'1.0.0-siprix-1');
+  assert.equal(config.runtimeVersion,'1.0.0-siprix-chat-media-2');
   const properties=await mod(config,'podfileProperties');
   assert.equal(properties['phone11.voipWakeCommissioned'],'0');
   assert.equal(properties['phone11.apnsEnvironment'],undefined);
@@ -67,7 +67,7 @@ test('actual default Expo mods and evaluated pod keep native wake disabled',asyn
 }));
 test('resolved pilot profile generates matching production entitlement, JS config and whole-pod compile flag',async()=>withProfile('preview-ios-siprix-wake-pilot',async config=>{
   assert.equal(config.extra.phone11ApnsEnvironment,'production');
-  assert.equal(config.runtimeVersion,'1.0.0-siprix-wake-pilot-1');
+  assert.equal(config.runtimeVersion,'1.0.0-siprix-wake-pilot-chat-media-2');
   assert.equal(config.extra.phone11ChatNotificationsEnabled,false);
   assert.equal(config.ios.infoPlist.Phone11ChatNotificationsCommissioned,0);
   assert.notEqual(profile('preview-ios-siprix-wake-pilot').channel,profile('preview-ios-siprix').channel);
@@ -92,7 +92,7 @@ test('explicit daily pilot isolates ordinary alerts and preserves production cal
   assert.equal(config.extra.phone11ChatNotificationsEnabled,true);
   assert.equal(config.ios.infoPlist.Phone11ChatNotificationsCommissioned,1);
   assert.equal(config.extra.phone11ApnsEnvironment,'production');
-  assert.equal(config.runtimeVersion,'1.0.0-siprix-daily-pilot-1');
+  assert.equal(config.runtimeVersion,'1.0.0-siprix-daily-pilot-chat-media-2');
   assert.notEqual(profile('preview-ios-siprix-daily-pilot').channel,profile('preview-ios-siprix-wake-pilot').channel);
   assert.equal(profile('preview-ios-siprix-daily-pilot').env.PHONE11_BUNDLE_ID,profile('preview-ios-siprix').env.PHONE11_BUNDLE_ID);
   assert.equal((await mod(config,'entitlements'))['aps-environment'],'production');

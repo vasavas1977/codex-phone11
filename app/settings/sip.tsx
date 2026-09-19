@@ -33,12 +33,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error || "Unknown error");
 }
 
-function pilotExtensionCandidates(userId: number): string[] {
-  const userBased = 1000 + userId;
-  const timeBased = 3000 + (Date.now() % 6000);
-  return Array.from(new Set([userBased, 2000 + userId, timeBased, timeBased + 1].map(String)));
-}
-
 export default function SIPAccountScreen() {
   const colors = useColors();
   const { user, loading: authLoading, isAuthenticated, refresh: refreshAuth } = useAuth();
@@ -53,8 +47,6 @@ export default function SIPAccountScreen() {
   const addDiagnosticEvent = useSipDiagnosticsStore((s) => s.addEvent);
   const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
   const ensurePilotConfig = trpc.phone.ensurePilotConfig.useMutation();
-  const createExtension = trpc.phone.createExtension.useMutation();
-  const assignExtension = trpc.phone.assignExtension.useMutation();
 
   useEffect(() => {
     let cancelled = false;
@@ -113,56 +105,8 @@ export default function SIPAccountScreen() {
     );
   };
 
-  const refetchAssignedConfig = async (): Promise<PhoneProvisioningConfig> => {
-    const refreshed = await phoneConfigQuery.refetch();
-    if (refreshed.error) throw refreshed.error;
-    if (!refreshed.data?.configured || !refreshed.data.sip) {
-      throw new Error("Extension was created, but the server still did not return SIP settings for this user.");
-    }
-    return refreshed.data;
-  };
-
-  const createPilotWithExistingAdminApi = async (): Promise<PhoneProvisioningConfig> => {
-    if (!user?.id) {
-      throw new Error("The signed-in user ID is missing. Sign out and sign in again, then retry.");
-    }
-
-    let lastError: unknown;
-    for (const extensionNumber of pilotExtensionCandidates(user.id)) {
-      try {
-        const created = await createExtension.mutateAsync({
-          orgId: 1,
-          extensionNumber,
-          displayName: `Phone11 Pilot ${extensionNumber}`,
-        });
-
-        if (!created?.id) {
-          throw new Error("Admin API created an extension without returning an extension ID.");
-        }
-
-        await assignExtension.mutateAsync({ userId: user.id, extensionId: created.id, isPrimary: true });
-        return refetchAssignedConfig();
-      } catch (error) {
-        lastError = error;
-        const message = errorMessage(error).toLowerCase();
-        if (message.includes("forbidden") || message.includes("not_admin") || message.includes("not admin")) {
-          break;
-        }
-      }
-    }
-
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("Could not create a pilot extension with the deployed admin API.");
-  };
-
   const createOrSyncPilotConfig = async (): Promise<PhoneProvisioningConfig> => {
-    try {
-      return await ensurePilotConfig.mutateAsync();
-    } catch (newEndpointError) {
-      console.warn("[Phone Provisioning] ensurePilotConfig failed, falling back to admin APIs:", newEndpointError);
-      return createPilotWithExistingAdminApi();
-    }
+    return ensurePilotConfig.mutateAsync();
   };
 
   const handleSyncFromAdmin = async () => {
@@ -205,9 +149,7 @@ export default function SIPAccountScreen() {
     if (autoProvisionAttempted.current) return;
     if (
       phoneConfigQuery.isFetching ||
-      ensurePilotConfig.isPending ||
-      createExtension.isPending ||
-      assignExtension.isPending
+      ensurePilotConfig.isPending
     ) {
       return;
     }
@@ -223,8 +165,6 @@ export default function SIPAccountScreen() {
     user?.id,
     phoneConfigQuery.isFetching,
     ensurePilotConfig.isPending,
-    createExtension.isPending,
-    assignExtension.isPending,
   ]);
 
   const ReadOnlyField = ({
@@ -255,9 +195,7 @@ export default function SIPAccountScreen() {
 
   const syncing =
     phoneConfigQuery.isFetching ||
-    ensurePilotConfig.isPending ||
-    createExtension.isPending ||
-    assignExtension.isPending;
+    ensurePilotConfig.isPending;
   const userLabel = isAuthenticated
     ? `${user?.email || user?.name || "Signed-in user"} - User ID ${user?.id}`
     : authLoading

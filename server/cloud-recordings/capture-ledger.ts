@@ -20,7 +20,9 @@ export function createCaptureLedger(db= getPool(),repo=createCloudRecordingRepos
   async failed(l){await repo.failCapture(l.callUuid,l.token);},
   async active(id,user){
    const result=await db.query(`SELECT r.* FROM phone11_cloud_recordings r ${route}
-    JOIN user_extensions ue ON ue.extension_id=r.extension_id JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id
+    JOIN user_extensions ue ON ue.extension_id=r.extension_id
+    JOIN tenant_memberships tm ON tm.user_id=ue.user_id AND tm.tenant_id=r.tenant_id AND tm.status='active'
+    JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id
     JOIN tenants t ON t.id=r.tenant_id WHERE r.call_uuid=$1 AND ue.user_id=$2 AND r.recording_status='recording'
     AND r.capture_stop_requested_at IS NULL AND r.capture_stopped_at IS NULL
     AND e.status='active' AND e.deleted_at IS NULL AND t.status='active'`,[id,user]);

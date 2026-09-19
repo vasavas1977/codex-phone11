@@ -11,5 +11,6 @@ try{
  run(join(bin,'initdb'),['-D',data,'-U','phone11_test','--auth-local=trust','--auth-host=reject','--no-locale','-E','UTF8']);
  run(join(bin,'pg_ctl'),['-D',data,'-l',join(root,'postgres.log'),'-o',`-h '' -k ${socket}`,'-w','start']);started=true;
  run(join(bin,'createdb'),['-h',socket,'-U','phone11_test','phone11_chat_notification_test']);
- const r=spawnSync(process.execPath,['node_modules/vitest/vitest.mjs','run','tests/phone11-chat-notification-postgres.test.ts'],{stdio:'inherit',env:{...process.env,PHONE11_CHAT_NOTIFICATION_TEST_SOCKET:socket,NODE_ENV:'test'}});process.exitCode=r.status??1;
+ run(join(bin,'createdb'),['-h',socket,'-U','phone11_test','phone11_chat_test']);
+ const r=spawnSync(process.execPath,['node_modules/vitest/vitest.mjs','run','tests/phone11-chat-notification-postgres.test.ts','tests/phone11-chat-postgres.test.ts'],{stdio:'inherit',env:{...process.env,PHONE11_CHAT_NOTIFICATION_TEST_SOCKET:socket,PHONE11_CHAT_TEST_SOCKET:socket,PHONE11_CHAT_TEST_DATABASE_URL:'',PHONE11_CHAT_NOTIFICATION_TEST_DATABASE_URL:'',NODE_ENV:'test'}});process.exitCode=r.status??1;
 }finally{if(started)run(join(bin,'pg_ctl'),['-D',data,'-m','fast','-w','stop']);await rm(root,{recursive:true,force:true});}

@@ -219,4 +219,28 @@ CREATE TRIGGER phone11_queue_agent_tenant
   BEFORE INSERT OR UPDATE ON queue_agents
   FOR EACH ROW EXECUTE FUNCTION phone11_validate_advanced_pbx_member();
 
+-- Child rows reference integer parent IDs, so changing a parent workspace would
+-- otherwise leave existing members attached to extensions from the old tenant.
+-- Tenant moves must be represented by a reviewed export/recreate operation.
+CREATE OR REPLACE FUNCTION phone11_advanced_pbx_tenant_immutable() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id THEN
+    RAISE EXCEPTION 'advanced PBX parent tenant is immutable'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS phone11_ring_group_tenant_immutable ON ring_groups;
+CREATE TRIGGER phone11_ring_group_tenant_immutable
+  BEFORE UPDATE OF tenant_id ON ring_groups
+  FOR EACH ROW EXECUTE FUNCTION phone11_advanced_pbx_tenant_immutable();
+
+DROP TRIGGER IF EXISTS phone11_queue_tenant_immutable ON call_queues;
+CREATE TRIGGER phone11_queue_tenant_immutable
+  BEFORE UPDATE OF tenant_id ON call_queues
+  FOR EACH ROW EXECUTE FUNCTION phone11_advanced_pbx_tenant_immutable();
+
 COMMIT;

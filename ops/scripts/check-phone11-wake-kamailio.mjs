@@ -63,6 +63,8 @@ request_route {
  exit;
 }
 route[PHONE11_INBOUND_OFFER] { return; }
+route[PHONE11_LOCAL_EXTENSION_MEDIA] { return; }
+onreply_route[LOCAL_EXTENSION_REPLY] { return; }
 route[RELAY] { t_relay(); exit; }
 include_file "/candidate/routes.inc"
 `;

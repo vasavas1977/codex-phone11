@@ -1,9 +1,9 @@
 import type { MeetingGrant } from "./service";
 import {
-  createPlainVideoAdmissionRepository,
-  type PlainVideoAdmissionRecord,
-  type PlainVideoReadOnlyTransaction,
-} from "./plain-video-admission-repository";
+  createPlainVideoAdmissionLeaseRepository,
+  type PlainVideoAdmissionLease,
+  type PlainVideoIssuanceTransaction,
+} from "./plain-video-admission-lease-repository";
 
 export type TrustedConnect11PlainVideoAdmission = {
   meetingId: string;
@@ -24,7 +24,7 @@ function isTrustedGrant(grant: MeetingGrant): boolean {
 }
 
 function admissionFrom(
-  record: PlainVideoAdmissionRecord,
+  record: PlainVideoAdmissionLease,
   grant: MeetingGrant,
 ): TrustedConnect11PlainVideoAdmission | null {
   // The repository filters these values in SQL. Repeat the comparison here so
@@ -33,6 +33,11 @@ function admissionFrom(
     record.meeting_id !== grant.meetingId ||
     record.tenant_id !== grant.tenantId ||
     record.user_id !== grant.userId
+  )
+    return null;
+  if (
+    !/^[A-Za-z0-9_-]{1,96}$/.test(record.participant_id) ||
+    !["interactive", "listener"].includes(record.grant_profile)
   )
     return null;
   return {
@@ -45,20 +50,33 @@ function admissionFrom(
 /**
  * Produces the deliberately small plain-video admission from fresh, durable
  * Phone11 state. It has no interpreter language, consent assertion, agent,
- * room name, display identity, or client-selected profile input.
- * Lifecycle commands, revision-locked token issuance, provider eviction, and
- * audit/outbox delivery are deliberately not implemented by this read-only
- * seam and remain activation requirements.
+ * room name, display identity, or client-selected profile input. A pending
+ * revision snapshot is persisted before Connect11 issuance and confirmed only
+ * after it returns, before the token can leave this server.
  */
 export function createPlainVideoAdmissionResolver(
-  transaction: PlainVideoReadOnlyTransaction,
-  repository = createPlainVideoAdmissionRepository(),
+  transaction: PlainVideoIssuanceTransaction,
+  repository = createPlainVideoAdmissionLeaseRepository(transaction),
 ) {
   return {
-    async resolve(grant: MeetingGrant): Promise<TrustedConnect11PlainVideoAdmission> {
+    async prepare(grant: MeetingGrant): Promise<{
+      admission: TrustedConnect11PlainVideoAdmission;
+      lease: PlainVideoAdmissionLease;
+    }> {
       if (!isTrustedGrant(grant)) throw new PlainVideoAdmissionUnavailableError();
-      const record = await transaction((db) => repository.findAuthorized(db, grant));
+      const record = await repository.begin(grant);
       const admission = record && admissionFrom(record, grant);
+      if (!admission) throw new PlainVideoAdmissionUnavailableError();
+      return { admission, lease: record };
+    },
+
+    async confirm(lease: PlainVideoAdmissionLease): Promise<TrustedConnect11PlainVideoAdmission> {
+      const record = await repository.confirm(lease);
+      const admission = record && admissionFrom(record, {
+        meetingId: lease.meeting_id,
+        tenantId: lease.tenant_id,
+        userId: lease.user_id,
+      });
       if (!admission) throw new PlainVideoAdmissionUnavailableError();
       return admission;
     },

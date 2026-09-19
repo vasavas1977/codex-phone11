@@ -8,6 +8,7 @@ export type SavedPushToken = PushToken & { revision: string };
 const assignmentJoin = `JOIN phone11_auth_session auths ON auths.id=p.session_id AND auths."expiresAt">NOW()
  JOIN phone11_auth_identity ai ON ai.auth_user_id=auths."userId" AND ai.legacy_user_id=p.user_id AND ai.disabled_at IS NULL
  JOIN user_extensions ue ON ue.user_id = p.user_id AND ue.extension_id = p.extension_id
+ JOIN tenant_memberships tm ON tm.user_id=p.user_id AND tm.tenant_id=p.tenant_id AND tm.status='active'
  JOIN extensions e ON e.id = p.extension_id AND e.tenant_id = p.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL
  JOIN tenants t ON t.id = p.tenant_id AND t.status = 'active'
  JOIN sip_accounts sa ON sa.extension_id = p.extension_id AND sa.tenant_id = p.tenant_id
@@ -31,6 +32,7 @@ export function createPushRepository(transaction: Transaction = withTransaction)
         await client.query("SELECT pg_advisory_xact_lock(731102, $1)", [token.owner.userId]);
         const assignment = await client.query(`SELECT ue.user_id FROM user_extensions ue
           JOIN extensions e ON e.id = ue.extension_id JOIN tenants t ON t.id = e.tenant_id
+          JOIN tenant_memberships tm ON tm.user_id=ue.user_id AND tm.tenant_id=e.tenant_id AND tm.status='active'
           JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
           JOIN phone11_auth_identity ai ON ai.legacy_user_id=ue.user_id AND ai.disabled_at IS NULL
           JOIN phone11_auth_session auths ON auths."userId"=ai.auth_user_id AND auths.id=$5 AND auths."expiresAt">NOW()

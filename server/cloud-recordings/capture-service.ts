@@ -45,6 +45,7 @@ export function createRecordingCaptureService(config:{esl:EslConfig;spoolDirecto
    const found=await db.query(`SELECT r.recording_status,r.capture_stop_requested_at,r.capture_stopped_at,p.mode FROM phone11_cloud_recordings r
     JOIN phone11_recording_routes rr ON rr.channel_uuid::text=r.call_uuid AND rr.tenant_id=r.tenant_id AND rr.extension_id=r.extension_id
     JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id JOIN user_extensions ue ON ue.extension_id=r.extension_id
+    JOIN tenant_memberships tm ON tm.user_id=ue.user_id AND tm.tenant_id=r.tenant_id AND tm.status='active'
     JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id JOIN tenants t ON t.id=r.tenant_id
     WHERE r.call_uuid=$1 AND ue.user_id=$2 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active' AND r.expires_at>clock_timestamp()`,[channelUuid,actorUserId]);
    if(found.rows.length!==1)return none;

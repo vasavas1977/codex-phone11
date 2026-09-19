@@ -16,6 +16,12 @@ try {
     const destination=join(scratch,path);await mkdir(dirname(destination),{recursive:true});
     await copyFile(join(root,path),destination);
   }
+  // Native plugins can be newly authored in the reviewed working candidate.
+  // Include only JavaScript plugins, never ignored environment/signing files.
+  await mkdir(join(scratch,'plugins'),{recursive:true});
+  for(const name of await readdir(join(root,'plugins'))) {
+    if(name.endsWith('.js'))await copyFile(join(root,'plugins',name),join(scratch,'plugins',name));
+  }
   await symlink(join(root,'node_modules'),join(scratch,'node_modules'),'dir');
   const env={...process.env,CI:'1',EXPO_NO_TELEMETRY:'1',EXPO_PUBLIC_SIP_ENGINE:'siprix',
     PHONE11_BUNDLE_ID:'space.manus.phone11ai.t20260425073427',EXPO_PUBLIC_API_BASE_URL:'https://api.phone11.ai'};
@@ -37,6 +43,9 @@ try {
     assert.ok(delegate.indexOf('Phone11VoipPush.bootstrap()')<delegate.indexOf('let delegate ='),'Native bootstrap must precede the React factory');
     const plist=await readFile(join(scratch,'ios',dirname(delegates[0]),'Info.plist'),'utf8');
     assert.match(plist,/<key>Phone11WakeOrigin<\/key>\s*<string>https:\/\/api\.phone11\.ai<\/string>/);
+    for (const key of ['NSMicrophoneUsageDescription','NSCameraUsageDescription','NSPhotoLibraryUsageDescription']) {
+      assert.match(plist,new RegExp('<key>'+key+'</key>\\s*<string>[^<]+</string>'),key+' must survive all native plugins');
+    }
     const properties=JSON.parse(await readFile(join(scratch,'ios','Podfile.properties.json'),'utf8'));
     assert.equal(properties['phone11.voipWakeCommissioned'],gate);
     assert.equal(properties['phone11.apnsEnvironment'],gate==='1'?'production':undefined);
@@ -48,5 +57,16 @@ try {
     if(gate==='1')assert.match(entitlement,/<key>aps-environment<\/key>\s*<string>production<\/string>/);
     console.log(`Real Expo iOS prebuild passed for native wake gate ${gate}, chat gate ${chat}; generated bootstrap, origin, gate, Podfile properties and pilot APNs entitlement verified.`);
   }
+  const android=spawnSync(process.execPath,[join(root,'node_modules/expo/bin/cli'),'prebuild','--platform','android','--no-install'],
+    {cwd:scratch,env,encoding:'utf8',timeout:120000,maxBuffer:4*1024*1024});
+  if(android.error||android.status!==0)throw new Error(`Android native project generation failed\n${android.stdout??''}\n${android.stderr??''}`);
+  const manifest=await readFile(join(scratch,'android/app/src/main/AndroidManifest.xml'),'utf8');
+  for(const permission of ['RECORD_AUDIO','CAMERA']) {
+    const tags=manifest.match(/<uses-permission\b[^>]*>/g)||[];
+    const matching=tags.filter(tag=>tag.includes('android.permission.'+permission+'"'));
+    assert.ok(matching.length>0,permission+' must survive all native plugins');
+    assert.ok(matching.every(tag=>!tag.includes('tools:node="remove"')),permission+' must not be blocked');
+  }
+  console.log('Real Expo Android prebuild passed; microphone and camera permissions verified.');
   console.log('No signing or installation performed.');
 } finally {await rm(scratch,{recursive:true,force:true});}

@@ -12,6 +12,7 @@ const uuid = /^[a-zA-Z0-9_-]{1,128}$/;
 const analysisAvailable=()=>process.env.PHONE11_RECORDING_AI_ENABLED==='true' && Boolean(process.env.GEMINI_API_KEY) && /^[a-zA-Z0-9._-]{1,100}$/.test(process.env.PHONE11_RECORDING_GEMINI_MODEL??'');
 const unavailable = () => new TRPCError({code:"NOT_FOUND",message:"Recording not found"});
 const owned = `EXISTS (SELECT 1 FROM extensions e JOIN user_extensions ue ON ue.extension_id=e.id
+ JOIN tenant_memberships tm ON tm.user_id=ue.user_id AND tm.tenant_id=e.tenant_id AND tm.status='active'
  JOIN tenants t ON t.id=e.tenant_id WHERE e.id=r.extension_id AND e.tenant_id=r.tenant_id
  AND ue.user_id=$1 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active')`;
 export interface RecordingJob { callUuid:string; tenantId:number; storageKey:string; leaseToken:string }
@@ -107,7 +108,9 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
     const r=found.rows[0];if(!r||!['off','failed'].includes(r.recording_status)||r.mode==='off')return null;
     const active=await c.query("SELECT 1 FROM extensions e JOIN tenants t ON t.id=e.tenant_id WHERE e.id=$1 AND e.tenant_id=$2 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active'",[r.extension_id,r.tenant_id]);if(!active.rows.length)return null;
     if(r.mode==='manual'||manualActorUserId!==undefined){
-     const allowed=await c.query(`SELECT 1 FROM extensions e JOIN user_extensions ue ON ue.extension_id=e.id JOIN tenants t ON t.id=e.tenant_id
+     const allowed=await c.query(`SELECT 1 FROM extensions e JOIN user_extensions ue ON ue.extension_id=e.id
+      JOIN tenant_memberships tm ON tm.user_id=ue.user_id AND tm.tenant_id=e.tenant_id AND tm.status='active'
+      JOIN tenants t ON t.id=e.tenant_id
       WHERE e.id=$1 AND e.tenant_id=$2 AND ue.user_id=$3 AND e.status='active' AND e.deleted_at IS NULL AND t.status='active'`,[r.extension_id,r.tenant_id,manualActorUserId??null]);
      if(!allowed.rows.length)return null;
     }
@@ -119,7 +122,9 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
    if(!captureAvailable())return false;
    const r=await db.query(`UPDATE phone11_cloud_recordings r SET recording_status='recording',capture_pending_until=NULL FROM phone11_recording_policies p
     WHERE p.tenant_id=r.tenant_id AND p.mode<>'off' AND r.call_uuid=$1 AND r.capture_token=$2 AND r.recording_status='pending'
-    AND (r.manual_actor_user_id IS NULL OR EXISTS(SELECT 1 FROM user_extensions ue WHERE ue.extension_id=r.extension_id AND ue.user_id=r.manual_actor_user_id)) AND r.capture_pending_until>clock_timestamp() AND r.expires_at>clock_timestamp() RETURNING r.call_uuid`,[callUuid,captureToken]);return r.rows.length===1;
+    AND (r.manual_actor_user_id IS NULL OR EXISTS(SELECT 1 FROM user_extensions ue
+      JOIN tenant_memberships tm ON tm.user_id=ue.user_id AND tm.tenant_id=r.tenant_id AND tm.status='active'
+      WHERE ue.extension_id=r.extension_id AND ue.user_id=r.manual_actor_user_id)) AND r.capture_pending_until>clock_timestamp() AND r.expires_at>clock_timestamp() RETURNING r.call_uuid`,[callUuid,captureToken]);return r.rows.length===1;
   },
   /** Called only after trusted authenticated ingestion has finalized a private WAV. */
   async recordingStored(callUuid:string,storageKey:string,captureToken:string):Promise<boolean>{
@@ -160,7 +165,9 @@ export function createCloudRecordingRepository(db:DB = getPool(), captureAvailab
    const r=await db.query(`SELECT 1 FROM phone11_cloud_recordings r JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id
     JOIN extensions e ON e.id=r.extension_id AND e.tenant_id=r.tenant_id JOIN tenants t ON t.id=e.tenant_id
     WHERE r.call_uuid=$1 AND r.capture_token=$2 AND r.recording_status IN ('pending','recording') AND r.expires_at>clock_timestamp()
-    AND (r.manual_actor_user_id IS NULL OR EXISTS(SELECT 1 FROM user_extensions ue WHERE ue.extension_id=r.extension_id AND ue.user_id=r.manual_actor_user_id)) AND (r.recording_status<>'pending' OR r.capture_pending_until>clock_timestamp()) AND p.mode<>'off' AND e.status='active' AND e.deleted_at IS NULL AND t.status='active'`,[callUuid,captureToken]);return r.rows.length===1;
+    AND (r.manual_actor_user_id IS NULL OR EXISTS(SELECT 1 FROM user_extensions ue
+      JOIN tenant_memberships tm ON tm.user_id=ue.user_id AND tm.tenant_id=r.tenant_id AND tm.status='active'
+      WHERE ue.extension_id=r.extension_id AND ue.user_id=r.manual_actor_user_id)) AND (r.recording_status<>'pending' OR r.capture_pending_until>clock_timestamp()) AND p.mode<>'off' AND e.status='active' AND e.deleted_at IS NULL AND t.status='active'`,[callUuid,captureToken]);return r.rows.length===1;
   },
   async failCapture(callUuid:string,captureToken:string):Promise<boolean>{
    const r=await db.query("UPDATE phone11_cloud_recordings SET recording_status='failed',capture_token=NULL,capture_pending_until=NULL WHERE call_uuid=$1 AND capture_token=$2 AND recording_status IN ('pending','recording') RETURNING call_uuid",[callUuid,captureToken]);return r.rows.length===1;

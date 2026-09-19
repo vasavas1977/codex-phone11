@@ -149,7 +149,7 @@ it("offers a manual AI refresh for failed or stale detail", async () => {
     summaryStatus: "failed",
   };
   let html = renderToStaticMarkup(createElement(Detail));
-  expect(html).toContain("AI summary could not be created");
+  expect(html).toContain("AI summary is unavailable");
   expect(html).toContain("Refresh status");
   await mocks.press.get("Refresh status")?.();
   expect(mocks.cloud.reload).toHaveBeenCalledOnce();
@@ -574,7 +574,7 @@ it("ready without returned summary never claims AI is off", () => {
       onTabChange: vi.fn(),
     }),
   );
-  expect(html).toContain("AI summary is still processing");
+  expect(html).toContain("AI summary is unavailable");
   expect(html).not.toContain("AI summary was not enabled");
 });
 

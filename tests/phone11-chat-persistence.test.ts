@@ -4,7 +4,7 @@ import { createChatStore, type ChatTransport } from "../lib/chat/state";
 import type { ChatMessage } from "../lib/chat/types";
 const room = "e2c949c0-9988-4000-8000-663bee2e3eaa";
 const message = (senderId = 1): ChatMessage => ({ id: "c68a7adf-7654-4000-8000-99e17ef3c456", clientId: "dc999694-9999-4000-8000-848848d0c731", channelId: room,
-  senderId, senderName: "You", content: "Keep this after restart", timestamp: 10, sequence: 0, status: "sending" });
+  senderId, senderName: "You", content: "Keep this after restart", timestamp: 10, sequence: 0, status: "sending", parent: null });
 function memoryStorage() {
   const rows = new Map<string, string>();
   const storage: PendingStorage = { getItem: async k => rows.get(k) ?? null, setItem: async (k, v) => { rows.set(k, v); },
@@ -12,10 +12,10 @@ function memoryStorage() {
   return { rows, storage };
 }
 const api = (tenant = 10): ChatTransport => ({
-  list: async () => ({ workspace: { id: tenant, name: "Work" }, workspaces: [], channels: [{ id: room, name: "Private", kind: "direct", memberIds: [1, 2], lastMessage: null, lastMessageAt: 0, unreadCount: 0 }] }),
+  list: async () => ({ workspace: { id: tenant, name: "Work" }, workspaces: [], channels: [{ id: room, name: "Private", kind: "direct", memberIds: [1, 2], lastMessage: null, lastMessageAt: 0, unreadCount: 0, blocked: false }] }),
   search: async () => ({ messages: [], hasMore: false }),
-  directory: async () => [], create: async () => ({ id: room }), history: async () => ({ messages: [], hasMore: false }),
-  send: vi.fn(async (_tenant, _id, clientId, content) => ({ ...message(), id: "persisted", clientId, content, status: "sent" as const, sequence: 5 })), read: async () => ({ ok: true }),
+  directory: async () => [], create: async () => ({ id: room }), history: async () => ({ messages: [], hasMore: false }), thread: async () => ({ root: message(), replies: [], hasMore: false }),
+  send: vi.fn(async (_tenant, _id, clientId, content) => ({ ...message(), id: "persisted", clientId, content, status: "sent" as const, sequence: 5 })), report: async () => ({ recorded: true as const }), block: async () => ({ blocked: true as const }), unblock: async () => ({ blocked: false as const }), read: async () => ({ ok: true }),
 });
 describe("durable user and tenant scoped drafts/outbox", () => {
   it("restores drafts and interrupted sends as Failed; never automatically sends", async () => {
@@ -25,7 +25,7 @@ describe("durable user and tenant scoped drafts/outbox", () => {
     restarted.getState().setUser(1); await restarted.getState().loadChannels();
     expect(restarted.getState().drafts[room]).toBe("Typed draft"); expect(restarted.getState().messages[room][0].status).toBe("failed"); expect(network.send).not.toHaveBeenCalled();
     await restarted.getState().retryMessage(room, message().clientId);
-    expect(network.send).toHaveBeenCalledWith(10, room, message().clientId, message().content);
+    expect(network.send).toHaveBeenCalledWith(10, room, message().clientId, message().content, undefined);
     expect((await persistence.load(1, 10)).messages).toEqual({});
   });
   it("persists a newly typed draft and failed message through a new store instance", async () => {
@@ -89,4 +89,12 @@ describe("durable user and tenant scoped drafts/outbox", () => {
     await persistence.save(1, 10, { drafts: { [room]: "one" }, messages: {} }); await persistence.save(11, 10, { drafts: { [room]: "eleven" }, messages: {} });
     await persistence.clearOwner(1); expect((await persistence.load(11, 10)).drafts[room]).toBe("eleven");
   });
+});
+
+it("drops corrupt attachment-only outbox entries and strips untrusted attachment fields", () => {
+  const valid={id:'a98a72dd-67c9-4444-8444-47b8c8f2f999',filename:'photo.png',mimeType:'image/png',sizeBytes:100,uri:'https://untrusted.invalid',storageKey:'secret'};
+  const raw=JSON.stringify({version:1,drafts:{},messages:{[room]:[{...message(),content:'',attachments:[valid]},{...message(),content:'',attachments:[{...valid,id:'bad'}]}]}});
+  const restored=decodePending(raw,1).messages[room];
+  expect(restored).toHaveLength(1);
+  expect(restored[0].attachments?.[0]).toEqual({id:valid.id,conversationId:room,status:'ready',filename:'photo.png',mimeType:'image/png',sizeBytes:100});
 });

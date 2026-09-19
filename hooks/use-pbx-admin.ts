@@ -1,6 +1,6 @@
 /**
  * PBX Admin Hooks
- * 
+ *
  * React hooks for all PBX admin operations using tRPC.
  * Provides type-safe access to tenant, extensions, phone numbers,
  * call records, fraud controls, and dashboard stats.
@@ -18,10 +18,28 @@ export function usePbxDashboardStats() {
 }
 
 export function usePbxRecentCalls(limit: number = 10) {
-  return trpc.pbx.dashboard.recentCalls.useQuery({ limit }, {
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-  });
+  return trpc.pbx.dashboard.recentCalls.useQuery(
+    { limit },
+    {
+      staleTime: 15_000,
+      refetchInterval: 30_000,
+    },
+  );
+}
+
+export type PbxAnalyticsPeriod = "today" | "week" | "month";
+
+/**
+ * Recorded-call reporting for the current tenant administrator.
+ *
+ * This is deliberately refreshed by the caller instead of polling, because CDR
+ * ingestion is asynchronous and the result is not a live PBX-status signal.
+ */
+export function usePbxCallAnalytics(period: PbxAnalyticsPeriod) {
+  return trpc.pbx.dashboard.analytics.useQuery(
+    { period },
+    { staleTime: 15_000 },
+  );
 }
 
 // ============================================================================
@@ -36,6 +54,34 @@ export function useTenant() {
 export function useTenantMemberships() {
   return trpc.pbx.tenant.memberships.useQuery(undefined, {
     staleTime: 300_000,
+  });
+}
+
+/** Active, same-workspace people with safe display identity only. */
+export function useTenantPeople(enabled: boolean = true) {
+  return trpc.pbx.tenant.people.useQuery(undefined, {
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** Existing workspace members, including inactive memberships, for admins. */
+export function useTenantMembers(enabled: boolean = true) {
+  return trpc.pbx.tenant.members.useQuery(undefined, {
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useUpdateTenantMember() {
+  const utils = trpc.useUtils();
+  return trpc.pbx.tenant.updateMember.useMutation({
+    onSuccess: () => {
+      void utils.pbx.tenant.members.invalidate();
+      void utils.pbx.tenant.people.invalidate();
+      void utils.pbx.tenant.get.invalidate();
+      void utils.pbx.extensions.list.invalidate();
+    },
   });
 }
 
@@ -58,15 +104,18 @@ export function useExtensions(
 ) {
   return trpc.pbx.extensions.list.useQuery(
     { page, pageSize, sortBy: "extension_number", sortOrder: "asc" },
-    { enabled, staleTime: 30_000 }
+    { enabled, staleTime: 30_000 },
   );
 }
 
 export function useExtension(id: number) {
-  return trpc.pbx.extensions.get.useQuery({ id }, {
-    enabled: id > 0,
-    staleTime: 30_000,
-  });
+  return trpc.pbx.extensions.get.useQuery(
+    { id },
+    {
+      enabled: id > 0,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useCreateExtension() {
@@ -84,6 +133,7 @@ export function useUpdateExtension() {
   return trpc.pbx.extensions.update.useMutation({
     onSuccess: () => {
       utils.pbx.extensions.list.invalidate();
+      utils.pbx.tenant.people.invalidate();
     },
   });
 }
@@ -112,7 +162,7 @@ export function usePhoneNumbers(
 ) {
   return trpc.pbx.phoneNumbers.list.useQuery(
     { page, pageSize },
-    { enabled, staleTime: 30_000 }
+    { enabled, staleTime: 30_000 },
   );
 }
 
@@ -127,13 +177,13 @@ export function useCreatePhoneNumber() {
 }
 
 // Re-export the type for convenience
-export type { };
+export type {};
 
 export function useAssignPhoneNumberRoute() {
   const utils = trpc.useUtils();
   return trpc.pbx.phoneNumbers.assignRoute.useMutation({
     onSuccess: () => {
-      utils.pbx.phoneNumbers.list.invalidate();
+      void utils.pbx.phoneNumbers.list.invalidate().catch(() => undefined);
     },
   });
 }
@@ -208,9 +258,12 @@ export function useCallRecords(params?: {
 }
 
 export function useCallRecord(id: number) {
-  return trpc.pbx.callRecords.get.useQuery({ id }, {
-    enabled: id > 0,
-  });
+  return trpc.pbx.callRecords.get.useQuery(
+    { id },
+    {
+      enabled: id > 0,
+    },
+  );
 }
 
 // ============================================================================
@@ -219,7 +272,7 @@ export function useCallRecord(id: number) {
 export function useAudioFiles(category?: string) {
   return trpc.pbx.audioFiles.list.useQuery(
     category ? { category } : undefined,
-    { staleTime: 60_000 }
+    { staleTime: 60_000 },
   );
 }
 
@@ -250,17 +303,23 @@ export function useAuditLogs(params?: {
 // IVR Menus (Milestone 7)
 // ============================================================================
 export function useIvrMenus(tenantId: number) {
-  return trpc.ivr.ivr.list.useQuery({ tenant_id: tenantId }, {
-    enabled: tenantId > 0,
-    staleTime: 30_000,
-  });
+  return trpc.ivr.ivr.list.useQuery(
+    { tenant_id: tenantId },
+    {
+      enabled: tenantId > 0,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useIvrMenu(id: number) {
-  return trpc.ivr.ivr.get.useQuery({ id }, {
-    enabled: id > 0,
-    staleTime: 30_000,
-  });
+  return trpc.ivr.ivr.get.useQuery(
+    { id },
+    {
+      enabled: id > 0,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useCreateIvrMenu() {
@@ -304,17 +363,23 @@ export function useSetIvrActions() {
 // Ring Groups (Milestone 7)
 // ============================================================================
 export function useRingGroups(tenantId: number) {
-  return trpc.ivr.ringGroups.list.useQuery({ tenant_id: tenantId }, {
-    enabled: tenantId > 0,
-    staleTime: 30_000,
-  });
+  return trpc.ivr.ringGroups.list.useQuery(
+    { tenant_id: tenantId },
+    {
+      enabled: tenantId > 0,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useRingGroup(id: number) {
-  return trpc.ivr.ringGroups.get.useQuery({ id }, {
-    enabled: id > 0,
-    staleTime: 30_000,
-  });
+  return trpc.ivr.ringGroups.get.useQuery(
+    { id },
+    {
+      enabled: id > 0,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useCreateRingGroup() {
@@ -358,17 +423,23 @@ export function useSetRingGroupMembers() {
 // Call Queues (Milestone 7)
 // ============================================================================
 export function useCallQueues(tenantId: number) {
-  return trpc.ivr.queues.list.useQuery({ tenant_id: tenantId }, {
-    enabled: tenantId > 0,
-    staleTime: 30_000,
-  });
+  return trpc.ivr.queues.list.useQuery(
+    { tenant_id: tenantId },
+    {
+      enabled: tenantId > 0,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useCallQueue(id: number) {
-  return trpc.ivr.queues.get.useQuery({ id }, {
-    enabled: id > 0,
-    staleTime: 30_000,
-  });
+  return trpc.ivr.queues.get.useQuery(
+    { id },
+    {
+      enabled: id > 0,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useCreateCallQueue() {
@@ -429,34 +500,53 @@ export function useQueueAgentLogout() {
 }
 
 export function useQueueStats(queueId: number, hours: number = 24) {
-  return trpc.ivr.queues.stats.useQuery({ queue_id: queueId, hours }, {
-    enabled: queueId > 0,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
+  return trpc.ivr.queues.stats.useQuery(
+    { queue_id: queueId, hours },
+    {
+      enabled: queueId > 0,
+      staleTime: 30_000,
+      refetchInterval: 60_000,
+    },
+  );
 }
 
 // ============================================================================
 // Time Conditions (Milestone 7)
 // ============================================================================
 export function useTimeConditions(tenantId: number) {
-  return trpc.ivr.timeConditions.list.useQuery({ tenant_id: tenantId }, {
-    enabled: tenantId > 0,
-    staleTime: 60_000,
-  });
+  return trpc.ivr.timeConditions.list.useQuery(
+    { tenant_id: tenantId },
+    {
+      enabled: tenantId > 0,
+      staleTime: 60_000,
+    },
+  );
 }
 
 export function useTimeCondition(id: number) {
-  return trpc.ivr.timeConditions.get.useQuery({ id }, {
-    enabled: id > 0,
-    staleTime: 60_000,
-  });
+  return trpc.ivr.timeConditions.get.useQuery(
+    { id },
+    {
+      enabled: id > 0,
+      staleTime: 60_000,
+    },
+  );
 }
 
 export function useCreateTimeCondition() {
   const utils = trpc.useUtils();
   return trpc.ivr.timeConditions.create.useMutation({
     onSuccess: () => {
+      utils.ivr.timeConditions.list.invalidate();
+    },
+  });
+}
+
+export function useUpdateTimeCondition() {
+  const utils = trpc.useUtils();
+  return trpc.ivr.timeConditions.update.useMutation({
+    onSuccess: () => {
+      utils.ivr.timeConditions.get.invalidate();
       utils.ivr.timeConditions.list.invalidate();
     },
   });

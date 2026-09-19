@@ -51,12 +51,22 @@ describe('browser meeting session', () => {
   await session.connect(credentials); pending.resolve(); await expect(first).rejects.toThrow('cancelled');
   expect(session.getSnapshot().status).toBe('connected'); expect(next.result.disconnect).not.toHaveBeenCalled();
  });
- it('cleans up tracks when initial capture fails', async () => {
+ it('keeps receiving media when initial camera permission is unavailable', async () => {
   const r = room(); vi.mocked(r.result.localParticipant.setCameraEnabled).mockRejectedValue(new Error('denied'));
   const session = new BrowserMeetingSession(() => r.result);
-  await expect(session.connect({ ...credentials, microphone: true, camera: true })).rejects.toThrow('denied');
-  expect(session.getSnapshot().status).toBe('error'); expect(r.result.disconnect).toHaveBeenCalledWith(true);
-  expect([...r.events.values()].every(set => set.size === 0)).toBe(true);
+  await expect(session.connect({ ...credentials, microphone: true, camera: true })).resolves.toBeUndefined();
+  expect(session.getSnapshot().status).toBe('connected');
+  expect(session.getSnapshot().participants[0]).toMatchObject({ microphone: true, camera: false });
+  expect(session.getSnapshot().error).toBe('Camera unavailable. You joined with video off.');
+  expect(r.result.disconnect).not.toHaveBeenCalled();
+ });
+ it('keeps a listener receive-only even when preferences request capture', async () => {
+  const r = room(), session = new BrowserMeetingSession(() => r.result);
+  await session.connect({ ...credentials, microphone: true, camera: true, receiveOnly: true });
+  expect(r.result.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+  expect(r.result.localParticipant.setCameraEnabled).not.toHaveBeenCalled();
+  await expect(session.setMicrophone(true)).rejects.toThrow('listen-only');
+  await expect(session.setCamera(true)).rejects.toThrow('listen-only');
  });
  it('stops capture completed after leave', async () => {
   const r = room(), pending = deferred(), session = new BrowserMeetingSession(() => r.result);

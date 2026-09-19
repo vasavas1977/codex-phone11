@@ -43,6 +43,7 @@ export class BrowserMeetingSession {
   private listeners = new Set<() => void>();
   private snapshot: BrowserSessionSnapshot = { status: 'idle', participants: [], error: null };
   private mediaQueue: Promise<unknown> = Promise.resolve();
+  private receiveOnly = false;
   constructor(private readonly createRoom: () => BrowserRoom,
     private readonly capabilities: BrowserSessionCapabilities = {}) {}
   getSnapshot = (): BrowserSessionSnapshot => this.snapshot;
@@ -50,6 +51,8 @@ export class BrowserMeetingSession {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
+  /** The authenticated native lifecycle owns this room; callers may render only its existing tracks. */
+  getRoom = (): BrowserRoom | undefined => this.room;
   private update(patch: Partial<BrowserSessionSnapshot>) {
     this.snapshot = Object.freeze({ ...this.snapshot, ...patch });
     this.listeners.forEach(listener => listener());
@@ -68,10 +71,11 @@ export class BrowserMeetingSession {
     this.update({ error: 'Meeting operation failed. Check permissions and connection, then retry.' });
     return error instanceof Error ? error : new Error('Meeting operation failed');
   }
-  async connect(options: { url: string; token: string; microphone?: boolean; camera?: boolean }): Promise<void> {
+  async connect(options: { url: string; token: string; microphone?: boolean; camera?: boolean; receiveOnly?: boolean }): Promise<void> {
     const generation = ++this.generation;
     const previous = this.room;
     this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
+    this.receiveOnly = options.receiveOnly === true;
     this.update({ status: 'connecting', participants: [], error: null });
     let room: BrowserRoom | undefined;
     try {
@@ -95,12 +99,22 @@ export class BrowserMeetingSession {
       });
       await room.connect(options.url, options.token);
       if (!current()) throw new Error('Meeting connection cancelled');
-      // No capture is requested until an explicit opt-in is provided.
-      if (options.microphone === true) await room.localParticipant.setMicrophoneEnabled(true);
+      // No capture is requested until explicit opt-in. Permission rejection is
+      // non-fatal: the meeting stays connected in receive mode with a truthful
+      // local state instead of losing remote audio/video.
+      const unavailable: string[] = [];
+      if (!this.receiveOnly && options.microphone === true) {
+        try { await room.localParticipant.setMicrophoneEnabled(true); }
+        catch { unavailable.push('Microphone unavailable. You joined muted.'); }
+      }
       if (!current()) throw new Error('Meeting connection cancelled');
-      if (options.camera === true) await room.localParticipant.setCameraEnabled(true);
+      if (!this.receiveOnly && options.camera === true) {
+        try { await room.localParticipant.setCameraEnabled(true); }
+        catch { unavailable.push('Camera unavailable. You joined with video off.'); }
+      }
       if (!current()) throw new Error('Meeting connection cancelled');
-      this.refresh(room); this.update({ status: 'connected' });
+      this.refresh(room);
+      this.update({ status: 'connected', error: unavailable.length ? unavailable.join(' ') : null });
     } catch (error) {
       if (generation === this.generation) {
         this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
@@ -114,6 +128,7 @@ export class BrowserMeetingSession {
   async disconnect(): Promise<void> {
     const generation = ++this.generation, room = this.room;
     this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
+    this.receiveOnly = false;
     this.update({ status: 'disconnected', participants: [], error: null });
     try { if (room) await room.disconnect(true); }
     catch (error) { if (generation === this.generation) this.fail(error); throw error; }
@@ -138,8 +153,17 @@ export class BrowserMeetingSession {
     this.mediaQueue = result.catch(() => undefined);
     return result;
   }
-  setMicrophone(enabled: boolean) { return this.operation(p => p.setMicrophoneEnabled(enabled)); }
-  setCamera(enabled: boolean) { return this.operation(p => p.setCameraEnabled(enabled)); }
+  private denyPublish(): Promise<void> {
+    const error = new Error('This meeting is listen-only');
+    this.fail(error);
+    return Promise.reject(error);
+  }
+  setMicrophone(enabled: boolean) {
+    return enabled && this.receiveOnly ? this.denyPublish() : this.operation(p => p.setMicrophoneEnabled(enabled));
+  }
+  setCamera(enabled: boolean) {
+    return enabled && this.receiveOnly ? this.denyPublish() : this.operation(p => p.setCameraEnabled(enabled));
+  }
   setLanguage(language: string): Promise<void> {
     return this.operation(async p => {
       const key = this.capabilities.languageAttribute;

@@ -1,8 +1,8 @@
 /**
  * Tenant extension administration.
  *
- * Lists the active workspace's extensions and creates unassigned extensions.
- * People assignment stays read-only until the live People directory is wired.
+ * Lists the active workspace's extensions and lets tenant administrators assign
+ * them to active workspace people through the authoritative PBX update path.
  */
 
 import { useMemo, useState } from "react";
@@ -11,6 +11,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -26,6 +27,8 @@ import {
   useCreateExtension,
   useExtensions,
   useTenant,
+  useTenantPeople,
+  useUpdateExtension,
 } from "@/hooks/use-pbx-admin";
 
 type ExtensionFilter = "all" | "assigned" | "open";
@@ -39,6 +42,13 @@ type ExtensionRow = {
   user_email?: string | null;
   sip_status?: string | null;
   last_registered_at?: string | null;
+};
+
+type TenantPerson = {
+  id: number;
+  name?: string | null;
+  email?: string | null;
+  assigned_extension_numbers?: string[] | null;
 };
 
 function extensionNumber(row: ExtensionRow) {
@@ -61,12 +71,17 @@ export default function AdminExtensions() {
     tenantQuery.isSuccess && canManage,
   );
   const createExtension = useCreateExtension();
+  const updateExtension = useUpdateExtension();
+  const peopleQuery = useTenantPeople(tenantQuery.isSuccess && canManage);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ExtensionFilter>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [extension, setExtension] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [editingAssignment, setEditingAssignment] = useState<ExtensionRow | null>(null);
+  const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
 
   const rows = useMemo(
     () => (extensionsQuery.data?.data || []) as ExtensionRow[],
@@ -95,6 +110,10 @@ export default function AdminExtensions() {
       return matchesFilter && matchesSearch;
     });
   }, [filter, rows, search]);
+  const people = useMemo(
+    () => (peopleQuery.data || []) as TenantPerson[],
+    [peopleQuery.data],
+  );
 
   const resetCreate = () => {
     setExtension("");
@@ -122,10 +141,39 @@ export default function AdminExtensions() {
       resetCreate();
       Alert.alert(
         "Extension created",
-        `Extension ${number} is ready to assign from the live People directory when that connection is available.`,
+        `Extension ${number} is ready to assign to an active workspace person.`,
       );
     } catch (error) {
       Alert.alert("Extension not created", errorMessage(error));
+    }
+  };
+
+  const closeAssignmentEditor = () => {
+    setEditingAssignment(null);
+    setSelectedPersonId(null);
+    setAssignmentError(null);
+  };
+
+  const openAssignmentEditor = (row: ExtensionRow) => {
+    setEditingAssignment(row);
+    setSelectedPersonId(row.user_id ?? null);
+    setAssignmentError(null);
+  };
+
+  const saveAssignment = async () => {
+    if (!editingAssignment) return;
+    try {
+      await updateExtension.mutateAsync({
+        id: editingAssignment.id,
+        userId: selectedPersonId,
+      });
+      // Close before refetching so a slow best-effort refresh cannot reopen it.
+      closeAssignmentEditor();
+      void extensionsQuery.refetch().catch(() => undefined);
+      void peopleQuery.refetch().catch(() => undefined);
+    } catch (error) {
+      // Keep the chosen person visible so an administrator can retry or change it.
+      setAssignmentError(errorMessage(error));
     }
   };
 
@@ -175,6 +223,16 @@ export default function AdminExtensions() {
             {assigned ? "ASSIGNED" : "OPEN"}
           </Text>
         </View>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel={`${assigned ? "Change" : "Assign"} person for extension ${extensionNumber(item)}`}
+          onPress={() => openAssignmentEditor(item)}
+          style={[styles.assignmentButton, { borderColor: colors.primary }]}
+        >
+          <Text style={[styles.assignmentButtonText, { color: colors.primary }]}>
+            {assigned ? "Change" : "Assign"}
+          </Text>
+        </TouchableOpacity>
       </View>
     );
   };
@@ -379,8 +437,8 @@ export default function AdminExtensions() {
               placeholderTextColor={colors.muted}
             />
             <Text style={[styles.note, { color: colors.muted }]}>
-              The new extension will remain unassigned until the live People
-              directory is connected.
+              You can assign the new extension to an active workspace person
+              after creating it.
             </Text>
             <TouchableOpacity
               style={[
@@ -399,6 +457,121 @@ export default function AdminExtensions() {
                 <Text style={styles.createText}>Create extension</Text>
               )}
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={Boolean(editingAssignment)}
+        animationType="slide"
+        transparent
+        onRequestClose={closeAssignmentEditor}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.modal,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <View>
+                <Text style={[styles.modalTitle, { color: colors.foreground }]}>
+                  Assign person
+                </Text>
+                <Text style={[styles.modalSubtitle, { color: colors.muted }]}>
+                  Extension {editingAssignment ? extensionNumber(editingAssignment) : ""}
+                </Text>
+              </View>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close assignment editor" onPress={closeAssignmentEditor}>
+                <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
+              </TouchableOpacity>
+            </View>
+
+            {editingAssignment?.user_id && !people.some((person) => person.id === editingAssignment.user_id) && (
+              <Text style={[styles.warning, { color: "#B45309" }]}>
+                The current assignment is not an active workspace person. Choose an active person or unassign it.
+              </Text>
+            )}
+
+            {peopleQuery.isLoading ? (
+              <View style={styles.peopleState}>
+                <ActivityIndicator color={colors.primary} />
+                <Text style={[styles.stateText, { color: colors.muted }]}>Loading people…</Text>
+              </View>
+            ) : peopleQuery.isError ? (
+              <View style={styles.peopleState}>
+                <Text style={[styles.stateText, { color: colors.muted }]}>Couldn’t load active workspace people.</Text>
+                <TouchableOpacity accessibilityRole="button" onPress={() => void peopleQuery.refetch()}>
+                  <Text style={[styles.retry, { color: colors.primary }]}>Try again</Text>
+                </TouchableOpacity>
+              </View>
+            ) : people.length === 0 ? (
+              <Text style={[styles.stateText, { color: colors.muted }]}>There are no active workspace people to assign.</Text>
+            ) : (
+              <ScrollView style={styles.peopleList} contentContainerStyle={styles.peopleListContent}>
+                {people.map((person) => {
+                  const selected = person.id === selectedPersonId;
+                  const existingAssignments = person.assigned_extension_numbers || [];
+                  return (
+                    <TouchableOpacity
+                      key={person.id}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`Assign ${person.name || person.email || `member ${person.id}`}${existingAssignments.length ? `. Currently assigned to ${existingAssignments.join(", ")}` : ""}`}
+                      onPress={() => {
+                        setSelectedPersonId(person.id);
+                        setAssignmentError(null);
+                      }}
+                      style={[
+                        styles.personRow,
+                        {
+                          backgroundColor: selected ? colors.primary + "12" : colors.background,
+                          borderColor: selected ? colors.primary : colors.border,
+                        },
+                      ]}
+                    >
+                      <View style={styles.personCopy}>
+                        <Text style={[styles.personName, { color: colors.foreground }]}>
+                          {person.name || person.email || `Member ${person.id}`}
+                        </Text>
+                        {person.email && <Text style={[styles.personMeta, { color: colors.muted }]}>{person.email}</Text>}
+                        {existingAssignments.length > 0 && (
+                          <Text style={[styles.personMeta, { color: colors.muted }]}>
+                            Currently assigned: {existingAssignments.join(", ")}
+                          </Text>
+                        )}
+                      </View>
+                      <IconSymbol name={selected ? "checkmark.circle.fill" : "circle"} size={20} color={selected ? colors.primary : colors.muted} />
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            {assignmentError && <Text accessibilityRole="alert" style={[styles.assignmentError, { color: "#DC2626" }]}>{assignmentError}</Text>}
+            <View style={styles.assignmentActions}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                onPress={() => {
+                  setSelectedPersonId(null);
+                  setAssignmentError(null);
+                }}
+                style={[styles.secondaryButton, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.secondaryButtonText, { color: colors.foreground }]}>Unassign</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={selectedPersonId === null ? "Save unassigned extension" : "Save person assignment"}
+                disabled={updateExtension.isPending || (selectedPersonId !== null && !people.some((person) => person.id === selectedPersonId))}
+                onPress={() => void saveAssignment()}
+                style={[styles.saveAssignmentButton, { backgroundColor: colors.primary, opacity: updateExtension.isPending ? 0.65 : 1 }]}
+              >
+                {updateExtension.isPending ? <ActivityIndicator color="#fff" /> : <Text style={styles.createText}>{selectedPersonId === null ? "Save unassigned" : "Save assignment"}</Text>}
+              </TouchableOpacity>
+            </View>
+            <Text style={[styles.note, { color: colors.muted }]}>Assignment updates workspace source state only. It does not confirm a handset or SIP registration.</Text>
           </View>
         </View>
       </Modal>
@@ -473,6 +646,14 @@ const styles = StyleSheet.create({
   meta: { fontSize: 11, marginTop: 3 },
   badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   badgeText: { fontSize: 10, fontWeight: "700" },
+  assignmentButton: {
+    minHeight: 36,
+    justifyContent: "center",
+    paddingHorizontal: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  assignmentButtonText: { fontSize: 12, fontWeight: "700" },
   state: { padding: 28, alignItems: "center", gap: 8 },
   stateTitle: { fontSize: 16, fontWeight: "700", textAlign: "center" },
   stateText: { fontSize: 13, lineHeight: 19, textAlign: "center" },
@@ -497,6 +678,7 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   modalTitle: { fontSize: 20, fontWeight: "700" },
+  modalSubtitle: { fontSize: 13, marginTop: 2 },
   label: { fontSize: 12, fontWeight: "600", marginTop: 4 },
   input: {
     borderWidth: 1,
@@ -514,4 +696,43 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   createText: { color: "#fff", fontSize: 15, fontWeight: "700" },
+  warning: {
+    fontSize: 12,
+    lineHeight: 18,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "#FEF3C7",
+  },
+  peopleState: { minHeight: 100, alignItems: "center", justifyContent: "center", gap: 8 },
+  peopleList: { maxHeight: 300 },
+  peopleListContent: { gap: 8 },
+  personRow: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderWidth: 1,
+    borderRadius: 10,
+    gap: 10,
+  },
+  personCopy: { flex: 1, minWidth: 0 },
+  personName: { fontSize: 14, fontWeight: "600" },
+  personMeta: { fontSize: 12, marginTop: 2 },
+  assignmentError: { fontSize: 13, lineHeight: 18 },
+  assignmentActions: { flexDirection: "row", gap: 8, marginTop: 4 },
+  secondaryButton: {
+    minHeight: 46,
+    paddingHorizontal: 14,
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  secondaryButtonText: { fontSize: 14, fontWeight: "700" },
+  saveAssignmentButton: {
+    minHeight: 46,
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    borderRadius: 12,
+  },
 });

@@ -1,4 +1,84 @@
-import { describe, it, expect } from "vitest";
+import { beforeAll, beforeEach, describe, it, expect, vi } from "vitest";
+
+const notificationEngine = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  loadNotifications: vi.fn(),
+  loadPreferences: vi.fn(),
+  setBadgeCount: vi.fn(),
+}));
+
+vi.mock("../lib/notifications/engine", () => ({ pushEngine: notificationEngine }));
+
+let notificationStore: typeof import("../lib/notifications/store").useNotificationStore;
+
+beforeAll(async () => {
+  ({ useNotificationStore: notificationStore } = await import("../lib/notifications/store"));
+});
+
+beforeEach(async () => {
+  notificationEngine.initialize.mockResolvedValue(true);
+  notificationEngine.loadNotifications.mockResolvedValue([]);
+  notificationEngine.loadPreferences.mockResolvedValue({
+    enabled: true,
+    missedCalls: true,
+    voicemail: true,
+    recordingReady: true,
+    sipRegistration: false,
+    systemAlerts: true,
+    soundEnabled: true,
+    vibrationEnabled: true,
+    quietHoursEnabled: false,
+    quietHoursStart: "22:00",
+    quietHoursEnd: "07:00",
+  });
+  notificationEngine.setBadgeCount.mockResolvedValue(undefined);
+  notificationEngine.initialize.mockClear();
+  notificationEngine.loadNotifications.mockClear();
+  notificationEngine.loadPreferences.mockClear();
+  notificationEngine.setBadgeCount.mockClear();
+  notificationStore.setState({ notifications: [], isLoading: false, unreadCount: 0 });
+});
+
+describe("Notification store durable initialization", () => {
+  it("keeps an empty durable store empty and clears the badge", async () => {
+    await notificationStore.getState().initialize();
+
+    expect(notificationStore.getState().notifications).toEqual([]);
+    expect(notificationStore.getState().unreadCount).toBe(0);
+    expect(notificationStore.getState().isLoading).toBe(false);
+    expect(notificationEngine.setBadgeCount).toHaveBeenLastCalledWith(0);
+  });
+
+  it("restores durable notifications and derives the unread badge from them", async () => {
+    const saved = [{
+      id: "notif-saved",
+      type: "missed_call" as const,
+      title: "Missed Call",
+      body: "A real saved call",
+      timestamp: 1,
+      status: "unread" as const,
+      priority: "high" as const,
+    }];
+    notificationEngine.loadNotifications.mockResolvedValue(saved);
+
+    await notificationStore.getState().initialize();
+
+    expect(notificationStore.getState().notifications).toEqual(saved);
+    expect(notificationStore.getState().unreadCount).toBe(1);
+    expect(notificationEngine.setBadgeCount).toHaveBeenLastCalledWith(1);
+  });
+
+  it("settles to an empty state when durable initialization fails", async () => {
+    notificationEngine.loadNotifications.mockRejectedValue(new Error("storage unavailable"));
+
+    await expect(notificationStore.getState().initialize()).resolves.toBeUndefined();
+
+    expect(notificationStore.getState().notifications).toEqual([]);
+    expect(notificationStore.getState().unreadCount).toBe(0);
+    expect(notificationStore.getState().isLoading).toBe(false);
+    expect(notificationEngine.setBadgeCount).toHaveBeenLastCalledWith(0);
+  });
+});
 
 describe("Push Notification Types", () => {
   it("should export all notification types and configs", async () => {

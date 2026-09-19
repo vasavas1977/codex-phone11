@@ -45,6 +45,14 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
   await expect(repo.updatePolicy(3,{tenantId:10,mode:'automatic',aiEnabled:true,retentionDays:30})).rejects.toMatchObject({code:'FORBIDDEN'});
  });
  it('only assigned extension sees call; tenant admin is not media permission',async()=>{await ready();expect((await repo.list(2)).items).toHaveLength(1);expect((await repo.list(1)).items).toHaveLength(0);await expect(repo.detail(3,'call1')).rejects.toMatchObject({code:'NOT_FOUND'});await pool.query("DELETE FROM user_extensions WHERE user_id=2");await expect(repo.detail(2,'call1')).rejects.toMatchObject({code:'NOT_FOUND'});});
+ it('deactivation removes saved recording access without changing the extension assignment',async()=>{
+  await ready();expect((await repo.list(2)).items).toHaveLength(1);
+  await pool.query("UPDATE tenant_memberships SET status='inactive' WHERE user_id=2 AND tenant_id=10");
+  expect((await repo.list(2)).items).toHaveLength(0);
+  await expect(repo.detail(2,'call1')).rejects.toMatchObject({code:'NOT_FOUND'});
+  await pool.query("UPDATE tenant_memberships SET status='active' WHERE user_id=2 AND tenant_id=10");
+  expect((await repo.list(2)).items).toHaveLength(1);
+ });
  it('does not infer diarized participant names from caller ID or direction',async()=>{
   await pool.query("UPDATE extensions SET display_name='Vasavas' WHERE id=11");
   await pool.query("UPDATE call_records SET metadata=$1::jsonb WHERE call_uuid='call1'", [JSON.stringify({caller_name:'Somchai'})]);
@@ -109,6 +117,34 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
   await repo.updatePolicy(1,{tenantId:10,mode:'automatic',aiEnabled:false,retentionDays:30});await repo.registerCall('call1');
   const manual=(await repo.reserveCapture('call1',2))!;expect(await repo.capturePermitted('call1',manual.captureToken)).toBe(true);
   await pool.query('DELETE FROM user_extensions WHERE user_id=2');expect(await repo.capturePermitted('call1',manual.captureToken)).toBe(false);expect(await repo.markCapturing('call1',manual.captureToken)).toBe(false);
+ });
+ it('deactivation invalidates a manual capture before it starts',async()=>{
+  await repo.updatePolicy(1,{tenantId:10,mode:'manual',aiEnabled:false,retentionDays:30});await repo.registerCall('call1');
+  const manual=(await repo.reserveCapture('call1',2))!;expect(manual).toBeTruthy();
+  await pool.query("UPDATE tenant_memberships SET status='inactive' WHERE user_id=2 AND tenant_id=10");
+  expect(await repo.capturePermitted('call1',manual.captureToken)).toBe(false);
+  expect(await repo.markCapturing('call1',manual.captureToken)).toBe(false);
+ });
+ it('rejects cross-tenant recording pairs at the database boundary',async()=>{
+  await expect(pool.query(`INSERT INTO phone11_recording_policies(tenant_id,updated_by) VALUES(10,3)`)).rejects.toMatchObject({code:'23514'});
+  await pool.query(`INSERT INTO phone11_recording_policies(tenant_id,updated_by) VALUES(10,1)`);
+  await expect(pool.query(`INSERT INTO phone11_cloud_recordings(call_uuid,tenant_id,extension_id,number,direction,started_at,expires_at)
+   VALUES('foreign-recording',10,21,'3002','inbound',now(),now()+interval '1 day')`)).rejects.toMatchObject({code:'23514'});
+  const channel='00000000-0000-4000-8000-000000000010';
+  await pool.query(`INSERT INTO phone11_cloud_recordings(call_uuid,tenant_id,extension_id,number,direction,started_at,expires_at)
+   VALUES($1,10,11,'3001','inbound',now(),now()+interval '1 day')`,[channel]);
+  await expect(pool.query(`INSERT INTO phone11_recording_routes(channel_uuid,tenant_id,extension_id,direction,number)
+   VALUES($1,20,21,'inbound','3002')`,[channel])).rejects.toMatchObject({code:'23514'});
+  await expect(pool.query(`UPDATE phone11_cloud_recordings SET manual_actor_user_id=3 WHERE call_uuid=$1`,[channel])).rejects.toMatchObject({code:'23514'});
+  await pool.query(`INSERT INTO phone11_auth_session VALUES('tenant-pair-session') ON CONFLICT DO NOTHING;
+   INSERT INTO phone11_wake_bindings(id,session_id,session_binding,user_id,tenant_id,extension_id,device_id,push_revision,grant_hash,expires_at)
+   VALUES('00000000-0000-4000-8000-000000000011','tenant-pair-session','00000000-0000-4000-8000-000000000012',2,10,11,'test-device','00000000-0000-4000-8000-000000000013',repeat('a',64),now()+interval '1 day')`);
+  await expect(pool.query(`INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id)
+   VALUES('00000000-0000-4000-8000-000000000014','00000000-0000-4000-8000-000000000011',20,21,'cross-tenant')`)).rejects.toMatchObject({code:'23514'});
+  await pool.query(`INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id)
+   VALUES('00000000-0000-4000-8000-000000000014','00000000-0000-4000-8000-000000000011',10,11,'tenant-safe')`);
+  await expect(pool.query(`UPDATE extensions SET tenant_id=20 WHERE id=11`)).rejects.toMatchObject({code:'23514'});
+  await expect(pool.query(`UPDATE phone11_wake_bindings SET tenant_id=20,extension_id=21 WHERE id='00000000-0000-4000-8000-000000000011'`)).rejects.toMatchObject({code:'23514'});
  });
 
 });

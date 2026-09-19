@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createChatStore, type ChatTransport } from "../lib/chat/state";
 import { startChatForegroundRefresh } from "../lib/chat/foreground";
-const page = (tenant = 10, unreadCount = 2) => ({ workspace: { id: tenant, name: "Work" }, workspaces: [{ id: tenant, name: "Work" }], channels: [{ id: "room", kind: "group" as const, name: "Team", memberIds: [1, 2], lastMessage: null, lastMessageAt: 1, unreadCount }] });
+const page = (tenant = 10, unreadCount = 2) => ({ workspace: { id: tenant, name: "Work" }, workspaces: [{ id: tenant, name: "Work" }], channels: [{ id: "room", kind: "group" as const, name: "Team", memberIds: [1, 2], lastMessage: null, lastMessageAt: 1, unreadCount, blocked: false }] });
 function deferred() { let resolve!: (value: ReturnType<typeof page>) => void; let reject!: (error: unknown) => void; const promise = new Promise<ReturnType<typeof page>>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 const cleanups: (() => void)[] = [];
 beforeEach(() => vi.useFakeTimers());
@@ -9,7 +9,7 @@ afterEach(() => { cleanups.splice(0).forEach(stop => stop()); vi.useRealTimers()
 function setup(options: { signedOut?: boolean; inactive?: boolean; list?: ChatTransport["list"] } = {}) {
   let auth = { user: options.signedOut ? null : { id: 1 }, loading: false }; let active = !options.inactive;
   const authListeners = new Set<() => void>(), activityListeners = new Set<() => void>();
-  const api: ChatTransport = { list: vi.fn(options.list || (async () => page())), directory: vi.fn(async () => []), create: vi.fn(), history: vi.fn(), search: vi.fn(), send: vi.fn(), read: vi.fn() };
+  const api: ChatTransport = { list: vi.fn(options.list || (async () => page())), directory: vi.fn(async () => []), create: vi.fn(), history: vi.fn(), search: vi.fn(), thread: vi.fn(), send: vi.fn(), report: vi.fn(), block: vi.fn(), unblock: vi.fn(), read: vi.fn() };
   const store = createChatStore(api);
   const stop = startChatForegroundRefresh({ auth: () => auth, active: () => active, state: store.getState,
     onAuth: f => { authListeners.add(f); return () => authListeners.delete(f); },

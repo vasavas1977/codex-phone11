@@ -3,11 +3,19 @@ import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import {readFileSync} from 'node:fs';
 const require=createRequire(import.meta.url);
-const {injectBootstrap,wakeOrigin}=require('../plugins/with-phone11-voip-wake.js');
+const {injectBootstrap,injectSiprixPod,wakeOrigin}=require('../plugins/with-phone11-voip-wake.js');
 const source='import Expo\nclass AppDelegate: ExpoAppDelegate {\n override func application(\n _ application: UIApplication,\n didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil\n ) -> Bool {\n let factory = ExpoReactNativeFactory(delegate: delegate)\n return true\n }\n}';
 test('Swift native bootstrap precedes React factory and is idempotent',()=>{const result=injectBootstrap(source);assert.ok(result.indexOf('Phone11VoipPush.bootstrap()')<result.indexOf('let factory'));assert.equal(injectBootstrap(result),result);assert.match(result,/import Phone11Siprix/);});
 test('changed launch signature is rejected instead of silently losing cold wake',()=>assert.throws(()=>injectBootstrap('class AppDelegate {}')));
 test('native wake origin rejects redirects, paths, credentials and insecure schemes',()=>{assert.equal(wakeOrigin('https://api.phone11.ai/'),'https://api.phone11.ai');for(const value of ['http://api.phone11.ai','https://user:secret@api.phone11.ai','https://api.phone11.ai/path','https://api.phone11.ai?x=y','https://api.phone11.ai#x'])assert.throws(()=>wakeOrigin(value));});
+test('Siprix Pod declaration is anchored in the reviewed target and idempotent',()=>{
+  const podfile="platform :ios, '15.1'\n\ntarget 'Phone11' do\n  use_expo_modules!\nend\n";
+  const result=injectSiprixPod(podfile);
+  assert.match(result,/target 'Phone11' do\n  # Phone11 Siprix static bridge\n  pod 'Phone11Siprix', :path => '\.\.\/modules\/phone11-siprix'/);
+  assert.equal(injectSiprixPod(result),result);
+  assert.throws(()=>injectSiprixPod("target 'Phone11' do\n  # Phone11 Siprix static bridge\nend\n"),/incomplete or misplaced/);
+  assert.throws(()=>injectSiprixPod("target 'Other' do\nend\n"),/reviewed iOS Podfile target/);
+});
 
 const generated = readFileSync(new URL('./fixtures/expo54-AppDelegate.swift', import.meta.url), 'utf8');
 test('actual Expo 54 delegate gets one early bootstrap while super and linking methods remain unchanged', () => {

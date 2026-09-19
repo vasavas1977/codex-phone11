@@ -30,3 +30,24 @@ export function playbackURL(
     return null;
   }
 }
+
+/** Build only the authenticated, tenant-checked voicemail playback route. */
+export function voicemailPlaybackURL(
+  base: string,
+  voicemailId: number,
+  path?: string,
+): string | null {
+  if (
+    !Number.isSafeInteger(voicemailId) ||
+    voicemailId <= 0 ||
+    path !== `/api/recordings/voicemail/${voicemailId}`
+  )
+    return null;
+  try {
+    const origin = new URL(base);
+    if (origin.protocol !== "https:") return null;
+    return new URL(path, origin.origin).href;
+  } catch {
+    return null;
+  }
+}

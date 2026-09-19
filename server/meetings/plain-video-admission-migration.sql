@@ -50,6 +50,65 @@ CREATE INDEX IF NOT EXISTS phone11_plain_video_admission_members_lookup
   ON phone11_plain_video_admission_members(tenant_id, user_id, meeting_id)
   WHERE revoked_at IS NULL;
 
+-- A lease stores only the durable lifecycle revisions that authorized one
+-- server-side issuance attempt. It never stores a media token. The issuer
+-- rechecks both revisions and the active admission predicates after Connect11
+-- responds, before it returns any token to the Phone11 client.
+CREATE TABLE IF NOT EXISTS phone11_plain_video_admission_leases (
+  id UUID PRIMARY KEY,
+  tenant_id INTEGER NOT NULL,
+  meeting_id UUID NOT NULL,
+  user_id INTEGER NOT NULL,
+  participant_id VARCHAR(96) NOT NULL
+    CHECK (participant_id ~ '^[A-Za-z0-9_-]{1,96}$'),
+  room_revision UUID NOT NULL,
+  member_revision UUID NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'issued', 'revoked', 'expired')),
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CHECK (expires_at > created_at AND expires_at <= created_at + INTERVAL '5 minutes'),
+  CHECK (state <> 'revoked' OR revoked_at IS NOT NULL),
+  FOREIGN KEY (meeting_id, tenant_id, user_id, participant_id)
+    REFERENCES phone11_plain_video_admission_members(
+      meeting_id, tenant_id, user_id, participant_id
+    )
+);
+CREATE INDEX IF NOT EXISTS phone11_plain_video_admission_leases_pending
+  ON phone11_plain_video_admission_leases(tenant_id, meeting_id, user_id, expires_at)
+  WHERE state = 'pending';
+
+-- A removal revokes the local member before any external request. `pending`
+-- means only that local denial is durable; it is not evidence that Connect11
+-- removed an already connected participant. Only `completed` is an observed
+-- provider acknowledgement. This table intentionally stores no media token.
+CREATE TABLE IF NOT EXISTS phone11_plain_video_eviction_operations (
+  id UUID PRIMARY KEY,
+  tenant_id INTEGER NOT NULL,
+  meeting_id UUID NOT NULL,
+  user_id INTEGER NOT NULL,
+  participant_id VARCHAR(96) NOT NULL
+    CHECK (participant_id ~ '^[A-Za-z0-9_-]{1,96}$'),
+  idempotency_key VARCHAR(128) NOT NULL
+    CHECK (idempotency_key ~ '^[A-Za-z0-9_-]{16,128}$'),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'completed', 'failed')),
+  provider_eviction_id UUID,
+  revoke_token_ts BIGINT,
+  provider_created_at TIMESTAMPTZ,
+  provider_completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (tenant_id, user_id, idempotency_key),
+  CHECK ((state = 'completed') = (provider_completed_at IS NOT NULL)),
+  FOREIGN KEY (meeting_id, tenant_id, user_id, participant_id)
+    REFERENCES phone11_plain_video_admission_members(
+      meeting_id, tenant_id, user_id, participant_id
+    )
+);
+CREATE INDEX IF NOT EXISTS phone11_plain_video_eviction_operations_pending
+  ON phone11_plain_video_eviction_operations(tenant_id, meeting_id, user_id, created_at)
+  WHERE state = 'pending';
+
 CREATE OR REPLACE FUNCTION phone11_plain_video_admission_touch_revision()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

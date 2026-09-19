@@ -58,9 +58,14 @@ export const callBusy = () => {
 export function Playback({
   callUuid,
   path,
+  sourceURL,
+  allowShare = true,
 }: {
   callUuid: string;
   path: string;
+  /** Only pass a local allowlist function for another authenticated media route. */
+  sourceURL?: (base: string, path: string) => string | null;
+  allowShare?: boolean;
 }) {
   const colors = useColors();
   const player = useAudioPlayer(null, { downloadFirst: false });
@@ -222,6 +227,7 @@ export function Playback({
         base: getApiBaseUrl(),
         callUuid,
         path,
+        sourceURL,
         identity: () => Auth.getAuthSnapshot().user,
         token: Auth.getSessionToken,
         canPlay: () => !callBusy(),
@@ -269,7 +275,7 @@ export function Playback({
           void resetPlaybackAudioRoute(() => !callBusy()).catch(() => {});
         }
       };
-    }, [applyRoute, callUuid, failPlayback, path, player]),
+    }, [applyRoute, callUuid, failPlayback, path, player, sourceURL]),
   );
   useEffect(() => {
     if (status.playbackState === "failed" || status.playbackState === "error")
@@ -356,7 +362,7 @@ export function Playback({
         const effectiveOutput = normalizePlaybackAudioRoute(selectedOutput);
         if (effectiveOutput.route !== "unknown") setOutput(effectiveOutput);
       }}
-      onShare={async () => {
+      onShare={allowShare ? async () => {
         if (sharing || callBusy()) return;
         controller.current?.pause();
         setSharing(true);
@@ -376,7 +382,7 @@ export function Playback({
         } finally {
           setSharing(false);
         }
-      }}
+      } : undefined}
     />
   );
 }

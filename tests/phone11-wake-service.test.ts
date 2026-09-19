@@ -1,7 +1,7 @@
 import {afterEach,describe,expect,it,vi} from "vitest";
 const apns=vi.hoisted(()=>({send:vi.fn(async()=>{})}));
 vi.mock("../server/push/apns",()=>({sendApnsPush:apns.send}));
-import {createWakeService,wakePilot} from "../server/push/wake-service";
+import {createWakeService,wakePilot,wakePilots} from "../server/push/wake-service";
 import {wakeRepository,WakeError,type WakeCall} from "../server/push/wake-repository";
 import {pushRepository} from "../server/push/repository";
 const input={sipUri:"sip:3001@pilot.invalid",sipCallId:"synthetic-dialog"};
@@ -27,10 +27,22 @@ function providerHarness() {
 }
 afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllEnvs();apns.send.mockReset();apns.send.mockResolvedValue();});
 describe("wake service ownership and bounded call setup",()=>{
- it("stays unavailable without explicit enablement and exact valid pilot",()=>{
+ it("stays unavailable without explicit enablement and keeps the single-pilot configuration compatible",()=>{
   vi.stubEnv("PHONE11_WAKE_ENABLED","");vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URI",input.sipUri);expect(()=>wakePilot()).toThrow(WakeError);
   vi.stubEnv("PHONE11_WAKE_ENABLED","1");vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URI","not-a-sip-uri");expect(()=>wakePilot()).toThrow(WakeError);
-  vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URI",input.sipUri);expect(wakePilot()).toBe(input.sipUri);
+  vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URI",input.sipUri);expect(wakePilot()).toBe(input.sipUri);expect(wakePilots()).toEqual([input.sipUri]);
+ });
+ it("accepts at most two explicit exact pilot targets without widening to other SIP users",async()=>{
+  const reverse="sip:1020@pilot.invalid";
+  vi.stubEnv("PHONE11_WAKE_ENABLED","1");vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URIS",`${input.sipUri},${reverse}`);
+  expect(wakePilots()).toEqual([input.sipUri,reverse]);expect(wakePilot()).toBe(input.sipUri);
+  const h=harness();const service=createWakeService({repository:h.repository as unknown as typeof wakeRepository,notify:h.notify,pilots:wakePilots});
+  await service.offer({...input,sipUri:reverse});expect(h.repository.offer).toHaveBeenCalledWith(reverse,input.sipCallId);
+  await service.terminal({...input,sipUri:reverse,status:"cancelled"});expect(h.repository.transitionTrusted).toHaveBeenCalledWith(reverse,input.sipCallId,"cancelled");
+  await expect(service.offer({...input,sipUri:"sip:unmapped@pilot.invalid"})).rejects.toMatchObject({status:403});
+  vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URIS",`${input.sipUri},${input.sipUri}`);expect(()=>wakePilots()).toThrow(WakeError);
+  vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URIS",`${input.sipUri},${reverse},sip:3002@pilot.invalid`);expect(()=>wakePilots()).toThrow(WakeError);
+  vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URIS",`${input.sipUri}, sip:space@pilot.invalid`);expect(()=>wakePilots()).toThrow(WakeError);
  });
  it("rejects cross-pilot offers and terminal changes before database/provider work",async()=>{
   const h=harness();await expect(h.service.offer({...input,sipUri:"sip:3002@pilot.invalid"})).rejects.toMatchObject({status:403});
@@ -40,7 +52,7 @@ describe("wake service ownership and bounded call setup",()=>{
  it("forwards the exact resolved session and device identity to enrollment and resolution",async()=>{
   const h=harness();await h.service.enroll("session-current",7,{deviceId:"device",platform:"ios"});
   await h.service.resolve("session-current",7,call.bindingId);await h.service.revoke("session-current",7,call.bindingId);
-  expect(h.repository.enroll).toHaveBeenCalledWith("session-current",7,"device",input.sipUri);
+  expect(h.repository.enroll).toHaveBeenCalledWith("session-current",7,"device",[input.sipUri]);
   expect(h.repository.resolve).toHaveBeenCalledWith(call.bindingId,"session-current",7);
   expect(h.repository.revoke).toHaveBeenCalledWith(call.bindingId,"session-current",7);
  });

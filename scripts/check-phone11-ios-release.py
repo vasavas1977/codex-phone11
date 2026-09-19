@@ -11,7 +11,8 @@ from pathlib import Path
 
 BASE_HASH = 'e009bb13feec8b856eba8815917026a7e7a9976ffc1992afe3eae73d9b3fea66'
 BUNDLE = 'space.manus.phone11ai.t20260425073427'
-RUNTIME = '1.0.0-siprix-daily-pilot-1'
+BASE_RUNTIME = '1.0.0-siprix-daily-pilot-1'
+RUNTIME = '1.0.0-siprix-daily-pilot-chat-media-2'
 
 
 def command(*args):
@@ -67,10 +68,19 @@ def main():
     check('Expected bundle identity', lambda: info.get('CFBundleIdentifier') == base.get('CFBundleIdentifier') == BUNDLE)
     check('Expected application version', lambda: info.get('CFBundleShortVersionString') == base.get('CFBundleShortVersionString') == '1.0.0')
     check('Build increases from 49', lambda: int(base['CFBundleVersion']) == 49 and (int(info['CFBundleVersion']) > 49 or (args.allow_baseline and int(info['CFBundleVersion']) == 49)))
-    check('Siprix daily runtime retained', lambda: expo.get('EXUpdatesRuntimeVersion') == base_expo.get('EXUpdatesRuntimeVersion') == RUNTIME)
+    check('Siprix daily runtime retained', lambda: base_expo.get('EXUpdatesRuntimeVersion') == BASE_RUNTIME and expo.get('EXUpdatesRuntimeVersion') == (BASE_RUNTIME if args.allow_baseline else RUNTIME))
     check('Over-the-air updates disabled', lambda: expo.get('EXUpdatesEnabled') is False and base_expo.get('EXUpdatesEnabled') is False)
     for key in ('Phone11WakeCommissioned', 'Phone11ChatNotificationsCommissioned'):
         check(key + ' enabled', lambda key=key: str(info.get(key)) == str(base.get(key)) == '1')
+    # Chat media plugins must not remove shared calling permissions. Older
+    # baseline validation still requires microphone; the new media
+    # candidate also requires camera and Photo Library access.
+    permissions = ['NSMicrophoneUsageDescription']
+    if not args.allow_baseline:
+        permissions.extend(['NSCameraUsageDescription', 'NSPhotoLibraryUsageDescription'])
+    for key in permissions:
+        check(key + ' present', lambda key=key: isinstance(info.get(key), str) and bool(info[key].strip()))
+    check('Calling background modes retained', lambda: {'audio', 'voip', 'remote-notification'} <= set(info.get('UIBackgroundModes', [])))
     check('Wake API origin retained', lambda: info.get('Phone11WakeOrigin') == base.get('Phone11WakeOrigin') == 'https://api.phone11.ai')
     check('Signed production APNs', lambda: ent.get('aps-environment') == base_ent.get('aps-environment') == 'production')
     check('Signed team retained', lambda: bool(base_ent.get('com.apple.developer.team-identifier')) and ent.get('com.apple.developer.team-identifier') == base_ent.get('com.apple.developer.team-identifier'))

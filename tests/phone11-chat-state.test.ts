@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { createChatStore, type ChatTransport } from "../lib/chat/state";
 import type { ChatMessage } from "../lib/chat/types";
-const channel = { id: "room", name: "Team", kind: "group" as const, memberIds: [1, 2], lastMessage: null, lastMessageAt: 1, unreadCount: 2 };
-const saved = (overrides: Partial<ChatMessage> = {}): ChatMessage => ({ id: "server-row", channelId: "room", clientId: "client", senderId: 1, senderName: "One", content: "hello", timestamp: 10, sequence: 1, status: "sent", ...overrides });
+const channel = { id: "room", name: "Team", kind: "group" as const, memberIds: [1, 2], lastMessage: null, lastMessageAt: 1, unreadCount: 2, blocked: false };
+const saved = (overrides: Partial<ChatMessage> = {}): ChatMessage => ({ id: "server-row", channelId: "room", clientId: "client", senderId: 1, senderName: "One", content: "hello", timestamp: 10, sequence: 1, status: "sent", parent: null, ...overrides });
 function setup(overrides: Partial<ChatTransport> = {}) {
   const api: ChatTransport = {
     list: vi.fn(async () => ({ workspace: { id: 10, name: "Alpha" }, workspaces: [{ id: 10, name: "Alpha" }], channels: [channel] })),
     search: vi.fn(async () => ({ messages: [], hasMore: false })),
     directory: vi.fn(async () => []), create: vi.fn(async () => ({ id: "room" })),
-    history: vi.fn(async () => ({ messages: [], hasMore: false })), send: vi.fn(async (_tenant, _id, clientId, content) => saved({ clientId, content })),
+    history: vi.fn(async () => ({ messages: [], hasMore: false })), thread: vi.fn(async () => ({ root: saved(), replies: [], hasMore: false })), send: vi.fn(async (_tenant, _id, clientId, content) => saved({ clientId, content })), report: vi.fn(async () => ({ recorded: true as const })), block: vi.fn(async () => ({ blocked: true as const })), unblock: vi.fn(async () => ({ blocked: false as const })),
     read: vi.fn(async () => ({ ok: true })), ...overrides,
   };
   const store = createChatStore(api); store.getState().setUser(1);
@@ -32,8 +32,60 @@ describe("Team Chat network state", () => {
     const send = vi.fn().mockRejectedValueOnce(new Error("offline")).mockImplementation(async (_t, _r, clientId, content) => saved({ clientId, content }));
     const { store } = setup({ send }); await store.getState().loadChannels(); await store.getState().sendMessage("room", "hello");
     const pending = store.getState().messages.room[0]; expect(pending.status).toBe("failed");
+    expect(store.getState().roomErrors.room).toContain("Could not connect");
     await store.getState().retryMessage("room", pending.clientId);
     expect(send.mock.calls[0]).toEqual(send.mock.calls[1]); expect(store.getState().messages.room).toHaveLength(1); expect(store.getState().messages.room[0].status).toBe("sent");
+    expect(store.getState().roomErrors.room).toBeNull();
+  });
+  it("retains verified mention ids and ranges on an offline retry", async () => {
+    const send = vi.fn().mockRejectedValueOnce(new Error("offline")).mockImplementation(async (_t, _r, clientId, content) => saved({ clientId, content, mentions: [{ userId: 2, name: "Bob", start: 6, length: 4 }] }));
+    const { store } = setup({ directory: vi.fn(async () => [{ id: 2, name: "Bob", extension: "1002" }]), send });
+    await store.getState().loadChannels(); await store.getState().loadDirectory();
+    await store.getState().sendMessage("room", "Hello @Bob", undefined, [], [{ userId: 2, start: 6, length: 4 }]);
+    const pending = store.getState().messages.room[0];
+    expect(pending.mentions).toEqual([{ userId: 2, name: "Bob", start: 6, length: 4 }]);
+    await store.getState().retryMessage("room", pending.clientId);
+    expect(send.mock.calls[1].slice(5)).toEqual([[], [{ userId: 2, start: 6, length: 4 }]]);
+  });
+  it("rejects a late conversation-details response after an account switch", async () => {
+    let finish!: (value: { members: []; media: []; links: [] }) => void;
+    const { store } = setup({ details: vi.fn(() => new Promise<{ members: []; media: []; links: [] }>(resolve => { finish = resolve; })) });
+    await store.getState().loadChannels();
+    const request = store.getState().loadDetails("room");
+    store.getState().setUser(2);
+    finish({ members: [], media: [], links: [] });
+    await expect(request).rejects.toThrow("Account changed");
+  });
+  it("keeps a quoted parent on the optimistic bubble and reuses it for a nonduplicating retry", async () => {
+    const parent = saved({ id: "parent", clientId: "parent-client", senderId: 2, senderName: "Bob", content: "Original" });
+    const send = vi.fn().mockRejectedValueOnce(new Error("offline")).mockImplementation(async (_t, _r, clientId, content, parentMessageId) =>
+      saved({ id: "reply", clientId, content, parent: { id: parentMessageId, senderName: "Bob", content: "Original" } }));
+    const { store } = setup({ history: vi.fn(async () => ({ messages: [parent], hasMore: false })), send });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().sendMessage("room", "Reply", parent.id);
+    const pending = store.getState().messages.room.find(message => message.clientId !== parent.clientId)!;
+    expect(pending).toMatchObject({ status: "failed", parent: { id: parent.id, content: "Original" } });
+    await store.getState().retryMessage("room", pending.clientId);
+    expect(send.mock.calls[0]).toEqual(send.mock.calls[1]); expect(store.getState().messages.room).toHaveLength(2);
+  });
+  it("rejects a late bounded-thread response after an account switch", async () => {
+    let finish!: (value: { root: ChatMessage; replies: ChatMessage[]; hasMore: boolean }) => void;
+    const { store } = setup({ thread: vi.fn(() => new Promise<{ root: ChatMessage; replies: ChatMessage[]; hasMore: boolean }>(resolve => { finish = resolve; })) });
+    await store.getState().loadChannels(); const request = store.getState().loadThread("room", "parent");
+    store.getState().setUser(2); finish({ root: saved({ id: "parent" }), replies: [], hasMore: false });
+    await expect(request).rejects.toThrow("Account changed");
+  });
+  it("does not refresh blocked-state policy into a replacement account", async () => {
+    let finish!: (value: { blocked: true }) => void;
+    const { store } = setup({ block: vi.fn(() => new Promise<{ blocked: true }>(resolve => { finish = resolve; })) });
+    await store.getState().loadChannels(); const request = store.getState().blockMember(2);
+    store.getState().setUser(2); finish({ blocked: true });
+    await expect(request).rejects.toThrow("Account changed"); expect(store.getState().channels).toEqual([]);
+  });
+  it("refreshes the directory after unblocking so a restored peer can be selected again", async () => {
+    const { store, api } = setup({ directory: vi.fn(async () => [{ id: 2, name: "Bob", extension: "1002" }]) });
+    await store.getState().loadChannels(); await store.getState().unblockMember(2);
+    expect(api.unblock).toHaveBeenCalledWith(10, 2); expect(api.directory).toHaveBeenCalledWith(10);
+    expect(store.getState().people).toEqual([{ id: 2, name: "Bob", extension: "1002" }]);
   });
   it("merges a lost-response retry with the server history instead of duplicating it", async () => {
     const { store, api } = setup({ send: vi.fn().mockRejectedValue(new Error("lost response")) }); await store.getState().loadChannels(); await store.getState().sendMessage("room", "hello");
@@ -124,6 +176,19 @@ describe("Team Chat network state", () => {
     await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().markAsRead("room");
     await store.getState().markAsRead("room");
     expect(api.read).toHaveBeenCalledOnce(); expect(api.read).toHaveBeenCalledWith(10, "room", 4);
+  });
+  it("uses the server room ceiling to acknowledge thread replies omitted from root history", async () => {
+    const { store, api } = setup({ history: vi.fn(async () => ({ messages: [saved({ senderId: 2, sequence: 4 })], hasMore: false, latestSequence: 9 })) });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().markAsRead("room");
+    expect(api.read).toHaveBeenCalledWith(10, "room", 9);
+  });
+  it("clears the root-thread draft when replying to a nested reply", async () => {
+    const root = saved({ id: "root", clientId: "root-client", senderId: 2 });
+    const reply = saved({ id: "reply", clientId: "reply-client", senderId: 2, parent: { id: "root", senderName: "Two", content: "root" } });
+    const { store } = setup({ history: vi.fn(async () => ({ messages: [root, reply], hasMore: false })) });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room");
+    store.getState().setDraft("room:thread:root", "nested response"); await store.getState().sendMessage("room", "nested response", reply.id);
+    expect(store.getState().drafts["room:thread:root"]).toBe("");
   });
   it("does not coalesce a newer read cursor into an older pending acknowledgement", async () => {
     let finishFirst!: () => void;

@@ -319,6 +319,9 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
  * Get call statistics for dashboard
  */
 export async function getCallStats(tenantId: number, period: "today" | "week" | "month" = "today") {
+  // These boundaries and EXTRACT(HOUR) use the database session timezone. The
+  // current API has no validated workspace-timezone input, so clients must not
+  // label this distribution as local workspace time.
   const dateFilter = period === "today" 
     ? "started_at >= CURRENT_DATE"
     : period === "week"
@@ -395,19 +398,46 @@ export async function getCallStats(tenantId: number, period: "today" | "week" | 
 /**
  * Get voicemail messages for an extension
  */
-export async function getVoicemails(tenantId: number, extension?: string) {
-  const conditions = ["tenant_id = $1", "status != 'deleted'"];
-  const vals: any[] = [tenantId];
+export class VoicemailStorageUnavailableError extends Error {
+  constructor() {
+    super("Voicemail inbox storage is not configured on this server");
+  }
+}
+
+/** Do not treat an absent migration as an empty inbox. */
+export async function requireVoicemailStorage() {
+  const result = await query("SELECT to_regclass('voicemail_messages') AS name");
+  if (!result.rows[0]?.name) throw new VoicemailStorageUnavailableError();
+}
+
+export async function getVoicemails(
+  tenantId: number,
+  userId: number,
+  extension?: string,
+) {
+  await requireVoicemailStorage();
+  const conditions = ["vm.tenant_id = $1", "vm.status != 'deleted'"];
+  const vals: Array<number | string> = [tenantId, userId];
 
   if (extension) {
-    conditions.push("extension_number = $2");
+    conditions.push("e.extension_number = $3");
     vals.push(extension);
   }
 
   const result = await query(
-    `SELECT * FROM voicemail_messages 
+    `SELECT vm.id, vm.extension_id, e.extension_number, vm.caller_number,
+            vm.caller_name, vm.duration_seconds, vm.status, vm.created_at,
+            vm.read_at
+     FROM voicemail_messages vm
+     JOIN extensions e
+       ON e.id = vm.extension_id AND e.tenant_id = vm.tenant_id
+     JOIN user_extensions ue
+       ON ue.extension_id = e.id AND ue.user_id = $2
+     JOIN tenant_memberships tm
+       ON tm.user_id = ue.user_id AND tm.tenant_id = vm.tenant_id AND tm.status = 'active'
      WHERE ${conditions.join(" AND ")}
-     ORDER BY created_at DESC
+       AND e.status = 'active' AND e.deleted_at IS NULL
+     ORDER BY vm.created_at DESC
      LIMIT 100`,
     vals
   );

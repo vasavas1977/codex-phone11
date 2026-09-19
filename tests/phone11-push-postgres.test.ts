@@ -26,16 +26,18 @@ describe.skipIf(!connectionString)("Push registry real PostgreSQL persistence an
       CREATE TABLE IF NOT EXISTS tenants (id INTEGER PRIMARY KEY, status TEXT);
       CREATE TABLE IF NOT EXISTS extensions (id INTEGER PRIMARY KEY, tenant_id INTEGER REFERENCES tenants(id), status TEXT, deleted_at TIMESTAMPTZ);
       CREATE TABLE IF NOT EXISTS user_extensions (user_id INTEGER REFERENCES users(id), extension_id INTEGER REFERENCES extensions(id));
+      CREATE TABLE IF NOT EXISTS tenant_memberships (user_id INTEGER REFERENCES users(id), tenant_id INTEGER REFERENCES tenants(id), status TEXT, PRIMARY KEY(user_id,tenant_id));
       CREATE TABLE IF NOT EXISTS sip_accounts (extension_id INTEGER REFERENCES extensions(id), tenant_id INTEGER REFERENCES tenants(id), sip_username TEXT, sip_domain TEXT, status TEXT, deleted_at TIMESTAMPTZ);`);
     const migration = await readFile(new URL("../server/push/migration.sql", import.meta.url), "utf8");
     await pool.query(migration); await pool.query(migration);
   });
   beforeEach(async () => {
-    await pool.query(`TRUNCATE phone11_push_devices, phone11_auth_identity, phone11_auth_session, sip_accounts, user_extensions, extensions, users, tenants CASCADE;
+    await pool.query(`TRUNCATE phone11_push_devices, phone11_auth_identity, phone11_auth_session, sip_accounts, user_extensions, tenant_memberships, extensions, users, tenants CASCADE;
       INSERT INTO users VALUES (1),(2),(3);
       INSERT INTO phone11_auth_identity VALUES ('auth-1',1,NULL),('auth-2',2,NULL),('auth-3',3,NULL);
       INSERT INTO phone11_auth_session VALUES ('session-1','auth-1',NOW()+INTERVAL '1 day'),('session-2','auth-2',NOW()+INTERVAL '1 day'),('session-3','auth-3',NOW()+INTERVAL '1 day');
       INSERT INTO tenants VALUES (10,'active'),(20,'active');
+      INSERT INTO tenant_memberships VALUES (1,10,'active'),(2,10,'active'),(3,20,'active');
       INSERT INTO extensions VALUES (1,10,'active',NULL),(2,10,'active',NULL),(3,20,'active',NULL);
       INSERT INTO user_extensions VALUES (1,1),(2,2),(3,3);
       INSERT INTO sip_accounts VALUES (1,10,'1001','test.invalid','active',NULL),(2,10,'1002','test.invalid','active',NULL),(3,20,'2001','test.invalid','active',NULL);`);
@@ -58,6 +60,13 @@ describe.skipIf(!connectionString)("Push registry real PostgreSQL persistence an
   it("rechecks an assignment revoked between gateway authentication and persistence", async () => {
     await pool.query("DELETE FROM user_extensions WHERE user_id=1");
     await expect(repository.put(token)).rejects.toThrow("not assigned"); expect((await repository.stats()).totalDevices).toBe(0);
+  });
+  it("stops delivery and new registration after workspace member deactivation", async () => {
+    await repository.put(token); const [saved] = await repository.list(token.sipUri);
+    await pool.query("UPDATE tenant_memberships SET status='inactive' WHERE user_id=1 AND tenant_id=10");
+    expect(await repository.list(token.sipUri)).toHaveLength(0);
+    expect(await repository.isCurrent(saved)).toBe(false);
+    await expect(repository.put(token)).rejects.toThrow("not assigned");
   });
   it.each(["UPDATE tenants SET status='inactive' WHERE id=10", "UPDATE extensions SET deleted_at=NOW() WHERE id=1", "UPDATE sip_accounts SET status='inactive' WHERE extension_id=1", "DELETE FROM user_extensions WHERE user_id=1", "UPDATE sip_accounts SET sip_username='replacement' WHERE extension_id=1"])("excludes stale assignment at both lookup and last delivery check (%s)", async change => {
     await repository.put(token); const [saved] = await repository.list(token.sipUri); await pool.query(change);

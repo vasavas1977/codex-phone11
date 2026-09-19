@@ -149,12 +149,23 @@ export function clearAuth(): Promise<void> {
       clearUserInfo(),
       (async () => {
         try {
-          const { sipEngine } = await import("@/lib/sip/engine");
-          await sipEngine.destroy();
+          const { clearNativeMeetingForAuth } =
+            await import("@/lib/meetings/native-session-registry");
+          await clearNativeMeetingForAuth();
         } finally {
-          const { useSipAccountStore } =
-            await import("@/lib/sip/account-store");
-          await useSipAccountStore.getState().clearAccount();
+          // A SIP-interrupted meeting is already absent from the route registry,
+          // so retire its explicit resume record as well on account teardown.
+          const { clearNativeMeetingMediaForAuth } =
+            await import("@/lib/meetings/native-session");
+          clearNativeMeetingMediaForAuth();
+          try {
+            const { sipEngine } = await import("@/lib/sip/engine");
+            await sipEngine.destroy();
+          } finally {
+            const { useSipAccountStore } =
+              await import("@/lib/sip/account-store");
+            await useSipAccountStore.getState().clearAccount();
+          }
         }
       })(),
     ]);

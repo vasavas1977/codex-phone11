@@ -32,6 +32,8 @@ vi.mock("../server/pbx/cdr-processor", () => ({
 // The router must load after its database and service modules are mocked.
 // eslint-disable-next-line import/first
 import { pbxRouter } from "../server/pbx/pbx-router";
+// eslint-disable-next-line import/first
+import { getCallStats } from "../server/pbx/cdr-processor";
 
 const context = (globalRole = "user") =>
   ({
@@ -106,8 +108,74 @@ describe("PBX workspace administrator authorization", () => {
       "utf8",
     );
     expect(source).not.toContain("adminProcedure");
-    expect(source.match(/await getTenantAdminCtx\(ctx/g)).toHaveLength(14);
+    expect(source.match(/await getTenantAdminCtx\(ctx/g)).toHaveLength(18);
   });
+
+  it.each(["owner", "admin"] as const)(
+    "lists only active people in the current workspace for a %s",
+    async (role) => {
+      const people = [
+        {
+          id: 88,
+          name: "Nok",
+          email: "nok@example.com",
+          assigned_extension_numbers: ["3101"],
+        },
+      ];
+      db.query
+        .mockResolvedValueOnce({ rows: [membership(role)] })
+        .mockResolvedValueOnce({ rows: people });
+
+      await expect(
+        pbxRouter.createCaller(context("user")).tenant.people(),
+      ).resolves.toEqual(people);
+      expect(db.query.mock.calls[1]).toEqual([
+        expect.stringContaining("FROM tenant_memberships tm"),
+        [7],
+      ]);
+      expect(db.query.mock.calls[1][0]).toContain("tm.status = 'active'");
+      expect(db.query.mock.calls[1][0]).toContain("e.tenant_id = tm.tenant_id");
+      expect(db.query.mock.calls[1][0]).not.toContain("secret_ciphertext");
+    },
+  );
+
+  it.each(["manager", "user"] as const)(
+    "denies people listing to a workspace %s",
+    async (role) => {
+      db.query.mockResolvedValueOnce({ rows: [membership(role)] });
+
+      await expect(
+        pbxRouter.createCaller(context("admin")).tenant.people(),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(db.query).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(["owner", "admin"] as const)(
+    "allows a workspace %s to read tenant-scoped call analytics",
+    async (role) => {
+      const report = { summary: { total_calls: "3" } };
+      db.query.mockResolvedValueOnce({ rows: [membership(role)] });
+      vi.mocked(getCallStats).mockResolvedValueOnce(report as any);
+
+      await expect(
+        pbxRouter.createCaller(context("user")).dashboard.analytics({ period: "week" }),
+      ).resolves.toEqual(report);
+      expect(getCallStats).toHaveBeenCalledWith(7, "week");
+    },
+  );
+
+  it.each(["manager", "user"] as const)(
+    "denies a workspace %s before reading call analytics",
+    async (role) => {
+      db.query.mockResolvedValueOnce({ rows: [membership(role)] });
+
+      await expect(
+        pbxRouter.createCaller(context("admin")).dashboard.analytics({ period: "month" }),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(getCallStats).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects creating an extension for a person outside the active workspace", async () => {
     db.query
@@ -161,8 +229,11 @@ describe("PBX workspace administrator authorization", () => {
       .mockResolvedValueOnce({ rows: [membership("admin")] })
       .mockResolvedValueOnce({ rows: [{ id: 44 }] })
       .mockResolvedValueOnce({ rows: [{ exists: 1 }] })
-      .mockResolvedValueOnce({ rows: [{ id: 44, tenant_id: 7 }] })
-      .mockResolvedValueOnce({ rows: [] });
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ has_primary: false }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 55 }] });
 
     await expect(
       pbxRouter.createCaller(context("user")).extensions.update({
@@ -175,15 +246,110 @@ describe("PBX workspace administrator authorization", () => {
       expect.stringContaining("FROM tenant_memberships"),
       [88, 7],
     ]);
-    expect(db.query.mock.calls[4][0]).toContain("UPDATE extensions");
+    expect(db.query.mock.calls[3]).toEqual([
+      expect.stringContaining(
+        "WHERE id = $2 AND tenant_id = $3 AND deleted_at IS NULL",
+      ),
+      [88, 44, 7],
+    ]);
+    expect(db.query.mock.calls[4]).toEqual([
+      expect.stringContaining("DELETE FROM user_extensions"),
+      [44, 7],
+    ]);
+    expect(db.query.mock.calls[6]).toEqual([
+      expect.stringContaining("INSERT INTO user_extensions"),
+      [88, 44, true],
+    ]);
+    expect(db.query.mock.calls[7]).toEqual([
+      expect.stringContaining("UPDATE sip_accounts"),
+      [88, 44, 7],
+    ]);
+  });
+
+  it("allows an administrator to unassign an existing extension with null", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 55 }] });
+
+    await expect(
+      pbxRouter.createCaller(context("user")).extensions.update({
+        id: 44,
+        userId: null,
+      }),
+    ).resolves.toEqual({ success: true });
+
+    expect(db.query.mock.calls[2]).toEqual([
+      expect.stringContaining("UPDATE extensions SET user_id = $1"),
+      [null, 44, 7],
+    ]);
+    expect(db.query.mock.calls[3]).toEqual([
+      expect.stringContaining("DELETE FROM user_extensions"),
+      [44, 7],
+    ]);
+    expect(db.query.mock.calls[4]).toEqual([
+      expect.stringContaining("UPDATE sip_accounts"),
+      [null, 44, 7],
+    ]);
+  });
+
+  it("does not make a second extension primary for a person with a primary assignment", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [{ exists: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ has_primary: true }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 55 }] });
+
+    await expect(
+      pbxRouter.createCaller(context("user")).extensions.update({
+        id: 44,
+        userId: 88,
+      }),
+    ).resolves.toEqual({ success: true });
+
+    expect(db.query.mock.calls[6]).toEqual([
+      expect.stringContaining("INSERT INTO user_extensions"),
+      [88, 44, false],
+    ]);
+  });
+
+  it("rolls back an assignment when the extension has no single active SIP account", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [{ exists: 1 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ has_primary: false }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context("user")).extensions.update({
+        id: 44,
+        userId: 88,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    expect(db.withTransaction).toHaveBeenCalledTimes(1);
+    expect(db.query.mock.calls[7]).toEqual([
+      expect.stringContaining("UPDATE sip_accounts"),
+      [88, 44, 7],
+    ]);
   });
 });
 
 describe("DID route assignment", () => {
   it.each([
-    ["extension", "extensions", "status = 'active'"],
-    ["ring_group", "ring_groups", "is_active = true"],
-    ["queue", "call_queues", "is_active = true"],
+    ["extension", "extensions", "sa.status = 'active'"],
+    ["ring_group", "ring_groups", "strategy IN ('simultaneous', 'sequential')"],
+    ["queue", "call_queues", "strategy = 'ring_all'"],
     ["ivr", "ivr_menus", "is_active = true"],
     ["time_condition", "time_conditions", "tenant_id = $2"],
   ] as const)(
@@ -206,7 +372,16 @@ describe("DID route assignment", () => {
       expect(db.query.mock.calls[2][0]).toContain(`FROM ${table}`);
       expect(db.query.mock.calls[2][0]).toContain(activeCondition);
       expect(db.query.mock.calls[2][1]).toEqual([23, 7]);
-      expect(db.query.mock.calls[3][0]).toContain("UPDATE phone_numbers");
+      if (routeType === "extension") {
+        expect(db.query.mock.calls[2][0]).toContain(
+          "sa.tenant_id = e.tenant_id",
+        );
+        expect(db.query.mock.calls[2][0]).toContain("sa.user_id IS NOT NULL");
+      }
+      expect(db.query.mock.calls[3]).toEqual([
+        expect.stringContaining("WHERE id = $3 AND tenant_id = $4"),
+        [routeType, 23, 44, 7],
+      ]);
     },
   );
 
@@ -229,6 +404,40 @@ describe("DID route assignment", () => {
       ),
     ).toBe(false);
   });
+
+  it.each([
+    ["extension", "e.type = 'user'", "sa.user_id IS NOT NULL"],
+    [
+      "ring_group",
+      "strategy IN ('simultaneous', 'sequential')",
+      "is_active = true",
+    ],
+    ["queue", "strategy = 'ring_all'", "is_active = true"],
+  ] as const)(
+    "rejects a runtime-unusable %s destination before updating the DID",
+    async (routeType, requiredClause, activeClause) => {
+      db.query
+        .mockResolvedValueOnce({ rows: [membership("owner")] })
+        .mockResolvedValueOnce({ rows: [{ id: 44 }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await expect(
+        pbxRouter.createCaller(context("user")).phoneNumbers.assignRoute({
+          id: 44,
+          assignedRouteType: routeType,
+          assignedRouteId: 23,
+        }),
+      ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+      expect(db.query.mock.calls[2][0]).toContain(requiredClause);
+      expect(db.query.mock.calls[2][0]).toContain(activeClause);
+      expect(
+        db.query.mock.calls.some(([sql]) =>
+          String(sql).includes("UPDATE phone_numbers"),
+        ),
+      ).toBe(false);
+    },
+  );
 
   it.each([
     { assignedRouteType: "ivr" as const, assignedRouteId: null },
@@ -256,7 +465,10 @@ describe("DID route assignment", () => {
         assignedRouteId: null,
       }),
     ).resolves.toEqual({ success: true });
-    expect(db.query.mock.calls[2][0]).toContain("UPDATE phone_numbers");
+    expect(db.query.mock.calls[2]).toEqual([
+      expect.stringContaining("WHERE id = $3 AND tenant_id = $4"),
+      [null, null, 44, 7],
+    ]);
   });
 });
 
@@ -272,7 +484,9 @@ describe("PBX call-record isolation", () => {
 
     expect(db.query).toHaveBeenCalledTimes(2);
     expect(db.query.mock.calls[1]).toEqual([
-      expect.stringContaining("FROM call_records WHERE id = $1 AND tenant_id = $2"),
+      expect.stringContaining(
+        "FROM call_records WHERE id = $1 AND tenant_id = $2",
+      ),
       [44, 7],
     ]);
     expect(
@@ -280,5 +494,184 @@ describe("PBX call-record isolation", () => {
         /FROM call_(legs|events)/.test(String(sql)),
       ),
     ).toBe(false);
+  });
+});
+
+describe("PBX workspace member lifecycle", () => {
+  it.each(["owner", "admin"] as const)(
+    "lists active and inactive members only in the current workspace for a %s",
+    async (role) => {
+      const members = [
+        { id: 88, name: "Nok", email: "nok@example.com", role: "user", status: "active" },
+        { id: 89, name: "Mai", email: "mai@example.com", role: "user", status: "inactive" },
+      ];
+      db.query
+        .mockResolvedValueOnce({ rows: [membership(role)] })
+        .mockResolvedValueOnce({ rows: members });
+
+      await expect(
+        pbxRouter.createCaller(context()).tenant.members(),
+      ).resolves.toEqual(members);
+      expect(db.query.mock.calls[1]).toEqual([
+        expect.stringContaining("FROM tenant_memberships tm"),
+        [7],
+      ]);
+      expect(db.query.mock.calls[1][0]).toContain("WHERE tm.tenant_id = $1");
+      expect(db.query.mock.calls[1][0]).not.toContain(
+        "WHERE tm.tenant_id = $1 AND tm.status = 'active'",
+      );
+      expect(db.query.mock.calls[1][0]).not.toContain("secret_ciphertext");
+    },
+  );
+
+  it.each(["manager", "user"] as const)(
+    "denies member listing to a workspace %s",
+    async (role) => {
+      db.query.mockResolvedValueOnce({ rows: [membership(role)] });
+
+      await expect(
+        pbxRouter.createCaller(context()).tenant.members(),
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(db.query).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("rejects a target outside the active workspace before any membership write", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.updateMember({
+        userId: 88,
+        status: "inactive",
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(db.query.mock.calls[2]).toEqual([
+      expect.stringContaining("WHERE tm.tenant_id = $1 AND tm.user_id = $2"),
+      [7, 88],
+    ]);
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        String(sql).includes("UPDATE tenant_memberships"),
+      ),
+    ).toBe(false);
+  });
+
+  it("lets an owner demote an administrator only when another active administrator remains", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ user_id: 88, role: "admin", status: "active", name: "Nok", email: "nok@example.com" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ user_id: 9 }, { user_id: 88 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 88, role: "user", status: "active" }] });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.updateMember({
+        userId: 88,
+        role: "user",
+      }),
+    ).resolves.toEqual({
+      success: true,
+      member: { id: 88, role: "user", status: "active" },
+    });
+    expect(db.query.mock.calls[4]).toEqual([
+      expect.stringContaining("UPDATE tenant_memberships"),
+      ["user", "active", 7, 88],
+    ]);
+  });
+
+  it("protects the final active workspace administrator from demotion or deactivation", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ user_id: 88, role: "admin", status: "active", name: "Nok", email: "nok@example.com" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ user_id: 88 }] });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.updateMember({
+        userId: 88,
+        status: "inactive",
+      }),
+    ).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "Keep at least one active workspace administrator.",
+    });
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        String(sql).includes("UPDATE tenant_memberships"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not let an administrator promote or change another administrator", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ user_id: 88, role: "user", status: "active", name: "Nok", email: "nok@example.com" }],
+      });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.updateMember({
+        userId: 88,
+        role: "admin",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        String(sql).includes("UPDATE tenant_memberships"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not mutate workspace owners through the member lifecycle API", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ user_id: 88, role: "owner", status: "active", name: "Nok", email: "nok@example.com" }],
+      });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.updateMember({
+        userId: 88,
+        status: "inactive",
+      }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        String(sql).includes("UPDATE tenant_memberships"),
+      ),
+    ).toBe(false);
+  });
+
+  it("preserves a legacy manager role when an owner only changes membership status", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ user_id: 88, role: "manager", status: "active", name: "Nok", email: "nok@example.com" }],
+      })
+      .mockResolvedValueOnce({ rows: [{ id: 88, role: "manager", status: "inactive" }] });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.updateMember({
+        userId: 88,
+        status: "inactive",
+      }),
+    ).resolves.toEqual({
+      success: true,
+      member: { id: 88, role: "manager", status: "inactive" },
+    });
+    expect(db.query.mock.calls[3]).toEqual([
+      expect.stringContaining("UPDATE tenant_memberships"),
+      ["manager", "inactive", 7, 88],
+    ]);
   });
 });

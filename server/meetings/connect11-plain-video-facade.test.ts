@@ -106,4 +106,57 @@ describe("Connect11 plain video facade", () => {
       ).capabilities(),
     ).rejects.toThrow("unavailable");
   });
+
+  it("uses the strict opaque eviction contract and requires a bounded status read", async () => {
+    const eviction = {
+      eviction_id: "12345678-1234-4234-8234-123456789012",
+      contract_version: "phone11-plain-video.v1",
+      status: "pending",
+      revoke_token_ts: Math.floor(Date.now() / 1_000),
+      created_at: "2026-09-19T00:00:00.000Z",
+      completed_at: null,
+    };
+    const request = vi
+      .fn()
+      .mockImplementationOnce(async () => new Response(JSON.stringify(eviction), { status: 202 }))
+      .mockImplementationOnce(async () => new Response(JSON.stringify({
+        ...eviction,
+        status: "completed",
+        completed_at: "2026-09-19T00:01:00.000Z",
+      }), { status: 200 }));
+    const facade = createConnect11PlainVideoFacade(config, request);
+
+    await expect(facade.requestEviction({
+      meetingId: "meeting_01",
+      participantId: "person_01",
+    }, "plain_video_remove_0001")).resolves.toEqual(eviction);
+    expect(String(request.mock.calls[0][0])).toBe(
+      "https://connect11.example/api/v1/realtime/plain-video/evictions",
+    );
+    expect(request.mock.calls[0][1].method).toBe("POST");
+    expect(request.mock.calls[0][1].headers["Idempotency-Key"]).toBe("plain_video_remove_0001");
+    expect(JSON.parse(request.mock.calls[0][1].body)).toEqual({
+      meeting_id: "meeting_01",
+      participant_id: "person_01",
+    });
+
+    await expect(facade.evictionStatus(eviction.eviction_id)).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(String(request.mock.calls[1][0])).toBe(
+      `https://connect11.example/api/v1/realtime/plain-video/evictions/${eviction.eviction_id}`,
+    );
+  });
+
+  it("rejects non-202, malformed, or incomplete eviction acknowledgements", async () => {
+    const response = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: "completed" }), { status: 202 }),
+    );
+    const facade = createConnect11PlainVideoFacade(config, response);
+    await expect(facade.requestEviction({
+      meetingId: "meeting_01",
+      participantId: "person_01",
+    }, "plain_video_remove_0001")).rejects.toThrow("unavailable");
+    expect(response).toHaveBeenCalledTimes(1);
+  });
 });

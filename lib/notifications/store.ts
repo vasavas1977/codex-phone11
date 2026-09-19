@@ -60,10 +60,9 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
         pushEngine.loadPreferences(),
       ]);
 
-      // If no saved notifications, use mock data for demo
-      const notifications = savedNotifications.length > 0
-        ? savedNotifications
-        : pushEngine.generateMockNotifications();
+      // An empty durable store is a valid state. Do not invent notifications
+      // when the account has no saved calls, messages, or recordings.
+      const notifications = savedNotifications;
 
       set({
         notifications,
@@ -77,14 +76,13 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       await pushEngine.setBadgeCount(unread);
     } catch (error) {
       console.error("[NotificationStore] Init failed:", error);
-      // Fall back to mock data
-      const mockNotifications = pushEngine.generateMockNotifications();
       set({
-        notifications: mockNotifications,
+        notifications: [],
         preferences: DEFAULT_PREFERENCES,
-        unreadCount: computeUnreadCount(mockNotifications),
+        unreadCount: 0,
         isLoading: false,
       });
+      await pushEngine.setBadgeCount(0);
     }
   },
 

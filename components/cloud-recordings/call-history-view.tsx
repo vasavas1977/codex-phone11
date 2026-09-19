@@ -240,8 +240,8 @@ export function RecordingPanel({
     off: "AI summary was not enabled for this call.",
     queued: "Preparing transcription before the AI summary…",
     processing: "Creating AI summary…",
-    ready: "AI summary is still processing. Refresh status.",
-    failed: "AI summary could not be created. Refresh status to check again.",
+    ready: "AI summary is unavailable. Refresh status to check again.",
+    failed: "AI summary is unavailable. Refresh status to check again.",
   }[summaryStatus];
   const transcriptionMessage = {
     off: "Transcription was not enabled for this call.",

@@ -26,6 +26,9 @@ const wake = createWakeRepository(transaction), push = createPushRepository(tran
 const uri = "sip:1001@test.invalid";
 const token: PushToken = { sessionId: "session-1", owner: { userId: 1, tenantId: 10, extensionId: 1, sipUri: uri }, sipUri: uri,
   token: "a".repeat(64), tokenType: "voip", platform: "ios", deviceId: "device-a", bundleId: "test.phone11", sandbox: false, registeredAt: 0 };
+const reverseUri = "sip:1002@test.invalid";
+const reverseToken: PushToken = { sessionId: "session-2", owner: { userId: 2, tenantId: 10, extensionId: 2, sipUri: reverseUri }, sipUri: reverseUri,
+  token: "b".repeat(64), tokenType: "voip", platform: "ios", deviceId: "device-b", bundleId: "test.phone11", sandbox: false, registeredAt: 0 };
 async function enrolled() { await push.put(token); return wake.enroll("session-1", 1, "device-a", uri); }
 async function offered() { const b = await enrolled(); const { call } = await wake.offer(uri, "sip-call-1"); return { b, call }; }
 async function afterExpiry(expiry: Date) {
@@ -48,6 +51,7 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
       CREATE TABLE tenants (id INTEGER PRIMARY KEY, status TEXT);
       CREATE TABLE extensions (id INTEGER PRIMARY KEY, tenant_id INTEGER REFERENCES tenants(id), status TEXT, deleted_at TIMESTAMPTZ);
       CREATE TABLE user_extensions (user_id INTEGER REFERENCES users(id), extension_id INTEGER REFERENCES extensions(id));
+      CREATE TABLE tenant_memberships (user_id INTEGER REFERENCES users(id), tenant_id INTEGER REFERENCES tenants(id), status TEXT, PRIMARY KEY(user_id,tenant_id));
       CREATE TABLE sip_accounts (extension_id INTEGER REFERENCES extensions(id), tenant_id INTEGER REFERENCES tenants(id), sip_username TEXT, sip_domain TEXT, status TEXT, deleted_at TIMESTAMPTZ, transport_preference TEXT);
       CREATE TABLE subscriber (username TEXT, domain TEXT, password TEXT, PRIMARY KEY(username,domain));`);
     for (const path of ["../server/push/migration.sql", "../server/push/wake-migration.sql"]) {
@@ -56,11 +60,12 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     }
   });
   beforeEach(async () => {
-    await pool.query(`TRUNCATE phone11_wake_terminals, phone11_wake_calls, phone11_wake_bindings, phone11_push_devices, phone11_auth_identity, phone11_auth_session, subscriber, sip_accounts, user_extensions, extensions, users, tenants CASCADE;
+    await pool.query(`TRUNCATE phone11_wake_terminals, phone11_wake_calls, phone11_wake_bindings, phone11_push_devices, phone11_auth_identity, phone11_auth_session, subscriber, sip_accounts, user_extensions, tenant_memberships, extensions, users, tenants CASCADE;
       INSERT INTO users VALUES (1),(2),(3);
       INSERT INTO phone11_auth_identity VALUES ('auth-1',1,NULL),('auth-2',2,NULL),('auth-3',3,NULL);
       INSERT INTO phone11_auth_session VALUES ('session-1','auth-1',clock_timestamp()+INTERVAL '1 day'),('session-2','auth-2',clock_timestamp()+INTERVAL '1 day'),('session-3','auth-3',clock_timestamp()+INTERVAL '1 day'),('session-new','auth-1',clock_timestamp()+INTERVAL '1 day');
       INSERT INTO tenants VALUES (10,'active'),(20,'active');
+      INSERT INTO tenant_memberships VALUES (1,10,'active'),(2,10,'active'),(3,20,'active');
       INSERT INTO extensions VALUES (1,10,'active',NULL),(2,10,'active',NULL),(3,20,'active',NULL);
       INSERT INTO user_extensions VALUES (1,1),(2,2),(3,3);
       INSERT INTO sip_accounts VALUES (1,10,'1001','test.invalid','active',NULL,'TLS'),(2,10,'1002','test.invalid','active',NULL,'UDP'),(3,20,'2001','test.invalid','active',NULL,'UDP');
@@ -76,6 +81,19 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     const safe = await createWakeRepository(transaction).resolve(b.bindingId, "session-1", 1);
     expect(safe).not.toHaveProperty("grant"); expect(safe).not.toHaveProperty("grant_hash"); expect(safe).not.toHaveProperty("sip");
     expect(safe.bindingId).toBe(b.bindingId);
+  });
+  it("keeps two explicit targets independently bound and refuses an unlisted account", async () => {
+    await push.put(token); await push.put(reverseToken);
+    const pilots=[uri,reverseUri] as const;
+    const [forward,reverse]=await Promise.all([
+      wake.enroll("session-1",1,"device-a",pilots),wake.enroll("session-2",2,"device-b",pilots),
+    ]);
+    expect(forward.tenantId).toBe(10);expect(reverse.tenantId).toBe(10);
+    expect((await wake.offer(uri,"forward-pilot")).call.bindingId).toBe(forward.bindingId);
+    expect((await wake.offer(reverseUri,"reverse-pilot")).call.bindingId).toBe(reverse.bindingId);
+    const unlisted:PushToken={...token,sessionId:"session-3",owner:{userId:3,tenantId:20,extensionId:3,sipUri:"sip:2001@test.invalid"},sipUri:"sip:2001@test.invalid",deviceId:"device-c",token:"c".repeat(64)};
+    await push.put(unlisted);
+    await expect(wake.enroll("session-3",3,"device-c",pilots)).rejects.toMatchObject({status:403});
   });
   it("binds resolve and revoke to the exact session, not merely the same user", async () => {
     const b = await enrolled();
@@ -100,6 +118,7 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     "UPDATE phone11_auth_identity SET disabled_at=clock_timestamp() WHERE auth_user_id='auth-1'",
     "UPDATE phone11_auth_identity SET legacy_user_id=2 WHERE auth_user_id='auth-1'",
     "DELETE FROM user_extensions WHERE user_id=1",
+    "UPDATE tenant_memberships SET status='inactive' WHERE user_id=1 AND tenant_id=10",
     "UPDATE extensions SET tenant_id=20 WHERE id=1",
     "UPDATE tenants SET status='inactive' WHERE id=10",
     "UPDATE sip_accounts SET sip_username='replacement' WHERE extension_id=1",

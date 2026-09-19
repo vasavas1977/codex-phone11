@@ -1,0 +1,104 @@
+# === Environment & Secrets ===
+.env
+.env.*
+!.env.example
+
+# === Keys & Certificates ===
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+*.jks
+*.p8
+*.mobileprovision
+id_rsa*
+id_ed25519*
+
+# === Terraform State & Secrets ===
+terraform.tfstate
+terraform.tfstate.*
+terraform.tfstate.backup
+tfplan
+terraform.tfvars
+!terraform.tfvars.example
+.terraform/providers/
+
+# === Dependencies ===
+node_modules/
+modules/phone11-siprix/vendor/
+.pnp.*
+
+# === Build Artifacts ===
+dist/
+build/
+web-build/
+.next/
+out/
+*.tgz
+*.tar.gz
+.cache/
+
+# === Expo / React Native ===
+.expo/
+expo-env.d.ts
+ios/Pods/
+android/.gradle/
+android/app/build/
+*.ipa
+*.apk
+*.aab
+.phone11-derived/
+.phone11-derived-release/
+.metro-health-check*
+/ios
+/android
+.kotlin/
+*.orig.*
+*.bak
+*.bak.*
+app-example
+
+# === Logs ===
+*.log
+logs/
+.manus-logs/
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# === Recordings & Customer Data ===
+recordings/
+uploads/
+*.wav
+*.mp3
+*.ogg
+
+# === IDE & OS ===
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === Database ===
+*.sqlite
+*.db
+*.dump
+
+# === TypeScript ===
+*.tsbuildinfo
+**/__pycache__/
+
+# === Misc ===
+.npmrc
+.watchmanconfig
+coverage/
+.webdev/
+
+artifacts/
+docs/
+coverage/

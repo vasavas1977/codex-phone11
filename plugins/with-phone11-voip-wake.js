@@ -1,4 +1,7 @@
-const { withAppDelegate, withInfoPlist, withEntitlementsPlist, withPodfileProperties } = require("expo/config-plugins");
+const { withAppDelegate, withInfoPlist, withEntitlementsPlist, withPodfile, withPodfileProperties } = require("expo/config-plugins");
+
+const siprixPodMarker = "  # Phone11 Siprix static bridge";
+const siprixPodDeclaration = "  pod 'Phone11Siprix', :path => '../modules/phone11-siprix'";
 
 function wakeBuildSettings(env = process.env) {
   const gate = env.PHONE11_VOIP_WAKE_COMMISSIONED ?? "0";
@@ -42,6 +45,25 @@ function injectBootstrap(source) {
   return imports.length ? result : `import Phone11Siprix\n${result}`;
 }
 
+function injectSiprixPod(source) {
+  const target = "target 'Phone11' do";
+  const targetIndex = source.indexOf(target);
+  if (targetIndex === -1) throw new Error("Phone11 requires the reviewed iOS Podfile target");
+
+  const markerCount = source.split(siprixPodMarker).length - 1;
+  const declarationCount = source.split(siprixPodDeclaration).length - 1;
+  if (markerCount || declarationCount) {
+    if (markerCount !== 1 || declarationCount !== 1 ||
+        !source.slice(targetIndex + target.length).startsWith(`\n${siprixPodMarker}\n${siprixPodDeclaration}`)) {
+      throw new Error("Phone11 found an incomplete or misplaced Siprix Pod declaration");
+    }
+    return source;
+  }
+
+  const insertion = `\n${siprixPodMarker}\n${siprixPodDeclaration}`;
+  return source.slice(0, targetIndex + target.length) + insertion + source.slice(targetIndex + target.length);
+}
+
 function withPhone11VoipWake(config, options = {}) {
   const origin = wakeOrigin(options.origin ?? "https://api.phone11.ai");
   const settings = wakeBuildSettings();
@@ -54,6 +76,10 @@ function withPhone11VoipWake(config, options = {}) {
     native.modResults["phone11.voipWakeCommissioned"] = settings.gate;
     if (settings.environment) native.modResults["phone11.apnsEnvironment"] = settings.environment;
     else delete native.modResults["phone11.apnsEnvironment"];
+    return native;
+  });
+  config = withPodfile(config, native => {
+    native.modResults.contents = injectSiprixPod(native.modResults.contents);
     return native;
   });
   config = withEntitlementsPlist(config, native => {
@@ -72,6 +98,7 @@ function withPhone11VoipWake(config, options = {}) {
 }
 module.exports = withPhone11VoipWake;
 module.exports.injectBootstrap = injectBootstrap;
+module.exports.injectSiprixPod = injectSiprixPod;
 module.exports.wakeOrigin = wakeOrigin;
 
 module.exports.wakeBuildSettings = wakeBuildSettings;

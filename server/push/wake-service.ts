@@ -10,13 +10,20 @@ export const wakeOfferSchema=z.object({sipUri:z.string().regex(/^sip:[A-Za-z0-9_
   sipCallId:z.string().min(1).max(512).regex(/^[\x21-\x7e]+$/)}).strict();
 export const wakeTerminalSchema=wakeOfferSchema.extend({status:z.enum(["cancelled","ended"])}).strict();
 
-export function wakePilot(): string {
-  const uri=process.env.PHONE11_WAKE_PILOT_SIP_URI;
-  if (process.env.PHONE11_WAKE_ENABLED!=="1" || !uri || !wakeOfferSchema.shape.sipUri.safeParse(uri).success) {
+const configuredPilots=()=>{
+  const configured=process.env.PHONE11_WAKE_PILOT_SIP_URIS;
+  const pilots=configured===undefined ? [process.env.PHONE11_WAKE_PILOT_SIP_URI] : configured.split(",");
+  if (process.env.PHONE11_WAKE_ENABLED!=="1" || pilots.length<1 || pilots.length>2 ||
+    pilots.some(uri=>!uri || !wakeOfferSchema.shape.sipUri.safeParse(uri).success) || new Set(pilots).size!==pilots.length) {
     throw new WakeError(503,"Background incoming calls are not enabled");
   }
-  return uri;
+  return pilots as readonly string[];
+};
+
+export function wakePilot(): string {
+  return configuredPilots()[0];
 }
+export function wakePilots(): readonly string[] { return configuredPilots(); }
 async function notify(call: WakeCall, deadline:number, signal:AbortSignal) {
   const check=()=>{if(signal.aborted || Date.now()>=deadline) throw new WakeError(410);};
   check();
@@ -49,12 +56,15 @@ async function notify(call: WakeCall, deadline:number, signal:AbortSignal) {
   }
 }
 export function createWakeService(deps: {
-  repository?: typeof wakeRepository; notify?: (call:WakeCall,deadline:number,signal:AbortSignal)=>Promise<void>; pilot?: ()=>string;
+  repository?: typeof wakeRepository; notify?: (call:WakeCall,deadline:number,signal:AbortSignal)=>Promise<void>;
+  /** `pilot` keeps focused single-pilot tests and older callers source-compatible. */
+  pilot?: ()=>string; pilots?: ()=>readonly string[];
   sleep?: (ms:number)=>Promise<void>; now?: ()=>number;
 }={}) {
-  const repository=deps.repository??wakeRepository,send=deps.notify??notify,pilot=deps.pilot??wakePilot;
+  const repository=deps.repository??wakeRepository,send=deps.notify??notify;
+  const pilots=deps.pilots??(deps.pilot ? ()=>[deps.pilot!()] : wakePilots);
   const sleep=deps.sleep??(ms=>new Promise(resolve=>setTimeout(resolve,ms))),now=deps.now??Date.now;
-  const requireTarget=(uri:string)=>{if(uri!==pilot()) throw new WakeError(403);};
+  const requireTarget=(uri:string)=>{if(!pilots().includes(uri)) throw new WakeError(403);};
   const bounded=<T>(deadline:number,run:()=>Promise<T>,signal?:AbortSignal):Promise<T>=>new Promise((resolve,reject)=>{
     let settled=false;
     const finish=(error?:unknown,value?:T)=>{
@@ -74,12 +84,12 @@ export function createWakeService(deps: {
   });
   return {
     enroll(sessionId:string,userId:number,input:z.infer<typeof wakeEnrollSchema>) {
-      return repository.enroll(sessionId,userId,input.deviceId,pilot());
+      return repository.enroll(sessionId,userId,input.deviceId,pilots());
     },
-    resolve(sessionId:string,userId:number,bindingId:string) {pilot();return repository.resolve(bindingId,sessionId,userId);},
+    resolve(sessionId:string,userId:number,bindingId:string) {pilots();return repository.resolve(bindingId,sessionId,userId);},
     revoke(sessionId:string,userId:number,bindingId:string) {return repository.revoke(bindingId,sessionId,userId);},
     device(action:"claim"|"ready"|"status"|"end",grant:string,input:z.infer<typeof wakeDeviceCallSchema>) {
-      pilot();return repository.deviceCall(input.bindingId,grant,input.callUUID,action);
+      pilots();return repository.deviceCall(input.bindingId,grant,input.callUUID,action);
     },
     terminal(input:z.infer<typeof wakeTerminalSchema>) {requireTarget(input.sipUri);return repository.transitionTrusted(input.sipUri,input.sipCallId,input.status);},
     /** Proxy holds the original SIP transaction while this bounded request waits for registration. */

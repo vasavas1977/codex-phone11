@@ -3,7 +3,7 @@
  * View, create, and manage IVR dial plans deployed on FreeSWITCH.
  */
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList, Alert,
   TextInput, Modal, ActivityIndicator,
@@ -12,7 +12,24 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { useCreateIvrMenu, useDeleteIvrMenu, useIvrMenus, useTenant } from "@/hooks/use-pbx-admin";
+import {
+  IVR_ACTION_TYPES,
+  TARGET_ACTIONS,
+  validateIvrActionDraft,
+  type IvrActionDraft,
+  type SupportedActionType,
+} from "@/lib/pbx/ivr-actions";
+import {
+  useCallQueues,
+  useCreateIvrMenu,
+  useDeleteIvrMenu,
+  useExtensions,
+  useIvrMenu,
+  useIvrMenus,
+  useRingGroups,
+  useSetIvrActions,
+  useTenant,
+} from "@/hooks/use-pbx-admin";
 
 const EXIT_ACTIONS = [
   { value: "voicemail", label: "Voicemail" },
@@ -25,14 +42,116 @@ export default function AdminIVR() {
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
   const menusQuery = useIvrMenus(tenantId);
+  const [editingMenuId, setEditingMenuId] = useState<number | null>(null);
+  const menuDetailQuery = useIvrMenu(editingMenuId ?? 0);
+  const extensionsQuery = useExtensions(1, 100, editingMenuId !== null && tenantId > 0);
+  const queuesQuery = useCallQueues(tenantId);
+  const ringGroupsQuery = useRingGroups(tenantId);
   const createMutation = useCreateIvrMenu();
   const deleteMutation = useDeleteIvrMenu();
+  const actionsMutation = useSetIvrActions();
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [greeting, setGreeting] = useState("");
   const [exitAction, setExitAction] = useState<(typeof EXIT_ACTIONS)[number]["value"]>("voicemail");
   const [exitTarget, setExitTarget] = useState("");
+  const [draftActions, setDraftActions] = useState<IvrActionDraft[]>([]);
+  const [editorError, setEditorError] = useState<string | null>(null);
+  const initializedEditor = useRef<number | null>(null);
   const menus = menusQuery.data || [];
+
+  const extensionRows = (extensionsQuery.data?.data || []) as Array<{
+    extension_number?: string | null;
+    display_name?: string | null;
+  }>;
+  const targetOptions = useMemo(() => {
+    const extensions = extensionRows
+      .filter((item) => item.extension_number)
+      .map((item) => ({ value: String(item.extension_number), label: item.display_name ? `${item.extension_number} · ${item.display_name}` : String(item.extension_number) }));
+    const queues = (queuesQuery.data || [])
+      .filter((item: any) => item.extension)
+      .map((item: any) => ({ value: String(item.extension), label: `${item.extension} · ${item.name}` }));
+    const ringGroups = (ringGroupsQuery.data || [])
+      .filter((item: any) => item.extension)
+      .map((item: any) => ({ value: String(item.extension), label: `${item.extension} · ${item.name}` }));
+    const subMenus = menus
+      .filter((item: any) => Number(item.id) !== editingMenuId)
+      .map((item: any) => ({ value: String(item.id), label: item.name }));
+    return { transfer_ext: extensions, voicemail: extensions, transfer_queue: queues, transfer_ringgroup: ringGroups, sub_menu: subMenus } as Record<string, Array<{ value: string; label: string }>>;
+  }, [editingMenuId, extensionRows, menus, queuesQuery.data, ringGroupsQuery.data]);
+
+  useEffect(() => {
+    if (
+      editingMenuId === null ||
+      initializedEditor.current === editingMenuId ||
+      Number(menuDetailQuery.data?.id) !== editingMenuId
+    ) return;
+    setDraftActions((menuDetailQuery.data.actions || []).map((action: any) => ({
+      id: Number(action.id),
+      digit: String(action.digit || ""),
+      action_type: String(action.action_type || "hangup"),
+      target: action.target == null ? undefined : String(action.target),
+      description: action.description == null ? "" : String(action.description),
+      sort_order: Number(action.sort_order) || 0,
+    })));
+    initializedEditor.current = editingMenuId;
+    setEditorError(null);
+  }, [editingMenuId, menuDetailQuery.data]);
+
+  const openEditor = (menuId: number) => {
+    const normalizedMenuId = Number(menuId);
+    if (!Number.isSafeInteger(normalizedMenuId) || normalizedMenuId < 1) {
+      setEditorError("This IVR menu has an invalid identifier. Refresh and try again.");
+      return;
+    }
+    setEditorError(null);
+    setDraftActions([]);
+    initializedEditor.current = null;
+    setEditingMenuId(normalizedMenuId);
+  };
+
+  const closeEditor = () => {
+    if (actionsMutation.isPending) return;
+    setEditingMenuId(null);
+    setDraftActions([]);
+    initializedEditor.current = null;
+    setEditorError(null);
+  };
+
+  const updateAction = (index: number, changes: Partial<IvrActionDraft>) => {
+    setDraftActions((current) => current.map((action, i) => i === index ? { ...action, ...changes } : action));
+    setEditorError(null);
+  };
+
+  const addAction = () => {
+    setDraftActions((current) => [...current, { digit: "", action_type: "hangup", target: undefined, description: "", sort_order: current.length }]);
+    setEditorError(null);
+  };
+
+  const saveActions = async () => {
+    if (editingMenuId === null) return;
+    const validationError = validateIvrActionDraft(draftActions);
+    if (validationError) {
+      setEditorError(validationError);
+      return;
+    }
+    try {
+      await actionsMutation.mutateAsync({
+        menu_id: editingMenuId,
+        actions: draftActions.map(({ id: _id, ...action }, index) => ({
+          ...action,
+          action_type: action.action_type as SupportedActionType,
+          target: action.target?.trim() || undefined,
+          description: action.description?.trim() || undefined,
+          sort_order: index,
+        })),
+      });
+      await Promise.all([menuDetailQuery.refetch(), menusQuery.refetch()]);
+      closeEditor();
+    } catch (error: any) {
+      setEditorError(error?.message || "Actions could not be saved. Your changes are still here; try again.");
+    }
+  };
 
   const handleDelete = (id: number, menuName: string) => {
     Alert.alert(
@@ -116,6 +235,14 @@ export default function AdminIVR() {
       </View>
 
       <View style={[styles.flowActions, { borderTopColor: colors.border }]}>
+        <TouchableOpacity
+          style={[styles.actionBtn, { backgroundColor: colors.primary + "15" }]}
+          onPress={() => openEditor(Number(item.id))}
+          accessibilityLabel={`Edit actions for ${item.name}`}
+        >
+          <IconSymbol name="pencil" size={14} color={colors.primary} />
+          <Text style={[styles.actionText, { color: colors.primary }]}>Keys</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: "#EF444415" }]}
           onPress={() => handleDelete(item.id, item.name)}
@@ -266,6 +393,95 @@ export default function AdminIVR() {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={editingMenuId !== null} animationType="slide" transparent onRequestClose={closeEditor}>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.modalTitle, { color: colors.foreground }]}>Key actions</Text>
+                <Text style={[styles.modalSubtitle, { color: colors.muted }]}>Choose what each caller key does.</Text>
+              </View>
+              <TouchableOpacity onPress={closeEditor} accessibilityLabel="Close key actions">
+                <IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} />
+              </TouchableOpacity>
+            </View>
+            {menuDetailQuery.isLoading ? (
+              <View style={styles.emptyState}><ActivityIndicator size="small" color={colors.primary} /><Text style={[styles.emptyText, { color: colors.muted }]}>Loading key actions…</Text></View>
+            ) : menuDetailQuery.isError ? (
+              <View style={styles.emptyState}><Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load key actions</Text><TouchableOpacity onPress={() => menuDetailQuery.refetch()}><Text style={[styles.retryText, { color: colors.primary }]}>Try again</Text></TouchableOpacity></View>
+            ) : (
+              <>
+                <ScrollView style={styles.modalBody} keyboardShouldPersistTaps="handled">
+                  {draftActions.map((action, index) => {
+                    const choices = targetOptions[action.action_type] || [];
+                    const supported = IVR_ACTION_TYPES.some((item) => item.value === action.action_type);
+                    return (
+                      <View key={`${action.id ?? "new"}-${index}`} style={[styles.actionCard, { borderColor: colors.border, backgroundColor: colors.background }]}>
+                        <View style={styles.actionCardHeader}>
+                          <Text style={[styles.fieldLabel, { color: colors.muted, marginTop: 0 }]}>Key action {index + 1}</Text>
+                          <TouchableOpacity disabled={actionsMutation.isPending} onPress={() => setDraftActions((current) => current.filter((_, i) => i !== index))} accessibilityLabel={`Remove key action ${index + 1}`}>
+                            <Text style={[styles.removeText, { color: colors.error || "#EF4444" }]}>Remove</Text>
+                          </TouchableOpacity>
+                        </View>
+                        <TextInput
+                          accessibilityLabel={`DTMF key ${index + 1}`}
+                          style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface }]}
+                          value={action.digit}
+                          editable={!actionsMutation.isPending}
+                          onChangeText={(value) => updateAction(index, { digit: value.replace(/[^0-9*#]/g, "").slice(0, 5) })}
+                          placeholder="1"
+                          placeholderTextColor={colors.muted}
+                          keyboardType="phone-pad"
+                          maxLength={5}
+                        />
+                        <Text style={[styles.fieldLabel, { color: colors.muted }]}>Action</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.choiceRow}>
+                          {IVR_ACTION_TYPES.map((item) => (
+                            <TouchableOpacity
+                              key={item.value}
+                              disabled={actionsMutation.isPending}
+                              onPress={() => updateAction(index, { action_type: item.value as SupportedActionType, target: TARGET_ACTIONS.has(item.value) ? undefined : undefined })}
+                              style={[styles.choice, { borderColor: action.action_type === item.value ? colors.primary : colors.border, backgroundColor: action.action_type === item.value ? colors.primary + "15" : colors.surface }]}
+                            >
+                              <Text style={[styles.choiceText, { color: action.action_type === item.value ? colors.primary : colors.foreground }]}>{item.label}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                        {supported && TARGET_ACTIONS.has(action.action_type) ? (
+                          <>
+                            <Text style={[styles.fieldLabel, { color: colors.muted }]}>Destination</Text>
+                            {choices.length === 0 ? (
+                              <Text style={[styles.note, { color: colors.muted }]}>No active destination is available in this workspace.</Text>
+                            ) : (
+                              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.choiceRow}>
+                                {choices.map((choice) => (
+                                  <TouchableOpacity disabled={actionsMutation.isPending} key={choice.value} onPress={() => updateAction(index, { target: choice.value })} style={[styles.choice, { borderColor: action.target === choice.value ? colors.primary : colors.border, backgroundColor: action.target === choice.value ? colors.primary + "15" : colors.surface }]}>
+                                    <Text style={[styles.choiceText, { color: action.target === choice.value ? colors.primary : colors.foreground }]}>{choice.label}</Text>
+                                  </TouchableOpacity>
+                                ))}
+                              </ScrollView>
+                            )}
+                          </>
+                        ) : null}
+                        {supported && <TextInput editable={!actionsMutation.isPending} accessibilityLabel={`Description for key action ${index + 1}`} style={[styles.input, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.surface, marginTop: 10 }]} value={action.description || ""} onChangeText={(value) => updateAction(index, { description: value.slice(0, 240) })} placeholder="Optional description" placeholderTextColor={colors.muted} maxLength={240} />}
+                        {!supported ? <Text style={[styles.note, { color: "#D97706" }]}>This existing action is unsupported by the current Phone11 dialplan. Remove it before saving.</Text> : null}
+                      </View>
+                    );
+                  })}
+                  {draftActions.length === 0 ? <Text style={[styles.note, { color: colors.muted }]}>No key actions yet. Add one when callers should choose a destination.</Text> : null}
+                  {editorError ? <Text accessibilityRole="alert" style={[styles.editorError, { color: colors.error || "#EF4444" }]}>{editorError}</Text> : null}
+                  <TouchableOpacity disabled={actionsMutation.isPending} onPress={addAction} style={[styles.addActionButton, { borderColor: colors.primary }]} accessibilityLabel="Add key action"><Text style={[styles.addActionText, { color: colors.primary }]}>＋ Add key action</Text></TouchableOpacity>
+                </ScrollView>
+                <View style={styles.modalFooter}>
+                  <TouchableOpacity style={[styles.cancelBtn, { borderColor: colors.border }]} onPress={closeEditor}><Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text></TouchableOpacity>
+                  <TouchableOpacity style={[styles.createBtn, { backgroundColor: colors.primary, opacity: actionsMutation.isPending ? 0.65 : 1 }]} onPress={saveActions} disabled={actionsMutation.isPending}><Text style={styles.createText}>{actionsMutation.isPending ? "Saving…" : "Save key actions"}</Text></TouchableOpacity>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </ScreenContainer>
   );
 }
@@ -302,6 +518,7 @@ const styles = StyleSheet.create({
   modal: { borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 0.5, maxHeight: "85%" },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 0.5, borderBottomColor: "#333" },
   modalTitle: { fontSize: 18, fontWeight: "700" },
+  modalSubtitle: { fontSize: 12, marginTop: 3 },
   modalBody: { padding: 16 },
   fieldLabel: { fontSize: 12, fontWeight: "600", marginTop: 12, marginBottom: 6 },
   input: { borderWidth: 0.5, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
@@ -314,4 +531,14 @@ const styles = StyleSheet.create({
   cancelText: { fontSize: 15, fontWeight: "600" },
   createBtn: { flex: 2, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
   createText: { color: "#fff", fontSize: 15, fontWeight: "600" },
+  actionCard: { borderWidth: 0.5, borderRadius: 12, padding: 12, marginBottom: 10, gap: 4 },
+  actionCardHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  removeText: { fontSize: 12, fontWeight: "600" },
+  choiceRow: { gap: 8, paddingVertical: 2 },
+  choice: { borderWidth: 1, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 8 },
+  choiceText: { fontSize: 12, fontWeight: "600" },
+  note: { fontSize: 12, lineHeight: 18 },
+  editorError: { fontSize: 13, lineHeight: 19, marginTop: 4 },
+  addActionButton: { borderWidth: 1, borderRadius: 10, alignItems: "center", paddingVertical: 11, marginTop: 2, marginBottom: 4 },
+  addActionText: { fontSize: 14, fontWeight: "600" },
 });

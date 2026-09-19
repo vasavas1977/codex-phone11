@@ -11,6 +11,8 @@ export async function findOwnedRecording(userId: number, callUuid: string): Prom
          SELECT 1 FROM call_legs cl
          JOIN extensions e ON e.id = cl.extension_id AND e.tenant_id = cr.tenant_id
          JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+         JOIN tenant_memberships tm ON tm.user_id = ue.user_id
+           AND tm.tenant_id = cr.tenant_id AND tm.status = 'active'
          JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
          WHERE cl.call_record_id = cr.id AND cl.tenant_id = cr.tenant_id
            AND e.status = 'active' AND e.deleted_at IS NULL
@@ -32,6 +34,46 @@ export async function findOwnedRecording(userId: number, callUuid: string): Prom
   } catch (error) {
     if ((error as { code?: string })?.code === "42P01") {
       throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Call recording storage is not available on this server" });
+    }
+    throw error;
+  }
+}
+
+/**
+ * A voicemail belongs to its assigned extension, never merely to a tenant
+ * member. Deleted messages remain in the audit trail but cannot be played.
+ */
+export async function findOwnedVoicemail(
+  userId: number,
+  voicemailId: number,
+): Promise<{ storage_path: string; tenant_id: number } | null> {
+  if (!Number.isSafeInteger(userId) || userId <= 0 || !Number.isSafeInteger(voicemailId) || voicemailId <= 0)
+    return null;
+  try {
+    const result = await query(
+      `SELECT vm.storage_path, vm.tenant_id
+       FROM voicemail_messages vm
+       JOIN extensions e
+         ON e.id = vm.extension_id AND e.tenant_id = vm.tenant_id
+       JOIN user_extensions ue
+         ON ue.extension_id = e.id AND ue.user_id = $1
+       JOIN tenant_memberships tm
+         ON tm.user_id = ue.user_id AND tm.tenant_id = vm.tenant_id AND tm.status = 'active'
+       JOIN tenants t ON t.id = vm.tenant_id AND t.status = 'active'
+       WHERE vm.id = $2
+         AND vm.status != 'deleted'
+         AND e.status = 'active'
+         AND e.deleted_at IS NULL
+       LIMIT 1`,
+      [userId, voicemailId],
+    );
+    return result.rows[0] ?? null;
+  } catch (error) {
+    if ((error as { code?: string })?.code === "42P01") {
+      throw new TRPCError({
+        code: "SERVICE_UNAVAILABLE",
+        message: "Voicemail inbox storage is not available on this server",
+      });
     }
     throw error;
   }

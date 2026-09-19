@@ -11,6 +11,8 @@ export function beginPlaybackSession(options: {
   base: string;
   callUuid: string;
   path: string;
+  /** An allowlisted alternative route, used for a private voicemail item. */
+  sourceURL?(base: string, path: string): string | null;
   canPlay?(): boolean;
   identity(): object | null;
   token(): Promise<string | null>;
@@ -41,7 +43,9 @@ export function beginPlaybackSession(options: {
         options.canPlay?.() === false
       )
         return;
-      const uri = playbackURL(options.base, options.callUuid, options.path);
+      const uri = options.sourceURL
+        ? options.sourceURL(options.base, options.path)
+        : playbackURL(options.base, options.callUuid, options.path);
       if (!token || !uri) {
         options.failed();
         return;

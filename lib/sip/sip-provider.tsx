@@ -10,6 +10,11 @@ import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { createRegistrationLifecycle } from "./registration-lifecycle";
 import { createVoipEnrollmentLifecycle } from "../push/enrollment-lifecycle";
 import { getVideoBridge } from "./video-runtime";
+import {
+  prepareSipMediaOwnership,
+  releaseSipMediaOwnership,
+} from "../meetings/native-session";
+import type { MediaLease } from "../meetings/media-ownership";
 import { sipEngine } from "./engine";
 import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
@@ -46,6 +51,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
   const accountLoadPromise = useRef<Promise<void> | null>(null);
   const nativeStackInitialized = useRef(false);
   const nativeStackInitPromise = useRef<Promise<void> | null>(null);
+  const sipMediaLease = useRef<MediaLease | undefined>(undefined);
   const { loadAccount } = useSipAccountStore();
 
   const ensureAccountLoaded = useCallback(async () => {
@@ -149,14 +155,40 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       const incomingCall = state.incomingCall;
       if (incomingCall && incomingCall.id !== prevIncomingId) {
         prevIncomingId = incomingCall.id;
-        nativeCallManager.displayIncomingCall(
-          incomingCall.id,
-          incomingCall.remoteNumber,
-          incomingCall.remoteName,
-          incomingCall.isVideo,
-        );
+        // A meeting owns the microphone/camera until it has stopped every
+        // track and released its audio session. Never display CallKit first.
+        void (async () => {
+          try {
+            const lease = await prepareSipMediaOwnership(incomingCall.id);
+            const current = useSipCallStore.getState().incomingCall;
+            if (current?.id !== incomingCall.id || current.status === "disconnected") {
+              releaseSipMediaOwnership(lease);
+              return;
+            }
+            releaseSipMediaOwnership(sipMediaLease.current);
+            sipMediaLease.current = lease;
+            nativeCallManager.displayIncomingCall(
+              current.id,
+              current.remoteNumber,
+              current.remoteName,
+              current.isVideo,
+            );
+          } catch {
+            useSipDiagnosticsStore.getState().addEvent({
+              level: "warning",
+              category: "call",
+              message: "Incoming call is waiting for meeting media to stop",
+            });
+          }
+        })();
       } else if (!incomingCall) {
         prevIncomingId = null;
+      }
+      const hasLiveCall = Boolean(state.incomingCall && state.incomingCall.status !== "disconnected") ||
+        Object.values(state.activeCalls).some(call => call.status !== "disconnected");
+      if (!hasLiveCall) {
+        releaseSipMediaOwnership(sipMediaLease.current);
+        sipMediaLease.current = undefined;
       }
     });
 
@@ -167,6 +199,8 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       unsubAuth();
       appState.remove();
       unsubIncoming();
+      releaseSipMediaOwnership(sipMediaLease.current);
+      sipMediaLease.current = undefined;
       nativeCallManager.destroy();
       sipEngine.destroy().catch(console.error);
       nativeStackInitialized.current = false;
@@ -202,12 +236,24 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       await registrationLifecycle.current.reconnect();
     },
     makeCall: async (dest, video) => {
+      const lease = await prepareSipMediaOwnership(`outgoing-${Date.now()}`);
+      releaseSipMediaOwnership(sipMediaLease.current);
+      sipMediaLease.current = lease;
       await ensureNativeStackInitialized();
-      const callId = await sipEngine.makeCall(dest, video);
-      if (callId) {
-        nativeCallManager.reportOutgoingCall(callId, dest, undefined, video);
+      try {
+        const callId = await sipEngine.makeCall(dest, video);
+        if (callId) {
+          nativeCallManager.reportOutgoingCall(callId, dest, undefined, video);
+          return callId;
+        }
+        releaseSipMediaOwnership(lease);
+        if (sipMediaLease.current === lease) sipMediaLease.current = undefined;
+        return null;
+      } catch (error) {
+        releaseSipMediaOwnership(lease);
+        if (sipMediaLease.current === lease) sipMediaLease.current = undefined;
+        throw error;
       }
-      return callId;
     },
     hangupCall: async (id) => {
       await sipEngine.hangupCall(id);

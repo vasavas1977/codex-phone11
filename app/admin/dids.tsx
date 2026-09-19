@@ -1,15 +1,16 @@
 /**
  * Tenant phone-number inventory.
  *
- * Displays live numbers and their current PBX destinations. Number acquisition
- * and route changes stay unavailable until carrier-backed provisioning is
- * connected to this screen.
+ * Displays carrier-provisioned numbers and their current PBX destinations.
+ * Number acquisition remains unavailable from this screen.
  */
 
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Modal,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -21,7 +22,16 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { usePhoneNumbers, useTenant } from "@/hooks/use-pbx-admin";
+import {
+  useAssignPhoneNumberRoute,
+  useCallQueues,
+  useExtensions,
+  useIvrMenus,
+  usePhoneNumbers,
+  useRingGroups,
+  useTenant,
+  useTimeConditions,
+} from "@/hooks/use-pbx-admin";
 
 type NumberFilter = "all" | "assigned" | "unassigned";
 
@@ -37,22 +47,117 @@ type PhoneNumberRow = {
   assigned_route_id?: number | null;
 };
 
+type RouteType =
+  | "extension"
+  | "ring_group"
+  | "queue"
+  | "ivr"
+  | "time_condition";
+
+type DestinationRow = {
+  id?: number | string | null;
+  name?: string | null;
+  extension?: string | null;
+  extension_number?: string | null;
+  display_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  type?: string | null;
+  user_id?: number | string | null;
+  sip_status?: string | null;
+  sip_username?: string | null;
+  sip_domain?: string | null;
+  status?: string | null;
+  is_active?: boolean | null;
+  strategy?: string | null;
+  deleted_at?: string | null;
+  timezone?: string | null;
+};
+
+type DestinationOption = {
+  id: number;
+  label: string;
+  isActive: boolean;
+};
+
+const ROUTE_TYPES: Array<{ value: RouteType; label: string }> = [
+  { value: "extension", label: "Extension" },
+  { value: "ring_group", label: "Ring group" },
+  { value: "queue", label: "Queue" },
+  { value: "ivr", label: "IVR menu" },
+  { value: "time_condition", label: "Business hours" },
+];
+
+function routeTypeLabel(routeType?: string | null) {
+  return ROUTE_TYPES.find((item) => item.value === routeType)?.label;
+}
+
+function destinationOption(
+  routeType: RouteType,
+  row: DestinationRow,
+): DestinationOption | null {
+  const id = Number(row.id);
+  if (!Number.isSafeInteger(id) || id < 1) return null;
+
+  if (routeType === "extension") {
+    const dialCode = String(row.extension_number || "").trim();
+    if (!dialCode) return null;
+    const name = String(
+      row.display_name ||
+        [row.first_name, row.last_name].filter(Boolean).join(" ") ||
+        "Extension",
+    ).trim();
+    return {
+      id,
+      label: `${name} · ${dialCode}`,
+      isActive:
+        row.status === "active" &&
+        !row.deleted_at &&
+        row.type === "user" &&
+        Boolean(row.user_id) &&
+        row.sip_status === "active" &&
+        Boolean(row.sip_username) &&
+        Boolean(row.sip_domain),
+    };
+  }
+
+  const name = String(
+    row.name || routeTypeLabel(routeType) || "Destination",
+  ).trim();
+  const dialCode = String(row.extension || "").trim();
+  return {
+    id,
+    label:
+      routeType === "time_condition"
+        ? `${name}${row.timezone ? ` · ${row.timezone}` : ""}`
+        : `${name}${dialCode ? ` · ${dialCode}` : ""}`,
+    isActive:
+      row.is_active !== false &&
+      (routeType !== "ring_group" ||
+        ["simultaneous", "sequential"].includes(String(row.strategy))) &&
+      (routeType !== "queue" || row.strategy === "ring_all"),
+  };
+}
+
 function numberLabel(row: PhoneNumberRow) {
   return row.number_display || row.number_e164 || String(row.id);
 }
 
-function routeLabel(row: PhoneNumberRow) {
+function routeLabel(
+  row: PhoneNumberRow,
+  destinations: Record<RouteType, DestinationOption[]>,
+) {
   if (!row.assigned_route_type || !row.assigned_route_id) {
-    return "No call destination";
+    return "Unassigned";
   }
-  const labels: Record<string, string> = {
-    extension: "Extension",
-    ring_group: "Ring group",
-    queue: "Queue",
-    ivr: "IVR menu",
-    time_condition: "Business hours",
-  };
-  return `${labels[row.assigned_route_type] || "Destination"} #${row.assigned_route_id}`;
+  const routeType = row.assigned_route_type as RouteType;
+  const option = destinations[routeType]?.find(
+    (item) => item.id === Number(row.assigned_route_id),
+  );
+  const label = routeTypeLabel(routeType);
+  return option && label
+    ? `${label} · ${option.label}`
+    : "Unavailable destination";
 }
 
 function typeLabel(value?: string | null) {
@@ -69,20 +174,74 @@ function errorMessage(error: unknown) {
 export default function AdminDIDs() {
   const colors = useColors();
   const tenantQuery = useTenant();
+  const tenantId = Number(tenantQuery.data?.id || 0);
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
   );
+  const routeTenantId = canManage ? tenantId : 0;
   const numbersQuery = usePhoneNumbers(
     1,
     100,
     tenantQuery.isSuccess && canManage,
   );
+  const routeMutation = useAssignPhoneNumberRoute();
+  const extensionsQuery = useExtensions(1, 100, routeTenantId > 0);
+  const ringGroupsQuery = useRingGroups(routeTenantId);
+  const queuesQuery = useCallQueues(routeTenantId);
+  const ivrMenusQuery = useIvrMenus(routeTenantId);
+  const timeConditionsQuery = useTimeConditions(routeTenantId);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<NumberFilter>("all");
+  const [editingNumber, setEditingNumber] = useState<PhoneNumberRow | null>(
+    null,
+  );
+  const [selectedRouteType, setSelectedRouteType] = useState<RouteType | null>(
+    null,
+  );
+  const [selectedRouteId, setSelectedRouteId] = useState<number | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
 
   const rows = useMemo(
     () => (numbersQuery.data?.data || []) as PhoneNumberRow[],
     [numbersQuery.data?.data],
+  );
+  const allDestinations = useMemo<Record<RouteType, DestinationOption[]>>(
+    () => ({
+      extension: ((extensionsQuery.data?.data || []) as DestinationRow[])
+        .map((row) => destinationOption("extension", row))
+        .filter((row): row is DestinationOption => row !== null),
+      ring_group: ((ringGroupsQuery.data || []) as DestinationRow[])
+        .map((row) => destinationOption("ring_group", row))
+        .filter((row): row is DestinationOption => row !== null),
+      queue: ((queuesQuery.data || []) as DestinationRow[])
+        .map((row) => destinationOption("queue", row))
+        .filter((row): row is DestinationOption => row !== null),
+      ivr: ((ivrMenusQuery.data || []) as DestinationRow[])
+        .map((row) => destinationOption("ivr", row))
+        .filter((row): row is DestinationOption => row !== null),
+      time_condition: ((timeConditionsQuery.data || []) as DestinationRow[])
+        .map((row) => destinationOption("time_condition", row))
+        .filter((row): row is DestinationOption => row !== null),
+    }),
+    [
+      extensionsQuery.data?.data,
+      ivrMenusQuery.data,
+      queuesQuery.data,
+      ringGroupsQuery.data,
+      timeConditionsQuery.data,
+    ],
+  );
+  const destinationOptions = useMemo<Record<RouteType, DestinationOption[]>>(
+    () => ({
+      extension: allDestinations.extension.filter((item) => item.isActive),
+      ring_group: allDestinations.ring_group.filter((item) => item.isActive),
+      queue: allDestinations.queue.filter((item) => item.isActive),
+      ivr: allDestinations.ivr.filter((item) => item.isActive),
+      time_condition: allDestinations.time_condition.filter(
+        (item) => item.isActive,
+      ),
+    }),
+    [allDestinations],
   );
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -105,17 +264,73 @@ export default function AdminDIDs() {
         String(row.provider || "")
           .toLowerCase()
           .includes(needle) ||
-        routeLabel(row).toLowerCase().includes(needle);
+        routeLabel(row, allDestinations).toLowerCase().includes(needle);
       return matchesFilter && matchesSearch;
     });
-  }, [filter, rows, search]);
+  }, [allDestinations, filter, rows, search]);
+
+  const openRouteEditor = (number: PhoneNumberRow) => {
+    const routeType = routeTypeLabel(number.assigned_route_type)
+      ? (number.assigned_route_type as RouteType)
+      : null;
+    setEditingNumber(number);
+    setSelectedRouteType(routeType);
+    setSelectedRouteId(
+      routeType ? Number(number.assigned_route_id) || null : null,
+    );
+    setRouteError(null);
+  };
+
+  const closeRouteEditor = (force = false) => {
+    if (routeMutation.isPending && !force) return;
+    setEditingNumber(null);
+    setSelectedRouteType(null);
+    setSelectedRouteId(null);
+    setRouteError(null);
+  };
+
+  const chooseRouteType = (routeType: RouteType | null) => {
+    setSelectedRouteType(routeType);
+    setSelectedRouteId(null);
+    setRouteError(null);
+  };
+
+  const saveRoute = async () => {
+    if (!editingNumber) return;
+    if (
+      selectedRouteType &&
+      !destinationOptions[selectedRouteType].some(
+        (item) => item.id === selectedRouteId,
+      )
+    ) {
+      setRouteError("Choose an active destination in this workspace.");
+      return;
+    }
+    try {
+      await routeMutation.mutateAsync({
+        id: editingNumber.id,
+        assignedRouteType: selectedRouteType,
+        assignedRouteId: selectedRouteType ? selectedRouteId : null,
+      });
+      closeRouteEditor(true);
+      void numbersQuery.refetch().catch(() => undefined);
+    } catch (error) {
+      setRouteError(
+        errorMessage(error) ||
+          "Destination could not be saved. Your selection is still here; try again.",
+      );
+    }
+  };
 
   const renderNumber = ({ item }: { item: PhoneNumberRow }) => {
     const assigned = Boolean(
       item.assigned_route_type && item.assigned_route_id,
     );
     return (
-      <View
+      <TouchableOpacity
+        accessibilityLabel={`Change destination for ${numberLabel(item)}`}
+        disabled={routeMutation.isPending}
+        onPress={() => openRouteEditor(item)}
         style={[
           styles.card,
           { backgroundColor: colors.surface, borderColor: colors.border },
@@ -144,7 +359,7 @@ export default function AdminDIDs() {
               { color: assigned ? colors.primary : colors.muted },
             ]}
           >
-            {routeLabel(item)}
+            {routeLabel(item, allDestinations)}
           </Text>
         </View>
         <View style={styles.cardEnd}>
@@ -168,8 +383,9 @@ export default function AdminDIDs() {
               {String(item.status || "unknown").toUpperCase()}
             </Text>
           </View>
+          <Text style={[styles.edit, { color: colors.primary }]}>Edit</Text>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -270,20 +486,6 @@ export default function AdminDIDs() {
         <>
           <View
             style={[
-              styles.notice,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <Text style={[styles.noticeTitle, { color: colors.foreground }]}>
-              Destinations are read-only
-            </Text>
-            <Text style={[styles.noticeText, { color: colors.muted }]}>
-              Adding numbers and changing call destinations will be available
-              after carrier provisioning is connected.
-            </Text>
-          </View>
-          <View
-            style={[
               styles.search,
               { backgroundColor: colors.surface, borderColor: colors.border },
             ]}
@@ -331,6 +533,226 @@ export default function AdminDIDs() {
       )}
 
       {listState}
+
+      <Modal
+        animationType="slide"
+        transparent
+        visible={editingNumber !== null}
+        onRequestClose={() => closeRouteEditor()}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.modal,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <View style={styles.modalHeader}>
+              <View style={styles.modalHeading}>
+                <Text style={[styles.modalTitle, { color: colors.foreground }]}>
+                  Call destination
+                </Text>
+                <Text style={[styles.modalSubtitle, { color: colors.muted }]}>
+                  {editingNumber ? numberLabel(editingNumber) : ""}
+                </Text>
+              </View>
+              <TouchableOpacity
+                accessibilityLabel="Close destination editor"
+                disabled={routeMutation.isPending}
+                onPress={() => closeRouteEditor()}
+                style={styles.closeButton}
+              >
+                <IconSymbol name="xmark" size={18} color={colors.muted} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalContent}>
+              <Text style={[styles.fieldLabel, { color: colors.muted }]}>
+                Send calls to
+              </Text>
+              <View style={styles.routeChoices}>
+                <TouchableOpacity
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: selectedRouteType === null }}
+                  disabled={routeMutation.isPending}
+                  onPress={() => chooseRouteType(null)}
+                  style={[
+                    styles.routeChoice,
+                    {
+                      backgroundColor:
+                        selectedRouteType === null
+                          ? colors.primary + "15"
+                          : colors.background,
+                      borderColor:
+                        selectedRouteType === null
+                          ? colors.primary
+                          : colors.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.routeChoiceText,
+                      {
+                        color:
+                          selectedRouteType === null
+                            ? colors.primary
+                            : colors.foreground,
+                      },
+                    ]}
+                  >
+                    Unassigned
+                  </Text>
+                </TouchableOpacity>
+                {ROUTE_TYPES.map((route) => (
+                  <TouchableOpacity
+                    key={route.value}
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: selectedRouteType === route.value,
+                    }}
+                    disabled={routeMutation.isPending}
+                    onPress={() => chooseRouteType(route.value)}
+                    style={[
+                      styles.routeChoice,
+                      {
+                        backgroundColor:
+                          selectedRouteType === route.value
+                            ? colors.primary + "15"
+                            : colors.background,
+                        borderColor:
+                          selectedRouteType === route.value
+                            ? colors.primary
+                            : colors.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.routeChoiceText,
+                        {
+                          color:
+                            selectedRouteType === route.value
+                              ? colors.primary
+                              : colors.foreground,
+                        },
+                      ]}
+                    >
+                      {route.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {selectedRouteType ? (
+                <>
+                  <Text style={[styles.fieldLabel, { color: colors.muted }]}>
+                    Choose {routeTypeLabel(selectedRouteType)?.toLowerCase()}
+                  </Text>
+                  {destinationOptions[selectedRouteType].length === 0 ? (
+                    <Text
+                      style={[
+                        styles.emptyDestinations,
+                        { color: colors.muted },
+                      ]}
+                    >
+                      No active destinations are available in this workspace.
+                    </Text>
+                  ) : (
+                    <View style={styles.destinationChoices}>
+                      {destinationOptions[selectedRouteType].map(
+                        (destination) => (
+                          <TouchableOpacity
+                            key={destination.id}
+                            accessibilityRole="radio"
+                            accessibilityState={{
+                              selected: selectedRouteId === destination.id,
+                            }}
+                            accessibilityLabel={`Use ${destination.label}`}
+                            disabled={routeMutation.isPending}
+                            onPress={() => {
+                              setSelectedRouteId(destination.id);
+                              setRouteError(null);
+                            }}
+                            style={[
+                              styles.destinationChoice,
+                              {
+                                backgroundColor:
+                                  selectedRouteId === destination.id
+                                    ? colors.primary + "15"
+                                    : colors.background,
+                                borderColor:
+                                  selectedRouteId === destination.id
+                                    ? colors.primary
+                                    : colors.border,
+                              },
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.destinationChoiceText,
+                                {
+                                  color:
+                                    selectedRouteId === destination.id
+                                      ? colors.primary
+                                      : colors.foreground,
+                                },
+                              ]}
+                            >
+                              {destination.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ),
+                      )}
+                    </View>
+                  )}
+                </>
+              ) : (
+                <Text
+                  style={[styles.emptyDestinations, { color: colors.muted }]}
+                >
+                  Calls to this number will not have a PBX destination.
+                </Text>
+              )}
+              {routeError ? (
+                <Text
+                  accessibilityRole="alert"
+                  style={[styles.routeError, { color: colors.error }]}
+                >
+                  {routeError}
+                </Text>
+              ) : null}
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                disabled={routeMutation.isPending}
+                onPress={() => closeRouteEditor()}
+                style={[styles.cancelButton, { borderColor: colors.border }]}
+              >
+                <Text style={[styles.cancelText, { color: colors.muted }]}>
+                  Cancel
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                disabled={routeMutation.isPending}
+                onPress={saveRoute}
+                style={[
+                  styles.saveButton,
+                  {
+                    backgroundColor: colors.primary,
+                    opacity: routeMutation.isPending ? 0.65 : 1,
+                  },
+                ]}
+              >
+                <Text style={styles.saveText}>
+                  {routeMutation.isPending ? "Saving…" : "Save destination"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScreenContainer>
   );
 }
@@ -353,15 +775,6 @@ const styles = StyleSheet.create({
   heading: { flex: 1 },
   title: { fontSize: 20, fontWeight: "700" },
   subtitle: { fontSize: 12, marginTop: 2 },
-  notice: {
-    marginHorizontal: 16,
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 0.5,
-  },
-  noticeTitle: { fontSize: 13, fontWeight: "700" },
-  noticeText: { fontSize: 12, lineHeight: 18, marginTop: 3 },
   search: {
     flexDirection: "row",
     alignItems: "center",
@@ -404,15 +817,84 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   cardBody: { flex: 1, minWidth: 0 },
-  cardEnd: { alignItems: "flex-end" },
+  cardEnd: { alignItems: "flex-end", gap: 8 },
   number: { fontSize: 16, fontWeight: "700" },
   e164: { fontSize: 12, marginTop: 2 },
   meta: { fontSize: 11, marginTop: 4 },
   route: { fontSize: 12, fontWeight: "600", marginTop: 7 },
   badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   badgeText: { fontSize: 10, fontWeight: "700" },
+  edit: { fontSize: 12, fontWeight: "700" },
   state: { padding: 28, alignItems: "center", gap: 8 },
   stateTitle: { fontSize: 16, fontWeight: "700", textAlign: "center" },
   stateText: { fontSize: 13, lineHeight: 19, textAlign: "center" },
   retry: { fontSize: 14, fontWeight: "600", marginTop: 4 },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "#00000066",
+  },
+  modal: {
+    maxHeight: "82%",
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderWidth: 0.5,
+  },
+  modalHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 12,
+  },
+  modalHeading: { flex: 1 },
+  modalTitle: { fontSize: 18, fontWeight: "700" },
+  modalSubtitle: { fontSize: 13, marginTop: 3 },
+  closeButton: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalContent: { paddingHorizontal: 20, paddingBottom: 8 },
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 12,
+    marginBottom: 8,
+  },
+  routeChoices: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  routeChoice: {
+    borderWidth: 1,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  routeChoiceText: { fontSize: 12, fontWeight: "600" },
+  destinationChoices: { gap: 8 },
+  destinationChoice: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  destinationChoiceText: { fontSize: 14, fontWeight: "600" },
+  emptyDestinations: { fontSize: 13, lineHeight: 19, marginTop: 4 },
+  routeError: { fontSize: 13, lineHeight: 19, marginTop: 14 },
+  modalFooter: { flexDirection: "row", padding: 16, gap: 12 },
+  cancelButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  cancelText: { fontSize: 15, fontWeight: "600" },
+  saveButton: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  saveText: { color: "#fff", fontSize: 15, fontWeight: "700" },
 });

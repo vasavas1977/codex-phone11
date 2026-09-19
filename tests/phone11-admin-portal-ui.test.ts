@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BUSINESS_WEEK,
+  businessHoursFromRules,
   buildBusinessHoursRule,
   describeSchedule,
   isValidBusinessHours,
@@ -25,6 +26,14 @@ describe("enterprise PBX admin schedules", () => {
     expect(isValidBusinessHours("9:00", "18:00")).toBe(false);
     expect(isValidBusinessHours("18:00", "09:00")).toBe(false);
     expect(() => buildBusinessHoursRule("24:00", "25:00")).toThrow();
+  });
+
+  it("loads editable weekday hours from persisted rules with SQL time precision", () => {
+    expect(businessHoursFromRules([
+      { day_of_week: [1, 2, 3, 4, 5], start_time: "08:30:00", end_time: "17:15:00" },
+    ])).toEqual({ startTime: "08:30", endTime: "17:15" });
+    expect(businessHoursFromRules([{ day_of_week: [0], start_time: "09:00", end_time: "17:00" }]))
+      .toEqual({ startTime: "09:00", endTime: "18:00" });
   });
 
   it("describes open and closed routing without inventing destinations", () => {
@@ -52,6 +61,10 @@ describe("enterprise PBX admin screens", () => {
     resolve(process.cwd(), "app/admin/index.tsx"),
     "utf8",
   );
+  const analytics = readFileSync(
+    resolve(process.cwd(), "app/admin/analytics.tsx"),
+    "utf8",
+  );
   const settings = readFileSync(
     resolve(process.cwd(), "app/(tabs)/settings.tsx"),
     "utf8",
@@ -65,11 +78,16 @@ describe("enterprise PBX admin screens", () => {
     expect(ivr).not.toContain("Deployed to FreeSWITCH successfully");
   });
 
-  it("creates business hours and rules through the PBX API", () => {
+  it("creates and edits business hours through tenant-scoped PBX APIs", () => {
     expect(schedules).toContain("useTimeConditions(tenantId)");
+    expect(schedules).toContain("useTimeCondition(editingId ?? 0)");
     expect(schedules).toContain("useCreateTimeCondition()");
+    expect(schedules).toContain("useUpdateTimeCondition()");
     expect(schedules).toContain("useSetTimeConditionRules()");
     expect(schedules).toContain("useDeleteTimeCondition()");
+    expect(schedules).toContain("Edit business hours");
+    expect(schedules).toContain("Save changes");
+    expect(schedules).toContain("void schedulesQuery.refetch().catch");
     expect(schedules).not.toMatch(/MOCK_|Math\.random/);
     expect(schedules).toContain("CONFIGURED");
     expect(schedules).not.toContain(">ACTIVE<");
@@ -87,28 +105,46 @@ describe("enterprise PBX admin screens", () => {
   });
 
   it("shows only implemented, source-backed management destinations", () => {
-    expect(dashboard).not.toContain('route: "/admin/users"');
     expect(dashboard).not.toContain('route: "/admin/call-history"');
     expect(dashboard).not.toContain('route: "/admin/voicemail"');
     expect(dashboard).not.toContain('route: "/admin/live-calls"');
     expect(dashboard).not.toContain('route: "/admin/settings"');
-    expect(dashboard).not.toContain('route: "/admin/analytics"');
+    expect(dashboard).toContain('label: "Call analytics"');
+    expect(dashboard).toContain('route: "/admin/analytics"');
+    expect(dashboard).toContain('label: "People"');
+    expect(dashboard).toContain('route: "/admin/users"');
+    expect(dashboard).toContain('label: "Extensions"');
+    expect(dashboard).toContain('route: "/admin/extensions"');
   });
 
-  it("does not present demo users, analytics, or system health as live data", () => {
+  it("renders CDR-backed analytics without claiming live PBX data", () => {
+    expect(analytics).toContain("usePbxCallAnalytics(period)");
+    expect(analytics).toContain('value: "today"');
+    expect(analytics).toContain('value: "week"');
+    expect(analytics).toContain('value: "month"');
+    expect(analytics).toContain("Hourly distribution");
+    expect(analytics).toContain("Top callers");
+    expect(analytics).toContain("Top destinations");
+    expect(analytics).toContain("RefreshControl");
+    expect(analytics).toContain("Call analytics could not be loaded.");
+    expect(analytics).toContain("No recorded calls for this period.");
+    expect(analytics).toContain("may update after call processing");
+    expect(analytics).not.toContain("UnavailableAdminScreen");
+    expect(analytics).not.toMatch(/MOCK_|Math\.random|All systems operational/);
+  });
+
+  it("does not present demo users or system health as live data", () => {
     const unavailable = readFileSync(
       resolve(process.cwd(), "components/admin/unavailable-admin-screen.tsx"),
       "utf8",
     );
 
-    for (const screen of ["users", "analytics", "system"]) {
-      const source = readFileSync(
-        resolve(process.cwd(), `app/admin/${screen}.tsx`),
-        "utf8",
-      );
-      expect(source).toContain("UnavailableAdminScreen");
-      expect(source).not.toMatch(/MOCK_USERS|Math\.random|All systems operational/);
-    }
+    const system = readFileSync(
+      resolve(process.cwd(), "app/admin/system.tsx"),
+      "utf8",
+    );
+    expect(system).toContain("UnavailableAdminScreen");
+    expect(system).not.toMatch(/MOCK_USERS|Math\.random|All systems operational/);
 
     expect(unavailable).toContain("Not available yet");
     expect(unavailable).toContain("live service");

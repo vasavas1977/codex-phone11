@@ -4,7 +4,13 @@
 route[PHONE11_WAKE_START] {
     # Call only from the existing, source-authorized PHONE11_INBOUND_PILOT route
     # AFTER its exact destination rewrite and BEFORE its location lookup.
-    if (!is_method("INVITE") || has_totag() || $ru != PHONE11_WAKE_PILOT_URI) {
+    # The legacy pilot is exact. A local app-to-app call may provide one of
+    # two separately configured targets only after its authenticated pair gate
+    # stored the target on this dialog.
+    if (!is_method("INVITE") || has_totag() ||
+        ($ru != PHONE11_WAKE_PILOT_URI &&
+         ($dlg_var(phone11_local_wake) != "1" || !defined $dlg_var(phone11_wake_target) ||
+          $ru != $dlg_var(phone11_wake_target)))) {
         return;
     }
     if ($ci == $null || $(ci{s.len}) > 512 || !($ci =~ "^[!-~]+$")) {
@@ -14,12 +20,15 @@ route[PHONE11_WAKE_START] {
     remove_hf("X-Phone11-Wake-ID");
     setflag(PHONE11_WAKE_FLAG);
     $dlg_var(phone11_wake) = "1";
+    # Preserve the exact allowed target through suspension, resume and terminal
+    # handling. Never derive it from a caller header, From URI or extension.
+    $dlg_var(phone11_wake_target) = $ru;
     if (!t_newtran()) { exit; }
     t_set_fr(30000, 30000);
     t_set_max_lifetime(60000, 30000);
     t_on_failure("PHONE11_WAKE_FAILURE");
     $var(wake_body) = "{}";
-    jansson_set("string", "sipUri", PHONE11_WAKE_PILOT_URI, "$var(wake_body)");
+    jansson_set("string", "sipUri", "$dlg_var(phone11_wake_target)", "$var(wake_body)");
     jansson_set("string", "sipCallId", "$ci", "$var(wake_body)");
     $http_req(all) = $null;
     $http_req(method) = "POST";
@@ -58,7 +67,13 @@ route[PHONE11_WAKE_RESUME] {
         exit;
     }
     # Preserve the real original INVITE/Call-ID/SDP. Never originate another call.
-    $ru = PHONE11_WAKE_PILOT_URI;
+    if (!defined $dlg_var(phone11_wake_target)) {
+        $var(wake_terminal) = "cancelled";
+        route(PHONE11_WAKE_TERMINAL);
+        t_reply("480", "Phone unavailable");
+        exit;
+    }
+    $ru = $dlg_var(phone11_wake_target);
     $du = $null;
     if (!lookup("location")) {
         $var(wake_terminal) = "cancelled";
@@ -69,8 +84,31 @@ route[PHONE11_WAKE_RESUME] {
     # Correlate only the server-generated wake UUID; discard caller-supplied copies.
     remove_hf("X-Phone11-Wake-ID");
     append_hf("X-Phone11-Wake-ID: $var(wake_uuid)\r\n");
-    # Reuse the existing pilot's native/FreeSWITCH/carrier media and reply routes.
-    route(PHONE11_INBOUND_OFFER);
+    # The dialog marker survives async resume; do not silently downgrade a
+    # gated local call to the generic pilot media route when callback AVPs vary.
+    if ($dlg_var(phone11_local_wake) == "1") {
+        if (!has_body("application/sdp") ||
+            !search_body("a=crypto:.*AES_CM_128_HMAC_SHA1_80")) {
+            route(PHONE11_WAKE_MEDIA_CLEANUP);
+            $var(wake_terminal) = "cancelled";
+            route(PHONE11_WAKE_TERMINAL);
+            t_reply("488", "Secure local media required");
+            exit;
+        }
+        route(PHONE11_LOCAL_EXTENSION_MEDIA);
+        if ($avp(phone11_local_media_failed) == "1" ||
+            $dlg_var(phone11_local_media_profile) != "siprix-sdes80") {
+            route(PHONE11_WAKE_MEDIA_CLEANUP);
+            $var(wake_terminal) = "cancelled";
+            route(PHONE11_WAKE_TERMINAL);
+            t_reply("503", "Secure local media unavailable");
+            exit;
+        }
+        t_on_reply("LOCAL_EXTENSION_REPLY");
+    } else {
+        # Carrier/FreeSWITCH pilot calls retain their existing media contract.
+        route(PHONE11_INBOUND_OFFER);
+    }
     # The existing offer route returns only after media allocation succeeds.
     # Keep this transaction AVP unset for failed wake/lookup and early CANCEL.
     $avp(phone11_wake_media_allocated) = 1;
@@ -140,7 +178,8 @@ route[PHONE11_WAKE_MEDIA_CLEANUP] {
 
 route[PHONE11_WAKE_TERMINAL] {
     $var(wake_body) = "{}";
-    jansson_set("string", "sipUri", PHONE11_WAKE_PILOT_URI, "$var(wake_body)");
+    if (!defined $dlg_var(phone11_wake_target)) { return; }
+    jansson_set("string", "sipUri", "$dlg_var(phone11_wake_target)", "$var(wake_body)");
     jansson_set("string", "sipCallId", "$ci", "$var(wake_body)");
     jansson_set("string", "status", "$var(wake_terminal)", "$var(wake_body)");
     $http_req(all) = $null;

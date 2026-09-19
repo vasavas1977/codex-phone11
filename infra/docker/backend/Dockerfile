@@ -57,6 +57,7 @@ COPY tsconfig.json ./
 # scripts would run the Expo mobile prebuild inside the backend image.
 RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs
 RUN pnpm exec esbuild scripts/phone11-auth-admin.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/auth-admin.mjs
+RUN pnpm exec esbuild scripts/phone11-conference-readiness.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/conference-readiness.mjs
 
 # --- Stage 3: Production ---
 FROM node:22-alpine AS production
@@ -69,7 +70,8 @@ WORKDIR /app
 # Security: run as non-root
 RUN addgroup -g 1001 -S cloudphone && \
     adduser -S cloudphone -u 1001 -G cloudphone && \
-    mkdir -p /var/lib/phone11/recordings /var/lib/phone11/voicemail && \
+    mkdir -p /var/lib/phone11/recordings /var/lib/phone11/voicemail /var/lib/phone11/chat-media && \
+    chmod 0700 /var/lib/phone11/chat-media && \
     chown -R cloudphone:cloudphone /var/lib/phone11
 
 # Copy production dependencies from deps stage

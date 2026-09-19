@@ -1,5 +1,6 @@
 import { startRecordingCaptureService } from "../cloud-recordings/capture-service";
 import "dotenv/config";
+import { chatMediaRouter, startChatMediaRetention } from "../chat/media";
 import { startChatNotificationDispatcher } from "../chat-notifications/dispatcher";
 import { startRecordingAnalysisWorker, startRecordingRetentionWorker } from "../cloud-recordings/worker";
 import express from "express";
@@ -40,6 +41,7 @@ async function startServer() {
   let stopRecordingAnalysis = () => {};
   let stopRecordingRetention = () => {};
   let stopRecordingCapture = () => {};
+  let stopChatMediaRetention = () => {};
   const app = express();
   const server = createServer(app);
 
@@ -50,6 +52,7 @@ async function startServer() {
   // Wake requests have their own small body limit and fail closed until commissioned.
   registerWakeRoutes(app);
 
+  app.use("/api/chat/media", chatMediaRouter);
   app.use("/api/freeswitch/cdr", freeswitchCdrRouter);
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -105,6 +108,7 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`[api] server listening on port ${port}`);
     startChatNotificationDispatcher();
+    stopChatMediaRetention = startChatMediaRetention();
     stopRecordingAnalysis = startRecordingAnalysisWorker();
     stopRecordingRetention = startRecordingRetentionWorker();
     stopRecordingCapture = startRecordingCaptureService();
@@ -122,6 +126,7 @@ async function startServer() {
     stopRecordingAnalysis();
     stopRecordingRetention();
     stopRecordingCapture();
+    stopChatMediaRetention();
     console.log("[api] SIGTERM received, shutting down...");
     fsEventListener.stop();
     wsManager.shutdown();

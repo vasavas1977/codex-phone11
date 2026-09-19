@@ -59,6 +59,7 @@ export default function SettingsScreen() {
     </View>
     {row("Phone account", "View your assigned extension and connection", () => router.push(user ? "/settings/sip" : "/auth/sign-in"))}
     {account && row(busy ? "Connecting…" : "Reconnect", "Refresh your phone connection", reconnect)}
+    {row("About Phone11", "Current calling features and availability", () => router.push("/settings/about"))}
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <Text style={[styles.rowTitle, { color: colors.foreground }]}>Appearance</Text>
       <View accessibilityRole="radiogroup" style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
@@ -77,6 +78,7 @@ export default function SettingsScreen() {
       </View>
     </View>
     {row("Recording & AI", "Recording policy, AI summaries and retention", () => router.push("/call-recording/settings"))}
+    {row("Voicemail", "Listen to and manage voicemail for your assigned extension", () => router.push("/voicemail"))}
     {row("Today & calendar", "Scheduled calls and meetings from Super Number", () => router.push("/calendar" as any))}
     {row("Call history", "Calls placed and received on this phone", () => router.push("/(tabs)/recents"))}
     {row("Team Chat", "Conversations in your work account", () => router.push("/(tabs)/teamchat"))}
@@ -84,8 +86,8 @@ export default function SettingsScreen() {
     {canManageWorkspace && row("Workspace administration", "Manage people, numbers and call routing", () => router.push("/admin"))}
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <Text style={[styles.rowTitle, { color: colors.foreground }]}>Preview availability</Text>
-      <Text style={[styles.detail, { color: colors.muted }]}>Keep Phone11 open to receive calls in this preview. Incoming-call notifications while the app is closed are not connected yet.</Text>
-      <Text style={[styles.detail, { color: colors.muted }]}>Preview calls are limited to 60 seconds. Voicemail, transfer, video, SMS and live presence are not available yet.</Text>
+      <Text style={[styles.detail, { color: colors.muted }]}>Calls are available while Phone11 is open. Incoming-call alerts while the app is in the background or closed require commissioned native support and are not available in this preview.</Text>
+      <Text style={[styles.detail, { color: colors.muted }]}>Preview calls are limited to 60 seconds. Video, transfer, conference calling, SMS and live presence are not available yet.</Text>
     </View>
     {row("Connection diagnostics", "Troubleshooting information for support", () => router.push("/settings/sip-diagnostics"))}
     {user ? row("Sign out", "Disconnect this work account from the app", signOut, true) : row("Sign in", "Connect your work account", () => router.push(SIGN_IN_ROUTE))}

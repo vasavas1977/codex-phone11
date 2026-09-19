@@ -11,7 +11,7 @@
  * 4. Returns SIP credentials to the app
  */
 
-import { getPool } from "./pbx/db";
+import { getPool, withTransaction } from "./pbx/db";
 import { createSipCredentials, decryptSecret } from "./pbx/sip-secrets";
 
 export interface PhoneConfig {
@@ -352,14 +352,20 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
              sub.password as subscriber_password
       FROM extensions e
       LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+      JOIN tenant_memberships tm ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
+      JOIN tenants active_tenant ON active_tenant.id = e.tenant_id AND active_tenant.status = 'active'
       LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
       LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
-      LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+      LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
       LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
         AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
       WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
         AND COALESCE(e.status, 'active') = 'active'
         AND e.deleted_at IS NULL
+        -- A legacy extension without a sip_accounts row may use its existing
+        -- credential fields. Once an account exists, only its live state can
+        -- provision credentials; suspended/deleted accounts fail closed.
+        AND (sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL))
       ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
       LIMIT 1
     `, [userId, DEFAULT_SIP_DOMAIN]);
@@ -368,11 +374,11 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       const ext = assignedResult.rows[0];
       const didsResult = await db.query(`
         SELECT number, description FROM did_numbers
-        WHERE COALESCE(org_id, tenant_id, 1) = $1
+        WHERE tenant_id = $1
           AND destination_type = 'extension'
           AND destination_value = $2
           AND COALESCE(status, 'active') = 'active'
-      `, [ext.org_id || ext.tenant_id || 1, ext.extension_number]);
+      `, [ext.tenant_id, ext.extension_number]);
 
       return buildConfig(
         ext,
@@ -401,12 +407,18 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 
+  // Pilot bootstrap must not revive an inactive member by handing out a fresh
+  // extension and its SIP credentials.
+  const membership = await db.query(`SELECT 1 FROM tenant_memberships tm JOIN tenants t ON t.id=tm.tenant_id
+    WHERE tm.user_id=$1 AND tm.tenant_id=1 AND tm.status='active' AND t.status='active' LIMIT 1`, [userId]);
+  if (membership.rows.length !== 1) return { configured: false };
+
   const openExtension = await db.query(`
     SELECT e.*
     FROM extensions e
     LEFT JOIN user_extensions ue ON ue.extension_id = e.id
     LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
-    WHERE COALESCE(e.org_id, e.tenant_id, 1) = 1
+    WHERE e.tenant_id = 1
       AND COALESCE(e.status, 'active') = 'active'
       AND e.deleted_at IS NULL
       AND e.user_id IS NULL
@@ -418,7 +430,7 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
 
   if (openExtension.rows.length > 0) {
     const ext = openExtension.rows[0];
-    await assignExtensionToUser(userId, ext.id, true);
+    await assignExtensionToUser(userId, ext.id, true, 1);
     return getPhoneConfig(userId, openId);
   }
 
@@ -428,7 +440,7 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
     extensionNumber,
     displayName: `Phone11 Pilot ${extensionNumber}`,
   });
-  await assignExtensionToUser(userId, created.id, true);
+  await assignExtensionToUser(userId, created.id, true, 1);
 
   return getPhoneConfig(userId, openId);
 }
@@ -436,12 +448,39 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
 /**
  * Assign an extension to a user.
  */
-export async function assignExtensionToUser(userId: number, extensionId: number, isPrimary: boolean = true) {
+export async function assignExtensionToUser(
+  userId: number,
+  extensionId: number,
+  isPrimary: boolean = true,
+  tenantId: number = 1,
+) {
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 
+  // Never allow the legacy route (or a future direct caller) to link an
+  // extension to someone outside that extension's active workspace.
+  const eligible = await db.query(
+    `SELECT e.id
+       FROM extensions e
+       JOIN tenant_memberships tm
+         ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
+       JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
+      WHERE e.id = $2 AND e.tenant_id = $3
+        AND e.status = 'active' AND e.deleted_at IS NULL
+      LIMIT 1`,
+    [userId, extensionId, tenantId],
+  );
+  if (eligible.rows.length !== 1) {
+    throw new Error("Extension assignee must be an active member of this workspace.");
+  }
+
   if (isPrimary) {
-    await db.query(`UPDATE user_extensions SET is_primary = false WHERE user_id = $1`, [userId]);
+    await db.query(
+      `UPDATE user_extensions ue SET is_primary = false
+         FROM extensions e
+        WHERE ue.user_id = $1 AND ue.extension_id = e.id AND e.tenant_id = $2`,
+      [userId, tenantId],
+    );
   }
 
   await db.query(`
@@ -450,8 +489,15 @@ export async function assignExtensionToUser(userId: number, extensionId: number,
     ON CONFLICT (user_id, extension_id) DO UPDATE SET is_primary = EXCLUDED.is_primary
   `, [userId, extensionId, isPrimary]);
 
-  await db.query(`UPDATE extensions SET user_id = $1, updated_at = NOW() WHERE id = $2`, [userId, extensionId]);
-  await db.query(`UPDATE sip_accounts SET user_id = $1, updated_at = NOW() WHERE extension_id = $2`, [userId, extensionId]);
+  await db.query(
+    `UPDATE extensions SET user_id = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
+    [userId, extensionId, tenantId],
+  );
+  await db.query(
+    `UPDATE sip_accounts SET user_id = $1, updated_at = NOW()
+      WHERE extension_id = $2 AND tenant_id = $3`,
+    [userId, extensionId, tenantId],
+  );
 
   return { success: true };
 }
@@ -467,7 +513,7 @@ export async function listExtensions(orgId: number) {
     SELECT e.*, ue.user_id as assigned_user_id
     FROM extensions e
     LEFT JOIN user_extensions ue ON e.id = ue.extension_id
-    WHERE COALESCE(e.org_id, e.tenant_id, 1) = $1
+    WHERE e.tenant_id = $1
       AND e.deleted_at IS NULL
     ORDER BY e.extension_number
   `, [orgId]);
@@ -487,59 +533,77 @@ export async function createExtension(input: {
   await ensurePhoneProvisioningSchema(db);
 
   const { orgId, extensionNumber, displayName, password } = input;
-  const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN, password);
+  return withTransaction(async (client) => {
+    // Kamailio subscriber usernames are global in this legacy schema. The
+    // transaction-scoped lock makes the ownership check and credential write
+    // indivisible across tenants, while the transaction rolls back a subscriber
+    // change if either local provisioning insert fails.
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+      [extensionNumber, DEFAULT_SIP_DOMAIN],
+    );
+    const conflictingExtension = await client.query(
+      `SELECT id FROM extensions
+        WHERE extension_number = $1 AND tenant_id <> $2 AND deleted_at IS NULL
+        LIMIT 1`,
+      [extensionNumber, orgId],
+    );
+    if (conflictingExtension.rows.length > 0) {
+      throw new Error("This extension number is already in use by another workspace.");
+    }
 
-  await db.query(`
-    INSERT INTO subscriber (username, domain, password, ha1, ha1b)
-    VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (username, domain) DO UPDATE SET
-      password = EXCLUDED.password,
-      ha1 = EXCLUDED.ha1,
-      ha1b = EXCLUDED.ha1b
-  `, [extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, creds.ha1, creds.ha1b]);
+    const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN, password);
+    await client.query(`
+      INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (username, domain) DO UPDATE SET
+        password = EXCLUDED.password,
+        ha1 = EXCLUDED.ha1,
+        ha1b = EXCLUDED.ha1b
+    `, [extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, creds.ha1, creds.ha1b]);
 
-  const result = await db.query(`
-    INSERT INTO extensions (
-      org_id, tenant_id, extension_number, sip_username, sip_domain, sip_password,
-      display_name, transport, status, type
-    )
-    VALUES ($1, $1, $2, $2, $3, $4, $5, $6, 'active', 'user')
-    RETURNING *
-  `, [orgId, extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, displayName || `Extension ${extensionNumber}`, DEFAULT_SIP_TRANSPORT]);
+    const result = await client.query(`
+      INSERT INTO extensions (
+        org_id, tenant_id, extension_number, sip_username, sip_domain, sip_password,
+        display_name, transport, status, type
+      )
+      VALUES ($1, $1, $2, $2, $3, $4, $5, $6, 'active', 'user')
+      RETURNING *
+    `, [orgId, extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, displayName || `Extension ${extensionNumber}`, DEFAULT_SIP_TRANSPORT]);
 
-  const ext = result.rows[0];
+    const ext = result.rows[0];
+    await client.query(`
+      INSERT INTO sip_accounts (
+        tenant_id, org_id, extension_id, sip_username, sip_domain, ha1, ha1b,
+        secret_ciphertext, secret_iv, secret_tag, dek_id, transport_preference, status
+      )
+      VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active')
+    `, [
+      orgId,
+      ext.id,
+      creds.sipUsername,
+      creds.sipDomain,
+      creds.ha1,
+      creds.ha1b,
+      creds.secretCiphertext,
+      creds.secretIv,
+      creds.secretTag,
+      creds.dekId,
+      DEFAULT_SIP_TRANSPORT,
+    ]);
 
-  await db.query(`
-    INSERT INTO sip_accounts (
-      tenant_id, org_id, extension_id, sip_username, sip_domain, ha1, ha1b,
-      secret_ciphertext, secret_iv, secret_tag, dek_id, transport_preference, status
-    )
-    VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'active')
-  `, [
-    orgId,
-    ext.id,
-    creds.sipUsername,
-    creds.sipDomain,
-    creds.ha1,
-    creds.ha1b,
-    creds.secretCiphertext,
-    creds.secretIv,
-    creds.secretTag,
-    creds.dekId,
-    DEFAULT_SIP_TRANSPORT,
-  ]);
-
-  return ext;
+    return ext;
+  });
 }
 
 /**
  * List all organizations.
  */
-export async function listOrganizations() {
+export async function listOrganizations(tenantIds: number[]) {
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 
-  const result = await db.query(`SELECT * FROM organizations ORDER BY id`);
+  const result = await db.query(`SELECT * FROM organizations WHERE id = ANY($1::integer[]) ORDER BY id`, [tenantIds]);
   return result.rows;
 }
 
@@ -551,7 +615,7 @@ export async function listDidNumbers(orgId: number) {
   await ensurePhoneProvisioningSchema(db);
 
   const result = await db.query(`
-    SELECT * FROM did_numbers WHERE COALESCE(org_id, tenant_id, 1) = $1 ORDER BY number
+    SELECT * FROM did_numbers WHERE tenant_id = $1 ORDER BY number
   `, [orgId]);
   return result.rows;
 }

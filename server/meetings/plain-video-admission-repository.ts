@@ -5,7 +5,7 @@ import type { MeetingGrant, MeetingRepository } from "./service";
 
 const opaqueIdentifier = z.string().regex(/^[A-Za-z0-9_-]{1,96}$/);
 
-const plainVideoAdmissionRowSchema = z.object({
+export const plainVideoAdmissionRowSchema = z.object({
   meeting_id: z.string().uuid(),
   tenant_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
   user_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
@@ -21,7 +21,7 @@ export type PlainVideoReadOnlyTransaction = <T>(
   fn: (db: PlainVideoAdmissionQuery) => Promise<T>,
 ) => Promise<T>;
 
-function parseExactRecord(
+export function parseExactPlainVideoAdmissionRecord(
   row: unknown,
   expected: { meetingId: string; userId: number; tenantId?: number },
 ): PlainVideoAdmissionRecord | null {
@@ -37,7 +37,7 @@ function parseExactRecord(
   return record;
 }
 
-const selection = `SELECT r.id AS meeting_id, r.tenant_id, m.user_id,
+export const plainVideoAdmissionSelection = `SELECT r.id AS meeting_id, r.tenant_id, m.user_id,
                            m.participant_id, m.grant_profile,
                            r.revision AS room_revision, m.revision AS member_revision
                       FROM phone11_plain_video_admission_rooms r
@@ -51,7 +51,7 @@ const selection = `SELECT r.id AS meeting_id, r.tenant_id, m.user_id,
                         ON tm.tenant_id = r.tenant_id AND tm.user_id = m.user_id
                        AND tm.status = 'active'`;
 
-const admitted = `r.state = 'open' AND r.ended_at IS NULL
+export const plainVideoAdmissionAdmitted = `r.state = 'open' AND r.ended_at IS NULL
                   AND m.revoked_at IS NULL AND m.lobby_state = 'admitted'`;
 
 /**
@@ -66,12 +66,12 @@ export function createPlainVideoAdmissionRepository() {
       meetingId: string,
     ): Promise<MeetingGrant | null> {
       const result = await db.query(
-        `${selection}
-          WHERE r.id = $1 AND m.user_id = $2 AND ${admitted}`,
+        `${plainVideoAdmissionSelection}
+          WHERE r.id = $1 AND m.user_id = $2 AND ${plainVideoAdmissionAdmitted}`,
         [meetingId, userId],
       );
       if (result.rows.length !== 1) return null;
-      const record = parseExactRecord(result.rows[0], { meetingId, userId });
+      const record = parseExactPlainVideoAdmissionRecord(result.rows[0], { meetingId, userId });
       return record
         ? { meetingId: record.meeting_id, tenantId: record.tenant_id, userId: record.user_id }
         : null;
@@ -82,12 +82,12 @@ export function createPlainVideoAdmissionRepository() {
       grant: MeetingGrant,
     ): Promise<PlainVideoAdmissionRecord | null> {
       const result = await db.query(
-        `${selection}
-          WHERE r.id = $1 AND r.tenant_id = $2 AND m.user_id = $3 AND ${admitted}`,
+        `${plainVideoAdmissionSelection}
+          WHERE r.id = $1 AND r.tenant_id = $2 AND m.user_id = $3 AND ${plainVideoAdmissionAdmitted}`,
         [grant.meetingId, grant.tenantId, grant.userId],
       );
       if (result.rows.length !== 1) return null;
-      return parseExactRecord(result.rows[0], grant);
+      return parseExactPlainVideoAdmissionRecord(result.rows[0], grant);
     },
   };
 }
