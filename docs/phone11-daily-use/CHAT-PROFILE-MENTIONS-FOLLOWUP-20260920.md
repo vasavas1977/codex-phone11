@@ -70,6 +70,30 @@ destinations. Use actual Phone11 identity and supported account capabilities.
 A passed source test or registration check does not complete these handset
 steps. The owner has not yet reported locked-screen message-alert delivery.
 
+## Signed Build 76 — ready for installation
+
+- Client source: `92e8a3a6ea167aff66b486f98f2ad75d53fbec31`.
+- [CI run 35525678664](https://github.com/vasavas1977/codex-phone11/actions/runs/35525678664)
+  passed. EAS profile: `preview-ios-siprix-daily-pilot`.
+- [Install Build 76](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/578df8fd-1c61-4d48-87f3-7e50c63939d5).
+  This is the EAS build-details installation page, not a raw IPA download.
+- IPA SHA-256: `62361f82cb7012ecc11a133ae0a48c2d69a7632668d25f09172d376526c39537`.
+- Native Siprix/bridge/signature checks and all 22 signed configuration and
+  provisioning checks passed. Embedded JavaScript is present; development
+  launcher is absent. Existing baseline handset coverage is retained.
+- Retained IPA and verification records are under
+  `~/Library/Application Support/Phone11/verified-builds/76/`.
+- No installation or physical-phone acceptance is claimed. Build 74 remains
+  the last confirmed installed version; keep it available for rollback.
+
+Build 76 can exercise the corrected native meeting audio startup, member
+mention picker, and notification enrollment interface against existing APIs.
+Profile persistence/DND, standby mobile presence fallback, and governed `@all`
+still require the pending backend/schema release. The later server-only
+concurrent status-expiry correction (`682fbd0`) does not require another mobile
+build. Test steps 3, 5, 6 and the `@all` portion of step 4 must wait for that
+backend release; do not present them as live features of this package alone.
+
 ## Integration verification — 21 September
 
 - Final compact profile preview at 390×844: status preset selection, save and
