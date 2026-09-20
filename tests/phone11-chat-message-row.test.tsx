@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup(node: ReactNode): string };
-const m = vi.hoisted(() => ({ buttons: new Map<string, any>() }));
+const m = vi.hoisted(() => ({ buttons: new Map<string, any>(), contentProps: null as any }));
 function element({ children }: any) {
   return createElement("div", null, children);
 }
@@ -31,7 +31,7 @@ vi.mock("../components/chat/link-preview", () => ({
   ChatLinkPreview: () => null,
 }));
 vi.mock("../components/chat/message-content", () => ({
-  LinkedChatText: ({ text }: any) => createElement("span", null, text),
+  LinkedChatText: (props: any) => { m.contentProps = props; return createElement("span", null, props.text); },
   ChatAttachmentCard: () => createElement("span", null, "attachment"),
 }));
 import { ChatMessageRow } from "../components/chat/message-row";
@@ -48,7 +48,7 @@ const base: ChatMessage = {
   status: "sent",
   parent: null,
 };
-beforeEach(() => m.buttons.clear());
+beforeEach(() => { m.buttons.clear(); m.contentProps = null; });
 function render(message: ChatMessage) {
   const actions = {
     onActions: vi.fn(),
@@ -77,6 +77,10 @@ it("shows a compact accessible receipt control only when a positive label is sup
   m.buttons.get("Read by 3. View read receipts").onPress();
   expect(onReadReceipts).toHaveBeenCalledOnce();
   expect(render(base).html).not.toContain("View read receipts");
+});
+it("passes the server-authorized @all range to message rendering", () => {
+  render({ ...base, content: "Hello @all", allMention: { start: 6, length: 4 } });
+  expect(m.contentProps).toMatchObject({ text: "Hello @all", allMention: { start: 6, length: 4 } });
 });
 it("keeps replies reachable after the parent is deleted without exposing deleted text or media", () => {
   const { html, onReplies } = render({

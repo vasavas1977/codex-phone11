@@ -12,9 +12,9 @@ import {
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { useColors } from "@/hooks/use-colors";
 import { getChatMediaSource, shareChatFile } from "@/lib/chat/media-client";
-import type { ChatAttachment, ChatMention } from "@/lib/chat/types";
+import type { ChatAllMention, ChatAttachment, ChatMention } from "@/lib/chat/types";
 import { ReceivedMedia } from "@/components/chat/received-media";
-function mentionSegments(text: string, mentions: ChatMention[]) {
+function mentionSegments(text: string, mentions: (ChatMention | ChatAllMention)[]) {
   const items: { text: string; mention?: boolean }[] = [];
   let offset = 0;
   for (const mention of [...mentions].filter(item => item.start >= 0 && item.length > 0 && item.start + item.length <= text.length).sort((a, b) => a.start - b.start)) {
@@ -31,13 +31,15 @@ export function LinkedChatText({
   text,
   deleted = false,
   mentions = [],
+  allMention,
 }: {
   text: string;
   deleted?: boolean;
   mentions?: ChatMention[];
+  allMention?: ChatAllMention;
 }) {
   const colors = useColors();
-  const rendered = mentionSegments(text, mentions);
+  const rendered = mentionSegments(text, allMention ? [...mentions, allMention] : mentions);
   return (
     <Text
       selectable

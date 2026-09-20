@@ -22,3 +22,10 @@ it("shows Thai name matches from the composer query", () => {
   expect(html).not.toContain("Nathasa");
   expect(html).not.toContain("@all");
 });
+it("shows @all only when the server grants the capability and the query matches", () => {
+  const allowed = renderToStaticMarkup(createElement(MentionPicker, { people: [], query: "al", canMentionAll: true, onPick: () => {}, onPickAll: () => {} }));
+  const denied = renderToStaticMarkup(createElement(MentionPicker, { people: [], query: "al", canMentionAll: false, onPick: () => {} }));
+  expect(allowed).toContain("@all");
+  expect(allowed).toContain("Notify all current members");
+  expect(denied).not.toContain("@all");
+});

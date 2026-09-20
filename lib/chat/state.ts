@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { ChatPersistence } from "./persistence";
-import type { ChatAttachment, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatParentPreview, ChatPerson, ChatWorkspace } from "./types";
+import type { ChatAllMention, ChatAttachment, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatParentPreview, ChatPerson, ChatWorkspace } from "./types";
 export interface ChatThread { root: ChatMessage; replies: ChatMessage[]; hasMore: boolean }
 export interface ChatTransport {
   list(tenantId?: number): Promise<{ workspace: ChatWorkspace; workspaces: ChatWorkspace[]; channels: ChatChannel[] }>;
@@ -9,7 +9,7 @@ export interface ChatTransport {
   history(tenantId: number, id: string, before?: number): Promise<{ messages: ChatMessage[]; hasMore: boolean; latestSequence?: number }>;
   search(tenantId: number, id: string, text: string): Promise<{ messages: ChatMessage[]; hasMore: boolean }>;
   thread(tenantId: number, id: string, parentMessageId: string, before?: number): Promise<ChatThread>;
-  send(tenantId: number, id: string, clientId: string, content: string, parentMessageId?: string, attachmentIds?: string[], mentions?: Pick<ChatMention, "userId" | "start" | "length">[]): Promise<ChatMessage>;
+  send(tenantId: number, id: string, clientId: string, content: string, parentMessageId?: string, attachmentIds?: string[], mentions?: Pick<ChatMention, "userId" | "start" | "length">[], allMention?: ChatAllMention): Promise<ChatMessage>;
   details?: (tenantId: number, id: string) => Promise<ChatConversationDetails>;
   report(tenantId: number, id: string, category: "harassment" | "spam" | "safety" | "other", comment?: string, messageId?: string): Promise<{ recorded: true }>;
   block(tenantId: number, userId: number): Promise<{ blocked: true }>;
@@ -58,7 +58,7 @@ interface ChatState {
   unblockMember: (userId: number) => Promise<void>;
   markAsRead: (id: string) => Promise<void>;
   searchMessages: (id: string, text: string) => Promise<{ messages: ChatMessage[]; hasMore: boolean }>;
-  sendMessage: (id: string, content: string, parentMessageId?: string, attachments?: ChatAttachment[], mentions?: Pick<ChatMention, "userId" | "start" | "length">[]) => Promise<void>;
+  sendMessage: (id: string, content: string, parentMessageId?: string, attachments?: ChatAttachment[], mentions?: Pick<ChatMention, "userId" | "start" | "length">[], allMention?: ChatAllMention) => Promise<void>;
   loadDetails: (id: string) => Promise<ChatConversationDetails>;
   retryMessage: (id: string, clientId: string) => Promise<void>;
 }
@@ -132,7 +132,9 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         const mentions = pending.mentions?.map(({ userId, start, length }) => ({ userId, start, length })) || [];
         // Retain the established five-argument call for legacy text retries.
         // Optional metadata only crosses the wire when it exists.
-        const sent = attachmentIds.length || mentions.length
+        const sent = pending.allMention
+          ? await api.send(state.workspace.id, id, pending.clientId, pending.content, pending.parent?.id, attachmentIds, mentions, pending.allMention)
+          : attachmentIds.length || mentions.length
           ? await api.send(state.workspace.id, id, pending.clientId, pending.content, pending.parent?.id, attachmentIds, mentions)
           : await api.send(state.workspace.id, id, pending.clientId, pending.content, pending.parent?.id);
         if (current !== generation) return;
@@ -351,7 +353,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         if (current !== generation) throw new Error("Account changed.");
         return details;
       },
-      sendMessage: async (id, text, parentMessageId, attachments = [], mentions = []) => {
+      sendMessage: async (id, text, parentMessageId, attachments = [], mentions = [], allMention) => {
         const state = get(), content = text.trim();
         if (!state.userId || !state.workspace || !state.channels.some(c => c.id === id) || (!content && !attachments.length) || content.length > 4000 || attachments.length > 10) return;
         const source = parentMessageId ? (state.messages[id] || []).find(message => message.id === parentMessageId && message.status === "sent") : undefined;
@@ -361,7 +363,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
           : { id: parentMessageId, senderName: "Team member", content: "Original message is unavailable." } : null;
         const pending: ChatMessage = { id: newId(), clientId: newId(), channelId: id, senderId: state.userId, senderName: "You",
           content, timestamp: Date.now(), sequence: 0, status: "sending", parent, attachments,
-          mentions: mentions.map(item => ({ ...item, name: (state.people.find(person => person.id === item.userId)?.name || "Team member") })) };
+          mentions: mentions.map(item => ({ ...item, name: (state.people.find(person => person.id === item.userId)?.name || "Team member") })), allMention };
         const threadRootId = source?.parent?.id || parentMessageId;
         set(s => ({ drafts: { ...s.drafts, [chatDraftKey(id, threadRootId)]: "" }, messages: { ...s.messages, [id]: [...(s.messages[id] || []), pending] }, roomErrors: { ...s.roomErrors, [id]: null } }));
         await deliver(id, pending);

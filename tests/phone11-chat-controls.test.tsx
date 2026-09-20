@@ -234,6 +234,21 @@ it("opens on a typed @, inserts at the caret, and sends a structured member ment
     { userId: 2, start: 0, length: 8 },
   ]);
 });
+it("offers and sends @all only with the server capability", async () => {
+  mocks.state.channels[0].kind = "channel";
+  mocks.state.drafts.room = "@";
+  mocks.draft.mockImplementation((key: string, value: string) => { mocks.state.drafts[key] = value; });
+  mocks.details.mockResolvedValue({ members: [], canMentionAll: true, media: [], links: [] });
+  render();
+  mocks.input.onSelectionChange({ nativeEvent: { selection: { start: 1, end: 1 } } });
+  await Promise.resolve(); await Promise.resolve();
+  render();
+  expect(mocks.press.has("Mention everyone")).toBe(true);
+  mocks.press.get("Mention everyone")!.press();
+  render();
+  await mocks.press.get("Send message")!.press();
+  expect(mocks.send).toHaveBeenCalledWith("room", "@all", undefined, [], [], { start: 0, length: 4 });
+});
 it("resizes the full chat route for the keyboard and preserves the message anchor", () => {
   render();
   const roomKeyboard = mocks.keyboards.get("chat-room-keyboard-avoiding");

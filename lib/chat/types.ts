@@ -45,8 +45,12 @@ export interface ChatAttachment {
 }
 /** A server-verified member reference. Offsets are UTF-16 offsets in content. */
 export interface ChatMention { userId: number; name: string; start: number; length: number }
+/** A server-authorized broadcast range. It never impersonates a user id. */
+export interface ChatAllMention { start: number; length: 4 }
 export interface ChatConversationDetails {
   members: ChatPerson[];
+  /** Missing on older servers and therefore treated as false. */
+  canMentionAll?: boolean;
   media: { messageId: string; attachment: ChatAttachment }[];
   links: { messageId: string; url: string }[];
 }
@@ -67,6 +71,7 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   /** Omitted for legacy messages and clients. Never inferred from display text. */
   mentions?: ChatMention[];
+  allMention?: ChatAllMention;
 }
 export function formatChatTime(timestamp: number): string {
   if (!timestamp) return "";

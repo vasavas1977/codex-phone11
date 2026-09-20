@@ -10,9 +10,10 @@ import { ConversationDetails } from "@/components/chat/conversation-details";
 import { VoiceNote } from "@/components/chat/voice-note";
 import { useColors } from "@/hooks/use-colors";
 import { useThemeContext } from "@/lib/theme-provider";
-import type { ChatConversationDetails, ChatMention, ChatMessage } from "@/lib/chat/types";
+import type { ChatAllMention, ChatConversationDetails, ChatMention, ChatMessage } from "@/lib/chat/types";
 import { findMentionTrigger, insertMention, reconcileMentions, selectionAfterEdit, type ComposerSelection } from "@/lib/chat/mentions";
-const sampleDetails: ChatConversationDetails = { members: [{ id: 1, name: "You", extension: "1001" }, { id: 2, name: "Nathasa", extension: "1002" }, { id: 3, name: "Somchai", extension: "1003" }, { id: 4, name: "มนตรี ใจดี", extension: "1004" }], media: [], links: [{ messageId: "3", url: "https://phone11.ai" }] };
+import { insertAllMention, reconcileAllMention } from "@/lib/chat/all-mentions";
+const sampleDetails: ChatConversationDetails = { members: [{ id: 1, name: "You", extension: "1001" }, { id: 2, name: "Nathasa", extension: "1002" }, { id: 3, name: "Somchai", extension: "1003" }, { id: 4, name: "มนตรี ใจดี", extension: "1004" }], canMentionAll: true, media: [], links: [{ messageId: "3", url: "https://phone11.ai" }] };
 const sample: ChatMessage[] = [
   {
     id: "1",
@@ -70,14 +71,16 @@ export default function ChatPreview() {
     [replies, setReplies] = useState(false),
     [draft, setDraft] = useState(""),
     [draftMentions, setDraftMentions] = useState<ChatMention[]>([]),
+    [draftAllMention, setDraftAllMention] = useState<ChatAllMention | undefined>(),
     [selection, setSelection] = useState<ComposerSelection>({ start: 0, end: 0 }),
     [detailsOpen, setDetailsOpen] = useState(false),
     [receiptsOpen, setReceiptsOpen] = useState(false),
     [voiceOpen, setVoiceOpen] = useState(false),
     [voiceStatus, setVoiceStatus] = useState<string | null>(null);
-  const mentionTrigger = findMentionTrigger(draft, selection, draftMentions);
+  const mentionTrigger = findMentionTrigger(draft, selection, draftMentions, draftAllMention ? [draftAllMention] : []);
   const updateDraft = (value: string, nextSelection = selectionAfterEdit(draft, value, selection)) => {
     setDraftMentions(reconcileMentions(draft, value, draftMentions));
+    setDraftAllMention(reconcileAllMention(draft, value, draftAllMention));
     setDraft(value);
     setSelection(nextSelection);
   };
@@ -175,10 +178,18 @@ export default function ChatPreview() {
             ),
           )}
         </ScrollView>
-        {mentionTrigger && <MentionPicker people={sampleDetails.members} query={mentionTrigger.query} onPick={person => {
+        {mentionTrigger && <MentionPicker people={sampleDetails.members} query={mentionTrigger.query} canMentionAll={!draftAllMention} onPickAll={() => {
+          const result = insertAllMention(draft, mentionTrigger, draftAllMention);
+          setDraft(result.value); setDraftMentions(reconcileMentions(draft, result.value, draftMentions)); setDraftAllMention(result.allMention); setSelection(result.selection);
+          requestAnimationFrame(() => {
+            composerInput.current?.focus();
+            if (typeof composerInput.current?.setNativeProps === "function") composerInput.current.setNativeProps({ selection: result.selection });
+          });
+        }} onPick={person => {
           const result = insertMention(draft, mentionTrigger, person, draftMentions);
           setDraft(result.value);
           setDraftMentions(result.mentions);
+          setDraftAllMention(reconcileAllMention(draft, result.value, draftAllMention));
           setSelection(result.selection);
           requestAnimationFrame(() => {
             composerInput.current?.focus();

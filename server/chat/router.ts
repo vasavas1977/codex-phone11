@@ -11,7 +11,8 @@ const emoji = z.string().trim().min(1).max(32);
 const attachmentIds = z.array(z.string().uuid()).max(10).refine(ids => new Set(ids).size === ids.length, "Attachment ids must be unique");
 const mentions = z.array(z.object({ userId: tenant, start: z.number().int().nonnegative().max(4000), length: z.number().int().min(2).max(256) })).max(20)
   .refine(items => new Set(items.map(item => item.start)).size === items.length, "Mention positions must be unique");
-const sendInput = channel.extend({ clientId: z.string().uuid(), content: z.string().trim().max(4000), parentMessageId: z.string().uuid().optional(), attachmentIds: attachmentIds.optional(), mentions: mentions.optional() })
+const allMention = z.object({ start: z.number().int().nonnegative().max(3996), length: z.literal(4) }).strict();
+const sendInput = channel.extend({ clientId: z.string().uuid(), content: z.string().trim().max(4000), parentMessageId: z.string().uuid().optional(), attachmentIds: attachmentIds.optional(), mentions: mentions.optional(), allMention: allMention.optional() })
   .refine(input => input.content.length > 0 || (input.attachmentIds?.length || 0) > 0, "Add a message or attachment");
 const chatProcedure = protectedProcedure.use(({ ctx, next }) => {
   const expectedOwner = ctx.req.headers?.["x-phone11-chat-owner"];
@@ -36,7 +37,7 @@ export const chatRouter = router({
   thread: chatProcedure.input(channel.extend({ parentMessageId: z.string().uuid(), before: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() }))
     .query(({ ctx, input: i }) => service.thread(ctx.user.id, i.tenantId, i.id, i.parentMessageId, i.before)),
   send: chatProcedure.input(sendInput)
-    .mutation(({ ctx, input: i }) => service.send(ctx.user.id, i.tenantId, i.id, i.clientId, i.content, i.parentMessageId, i.attachmentIds, i.mentions)),
+    .mutation(({ ctx, input: i }) => service.send(ctx.user.id, i.tenantId, i.id, i.clientId, i.content, i.parentMessageId, i.attachmentIds, i.mentions, i.allMention)),
   details: chatProcedure.input(channel)
     .query(({ ctx, input: i }) => service.details(ctx.user.id, i.tenantId, i.id)),
   typingPublish: chatProcedure.input(channel.extend({ threadRootId: z.string().uuid().optional(), sessionId: z.string().uuid(),

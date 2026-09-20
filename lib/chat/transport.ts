@@ -6,6 +6,7 @@ import { getApiBaseUrl } from "../../constants/oauth";
 import { getAuthSnapshot, getSessionToken } from "../_core/auth";
 import { fetchWithTimeout } from "../_core/api";
 import type { ChatTransport } from "./state";
+import type { ChatAllMention } from "./types";
 
 /** Bind queued message bodies to the identity that initiated them, never a later login. */
 export function createChatTransport() {
@@ -78,6 +79,7 @@ export function createChatTransport() {
       parentMessageId?: string,
       attachmentIds?: string[],
       mentions?: { userId: number; start: number; length: number }[],
+      allMention?: ChatAllMention,
     ) =>
       withClient((client) =>
         client.chat.send.mutate({
@@ -88,6 +90,7 @@ export function createChatTransport() {
           ...(parentMessageId ? { parentMessageId } : {}),
           ...(attachmentIds?.length ? { attachmentIds } : {}),
           ...(mentions?.length ? { mentions } : {}),
+          ...(allMention ? { allMention } : {}),
         }),
       ),
     report: (tenantId, id, category, comment, messageId) =>

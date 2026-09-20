@@ -58,13 +58,14 @@ export function findMentionTrigger(
   value: string,
   selection: ComposerSelection,
   mentions: ChatMention[],
+  protectedRanges: { start: number; length: number }[] = [],
 ): MentionTrigger | null {
   const caret = clampSelection(value, selection);
   if (caret.start !== caret.end || caret.start === 0) return null;
-  if (mentions.some(item => caret.start > item.start && caret.start <= item.start + item.length)) return null;
+  if ([...mentions, ...protectedRanges].some(item => caret.start > item.start && caret.start <= item.start + item.length)) return null;
   const start = value.lastIndexOf("@", caret.start - 1);
   if (start < 0 || start >= caret.start || (start > 0 && !/\s/u.test(value[start - 1]))) return null;
-  if (mentions.some(item => item.start === start && caret.start >= item.start + item.length)) return null;
+  if ([...mentions, ...protectedRanges].some(item => item.start === start && caret.start >= item.start + item.length)) return null;
   const query = value.slice(start + 1, caret.start);
   if (/[\r\n@]/u.test(query)) return null;
   return { start, end: caret.start, query };

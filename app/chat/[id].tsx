@@ -28,6 +28,7 @@ import { useChatStore } from "@/lib/chat/store";
 import {
   formatChatTime,
   type ChatAttachment,
+  type ChatAllMention,
   type ChatConversationDetails,
   type ChatMessage,
   type ChatMention,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/chat/types";
 import { createReadReceiptController, createReadReceiptRequestGuard, createReadReceiptSummaryLoader, READ_RECEIPT_VIEW_AREA_PERCENT } from "@/lib/chat/read-receipts";
 import { findMentionTrigger, insertMention, reconcileMentions, selectionAfterEdit, type ComposerSelection, type MentionTrigger } from "@/lib/chat/mentions";
+import { insertAllMention, isExactAllMention, reconcileAllMention } from "@/lib/chat/all-mentions";
 
 import { ConversationRail } from "@/components/chat/conversation-rail";
 import { PresenceIndicator } from "@/components/chat/presence-indicator";
@@ -137,6 +139,7 @@ export default function ChatRoomScreen() {
   const [mentionTrigger, setMentionTrigger] = useState<MentionTrigger | null>(null);
   const [mentionLoading, setMentionLoading] = useState(false);
   const [draftMentionState, setDraftMentionState] = useState<{ key: string; items: ChatMention[] }>({ key: "", items: [] });
+  const [draftAllMentionState, setDraftAllMentionState] = useState<{ key: string; item?: ChatAllMention }>({ key: "" });
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [details, setDetails] = useState<ChatConversationDetails | null>(null);
@@ -202,17 +205,22 @@ export default function ChatRoomScreen() {
   const mentionDetailsRequest = useRef<SendAction | null>(null);
   const detailsScope = useRef<SendAction | null>(null);
   const activeDraftMentions = draftMentionState.key === draftKey ? draftMentionState.items : [];
+  const activeAllMention = draftAllMentionState.key === draftKey ? draftAllMentionState.item : undefined;
   const composerDraft = useRef(draft);
   const composerMentionList = useRef<ChatMention[]>(activeDraftMentions);
+  const composerAllMention = useRef<ChatAllMention | undefined>(activeAllMention);
   composerMentionList.current = activeDraftMentions;
+  composerAllMention.current = activeAllMention;
   composerDraft.current = draft;
-  const setDraft = (value: string, mentions = reconcileMentions(draft, value, activeDraftMentions)) => {
+  const setDraft = (value: string, mentions = reconcileMentions(draft, value, activeDraftMentions), allMention = reconcileAllMention(draft, value, activeAllMention)) => {
     const state = currentScope();
     if (state?.channels.some((channel) => channel.id === id))
       state.setDraft(draftKey, value);
     composerDraft.current = value;
     composerMentionList.current = mentions;
+    composerAllMention.current = allMention;
     setDraftMentionState({ key: draftKey, items: mentions });
+    setDraftAllMentionState({ key: draftKey, item: allMention });
   };
   const channel = ownsWorkspace
     ? chat.channels.find((item) => item.id === id)
@@ -281,6 +289,7 @@ export default function ChatRoomScreen() {
     setMentionTrigger(null);
     setMentionLoading(false);
     setDraftMentionState({ key: "", items: [] });
+    setDraftAllMentionState({ key: "" });
     mentionDetailsRequest.current = null;
     detailsScope.current = null;
     setDetailsOpen(false);
@@ -485,11 +494,16 @@ export default function ChatRoomScreen() {
       const mentions = activeDraftMentions.map(item => ({ ...item, start: item.start - leadingWhitespace }))
         .filter(item => item.start >= 0 && content.slice(item.start, item.start + item.length) === `@${item.name}`)
         .map(({ userId, start, length }) => ({ userId, start, length }));
-      if (attachments.length || mentions.length)
+      const allMention = activeAllMention ? { ...activeAllMention, start: activeAllMention.start - leadingWhitespace } : undefined;
+      const validAllMention = allMention && isExactAllMention(content, allMention) ? allMention : undefined;
+      if (validAllMention)
+        await state.sendMessage(id, content, parentMessageId, attachments, mentions, validAllMention);
+      else if (attachments.length || mentions.length)
         await state.sendMessage(id, content, parentMessageId, attachments, mentions);
       else await state.sendMessage(id, content, parentMessageId);
       if (currentScope()) setAttachments([]);
       if (currentScope()) setDraftMentionState({ key: draftKey, items: [] });
+      if (currentScope()) setDraftAllMentionState({ key: draftKey });
       if (activeThread)
         await refreshThread(state, activeThread.request, activeThread.rootId);
     } finally {
@@ -535,19 +549,20 @@ export default function ChatRoomScreen() {
       }
     }
   };
-  const syncMentionTrigger = (value: string, selection: ComposerSelection, mentions: ChatMention[]) => {
+  const syncMentionTrigger = (value: string, selection: ComposerSelection, mentions: ChatMention[], allMention = activeAllMention) => {
     const trigger = canCompose && (channel?.kind === "group" || channel?.kind === "channel")
-      ? findMentionTrigger(value, selection, mentions)
+      ? findMentionTrigger(value, selection, mentions, allMention ? [allMention] : [])
       : null;
     setMentionTrigger(trigger);
     if (trigger) void ensureMentionMembers();
   };
   const applyComposerChange = (value: string, selection = selectionAfterEdit(draft, value, composerSelection.current)) => {
     const mentions = reconcileMentions(draft, value, activeDraftMentions);
+    const allMention = reconcileAllMention(draft, value, activeAllMention);
     composerSelection.current = selection;
-    setDraft(value, mentions);
+    setDraft(value, mentions, allMention);
     typing.onUserEdit(value);
-    syncMentionTrigger(value, selection, mentions);
+    syncMentionTrigger(value, selection, mentions, allMention);
   };
   const focusComposerAt = (selection: ComposerSelection) => {
     composerSelection.current = selection;
@@ -562,9 +577,10 @@ export default function ChatRoomScreen() {
     const nextValue = draft.slice(0, selection.start) + "@" + draft.slice(selection.end);
     const nextSelection = { start: selection.start + 1, end: selection.start + 1 };
     const mentions = reconcileMentions(draft, nextValue, activeDraftMentions);
-    setDraft(nextValue, mentions);
+    const allMention = reconcileAllMention(draft, nextValue, activeAllMention);
+    setDraft(nextValue, mentions, allMention);
     typing.onUserEdit(nextValue);
-    syncMentionTrigger(nextValue, nextSelection, mentions);
+    syncMentionTrigger(nextValue, nextSelection, mentions, allMention);
     focusComposerAt(nextSelection);
   };
   const pickMention = (person: ChatConversationDetails["members"][number]) => {
@@ -575,6 +591,15 @@ export default function ChatRoomScreen() {
     }
     const result = insertMention(draft, mentionTrigger, person, activeDraftMentions);
     setDraft(result.value, result.mentions);
+    typing.onUserEdit(result.value);
+    setMentionTrigger(null);
+    focusComposerAt(result.selection);
+  };
+  const pickAllMention = () => {
+    if (!mentionTrigger || !details?.canMentionAll || activeAllMention) return;
+    const result = insertAllMention(draft, mentionTrigger, activeAllMention);
+    const mentions = reconcileMentions(draft, result.value, activeDraftMentions);
+    setDraft(result.value, mentions, result.allMention);
     typing.onUserEdit(result.value);
     setMentionTrigger(null);
     focusComposerAt(result.selection);
@@ -1803,8 +1828,10 @@ export default function ChatRoomScreen() {
                         people={details && actionIsCurrent(detailsScope.current) ? details.members : []}
                         query={mentionTrigger?.query || ""}
                         tenantId={chat.workspace?.id}
+                        canMentionAll={details?.canMentionAll === true && !activeAllMention}
                         loading={mentionLoading}
                         onPick={pickMention}
+                        onPickAll={pickAllMention}
                       />
                     )}
                     <TypingIndicator names={typing.names} />
@@ -1830,7 +1857,7 @@ export default function ChatRoomScreen() {
                         onSelectionChange={(event) => {
                           const selection = event.nativeEvent.selection;
                           composerSelection.current = selection;
-                          syncMentionTrigger(composerDraft.current, selection, composerMentionList.current);
+                          syncMentionTrigger(composerDraft.current, selection, composerMentionList.current, composerAllMention.current);
                         }}
                         onBlur={() => { setMentionTrigger(null); void typing.stop(); }}
                         editable={canCompose}

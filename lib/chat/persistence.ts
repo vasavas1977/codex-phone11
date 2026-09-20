@@ -1,4 +1,5 @@
 import type { ChatMessage } from "./types";
+import { isExactAllMention } from "./all-mentions";
 export interface PendingChat {
   drafts: Record<string, string>;
   messages: Record<string, ChatMessage[]>;
@@ -110,6 +111,8 @@ export function decodePending(raw: string | null, owner: number): PendingChat {
                 && mention.start + mention.length <= m.content.length).slice(0, 20)
                 .map((mention: any) => ({ userId: mention.userId, start: mention.start, length: mention.length, name: "Team member" }))
               : [],
+            allMention: m.allMention && Number.isSafeInteger(m.allMention.start) && Number.isSafeInteger(m.allMention.length)
+              && isExactAllMention(m.content, m.allMention) ? { start: m.allMention.start, length: m.allMention.length } : undefined,
           };
         })
         .filter((m) => m.content.trim() || m.attachments.length > 0);

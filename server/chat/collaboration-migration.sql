@@ -123,4 +123,17 @@ CREATE TABLE IF NOT EXISTS phone11_chat_message_mentions (
 );
 CREATE INDEX IF NOT EXISTS phone11_chat_message_mentions_message
   ON phone11_chat_message_mentions(tenant_id, conversation_id, message_id, start_offset);
+
+-- @all is a broadcast descriptor, not a synthetic member identity. The
+-- permission is checked from current workspace role when a new message sends.
+CREATE TABLE IF NOT EXISTS phone11_chat_message_all_mentions (
+  tenant_id INTEGER NOT NULL,
+  conversation_id UUID NOT NULL,
+  message_id UUID NOT NULL,
+  start_offset INTEGER NOT NULL CHECK (start_offset >= 0 AND start_offset <= 3996),
+  length INTEGER NOT NULL CHECK (length = 4),
+  PRIMARY KEY (tenant_id, conversation_id, message_id),
+  FOREIGN KEY (tenant_id, conversation_id, message_id)
+    REFERENCES phone11_chat_messages(tenant_id, conversation_id, id) ON DELETE CASCADE
+);
 COMMIT;

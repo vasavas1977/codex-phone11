@@ -115,6 +115,7 @@ export function ChatMessageRow({
                 text={message.deletedAt ? "Message deleted" : message.content}
                 deleted={!!message.deletedAt}
                 mentions={message.mentions}
+                allMention={message.allMention}
               />
             </View>
           )}

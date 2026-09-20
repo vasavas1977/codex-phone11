@@ -5,7 +5,8 @@ import type { PoolClient } from "pg";
 import { withTransaction } from "../pbx/db";
 import { ChatIntelligenceError, chatIntelligenceAvailable, generateChatIntelligence } from "./intelligence";
 import { LinkPreviewError, previewChatLink } from "./link-preview";
-import type { ChatAutomaticPresenceStatus, ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatPresenceStatus, ChatReadReceipt, ChatReadReceiptSummary, ChatWorkspace } from "../../lib/chat/types";
+import type { ChatAllMention, ChatAutomaticPresenceStatus, ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatPresenceStatus, ChatReadReceipt, ChatReadReceiptSummary, ChatWorkspace } from "../../lib/chat/types";
+import { isExactAllMention } from "../../lib/chat/all-mentions";
 import { chatTypingRegistry, type ChatTypingRegistry } from "./typing";
 import { getWorkspaceProfileStatuses } from "../profile/status";
 
@@ -81,6 +82,10 @@ const messageSelect = `SELECT msg.*, u.name AS sender_name,
     AND parent.conversation_id = msg.conversation_id AND parent.id = msg.parent_message_id
   LEFT JOIN users parent_user ON parent_user.id = parent.sender_id`;
 
+async function allMentionsSupported(db: Pick<PoolClient, "query">): Promise<boolean> {
+  return (await db.query("SELECT to_regclass('public.phone11_chat_message_all_mentions') IS NOT NULL AS supported")).rows[0]?.supported === true;
+}
+
 /**
  * Collaboration metadata is hydrated only after tenant + member authorization.
  * Keeping it separate from messageSelect makes the base text path portable while
@@ -94,7 +99,8 @@ async function hydrateMessages(db: Pick<PoolClient, "query">, userId: number, te
   // service initialization avoids a module-initialization cycle while retaining
   // one authoritative protected descriptor path.
   const { messageAttachmentDescriptors } = await import("./media");
-  const [replyCounts, reactionRows, bookmarks, pins, attachments, mentionRows] = await Promise.all([
+  const supportsAll = await allMentionsSupported(db);
+  const [replyCounts, reactionRows, bookmarks, pins, attachments, mentionRows, allMentionRows] = await Promise.all([
     db.query(`SELECT parent_message_id AS message_id, COUNT(*)::integer AS count
       FROM phone11_chat_messages WHERE tenant_id = $1 AND conversation_id = $2
         AND parent_message_id = ANY($3::uuid[]) GROUP BY parent_message_id`, [tenantId, conversationId, ids]),
@@ -111,16 +117,21 @@ async function hydrateMessages(db: Pick<PoolClient, "query">, userId: number, te
       FROM phone11_chat_message_mentions mm JOIN users u ON u.id = mm.user_id
       WHERE mm.tenant_id = $1 AND mm.conversation_id = $2 AND mm.message_id = ANY($3::uuid[])
       ORDER BY mm.message_id, mm.start_offset`, [tenantId, conversationId, ids]),
+    supportsAll ? db.query(`SELECT message_id, start_offset, length FROM public.phone11_chat_message_all_mentions
+      WHERE tenant_id = $1 AND conversation_id = $2 AND message_id = ANY($3::uuid[])`, [tenantId, conversationId, ids]) : Promise.resolve({ rows: [] }),
   ]);
   const replyCount = new Map(replyCounts.rows.map((row: any) => [row.message_id, Number(row.count)]));
   const bookmarked = new Set(bookmarks.rows.map((row: any) => row.message_id));
   const pinned = new Set(pins.rows.map((row: any) => row.message_id));
   const messageMentions = new Map<string, ChatMention[]>();
+  const allMentions = new Map<string, ChatAllMention>();
   for (const item of mentionRows.rows as any[]) {
     const list = messageMentions.get(item.message_id) || [];
     list.push({ userId: Number(item.user_id), name: item.name, start: Number(item.start_offset), length: Number(item.length) });
     messageMentions.set(item.message_id, list);
   }
+  for (const item of allMentionRows.rows as any[]) allMentions.set(item.message_id,
+    { start: Number(item.start_offset), length: 4 });
   const reactions = new Map<string, Map<string, { emoji: string; users: { id: number; name: string }[] }>>();
   for (const row of reactionRows.rows as any[]) {
     const perMessage = reactions.get(row.message_id) || new Map<string, { emoji: string; users: { id: number; name: string }[] }>();
@@ -132,7 +143,7 @@ async function hydrateMessages(db: Pick<PoolClient, "query">, userId: number, te
     reactions: [...(reactions.get(row.id)?.values() || [])].map(reaction => ({ ...reaction, count: reaction.users.length,
       reacted: reaction.users.some(user => user.id === userId) })),
     isBookmarked: bookmarked.has(row.id), isPinned: pinned.has(row.id), attachments: attachments.get(row.id) || [],
-    mentions: messageMentions.get(row.id) || [] }));
+    mentions: messageMentions.get(row.id) || [], allMention: allMentions.get(row.id) }));
 }
 
 type MentionInput = Pick<ChatMention, "userId" | "start" | "length">;
@@ -304,11 +315,10 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
           latestSequence: Math.max(0, ...all.map(row => row.sequence)) };
       });
     },
-    send(userId: number, tenantId: number, id: string, clientId: string, content: string, parentMessageId?: string, attachmentIds: string[] = [], mentionInputs: MentionInput[] = []) {
+    send(userId: number, tenantId: number, id: string, clientId: string, content: string, parentMessageId?: string, attachmentIds: string[] = [], mentionInputs: MentionInput[] = [], allMention?: ChatAllMention) {
       return scoped(userId, tenantId, async (db, workspace) => {
         if (!content && !attachmentIds.length) throw new TRPCError({ code: "BAD_REQUEST", message: "Add a message or attachment." });
         await authorizeConversation(db, userId, workspace.id, id);
-        const mentions = await resolveMentions(db, workspace.id, id, content, mentionInputs);
         // A retry must reuse the same stable client ID. Serialize it before an
         // attachment claim so concurrent lost-response retries converge instead
         // of one seeing the other retry's already-attached media as unavailable.
@@ -318,11 +328,19 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
           const saved = (await messageAttachmentDescriptors(db, workspace.id, id, [messageId])).get(messageId) || [];
           return saved.length === attachmentIds.length && saved.every((attachment, index) => attachment.id === attachmentIds[index]);
         };
+        const orderedMentionInputs = [...mentionInputs].sort((a, b) => a.start - b.start);
         const hasSameMentions = async (messageId: string) => {
           const saved = await db.query(`SELECT user_id, start_offset, length FROM phone11_chat_message_mentions
             WHERE tenant_id = $1 AND conversation_id = $2 AND message_id = $3 ORDER BY start_offset`, [workspace.id, id, messageId]);
-          return saved.rows.length === mentions.length && saved.rows.every((row: any, index: number) =>
-            Number(row.user_id) === mentions[index].userId && Number(row.start_offset) === mentions[index].start && Number(row.length) === mentions[index].length);
+          return saved.rows.length === orderedMentionInputs.length && saved.rows.every((row: any, index: number) =>
+            Number(row.user_id) === orderedMentionInputs[index].userId && Number(row.start_offset) === orderedMentionInputs[index].start && Number(row.length) === orderedMentionInputs[index].length);
+        };
+        const hasSameAllMention = async (messageId: string) => {
+          if (!await allMentionsSupported(db)) return !allMention;
+          const saved = await db.query(`SELECT start_offset, length FROM public.phone11_chat_message_all_mentions
+            WHERE tenant_id=$1 AND conversation_id=$2 AND message_id=$3`, [workspace.id, id, messageId]);
+          if (!allMention) return saved.rows.length === 0;
+          return saved.rows.length === 1 && Number(saved.rows[0].start_offset) === allMention.start && Number(saved.rows[0].length) === allMention.length;
         };
         const existingMessage = async () => {
           const existing = await db.query(`${messageSelect} WHERE msg.tenant_id = $1 AND msg.conversation_id = $2 AND msg.sender_id = $3 AND msg.client_id = $4`,
@@ -332,12 +350,23 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
             throw new TRPCError({ code: "CONFLICT", message: "This retry belongs to a different message. Please send it again." });
           if (!await hasSameAttachments(existing.rows[0].id)) throw new TRPCError({ code: "CONFLICT", message: "This retry has different attachments. Please send it again." });
           if (!await hasSameMentions(existing.rows[0].id)) throw new TRPCError({ code: "CONFLICT", message: "This retry has different mentions. Please send it again." });
+          if (!await hasSameAllMention(existing.rows[0].id)) throw new TRPCError({ code: "CONFLICT", message: "This retry has a different @all mention. Please send it again." });
           return loadMessage(db, userId, workspace.id, id, existing.rows[0].id);
         };
         // A lost response remains idempotent even if the user blocks the direct
         // relationship before retrying. The block governs new messages only.
         const alreadySaved = await existingMessage();
         if (alreadySaved) return alreadySaved;
+        const mentions = await resolveMentions(db, workspace.id, id, content, mentionInputs);
+        if (allMention) {
+          if (!await allMentionsSupported(db)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "@all is unavailable until Team Chat is updated." });
+          if (!isExactAllMention(content, allMention) || mentions.some(item => item.start < allMention.start + allMention.length && allMention.start < item.start + item.length))
+            throw new TRPCError({ code: "BAD_REQUEST", message: "The @all mention no longer matches this message." });
+          const allowed = await db.query(`SELECT 1 FROM phone11_chat_conversations c
+            JOIN tenant_memberships tm ON tm.tenant_id=c.tenant_id AND tm.user_id=$3 AND tm.status='active'
+            WHERE c.tenant_id=$1 AND c.id=$2 AND c.kind IN ('group','channel') AND tm.role IN ('owner','admin')`, [workspace.id, id, userId]);
+          if (!allowed.rows[0]) throw new TRPCError({ code: "FORBIDDEN", message: "Only workspace owners and admins can mention everyone." });
+        }
         const peer = await directPeer(db, workspace.id, id, userId);
         if (peer !== null) {
           if (!peer.active) throw new TRPCError({ code: "NOT_FOUND", message: "Conversation is unavailable or you no longer have access." });
@@ -365,6 +394,9 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
         if (rows.rows[0].newly_inserted) for (const mention of mentions) await db.query(`INSERT INTO phone11_chat_message_mentions
           (tenant_id, conversation_id, message_id, user_id, start_offset, length) VALUES($1,$2,$3,$4,$5,$6)`,
           [workspace.id, id, rows.rows[0].id, mention.userId, mention.start, mention.length]);
+        if (rows.rows[0].newly_inserted && allMention) await db.query(`INSERT INTO public.phone11_chat_message_all_mentions
+          (tenant_id,conversation_id,message_id,start_offset,length) VALUES($1,$2,$3,$4,$5)`,
+          [workspace.id, id, rows.rows[0].id, allMention.start, allMention.length]);
         if (rows.rows[0].newly_inserted && chatNotificationsEnabled()) await enqueueChatNotifications(db, rows.rows[0].id);
         const saved = await db.query(`${messageSelect} WHERE msg.id = $1 AND msg.tenant_id = $2`, [rows.rows[0].id, workspace.id]);
         return loadMessage(db, userId, workspace.id, id, saved.rows[0].id);
@@ -373,7 +405,8 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
     details(userId: number, tenantId: number, id: string) {
       return scoped(userId, tenantId, async (db, workspace): Promise<ChatConversationDetails> => {
         await authorizeConversation(db, userId, workspace.id, id);
-        const [memberRows, messageRows] = await Promise.all([
+        const supportsAll = await allMentionsSupported(db);
+        const [memberRows, messageRows, permissionRows] = await Promise.all([
           db.query(`SELECT m.user_id AS id, COALESCE(u.name, 'Team member') AS name,
               (SELECT e.extension_number FROM user_extensions ue JOIN extensions e ON e.id = ue.extension_id
                 WHERE ue.user_id = m.user_id AND e.tenant_id = m.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL
@@ -383,6 +416,9 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
             ORDER BY name, id LIMIT 100`, [workspace.id, id]),
           db.query(`SELECT id, content FROM phone11_chat_messages WHERE tenant_id = $1 AND conversation_id = $2
             AND deleted_at IS NULL ORDER BY sequence DESC LIMIT 100`, [workspace.id, id]),
+          supportsAll ? db.query(`SELECT 1 FROM phone11_chat_conversations c
+            JOIN tenant_memberships tm ON tm.tenant_id=c.tenant_id AND tm.user_id=$3 AND tm.status='active'
+            WHERE c.tenant_id=$1 AND c.id=$2 AND c.kind IN ('group','channel') AND tm.role IN ('owner','admin')`, [workspace.id, id, userId]) : Promise.resolve({ rows: [] }),
         ]);
         const { messageAttachmentDescriptors } = await import("./media");
         const messageIds = messageRows.rows.map((row: any) => row.id);
@@ -392,7 +428,7 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
         for (const row of messageRows.rows as any[]) for (const url of String(row.content).match(/https?:\/\/[^\s<>]+/g) || []) {
           if (links.length < 100 && !seen.has(url)) { seen.add(url); links.push({ messageId: row.id, url }); }
         }
-        return { members: memberRows.rows.map((row: any) => ({ id: Number(row.id), name: row.name, extension: row.extension ?? null })),
+        return { members: memberRows.rows.map((row: any) => ({ id: Number(row.id), name: row.name, extension: row.extension ?? null })), canMentionAll: permissionRows.rows.length === 1,
           media: messageIds.flatMap(messageId => (descriptors.get(messageId) || []).map(attachment => ({ messageId, attachment }))), links };
       });
     },
@@ -471,6 +507,8 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
           // Edits carry no identity metadata. Do not leave an old range pointing
           // at a changed body; clients can create new verified mentions on send.
           await db.query(`DELETE FROM phone11_chat_message_mentions WHERE tenant_id = $1 AND conversation_id = $2 AND message_id = $3`, [workspace.id, id, messageId]);
+          if (await allMentionsSupported(db)) await db.query(`DELETE FROM public.phone11_chat_message_all_mentions
+            WHERE tenant_id = $1 AND conversation_id = $2 AND message_id = $3`, [workspace.id, id, messageId]);
         }
         return loadMessage(db, userId, workspace.id, id, messageId);
       });

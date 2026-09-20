@@ -40,11 +40,12 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
       CREATE TABLE IF NOT EXISTS tenant_memberships (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), tenant_id INTEGER REFERENCES tenants(id), role TEXT, status TEXT, is_default BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id, tenant_id));`);
     await pool.query(await readFile(new URL("../server/chat/migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/collaboration-migration.sql", import.meta.url), "utf8"));
+    await pool.query(await readFile(new URL("../server/chat/all-mentions-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/read-receipts-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/media-migration.sql", import.meta.url), "utf8"));
   });
   beforeEach(async () => {
-    await pool.query(`TRUNCATE phone11_chat_read_receipts, phone11_chat_reports, phone11_chat_blocks, phone11_chat_notification_preferences, phone11_chat_pins, phone11_chat_bookmarks, phone11_chat_reactions, phone11_chat_attachments, phone11_chat_messages, phone11_chat_members, phone11_chat_conversations, user_extensions, tenant_memberships, extensions, users, tenants RESTART IDENTITY CASCADE;
+    await pool.query(`TRUNCATE phone11_chat_message_all_mentions, phone11_chat_read_receipts, phone11_chat_reports, phone11_chat_blocks, phone11_chat_notification_preferences, phone11_chat_pins, phone11_chat_bookmarks, phone11_chat_reactions, phone11_chat_attachments, phone11_chat_messages, phone11_chat_members, phone11_chat_conversations, user_extensions, tenant_memberships, extensions, users, tenants RESTART IDENTITY CASCADE;
       INSERT INTO users VALUES (1,'Alice'),(2,'Bob'),(3,'Other tenant'),(4,'No assignment'),(5,'Not in conversation'),(6,'Beta teammate');
       INSERT INTO tenants VALUES (10,'Alpha','active'),(20,'Beta','active');
       INSERT INTO tenant_memberships(user_id,tenant_id,role,status,is_default) VALUES (1,10,'owner','active',true),(2,10,'user','active',false),(3,20,'owner','active',true),(5,10,'user','active',false),(6,20,'user','active',false);
@@ -73,6 +74,56 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await expect(service.details(5, 10, id)).rejects.toMatchObject({ code: "NOT_FOUND" });
     const beta = await service.create(3, 20, "direct", "Beta", [6]);
     await expect(service.details(1, 10, beta.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+  it("authorizes and persists @all without inventing a member identity", async () => {
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    expect((await service.details(1, 10, group.id)).canMentionAll).toBe(true);
+    expect((await service.details(2, 10, group.id)).canMentionAll).toBe(false);
+    const saved = await service.send(1, 10, group.id, randomUUID(), "Hello @all", undefined, [], [], { start: 6, length: 4 });
+    expect(saved.allMention).toEqual({ start: 6, length: 4 });
+    expect(saved.mentions).toEqual([]);
+    expect((await service.history(2, 10, group.id)).messages[0].allMention).toEqual({ start: 6, length: 4 });
+    await expect(service.send(2, 10, group.id, randomUUID(), "Hello @all", undefined, [], [], { start: 6, length: 4 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.send(1, 10, group.id, randomUUID(), "Hello @All", undefined, [], [], { start: 6, length: 4 }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const direct = await room();
+    expect((await service.details(1, 10, direct.id)).canMentionAll).toBe(false);
+    await expect(service.send(1, 10, direct.id, randomUUID(), "Hello @all", undefined, [], [], { start: 6, length: 4 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    await pool.query("UPDATE tenant_memberships SET role='admin' WHERE tenant_id=10 AND user_id=1");
+    expect((await service.details(1, 10, group.id)).canMentionAll).toBe(true);
+    await expect(service.send(1, 10, group.id, randomUUID(), "Again @all", undefined, [], [], { start: 6, length: 4 }))
+      .resolves.toMatchObject({ allMention: { start: 6, length: 4 } });
+  });
+  it("returns an accepted mention retry after authority changes but rejects a fresh send", async () => {
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    const clientId = randomUUID();
+    const accepted = await service.send(1, 10, group.id, clientId, "@all hello @Bob", undefined, [],
+      [{ userId: 2, start: 11, length: 4 }], { start: 0, length: 4 });
+    await pool.query("UPDATE tenant_memberships SET role='user' WHERE tenant_id=10 AND user_id=1");
+    await pool.query("UPDATE tenant_memberships SET status='inactive' WHERE tenant_id=10 AND user_id=2");
+    await expect(service.send(1, 10, group.id, clientId, "@all hello @Bob", undefined, [],
+      [{ userId: 2, start: 11, length: 4 }], { start: 0, length: 4 })).resolves.toMatchObject({ id: accepted.id });
+    await expect(service.send(1, 10, group.id, clientId, "changed @all", undefined, [], [], { start: 8, length: 4 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(service.send(1, 10, group.id, randomUUID(), "@all new", undefined, [], [], { start: 0, length: 4 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(service.send(1, 10, group.id, randomUUID(), "Hello @Bob", undefined, [], [{ userId: 2, start: 6, length: 4 }]))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("fails closed without aborting old-deployment reads when @all storage is absent", async () => {
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    await pool.query("ALTER TABLE phone11_chat_message_all_mentions RENAME TO phone11_chat_message_all_mentions_hidden");
+    try {
+      expect((await service.details(1, 10, group.id)).canMentionAll).toBe(false);
+      await expect(service.history(1, 10, group.id)).resolves.toMatchObject({ messages: [] });
+      await expect(service.send(1, 10, group.id, randomUUID(), "@all", undefined, [], [], { start: 0, length: 4 }))
+        .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    } finally {
+      await pool.query("ALTER TABLE phone11_chat_message_all_mentions_hidden RENAME TO phone11_chat_message_all_mentions");
+    }
+    expect((await service.details(1, 10, group.id)).canMentionAll).toBe(true);
   });
   it("removes deactivated members from Team Chat and restores them only after reactivation", async () => {
     const { id } = await room();

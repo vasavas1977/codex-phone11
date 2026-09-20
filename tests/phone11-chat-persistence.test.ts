@@ -38,6 +38,17 @@ describe("durable user and tenant scoped drafts/outbox", () => {
     const third = createChatStore(network, persistence); third.getState().setUser(1); await third.getState().loadChannels();
     expect(third.getState().drafts[room]).toBe(""); expect(third.getState().messages[room][0]).toMatchObject({ content: "message text", status: "failed" });
   });
+  it("preserves a real @all descriptor across an offline retry", async () => {
+    const { storage } = memoryStorage(); const persistence = createChatPersistence(storage), network = api();
+    vi.mocked(network.send).mockRejectedValueOnce(new Error("offline"));
+    const first = createChatStore(network, persistence); first.getState().setUser(1); await first.getState().loadChannels();
+    await first.getState().sendMessage(room, "@all update", undefined, [], [], { start: 0, length: 4 });
+    const second = createChatStore(network, persistence); second.getState().setUser(1); await second.getState().loadChannels();
+    const pending = second.getState().messages[room][0];
+    expect(pending.allMention).toEqual({ start: 0, length: 4 });
+    await second.getState().retryMessage(room, pending.clientId);
+    expect(network.send).toHaveBeenLastCalledWith(10, room, pending.clientId, "@all update", undefined, [], [], { start: 0, length: 4 });
+  });
   it("does not hydrate another user or tenant's pending text", async () => {
     const { storage } = memoryStorage(), persistence = createChatPersistence(storage);
     await persistence.save(1, 10, { drafts: { [room]: "private" }, messages: { [room]: [message()] } });
