@@ -18,8 +18,25 @@ The receipt implementation passed 79 focused tests and 43 disposable PostgreSQL 
 
 ## Release boundaries
 
-**The chat schema and API are deployed and verified with pilot API checks. Two-iPhone acceptance remains pending.** Build 74 can now be used to test read receipts, named group readers, presence, typing, and the included voice-clip fixes. Conferencing requires its separate admitted pilot meeting and provider verification; do not infer video readiness from chat checks.
+**The chat schema and API are deployed and verified with pilot API checks. Two-iPhone acceptance remains pending.** Build 74 can now be used to test read receipts, named group readers, presence, typing, and the included voice-clip fixes. The separate conference pilot is also enabled for 3001 and 1020: both accounts passed public admission and real provider join-token checks. Actual handset audio/video is still unverified.
 
 The known working live backend image `sha256:d42c70f34d5062bff779c235dd2b6e415bede3b3a86b9de73892acf35b392619` was rechecked running without replacement during preparation. Parallel API rollout is reviewed separately so SIP wake and existing workers remain running.
 
 After server rollout, use the two-iPhone acceptance steps in [the receipt design](./READ-RECEIPTS-DESIGN-20260920.md), including background-notification exclusion, named group readers, thread isolation, and calling regression checks. Package verification is not handset or live delivery evidence.
+
+## Test now on both iPhones
+
+If Build 74 is already installed, reopen Phone11; no further build or development
+connection is required for these server changes. Otherwise use the installation
+page above without deleting the existing app.
+
+- Team Chat: test typing, a new message read receipt, and **Read by 1** details
+  in a group/channel containing the two pilot accounts.
+- Voice clips: record a new short audible clip, cancel/back out, then record,
+  preview, send and play it on the other phone.
+- Conference: **Team Chat → Meet** opens the one admitted meeting automatically.
+  Enable microphone and camera on both phones, then tap **Join meeting**. Check
+  two-way audio/video, mute/camera controls, leaving, and a subsequent phone call.
+
+The final read-only device inventory found both paired iPhones disconnected.
+Installed Build 74 and physical media behavior remain unverified.

@@ -168,8 +168,9 @@ tenant selection, or fixture path.
 
 ## Recommended controlled sequence
 
-1. Install a fresh signed Phone11 build containing the admitted meeting path on
-   both pilot handsets.
+1. Install the already verified signed Phone11 Build 74 on both pilot handsets
+   if it is not already installed. No additional native build is required for
+   this server-only rollout. See `PHONE11-BUILD-74-INSTALL.md`.
 2. Mint fresh per-join tokens only when each handset starts its live acceptance
    session; the commissioning tokens above expire and must not be reused.
 3. Complete the two-handset Phone11 test: join, camera/microphone, two-way
@@ -178,3 +179,7 @@ tenant selection, or fixture path.
 
 Interpretation, bots, recording, and transcription remain out of scope and
 must not be claimed by this pilot.
+
+The lead independently confirmed public availability and one listed meeting for
+both pilot accounts, and verified the fixture/provider receipt hashes against
+root-owned mode-0600 artifacts. These checks do not prove physical media.

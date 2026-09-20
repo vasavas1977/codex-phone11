@@ -61,13 +61,17 @@ or response bodies were retained in the report. Full activation evidence is in
 ## Not yet accepted
 
 Physical device behavior remains a separate gate; API success does not pass it.
-Connect11 meeting admission and two-device media acceptance are also separate.
+Connect11 meeting admission and provider join-token checks have since passed
+for both pilots; see `PLAIN-VIDEO-ADMISSION-READINESS-20260920.md`. Physical
+two-device media acceptance remains separate.
 Before the conference migration, a read-only production catalog check found
 no `phone11_plain_video_*` or `phone11_meeting*` relations. A later independent
 read-only check confirmed that all four plain-video admission tables exist
 and each has zero rows. Protected Connect11 credentials and empty tables alone
-do not make a meeting available; authorized meeting records and provider/device
-acceptance remain separate gates.
+did not make a meeting available. One authorized pilot meeting and two members
+were then provisioned and real provider join probes passed. The lead verified
+both public account listings and protected proof hashes. Device acceptance
+remains pending.
 
 ## Two-iPhone test sequence
 
