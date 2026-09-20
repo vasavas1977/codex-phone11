@@ -2,10 +2,10 @@
 
 ## Decision
 
-Phone11's reviewed plain-video source is ready for a guarded schema migration
-and two-user pilot fixture, but neither has been applied to production. This
-preserves the current fail-closed `meeting unavailable` behavior while the chat
-canary is resolved.
+Phone11's reviewed plain-video schema migration was applied to production with
+the guarded operator. The schema is empty and the two-user pilot fixture has
+not been created. Conference capability remains fail-closed while the pilot
+candidate is commissioned.
 
 The historical draft migration is not suitable for direct production replay:
 its `IF NOT EXISTS`, `CREATE OR REPLACE`, and trigger replacement statements can
@@ -45,6 +45,33 @@ The exact production inspection passed without DDL or row changes:
 
 The embedded operator `prepare` action then matched both live fingerprints and
 returned `apply=NOT_RUN`.
+
+## Production schema apply
+
+The approved commit `c6c07a73b9c1573fab27e1952e18dc18da11a02e` was staged at
+`/opt/phone11ai/plain-video-admission-migration-20260920T101431Z` in a
+root-owned mode `0700` directory. The SQL and operator remained root-owned mode
+`0600` with the pinned hashes above.
+
+One guarded apply completed and produced a `phone11-migration-receipt/v1`
+receipt with `status=applied`. Receipt SHA-256:
+`e7b8ba51885f0155b8309acc809536af81c864510fb83f279d8348f72fb9f0d9`;
+verification SHA-256:
+`777d6eefedfa9e2630a74a769bf82401fb406993a406d5683fa7e91385245917`.
+Read-only recovery returned `migration=ALREADY_APPLIED` and
+`receipt=ALREADY_PRESENT`, and the live target fingerprint remained
+`8719c1618a1212e13a414e2e717f394ce118660f5da0d3b618a4203bd9edd48c`.
+
+All four tables, the revision function, and both enabled revision triggers are
+present. Rooms, members, leases, and eviction operations each contain zero
+rows. The active backend and isolated API candidate both remained healthy with
+HTTP 200 health responses. The protected candidate conference probe still
+returned the required unavailable state; no provider call or token mint ran.
+
+The older candidate readiness checker reports a false failure because it
+formats two valid partial-index predicates with an explicit `::text` cast. That
+diagnostic does not authorize or invalidate the migration; the guarded
+operator's exact target fingerprint and receipt are authoritative.
 
 ## Guarded migration and fixture behavior
 
@@ -101,22 +128,15 @@ tenant selection, or fixture path.
 
 ## Recommended controlled sequence
 
-1. Independently review the exact guarded delta/operator commit.
-2. Only after the chat canary is stable, stage immutable root-owned copies and
-   run `--prepare`. If chat activation changed the active backend container or
-   image, update that pin through a separately reviewed source commit; do not
-   bypass the operator's stale-pin refusal.
-3. Run one guarded migration apply, then the read-only existing-receipt recovery
-   check and baseline health checks.
-4. Run the fixture dry-run for tenant `1`, users `1` and `2`; then create one
+1. Run the fixture dry-run for tenant `1`, users `1` and `2`; then create one
    pilot room with the same utility under an explicit fixture authorization.
-5. Start the candidate API with the protected tenant mapping and bounded
+2. Start the candidate API with the protected tenant mapping and bounded
    database lock/statement options. Prove both authenticated users list only
    their admitted meeting.
-6. Mint a fresh per-join token for each participant through the server-only
+3. Mint a fresh per-join token for each participant through the server-only
    Connect11 facade; never cache/reuse tokens or expose keys. Validate the
    returned WSS origin and five-minute expiry.
-7. Complete the two-handset Phone11 test: join, camera/microphone, two-way
+4. Complete the two-handset Phone11 test: join, camera/microphone, two-way
    audio/video, participant state, leave/rejoin, revocation/remint denial,
    eviction acknowledgement, background/lock behavior, and media release.
 
