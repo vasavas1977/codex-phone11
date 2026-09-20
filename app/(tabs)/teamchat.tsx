@@ -10,6 +10,8 @@ import { useChatStore } from "@/lib/chat/store";
 import { chatError } from "@/lib/chat/state";
 import { formatChatTime, type ChatKind } from "@/lib/chat/types";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { PresenceIndicator } from "@/components/chat/presence-indicator";
+import { usePresencePolling } from "@/lib/chat/presence-store";
 
 type Filter = "all" | "unread" | "chats" | "group" | "channel" | "drafts";
 type ScopedAction = { owner: ReturnType<typeof useAuth>["user"]; workspaceId: number };
@@ -110,6 +112,11 @@ export default function TeamChatScreen() {
   const composerVisible = composing && ownsWorkspace && actionIsCurrent(composerScope);
   const visiblePeople = ownsWorkspace ? chat.people.filter(person => `${person.name} ${person.extension || ""}`.toLowerCase().includes(peopleSearch.trim().toLowerCase())) : [];
   const moreSelection = filter === "group" ? "Groups" : filter === "drafts" ? "Drafts" : null;
+  const presenceIds = [...new Set([
+    ...chat.people.map(person => person.id),
+    ...chat.channels.flatMap(channel => channel.kind === "direct" ? channel.memberIds.filter(id => id !== user?.id) : []),
+  ])];
+  usePresencePolling(chat.workspace?.id, presenceIds, ownsWorkspace);
 
   return <ScreenContainer>
     <View style={styles.content}>
@@ -135,7 +142,7 @@ export default function TeamChatScreen() {
         {(chat.error || chat.storageError) && <Pressable accessibilityRole="button" accessibilityLabel="Retry Team Chat" onPress={() => chat.loadChannels()} style={styles.error}><Text style={{ color: colors.error }}>{chat.storageError || chat.error} Tap to retry.</Text></Pressable>}
         <FlatList data={rows} keyExtractor={item => item.id} refreshing={chat.loading} onRefresh={() => chat.loadChannels()} contentContainerStyle={rows.length === 0 ? styles.listEmpty : undefined} renderItem={({ item }) => <Pressable accessibilityRole="button" accessibilityLabel={`Open ${item.name}`} onPress={() => { const state = currentScope(); if (state?.channels.some(channel => channel.id === item.id)) router.push({ pathname: "/chat/[id]", params: { id: item.id, tenantId: String(state.workspace?.id) } }); }} style={[styles.row, { borderBottomColor: colors.border }]}>
           <View style={[styles.avatar, { backgroundColor: colors.primary + "18" }]}><Text style={[styles.avatarText, { color: colors.primary }]}>{item.kind === "channel" ? "#" : initials(item.name)}</Text></View>
-          <View style={styles.rowBody}><View style={styles.rowHeading}><Text numberOfLines={1} style={[styles.rowName, fg, item.unreadCount > 0 && { fontWeight: "700" }]}>{item.name}</Text><Text style={[styles.rowTime, { color: colors.muted }]}>{formatChatTime(item.lastMessageAt)}</Text></View><Text numberOfLines={1} style={[styles.preview, { color: chat.drafts[item.id]?.trim() ? colors.error : colors.muted }]}>{chat.drafts[item.id]?.trim() ? `Draft: ${chat.drafts[item.id]}` : item.lastMessage || "No messages yet"}</Text></View>
+          <View style={styles.rowBody}><View style={styles.rowHeading}><Text numberOfLines={1} style={[styles.rowName, fg, item.unreadCount > 0 && { fontWeight: "700" }]}>{item.name}</Text><Text style={[styles.rowTime, { color: colors.muted }]}>{formatChatTime(item.lastMessageAt)}</Text></View>{item.kind === "direct" && <PresenceIndicator tenantId={chat.workspace?.id} userId={item.memberIds.find(id => id !== user?.id)} />}<Text numberOfLines={1} style={[styles.preview, { color: chat.drafts[item.id]?.trim() ? colors.error : colors.muted }]}>{chat.drafts[item.id]?.trim() ? `Draft: ${chat.drafts[item.id]}` : item.lastMessage || "No messages yet"}</Text></View>
           {item.unreadCount > 0 && <View style={[styles.badge, { backgroundColor: colors.primary }]}><Text style={styles.buttonText}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</Text></View>}
         </Pressable>} ListEmptyComponent={<View style={styles.empty}>{chat.loading ? <ActivityIndicator color={colors.primary} /> : <><Text style={[styles.emptyTitle, fg]}>{chat.error ? "Chat is unavailable" : search || filter !== "all" ? "No matching conversations" : "Start a conversation"}</Text><Text style={{ color: colors.muted, textAlign: "center" }}>{chat.error ? "Your messages will appear when the connection is restored." : "Choose New message to message someone in your workspace."}</Text></>}</View>} />
       </>}
@@ -154,7 +161,7 @@ export default function TeamChatScreen() {
         {directoryLoading && <ActivityIndicator color={colors.primary} />}
         <TextInput accessibilityLabel="Search teammates" value={peopleSearch} onChangeText={setPeopleSearch} placeholder="Search name or extension" placeholderTextColor={colors.muted} style={[styles.search, fg, { backgroundColor: colors.surface, borderColor: colors.border }]} />
         <FlatList style={styles.peopleList} data={visiblePeople} keyExtractor={person => String(person.id)} keyboardShouldPersistTaps="handled" renderItem={({ item }) => <Pressable accessibilityRole="button" accessibilityLabel={`Select teammate ${item.name}`} disabled={creating || directoryLoading} onPress={() => selectPerson(item.id)} style={[styles.personRow, { borderBottomColor: colors.border }]}>
-          <View style={[styles.personAvatar, { backgroundColor: colors.primary + "18" }]}><Text style={[styles.avatarText, { color: colors.primary }]}>{initials(item.name)}</Text></View><View style={styles.personText}><Text numberOfLines={1} style={fg}>{item.name}</Text>{item.extension ? <Text style={{ color: colors.muted, fontSize: 13 }}>Ext. {item.extension}</Text> : null}</View>{kind !== "direct" && <Text style={{ color: colors.primary }}>{selected.includes(item.id) ? "Selected ✓" : "Select"}</Text>}
+          <View style={[styles.personAvatar, { backgroundColor: colors.primary + "18" }]}><Text style={[styles.avatarText, { color: colors.primary }]}>{initials(item.name)}</Text></View><View style={styles.personText}><Text numberOfLines={1} style={fg}>{item.name}</Text><PresenceIndicator tenantId={chat.workspace?.id} userId={item.id} />{item.extension ? <Text style={{ color: colors.muted, fontSize: 13 }}>Ext. {item.extension}</Text> : null}</View>{kind !== "direct" && <Text style={{ color: colors.primary }}>{selected.includes(item.id) ? "Selected ✓" : "Select"}</Text>}
         </Pressable>} ListEmptyComponent={!directoryLoading ? <Text style={{ color: colors.muted, padding: 20 }}>{peopleSearch.trim() ? "No teammates match your search." : "No other teammates are available. Your administrator must add another active workspace member."}</Text> : null} />
         {kind !== "direct" && <Pressable accessibilityRole="button" accessibilityLabel="Create" disabled={creating || directoryLoading || selected.length === 0 || !name.trim()} onPress={() => void create(kind, name, selected)} style={[styles.createButton, { backgroundColor: colors.primary, opacity: selected.length && name.trim() && !creating ? 1 : 0.4 }]}><Text style={styles.buttonText}>{creating ? "Creating…" : "Create"}</Text></Pressable>}
       </View></KeyboardAvoidingView></ScreenContainer>

@@ -11,9 +11,24 @@ export type ActiveNativeMeeting = {
 };
 
 let activeMeeting: ActiveNativeMeeting | undefined;
+const listeners = new Set<() => void>();
+let unsubscribeSession: (() => void) | undefined;
+
+function notifyRegistry(): void { listeners.forEach(listener => listener()); }
+
+export function subscribeNativeMeetingRegistry(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
 
 export function setActiveNativeMeeting(meeting: ActiveNativeMeeting): void {
+  unsubscribeSession?.();
   activeMeeting = meeting;
+  // Production BrowserMeetingSession is subscribable. The optional guard keeps
+  // lifecycle cleanup compatible with older restored/test registry records.
+  unsubscribeSession = typeof meeting.session.subscribe === "function"
+    ? meeting.session.subscribe(notifyRegistry) : undefined;
+  notifyRegistry();
 }
 
 /**
@@ -26,7 +41,11 @@ export function getActiveNativeMeeting(ownerId?: number): ActiveNativeMeeting | 
 }
 
 export function clearActiveNativeMeeting(meeting: ActiveNativeMeeting): void {
-  if (activeMeeting === meeting) activeMeeting = undefined;
+  if (activeMeeting === meeting) {
+    activeMeeting = undefined;
+    unsubscribeSession?.(); unsubscribeSession = undefined;
+    notifyRegistry();
+  }
 }
 
 /**
@@ -37,5 +56,7 @@ export function clearActiveNativeMeeting(meeting: ActiveNativeMeeting): void {
 export async function clearNativeMeetingForAuth(): Promise<void> {
   const meeting = activeMeeting;
   activeMeeting = undefined;
+  unsubscribeSession?.(); unsubscribeSession = undefined;
+  notifyRegistry();
   if (meeting) await meeting.leave();
 }

@@ -19,6 +19,8 @@ import {
 } from "@/lib/phone/directory";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useSipAccountStore } from "@/lib/sip/account-store";
+import { PresenceIndicator } from "@/components/chat/presence-indicator";
+import { usePresencePolling } from "@/lib/chat/presence-store";
 
 export function ContactDetails({
   id: contactId,
@@ -37,6 +39,7 @@ export function ContactDetails({
     id && tenantId
       ? directory.people.find((item) => item.id === id)
       : undefined;
+  usePresencePolling(tenantId, id ? [id] : [], Boolean(person));
   const account = useSipAccountStore((state) => state.account);
   const canCall =
     person &&
@@ -156,6 +159,7 @@ export function ContactDetails({
             <Text style={[styles.description, { color: colors.muted }]}>
               {directory.workspace?.name}
             </Text>
+            <PresenceIndicator tenantId={tenantId} userId={id} />
             <Text style={[styles.extension, { color: colors.muted }]}>
               {person.extension
                 ? `Ext. ${person.extension}`

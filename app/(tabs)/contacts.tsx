@@ -17,6 +17,8 @@ import { useDirectory } from "@/hooks/use-directory";
 import { ContactDetails } from "@/components/contact-details";
 import { DeviceContactsList } from "@/components/device-contacts-list";
 import { filterDirectory } from "@/lib/phone/directory";
+import { PresenceIndicator } from "@/components/chat/presence-indicator";
+import { usePresencePolling } from "@/lib/chat/presence-store";
 
 export default function ContactsScreen() {
   const colors = useColors();
@@ -33,6 +35,7 @@ export default function ContactsScreen() {
     () => filterDirectory(directory.people, query),
     [directory.people, query],
   );
+  usePresencePolling(directory.workspace?.id, directory.people.map(person => person.id), source === "team" && !directory.loading);
   return (
     <ScreenContainer
       style={{ width: "100%", maxWidth: 1200, alignSelf: "center" }}
@@ -186,6 +189,7 @@ export default function ContactsScreen() {
                         ? `Ext. ${item.extension}`
                         : "Team member"}
                     </Text>
+                    <PresenceIndicator tenantId={directory.workspace?.id} userId={item.id} />
                   </View>
                   <IconSymbol
                     name="chevron.right"

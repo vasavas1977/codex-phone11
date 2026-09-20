@@ -113,6 +113,10 @@ export function createChatTransport() {
     ...base,
     details: (tenantId: number, id: string) =>
       withClient((c) => c.chat.details.query({ tenantId, id })),
+    typingPublish: (tenantId: number, id: string, input: { threadRootId?: string; sessionId: string; generation: string; sequence: number; active: boolean }) =>
+      withClient((c) => c.chat.typingPublish.mutate({ tenantId, id, ...input })),
+    typing: (tenantId: number, id: string, threadRootId?: string) =>
+      withClient((c) => c.chat.typing.query({ tenantId, id, ...(threadRootId ? { threadRootId } : {}) })),
     linkPreview: (
       tenantId: number,
       id: string,
@@ -182,8 +186,10 @@ export function createChatTransport() {
       withClient((c) =>
         c.chat.setNotificationMute.mutate({ tenantId, id, muted }),
       ),
-    heartbeat: (tenantId: number) =>
-      withClient((c) => c.chat.heartbeat.mutate({ tenantId })),
+    presenceCapability: (tenantId: number) =>
+      withClient((c) => c.chat.presenceCapability.query({ tenantId })),
+    heartbeat: (tenantId: number, session?: { sessionId: string; generation: string; sequence: number; status: "available" | "away" | "on_call" | "in_meeting"; active: boolean }) =>
+      withClient((c) => c.chat.heartbeat.mutate(session ? { tenantId, ...session } : { tenantId })),
     presence: (tenantId: number, userIds: number[]) =>
       withClient((c) => c.chat.presence.query({ tenantId, userIds })),
     intelligenceCapability: (tenantId: number) =>

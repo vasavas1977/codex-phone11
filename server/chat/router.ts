@@ -39,6 +39,11 @@ export const chatRouter = router({
     .mutation(({ ctx, input: i }) => service.send(ctx.user.id, i.tenantId, i.id, i.clientId, i.content, i.parentMessageId, i.attachmentIds, i.mentions)),
   details: chatProcedure.input(channel)
     .query(({ ctx, input: i }) => service.details(ctx.user.id, i.tenantId, i.id)),
+  typingPublish: chatProcedure.input(channel.extend({ threadRootId: z.string().uuid().optional(), sessionId: z.string().uuid(),
+    generation: z.string().uuid(), sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), active: z.boolean() }).strict())
+    .mutation(({ ctx, input: i }) => service.typingPublish(ctx.user.id, i.tenantId, i.id, i)),
+  typing: chatProcedure.input(channel.extend({ threadRootId: z.string().uuid().optional() }).strict())
+    .query(({ ctx, input: i }) => service.typing(ctx.user.id, i.tenantId, i.id, i.threadRootId)),
   setReaction: chatProcedure.input(messageAction.extend({ emoji, reacted: z.boolean() }))
     .mutation(({ ctx, input: i }) => service.setReaction(ctx.user.id, i.tenantId, i.id, i.messageId, i.emoji, i.reacted)),
   reactionUsers: chatProcedure.input(messageAction.extend({ emoji }))
@@ -59,8 +64,15 @@ export const chatRouter = router({
     .query(({ ctx, input: i }) => service.pinnedMessages(ctx.user.id, i.tenantId, i.id)),
   setNotificationMute: chatProcedure.input(channel.extend({ muted: z.boolean() }))
     .mutation(({ ctx, input: i }) => service.setNotificationMute(ctx.user.id, i.tenantId, i.id, i.muted)),
-  heartbeat: chatProcedure.input(z.object({ tenantId: tenant }))
-    .mutation(({ ctx, input: i }) => service.heartbeat(ctx.user.id, i.tenantId)),
+  presenceCapability: chatProcedure.input(z.object({ tenantId: tenant }))
+    .query(({ ctx, input: i }) => service.presenceCapability(ctx.user.id, i.tenantId)),
+  heartbeat: chatProcedure.input(z.union([
+    z.object({ tenantId: tenant, sessionId: z.string().uuid(), generation: z.string().uuid(),
+      sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      status: z.enum(["available", "away", "on_call", "in_meeting"]), active: z.boolean() }).strict(),
+    z.object({ tenantId: tenant }).strict(),
+  ])).mutation(({ ctx, input: i }) => service.heartbeat(ctx.user.id, i.tenantId,
+    "sessionId" in i ? { sessionId: i.sessionId, generation: i.generation, sequence: i.sequence, status: i.status, active: i.active } : undefined)),
   presence: chatProcedure.input(z.object({ tenantId: tenant, userIds: z.array(tenant).max(100).optional() }))
     .query(({ ctx, input: i }) => service.presence(ctx.user.id, i.tenantId, i.userIds)),
   forward: chatProcedure.input(channel.extend({ sourceConversationId: z.string().uuid(), sourceMessageId: z.string().uuid(), clientId: z.string().uuid() }))

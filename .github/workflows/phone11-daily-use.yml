@@ -132,6 +132,9 @@ jobs:
             tests/phone11-chat-scope-ui.test.tsx \
             tests/phone11-chat-transport.test.ts \
             tests/phone11-chat-owner.test.ts \
+            tests/phone11-rich-presence.test.tsx \
+            tests/phone11-chat-typing.test.ts \
+            tests/phone11-runtime-role.test.ts \
             tests/phone11-chat-foreground.test.ts \
             tests/phone11-legacy-unavailable.test.tsx \
             tests/phone11-chat-notification-client.test.ts \

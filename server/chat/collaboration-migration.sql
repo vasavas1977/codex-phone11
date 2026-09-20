@@ -88,6 +88,24 @@ CREATE TABLE IF NOT EXISTS phone11_chat_presence (
 CREATE INDEX IF NOT EXISTS phone11_chat_presence_fresh
   ON phone11_chat_presence(tenant_id, last_seen_at DESC);
 
+-- A user may be signed in on several phones or browser sessions. Each session
+-- owns a short server-clock lease. Sequence is process-monotonic, so a delayed
+-- heartbeat cannot revive a session after a newer away/logout publication.
+CREATE TABLE IF NOT EXISTS phone11_chat_presence_sessions (
+  tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  session_id UUID NOT NULL,
+  generation UUID NOT NULL,
+  sequence BIGINT NOT NULL CHECK (sequence >= 0),
+  status TEXT NOT NULL CHECK (status IN ('available', 'away', 'on_call', 'in_meeting')),
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  lease_expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (tenant_id, user_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS phone11_chat_presence_sessions_fresh
+  ON phone11_chat_presence_sessions(tenant_id, user_id, lease_expires_at DESC);
+
 -- Mentions retain an authenticated member id and a display range. The server
 -- validates both at send time; text alone is deliberately never an identity.
 CREATE TABLE IF NOT EXISTS phone11_chat_message_mentions (

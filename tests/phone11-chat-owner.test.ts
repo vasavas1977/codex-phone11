@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-const m = vi.hoisted(() => ({ service: { list: vi.fn(), directory: vi.fn(), create: vi.fn(), history: vi.fn(), search: vi.fn(), thread: vi.fn(), send: vi.fn(), report: vi.fn(), block: vi.fn(), unblock: vi.fn(), read: vi.fn() } }));
+const m = vi.hoisted(() => ({ service: { list: vi.fn(), directory: vi.fn(), create: vi.fn(), history: vi.fn(), search: vi.fn(), thread: vi.fn(), send: vi.fn(), report: vi.fn(), block: vi.fn(), unblock: vi.fn(), read: vi.fn(), presenceCapability: vi.fn(), heartbeat: vi.fn(), typingPublish: vi.fn(), typing: vi.fn() } }));
 vi.mock("../server/chat/service", () => ({ createChatService: () => m.service }));
 vi.mock("../server/_core/phone11-auth", () => ({ readAuthConfig: () => ({ trustedOrigins: ["https://phone11.example.test"] }) }));
 import { chatRouter } from "../server/chat/router";
@@ -9,14 +9,16 @@ function caller(header: string | string[] | undefined, userId = 2) {
   return chatRouter.createCaller({ user: { id: userId } as any, req: { headers: { "x-phone11-chat-owner": header } } as any, res: {} as any });
 }
 beforeEach(() => vi.clearAllMocks());
-it.each(["list", "directory", "create", "history", "search", "thread", "send", "report", "block", "unblock", "read"] as const)("blocks %s before service access if browser cookies identify a replacement actor", async operation => {
+it.each(["list", "directory", "create", "history", "search", "thread", "send", "report", "block", "unblock", "read", "presenceCapability", "typingPublish", "typing"] as const)("blocks %s before service access if browser cookies identify a replacement actor", async operation => {
   const api = caller("1");
   const calls = {
     list: () => api.list({ tenantId: 10 }), directory: () => api.directory({ tenantId: 10 }),
     create: () => api.create({ tenantId: 10, kind: "group", name: "Private group", memberIds: [3] }),
     history: () => api.history({ tenantId: 10, id: room }), search: () => api.search({ tenantId: 10, id: room, text: "private" }), thread: () => api.thread({ tenantId: 10, id: room, parentMessageId: room }),
     send: () => api.send({ tenantId: 10, id: room, clientId: room, content: "old actor's message" }), report: () => api.report({ tenantId: 10, id: room, category: "spam" }), block: () => api.block({ tenantId: 10, userId: 3 }), unblock: () => api.unblock({ tenantId: 10, userId: 3 }),
-    read: () => api.read({ tenantId: 10, id: room, through: 1 }),
+    read: () => api.read({ tenantId: 10, id: room, through: 1 }), presenceCapability: () => api.presenceCapability({ tenantId: 10 }),
+    typingPublish: () => api.typingPublish({ tenantId: 10, id: room, sessionId: room, generation: room, sequence: 1, active: true }),
+    typing: () => api.typing({ tenantId: 10, id: room }),
   };
   await expect(calls[operation]()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   for (const method of Object.values(m.service)) expect(method).not.toHaveBeenCalled();
@@ -26,6 +28,14 @@ it.each(["", "02", ["2", "1"]])("rejects malformed or ambiguous owner assertion 
 });
 it("uses the authenticated user when the expected owner matches", async () => {
   await caller("2").list({ tenantId: 10 }); expect(m.service.list).toHaveBeenCalledWith(2, 10);
+});
+it.each([
+  { tenantId: 10, sessionId: "bad", generation: room, sequence: 1, status: "available", active: true },
+  { tenantId: 10, sessionId: room, generation: room, sequence: -1, status: "available", active: true },
+  { tenantId: 10, sessionId: room, generation: room, sequence: 1, status: "busy", active: true },
+])("rejects malformed rich presence without downgrading it to a legacy heartbeat", async payload => {
+  await expect(caller("2").heartbeat(payload as any)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  expect(m.service.heartbeat).not.toHaveBeenCalled();
 });
 it("keeps pre-header installed clients compatible without treating omission as actor binding", async () => {
   await caller(undefined).list({ tenantId: 10 }); expect(m.service.list).toHaveBeenCalledWith(2, 10);

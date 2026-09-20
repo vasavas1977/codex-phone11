@@ -33,6 +33,10 @@ import {
 } from "@/lib/chat/types";
 
 import { ConversationRail } from "@/components/chat/conversation-rail";
+import { PresenceIndicator } from "@/components/chat/presence-indicator";
+import { usePresencePolling } from "@/lib/chat/presence-store";
+import { useChatTyping } from "@/lib/chat/typing";
+import { TypingIndicator } from "@/components/chat/typing-indicator";
 import { ChatPeerCall } from "@/components/chat/peer-call";
 import {
   ChatAssistantSheet,
@@ -135,13 +139,13 @@ export default function ChatRoomScreen() {
   const [newMessages, setNewMessages] = useState(false);
   const [collectionTitle, setCollectionTitle] = useState("Saved messages");
   const [forwardTarget, setForwardTarget] = useState<ChatMessage | null>(null);
-  const [peerAvailable, setPeerAvailable] = useState<boolean | null>(null);
   const [aiAvailable, setAiAvailable] = useState(false);
   const [aiMode, setAiMode] = useState<{
     mode: ChatAssistantMode;
     messageId?: string;
   } | null>(null);
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [typingFocused, setTypingFocused] = useState(false);
   const [localPreviews, setLocalPreviews] = useState<Record<string, string>>(
     {},
   );
@@ -212,19 +216,23 @@ export default function ChatRoomScreen() {
         ? `${channel.memberIds.length} members · Channel`
         : channel.kind === "group"
           ? `${channel.memberIds.length} members · Group chat`
-          : peerAvailable === true
-            ? "Available"
-            : peerAvailable === false
-              ? "Offline"
-              : "Private conversation"
+          : "Private conversation"
       : "";
+  usePresencePolling(chat.workspace?.id, directPeerId ? [directPeerId] : [], Boolean(ownsWorkspace && directPeerId));
+  useFocusEffect(useCallback(() => {
+    setTypingFocused(true);
+    return () => setTypingFocused(false);
+  }, []));
+  const typing = useChatTyping({ owner: user, tenantId: chat.workspace?.id, conversationId: id,
+    threadRootId: threadIsCurrent ? thread?.root.id : undefined, enabled: canCompose,
+    focused: typingFocused });
+  const stopTyping = typing.stop;
 
   useEffect(() => {
     setVoiceOpen(false);
     setLocalPreviews({});
     setAiMode(null);
     setAiAvailable(false);
-    setPeerAvailable(null);
     setForwardTarget(null);
     setUploading(false);
     setFeatureBusy(false);
@@ -246,6 +254,7 @@ export default function ChatRoomScreen() {
     setSearchText("");
     setSearchResult({ messages: [], hasMore: false });
     setReplyTo(null);
+    stopTyping();
     setThread(null);
     setThreadScope(null);
     threadRequestRef.current = null;
@@ -258,7 +267,7 @@ export default function ChatRoomScreen() {
     setSafetyConfirm(null);
     setSafetyError(null);
     setSafetyComment("");
-  }, [user, id, tenantId, chat.workspace?.id]);
+  }, [user, id, tenantId, chat.workspace?.id, stopTyping]);
   useEffect(() => {
     let current = true;
     setSearchResult({ messages: [], hasMore: false });
@@ -402,6 +411,7 @@ export default function ChatRoomScreen() {
       content.length > 4000
     )
       return;
+    typing.stop();
     atBottom.current = true;
     const action = { owner: user, workspaceId: state.workspace.id, roomId: id };
     const activeThread =
@@ -771,41 +781,6 @@ export default function ChatRoomScreen() {
     lastMessageCount.current = displayedMessages.length;
   }, [displayedMessages.length]);
 
-  useFocusEffect(
-    useCallback(() => {
-      const state = currentScope();
-      if (!state?.workspace) return;
-      let alive = true,
-        running = false;
-      const refresh = async () => {
-        if (!alive || running || AppState.currentState !== "active") return;
-        running = true;
-        try {
-          await messageApi.heartbeat(state.workspace!.id);
-          if (directPeerId) {
-            const result = await messageApi.presence(state.workspace!.id, [
-              directPeerId,
-            ]);
-            if (alive && currentScope())
-              setPeerAvailable(
-                result.find((p) => p.userId === directPeerId)?.available ??
-                  false,
-              );
-          }
-        } catch {
-          if (alive) setPeerAvailable(null);
-        } finally {
-          running = false;
-        }
-      };
-      void refresh();
-      const timer = setInterval(() => void refresh(), 45000);
-      return () => {
-        alive = false;
-        clearInterval(timer);
-      };
-    }, [user, id, chat.workspace?.id, directPeerId]),
-  );
   useEffect(() => {
     let active = true;
     setAiAvailable(false);
@@ -1084,12 +1059,10 @@ export default function ChatRoomScreen() {
                 >
                   {threadOpen ? "Replies" : channel?.name || "Conversation"}
                 </Text>
-                <Text
+                {!threadOpen && directPeerId ? <PresenceIndicator tenantId={chat.workspace?.id} userId={directPeerId} /> : <Text
                   numberOfLines={1}
                   style={[styles.memberContext, { color: colors.muted }]}
-                >
-                  {memberContext}
-                </Text>
+                >{memberContext}</Text>}
               </Pressable>
               {!threadOpen && directPeerId && chat.workspace && (
                 <ChatPeerCall
@@ -1543,7 +1516,9 @@ export default function ChatRoomScreen() {
                             accessibilityLabel={`Insert ${emoji}`}
                             accessibilityRole="button"
                             onPress={() => {
-                              setDraft(draft + emoji);
+                              const nextDraft = draft + emoji;
+                              setDraft(nextDraft);
+                              typing.onUserEdit(nextDraft);
                               setEmojiOpen(false);
                             }}
                             style={{
@@ -1560,8 +1535,9 @@ export default function ChatRoomScreen() {
                     )}
                     {mentionOpen && (
                       <MentionPicker people={details?.members || []}
-                        onPick={(person) => { const marker = `@${person.name}`; const start = draft.length ? draft.length + 1 : 0; setDraft(`${draft}${draft.length ? " " : ""}${marker} `); setDraftMentions(items => [...items, { userId: person.id, name: person.name, start, length: marker.length }]); setMentionOpen(false); }} />
+                        onPick={(person) => { const marker = `@${person.name}`; const start = draft.length ? draft.length + 1 : 0; const nextDraft = `${draft}${draft.length ? " " : ""}${marker} `; setDraft(nextDraft); typing.onUserEdit(nextDraft); setDraftMentions(items => [...items, { userId: person.id, name: person.name, start, length: marker.length }]); setMentionOpen(false); }} />
                     )}
+                    <TypingIndicator names={typing.names} />
                     <View style={styles.composerRow}>
                       <Pressable
                         accessibilityRole="button"
@@ -1579,7 +1555,8 @@ export default function ChatRoomScreen() {
                       <TextInput
                         accessibilityLabel="Message"
                         value={draft}
-                        onChangeText={setDraft}
+                        onChangeText={(value) => { setDraft(value); typing.onUserEdit(value); }}
+                        onBlur={() => void typing.stop()}
                         editable={canCompose}
                         multiline
                         scrollEnabled

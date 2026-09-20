@@ -17,7 +17,14 @@ export interface ChatReaction {
   users: ChatReactionUser[];
 }
 export interface ChatBookmark { messageId: string; channelId: string; createdAt: number }
-export interface ChatPresence { userId: number; available: boolean; lastSeenAt: number | null }
+export type ChatPresenceStatus = "available" | "away" | "offline" | "on_call" | "in_meeting";
+export interface ChatPresence {
+  userId: number;
+  /** Kept for older clients; true means a current lease exists. */
+  available: boolean;
+  status: ChatPresenceStatus;
+  lastSeenAt: number | null;
+}
 /** Safe server descriptor. It intentionally contains no storage key or URL. */
 export interface ChatAttachment {
   id: string; conversationId: string; filename: string; mimeType: string; sizeBytes: number;

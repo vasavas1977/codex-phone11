@@ -251,11 +251,93 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await expect(service.pinnedMessages(5, 10, id)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
   it("uses an explicit fresh heartbeat with active account mapping for presence", async () => {
-    expect(await service.presence(1, 10, [2, 3, 4])).toEqual([{ userId: 2, available: false, lastSeenAt: null }]);
+    expect(await service.presence(1, 10, [2, 3, 4])).toEqual([{ userId: 2, available: false, status: "offline", lastSeenAt: null }]);
     const heartbeat = await service.heartbeat(2, 10); expect(heartbeat.lastSeenAt).toEqual(expect.any(Number));
-    expect(await service.presence(1, 10, [2])).toEqual([expect.objectContaining({ userId: 2, available: true, lastSeenAt: expect.any(Number) })]);
+    expect(await service.presence(1, 10, [2])).toEqual([expect.objectContaining({ userId: 2, available: true, status: "available", lastSeenAt: expect.any(Number) })]);
     await pool.query("UPDATE tenant_memberships SET status = 'inactive' WHERE user_id = 2 AND tenant_id = 10");
     expect(await service.presence(1, 10, [2])).toEqual([]);
+  });
+  it("aggregates server-clock session leases by call priority and rejects stale resurrection", async () => {
+    expect(await service.presenceCapability(1, 10)).toEqual({ tenantId: 10, version: 2 });
+    const phone = randomUUID(), desktop = randomUUID(), phoneGeneration = randomUUID(), desktopGeneration = randomUUID();
+    await service.heartbeat(2, 10, { sessionId: phone, generation: phoneGeneration, sequence: 1, status: "in_meeting", active: true });
+    await service.heartbeat(2, 10, { sessionId: desktop, generation: desktopGeneration, sequence: 2, status: "on_call", active: true });
+    expect(await service.presence(1, 10, [2])).toEqual([expect.objectContaining({ userId: 2, status: "on_call", available: true })]);
+    await service.heartbeat(2, 10, { sessionId: desktop, generation: desktopGeneration, sequence: 3, status: "on_call", active: false });
+    expect(await service.presence(1, 10, [2])).toEqual([expect.objectContaining({ status: "in_meeting", available: true })]);
+    await expect(service.heartbeat(2, 10, { sessionId: desktop, generation: desktopGeneration, sequence: 2, status: "on_call", active: true }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    await pool.query("UPDATE phone11_chat_presence_sessions SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE tenant_id = 10 AND user_id = 2");
+    expect(await service.presence(1, 10, [2])).toEqual([expect.objectContaining({ status: "offline", available: false })]);
+  });
+  it("keeps owners, workspaces and inactive memberships isolated for rich presence", async () => {
+    await service.heartbeat(1, 10, { sessionId: randomUUID(), generation: randomUUID(), sequence: 1, status: "available", active: true });
+    await service.heartbeat(2, 10, { sessionId: randomUUID(), generation: randomUUID(), sequence: 1, status: "away", active: true });
+    expect(await service.presence(1, 10, [1, 2])).toEqual([
+      expect.objectContaining({ userId: 1, status: "available" }), expect.objectContaining({ userId: 2, status: "away" }),
+    ]);
+    await expect(service.presence(1, 20, [3])).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await pool.query("UPDATE tenant_memberships SET status = 'inactive' WHERE user_id = 2 AND tenant_id = 10");
+    expect(await service.presence(1, 10, [2])).toEqual([]);
+  });
+  it("serializes the per-owner live-session cap", async () => {
+    const results = await Promise.allSettled(Array.from({ length: 17 }, (_, index) => service.heartbeat(2, 10, {
+      sessionId: randomUUID(), generation: randomUUID(), sequence: index + 1, status: "available", active: true,
+    })));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(16);
+    expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+    const count = await pool.query(`SELECT COUNT(*)::integer AS count FROM phone11_chat_presence_sessions
+      WHERE tenant_id = 10 AND user_id = 2 AND active AND lease_expires_at > clock_timestamp()`);
+    expect(Number(count.rows[0].count)).toBe(16);
+  });
+  it("does not reactivate a retained inactive session past the live-session cap", async () => {
+    const inactive = randomUUID(), generation = randomUUID();
+    await service.heartbeat(2, 10, { sessionId: inactive, generation, sequence: 1, status: "away", active: false });
+    for (let index = 0; index < 16; index++) await service.heartbeat(2, 10, {
+      sessionId: randomUUID(), generation: randomUUID(), sequence: index + 1, status: "available", active: true,
+    });
+    await expect(service.heartbeat(2, 10, { sessionId: inactive, generation, sequence: 2, status: "available", active: true }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+  });
+  it("does not reveal presence across a bilateral direct-message block", async () => {
+    await service.heartbeat(2, 10, { sessionId: randomUUID(), generation: randomUUID(), sequence: 1, status: "on_call", active: true });
+    expect(await service.presence(1, 10, [2])).toEqual([expect.objectContaining({ userId: 2, status: "on_call" })]);
+    await service.block(1, 10, 2);
+    expect(await service.presence(1, 10, [2])).toEqual([]);
+    expect(await service.presence(2, 10, [1])).toEqual([]);
+  });
+  it("scopes ephemeral typing to authorized unblocked members and exact live threads", async () => {
+    const { id } = await room(), sessionId = randomUUID(), generation = randomUUID();
+    await service.typingPublish(2, 10, id, { sessionId, generation, sequence: 1, active: true });
+    expect(await service.typing(1, 10, id)).toEqual([{ userId: 2, name: "Bob" }]);
+    await expect(service.typingPublish(5, 10, id, { sessionId: randomUUID(), generation: randomUUID(), sequence: 1, active: true }))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+    await service.typingPublish(2, 10, id, { sessionId, generation, sequence: 2, active: false });
+    const root = await service.send(1, 10, id, randomUUID(), "Thread root");
+    await service.typingPublish(2, 10, id, { threadRootId: root.id, sessionId, generation, sequence: 3, active: true });
+    expect(await service.typing(1, 10, id, root.id)).toEqual([{ userId: 2, name: "Bob" }]);
+    expect(await service.typing(1, 10, id)).toEqual([]);
+    await service.block(1, 10, 2);
+    expect(await service.typing(1, 10, id, root.id)).toEqual([]);
+    await expect(service.typingPublish(2, 10, id, { sessionId, generation, sequence: 4, active: true }))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    await service.unblock(1, 10, 2); await service.delete(1, 10, id, root.id);
+    await expect(service.typing(2, 10, id, root.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+  it("removes active typing identities after assignment or membership revocation and from blocked groups", async () => {
+    const group = await service.create(1, 10, "group", "Private group", [2, 5]);
+    const sessionId = randomUUID(), generation = randomUUID();
+    await service.typingPublish(2, 10, group.id, { sessionId, generation, sequence: 1, active: true });
+    expect(await service.typing(1, 10, group.id)).toEqual([{ userId: 2, name: "Bob" }]);
+    await service.block(1, 10, 2);
+    expect(await service.typing(1, 10, group.id)).toEqual([]);
+    await service.unblock(1, 10, 2);
+    await pool.query("UPDATE extensions SET status='inactive' WHERE id=2");
+    expect(await service.typing(1, 10, group.id)).toEqual([]);
+    await pool.query("UPDATE extensions SET status='active' WHERE id=2");
+    expect(await service.typing(1, 10, group.id)).toEqual([{ userId: 2, name: "Bob" }]);
+    await pool.query("UPDATE tenant_memberships SET status='inactive' WHERE user_id=2 AND tenant_id=10");
+    expect(await service.typing(1, 10, group.id)).toEqual([]);
   });
   it("forwards only an authorized same-tenant message and keeps a lost-response retry stable", async () => {
     const source = await room(); const target = await service.create(1, 10, "group", "Target", [2]);

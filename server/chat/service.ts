@@ -5,7 +5,8 @@ import type { PoolClient } from "pg";
 import { withTransaction } from "../pbx/db";
 import { ChatIntelligenceError, chatIntelligenceAvailable, generateChatIntelligence } from "./intelligence";
 import { LinkPreviewError, previewChatLink } from "./link-preview";
-import type { ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatWorkspace } from "../../lib/chat/types";
+import type { ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatPresenceStatus, ChatWorkspace } from "../../lib/chat/types";
+import { chatTypingRegistry, type ChatTypingRegistry } from "./typing";
 
 // Live Phone11 grants workspace access through an active tenant membership plus
 // an explicit user_extensions assignment. No inferred tenant 1 or
@@ -182,7 +183,7 @@ function linkPreviewFailure(error: unknown): never {
   throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "The link preview is unavailable." });
 }
 
-export function createChatService(transaction = withTransaction) {
+export function createChatService(transaction = withTransaction, typing: ChatTypingRegistry = chatTypingRegistry) {
   const scoped = <T>(userId: number, tenantId: number | undefined, fn: (db: PoolClient, workspace: ChatWorkspace) => Promise<T>) =>
     transaction(async db => fn(db, await authorizeWorkspace(db, userId, tenantId)));
   return {
@@ -394,6 +395,45 @@ export function createChatService(transaction = withTransaction) {
           media: messageIds.flatMap(messageId => (descriptors.get(messageId) || []).map(attachment => ({ messageId, attachment }))), links };
       });
     },
+    typingPublish(userId: number, tenantId: number, id: string, input: { threadRootId?: string; sessionId: string; generation: string; sequence: number; active: boolean }) {
+      return scoped(userId, tenantId, async (db, workspace) => {
+        await authorizeConversation(db, userId, workspace.id, id);
+        if (input.threadRootId) {
+          const root = await db.query(`SELECT 1 FROM phone11_chat_messages WHERE tenant_id=$1 AND conversation_id=$2
+            AND id=$3 AND parent_message_id IS NULL AND deleted_at IS NULL`, [workspace.id, id, input.threadRootId]);
+          if (!root.rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Thread is unavailable." });
+        }
+        const peer = await directPeer(db, workspace.id, id, userId);
+        if (peer && await pairIsBlocked(db, workspace.id, userId, peer.userId)) throw blockedError();
+        return typing.publish({ tenantId: workspace.id, conversationId: id, threadRootId: input.threadRootId || null,
+          userId, sessionId: input.sessionId, generation: input.generation, sequence: input.sequence, active: input.active });
+      });
+    },
+    typing(userId: number, tenantId: number, id: string, threadRootId?: string) {
+      return scoped(userId, tenantId, async (db, workspace) => {
+        await authorizeConversation(db, userId, workspace.id, id);
+        if (threadRootId) {
+          const root = await db.query(`SELECT 1 FROM phone11_chat_messages WHERE tenant_id=$1 AND conversation_id=$2
+            AND id=$3 AND parent_message_id IS NULL AND deleted_at IS NULL`, [workspace.id, id, threadRootId]);
+          if (!root.rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Thread is unavailable." });
+        }
+        const peer = await directPeer(db, workspace.id, id, userId);
+        if (peer && await pairIsBlocked(db, workspace.id, userId, peer.userId)) return [];
+        const ids = typing.activeUsers({ tenantId: workspace.id, conversationId: id, threadRootId: threadRootId || null }).filter(id => id !== userId);
+        if (!ids.length) return [];
+        const rows = await db.query(`SELECT DISTINCT m.user_id, COALESCE(u.name, 'Team member') AS name
+          FROM phone11_chat_members m
+          JOIN tenant_memberships tm ON tm.tenant_id=m.tenant_id AND tm.user_id=m.user_id AND tm.status='active'
+          JOIN user_extensions ue ON ue.user_id=m.user_id
+          JOIN extensions e ON e.id=ue.extension_id AND e.tenant_id=m.tenant_id AND e.status='active' AND e.deleted_at IS NULL
+          JOIN users u ON u.id=m.user_id
+          WHERE m.tenant_id=$1 AND m.conversation_id=$2 AND m.user_id=ANY($3::integer[])
+            AND NOT EXISTS (SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id=m.tenant_id
+              AND ((b.blocker_id=$4 AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=$4)))
+          ORDER BY name, m.user_id LIMIT 49`, [workspace.id, id, ids, userId]);
+        return rows.rows.map((row: any) => ({ userId: Number(row.user_id), name: row.name }));
+      });
+    },
     setReaction(userId: number, tenantId: number, id: string, messageId: string, emoji: string, reacted: boolean) {
       return scoped(userId, tenantId, async (db, workspace) => {
         await authorizeConversation(db, userId, workspace.id, id);
@@ -503,8 +543,51 @@ export function createChatService(transaction = withTransaction) {
         return { muted };
       });
     },
-    heartbeat(userId: number, tenantId: number) {
+    presenceCapability(userId: number, tenantId: number) {
       return scoped(userId, tenantId, async (db, workspace) => {
+        const result = await db.query(`SELECT to_regclass('phone11_chat_presence_sessions') IS NOT NULL AS supported`);
+        return { tenantId: workspace.id, version: result.rows[0]?.supported === true ? 2 as const : 1 as const };
+      });
+    },
+    heartbeat(userId: number, tenantId: number, session?: { sessionId: string; generation: string; sequence: number; status: Exclude<ChatPresenceStatus, "offline">; active: boolean }) {
+      return scoped(userId, tenantId, async (db, workspace) => {
+        if (session) {
+          // Keep tombstones for one day: they reject delayed lower-sequence
+          // requests after logout while bounding storage. Sixteen live device
+          // sessions is generous for a human account and limits abuse.
+          await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`phone11-presence:${workspace.id}:${userId}`]);
+          await db.query(`DELETE FROM phone11_chat_presence_sessions
+            WHERE tenant_id = $1 AND user_id = $2 AND lease_expires_at < clock_timestamp() - interval '1 day'`, [workspace.id, userId]);
+          await db.query(`DELETE FROM phone11_chat_presence_sessions WHERE ctid IN (
+            SELECT ctid FROM phone11_chat_presence_sessions
+            WHERE tenant_id = $1 AND user_id = $2 AND (NOT active OR lease_expires_at <= clock_timestamp())
+            ORDER BY last_seen_at DESC OFFSET 16)`, [workspace.id, userId]);
+          const row = await db.query(`INSERT INTO phone11_chat_presence_sessions
+              (tenant_id, user_id, session_id, generation, sequence, status, active, last_seen_at, lease_expires_at)
+            SELECT $1, $2, $3::uuid, $4::uuid, $5, $6, $7, clock_timestamp(),
+              CASE WHEN $7 THEN clock_timestamp() + interval '90 seconds' ELSE clock_timestamp() END
+            WHERE (EXISTS (SELECT 1 FROM phone11_chat_presence_sessions existing
+                    WHERE existing.tenant_id = $1 AND existing.user_id = $2 AND existing.session_id = $3::uuid)
+                 AND (NOT $7 OR EXISTS (SELECT 1 FROM phone11_chat_presence_sessions existing
+                    WHERE existing.tenant_id = $1 AND existing.user_id = $2 AND existing.session_id = $3::uuid
+                      AND existing.active AND existing.lease_expires_at > clock_timestamp())
+                   OR (SELECT COUNT(*) FROM phone11_chat_presence_sessions
+                    WHERE tenant_id = $1 AND user_id = $2 AND active AND lease_expires_at > clock_timestamp()) < 16))
+               OR (NOT EXISTS (SELECT 1 FROM phone11_chat_presence_sessions existing
+                    WHERE existing.tenant_id = $1 AND existing.user_id = $2 AND existing.session_id = $3::uuid)
+                   AND (NOT $7 OR (SELECT COUNT(*) FROM phone11_chat_presence_sessions
+                    WHERE tenant_id = $1 AND user_id = $2 AND active AND lease_expires_at > clock_timestamp()) < 16)
+                   AND (SELECT COUNT(*) FROM phone11_chat_presence_sessions
+                    WHERE tenant_id = $1 AND user_id = $2) < 32)
+            ON CONFLICT(tenant_id, user_id, session_id) DO UPDATE SET
+              generation = EXCLUDED.generation, sequence = EXCLUDED.sequence, status = EXCLUDED.status,
+              active = EXCLUDED.active, last_seen_at = EXCLUDED.last_seen_at, lease_expires_at = EXCLUDED.lease_expires_at
+            WHERE EXCLUDED.sequence > phone11_chat_presence_sessions.sequence
+            RETURNING last_seen_at, lease_expires_at`, [workspace.id, userId, session.sessionId, session.generation,
+              session.sequence, session.status, session.active]);
+          if (!row.rows[0]) throw new TRPCError({ code: "CONFLICT", message: "This presence update is stale or too many sessions are active." });
+          return { lastSeenAt: new Date(row.rows[0].last_seen_at).getTime(), leaseExpiresAt: new Date(row.rows[0].lease_expires_at).getTime() };
+        }
         const row = await db.query(`INSERT INTO phone11_chat_presence(tenant_id, user_id, last_seen_at) VALUES($1, $2, NOW())
           ON CONFLICT(tenant_id, user_id) DO UPDATE SET last_seen_at = NOW() RETURNING last_seen_at`, [workspace.id, userId]);
         return { lastSeenAt: new Date(row.rows[0].last_seen_at).getTime() };
@@ -592,15 +675,45 @@ export function createChatService(transaction = withTransaction) {
     },
     presence(userId: number, tenantId: number, userIds?: number[]) {
       return scoped(userId, tenantId, async (db, workspace) => {
-        const rows = await db.query(`SELECT DISTINCT ue.user_id, p.last_seen_at,
-            (p.last_seen_at >= clock_timestamp() - interval '2 minutes') AS available
+        const capability = await db.query(`SELECT to_regclass('phone11_chat_presence_sessions') IS NOT NULL AS supported`);
+        if (capability.rows[0]?.supported !== true) {
+          const legacy = await db.query(`SELECT DISTINCT ue.user_id, p.last_seen_at,
+              (p.last_seen_at >= clock_timestamp() - interval '2 minutes') AS available
+            FROM user_extensions ue JOIN extensions e ON e.id = ue.extension_id
+            JOIN tenant_memberships tm ON tm.user_id = ue.user_id AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
+            LEFT JOIN phone11_chat_presence p ON p.tenant_id = e.tenant_id AND p.user_id = ue.user_id
+            WHERE e.tenant_id = $1 AND e.status = 'active' AND e.deleted_at IS NULL
+              AND ($2::integer[] IS NULL OR ue.user_id = ANY($2::integer[]))
+              AND (ue.user_id = $3 OR NOT EXISTS (SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id=e.tenant_id
+                AND ((b.blocker_id=$3 AND b.blocked_id=ue.user_id) OR (b.blocked_id=$3 AND b.blocker_id=ue.user_id))))
+            ORDER BY ue.user_id LIMIT 500`, [workspace.id, userIds?.length ? userIds : null, userId]);
+          return legacy.rows.map((row: any) => ({ userId: Number(row.user_id), available: Boolean(row.available),
+            status: row.available ? "available" as const : "offline" as const,
+            lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).getTime() : null }));
+        }
+        const rows = await db.query(`SELECT DISTINCT ue.user_id,
+            CASE WHEN sessions.authoritative THEN sessions.last_seen_at ELSE legacy.last_seen_at END AS last_seen_at,
+            CASE WHEN sessions.authoritative THEN COALESCE(sessions.status, 'offline')
+              WHEN legacy.last_seen_at >= clock_timestamp() - interval '2 minutes' THEN 'available'
+              ELSE 'offline' END AS status
           FROM user_extensions ue JOIN extensions e ON e.id = ue.extension_id
           JOIN tenant_memberships tm ON tm.user_id = ue.user_id AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
-          LEFT JOIN phone11_chat_presence p ON p.tenant_id = e.tenant_id AND p.user_id = ue.user_id
+          LEFT JOIN phone11_chat_presence legacy ON legacy.tenant_id = e.tenant_id AND legacy.user_id = ue.user_id
+          LEFT JOIN LATERAL (
+            SELECT TRUE AS authoritative, MAX(ps.last_seen_at) AS last_seen_at,
+              (ARRAY_AGG(ps.status ORDER BY CASE ps.status
+                WHEN 'on_call' THEN 1 WHEN 'in_meeting' THEN 2 WHEN 'available' THEN 3 ELSE 4 END,
+                ps.last_seen_at DESC) FILTER (WHERE ps.active AND ps.lease_expires_at > clock_timestamp()))[1] AS status
+            FROM phone11_chat_presence_sessions ps
+            WHERE ps.tenant_id = e.tenant_id AND ps.user_id = ue.user_id
+            HAVING COUNT(*) > 0
+          ) sessions ON TRUE
           WHERE e.tenant_id = $1 AND e.status = 'active' AND e.deleted_at IS NULL
             AND ($2::integer[] IS NULL OR ue.user_id = ANY($2::integer[]))
-          ORDER BY ue.user_id LIMIT 500`, [workspace.id, userIds?.length ? userIds : null]);
-        return rows.rows.map((row: any) => ({ userId: Number(row.user_id), available: Boolean(row.available),
+            AND (ue.user_id = $3 OR NOT EXISTS (SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id=e.tenant_id
+              AND ((b.blocker_id=$3 AND b.blocked_id=ue.user_id) OR (b.blocked_id=$3 AND b.blocker_id=ue.user_id))))
+          ORDER BY ue.user_id LIMIT 500`, [workspace.id, userIds?.length ? userIds : null, userId]);
+        return rows.rows.map((row: any) => ({ userId: Number(row.user_id), available: row.status !== "offline", status: row.status as ChatPresenceStatus,
           lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).getTime() : null }));
       });
     },
