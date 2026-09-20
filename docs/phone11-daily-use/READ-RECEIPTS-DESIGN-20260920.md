@@ -1,6 +1,8 @@
 # Team Chat read receipts
 
-Status: implemented and source-verified; not yet deployed or device verified.
+Status: implemented, source-verified, and deployed with live pilot API checks on
+20 September 2026. Two-iPhone behavior is not yet verified; see
+`READ-RECEIPTS-LIVE-ACCEPTANCE-20260920.md`.
 
 ## Experience
 

@@ -38,13 +38,29 @@ The existing calling backend remained healthy; public health returned 200.
 The candidate started healthy on loopback port 3002 and direct API probes
 passed. The first public chat mutation probe returned HTTP 404 instead of
 200 after the proxy reload. The operator restored the original proxy file;
-public traffic remains on the working baseline. The candidate remains healthy
-for read-only diagnosis. The failure is not a handset test result.
+public traffic returned to the working baseline for diagnosis. The failure was
+not a handset test result. The successful corrected retry is recorded below.
+
+## Verified corrected activation
+
+The reviewed operator at `50b6c3b62298b21baa778053d08ce1054422c608`
+passed prepare and activation using the exact existing candidate. All five
+direct checks ran before the route switch. The local route and three consecutive
+public requests attested the new build before the five public checks ran.
+The baseline calling container, candidate identity, and SIP wake target stayed
+unchanged. Database lock/statement limits were verified at 2 and 30 seconds.
+
+Pilot-only API checks confirmed stable first-read timestamps, denied mismatched
+owner headers, sender-only reader details, and typing/presence start-stop cleanup.
+The lead independently repeated public GET checks: existing phone configuration
+and mixed feature batch returned 200 with expected fields and the candidate
+marker; an out-of-tenant request returned 403 with the same marker. No credentials
+or response bodies were retained in the report. Full activation evidence is in
+`READ-RECEIPTS-PARALLEL-API-ACTIVATION-20260920.md`.
 
 ## Not yet accepted
 
-Candidate activation, public API behavior, and physical device behavior are
-separate gates. The database update above does not pass them.
+Physical device behavior remains a separate gate; API success does not pass it.
 Connect11 meeting admission and two-device media acceptance are also separate.
 Before the conference migration, a read-only production catalog check found
 no `phone11_plain_video_*` or `phone11_meeting*` relations. A later independent

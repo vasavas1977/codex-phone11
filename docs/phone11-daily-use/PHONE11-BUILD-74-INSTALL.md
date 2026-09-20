@@ -1,4 +1,4 @@
-# Phone11 Build 74 — signed package verified, server rollout pending
+# Phone11 Build 74 — signed package and chat API ready for handset testing
 
 Verified 20 September 2026. This is the normal signed Phone11 app, with an embedded bundle and no development launcher. Do not uninstall the existing app.
 
@@ -18,7 +18,7 @@ The receipt implementation passed 79 focused tests and 43 disposable PostgreSQL 
 
 ## Release boundaries
 
-**Server activation, migrations, and two-iPhone acceptance are not complete.** Installing this package alone does not enable these new server-backed features. Keep that limitation visible in any handoff; do not tell the user they can already test live read receipts, presence, typing, or conferencing.
+**The chat schema and API are deployed and verified with pilot API checks. Two-iPhone acceptance remains pending.** Build 74 can now be used to test read receipts, named group readers, presence, typing, and the included voice-clip fixes. Conferencing requires its separate admitted pilot meeting and provider verification; do not infer video readiness from chat checks.
 
 The known working live backend image `sha256:d42c70f34d5062bff779c235dd2b6e415bede3b3a86b9de73892acf35b392619` was rechecked running without replacement during preparation. Parallel API rollout is reviewed separately so SIP wake and existing workers remain running.
 
