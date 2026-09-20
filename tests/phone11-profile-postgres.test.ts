@@ -48,15 +48,24 @@ describe.skipIf(!connectionString)("workspace profile real PostgreSQL persistenc
   afterAll(async () => { await pool.end(); });
 
   it("persists only self fields, scopes colleague reads, and clears expired values", async () => {
-    const service = createProfileService(pool, () => new Date("2026-09-20T10:00:00Z"));
+    const clock = await pool.query(`WITH chosen AS (SELECT clock_timestamp() AS now)
+      SELECT now,
+        (date_trunc('day', now AT TIME ZONE 'Asia/Bangkok') + INTERVAL '1 day')
+          AT TIME ZONE 'Asia/Bangkok' AS next_local_midnight
+      FROM chosen`);
+    const databaseNow = new Date(clock.rows[0].now);
+    const nextLocalMidnight = new Date(clock.rows[0].next_local_midnight);
+    const service = createProfileService(pool, () => databaseNow);
     const saved = await service.update(1, 10, {
       availability: { value: "busy" },
       status: { text: "In customer review", expiry: "today" },
       workLocation: "remote",
     });
     expect(saved).toMatchObject({ userId: 1, manualAvailability: "busy", statusText: "In customer review", workLocation: "remote" });
-    expect(saved.manualAvailabilityExpiresAt).toEqual(new Date("2026-09-21T10:00:00Z"));
-    expect(saved.statusExpiresAt).toEqual(new Date("2026-09-20T17:00:00Z"));
+    expect(saved.manualAvailabilityExpiresAt).toEqual(new Date(databaseNow.getTime() + 24 * 60 * 60_000));
+    expect(saved.statusExpiresAt).toEqual(nextLocalMidnight);
+    expect(saved.manualAvailabilityExpiresAt!.getTime()).toBeGreaterThan(databaseNow.getTime());
+    expect(saved.statusExpiresAt!.getTime()).toBeGreaterThan(databaseNow.getTime());
 
     const colleagues = await service.colleagues(1, 10, [1, 2, 3]);
     expect(colleagues.map((profile) => profile.userId)).toEqual([1, 2]);
