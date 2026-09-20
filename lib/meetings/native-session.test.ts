@@ -85,6 +85,18 @@ describe("native meeting lifecycle", () => {
     await lifecycle.leave();
   });
 
+  it("best-effort stops native audio when activation rejects before room creation", async () => {
+    mocks.startAudioSession.mockRejectedValueOnce(new Error("native audio activation failed"));
+
+    await expect(native.NativeMeetingLifecycle.join("meeting-audio-reject", admission, preferences))
+      .rejects.toThrow("native audio activation failed");
+
+    expect(mocks.rooms).toHaveLength(0);
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+  });
+
   it("rechecks ownership after native audio start and never registers a meeting raced by SIP", async () => {
     mocks.startAudioSession.mockImplementation(async () => {
       const sip = native.phone11MediaOwnership.requestSip("sip:race");
