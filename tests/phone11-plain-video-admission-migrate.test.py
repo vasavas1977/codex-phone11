@@ -166,6 +166,21 @@ class DisposablePostgresTests(unittest.TestCase):
             timeout=40,
         )
 
+    def recover(self, database: str, before: dict) -> subprocess.CompletedProcess:
+        contract = operator.contract()
+        contract["database_fingerprint"] = before["identity_fingerprint"]
+        contract["before_catalog_fingerprint"] = before["catalog_fingerprint"]
+        return subprocess.run(
+            [self.node, "-e", operator.NODE_PROGRAM, "recover", json.dumps(contract)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.environment(database),
+            check=False,
+            timeout=40,
+        )
+
     def targets_absent(self, database: str) -> bool:
         result = self.psql_run(
             database,
@@ -220,6 +235,26 @@ class DisposablePostgresTests(unittest.TestCase):
         result = self.apply(database, self.snapshot(database))
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(self.targets_absent(database))
+
+    def test_recovery_rejects_mutated_revision_trigger_function_body(self) -> None:
+        database = "video_trigger_tamper"
+        self.new_database(database)
+        before = self.snapshot(database)
+        applied = self.apply(database, before)
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        self.psql_run(
+            database,
+            """CREATE OR REPLACE FUNCTION phone11_plain_video_admission_touch_revision()
+               RETURNS trigger LANGUAGE plpgsql AS $$
+               BEGIN
+                 NEW.updated_at := clock_timestamp();
+                 RETURN NEW;
+               END;
+               $$;""",
+            True,
+        )
+        recovered = self.recover(database, before)
+        self.assertNotEqual(recovered.returncode, 0)
 
     def test_partial_target_and_reapply_fail_closed(self) -> None:
         database = "video_partial"

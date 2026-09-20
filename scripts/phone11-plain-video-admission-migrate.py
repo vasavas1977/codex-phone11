@@ -21,7 +21,7 @@ ACTIVE_CONTAINER_ID = "f9ce934dc51b531fe1a9b2bd927634322f9c6c572a551592a48d3e0d2
 ACTIVE_IMAGE = "sha256:d42c70f34d5062bff779c235dd2b6e415bede3b3a86b9de73892acf35b392619"
 EXPECTED_DATABASE_FINGERPRINT = "6901e1f28e6fc33ebba8eefaa8708e663f1145a22ccdeb5bdc960cd849b4a552"
 EXPECTED_BEFORE_CATALOG_FINGERPRINT = "e8e40847c0622d3719b61e7447af883c3b45bc594ac6985c537cbafcdee7e0e3"
-EXPECTED_TARGET_FINGERPRINT = "6a2027c84ad0de8fe8505cb3cedfd5da4da3ea2ed87d584a5877a1ae2b8d1d51"
+EXPECTED_TARGET_FINGERPRINT = "8719c1618a1212e13a414e2e717f394ce118660f5da0d3b618a4203bd9edd48c"
 EXPECTED_ARTIFACT_SHA256 = "985437663523803627abd151b5ee3a1858f65b61966c051ec6fbd048a0a4f732"
 EXPECTED_OWNER = "phone11ai"
 RECEIPT_SCHEMA = "phone11-migration-receipt/v1"
@@ -141,7 +141,7 @@ async function catalog(c){
  return{relations,columns,constraints,indexes,grants,policies};
 }
 async function extras(c){
- const routines=(await c.query("SELECT p.proname name,pg_get_userbyid(p.proowner) owner,p.prosecdef security_definer,p.provolatile volatility,p.prokind kind,pg_get_function_identity_arguments(p.oid) arguments,pg_get_function_result(p.oid) result,l.lanname language FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang WHERE n.nspname='public' AND p.proname='phone11_plain_video_admission_touch_revision' ORDER BY p.proname")).rows;
+ const routines=(await c.query("SELECT p.proname name,pg_get_userbyid(p.proowner) owner,p.prosecdef security_definer,p.provolatile volatility,p.prokind kind,pg_get_function_identity_arguments(p.oid) arguments,pg_get_function_result(p.oid) result,l.lanname language,pg_get_functiondef(p.oid) definition,p.proconfig settings,coalesce(p.proacl::text,'') acl FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang WHERE n.nspname='public' AND p.proname='phone11_plain_video_admission_touch_revision' ORDER BY p.proname")).rows;
  const triggers=(await c.query("SELECT c.relname table_name,t.tgname name,t.tgenabled enabled,pg_get_triggerdef(t.oid,true) definition FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND t.tgname=ANY($1::text[]) ORDER BY c.relname,t.tgname",[['phone11_plain_video_admission_room_revision','phone11_plain_video_admission_member_revision']])).rows;
  return{routines,triggers};
 }

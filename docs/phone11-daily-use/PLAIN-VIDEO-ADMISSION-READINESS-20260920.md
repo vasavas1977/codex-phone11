@@ -25,7 +25,7 @@ outer advisory lock, pre-commit post-shape verification, and an atomic receipt.
 - live prerequisite catalog fingerprint:
   `e8e40847c0622d3719b61e7447af883c3b45bc594ac6985c537cbafcdee7e0e3`
 - rehearsed exact target fingerprint:
-  `6a2027c84ad0de8fe8505cb3cedfd5da4da3ea2ed87d584a5877a1ae2b8d1d51`
+  `8719c1618a1212e13a414e2e717f394ce118660f5da0d3b618a4203bd9edd48c`
 
 ## Live read-only preflight
 
@@ -62,7 +62,8 @@ credential, interpreter, agent, bot, recording, or transcript behavior.
 migration safety pattern: exact root-only artifacts, exact container/image and
 database pins, a fixed transaction advisory lock before the catalog snapshot,
 two-second lock and thirty-second statement limits, exact unrelated-catalog
-preservation, an exact target fingerprint checked before commit, and atomic
+preservation, an exact target fingerprint (including trigger function body,
+settings, ACL, and trigger definitions) checked before commit, and atomic
 `phone11-migration-receipt/v1` publication with read-only recovery validation.
 
 The existing fixture utility remains the only proposed record writer. Its
@@ -76,12 +77,13 @@ Connect11.
 
 - 44/44 existing admission, lease, eviction, tenant-provider, facade,
   preflight, and fixture unit tests passed.
-- 6/6 new operator tests passed against a disposable real PostgreSQL 17
+- 7/7 new operator tests passed against a disposable real PostgreSQL 17
   cluster.
 - The real-database rehearsal proves guarded apply, exact target fingerprint,
   actual fixture dry-run with zero rows, actual two-user fixture apply, default
-  grant drift rollback, partial-target rejection, and advisory-lock timeout
-  before snapshot.
+  grant drift rollback, partial-target rejection, advisory-lock timeout before
+  snapshot, and recovery refusal after the revision-trigger function body is
+  altered.
 - Python compilation and whitespace checks pass.
 
 ## Concrete review finding
