@@ -1,5 +1,5 @@
 import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextStyle, type ViewStyle } from "react-native";
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextStyle, type ViewStyle } from "react-native";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import {
@@ -31,6 +31,25 @@ export function availabilitySummary(availability: ManualAvailability | null): st
     : "Automatic";
 }
 
+export const workspaceStatusPresets = [
+  { label: "In a meeting", text: "In a meeting", expiry: "1h" },
+  { label: "Commuting", text: "Commuting", expiry: "1h" },
+  { label: "Vacation", text: "Vacation", expiry: "always" },
+  { label: "Working remotely", text: "Working remotely", expiry: "today" },
+] as const;
+
+export function statusExpiryLabel(expiry: StatusExpiryPreset): string {
+  return statusExpiryOptions.find((option) => option.value === expiry)?.label ?? "Always";
+}
+
+export function statusDisplayTimeLabel(expiry: StatusExpiryPreset | undefined, expiresAt: Date | null): string {
+  if (expiry !== undefined) return statusExpiryLabel(expiry);
+  if (!expiresAt) return "Always";
+  const end = new Date(expiresAt);
+  if (Number.isNaN(end.getTime())) return "Scheduled end";
+  return `Until ${end.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+}
+
 function workLocationSummary(location: WorkLocation | null): string {
   return location === "office" ? "Office" : location === "remote" ? "Remote" : "Off";
 }
@@ -45,6 +64,7 @@ type AccountHubProps = {
   profileSaving?: boolean;
   profileError?: string | null;
   onUpdateWorkspaceProfile?: (update: WorkspaceProfileUpdate) => Promise<unknown>;
+  workspaceName?: string | null;
   isPreview?: boolean;
 };
 
@@ -58,52 +78,78 @@ function MenuRow({ icon, title, detail, onPress, last = false }: { icon: IconNam
   </Pressable>;
 }
 
-function Sheet({ visible, title, onClose, children }: { visible: boolean; title: string; onClose: () => void; children: ReactNode }) {
+function Sheet({ visible, title, onClose, children, keyboardSafe = false }: { visible: boolean; title: string; onClose: () => void; children: ReactNode; keyboardSafe?: boolean }) {
   const colors = useColors();
-  return <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
-    <View style={styles.sheetBackdrop}>
-      <Pressable accessibilityRole="button" accessibilityLabel="Close" style={StyleSheet.absoluteFill} onPress={onClose} />
-      <View accessibilityViewIsModal style={[styles.sheet, { backgroundColor: colors.background }]}>
-        <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
-          <Text accessibilityRole="header" style={[styles.sheetTitle, { color: colors.foreground }]}>{title}</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose} style={styles.closeButton}><IconSymbol name="xmark" size={20} color={colors.foreground} /></Pressable>
-        </View>
-        {children}
+  const content = <View style={styles.sheetBackdrop}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Close" style={StyleSheet.absoluteFill} onPress={onClose} />
+    <View accessibilityViewIsModal style={[styles.sheet, { backgroundColor: colors.background }]}>
+      <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
+        <Text accessibilityRole="header" style={[styles.sheetTitle, { color: colors.foreground }]}>{title}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Close" onPress={onClose} style={styles.closeButton}><IconSymbol name="xmark" size={20} color={colors.foreground} /></Pressable>
       </View>
+      {children}
     </View>
+  </View>;
+  return <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
+    {keyboardSafe ? <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.keyboardSheet}>{content}</KeyboardAvoidingView> : content}
   </Modal>;
 }
 
-function SheetChoice({ label, detail, selected, disabled, onPress }: { label: string; detail?: string; selected?: boolean; disabled?: boolean; onPress: () => void }) {
+function SheetChoice({ label, detail, selected, disabled, disclosure = false, onPress }: { label: string; detail?: string; selected?: boolean; disabled?: boolean; disclosure?: boolean; onPress: () => void }) {
   const colors = useColors();
   return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected, disabled }} disabled={disabled} onPress={onPress}
     style={({ pressed }) => [styles.sheetChoice, { borderBottomColor: colors.border, opacity: disabled ? 0.5 : pressed ? 0.72 : 1 }]}>
     <View style={styles.rowContent}><Text style={[styles.rowTitle, { color: colors.foreground }]}>{label}</Text>{detail && <Text style={[styles.rowDetail, { color: colors.muted }]}>{detail}</Text>}</View>
     {selected && <IconSymbol name="checkmark" size={20} color={colors.primary} />}
+    {disclosure && <IconSymbol name="chevron.right" size={19} color={colors.muted} />}
   </Pressable>;
 }
 
 function StatusEditor({ profile, visible, saving, onClose, onSave }: { profile: WorkspaceProfileStatus; visible: boolean; saving: boolean; onClose: () => void; onSave: (update: WorkspaceProfileUpdate) => void }) {
   const colors = useColors();
   const [text, setText] = useState(profile.statusText ?? "");
-  const [expiry, setExpiry] = useState<StatusExpiryPreset>("always");
-  useEffect(() => { if (visible) { setText(profile.statusText ?? ""); setExpiry("always"); } }, [profile.statusText, visible]);
+  const [expiry, setExpiry] = useState<StatusExpiryPreset | undefined>();
+  const [choosingDisplayTime, setChoosingDisplayTime] = useState(false);
+  useEffect(() => { if (visible) { setText(profile.statusText ?? ""); setExpiry(undefined); setChoosingDisplayTime(false); } }, [profile.statusText, visible]);
   const trimmed = text.trim();
-  return <Sheet visible={visible} title="Set status" onClose={onClose}>
-    <View style={styles.editorContent}>
+  const closeEditor = () => { setChoosingDisplayTime(false); onClose(); };
+  const clearStatus = () => onSave({ status: { text: null } });
+  const saveStatus = () => {
+    const status = trimmed
+      ? { text: trimmed, ...(expiry === undefined ? {} : { expiry }) }
+      : { text: null };
+    onSave({ status });
+  };
+  return <>
+    <Sheet visible={visible && !choosingDisplayTime} title="Set status" onClose={closeEditor} keyboardSafe>
+      <ScrollView contentContainerStyle={styles.editorContent} keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"} keyboardShouldPersistTaps="handled">
       <TextInput accessibilityLabel="Status text" value={text} maxLength={280} editable={!saving} onChangeText={setText}
         placeholder="Share a short update" placeholderTextColor={colors.muted} multiline style={[styles.statusInput, { color: colors.foreground, borderColor: colors.border }]} />
-      <Text style={[styles.sheetLabel, { color: colors.muted }]}>CLEAR STATUS</Text>
-      <SheetChoice label="Always" detail="Show until you clear it" selected={expiry === "always"} disabled={saving} onPress={() => setExpiry("always")} />
-      <Text style={[styles.sheetLabel, { color: colors.muted }]}>END STATUS</Text>
-      {statusExpiryOptions.filter(option => option.value !== "always").map(option => <SheetChoice key={option.value} label={option.label} selected={expiry === option.value} disabled={saving} onPress={() => setExpiry(option.value)} />)}
-      <View style={styles.sheetActions}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={saving} onPress={onClose} style={({ pressed }) => [styles.secondaryButton, { borderColor: colors.border, opacity: saving ? 0.5 : pressed ? 0.72 : 1 }]}><Text style={[styles.buttonText, { color: colors.foreground }]}>Cancel</Text></Pressable>
-        <Pressable accessibilityRole="button" accessibilityLabel={trimmed ? "Save status" : "Clear status"} disabled={saving} onPress={() => onSave({ status: { text: trimmed || null, expiry: trimmed ? expiry : "always" } })}
-          style={({ pressed }) => [styles.primaryButton, { backgroundColor: colors.primary, opacity: saving ? 0.5 : pressed ? 0.72 : 1 }]}><Text style={styles.primaryButtonText}>{trimmed ? "Save" : "Clear"}</Text></Pressable>
+      <Text style={[styles.sheetLabel, { color: colors.muted }]}>QUICK STATUS</Text>
+      <View style={styles.presetGrid}>
+        {workspaceStatusPresets.map((preset) => {
+          const selected = text === preset.text && expiry === preset.expiry;
+          return <Pressable key={preset.label} accessibilityRole="button" accessibilityLabel={`Set status: ${preset.label}`} accessibilityState={{ selected }} disabled={saving}
+            onPress={() => { setText(preset.text); setExpiry(preset.expiry); }}
+            style={({ pressed }) => [styles.presetButton, { borderColor: selected ? colors.primary : colors.border, backgroundColor: selected ? colors.primary + "12" : colors.surface, opacity: saving ? 0.5 : pressed ? 0.72 : 1 }]}>
+            <Text style={[styles.presetLabel, { color: colors.foreground }]}>{preset.label}</Text>
+            <Text style={[styles.presetDetail, { color: colors.muted }]}>{statusExpiryLabel(preset.expiry)}</Text>
+          </Pressable>;
+        })}
       </View>
-    </View>
-  </Sheet>;
+      <SheetChoice label="Display time" detail={statusDisplayTimeLabel(expiry, profile.statusExpiresAt)} disabled={saving} disclosure onPress={() => setChoosingDisplayTime(true)} />
+      {(profile.statusText || trimmed) && <Pressable accessibilityRole="button" accessibilityLabel="Clear status" disabled={saving} onPress={clearStatus} style={({ pressed }) => [styles.clearStatus, { opacity: saving ? 0.5 : pressed ? 0.72 : 1 }]}><Text style={[styles.clearStatusText, { color: colors.primary }]}>Clear status</Text></Pressable>}
+      <View style={styles.sheetActions}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Cancel" disabled={saving} onPress={closeEditor} style={({ pressed }) => [styles.secondaryButton, { borderColor: colors.border, opacity: saving ? 0.5 : pressed ? 0.72 : 1 }]}><Text style={[styles.buttonText, { color: colors.foreground }]}>Cancel</Text></Pressable>
+        <Pressable accessibilityRole="button" accessibilityLabel="Save status" disabled={saving} onPress={saveStatus}
+          style={({ pressed }) => [styles.primaryButton, { backgroundColor: colors.primary, opacity: saving ? 0.5 : pressed ? 0.72 : 1 }]}><Text style={styles.primaryButtonText}>Save</Text></Pressable>
+      </View>
+      </ScrollView>
+    </Sheet>
+    <Sheet visible={visible && choosingDisplayTime} title="Display time" onClose={() => setChoosingDisplayTime(false)}>
+      <View style={styles.sheetList}>{statusExpiryOptions.map((option) => <SheetChoice key={option.value} label={option.label} selected={expiry === option.value || (expiry === undefined && profile.statusExpiresAt === null && option.value === "always")} disabled={saving} onPress={() => { setExpiry(option.value); setChoosingDisplayTime(false); }} />)}</View>
+    </Sheet>
+  </>;
 }
 
 function AccountDetails({ identity, phone, visible, onClose }: { identity: AccountHubIdentity | null; phone: AccountHubPhone; visible: boolean; onClose: () => void }) {
@@ -121,7 +167,7 @@ function AccountDetails({ identity, phone, visible, onClose }: { identity: Accou
 }
 
 /** Shows auth-owned identity and server-persisted workspace preferences. */
-export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, isPreview = false }: AccountHubProps) {
+export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false }: AccountHubProps) {
   const colors = useColors();
   const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "details" | null>(null);
   const [dndDuration, setDndDuration] = useState<DndDurationMinutes>(60);
@@ -143,12 +189,13 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
       <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Profile</Text><View style={styles.back} />
     </View>
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-      {isPreview && <Text style={[styles.preview, { color: colors.muted }]}>Preview data</Text>}
+      {isPreview && <Text style={[styles.preview, { color: colors.muted }]}>Preview only — changes stay in this browser</Text>}
       <View style={styles.identityBlock}>
         <View style={[styles.avatar, { backgroundColor: colors.primary }]}><Text accessibilityLabel="Profile initials" style={styles.avatarText}>{accountInitials(identity?.name ?? null)}</Text></View>
         <Text style={[styles.name, { color: colors.foreground }]}>{name}</Text>
         <Text numberOfLines={1} style={[styles.email, { color: colors.muted }]}>{email}</Text>
         {phone && <Text style={[styles.extension, { color: colors.muted }]}>Extension {phone.extension}</Text>}
+        {workspaceName && <Text accessibilityLabel="Profile workspace" style={[styles.workspaceName, { color: colors.muted }]}>Availability, status, and location apply to {workspaceName}</Text>}
       </View>
       <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         {profile ? <>
@@ -190,9 +237,9 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
 }
 
 type AccountHubStyles = {
-  screen: ViewStyle; header: ViewStyle; back: ViewStyle; title: TextStyle; content: ViewStyle; preview: TextStyle; identityBlock: ViewStyle; avatar: ViewStyle; avatarText: TextStyle; name: TextStyle; email: TextStyle; extension: TextStyle; card: ViewStyle; unavailable: TextStyle; sectionTitle: TextStyle; error: TextStyle; row: ViewStyle; lastRow: ViewStyle; rowIcon: ViewStyle; rowContent: ViewStyle; rowTitle: TextStyle; rowDetail: TextStyle; sheetBackdrop: ViewStyle; sheet: ViewStyle; sheetHeader: ViewStyle; sheetTitle: TextStyle; closeButton: ViewStyle; sheetList: ViewStyle; sheetChoice: ViewStyle; sheetDescription: TextStyle; sheetLabel: TextStyle; editorContent: ViewStyle; statusInput: TextStyle; sheetActions: ViewStyle; secondaryButton: ViewStyle; primaryButton: ViewStyle; buttonText: TextStyle; primaryButtonText: TextStyle; detailsContent: ViewStyle; detailsLabel: TextStyle; detailsValue: TextStyle; detailsNote: TextStyle;
+  screen: ViewStyle; header: ViewStyle; back: ViewStyle; title: TextStyle; content: ViewStyle; preview: TextStyle; identityBlock: ViewStyle; avatar: ViewStyle; avatarText: TextStyle; name: TextStyle; email: TextStyle; extension: TextStyle; workspaceName: TextStyle; card: ViewStyle; unavailable: TextStyle; sectionTitle: TextStyle; error: TextStyle; row: ViewStyle; lastRow: ViewStyle; rowIcon: ViewStyle; rowContent: ViewStyle; rowTitle: TextStyle; rowDetail: TextStyle; keyboardSheet: ViewStyle; sheetBackdrop: ViewStyle; sheet: ViewStyle; sheetHeader: ViewStyle; sheetTitle: TextStyle; closeButton: ViewStyle; sheetList: ViewStyle; sheetChoice: ViewStyle; sheetDescription: TextStyle; sheetLabel: TextStyle; editorContent: ViewStyle; statusInput: TextStyle; presetGrid: ViewStyle; presetButton: ViewStyle; presetLabel: TextStyle; presetDetail: TextStyle; clearStatus: ViewStyle; clearStatusText: TextStyle; sheetActions: ViewStyle; secondaryButton: ViewStyle; primaryButton: ViewStyle; buttonText: TextStyle; primaryButtonText: TextStyle; detailsContent: ViewStyle; detailsLabel: TextStyle; detailsValue: TextStyle; detailsNote: TextStyle;
 };
 
 const styles = StyleSheet.create<AccountHubStyles>({
-  screen: { flex: 1 }, header: { minHeight: 58, paddingHorizontal: 12, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, back: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, title: { fontSize: 17, fontWeight: "700" }, content: { padding: 20, paddingBottom: 36, gap: 12 }, preview: { alignSelf: "center", fontSize: 12, fontWeight: "600" }, identityBlock: { alignItems: "center", paddingTop: 8, paddingBottom: 12 }, avatar: { width: 88, height: 88, borderRadius: 44, alignItems: "center", justifyContent: "center" }, avatarText: { color: "#fff", fontSize: 30, fontWeight: "700" }, name: { fontSize: 22, fontWeight: "700", marginTop: 13 }, email: { fontSize: 14, marginTop: 4, maxWidth: "100%" }, extension: { fontSize: 13, marginTop: 7, fontWeight: "600" }, card: { borderWidth: 1, borderRadius: 15, overflow: "hidden" }, unavailable: { fontSize: 14, lineHeight: 20, padding: 16, textAlign: "center" }, sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.8, marginTop: 14, marginLeft: 4 }, error: { fontSize: 13, lineHeight: 19, paddingHorizontal: 4 }, row: { minHeight: 76, paddingHorizontal: 16, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, lastRow: { borderBottomWidth: 0 }, rowIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" }, rowContent: { flex: 1, minWidth: 0 }, rowTitle: { fontSize: 16, fontWeight: "600" }, rowDetail: { fontSize: 13, lineHeight: 18, marginTop: 3 }, sheetBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "#00000066" }, sheet: { maxHeight: "82%", borderTopLeftRadius: 22, borderTopRightRadius: 22, overflow: "hidden" }, sheetHeader: { minHeight: 60, paddingLeft: 20, paddingRight: 10, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, sheetTitle: { fontSize: 17, fontWeight: "700" }, closeButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, sheetList: { paddingBottom: 16 }, sheetChoice: { minHeight: 62, paddingHorizontal: 20, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, sheetDescription: { fontSize: 14, lineHeight: 20, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }, sheetLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 14, marginBottom: 3 }, editorContent: { padding: 20, paddingTop: 8, paddingBottom: 24 }, statusInput: { minHeight: 94, maxHeight: 140, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderRadius: 11, fontSize: 16, textAlignVertical: "top" }, sheetActions: { flexDirection: "row", gap: 10, marginTop: 20 }, secondaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, borderWidth: 1 }, primaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10 }, buttonText: { fontSize: 15, fontWeight: "700" }, primaryButtonText: { color: "#fff", fontSize: 15, fontWeight: "700" }, detailsContent: { padding: 20, gap: 4 }, detailsLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 12 }, detailsValue: { fontSize: 16, lineHeight: 22 }, detailsNote: { fontSize: 13, lineHeight: 19, marginTop: 18 },
+  screen: { flex: 1 }, header: { minHeight: 58, paddingHorizontal: 12, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, back: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, title: { fontSize: 17, fontWeight: "700" }, content: { padding: 20, paddingBottom: 36, gap: 12 }, preview: { alignSelf: "center", fontSize: 12, fontWeight: "600" }, identityBlock: { alignItems: "center", paddingTop: 8, paddingBottom: 12 }, avatar: { width: 88, height: 88, borderRadius: 44, alignItems: "center", justifyContent: "center" }, avatarText: { color: "#fff", fontSize: 30, fontWeight: "700" }, name: { fontSize: 22, fontWeight: "700", marginTop: 13 }, email: { fontSize: 14, marginTop: 4, maxWidth: "100%" }, extension: { fontSize: 13, marginTop: 7, fontWeight: "600" }, workspaceName: { fontSize: 12, lineHeight: 18, marginTop: 8, textAlign: "center", maxWidth: 300 }, card: { borderWidth: 1, borderRadius: 15, overflow: "hidden" }, unavailable: { fontSize: 14, lineHeight: 20, padding: 16, textAlign: "center" }, sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.8, marginTop: 14, marginLeft: 4 }, error: { fontSize: 13, lineHeight: 19, paddingHorizontal: 4 }, row: { minHeight: 76, paddingHorizontal: 16, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, lastRow: { borderBottomWidth: 0 }, rowIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" }, rowContent: { flex: 1, minWidth: 0 }, rowTitle: { fontSize: 16, fontWeight: "600" }, rowDetail: { fontSize: 13, lineHeight: 18, marginTop: 3 }, keyboardSheet: { flex: 1 }, sheetBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "#00000066" }, sheet: { maxHeight: "82%", borderTopLeftRadius: 22, borderTopRightRadius: 22, overflow: "hidden" }, sheetHeader: { minHeight: 60, paddingLeft: 20, paddingRight: 10, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, sheetTitle: { fontSize: 17, fontWeight: "700" }, closeButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, sheetList: { paddingBottom: 16 }, sheetChoice: { minHeight: 62, paddingHorizontal: 20, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, sheetDescription: { fontSize: 14, lineHeight: 20, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }, sheetLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 14, marginBottom: 8 }, editorContent: { padding: 20, paddingTop: 8, paddingBottom: 24 }, statusInput: { minHeight: 94, maxHeight: 140, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderRadius: 11, fontSize: 16, textAlignVertical: "top" }, presetGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 }, presetButton: { width: "48%", minHeight: 58, borderWidth: 1, borderRadius: 11, paddingHorizontal: 12, paddingVertical: 9, justifyContent: "center" }, presetLabel: { fontSize: 14, lineHeight: 18, fontWeight: "600" }, presetDetail: { fontSize: 12, lineHeight: 17, marginTop: 2 }, clearStatus: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4, marginTop: 2 }, clearStatusText: { fontSize: 14, fontWeight: "600" }, sheetActions: { flexDirection: "row", gap: 10, marginTop: 14 }, secondaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, borderWidth: 1 }, primaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10 }, buttonText: { fontSize: 15, fontWeight: "700" }, primaryButtonText: { color: "#fff", fontSize: 15, fontWeight: "700" }, detailsContent: { padding: 20, gap: 4 }, detailsLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 12 }, detailsValue: { fontSize: 16, lineHeight: 22 }, detailsNote: { fontSize: 13, lineHeight: 19, marginTop: 18 },
 });

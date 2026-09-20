@@ -14,7 +14,7 @@ export type StatusExpiryPreset = (typeof statusExpiryPresets)[number];
 
 export type ProfileUpdate = {
   availability?: { value: ManualAvailability | null; expiresInMinutes?: DndDurationMinutes };
-  status?: { text: string | null; expiry: StatusExpiryPreset };
+  status?: { text: string | null; expiry?: StatusExpiryPreset };
   workLocation?: WorkLocation | null;
 };
 
@@ -127,7 +127,11 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
         ? normalizeStatusText(input.status.text)
         : current.statusText;
       const statusExpiresAt = input.status
-        ? statusText ? nextStatusExpiry(writtenAt, input.status.expiry, workspace.timeZone) : null
+        ? !statusText
+          ? null
+          : input.status.expiry === undefined
+            ? current.statusExpiresAt
+            : nextStatusExpiry(writtenAt, input.status.expiry, workspace.timeZone)
         : current.statusExpiresAt;
       const workLocation = input.workLocation === undefined ? current.workLocation : input.workLocation;
 

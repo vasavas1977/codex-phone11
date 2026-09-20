@@ -22,7 +22,7 @@ export type WorkspaceProfileStatus = {
 
 export type WorkspaceProfileUpdate = {
   availability?: { value: ManualAvailability | null; expiresInMinutes?: DndDurationMinutes };
-  status?: { text: string | null; expiry: StatusExpiryPreset };
+  status?: { text: string | null; expiry?: StatusExpiryPreset };
   workLocation?: WorkLocation | null;
 };
 

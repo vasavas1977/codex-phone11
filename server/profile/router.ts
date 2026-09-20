@@ -22,9 +22,9 @@ const availabilityInput = z.object({
 });
 const statusInput = z.object({
   text: z.string().trim().max(280).nullable(),
-  expiry: z.enum(statusExpiryPresets),
+  expiry: z.enum(statusExpiryPresets).optional(),
 }).strict().superRefine((input, ctx) => {
-  if (!input.text && input.expiry !== "always") {
+  if (!input.text && input.expiry !== undefined && input.expiry !== "always") {
     ctx.addIssue({ code: "custom", path: ["expiry"], message: "A status is required for an expiry." });
   }
 });

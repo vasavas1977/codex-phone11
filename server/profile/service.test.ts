@@ -17,6 +17,8 @@ it("validates timed DND and bounded profile status inputs", () => {
   expect(profileUpdateSchema.safeParse({ tenantId: 4, availability: { value: "dnd", expiresInMinutes: 60 } }).success).toBe(true);
   expect(profileUpdateSchema.safeParse({ tenantId: 4, availability: { value: "busy", expiresInMinutes: 60 } }).success).toBe(false);
   expect(profileUpdateSchema.safeParse({ tenantId: 4, status: { text: "", expiry: "1h" } }).success).toBe(false);
+  expect(profileUpdateSchema.safeParse({ tenantId: 4, status: { text: "Reviewing" } }).success).toBe(true);
+  expect(profileUpdateSchema.safeParse({ tenantId: 4, status: { text: null } }).success).toBe(true);
   expect(profileUpdateSchema.safeParse({ tenantId: 4, status: { text: "Reviewing", expiry: "week" } }).success).toBe(true);
   expect(profileUpdateSchema.safeParse({ tenantId: 4, status: { text: "x".repeat(281), expiry: "always" } }).success).toBe(false);
 });
@@ -53,6 +55,25 @@ it("uses a 24-hour Busy expiry and the workspace-local next midnight for Today",
   const today = createProfileService({ query } as any, () => new Date("2026-03-08T12:00:00Z"));
   await today.update(7, 4, { status: { text: "Reviewing", expiry: "today" } });
   expect(writes[1][5]).toEqual(new Date("2026-03-09T04:00:00Z"));
+});
+
+it("preserves an existing timed status when text changes without a new display time", async () => {
+  const existingExpiry = new Date("2026-09-20T11:00:00Z");
+  const writes: unknown[][] = [];
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
+    if (sql.includes("membership.user_id") && sql.includes("LIMIT 1")) return { rows: [{ time_zone: "Asia/Bangkok" }] };
+    if (sql.includes("to_regclass")) return { rows: [{ relation: "phone11_workspace_profile_status" }] };
+    if (sql.includes("INSERT INTO phone11_workspace_profile_status")) { writes.push(values ?? []); return { rows: [{ user_id: 7 }] }; }
+    return { rows: [{ ...profileRow, status_text: "In a meeting", status_expires_at: existingExpiry }] };
+  });
+  const service = createProfileService({ query } as any, () => new Date("2026-09-20T10:00:00Z"));
+  await service.update(7, 4, { status: { text: "Meeting moved" } });
+  expect(writes[0][4]).toBe("Meeting moved");
+  expect(writes[0][5]).toEqual(existingExpiry);
+
+  await service.update(7, 4, { status: { text: null } });
+  expect(writes[1][4]).toBeNull();
+  expect(writes[1][5]).toBeNull();
 });
 
 it("does not write after membership is revoked between the early guard and conflict write", async () => {
