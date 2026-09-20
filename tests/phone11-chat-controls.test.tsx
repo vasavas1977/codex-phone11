@@ -1,4 +1,9 @@
-vi.mock("../components/chat/voice-note", () => ({ VoiceNote: () => null }));
+vi.mock("../components/chat/voice-note", () => ({
+  VoiceNote: (props: any) => {
+    mocks.voice = props;
+    return null;
+  },
+}));
 vi.mock("../components/chat/received-media", () => ({ ReceivedMedia: () => null }));
 vi.mock("../components/chat/conversation-rail", () => ({ ConversationRail: () => null }));
 vi.mock("../components/chat/peer-call", () => ({ ChatPeerCall: () => null }));
@@ -23,6 +28,8 @@ const mocks = vi.hoisted(() => ({
   keyboard: null as any,
   keyboards: new Map<string | undefined, any>(),
   list: null as any,
+  voice: null as any,
+  upload: vi.fn(),
   refs: [] as any[],
   values: [] as any[],
   stateIndex: 0,
@@ -113,6 +120,11 @@ vi.mock("../lib/chat/store", () => ({
     getState: () => mocks.state,
   }),
 }));
+vi.mock("../lib/chat/media-client", () => ({
+  newUploadId: () => "upload-client",
+  uploadChatMedia: (...args: any[]) => mocks.upload(...args),
+  shareChatFile: vi.fn(),
+}));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn() }));
 vi.mock("@expo/vector-icons/MaterialIcons", () => ({ default: () => null }));
 import ChatRoom from "../app/chat/[id]";
@@ -126,6 +138,8 @@ beforeEach(() => {
   mocks.keyboard = null;
   mocks.keyboards.clear();
   mocks.list = null;
+  mocks.voice = null;
+  mocks.upload.mockReset();
   mocks.refs = [];
   mocks.values = [];
   mocks.stateIndex = 0;
@@ -350,6 +364,41 @@ it("keeps replies, search, and safety as mutually exclusive room modes", async (
   expect(render()).not.toContain("Original message");
   expect(mocks.press.has("Close report form")).toBe(true);
   expect(mocks.press.has("Close message search")).toBe(false);
+});
+it("does not commit a voice message when its upload is cancelled", async () => {
+  mocks.state.drafts.room = "";
+  let finishUpload!: (attachment: any) => void;
+  mocks.upload.mockReturnValue(
+    new Promise((resolve) => {
+      finishUpload = resolve;
+    }),
+  );
+  render();
+  mocks.press.get("Record voice note")!.press();
+  render();
+  const controller = new AbortController();
+  const commit = vi.fn(() => true);
+  const delivery = mocks.voice.onReady(
+    {
+      uri: "file:///voice.m4a",
+      filename: "voice-note.m4a",
+      mimeType: "audio/mp4",
+      sizeBytes: 8_192,
+    },
+    { signal: controller.signal, commit },
+  );
+  controller.abort();
+  finishUpload({
+    id: "attachment",
+    conversationId: "room",
+    filename: "voice-note.m4a",
+    mimeType: "audio/mp4",
+    sizeBytes: 8_192,
+    status: "ready",
+  });
+  await expect(delivery).rejects.toMatchObject({ name: "AbortError" });
+  expect(commit).not.toHaveBeenCalled();
+  expect(mocks.send).not.toHaveBeenCalled();
 });
 it("keeps message actions in a long press instead of the conversation canvas", () => {
   const parent = {

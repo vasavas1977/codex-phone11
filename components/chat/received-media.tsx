@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
+import {
+  setAudioModeAsync,
+  useAudioPlayer,
+  useAudioPlayerStatus,
+} from "expo-audio";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { getChatMediaSource } from "@/lib/chat/media-client";
 import { phone11MediaOwnership } from "@/lib/meetings/native-session";
@@ -22,7 +26,10 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     generation = useRef(0),
     mounted = useRef(true),
     pending = useRef(false),
-    finished = useRef(false);
+    finished = useRef(false),
+    configuring = useRef<Promise<void> | null>(null),
+    stopping = useRef<Promise<void> | null>(null),
+    pendingLoad = useRef<AbortController | null>(null);
   const [error, setError] = useState<string | null>(null),
     [playing, setPlaying] = useState(false),
     [loaded, setLoaded] = useState(false),
@@ -35,21 +42,43 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     const safe = Math.max(0, Math.round(seconds));
     return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, "0")}`;
   };
-  const stop = () => {
+  const stop = (): Promise<void> => {
     generation.current++;
-    audio.pause();
-    video.pause();
     if (mounted.current) setPlaying(false);
-    if (lease.current) phone11MediaOwnership.release(lease.current);
-    lease.current = null;
+    if (stopping.current) return stopping.current;
+    const ownedLease = lease.current;
+    const configuration = configuring.current;
+    const task = (async () => {
+      try {
+        audio.pause();
+        video.pause();
+      } catch {
+        // Retry after a pending native mode change settles.
+      }
+      await configuration?.catch(() => undefined);
+      audio.pause();
+      video.pause();
+      if (ownedLease && lease.current === ownedLease) {
+        phone11MediaOwnership.release(ownedLease);
+        lease.current = null;
+      }
+    })();
+    stopping.current = task;
+    void task.then(
+      () => {
+        if (stopping.current === task) stopping.current = null;
+      },
+      () => {
+        if (stopping.current === task) stopping.current = null;
+      },
+    );
+    return task;
   };
   const pause = () => {
-    try {
-      stop();
-    } catch {
+    void stop().catch(() => {
       if (mounted.current)
         setError("Media is unavailable, your account changed, or a call is active.");
-    }
+    });
   };
   const releaseSource = () => {
     source.current?.release();
@@ -57,11 +86,9 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
   };
   const markFinished = () => {
     finished.current = true;
-    try {
-      latest.current();
-    } catch {
+    void latest.current().catch(() => {
       // Preserve the lease if a native player rejects its final pause.
-    }
+    });
   };
   const latest = useRef(stop);
   latest.current = stop;
@@ -69,12 +96,12 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      try {
-        latest.current();
-      } catch {
+      pendingLoad.current?.abort();
+      pendingLoad.current = null;
+      void latest.current().catch(() => {
         // A native player that rejects a synchronous pause must not make
         // component cleanup throw. The ownership lease remains fail-closed.
-      }
+      });
       releaseSource();
       finished.current = false;
     };
@@ -93,6 +120,18 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
       v?.remove();
     };
   }, [audio, video]);
+  useEffect(() => {
+    if (
+      !isVideo &&
+      audioStatus.playbackState === "failed" &&
+      (playing || lease.current)
+    ) {
+      void latest.current().catch(() => {
+        // Keep ownership fail-closed if native pause itself fails.
+      });
+      setError("This voice message could not be played. Tap to retry.");
+    }
+  }, [audioStatus.playbackState, isVideo, playing]);
   const play = async () => {
     if (pending.current || !mounted.current) return;
     pending.current = true;
@@ -101,7 +140,7 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     let fetched: Awaited<ReturnType<typeof getChatMediaSource>> | null = null;
     let version = generation.current;
     try {
-      stop();
+      await stop();
       version = generation.current;
       // Playback remains stopped until this user tap has verified any failed
       // predecessor recorder shutdown. It is a no-op in the normal path.
@@ -110,7 +149,17 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
       if (source.current) {
         source.current.assertOwner();
       } else {
-        fetched = await getChatMediaSource(attachment.id);
+        const controller = new AbortController();
+        pendingLoad.current = controller;
+        try {
+          fetched = await getChatMediaSource(
+            attachment.id,
+            attachment,
+            controller.signal,
+          );
+        } finally {
+          if (pendingLoad.current === controller) pendingLoad.current = null;
+        }
         fetched.assertOwner();
       }
       if (!mounted.current || version !== generation.current) return;
@@ -118,7 +167,10 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
         `chat-playback:${attachment.id}`,
         {
           stopForSip: async () => {
-            latest.current();
+            // A mode change already handed to iOS cannot be cancelled. The
+            // stop promise keeps this lease until the mode settles and both
+            // players acknowledge pause, before the coordinator grants SIP.
+            await latest.current();
           },
         },
       );
@@ -138,6 +190,25 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
         else await audio.seekTo(0);
         finished.current = false;
       }
+      // expo-audio defaults iOS playback to the silent-switch-respecting
+      // ambient category. Configure playback only after this clip owns media,
+      // so the chat player cannot take the session from an active SIP call.
+      const configuration = setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+      });
+      configuring.current = configuration;
+      try {
+        await configuration;
+      } finally {
+        if (configuring.current === configuration) configuring.current = null;
+      }
+      if (
+        !mounted.current ||
+        version !== generation.current ||
+        !phone11MediaOwnership.isCurrent(request.lease)
+      )
+        return;
       if (isVideo) {
         if (!source.current) video.replace(protectedSource.source);
         setLoaded(true);
@@ -151,12 +222,10 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
       setPlaying(true);
     } catch {
       if (mounted.current && version === generation.current) {
-        try {
-          stop();
-        } catch {
+        await stop().catch(() => {
           // Keep the playback lease fail-closed if the native player rejects
           // a synchronous pause while recovering from an error.
-        }
+        });
         setError(
           "Media is unavailable, your account changed, or a call is active.",
         );
@@ -198,9 +267,11 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
             ? "Loading…"
             : error
               ? "Tap to retry"
+              : playing && !audioStatus.isLoaded
+                ? "Loading audio…"
               : duration > 0
                 ? `${clock(elapsed)} / ${clock(duration)}`
-                : clock(elapsed)}
+                : "Voice message"}
         </Text>
       </View>
     </View>

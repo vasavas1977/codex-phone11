@@ -83,10 +83,18 @@ export function ChatAttachmentCard({
   useEffect(() => {
     let active = true;
     let value: Awaited<ReturnType<typeof getChatMediaSource>> | null = null;
+    const controller = new AbortController();
     setMedia(null);
     setError(false);
     if (isImage)
-      void getChatMediaSource(attachment.id)
+      void getChatMediaSource(
+        attachment.id,
+        {
+          filename: attachment.filename,
+          sizeBytes: attachment.sizeBytes,
+        },
+        controller.signal,
+      )
         .then((result) => {
           value = result;
           result.assertOwner();
@@ -96,9 +104,10 @@ export function ChatAttachmentCard({
         .catch(() => active && setError(true));
     return () => {
       active = false;
+      controller.abort();
       value?.release();
     };
-  }, [attachment.id, isImage, attempt]);
+  }, [attachment.filename, attachment.id, attachment.sizeBytes, isImage, attempt]);
   if (isImage)
     return (
       <View style={{ width: "100%", minWidth: 180, maxWidth: 560 }}>

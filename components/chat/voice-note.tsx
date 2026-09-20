@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { MaterialIcons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { Pressable, StyleSheet, Text, View, type GestureResponderEvent } from "react-native";
+import {
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type GestureResponderEvent,
+} from "react-native";
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
@@ -14,17 +21,29 @@ import type { ChatUpload } from "@/lib/chat/media-client";
 import { useColors } from "@/hooks/use-colors";
 
 const MAX_SECONDS = 60;
+const MIN_DURATION_MS = 600;
 const CANCEL_DISTANCE = 72;
 function formatDuration(milliseconds: number) {
   const seconds = Math.min(MAX_SECONDS, Math.max(0, Math.ceil(milliseconds / 1000)));
   return `0:${String(seconds).padStart(2, "0")}`;
+}
+function cancelledError() {
+  const error = new Error("Voice note cancelled.");
+  error.name = "AbortError";
+  return error;
+}
+function isCancelled(cause: unknown) {
+  return cause instanceof Error && cause.name === "AbortError";
 }
 
 export function VoiceNote({
   onReady,
   onClose,
 }: {
-  onReady: (upload: ChatUpload) => void | Promise<void>;
+  onReady: (
+    upload: ChatUpload,
+    delivery?: { signal: AbortSignal; commit: () => boolean },
+  ) => void | Promise<void>;
   onClose?: () => void;
 }) {
   const colors = useColors();
@@ -38,6 +57,7 @@ export function VoiceNote({
   const working = useRef(false);
   const prepared = useRef(false);
   const recordingStarted = useRef(false);
+  const recordingStartedAt = useRef<number | null>(null);
   const releaseRequested = useRef(false);
   const cancelRequested = useRef(false);
   const gestureActiveRef = useRef(false);
@@ -51,9 +71,13 @@ export function VoiceNote({
   const [gestureActive, setGestureActive] = useState(false);
   const [cancelArmed, setCancelArmed] = useState(false);
   const [sending, setSending] = useState(false);
+  const [committed, setCommitted] = useState(false);
   const [retryAvailable, setRetryAvailable] = useState(false);
   const busyRef = useRef(false);
   const retryUpload = useRef<ChatUpload | null>(null);
+  const deliveryAbort = useRef<AbortController | null>(null);
+  const deliveryCommitted = useRef(false);
+  const deliveryGeneration = useRef(0);
 
   const release = () => {
     if (lease.current) phone11MediaOwnership.release(lease.current);
@@ -76,6 +100,7 @@ export function VoiceNote({
         }
       }
       recordingStarted.current = false;
+      recordingStartedAt.current = null;
       if (mode.current) {
         try {
           await setAudioModeAsync({ allowsRecording: false });
@@ -97,12 +122,18 @@ export function VoiceNote({
     );
     return task;
   };
-  const latest = useRef({ stop, release });
-  latest.current = { stop, release };
+  const abortPendingDelivery = () => {
+    if (deliveryCommitted.current) return;
+    deliveryGeneration.current++;
+    deliveryAbort.current?.abort();
+  };
+  const latest = useRef({ stop, release, abortPendingDelivery });
+  latest.current = { stop, release, abortPendingDelivery };
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
+      latest.current.abortPendingDelivery();
       void latest.current.stop().then(latest.current.release, () => {});
     };
   }, []);
@@ -121,40 +152,104 @@ export function VoiceNote({
     }
   };
   const cancel = async () => {
+    if (deliveryCommitted.current) return false;
+    abortPendingDelivery();
     cancelRequested.current = true;
     try {
       await stop();
       release();
+      retryUpload.current = null;
+      if (alive.current) setRetryAvailable(false);
+      return true;
     } catch (cause) {
       failure(cause);
+      return false;
     } finally {
       resetGesture();
     }
+  };
+  const validatedUpload = async (uri: string): Promise<ChatUpload> => {
+    const web = uri.startsWith("blob:");
+    if (web) {
+      const file = await (await fetch(uri)).blob();
+      if (file.size <= 0) throw new Error("The voice recording was empty. Please try again.");
+      return {
+        uri,
+        filename: "voice-note.webm",
+        mimeType: "audio/webm",
+        sizeBytes: file.size,
+        file,
+      };
+    }
+    if (Platform.OS !== "web") {
+      const files = await import("expo-file-system/legacy");
+      const info = await files.getInfoAsync(uri);
+      if (!info.exists || info.isDirectory || info.size <= 0)
+        throw new Error("The voice recording was empty. Please try again.");
+      return {
+        uri,
+        filename: "voice-note.m4a",
+        mimeType: "audio/mp4",
+        sizeBytes: info.size,
+      };
+    }
+    throw new Error("The voice recording was unavailable. Please try again.");
+  };
+  const deliver = async (upload: ChatUpload, version: number) => {
+    if (version !== deliveryGeneration.current) throw cancelledError();
+    const controller = new AbortController();
+    deliveryAbort.current = controller;
+    deliveryCommitted.current = false;
+    await onReady(upload, {
+      signal: controller.signal,
+      commit: () => {
+        if (
+          version !== deliveryGeneration.current ||
+          controller.signal.aborted ||
+          cancelRequested.current
+        )
+          return false;
+        deliveryCommitted.current = true;
+        if (alive.current) setCommitted(true);
+        return true;
+      },
+    });
+    if (version !== deliveryGeneration.current || controller.signal.aborted)
+      throw cancelledError();
   };
   const finishAndSend = async () => {
     if (working.current || sending || cancelRequested.current) return;
     working.current = true;
     if (alive.current) setSending(true);
+    const deliveryVersion = ++deliveryGeneration.current;
+    const wallDuration = recordingStartedAt.current
+      ? Date.now() - recordingStartedAt.current
+      : 0;
+    const recorderDuration = Number.isFinite(recorder.currentTime)
+      ? recorder.currentTime * 1_000
+      : 0;
+    const duration = Math.max(wallDuration, recorderDuration);
     try {
       await stop();
       if (cancelRequested.current) return;
       release();
+      if (duration < MIN_DURATION_MS)
+        throw new Error("Hold a little longer to record a voice note.");
       if (!recorder.uri) throw new Error("No voice recording was created.");
-      const web = recorder.uri.startsWith("blob:");
-      const upload = {
-        uri: recorder.uri,
-        filename: web ? "voice-note.webm" : "voice-note.m4a",
-        mimeType: web ? "audio/webm" : "audio/mp4",
-      } satisfies ChatUpload;
+      const upload = await validatedUpload(recorder.uri);
+      if (deliveryVersion !== deliveryGeneration.current) throw cancelledError();
       retryUpload.current = upload;
       if (alive.current) setRetryAvailable(true);
-      await onReady(upload);
+      await deliver(upload, deliveryVersion);
       retryUpload.current = null;
       if (alive.current) setRetryAvailable(false);
       if (alive.current) onClose?.();
     } catch (cause) {
-      failure(cause);
+      if (!isCancelled(cause)) failure(cause);
     } finally {
+      deliveryAbort.current = null;
+      deliveryCommitted.current = false;
+      if (alive.current) setCommitted(false);
       working.current = false;
       if (alive.current) setSending(false);
       resetGesture();
@@ -166,14 +261,18 @@ export function VoiceNote({
     working.current = true;
     setSending(true);
     setError(null);
+    const deliveryVersion = ++deliveryGeneration.current;
     try {
-      await onReady(upload);
+      await deliver(upload, deliveryVersion);
       retryUpload.current = null;
       if (alive.current) setRetryAvailable(false);
       if (alive.current) onClose?.();
     } catch (cause) {
-      failure(cause);
+      if (!isCancelled(cause)) failure(cause);
     } finally {
+      deliveryAbort.current = null;
+      deliveryCommitted.current = false;
+      if (alive.current) setCommitted(false);
       working.current = false;
       if (alive.current) setSending(false);
     }
@@ -228,6 +327,7 @@ export function VoiceNote({
       }
       recorder.record();
       recordingStarted.current = true;
+      recordingStartedAt.current = Date.now();
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       timer.current = setTimeout(() => {
         releaseRequested.current = true;
@@ -259,10 +359,39 @@ export function VoiceNote({
     releaseRequested.current = true;
     if (recordingStarted.current) void finishAndSend();
   };
+  const close = async () => {
+    if (deliveryCommitted.current) {
+      onClose?.();
+      return;
+    }
+    await cancel();
+    if (alive.current) onClose?.();
+  };
 
   const recording = gestureActive || state.isRecording;
   return (
     <View accessibilityLiveRegion="polite" style={styles.root}>
+      <View style={styles.headerRow}>
+        <Text style={[styles.title, { color: colors.foreground }]}>Voice note</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={committed ? "Close voice note" : "Cancel voice note"}
+          accessibilityHint={
+            committed
+              ? "Return to the conversation while the message finishes sending."
+              : "Discard this voice note and return to the conversation."
+          }
+          onPress={() => {
+            void close();
+          }}
+          style={styles.closeButton}
+        >
+          <MaterialIcons name="close" size={22} color={colors.foreground} />
+          <Text style={[styles.closeLabel, { color: colors.foreground }]}>
+            {committed ? "Close" : "Cancel"}
+          </Text>
+        </Pressable>
+      </View>
       {recording && (
         <View style={styles.statusRow}>
           <Text
@@ -317,7 +446,15 @@ export function VoiceNote({
             color={cancelArmed ? colors.error : colors.primary}
           />
           <Text style={[styles.holdLabel, { color: cancelArmed ? colors.error : colors.primary }]}>
-            {sending ? "Sending…" : cancelArmed ? "Release to cancel" : recording ? "Release to send" : "Hold to Record"}
+            {sending
+              ? deliveryCommitted.current
+                ? "Sending…"
+                : "Uploading…"
+              : cancelArmed
+                ? "Release to cancel"
+                : recording
+                  ? "Release to send"
+                  : "Hold to Record"}
           </Text>
         </Pressable>
         <Pressable
@@ -325,8 +462,7 @@ export function VoiceNote({
           accessibilityLabel="Return to message keyboard"
           accessibilityHint={recording ? "Cancel the recording and return to typing." : undefined}
           onPress={() => {
-            void cancel();
-            onClose?.();
+            void close();
           }}
           style={[styles.keyboardReturn, { borderColor: colors.border }]}
         >
@@ -349,6 +485,22 @@ export function VoiceNote({
 
 const styles = StyleSheet.create({
   root: { width: "100%", alignItems: "center", gap: 14, paddingTop: 4 },
+  headerRow: {
+    width: "100%",
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  title: { fontSize: 17, fontWeight: "700" },
+  closeButton: {
+    minHeight: 44,
+    paddingHorizontal: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  closeLabel: { fontSize: 15, fontWeight: "600" },
   statusRow: {
     minHeight: 30,
     width: "100%",

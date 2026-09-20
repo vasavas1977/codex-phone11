@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { Redirect } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
 import { ChatMessageRow } from "@/components/chat/message-row";
 import { MentionPicker } from "@/components/chat/mention-picker";
 import { ConversationDetails } from "@/components/chat/conversation-details";
+import { VoiceNote } from "@/components/chat/voice-note";
 import { useColors } from "@/hooks/use-colors";
 import { useThemeContext } from "@/lib/theme-provider";
 import type { ChatConversationDetails, ChatMessage } from "@/lib/chat/types";
@@ -66,7 +67,9 @@ export default function ChatPreview() {
     [replies, setReplies] = useState(false),
     [draft, setDraft] = useState(""),
     [mentionsOpen, setMentionsOpen] = useState(false),
-    [detailsOpen, setDetailsOpen] = useState(false);
+    [detailsOpen, setDetailsOpen] = useState(false),
+    [voiceOpen, setVoiceOpen] = useState(false),
+    [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   if (!__DEV__) return <Redirect href="/(tabs)/teamchat" />;
   return (
     <ScreenContainer>
@@ -187,17 +190,70 @@ export default function ChatPreview() {
             size={25}
             color={c.muted}
           />
-          <View
+          <Pressable
+            accessibilityLabel={draft.trim() ? "Send preview message" : "Record voice note"}
+            onPress={() => {
+              if (!draft.trim()) setVoiceOpen(true);
+            }}
             style={{
               borderRadius: 22,
               padding: 10,
               backgroundColor: c.primary,
             }}
           >
-            <MaterialIcons name="arrow-upward" size={22} color="white" />
-          </View>
+            <MaterialIcons
+              name={draft.trim() ? "arrow-upward" : "mic-none"}
+              size={22}
+              color="white"
+            />
+          </Pressable>
         </View>
+        {voiceStatus && (
+          <Text style={{ paddingHorizontal: 16, paddingBottom: 8, color: c.muted }}>
+            {voiceStatus}
+          </Text>
+        )}
         <ConversationDetails visible={detailsOpen} loading={false} details={sampleDetails} error={null} onRetry={() => {}} onClose={() => setDetailsOpen(false)} />
+        <Modal
+          visible={voiceOpen}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setVoiceOpen(false)}
+        >
+          <View
+            style={{
+              flex: 1,
+              justifyContent: "flex-end",
+              backgroundColor: "rgba(0,0,0,0.35)",
+            }}
+          >
+            <View
+              accessibilityViewIsModal
+              style={{
+                marginHorizontal: 8,
+                marginBottom: 8,
+                borderRadius: 24,
+                padding: 18,
+                maxWidth: 560,
+                alignSelf: "center",
+                width: "96%",
+                backgroundColor: c.background,
+              }}
+            >
+              {voiceOpen && (
+                <VoiceNote
+                  onReady={(upload, delivery) => {
+                    if (delivery && !delivery.commit()) return;
+                    setVoiceStatus(
+                      `Captured ${upload.filename} (${upload.sizeBytes ?? 0} bytes)`,
+                    );
+                  }}
+                  onClose={() => setVoiceOpen(false)}
+                />
+              )}
+            </View>
+          </View>
+        </Modal>
       </View>
     </ScreenContainer>
   );

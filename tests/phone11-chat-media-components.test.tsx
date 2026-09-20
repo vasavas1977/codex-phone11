@@ -9,14 +9,17 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/serve
 
 const m = vi.hoisted(() => ({
   press: new Map<string, Record<string, any>>(),
-  recorder: { prepareToRecordAsync: vi.fn(), record: vi.fn(), stop: vi.fn(), uri: "file://voice.m4a" },
+  recorder: { prepareToRecordAsync: vi.fn(), record: vi.fn(), stop: vi.fn(), uri: "file://voice.m4a", currentTime: 0 },
   audio: { pause: vi.fn(), play: vi.fn(), replace: vi.fn(), seekTo: vi.fn(), addListener: vi.fn() },
   audioListener: null as ((status: any) => void) | null,
+  audioStatus: { currentTime: 0, duration: 0, playing: false, isLoaded: false, playbackState: "unknown" },
   video: { pause: vi.fn(), play: vi.fn(), replace: vi.fn() },
   permission: vi.fn(),
   audioMode: vi.fn(),
   source: vi.fn(),
   state: { isRecording: false, durationMillis: 0 },
+  fileInfo: vi.fn(),
+  now: 1_000,
   coordinator: null as any,
   refs: [] as Array<{ current: any }>,
   values: [] as any[],
@@ -55,6 +58,7 @@ vi.mock("react", async () => {
   };
 });
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios" },
   View: ({ children }: any) => createElement("div", null, children),
   Text: ({ children }: any) => createElement("span", null, children),
   Pressable: (props: any) => {
@@ -78,9 +82,12 @@ vi.mock("expo-audio", () => ({
   useAudioRecorder: () => m.recorder,
   useAudioRecorderState: () => m.state,
   useAudioPlayer: () => m.audio,
-  useAudioPlayerStatus: () => ({ currentTime: 0, duration: 3, playing: false }),
+  useAudioPlayerStatus: () => m.audioStatus,
 }));
 vi.mock("expo-video", () => ({ useVideoPlayer: () => m.video, VideoView: () => null }));
+vi.mock("expo-file-system/legacy", () => ({
+  getInfoAsync: (...args: any[]) => m.fileInfo(...args),
+}));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "blue", muted: "gray", error: "red", border: "gray", surface: "white", foreground: "black" }) }));
 vi.mock("../lib/meetings/native-session", () => ({
   phone11MediaOwnership: {
@@ -117,9 +124,12 @@ const attachment = { id: "attachment-1", conversationId: "conversation-1", filen
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.spyOn(Date, "now").mockImplementation(() => m.now);
+  m.now = 1_000;
   m.coordinator = new MediaOwnershipCoordinator();
   m.state = { isRecording: false, durationMillis: 0 };
   m.audioListener = null;
+  m.audioStatus = { currentTime: 0, duration: 0, playing: false, isLoaded: false, playbackState: "unknown" };
   m.refs = []; m.values = []; m.cleanups = []; m.deps = [];
   m.permission.mockResolvedValue({ granted: true });
   m.audioMode.mockResolvedValue(undefined);
@@ -130,9 +140,19 @@ beforeEach(() => {
   });
   m.recorder.prepareToRecordAsync.mockResolvedValue(undefined);
   m.recorder.stop.mockResolvedValue(undefined);
+  m.fileInfo.mockResolvedValue({
+    exists: true,
+    uri: "file://voice.m4a",
+    isDirectory: false,
+    size: 8_192,
+    modificationTime: 1,
+  });
   m.source.mockResolvedValue({ source: { uri: "private" }, release: vi.fn(), assertOwner: vi.fn() });
 });
-afterEach(() => unmount());
+afterEach(() => {
+  unmount();
+  vi.mocked(Date.now).mockRestore();
+});
 
 it("records on hold and sends on release using a fresh voice lease", async () => {
   const ready = vi.fn();
@@ -143,20 +163,60 @@ it("records on hold and sends on release using a fresh voice lease", async () =>
   await flush();
   expect(m.recorder.prepareToRecordAsync).toHaveBeenCalledOnce();
   expect(m.recorder.record).toHaveBeenCalledOnce();
+  m.now += 1_000;
   m.state.isRecording = true;
   hold.onPressOut();
   await flush();
   expect(m.recorder.stop).toHaveBeenCalledOnce();
   expect(m.coordinator.getSnapshot().owner).toBeNull();
-  expect(ready).toHaveBeenCalledWith(expect.objectContaining({ uri: "file://voice.m4a" }));
+  expect(ready).toHaveBeenCalledWith(
+    expect.objectContaining({ uri: "file://voice.m4a", sizeBytes: 8_192 }),
+    expect.objectContaining({ signal: expect.anything(), commit: expect.any(Function) }),
+  );
 });
 
 it("keeps the idle panel to one recording action and keyboard return", () => {
   const markup = render(createElement(VoiceNote, { onReady: vi.fn() }));
   expect(m.press.has("Hold to record voice note")).toBe(true);
   expect(m.press.has("Return to message keyboard")).toBe(true);
-  expect(m.press.has("Cancel voice note")).toBe(false);
+  expect(m.press.has("Cancel voice note")).toBe(true);
   expect(markup).not.toContain("Voice waveform");
+});
+
+it("closes safely while microphone permission is pending", async () => {
+  const permission = deferred<{ granted: boolean }>();
+  const onClose = vi.fn();
+  const ready = vi.fn();
+  m.permission.mockReturnValue(permission.promise);
+  render(createElement(VoiceNote, { onReady: ready, onClose }));
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.press.get("Cancel voice note")!.onPress();
+  await flush();
+  expect(onClose).toHaveBeenCalledOnce();
+  permission.resolve({ granted: true });
+  await flush();
+  expect(m.recorder.prepareToRecordAsync).not.toHaveBeenCalled();
+  expect(m.recorder.record).not.toHaveBeenCalled();
+  expect(ready).not.toHaveBeenCalled();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
+});
+
+it("waits for recorder preparation to stop before the visible Cancel closes", async () => {
+  const prepare = deferred<void>();
+  const onClose = vi.fn();
+  m.recorder.prepareToRecordAsync.mockReturnValue(prepare.promise);
+  render(createElement(VoiceNote, { onReady: vi.fn(), onClose }));
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.press.get("Cancel voice note")!.onPress();
+  await flush();
+  expect(onClose).not.toHaveBeenCalled();
+  prepare.resolve();
+  await flush();
+  expect(m.recorder.stop).toHaveBeenCalledOnce();
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
 });
 
 it("does not record when SIP interrupts a pending recorder preparation", async () => {
@@ -189,6 +249,49 @@ it("cancels a quick release during preparation without starting or sending", asy
   expect(m.recorder.record).not.toHaveBeenCalled();
   expect(ready).not.toHaveBeenCalled();
   expect(m.coordinator.getSnapshot().owner).toBeNull();
+});
+
+it("rejects a fast release after recording starts instead of uploading a zero-duration clip", async () => {
+  const ready = vi.fn();
+  const node = createElement(VoiceNote, { onReady: ready });
+  render(node);
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.now += 100;
+  m.press.get("Hold to record voice note")!.onPressOut();
+  await flush();
+  expect(ready).not.toHaveBeenCalled();
+  expect(m.fileInfo).not.toHaveBeenCalled();
+  expect(render(node)).toContain("Hold a little longer");
+});
+
+it("rejects an empty native recording before upload", async () => {
+  const ready = vi.fn();
+  const node = createElement(VoiceNote, { onReady: ready });
+  m.fileInfo.mockResolvedValue({
+    exists: true,
+    uri: "file://voice.m4a",
+    isDirectory: false,
+    size: 0,
+    modificationTime: 1,
+  });
+  render(node);
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.now += 1_000;
+  m.press.get("Hold to record voice note")!.onPressOut();
+  await flush();
+  expect(ready).not.toHaveBeenCalled();
+  expect(render(node)).toContain("voice recording was empty");
+});
+
+it("shows a nonzero rounded recording duration", async () => {
+  const node = createElement(VoiceNote, { onReady: vi.fn() });
+  render(node);
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.state = { isRecording: true, durationMillis: 1_250 };
+  expect(render(node)).toContain("0:02");
 });
 
 it("holds its lease on unmount until a pending preparation has stopped", async () => {
@@ -239,6 +342,21 @@ it("keeps the media lease closed when recorder shutdown fails, while still disab
   expect(m.coordinator.getSnapshot().owner).toMatchObject({ kind: "voice-note" });
 });
 
+it("lets the user close the sheet after recorder shutdown fails while ownership stays fail-closed", async () => {
+  const onClose = vi.fn();
+  m.recorder.stop.mockRejectedValueOnce(new Error("recorder stop failed"));
+  const node = createElement(VoiceNote, { onReady: vi.fn(), onClose });
+  render(node);
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.state.isRecording = true;
+  render(node);
+  m.press.get("Cancel voice note")!.onPress();
+  await flush();
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(m.coordinator.getSnapshot().owner).toMatchObject({ kind: "voice-note" });
+});
+
 it("keeps the panel open when sending the captured clip fails", async () => {
   const onClose = vi.fn();
   const ready = vi
@@ -252,6 +370,7 @@ it("keeps the panel open when sending the captured clip fails", async () => {
   await flush();
   m.state.isRecording = true;
   render(node);
+  m.now += 1_000;
   m.press.get("Hold to record voice note")!.onPressOut();
   await flush();
   expect(ready).toHaveBeenCalledOnce();
@@ -266,10 +385,140 @@ it("keeps the panel open when sending the captured clip fails", async () => {
   expect(onClose).toHaveBeenCalledOnce();
 });
 
+it("cancels an in-flight upload without allowing its message commit", async () => {
+  const gate = deferred<void>();
+  const onClose = vi.fn();
+  let committed = false;
+  const ready = vi.fn(async (_upload: unknown, delivery: any) => {
+    await gate.promise;
+    if (delivery.signal.aborted) throw delivery.signal.reason;
+    committed = delivery.commit();
+  });
+  const node = createElement(VoiceNote, { onReady: ready, onClose });
+  render(node);
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.now += 1_000;
+  m.press.get("Hold to record voice note")!.onPressOut();
+  await flush();
+  expect(ready).toHaveBeenCalledOnce();
+  render(node);
+  m.press.get("Cancel voice note")!.onPress();
+  await flush();
+  expect(onClose).toHaveBeenCalledOnce();
+  gate.resolve();
+  await flush();
+  expect(committed).toBe(false);
+});
+
+it("cancels while the captured file is being validated without starting upload", async () => {
+  const fileInfo = deferred<any>();
+  const ready = vi.fn();
+  const onClose = vi.fn();
+  m.fileInfo.mockReturnValue(fileInfo.promise);
+  const node = createElement(VoiceNote, { onReady: ready, onClose });
+  render(node);
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.now += 1_000;
+  m.press.get("Hold to record voice note")!.onPressOut();
+  await flush();
+  render(node);
+  m.press.get("Cancel voice note")!.onPress();
+  await flush();
+  expect(onClose).toHaveBeenCalledOnce();
+  fileInfo.resolve({
+    exists: true,
+    uri: "file://voice.m4a",
+    isDirectory: false,
+    size: 8_192,
+    modificationTime: 1,
+  });
+  await flush();
+  expect(ready).not.toHaveBeenCalled();
+});
+
+it("invalidates pending file validation when the sheet unmounts", async () => {
+  const fileInfo = deferred<any>();
+  const ready = vi.fn();
+  m.fileInfo.mockReturnValue(fileInfo.promise);
+  render(createElement(VoiceNote, { onReady: ready }));
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.now += 1_000;
+  m.press.get("Hold to record voice note")!.onPressOut();
+  await flush();
+  unmount();
+  fileInfo.resolve({
+    exists: true,
+    uri: "file://voice.m4a",
+    isDirectory: false,
+    size: 8_192,
+    modificationTime: 1,
+  });
+  await flush();
+  expect(ready).not.toHaveBeenCalled();
+});
+
+it("aborts an uncommitted upload when the sheet unmounts", async () => {
+  const gate = deferred<void>();
+  let signal: AbortSignal | undefined;
+  let committed = false;
+  const ready = vi.fn(async (_upload: unknown, delivery: any) => {
+    signal = delivery.signal;
+    await gate.promise;
+    committed = delivery.commit();
+  });
+  render(createElement(VoiceNote, { onReady: ready }));
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.now += 1_000;
+  m.press.get("Hold to record voice note")!.onPressOut();
+  await flush();
+  expect(ready).toHaveBeenCalledOnce();
+  unmount();
+  expect(signal?.aborted).toBe(true);
+  gate.resolve();
+  await flush();
+  expect(committed).toBe(false);
+});
+
+it("closes after message commit without aborting or pretending to unsend", async () => {
+  const gate = deferred<void>();
+  const onClose = vi.fn();
+  let signal: AbortSignal | undefined;
+  const ready = vi.fn(async (_upload: unknown, delivery: any) => {
+    signal = delivery.signal;
+    expect(delivery.commit()).toBe(true);
+    await gate.promise;
+  });
+  const node = createElement(VoiceNote, { onReady: ready, onClose });
+  render(node);
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.now += 1_000;
+  m.press.get("Hold to record voice note")!.onPressOut();
+  await flush();
+  expect(render(node)).toContain("Close");
+  m.press.get("Close voice note")!.onPress();
+  await flush();
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(signal?.aborted).toBe(false);
+  gate.resolve();
+  await flush();
+});
+
 it("keeps received voice playback compact with progress and elapsed duration", () => {
+  m.audioStatus = { currentTime: 0, duration: 3, playing: false, isLoaded: true, playbackState: "readyToPlay" };
   const markup = render(createElement(ReceivedMedia, { attachment }));
   expect(m.press.get("Play voice.m4a")).toBeDefined();
   expect(markup).toContain("0:00 / 0:03");
+});
+
+it("labels an unloaded voice clip without falsely reporting a zero duration", () => {
+  const markup = render(createElement(ReceivedMedia, { attachment }));
+  expect(markup).toContain("Voice message");
+  expect(markup).not.toContain("0:00");
 });
 
 it("resumes a paused voice clip from its protected source without refetching", async () => {
@@ -277,9 +526,17 @@ it("resumes a paused voice clip from its protected source without refetching", a
   render(node);
   m.press.get("Play voice.m4a")!.onPress();
   await flush();
-  expect(m.source).toHaveBeenCalledOnce();
+  expect(m.source).toHaveBeenCalledWith(
+    "attachment-1",
+    attachment,
+    expect.any(Object),
+  );
   expect(m.audio.replace).toHaveBeenCalledOnce();
   expect(m.audio.play).toHaveBeenCalledOnce();
+  expect(m.audioMode).toHaveBeenCalledWith({
+    allowsRecording: false,
+    playsInSilentMode: true,
+  });
 
   render(node);
   m.press.get("Pause media")!.onPress();
@@ -289,6 +546,85 @@ it("resumes a paused voice clip from its protected source without refetching", a
   expect(m.source).toHaveBeenCalledOnce();
   expect(m.audio.replace).toHaveBeenCalledOnce();
   expect(m.audio.play).toHaveBeenCalledTimes(2);
+});
+
+it("does not configure or start chat playback while SIP owns audio", async () => {
+  const sip = m.coordinator.requestSip("sip-active");
+  await sip.ready;
+  const node = createElement(ReceivedMedia, { attachment });
+  render(node);
+  m.press.get("Play voice.m4a")!.onPress();
+  await flush();
+  expect(m.audioMode).not.toHaveBeenCalled();
+  expect(m.audio.play).not.toHaveBeenCalled();
+  expect(render(node)).toContain("Tap to retry");
+});
+
+it("waits for in-flight playback mode setup before granting SIP ownership", async () => {
+  const mode = deferred<void>();
+  m.audioMode.mockReturnValueOnce(mode.promise);
+  render(createElement(ReceivedMedia, { attachment }));
+  m.press.get("Play voice.m4a")!.onPress();
+  await flush();
+  const sip = m.coordinator.requestSip("sip-during-playback-mode");
+  let sipReady = false;
+  void sip.ready.then(() => {
+    sipReady = true;
+  });
+  await flush();
+  expect(sipReady).toBe(false);
+  expect(m.audio.play).not.toHaveBeenCalled();
+  mode.resolve();
+  await flush();
+  expect(sipReady).toBe(true);
+  expect(m.audio.play).not.toHaveBeenCalled();
+  expect(m.coordinator.getSnapshot().owner).toMatchObject({ kind: "sip" });
+});
+
+it("keeps playback ownership closed on unmount until native mode setup settles", async () => {
+  const mode = deferred<void>();
+  m.audioMode.mockReturnValueOnce(mode.promise);
+  render(createElement(ReceivedMedia, { attachment }));
+  m.press.get("Play voice.m4a")!.onPress();
+  await flush();
+  expect(m.coordinator.getSnapshot().owner).toMatchObject({ kind: "voice-note" });
+  unmount();
+  await flush();
+  expect(m.coordinator.getSnapshot().owner).toMatchObject({ kind: "voice-note" });
+  mode.resolve();
+  await flush();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
+  expect(m.audio.play).not.toHaveBeenCalled();
+});
+
+it("releases playback ownership and surfaces a native playback failure", async () => {
+  m.audio.play.mockImplementationOnce(() => {
+    throw new Error("native player failed");
+  });
+  const node = createElement(ReceivedMedia, { attachment });
+  render(node);
+  m.press.get("Play voice.m4a")!.onPress();
+  await flush();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
+  expect(render(node)).toContain("Tap to retry");
+});
+
+it("turns an asynchronous native load failure into a retry state", async () => {
+  const node = createElement(ReceivedMedia, { attachment });
+  render(node);
+  m.press.get("Play voice.m4a")!.onPress();
+  await flush();
+  m.audioStatus = {
+    currentTime: 0,
+    duration: 0,
+    playing: false,
+    isLoaded: false,
+    playbackState: "failed",
+  };
+  render(node);
+  await flush();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
+  expect(render(node)).toContain("Tap to retry");
 });
 
 it("replays a completed voice clip from zero while retaining its protected source", async () => {

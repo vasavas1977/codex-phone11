@@ -942,7 +942,16 @@ export default function ChatRoomScreen() {
     }
   };
 
-  const attachVoice = async (input: ChatUpload) => {
+  const attachVoice = async (
+    input: ChatUpload,
+    delivery?: { signal: AbortSignal; commit: () => boolean },
+  ) => {
+    const cancelled = () => {
+      const error = new Error("Voice note cancelled.");
+      error.name = "AbortError";
+      return error;
+    };
+    if (delivery?.signal.aborted) throw cancelled();
     const state = currentScope();
     if (!state?.workspace)
       throw new Error("Open the conversation workspace again.");
@@ -969,7 +978,9 @@ export default function ChatRoomScreen() {
         id,
         input,
         newUploadId(),
+        delivery?.signal,
       );
+      if (delivery?.signal.aborted) throw cancelled();
       const current = currentScope();
       if (!current || !actionIsCurrent(action))
         throw new Error(
@@ -982,6 +993,7 @@ export default function ChatRoomScreen() {
       const parentMessageId = activeThread
         ? replyTo?.id || activeThread.rootId
         : replyTo?.id;
+      if (delivery && !delivery.commit()) throw cancelled();
       // Once the attachment is handed to the chat store, its optimistic
       // message owns delivery retries. Repeating the voice upload here could
       // create a second attachment/message when delivery already failed.
@@ -997,7 +1009,11 @@ export default function ChatRoomScreen() {
         await refreshThread(state, activeThread.request, activeThread.rootId);
     } catch (error) {
       restorePreservedDraft();
-      if (currentScope() && actionIsCurrent(action))
+      if (
+        !delivery?.signal.aborted &&
+        currentScope() &&
+        actionIsCurrent(action)
+      )
         setActionError(
           error instanceof Error
             ? error.message
