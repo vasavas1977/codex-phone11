@@ -70,15 +70,31 @@ destinations. Use actual Phone11 identity and supported account capabilities.
 A passed source test or registration check does not complete these handset
 steps. The owner has not yet reported locked-screen message-alert delivery.
 
-## Signed Build 76 — ready for installation
+## Signed Build 77 — current meeting test package
 
-**Conference test hold:** after this package was verified, the Connect11 task
+Build 77 supersedes Build 76 for the next handset test. It adds safe join-stage
+diagnostics; it does not establish that the reported join failure is fixed.
+
+- Source: `1f0fabc9a095e7f1c5d8d51f4097bb48ac0d8b45`.
+- [Successful CI run 35527517268](https://github.com/vasavas1977/codex-phone11/actions/runs/35527517268).
+- [Install Build 77](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/66e8f36e-cc3c-4390-843a-539dc7cd6ac9).
+- EAS internal profile: `preview-ios-siprix-daily-pilot`; status FINISHED.
+- IPA SHA-256: `4f9f31de9378a214179bf1bf9c1916ddb094d7240b1347f6f7115ac84ea31c2f`.
+- Siprix/native bridge/strict signature and all 22 signed configuration and
+  provisioning checks passed. IPA and evidence JSON are retained under
+  `~/Library/Application Support/Phone11/verified-builds/77/`.
+- Update in place on both enrolled phones, then Team Chat → Meet → Join meeting.
+  Report the exact Reference value if it fails, or video/two-way-audio behavior
+  if successful. No handset result has been reported for this build.
+- Backend/profile/DND/standby-presence deployment remains pending independently.
+
+## Signed Build 76 — retained prior package
+
+**Superseded for conference testing:** after this package was verified, the Connect11 task
 reported continued generic join failure on Build 75. It committed stage-only
 join diagnostics at `1f0fabc9a095e7f1c5d8d51f4097bb48ac0d8b45` and took ownership
-of one Build 77 signing attempt. Wait for that task's verified artifact before
-requesting another meeting retry. Build 76 remains verified, but it does not
-contain these diagnostics. Do not dispatch a competing build or claim Build 77
-is available until its release evidence arrives.
+of one Build 77 signing attempt, now verified above. Build 76 remains verified,
+but it does not contain these diagnostics. Do not dispatch a competing build.
 
 - Client source: `92e8a3a6ea167aff66b486f98f2ad75d53fbec31`.
 - [CI run 35525678664](https://github.com/vasavas1977/codex-phone11/actions/runs/35525678664)
