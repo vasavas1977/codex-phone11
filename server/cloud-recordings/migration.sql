@@ -133,12 +133,7 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
   ELSIF TG_TABLE_NAME = 'phone11_recording_wake_links' THEN
-    -- Wake links intentionally outlive transient wake bindings; enforce the
-    -- pair only while the referenced binding is still retained.
-    IF EXISTS (
-      SELECT 1 FROM phone11_wake_bindings wb
-      WHERE wb.id = NEW.binding_id
-    ) AND NOT EXISTS (
+    IF NOT EXISTS (
       SELECT 1 FROM phone11_wake_bindings wb
       WHERE wb.id = NEW.binding_id
         AND wb.tenant_id = NEW.tenant_id

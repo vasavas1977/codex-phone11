@@ -106,7 +106,13 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
  });
  it('crashed final lease transitions failed instead of staying processing',async()=>{await ready();await repo.claimJob('a');await pool.query("UPDATE phone11_recording_jobs SET attempts=3,lease_until=now()-interval '1 second'");expect(await repo.claimJob('b')).toBeNull();expect((await repo.detail(2,'call1')).summaryStatus).toBe('failed');});
  it('retains exact inbound identity after transient wake tables are pruned',async()=>{
-  await pool.query("INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id) VALUES('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001',10,11,'sip-test')");
+  await pool.query(`INSERT INTO phone11_auth_session VALUES('test-session') ON CONFLICT DO NOTHING;
+   INSERT INTO phone11_wake_bindings(id,session_id,session_binding,user_id,tenant_id,extension_id,device_id,push_revision,grant_hash,expires_at)
+   VALUES('00000000-0000-4000-8000-000000000001','test-session','00000000-0000-4000-8000-000000000003',2,10,11,'test-device','00000000-0000-4000-8000-000000000004',repeat('a',64),now()+interval '1 day');
+   INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id)
+   VALUES('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001',10,11,'sip-test');
+   DELETE FROM phone11_wake_calls;
+   DELETE FROM phone11_wake_bindings WHERE id='00000000-0000-4000-8000-000000000001'`);
   await repo.registerCall('call1');expect((await repo.detail(2,'call1')).nativeHistoryId).toBe('native-wake:00000000-0000-4000-8000-000000000002');
  });
 
