@@ -72,6 +72,14 @@ steps. The owner has not yet reported locked-screen message-alert delivery.
 
 ## Signed Build 76 — ready for installation
 
+**Conference test hold:** after this package was verified, the Connect11 task
+reported continued generic join failure on Build 75. It committed stage-only
+join diagnostics at `1f0fabc9a095e7f1c5d8d51f4097bb48ac0d8b45` and took ownership
+of one Build 77 signing attempt. Wait for that task's verified artifact before
+requesting another meeting retry. Build 76 remains verified, but it does not
+contain these diagnostics. Do not dispatch a competing build or claim Build 77
+is available until its release evidence arrives.
+
 - Client source: `92e8a3a6ea167aff66b486f98f2ad75d53fbec31`.
 - [CI run 35525678664](https://github.com/vasavas1977/codex-phone11/actions/runs/35525678664)
   passed. EAS profile: `preview-ios-siprix-daily-pilot`.
