@@ -877,6 +877,9 @@ class Operator:
                 ], timeout=90)
         self.candidate()
         guarded(self.active().get("Id") == baseline_id, "active_changed")
+        # Exercise the complete candidate surface directly before exposing any
+        # public request to it. Fixture mutations are idempotent and scoped.
+        run_probes(self.system, "http://127.0.0.1:3002", self.probes)
         original = self.pinned_nginx()
         marker = self.pins.nginx_insert_marker.encode()
         activated = original.replace(
@@ -911,10 +914,8 @@ class Operator:
                 deadline,
                 consecutive=PUBLIC_READINESS_SUCCESSES,
             )
-            # Mutation-bearing probes cannot run until both route barriers have
-            # attested the candidate. Preserve the complete direct and public
-            # probe sets after that gate.
-            run_probes(self.system, "http://127.0.0.1:3002", self.probes)
+            # Public mutation probes cannot run until both route barriers have
+            # attested the candidate.
             run_probes(self.system, self.pins.public_origin, self.probes)
             guarded(self.active().get("Id") == baseline_id, "active_changed")
             self.candidate()

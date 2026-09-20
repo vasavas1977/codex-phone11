@@ -20,9 +20,10 @@ by three consecutive public requests over fresh `Connection: close`
 connections. Every response must carry the exact marker. A single total
 15-second deadline bounds both barriers and caps each request timeout to the
 remaining budget; transient failure or a wrong marker resets the public
-consecutive count. The complete direct and public five-probe sets run only
-after both barriers, so no mutation can precede route attestation. Timeout or
-probe failure retains the existing exact rollback behavior.
+consecutive count. The complete direct five-probe set remains the functional
+gate before any Nginx file write. The complete public five-probe set runs only
+after both route barriers, so no public mutation can precede route attestation.
+Timeout or probe failure retains the existing exact rollback behavior.
 
 An optional `candidate.reuse` manifest object pins the exact 64-character
 container ID and a canonical runtime-shape SHA-256. Reuse validates the pinned
@@ -33,12 +34,12 @@ Compose startup. Absence of `candidate.reuse` preserves the original
 candidate-absent and port-free gate. This is source correction evidence only;
 the prior source verdict does not approve this new diff or another activation.
 
-The corrected operator's 33 hermetic tests pass, together with all 11 candidate
+The corrected operator's 34 hermetic tests pass, together with all 11 candidate
 preparation tests, Python compilation, and the whitespace/error diff check.
 Correction script SHA-256:
-`e6210b19d506eb07dc00af37068bd57efb2ff33d8321ab6b33486e3efbd3efc9`;
+`21b2ae9f0a7d1dce7165d765269f8241624450a8b1655bd594f611cb2a4b3b25`;
 test SHA-256:
-`272ec87930e83061a257f6f8084fe562333b9ce4722af549ad99a0f56fca4721`.
+`aeee04de469881535894e9756b5ba992cd2095a5757c134f2f310e24e2da1156`.
 
 ## Prior independent source verdict (superseded for the new diff)
 

@@ -785,12 +785,17 @@ class ParallelApiPilotTests(unittest.TestCase):
         operator.save_rollback = Mock()
         operator.wake_target = Mock()
         fake_stat = Mock(st_mode=0o100644, st_uid=0, st_gid=0)
-        with patch.object(pilot, "atomic_write"), patch.object(Path, "stat", return_value=fake_stat), \
+        def write_after_direct_gate(*_args, **_kwargs):
+            self.assertTrue(any(origin == "http://127.0.0.1:3002" and probe["method"] == "POST" for origin, probe in system.requests))
+            self.assertFalse(any(origin == pilot.PUBLIC_ORIGIN and probe["method"] == "POST" for origin, probe in system.requests))
+
+        with patch.object(pilot, "atomic_write", side_effect=write_after_direct_gate), patch.object(Path, "stat", return_value=fake_stat), \
              patch.object(pilot.time, "sleep"):
             operator.activate()
 
-        first_mutation = next(index for index, (_origin, probe) in enumerate(system.requests) if probe["method"] == "POST")
-        self.assertTrue(all(probe["label"] == "existing_phone" for _origin, probe in system.requests[:first_mutation]))
+        public_requests = [probe for origin, probe in system.requests if origin == pilot.PUBLIC_ORIGIN]
+        first_public_mutation = next(index for index, probe in enumerate(public_requests) if probe["method"] == "POST")
+        self.assertTrue(all(probe["label"] == "existing_phone" for probe in public_requests[:first_public_mutation]))
         local_gate = [probe for origin, probe in system.requests if origin == "http://127.0.0.1" and "_timeout" in probe]
         public_gate = [probe for origin, probe in system.requests if origin == pilot.PUBLIC_ORIGIN and "_timeout" in probe]
         self.assertEqual(len(local_gate), 2)
@@ -808,6 +813,10 @@ class ParallelApiPilotTests(unittest.TestCase):
 
         def request(origin, probe):
             system.requests.append((origin, dict(probe)))
+            if origin == "http://127.0.0.1:3002":
+                return probe["status"], b'{"ok":true}'
+            if origin == "http://127.0.0.1":
+                return pilot.HttpResult(200, b'{"ok":true}', {pilot.CANDIDATE_HEADER: (current.candidate_build,)})
             return pilot.HttpResult(200, b'{"ok":true}', {})
 
         system.request = request
@@ -844,7 +853,26 @@ class ParallelApiPilotTests(unittest.TestCase):
         self.assertEqual(error.exception.stage, "readiness")
         self.assertTrue(operator.restored)
         self.assertTrue(system.requests)
-        self.assertTrue(all(probe["method"] == "GET" and probe["label"] == "existing_phone" for _origin, probe in system.requests))
+        public_requests = [probe for origin, probe in system.requests if origin == pilot.PUBLIC_ORIGIN]
+        self.assertTrue(public_requests)
+        self.assertTrue(all(probe["method"] == "GET" and probe["label"] == "existing_phone" for probe in public_requests))
+
+    def test_direct_probe_failure_cannot_write_or_reload_proxy(self) -> None:
+        current = pins(candidate__reuse={"container_id": "c" * 64, "runtime_sha256": "d" * 64})
+        system = FakeSystem()
+        probes = probe_document()["probes"]
+        system.responses = [(500, b'{"ok":false}')]
+        operator = pilot.Operator(current, system)
+        operator.prepare = Mock(side_effect=lambda: setattr(operator, "probes", probes))
+        operator.candidate = Mock()
+        operator.active = Mock(return_value={"Id": current.active_container_id})
+        operator.pinned_nginx = Mock()
+        with patch.object(pilot, "atomic_write") as write, self.assertRaises(pilot.GuardError) as error:
+            operator.activate()
+        self.assertEqual(error.exception.stage, "probes")
+        operator.pinned_nginx.assert_not_called()
+        write.assert_not_called()
+        self.assertNotIn(["nginx", "-s", "reload"], system.commands)
 
     def test_failed_reload_rolls_back_proxy_and_never_stops_a_backend(self) -> None:
         current = pins()
