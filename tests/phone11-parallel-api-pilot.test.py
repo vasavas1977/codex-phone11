@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
 
@@ -63,6 +66,7 @@ def pins(**changes: object):
 
 def rendered_config(current_pins) -> dict[str, object]:
     document: dict[str, object] = {
+        "name": "phone11-api-candidate",
         "services": {
             "candidate": {
                 "container_name": pilot.CANDIDATE_CONTAINER,
@@ -117,6 +121,24 @@ class FakeSystem(pilot.System):
 
 
 class ParallelApiPilotTests(unittest.TestCase):
+    def test_manifest_requires_exact_audited_public_origin(self) -> None:
+        self.assertEqual(pins().public_origin, pilot.PUBLIC_ORIGIN)
+        for origin in (
+            "https://evil.example",
+            "https://api.phone11.ai.evil.example",
+            "https://user@api.phone11.ai",
+            "https://api.phone11.ai:444",
+            "https://api.phone11.ai/",
+            "https://api.phone11.ai/path",
+            "https://api.phone11.ai?next=evil",
+            "https://api.phone11.ai#fragment",
+            "http://api.phone11.ai",
+        ):
+            changed = manifest()
+            changed["public_origin"] = origin
+            with self.subTest(origin=origin), self.assertRaises(pilot.GuardError):
+                pilot.parse_manifest(changed)
+
     def test_manifest_requires_real_immutable_candidate_and_every_hash(self) -> None:
         for changes in (
             {"candidate__image": "pending"},
@@ -141,6 +163,125 @@ class ParallelApiPilotTests(unittest.TestCase):
         changed["services"]["candidate"]["ports"][0]["host_ip"] = "0.0.0.0"
         with self.assertRaises(pilot.GuardError):
             pilot.validate_candidate_config(changed, valid)
+
+    def test_compose_change_after_prepare_aborts_before_up(self) -> None:
+        original = b"reviewed compose"
+        current = pins(candidate__compose_sha256=pilot.sha256_bytes(original))
+        system = FakeSystem()
+        operator = pilot.Operator(current, system)
+        operator.prepare = Mock()
+        with patch.object(pilot, "secure_read", return_value=original + b" changed"), \
+             self.assertRaises(pilot.GuardError) as error:
+            operator.activate()
+        self.assertEqual(error.exception.stage, "candidate_config")
+        self.assertFalse(any("up" in command for command in system.commands))
+
+    def test_activation_uses_frozen_rendered_config_with_explicit_project_semantics(self) -> None:
+        current = pins()
+        system = FakeSystem()
+        operator = pilot.Operator(current, system)
+        document = rendered_config(current)
+        operator.prepare = Mock()
+        operator.candidate_config = Mock(return_value=document)
+        operator.candidate = Mock()
+        operator.active = Mock(return_value={"Id": current.active_container_id})
+        operator.pinned_nginx = Mock(side_effect=pilot.GuardError("stop_after_start"))
+        frozen_path = Path("/protected/frozen-compose.json")
+
+        @contextmanager
+        def frozen(_document):
+            yield frozen_path
+
+        with patch.object(pilot, "frozen_candidate_config", frozen), \
+             self.assertRaises(pilot.GuardError):
+            operator.activate()
+        command = system.commands[0]
+        self.assertEqual(command[:7], [
+            "docker", "compose", "--project-name", document["name"],
+            "--project-directory", str(current.compose_file.parent), "-f",
+        ])
+        self.assertEqual(command[7], str(frozen_path))
+        self.assertEqual(command[8:], ["up", "-d", "--no-deps", pilot.CANDIDATE_SERVICE])
+        self.assertNotIn(str(current.compose_file), command)
+
+    def test_frozen_config_preserves_compose_canonical_dollar_values_exactly(self) -> None:
+        document = rendered_config(pins())
+        service = document["services"]["candidate"]
+        service["environment"].update({
+            "PLAIN_DOLLAR": "price$5",
+            "LITERAL_NAME": "$$NAME",
+            "LITERAL_BRACED": "$${NAME}",
+            "TWO_LITERAL_DOLLARS": "$$$$NAME",
+        })
+        service["command"] = ["sh", "-c", "price$5 $$NAME $${NAME} $$$$NAME"]
+        captured: list[bytes] = []
+
+        def capture(_path, content, **_metadata):
+            captured.append(content)
+
+        with patch.object(pilot, "atomic_write", side_effect=capture):
+            with pilot.frozen_candidate_config(document):
+                pass
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(json.loads(captured[0]), document)
+        frozen_service = json.loads(captured[0])["services"]["candidate"]
+        self.assertEqual(frozen_service["environment"], service["environment"])
+        self.assertEqual(frozen_service["command"], service["command"])
+
+    def test_atomic_write_retries_short_writes_and_fsyncs_file_and_directory(self) -> None:
+        content = b"abcdefghijklmnopqrstuvwxyz"
+        real_write = os.write
+        real_fsync = os.fsync
+        writes: list[int] = []
+        fsyncs: list[int] = []
+
+        def short_write(descriptor, value):
+            size = max(1, len(value) // 2)
+            writes.append(size)
+            return real_write(descriptor, value[:size])
+
+        def tracked_fsync(descriptor):
+            fsyncs.append(descriptor)
+            return real_fsync(descriptor)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(pilot.os, "write", side_effect=short_write), \
+             patch.object(pilot.os, "fsync", side_effect=tracked_fsync):
+            target = Path(directory) / "result"
+            pilot.atomic_write(target, content, mode=0o600, uid=os.getuid(), gid=os.getgid())
+            self.assertEqual(target.read_bytes(), content)
+        self.assertGreater(len(writes), 1)
+        self.assertEqual(len(fsyncs), 2)
+
+    def test_atomic_write_zero_write_fails_and_cleans_temporary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(pilot.os, "write", return_value=0):
+            target = Path(directory) / "result"
+            with self.assertRaises(pilot.GuardError) as error:
+                pilot.atomic_write(target, b"content", mode=0o600, uid=os.getuid(), gid=os.getgid())
+            self.assertEqual(error.exception.stage, "atomic_write")
+            self.assertFalse(target.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_atomic_write_reports_directory_fsync_failure(self) -> None:
+        real_fsync = os.fsync
+        calls = 0
+
+        def fail_directory_fsync(descriptor):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("directory fsync failed")
+            return real_fsync(descriptor)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(pilot.os, "fsync", side_effect=fail_directory_fsync):
+            target = Path(directory) / "result"
+            with self.assertRaises(pilot.GuardError) as error:
+                pilot.atomic_write(target, b"content", mode=0o600, uid=os.getuid(), gid=os.getgid())
+            self.assertEqual(error.exception.stage, "atomic_write")
+            self.assertEqual(calls, 2)
+            self.assertEqual(list(Path(directory).glob(".result.*")), [])
 
     def test_stale_nginx_configuration_fingerprint_is_rejected(self) -> None:
         reviewed = b"server { reviewed; }"
@@ -171,13 +312,16 @@ class ParallelApiPilotTests(unittest.TestCase):
         system.command = Mock(return_value=dump)
         operator = pilot.Operator(current, system)
         operator.prepare = Mock()
+        operator.candidate_config = Mock(return_value=rendered_config(current))
         operator.candidate = Mock()
         operator.active = Mock(return_value={"Id": current.active_container_id})
         operator.save_rollback = Mock()
         with patch.object(pilot, "secure_read", side_effect=[original, original + b"# external edit"]), \
+             patch.object(pilot, "frozen_candidate_config") as frozen, \
              patch.object(pilot, "atomic_write") as write, \
              patch.object(Path, "stat", return_value=Mock(st_mode=0o100644, st_uid=0, st_gid=0)), \
              self.assertRaises(pilot.GuardError) as error:
+            frozen.return_value.__enter__.return_value = Path("/protected/frozen.json")
             operator.activate()
         self.assertEqual(error.exception.stage, "nginx_config")
         write.assert_not_called()
@@ -341,6 +485,8 @@ class ParallelApiPilotTests(unittest.TestCase):
                 self.restored = False
             def prepare(self):
                 return None
+            def candidate_config(self):
+                return rendered_config(current)
             def pinned_nginx(self):
                 return original
             def active(self):
@@ -362,10 +508,12 @@ class ParallelApiPilotTests(unittest.TestCase):
         fake_stat = Mock(st_mode=0o100644, st_uid=0, st_gid=0)
         with (
             patch.object(pilot, "secure_read", return_value=original),
+            patch.object(pilot, "frozen_candidate_config") as frozen,
             patch.object(pilot, "atomic_write"),
             patch.object(Path, "stat", return_value=fake_stat),
             self.assertRaises(pilot.GuardError),
         ):
+            frozen.return_value.__enter__.return_value = Path("/protected/frozen.json")
             operator.activate()
         self.assertTrue(operator.restored)
         flattened = [word for command in system.commands for word in command]

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import errno
 import fcntl
 import hashlib
 import http.client
@@ -45,6 +46,7 @@ CONNECT11_CUSTOMER_ID = "cust-2d2ded98a329"
 CONNECT11_TENANT_NAMESPACE = "6fa4634ade063138"
 CONNECT11_API_URL = "https://api.connect11.ai"
 CONNECT11_RTC_URL = "wss://connect11-platform-zm6g4d8f.livekit.cloud"
+PUBLIC_ORIGIN = "https://api.phone11.ai"
 CONFIG_FILE = Path("/etc/phone11/connect11-plain-video.env")
 METADATA_FILE = Path("/etc/phone11/connect11-plain-video-credential-metadata.json")
 ROLLBACK_ROOT = Path("/var/lib/phone11-parallel-api")
@@ -204,8 +206,9 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     marker = nginx.get("insert_marker")
     guarded(isinstance(marker, str) and marker.startswith("# PHONE11_PARALLEL_API_INSERT ") and "\n" not in marker, "manifest")
     public_origin = document.get("public_origin")
-    parsed = urlsplit(public_origin if isinstance(public_origin, str) else "")
-    guarded(parsed.scheme == "https" and parsed.netloc and not parsed.path and not parsed.query, "manifest")
+    # Protected probes carry real authorization and session headers. Keep their
+    # destination a literal audited origin rather than accepting arbitrary HTTPS.
+    guarded(public_origin == PUBLIC_ORIGIN, "manifest")
     config_path = kamailio.get("config_path")
     guarded(isinstance(config_path, str) and config_path.startswith("/") and "\x00" not in config_path, "manifest")
     paths = [candidate.get("compose_file"), migration.get("receipt_file"), probes.get("file"), nginx.get("site")]
@@ -343,6 +346,8 @@ def health(system: System, origin: str, build: str, role: str | None) -> None:
 
 def validate_candidate_config(document: Any, pins: Pins) -> None:
     guarded(isinstance(document, Mapping) and set(document.get("services", {})) == {CANDIDATE_SERVICE}, "candidate_config")
+    guarded(isinstance(document.get("name"), str)
+            and bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,62}", document["name"])), "candidate_config")
     service = document["services"][CANDIDATE_SERVICE]
     guarded(isinstance(service, Mapping), "candidate_config")
     guarded(service.get("container_name") == CANDIDATE_CONTAINER and service.get("image") == pins.candidate_image, "candidate_config")
@@ -489,30 +494,92 @@ def proxy_fragment(marker: str) -> bytes:
 
 def atomic_write(path: Path, content: bytes, *, mode: int, uid: int, gid: int) -> None:
     descriptor: int | None = None
+    directory_descriptor: int | None = None
     temporary: str | None = None
     try:
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         os.fchmod(descriptor, mode)
         os.fchown(descriptor, uid, gid)
-        os.write(descriptor, content)
+        remaining = memoryview(content)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError(errno.EIO, "zero-length write")
+            remaining = remaining[written:]
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = None
         os.replace(temporary, path)
         temporary = None
+        directory_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        os.fsync(directory_descriptor)
+        os.close(directory_descriptor)
+        directory_descriptor = None
     except OSError as error:
         raise GuardError("atomic_write") from error
     finally:
         if descriptor is not None:
             os.close(descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
         if temporary is not None:
-            Path(temporary).unlink(missing_ok=True)
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+@contextmanager
+def frozen_candidate_config(document: Mapping[str, Any]):
+    """Yield a protected immutable-by-name compose input and remove it after use."""
+    directory = Path(tempfile.mkdtemp(prefix="phone11-api-candidate."))
+    path = directory / "compose.json"
+    try:
+        os.chmod(directory, 0o700)
+        # `docker compose config --format json` emits a round-trippable Compose
+        # model: literal dollars are already represented with Compose's `$$`
+        # escape. Preserve those strings byte-for-value. Escaping them again
+        # would turn one runtime dollar into two when the snapshot is parsed.
+        atomic_write(
+            path,
+            json.dumps(document, sort_keys=True, separators=(",", ":")).encode(),
+            mode=0o600,
+            uid=0,
+            gid=0,
+        )
+        yield path
+    except OSError as error:
+        raise GuardError("candidate_config") from error
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+            directory.rmdir()
+        except OSError:
+            pass
 
 
 class Operator:
     def __init__(self, pins: Pins, system: System) -> None:
         self.pins, self.system = pins, system
         self.probes: list[Mapping[str, Any]] = []
+
+    def candidate_config(self) -> Mapping[str, Any]:
+        compose = secure_read(self.pins.compose_file)
+        require_sha256(compose, self.pins.compose_sha256, "candidate_config")
+        rendered = self.system.json_command(
+            [
+                "docker", "compose",
+                "--project-directory", str(self.pins.compose_file.parent),
+                "-f", str(self.pins.compose_file),
+                "config", "--format", "json",
+            ],
+            "candidate_config",
+        )
+        validate_candidate_config(rendered, self.pins)
+        return rendered
 
     def active(self) -> Mapping[str, Any]:
         inspect = one_inspect(self.system, ACTIVE_CONTAINER, "active_runtime")
@@ -557,13 +624,7 @@ class Operator:
         self.candidate_absent_and_port_free()
         image = self.system.json_command(["docker", "image", "inspect", self.pins.candidate_image], "candidate_image")
         guarded(isinstance(image, list) and len(image) == 1 and image[0].get("Id") == self.pins.candidate_image, "candidate_image")
-        compose = secure_read(self.pins.compose_file)
-        require_sha256(compose, self.pins.compose_sha256, "candidate_config")
-        rendered = self.system.json_command(
-            ["docker", "compose", "-f", str(self.pins.compose_file), "config", "--format", "json"],
-            "candidate_config",
-        )
-        validate_candidate_config(rendered, self.pins)
+        self.candidate_config()
         credential_config = secure_read(CONFIG_FILE, mode=0o600)
         credential_metadata = secure_read(METADATA_FILE, mode=0o600)
         require_sha256(credential_config, self.pins.credential_config_sha256, "credentials")
@@ -625,7 +686,17 @@ class Operator:
     def activate(self) -> None:
         self.prepare()
         baseline_id = self.pins.active_container_id
-        self.system.command(["docker", "compose", "-f", str(self.pins.compose_file), "up", "-d", "--no-deps", CANDIDATE_SERVICE], timeout=90)
+        # Re-render after prepare, validate the exact pinned model, then run only
+        # that protected snapshot. Source Compose/.env edits cannot alter `up`.
+        rendered = self.candidate_config()
+        with frozen_candidate_config(rendered) as frozen:
+            self.system.command([
+                "docker", "compose",
+                "--project-name", rendered["name"],
+                "--project-directory", str(self.pins.compose_file.parent),
+                "-f", str(frozen),
+                "up", "-d", "--no-deps", CANDIDATE_SERVICE,
+            ], timeout=90)
         self.candidate()
         guarded(self.active().get("Id") == baseline_id, "active_changed")
         run_probes(self.system, "http://127.0.0.1:3002", self.probes)
