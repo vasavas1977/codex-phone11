@@ -103,4 +103,30 @@ describe.skipIf(!connectionString)("workspace profile real PostgreSQL persistenc
     await expect(service.update(1, 10, { workLocation: "office" })).rejects.toBeInstanceOf(ProfileWorkspaceAccessError);
     expect((await pool.query("SELECT * FROM phone11_workspace_profile_status")).rows).toEqual([]);
   });
+
+  it("does not restore a stale expiry when another writer changes it before an omitted-expiry text update", async () => {
+    const clock = new Date((await pool.query("SELECT clock_timestamp() AS now")).rows[0].now);
+    const originalExpiry = new Date(clock.getTime() + 60 * 60_000);
+    const concurrentExpiry = new Date(clock.getTime() + 4 * 60 * 60_000);
+    await pool.query(`INSERT INTO phone11_workspace_profile_status
+      (tenant_id, user_id, status_text, status_expires_at)
+      VALUES (10, 1, 'Original', $1)`, [originalExpiry]);
+    let injected = false;
+    const racedDatabase = {
+      query: async (sql: string, values?: readonly unknown[]) => {
+        if (!injected && sql.includes("INSERT INTO phone11_workspace_profile_status")) {
+          injected = true;
+          await pool.query(`UPDATE phone11_workspace_profile_status SET status_expires_at=$1
+            WHERE tenant_id=10 AND user_id=1`, [concurrentExpiry]);
+        }
+        return pool.query(sql, values as unknown[] | undefined);
+      },
+    };
+    const racedService = createProfileService(racedDatabase as never, () => clock);
+    const saved = await racedService.update(1, 10, { status: { text: "Edited" } });
+    expect(saved).toMatchObject({ statusText: "Edited", statusExpiresAt: concurrentExpiry });
+
+    const cleared = await createProfileService(pool, () => clock).update(1, 10, { status: { text: null } });
+    expect(cleared).toMatchObject({ statusText: null, statusExpiresAt: null });
+  });
 });

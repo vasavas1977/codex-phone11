@@ -150,7 +150,12 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
              manual_availability = CASE WHEN $8 THEN EXCLUDED.manual_availability ELSE phone11_workspace_profile_status.manual_availability END,
              manual_availability_expires_at = CASE WHEN $8 THEN EXCLUDED.manual_availability_expires_at ELSE phone11_workspace_profile_status.manual_availability_expires_at END,
              status_text = CASE WHEN $9 THEN EXCLUDED.status_text ELSE phone11_workspace_profile_status.status_text END,
-             status_expires_at = CASE WHEN $9 THEN EXCLUDED.status_expires_at ELSE phone11_workspace_profile_status.status_expires_at END,
+             status_expires_at = CASE
+               WHEN NOT $9 THEN phone11_workspace_profile_status.status_expires_at
+               WHEN EXCLUDED.status_text IS NULL THEN NULL
+               WHEN $11 THEN EXCLUDED.status_expires_at
+               ELSE phone11_workspace_profile_status.status_expires_at
+             END,
              work_location = CASE WHEN $10 THEN EXCLUDED.work_location ELSE phone11_workspace_profile_status.work_location END,
              updated_at = clock_timestamp()
            WHERE EXISTS (
@@ -160,7 +165,8 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
            )
            RETURNING user_id`,
           [tenantId, userId, availability, availabilityExpiresAt, statusText, statusExpiresAt, workLocation,
-            input.availability !== undefined, input.status !== undefined, input.workLocation !== undefined],
+            input.availability !== undefined, input.status !== undefined, input.workLocation !== undefined,
+            input.status?.expiry !== undefined],
         );
         if (!written.rows[0]) throw new ProfileWorkspaceAccessError("Workspace access is unavailable.");
       } catch (error) {
