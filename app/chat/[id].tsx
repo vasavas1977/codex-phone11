@@ -944,9 +944,23 @@ export default function ChatRoomScreen() {
 
   const attachVoice = async (input: ChatUpload) => {
     const state = currentScope();
-    if (!state?.workspace || uploading) return;
+    if (!state?.workspace)
+      throw new Error("Open the conversation workspace again.");
+    if (uploading) throw new Error("Another attachment is still uploading.");
     const action = { owner: user, workspaceId: state.workspace.id, roomId: id };
-    setVoiceOpen(false);
+    const preservedDraftKey = draftKey;
+    const preservedDraft = state.drafts[preservedDraftKey] || "";
+    let handedToChat = false;
+    const restorePreservedDraft = () => {
+      const current = currentScope();
+      if (
+        preservedDraft &&
+        current &&
+        actionIsCurrent(action) &&
+        current.drafts[preservedDraftKey] === ""
+      )
+        current.setDraft(preservedDraftKey, preservedDraft);
+    };
     setUploading(true);
     setActionError(null);
     try {
@@ -956,15 +970,41 @@ export default function ChatRoomScreen() {
         input,
         newUploadId(),
       );
-      if (currentScope() && actionIsCurrent(action))
-        setAttachments((items) => [...items, attachment]);
+      const current = currentScope();
+      if (!current || !actionIsCurrent(action))
+        throw new Error(
+          "Your account or workspace changed. Open the conversation again.",
+        );
+      const activeThread =
+        threadIsCurrent && thread
+          ? { request: threadScope!, rootId: thread.root.id }
+          : null;
+      const parentMessageId = activeThread
+        ? replyTo?.id || activeThread.rootId
+        : replyTo?.id;
+      // Once the attachment is handed to the chat store, its optimistic
+      // message owns delivery retries. Repeating the voice upload here could
+      // create a second attachment/message when delivery already failed.
+      handedToChat = true;
+      await current.sendMessage(id, "", parentMessageId, [attachment]);
+      if (!currentScope() || !actionIsCurrent(action))
+        throw new Error(
+          "Your account or workspace changed. Open the conversation again.",
+        );
+      restorePreservedDraft();
+      setReplyTo(null);
+      if (activeThread)
+        await refreshThread(state, activeThread.request, activeThread.rootId);
     } catch (error) {
+      restorePreservedDraft();
       if (currentScope() && actionIsCurrent(action))
         setActionError(
           error instanceof Error
             ? error.message
             : "Unable to upload voice note.",
         );
+      if (handedToChat) return;
+      throw error;
     } finally {
       if (currentScope() && actionIsCurrent(action)) setUploading(false);
     }
@@ -1706,24 +1746,15 @@ export default function ChatRoomScreen() {
             >
               <View style={styles.modalBackdrop}>
                 <View
-                  style={[styles.sheet, { backgroundColor: colors.background }]}
+                  accessibilityViewIsModal
+                  style={[styles.voiceSheet, { backgroundColor: colors.background }]}
                 >
-                  <Text
-                    style={[styles.sheetTitle, { color: colors.foreground }]}
-                  >
-                    Voice note
-                  </Text>
                   {voiceOpen && ownsWorkspace && (
-                    <VoiceNote onReady={(input) => void attachVoice(input)} />
+                    <VoiceNote
+                      onReady={attachVoice}
+                      onClose={() => setVoiceOpen(false)}
+                    />
                   )}
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Close voice recorder"
-                    onPress={() => setVoiceOpen(false)}
-                    style={styles.sheetAction}
-                  >
-                    <Text style={{ color: colors.primary }}>Close</Text>
-                  </Pressable>
                 </View>
               </View>
             </Modal>
@@ -2683,6 +2714,15 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     padding: 16,
     gap: 10,
+    maxWidth: 560,
+    alignSelf: "center",
+    width: "96%",
+  },
+  voiceSheet: {
+    marginHorizontal: 8,
+    marginBottom: 8,
+    borderRadius: 24,
+    padding: 18,
     maxWidth: 560,
     alignSelf: "center",
     width: "96%",

@@ -68,6 +68,14 @@ export function createMeetingService(repository: MeetingRepository, provider?: M
     // tenant still has to pass durable admission before the provider receives
     // one opaque token request.
     capabilities: () => provider ? availablePlainVideoMeetingCapabilities : unavailableMeetingCapabilities,
+    /**
+     * The signed client consumes only server-admitted meeting IDs. The signed
+     * release source keeps this contract fail-closed until the backend
+     * admission provider is enabled.
+     */
+    async availableMeetingsFor(): Promise<readonly { meetingId: string }[]> {
+      return [];
+    },
     async join(userId: number, raw: unknown) {
       if (!Number.isSafeInteger(userId) || userId < 1) throw new TRPCError({ code: "UNAUTHORIZED" });
       const input = joinMeetingSchema.parse(raw);

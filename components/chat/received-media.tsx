@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
-import { useAudioPlayer } from "expo-audio";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useAudioPlayer, useAudioPlayerStatus } from "expo-audio";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { getChatMediaSource } from "@/lib/chat/media-client";
 import { phone11MediaOwnership } from "@/lib/meetings/native-session";
@@ -10,6 +11,7 @@ import type { ChatAttachment } from "@/lib/chat/types";
 export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
   const colors = useColors(),
     audio = useAudioPlayer(null, { keepAudioSessionActive: false }),
+    audioStatus = useAudioPlayerStatus(audio),
     video = useVideoPlayer(null);
   const lease = useRef<
       ReturnType<typeof phone11MediaOwnership.requestVoiceNote>["lease"] | null
@@ -19,12 +21,20 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     ),
     generation = useRef(0),
     mounted = useRef(true),
-    pending = useRef(false);
+    pending = useRef(false),
+    finished = useRef(false);
   const [error, setError] = useState<string | null>(null),
     [playing, setPlaying] = useState(false),
     [loaded, setLoaded] = useState(false),
     [busy, setBusy] = useState(false);
   const isVideo = attachment.mimeType.startsWith("video/");
+  const elapsed = Number.isFinite(audioStatus.currentTime) ? audioStatus.currentTime : 0;
+  const duration = Number.isFinite(audioStatus.duration) ? audioStatus.duration : 0;
+  const progress = duration > 0 ? Math.min(1, Math.max(0, elapsed / duration)) : 0;
+  const clock = (seconds: number) => {
+    const safe = Math.max(0, Math.round(seconds));
+    return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, "0")}`;
+  };
   const stop = () => {
     generation.current++;
     audio.pause();
@@ -33,22 +43,51 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     if (lease.current) phone11MediaOwnership.release(lease.current);
     lease.current = null;
   };
+  const pause = () => {
+    try {
+      stop();
+    } catch {
+      if (mounted.current)
+        setError("Media is unavailable, your account changed, or a call is active.");
+    }
+  };
+  const releaseSource = () => {
+    source.current?.release();
+    source.current = null;
+  };
+  const markFinished = () => {
+    finished.current = true;
+    try {
+      latest.current();
+    } catch {
+      // Preserve the lease if a native player rejects its final pause.
+    }
+  };
   const latest = useRef(stop);
   latest.current = stop;
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      latest.current();
-      source.current?.release();
-      source.current = null;
+      try {
+        latest.current();
+      } catch {
+        // A native player that rejects a synchronous pause must not make
+        // component cleanup throw. The ownership lease remains fail-closed.
+      }
+      releaseSource();
+      finished.current = false;
     };
   }, [attachment.id]);
   useEffect(() => {
     const a = audio.addListener?.("playbackStatusUpdate", (status) => {
-      if (status.didJustFinish) latest.current();
+      if (status.didJustFinish) {
+        markFinished();
+      }
     });
-    const v = video.addListener?.("playToEnd", () => latest.current());
+    const v = video.addListener?.("playToEnd", () => {
+      markFinished();
+    });
     return () => {
       a?.remove();
       v?.remove();
@@ -56,21 +95,24 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
   }, [audio, video]);
   const play = async () => {
     if (pending.current || !mounted.current) return;
-    stop();
-    const version = generation.current;
     pending.current = true;
     setBusy(true);
     setError(null);
     let fetched: Awaited<ReturnType<typeof getChatMediaSource>> | null = null;
+    let version = generation.current;
     try {
+      stop();
+      version = generation.current;
       // Playback remains stopped until this user tap has verified any failed
       // predecessor recorder shutdown. It is a no-op in the normal path.
       await phone11MediaOwnership.retryVoiceStop();
       if (!mounted.current || version !== generation.current) return;
-      source.current?.release();
-      source.current = null;
-      fetched = await getChatMediaSource(attachment.id);
-      fetched.assertOwner();
+      if (source.current) {
+        source.current.assertOwner();
+      } else {
+        fetched = await getChatMediaSource(attachment.id);
+        fetched.assertOwner();
+      }
       if (!mounted.current || version !== generation.current) return;
       const request = phone11MediaOwnership.requestVoiceNote(
         `chat-playback:${attachment.id}`,
@@ -82,30 +124,49 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
       );
       lease.current = request.lease;
       await request.ready;
-      fetched.assertOwner();
+      const protectedSource = source.current ?? fetched;
+      if (!protectedSource) throw new Error("Attachment is unavailable.");
+      protectedSource.assertOwner();
       if (
         !mounted.current ||
         version !== generation.current ||
         !phone11MediaOwnership.isCurrent(request.lease)
       )
         return;
+      if (finished.current) {
+        if (isVideo) video.currentTime = 0;
+        else await audio.seekTo(0);
+        finished.current = false;
+      }
       if (isVideo) {
-        video.replace(fetched.source);
+        if (!source.current) video.replace(protectedSource.source);
         setLoaded(true);
         video.play();
       } else {
-        audio.replace(fetched.source);
+        if (!source.current) audio.replace(protectedSource.source);
         audio.play();
       }
-      source.current = fetched;
+      source.current = protectedSource;
       fetched = null;
       setPlaying(true);
     } catch {
       if (mounted.current && version === generation.current) {
-        stop();
+        try {
+          stop();
+        } catch {
+          // Keep the playback lease fail-closed if the native player rejects
+          // a synchronous pause while recovering from an error.
+        }
         setError(
           "Media is unavailable, your account changed, or a call is active.",
         );
+      }
+      if (source.current) {
+        try {
+          source.current.assertOwner();
+        } catch {
+          releaseSource();
+        }
       }
     } finally {
       fetched?.release();
@@ -113,6 +174,37 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
       if (mounted.current) setBusy(false);
     }
   };
+  if (!isVideo) return (
+    <View style={[styles.voiceBubble, { backgroundColor: `${colors.primary}12` }]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={playing ? "Pause media" : `Play ${attachment.filename}`}
+        disabled={busy}
+        onPress={() => (playing ? pause() : void play())}
+        style={[styles.playButton, { backgroundColor: colors.primary }]}
+      >
+        <MaterialIcons
+          name={busy ? "hourglass-top" : playing ? "pause" : "play-arrow"}
+          size={30}
+          color="#fff"
+        />
+      </Pressable>
+      <View style={styles.voiceTrackGroup}>
+        <View style={[styles.voiceTrack, { backgroundColor: `${colors.muted}55` }]}>
+          <View style={[styles.voiceProgress, { backgroundColor: colors.primary, width: `${progress * 100}%` }]} />
+        </View>
+        <Text style={[styles.voiceStatus, { color: error ? colors.error : colors.muted }]}>
+          {busy
+            ? "Loading…"
+            : error
+              ? "Tap to retry"
+              : duration > 0
+                ? `${clock(elapsed)} / ${clock(duration)}`
+                : clock(elapsed)}
+        </Text>
+      </View>
+    </View>
+  );
   return (
     <View
       style={{
@@ -161,3 +253,27 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  voiceBubble: {
+    minWidth: 230,
+    maxWidth: 560,
+    minHeight: 72,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  playButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  voiceTrackGroup: { flex: 1, gap: 7 },
+  voiceTrack: { height: 4, borderRadius: 2, overflow: "hidden" },
+  voiceProgress: { height: 4, borderRadius: 2 },
+  voiceStatus: { alignSelf: "flex-end", fontSize: 13, fontVariant: ["tabular-nums"] },
+});

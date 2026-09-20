@@ -10,6 +10,10 @@ import {
   View,
 } from "react-native";
 import { useColors } from "@/hooks/use-colors";
+import {
+  initialMeetingSelection,
+  type AdmittedMeeting,
+} from "@/lib/meetings/admitted-selection";
 
 export interface MeetingJoinPreferences {
   meetingCode: string;
@@ -20,6 +24,8 @@ export interface MeetingJoinPreferences {
 
 export interface MeetingPrejoinProps {
   initialMeetingCode?: string;
+  /** Server-filtered opaque IDs; their presence disables manual UUID entry. */
+  admittedMeetings?: readonly AdmittedMeeting[];
   initialDisplayName?: string;
   /** Omit until an authenticated meeting admission and media path are available. */
   onJoin?: (preferences: MeetingJoinPreferences) => Promise<void>;
@@ -33,6 +39,7 @@ export interface MeetingPrejoinProps {
 /** Collects preferences only. The join adapter owns permissions, admission and media. */
 export function MeetingPrejoin({
   initialMeetingCode = "",
+  admittedMeetings,
   initialDisplayName = "",
   onJoin,
   unavailableReason,
@@ -42,7 +49,11 @@ export function MeetingPrejoin({
   onBack,
 }: MeetingPrejoinProps) {
   const colors = useColors();
-  const [meetingCode, setMeetingCode] = useState(initialMeetingCode);
+  const selection = initialMeetingSelection(
+    admittedMeetings,
+    initialMeetingCode,
+  );
+  const [meetingCode, setMeetingCode] = useState(selection.meetingCode);
   const [displayName, setDisplayName] = useState(initialDisplayName);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
@@ -100,7 +111,10 @@ export function MeetingPrejoin({
               { borderColor: colors.border, backgroundColor: colors.surface },
             ]}
           >
-            <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>
+            <Text
+              accessibilityRole="header"
+              style={[styles.title, { color: colors.foreground }]}
+            >
               Meetings aren’t available
             </Text>
             <Text style={[styles.description, { color: colors.muted }]}>
@@ -114,148 +128,201 @@ export function MeetingPrejoin({
                 onPress={onRetryAvailability}
                 style={[styles.retry, { borderColor: colors.primary }]}
               >
-                {checkingAvailability && <ActivityIndicator color={colors.primary} />}
+                {checkingAvailability && (
+                  <ActivityIndicator color={colors.primary} />
+                )}
                 <Text style={[styles.retryText, { color: colors.primary }]}>
                   {checkingAvailability ? "Checking…" : "Check again"}
                 </Text>
               </Pressable>
             )}
           </View>
-        ) : <>
-          <Text
-            accessibilityRole="header"
-            style={[styles.title, { color: colors.foreground }]}
-          >
-            Join a meeting
-          </Text>
-          <Text style={[styles.description, { color: colors.muted }]}>
-            Meet face to face with your team.
-          </Text>
-          <View
-            style={[
-              styles.card,
-              { borderColor: colors.border, backgroundColor: colors.surface },
-            ]}
-          >
-          <Text
-            nativeID="meeting-code-label"
-            style={[styles.label, { color: colors.foreground }]}
-          >
-            Meeting code
-          </Text>
-          <TextInput
-            accessibilityLabel="Meeting code"
-            accessibilityLabelledBy="meeting-code-label"
-            value={meetingCode}
-            onChangeText={setMeetingCode}
-            placeholder="Enter meeting code"
-            placeholderTextColor={colors.muted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            maxLength={128}
-            editable={!joining}
-            returnKeyType="next"
-            style={[
-              styles.input,
-              { color: colors.foreground, borderColor: colors.border },
-            ]}
-          />
-          <Text
-            nativeID="meeting-name-label"
-            style={[styles.label, { color: colors.foreground }]}
-          >
-            Your name
-          </Text>
-          <TextInput
-            accessibilityLabel="Your name"
-            accessibilityLabelledBy="meeting-name-label"
-            value={displayName}
-            onChangeText={setDisplayName}
-            placeholder="Name shown in the meeting"
-            placeholderTextColor={colors.muted}
-            autoComplete="name"
-            maxLength={80}
-            editable={!joining}
-            returnKeyType="done"
-            onSubmitEditing={() => void join()}
-            style={[
-              styles.input,
-              { color: colors.foreground, borderColor: colors.border },
-            ]}
-          />
-          <View style={styles.mediaRow}>
-            <View style={styles.mediaText}>
-              <Text style={[styles.label, { color: colors.foreground }]}>
-                Microphone
+        ) : (
+          <>
+            <Text
+              accessibilityRole="header"
+              style={[styles.title, { color: colors.foreground }]}
+            >
+              Join a meeting
+            </Text>
+            <Text style={[styles.description, { color: colors.muted }]}>
+              Meet face to face with your team.
+            </Text>
+            <View
+              style={[
+                styles.card,
+                { borderColor: colors.border, backgroundColor: colors.surface },
+              ]}
+            >
+              {selection.manualEntry ? (
+                <>
+                  <Text
+                    nativeID="meeting-code-label"
+                    style={[styles.label, { color: colors.foreground }]}
+                  >
+                    Meeting code
+                  </Text>
+                  <TextInput
+                    accessibilityLabel="Meeting code"
+                    accessibilityLabelledBy="meeting-code-label"
+                    value={meetingCode}
+                    onChangeText={setMeetingCode}
+                    placeholder="Enter meeting code"
+                    placeholderTextColor={colors.muted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    maxLength={128}
+                    editable={!joining}
+                    returnKeyType="next"
+                    style={[
+                      styles.input,
+                      { color: colors.foreground, borderColor: colors.border },
+                    ]}
+                  />
+                </>
+              ) : (
+                <View style={styles.meetingPicker}>
+                  <Text style={[styles.label, { color: colors.foreground }]}>
+                    Meeting
+                  </Text>
+                  {admittedMeetings?.length === 1 ? (
+                    <Text style={{ color: colors.muted }}>
+                      Your admitted meeting is ready.
+                    </Text>
+                  ) : (
+                    <>
+                      <Text style={{ color: colors.muted }}>
+                        Select an admitted meeting.
+                      </Text>
+                      {admittedMeetings?.map((meeting, index) => {
+                        const selected = meetingCode === meeting.meetingId;
+                        return (
+                          <Pressable
+                            key={meeting.meetingId}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Select admitted meeting ${index + 1}`}
+                            accessibilityState={{ selected }}
+                            disabled={joining}
+                            onPress={() => setMeetingCode(meeting.meetingId)}
+                            style={[
+                              styles.meetingChoice,
+                              {
+                                borderColor: selected
+                                  ? colors.primary
+                                  : colors.border,
+                                backgroundColor: selected
+                                  ? colors.background
+                                  : colors.surface,
+                              },
+                            ]}
+                          >
+                            <Text style={{ color: colors.foreground }}>
+                              Meeting {index + 1}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </>
+                  )}
+                </View>
+              )}
+              <Text
+                nativeID="meeting-name-label"
+                style={[styles.label, { color: colors.foreground }]}
+              >
+                Your name
               </Text>
-              <Text style={{ color: colors.muted }}>
-                {microphoneEnabled ? "On when you join" : "Join muted"}
+              <TextInput
+                accessibilityLabel="Your name"
+                accessibilityLabelledBy="meeting-name-label"
+                value={displayName}
+                onChangeText={setDisplayName}
+                placeholder="Name shown in the meeting"
+                placeholderTextColor={colors.muted}
+                autoComplete="name"
+                maxLength={80}
+                editable={!joining}
+                returnKeyType="done"
+                onSubmitEditing={() => void join()}
+                style={[
+                  styles.input,
+                  { color: colors.foreground, borderColor: colors.border },
+                ]}
+              />
+              <View style={styles.mediaRow}>
+                <View style={styles.mediaText}>
+                  <Text style={[styles.label, { color: colors.foreground }]}>
+                    Microphone
+                  </Text>
+                  <Text style={{ color: colors.muted }}>
+                    {microphoneEnabled ? "On when you join" : "Join muted"}
+                  </Text>
+                </View>
+                <Switch
+                  accessibilityLabel="Microphone on when joining"
+                  value={microphoneEnabled}
+                  onValueChange={setMicrophoneEnabled}
+                  disabled={joining}
+                  trackColor={{ true: colors.primary }}
+                />
+              </View>
+              <View style={styles.mediaRow}>
+                <View style={styles.mediaText}>
+                  <Text style={[styles.label, { color: colors.foreground }]}>
+                    Camera
+                  </Text>
+                  <Text style={{ color: colors.muted }}>
+                    {cameraEnabled ? "On when you join" : "Join with video off"}
+                  </Text>
+                </View>
+                <Switch
+                  accessibilityLabel="Camera on when joining"
+                  value={cameraEnabled}
+                  onValueChange={setCameraEnabled}
+                  disabled={joining}
+                  trackColor={{ true: colors.primary }}
+                />
+              </View>
+              <Text style={[styles.note, { color: colors.muted }]}>
+                Your microphone and camera are off on this screen. Permission
+                may be requested when you join.
               </Text>
             </View>
-            <Switch
-              accessibilityLabel="Microphone on when joining"
-              value={microphoneEnabled}
-              onValueChange={setMicrophoneEnabled}
-              disabled={joining}
-              trackColor={{ true: colors.primary }}
-            />
-          </View>
-          <View style={styles.mediaRow}>
-            <View style={styles.mediaText}>
-              <Text style={[styles.label, { color: colors.foreground }]}>
-                Camera
+            {error && (
+              <Text
+                accessibilityRole="alert"
+                accessibilityLiveRegion="polite"
+                style={[styles.description, { color: colors.error }]}
+              >
+                {error}
               </Text>
-              <Text style={{ color: colors.muted }}>
-                {cameraEnabled ? "On when you join" : "Join with video off"}
+            )}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled, busy: joining }}
+              disabled={disabled}
+              onPress={() => void join()}
+              style={[
+                styles.join,
+                { backgroundColor: disabled ? colors.border : colors.primary },
+              ]}
+            >
+              {joining && <ActivityIndicator color={colors.foreground} />}
+              <Text
+                style={[
+                  styles.joinText,
+                  { color: disabled ? colors.muted : "#fff" },
+                ]}
+              >
+                {joining ? "Opening meeting…" : joinLabel}
               </Text>
-            </View>
-            <Switch
-              accessibilityLabel="Camera on when joining"
-              value={cameraEnabled}
-              onValueChange={setCameraEnabled}
-              disabled={joining}
-              trackColor={{ true: colors.primary }}
-            />
-          </View>
-          <Text style={[styles.note, { color: colors.muted }]}>
-            Your microphone and camera are off on this screen. Permission may be
-            requested when you join.
-          </Text>
-          </View>
-        {error && (
-          <Text
-            accessibilityRole="alert"
-            accessibilityLiveRegion="polite"
-            style={[styles.description, { color: colors.error }]}
-          >
-            {error}
-          </Text>
+            </Pressable>
+            <Text style={[styles.note, { color: colors.muted }]}>
+              Video meetings are separate from Phone calls. Finish any phone
+              call before joining a meeting.
+            </Text>
+          </>
         )}
-          <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ disabled, busy: joining }}
-          disabled={disabled}
-          onPress={() => void join()}
-          style={[
-            styles.join,
-            { backgroundColor: disabled ? colors.border : colors.primary },
-          ]}
-        >
-          {joining && <ActivityIndicator color={colors.foreground} />}
-          <Text
-            style={[
-              styles.joinText,
-              { color: disabled ? colors.muted : "#fff" },
-            ]}
-          >
-            {joining ? "Opening meeting…" : joinLabel}
-          </Text>
-          </Pressable>
-          <Text style={[styles.note, { color: colors.muted }]}>
-            Video meetings are separate from Phone calls. Finish any phone call
-            before joining a meeting.
-          </Text>
-        </>}
       </View>
     </ScrollView>
   );
@@ -291,6 +358,14 @@ const styles = StyleSheet.create({
     minHeight: 58,
   },
   mediaText: { flex: 1, gap: 5 },
+  meetingPicker: { gap: 10 },
+  meetingChoice: {
+    minHeight: 46,
+    borderWidth: 1,
+    borderRadius: 12,
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
   note: { fontSize: 14, lineHeight: 21 },
   retry: {
     minHeight: 46,

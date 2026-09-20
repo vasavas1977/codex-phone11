@@ -94,6 +94,7 @@ export function createMeetingsRouter(
   const service = createConfiguredMeetingService(env, dependencies);
   return router({
   capabilities: protectedProcedure.query(() => service.capabilities()),
+  available: protectedProcedure.query(() => service.availableMeetingsFor()),
   join: protectedProcedure.input(joinMeetingSchema).mutation(({ ctx, input }) =>
     service.join(ctx.user.id, input)),
   });

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { MaterialIcons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import { Pressable, StyleSheet, Text, View, type GestureResponderEvent } from "react-native";
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
-  useAudioPlayer,
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
@@ -12,30 +13,48 @@ import { phone11MediaOwnership } from "@/lib/meetings/native-session";
 import type { ChatUpload } from "@/lib/chat/media-client";
 import { useColors } from "@/hooks/use-colors";
 
+const MAX_SECONDS = 60;
+const CANCEL_DISTANCE = 72;
+function formatDuration(milliseconds: number) {
+  const seconds = Math.min(MAX_SECONDS, Math.max(0, Math.ceil(milliseconds / 1000)));
+  return `0:${String(seconds).padStart(2, "0")}`;
+}
+
 export function VoiceNote({
   onReady,
+  onClose,
 }: {
-  onReady: (upload: ChatUpload) => void;
+  onReady: (upload: ChatUpload) => void | Promise<void>;
+  onClose?: () => void;
 }) {
-  const colors = useColors(),
-    recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY),
-    state = useAudioRecorderState(recorder),
-    player = useAudioPlayer(null, { keepAudioSessionActive: false });
+  const colors = useColors();
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const state = useAudioRecorderState(recorder);
   const lease = useRef<
-      ReturnType<typeof phone11MediaOwnership.requestVoiceNote>["lease"] | null
-    >(null),
-    alive = useRef(true),
-    generation = useRef(0),
-    working = useRef(false),
-    prepared = useRef(false),
-    mode = useRef(false),
-    preparing = useRef<Promise<void> | null>(null),
-    stopping = useRef<Promise<void> | null>(null),
-    timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [uri, setUri] = useState<string | null>(null),
-    [error, setError] = useState<string | null>(null),
-    [playing, setPlaying] = useState(false),
-    [busy, setBusy] = useState(false);
+    ReturnType<typeof phone11MediaOwnership.requestVoiceNote>["lease"] | null
+  >(null);
+  const alive = useRef(true);
+  const generation = useRef(0);
+  const working = useRef(false);
+  const prepared = useRef(false);
+  const recordingStarted = useRef(false);
+  const releaseRequested = useRef(false);
+  const cancelRequested = useRef(false);
+  const gestureActiveRef = useRef(false);
+  const startX = useRef(0);
+  const mode = useRef(false);
+  const preparing = useRef<Promise<void> | null>(null);
+  const stopping = useRef<Promise<void> | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [gestureActive, setGestureActive] = useState(false);
+  const [cancelArmed, setCancelArmed] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [retryAvailable, setRetryAvailable] = useState(false);
+  const busyRef = useRef(false);
+  const retryUpload = useRef<ChatUpload | null>(null);
+
   const release = () => {
     if (lease.current) phone11MediaOwnership.release(lease.current);
     lease.current = null;
@@ -46,17 +65,26 @@ export function VoiceNote({
     timer.current = null;
     if (stopping.current) return stopping.current;
     const task = (async () => {
+      let stopError: unknown;
       await preparing.current?.catch(() => {});
       if (prepared.current) {
-        await recorder.stop();
-        prepared.current = false;
+        try {
+          await recorder.stop();
+          prepared.current = false;
+        } catch (cause) {
+          stopError = cause;
+        }
       }
-      player.pause();
+      recordingStarted.current = false;
       if (mode.current) {
-        await setAudioModeAsync({ allowsRecording: false });
+        try {
+          await setAudioModeAsync({ allowsRecording: false });
+        } catch (cause) {
+          stopError ||= cause;
+        }
         mode.current = false;
       }
-      if (alive.current) setPlaying(false);
+      if (stopError) throw stopError;
     })();
     stopping.current = task;
     void task.then(
@@ -75,56 +103,96 @@ export function VoiceNote({
     alive.current = true;
     return () => {
       alive.current = false;
-      void latest.current.stop().then(
-        () => latest.current.release(),
-        () => {},
-      );
+      void latest.current.stop().then(latest.current.release, () => {});
     };
   }, []);
-  useEffect(() => {
-    const listener = player.addListener?.("playbackStatusUpdate", (status) => {
-      if (status.didJustFinish)
-        void latest.current.stop().then(
-          () => latest.current.release(),
-          () => {},
-        );
-    });
-    return () => listener?.remove();
-  }, [player]);
+
   const failure = (cause: unknown) => {
     if (alive.current)
-      setError(
-        cause instanceof Error ? cause.message : "Voice note is unavailable.",
-      );
+      setError(cause instanceof Error ? cause.message : "Voice note is unavailable.");
   };
-  const finish = async () => {
-    if (working.current) return;
-    working.current = true;
-    setBusy(true);
+  const resetGesture = () => {
+    gestureActiveRef.current = false;
+    releaseRequested.current = false;
+    cancelRequested.current = false;
+    if (alive.current) {
+      setGestureActive(false);
+      setCancelArmed(false);
+    }
+  };
+  const cancel = async () => {
+    cancelRequested.current = true;
     try {
       await stop();
       release();
-      if (alive.current) {
-        if (!recorder.uri) throw new Error("No voice recording was created.");
-        setUri(recorder.uri);
-      }
+    } catch (cause) {
+      failure(cause);
+    } finally {
+      resetGesture();
+    }
+  };
+  const finishAndSend = async () => {
+    if (working.current || sending || cancelRequested.current) return;
+    working.current = true;
+    if (alive.current) setSending(true);
+    try {
+      await stop();
+      if (cancelRequested.current) return;
+      release();
+      if (!recorder.uri) throw new Error("No voice recording was created.");
+      const web = recorder.uri.startsWith("blob:");
+      const upload = {
+        uri: recorder.uri,
+        filename: web ? "voice-note.webm" : "voice-note.m4a",
+        mimeType: web ? "audio/webm" : "audio/mp4",
+      } satisfies ChatUpload;
+      retryUpload.current = upload;
+      if (alive.current) setRetryAvailable(true);
+      await onReady(upload);
+      retryUpload.current = null;
+      if (alive.current) setRetryAvailable(false);
+      if (alive.current) onClose?.();
     } catch (cause) {
       failure(cause);
     } finally {
       working.current = false;
-      if (alive.current) setBusy(false);
+      if (alive.current) setSending(false);
+      resetGesture();
     }
   };
-  const start = async () => {
-    if (working.current || !alive.current) return;
+  const retry = async () => {
+    const upload = retryUpload.current;
+    if (!upload || working.current || sending || !alive.current) return;
     working.current = true;
-    setBusy(true);
+    setSending(true);
     setError(null);
-    setUri(null);
+    try {
+      await onReady(upload);
+      retryUpload.current = null;
+      if (alive.current) setRetryAvailable(false);
+      if (alive.current) onClose?.();
+    } catch (cause) {
+      failure(cause);
+    } finally {
+      working.current = false;
+      if (alive.current) setSending(false);
+    }
+  };
+  const start = async (event: GestureResponderEvent) => {
+    if (working.current || sending || busyRef.current || !alive.current) return;
+    startX.current = event.nativeEvent.pageX;
+    gestureActiveRef.current = true;
+    releaseRequested.current = false;
+    cancelRequested.current = false;
+    setGestureActive(true);
+    setCancelArmed(false);
+    setError(null);
+    retryUpload.current = null;
+    setRetryAvailable(false);
+    setBusy(true);
+    busyRef.current = true;
     const version = ++generation.current;
     try {
-      // This tap is an explicit recovery action. It only retries a previously
-      // failed recorder shutdown; it never starts playback/recording itself.
       await phone11MediaOwnership.retryVoiceStop();
       if (!alive.current || version !== generation.current) return;
       const request = phone11MediaOwnership.requestVoiceNote(
@@ -140,14 +208,10 @@ export function VoiceNote({
         !alive.current ||
         version !== generation.current ||
         !phone11MediaOwnership.isCurrent(request.lease)
-      )
-        return;
+      ) return;
       preparing.current = (async () => {
         mode.current = true;
-        await setAudioModeAsync({
-          allowsRecording: true,
-          playsInSilentMode: true,
-        });
+        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
         await recorder.prepareToRecordAsync();
         prepared.current = true;
       })();
@@ -157,125 +221,173 @@ export function VoiceNote({
         !alive.current ||
         version !== generation.current ||
         !phone11MediaOwnership.isCurrent(request.lease)
-      )
+      ) return;
+      if (cancelRequested.current || releaseRequested.current) {
+        await cancel();
         return;
+      }
       recorder.record();
-      timer.current = setTimeout(() => void finish(), 60_000);
+      recordingStarted.current = true;
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      timer.current = setTimeout(() => {
+        releaseRequested.current = true;
+        void finishAndSend();
+      }, MAX_SECONDS * 1000);
+      if (cancelRequested.current || releaseRequested.current) await cancel();
     } catch (cause) {
       failure(cause);
       await stop().then(release, () => {});
+      resetGesture();
     } finally {
-      working.current = false;
+      busyRef.current = false;
       if (alive.current) setBusy(false);
     }
   };
-  const cancel = async () => {
-    try {
-      await stop();
-      release();
-      if (alive.current) setUri(null);
-    } catch (cause) {
-      failure(cause);
-    }
+  const move = (event: GestureResponderEvent) => {
+    if (!gestureActiveRef.current) return;
+    const armed = event.nativeEvent.pageX - startX.current <= -CANCEL_DISTANCE;
+    cancelRequested.current = armed;
+    setCancelArmed(armed);
   };
-  const preview = async () => {
-    if (!uri || working.current) return;
-    if (playing) {
-      await stop().then(release, failure);
+  const end = () => {
+    if (!gestureActiveRef.current) return;
+    if (cancelRequested.current) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      void cancel();
       return;
     }
-    working.current = true;
-    setError(null);
-    const version = ++generation.current;
-    try {
-      await phone11MediaOwnership.retryVoiceStop();
-      if (!alive.current || version !== generation.current) return;
-      const request = phone11MediaOwnership.requestVoiceNote(
-        `voice-preview:${Date.now()}`,
-        { stopForSip: () => latest.current.stop() },
-      );
-      lease.current = request.lease;
-      await request.ready;
-      if (
-        !alive.current ||
-        version !== generation.current ||
-        !phone11MediaOwnership.isCurrent(request.lease)
-      )
-        return;
-      player.replace(uri);
-      player.play();
-      setPlaying(true);
-    } catch (cause) {
-      failure(cause);
-      await stop().then(release, () => {});
-    } finally {
-      working.current = false;
-    }
+    releaseRequested.current = true;
+    if (recordingStarted.current) void finishAndSend();
   };
-  const add = async () => {
-    if (!uri || working.current) return;
-    working.current = true;
-    try {
-      await stop();
-      release();
-      const web = uri.startsWith("blob:");
-      if (alive.current)
-        onReady({
-          uri,
-          filename: web ? "voice-note.webm" : "voice-note.m4a",
-          mimeType: web ? "audio/webm" : "audio/mp4",
-        });
-    } catch (cause) {
-      failure(cause);
-    } finally {
-      working.current = false;
-    }
-  };
-  const button = (label: string, action: () => void | Promise<void>) => (
-    <Pressable
-      key={label}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={busy}
-      onPress={() => void action()}
-      style={{
-        minHeight: 44,
-        minWidth: 44,
-        paddingHorizontal: 10,
-        justifyContent: "center",
-      }}
-    >
-      <Text style={{ color: colors.primary }}>{label}</Text>
-    </Pressable>
-  );
+
+  const recording = gestureActive || state.isRecording;
   return (
-    <View accessibilityLiveRegion="polite">
-      {error && <Text style={{ color: colors.error }}>{error}</Text>}
-      <Text style={{ color: colors.muted }}>
-        {state.isRecording
-          ? `Recording ${Math.min(60, Math.ceil(state.durationMillis / 1000))}s`
-          : uri
-            ? "Voice note ready"
-            : busy
-              ? "Preparing…"
-              : ""}
-      </Text>
-      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-        {state.isRecording ? (
-          <>
-            {button("Stop", finish)}
-            {button("Cancel", cancel)}
-          </>
-        ) : uri ? (
-          <>
-            {button(playing ? "Pause" : "Play", preview)}
-            {button("Cancel", cancel)}
-            {button("Add to message", add)}
-          </>
-        ) : (
-          button("Record voice", start)
-        )}
+    <View accessibilityLiveRegion="polite" style={styles.root}>
+      {recording && (
+        <View style={styles.statusRow}>
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[styles.timer, { color: cancelArmed ? colors.error : colors.muted }]}
+          >
+            {busy && !state.isRecording ? "Preparing…" : formatDuration(state.durationMillis)}
+          </Text>
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[styles.cancelFeedback, { color: colors.error }]}
+          >
+            {cancelArmed ? "Release to cancel" : "Slide left to cancel"}
+          </Text>
+        </View>
+      )}
+      {error && (
+        <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>
+          {error}
+        </Text>
+      )}
+      <View style={styles.actionRow}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Hold to record voice note"
+          accessibilityHint="Keep holding to record. Slide left to cancel. Release to send."
+          disabled={sending || retryAvailable}
+          onPressIn={(event) => void start(event)}
+          onTouchMove={move}
+          onPressOut={end}
+          accessibilityActions={
+            recording ? [{ name: "activate", label: "Cancel voice note" }] : undefined
+          }
+          onAccessibilityAction={(event) => {
+            if (event.nativeEvent.actionName === "activate" && recording) void cancel();
+          }}
+          style={({ pressed }) => [
+            styles.holdButton,
+            {
+              backgroundColor: cancelArmed
+                ? `${colors.error}22`
+                : pressed || recording
+                  ? `${colors.primary}22`
+                  : colors.surface,
+              borderColor: cancelArmed ? colors.error : colors.border,
+            },
+          ]}
+        >
+          <MaterialIcons
+            name={cancelArmed ? "delete-outline" : "mic-none"}
+            size={22}
+            color={cancelArmed ? colors.error : colors.primary}
+          />
+          <Text style={[styles.holdLabel, { color: cancelArmed ? colors.error : colors.primary }]}>
+            {sending ? "Sending…" : cancelArmed ? "Release to cancel" : recording ? "Release to send" : "Hold to Record"}
+          </Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Return to message keyboard"
+          accessibilityHint={recording ? "Cancel the recording and return to typing." : undefined}
+          onPress={() => {
+            void cancel();
+            onClose?.();
+          }}
+          style={[styles.keyboardReturn, { borderColor: colors.border }]}
+        >
+          <MaterialIcons name="keyboard" size={20} color={colors.foreground} />
+        </Pressable>
       </View>
+      {retryAvailable && !recording && !sending && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Retry voice note"
+          onPress={() => void retry()}
+          style={styles.retryButton}
+        >
+          <Text style={[styles.retryLabel, { color: colors.primary }]}>Retry</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { width: "100%", alignItems: "center", gap: 14, paddingTop: 4 },
+  statusRow: {
+    minHeight: 30,
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 4,
+  },
+  cancelFeedback: {
+    fontSize: 13,
+  },
+  timer: {
+    fontSize: 16,
+    fontVariant: ["tabular-nums"],
+    fontWeight: "600",
+  },
+  error: { width: "100%", textAlign: "center", fontSize: 13, lineHeight: 18 },
+  actionRow: { width: "100%", flexDirection: "row", alignItems: "center", gap: 10 },
+  keyboardReturn: {
+    width: 44,
+    minHeight: 44,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  keyboardLabel: { fontSize: 14 },
+  retryButton: { minHeight: 32, paddingHorizontal: 8, justifyContent: "center" },
+  retryLabel: { fontSize: 14, fontWeight: "600" },
+  holdButton: {
+    flex: 1,
+    minHeight: 56,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 18,
+  },
+  holdLabel: { fontSize: 17, fontWeight: "700" },
+});
