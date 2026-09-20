@@ -142,8 +142,10 @@ class PrepareChatCandidateTests(unittest.TestCase):
             self.assertIn("PHONE11_AUTH_SECRET", item["forbidden"])
         self.assertIn("127.0.0.1", prepare.build_candidate_compose(base_compose())["services"]["candidate"]["ports"][0]["host_ip"])
         self.assertIn("chat.typingPublish,chat.publishReadReceipts", probes["existing_chat"]["path"])
-        self.assertIn("phone.getConfig,chat.presenceCapability,chat.readReceiptSummaries,chat.readReceiptDetails", probes["mixed_batch"]["path"])
+        self.assertIn("phone.getConfig,chat.presenceCapability,chat.readReceiptSummaries,chat.readReceiptDetails,chat.typing", probes["mixed_batch"]["path"])
         self.assertIn("phone.getConfig", probes["existing_phone"]["path"])
+        self.assertEqual(probes["existing_chat"]["required"], ['"accepted"', '"expiresAt"', '"recorded":1'])
+        self.assertIn('{"result":{"data":{"json":[]}}}', probes["mixed_batch"]["required"])
         self.assertIn('"available":false', probes["conference"]["required"])
         raw = json.dumps(document, separators=(",", ":")).encode()
         pins = operator.parse_manifest({
@@ -160,6 +162,13 @@ class PrepareChatCandidateTests(unittest.TestCase):
             "public_origin": operator.PUBLIC_ORIGIN,
         })
         self.assertEqual(len(operator.load_probes(raw, pins)), 5)
+
+    def test_probe_expectations_match_typing_and_receipt_service_contracts(self) -> None:
+        typing = (ROOT / "server" / "chat" / "typing.ts").read_text()
+        service = (ROOT / "server" / "chat" / "service.ts").read_text()
+        self.assertIn("return { accepted:", typing)
+        self.assertIn("expiresAt:", typing)
+        self.assertIn("return { recorded };", service)
 
     def test_auth_me_must_match_each_pilot_without_logging_body(self) -> None:
         tokens = {1: "one.secret", 2: "two.secret"}

@@ -412,8 +412,9 @@ def build_probes(tokens: Mapping[int, str], fixture: Mapping[str, Any]) -> Mappi
     mutation_inputs = {"0": {"json": typing}, "1": {"json": receipt}}
     mutation_body = json.dumps(mutation_inputs, separators=(",", ":"))
     mixed_path = trpc_path(
-        ["phone.getConfig", "chat.presenceCapability", "chat.readReceiptSummaries", "chat.readReceiptDetails"],
-        [None, {"tenantId": 1}, receipt, {"tenantId": 1, "id": conversation_id, "messageId": message_id}], batch=True,
+        ["phone.getConfig", "chat.presenceCapability", "chat.readReceiptSummaries", "chat.readReceiptDetails", "chat.typing"],
+        [None, {"tenantId": 1}, receipt, {"tenantId": 1, "id": conversation_id, "messageId": message_id},
+         {"tenantId": 1, "id": conversation_id}], batch=True,
     )
     probes = [
         # getConfig initializes the legacy provisioning schema on first use. It
@@ -423,11 +424,12 @@ def build_probes(tokens: Mapping[int, str], fixture: Mapping[str, Any]) -> Mappi
               ['"configured":true', '"tenantId":1', '"extension"', '"sip"', '"organization"'], common_forbidden),
         probe("existing_chat", "POST", "/api/trpc/chat.typingPublish,chat.publishReadReceipts?batch=1",
               {**h2, "Content-Type": "application/json"}, mutation_body, 200,
-              ['"active":false', '"published":1'], common_forbidden),
+              ['"accepted"', '"expiresAt"', '"recorded":1'], common_forbidden),
         probe("conference", "GET", trpc_path(["meetings.capabilities"], [None]), h1, "", 200,
               ['"available":false', '"video":false', '"interpretation":false', '"reason"'], common_forbidden),
         probe("mixed_batch", "GET", mixed_path, h1, "", 200,
-              ['"tenantId":1', '"version":2', '"count":1', '"userId":2', '"readAt"'], common_forbidden),
+              ['"tenantId":1', '"version":2', '"count":1', '"userId":2', '"readAt"',
+               '{"result":{"data":{"json":[]}}}'], common_forbidden),
         probe("denied_tenant", "GET", trpc_path(["chat.presenceCapability"], [{"tenantId": 2147483647}]), h2, "", 403,
               ['"code":"FORBIDDEN"'], common_forbidden),
     ]

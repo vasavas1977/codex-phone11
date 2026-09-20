@@ -12,7 +12,7 @@ candidate image is
 `sha256:cfea5fb61b244bec980211aab4f9d27320f8fd5e2deec2c5d4ae89c3f0f16e91`
 with build marker `read-receipts-a0f5c46-0c3c4e227148`. The final preparation
 record is `candidate-preparation.json`, SHA-256
-`7dc4f79e6da2360c900035c5e8660bbcc2dcdcc51dda63fdfd6f4a1ba032a89a`.
+`7047bd5fe44e30f8d44745056e274ec82dc334ac74fb1d9fa287dfb41cb06dc3`.
 Every protected preparation artifact is root-owned, mode `0600`; the stage is
 root-owned, mode `0700`.
 
@@ -22,7 +22,7 @@ root-owned, mode `0700`.
 | --- | --- |
 | Candidate Compose source | `e61e7e5c3320e2478a385d8cfb2db4d206976b9cbf5ba8e9f802aa0b30a7a433` |
 | Canonical rendered Compose model | `3685b69f4b07449e8ed50c2af0e5f6ca304f8dd179f23f7a24b8539fb780b31c` |
-| Protected five-probe bundle | `8c4e70007d872853bf6e5a5943bd07a0563d7ea942a71366da72d594441a1c1b` |
+| Protected five-probe bundle | `2dced6b2717cc688dacfdb62f69ccda95c7880de7e3aab8549682c53da68b54b` |
 | Protected fixture checkpoint | `4667559c5da1db8f0505423739bd02065d9ac2207d3cedbf6025a024be07bb21` |
 | Nginx site after marker only | `6f1d6e0a5b9805e076f7340abe4ae5b505f0fcac8b280df0d83e82f36bd29c5d` |
 | Nginx full stdout dump | `393df373a5d623746f36347acf6b6637c61c80eee2000182f19be56368057a79` |
@@ -57,7 +57,11 @@ the current public chat API. A targeted verification using only the checkpoint
 conversation and message IDs found one group, members `[1, 2]`, and one root
 message from pilot user 1 with the pinned client ID and text. The protected
 probe bundle contains the five operator labels and binds every chat request to
-the matching authenticated owner.
+the matching authenticated owner. Its chat mutation checks the actual service
+fields `accepted`, `expiresAt`, and `recorded: 1`; the later query batch checks
+that typing is inactive. This remains valid when the same bundle runs directly
+and publicly because a repeated typing sequence may correctly return
+`accepted: false` while the inactive query remains empty.
 
 `phone.getConfig` is intentionally prepared for `existing_phone` and the mixed
 batch but was not called during no-DDL preparation. Its first process call can
