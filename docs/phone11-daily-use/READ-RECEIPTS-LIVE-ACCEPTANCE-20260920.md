@@ -19,15 +19,37 @@
   `sha256:d42c70f34d5062bff779c235dd2b6e415bede3b3a86b9de73892acf35b392619`.
 - Independent catalog inspection found the existing base chat, collaboration,
   and media schema intact. Only the presence-session and message-read-receipt
-  tables and their indexes are missing. Apply a reviewed minimal delta;
+  tables and their indexes were missing at preflight. The minimal delta below
+  was applied;
   replaying the complete collaboration migration would unnecessarily recreate
   a constraint on the existing message table.
 
+## Production database update
+
+The minimal presence/read-receipt delta was applied using reviewed operator
+`284ddeaf6297939189250be8f0a6373226be3bd6`. Both the pre-commit verification and
+an independent read-only post-commit validation passed. The receipt is under
+`/opt/phone11ai/chat-presence-receipts-migration-20260920T095458Z`, with SHA-256
+`072fb0c46ad5dfaf4a955015c11de0951d92117c77b79c034294344774d9ea63`.
+The existing calling backend remained healthy; public health returned 200.
+
+## Guarded activation attempt
+
+The candidate started healthy on loopback port 3002 and direct API probes
+passed. The first public chat mutation probe returned HTTP 404 instead of
+200 after the proxy reload. The operator restored the original proxy file;
+public traffic remains on the working baseline. The candidate remains healthy
+for read-only diagnosis. The failure is not a handset test result.
+
 ## Not yet accepted
 
-Production migration, candidate activation, public API behavior, and physical
-device behavior are separate gates. The preparation above does not pass them.
+Candidate activation, public API behavior, and physical device behavior are
+separate gates. The database update above does not pass them.
 Connect11 meeting admission and two-device media acceptance are also separate.
+An additional read-only production catalog check found no
+`phone11_plain_video_*` or `phone11_meeting*` relations. Protected Connect11
+credentials alone therefore do not make a meeting available; the admission
+schema and authorized meeting records still need their separate rollout.
 
 ## Two-iPhone test sequence
 
