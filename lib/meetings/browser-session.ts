@@ -1,4 +1,19 @@
 /** Browser-only controller. The adapter must create a fresh, unpublished room per call. */
+import type { MeetingJoinStage } from "./join-failure";
+
+type BrowserMeetingConnectStage = Extract<MeetingJoinStage,
+  "room_cleanup" | "room_create" | "event_bind" | "signal_connect" |
+  "post_connect_guard" | "participant_refresh">;
+
+/** Keeps the original error in memory while exposing only a fixed join boundary. */
+export class BrowserMeetingConnectionFailure extends Error {
+  readonly name = "BrowserMeetingConnectionFailure";
+
+  constructor(readonly stage: BrowserMeetingConnectStage, cause: unknown) {
+    super(`Meeting connection failed at ${stage}.`, { cause });
+  }
+}
+
 export interface BrowserParticipant {
   identity: string;
   name?: string;
@@ -78,9 +93,11 @@ export class BrowserMeetingSession {
     this.receiveOnly = options.receiveOnly === true;
     this.update({ status: 'connecting', participants: [], error: null });
     let room: BrowserRoom | undefined;
+    let stage: BrowserMeetingConnectStage = 'room_cleanup';
     try {
       if (previous) await previous.disconnect(true);
       if (generation !== this.generation) throw new Error('Meeting connection cancelled');
+      stage = 'room_create';
       room = this.createRoom();
       this.room = room;
       const current = () => generation === this.generation && room === this.room;
@@ -90,6 +107,7 @@ export class BrowserMeetingSession {
         bindings.push([event, listener]); room!.on(event, listener);
       };
       this.cleanup = () => bindings.forEach(([event, fn]) => room!.off(event, fn));
+      stage = 'event_bind';
       refreshEvents.forEach(event => bind(event, () => this.refresh(room!)));
       bind('reconnecting', () => this.update({ status: 'reconnecting' }));
       bind('reconnected', () => { this.refresh(room!); this.update({ status: 'connected' }); });
@@ -97,7 +115,9 @@ export class BrowserMeetingSession {
         ++this.generation; this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
         this.update({ status: 'disconnected', participants: [], error: 'Meeting disconnected.' });
       });
+      stage = 'signal_connect';
       await room.connect(options.url, options.token);
+      stage = 'post_connect_guard';
       if (!current()) throw new Error('Meeting connection cancelled');
       // No capture is requested until explicit opt-in. Permission rejection is
       // non-fatal: the meeting stays connected in receive mode with a truthful
@@ -113,7 +133,9 @@ export class BrowserMeetingSession {
         catch { unavailable.push('Camera unavailable. You joined with video off.'); }
       }
       if (!current()) throw new Error('Meeting connection cancelled');
+      stage = 'participant_refresh';
       this.refresh(room);
+      stage = 'post_connect_guard';
       this.update({ status: 'connected', error: unavailable.length ? unavailable.join(' ') : null });
     } catch (error) {
       if (generation === this.generation) {
@@ -122,7 +144,9 @@ export class BrowserMeetingSession {
       }
       // A delayed connect/capture can complete after disconnect. Stop it again.
       if (room) await Promise.resolve(room.disconnect(true)).catch(() => undefined);
-      throw error;
+      throw error instanceof BrowserMeetingConnectionFailure
+        ? error
+        : new BrowserMeetingConnectionFailure(stage, error);
     }
   }
   async disconnect(): Promise<void> {

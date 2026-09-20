@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { BrowserMeetingSession, type BrowserRoom, type BrowserLocalParticipant } from './browser-session';
+import { BrowserMeetingConnectionFailure, BrowserMeetingSession, type BrowserRoom, type BrowserLocalParticipant } from './browser-session';
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; }
 function room() {
  const events = new Map<string, Set<(...args: unknown[]) => void>>();
@@ -40,7 +40,10 @@ describe('browser meeting session', () => {
   const r = room(), pending = deferred(); vi.mocked(r.result.connect).mockReturnValue(pending.promise);
   const session = new BrowserMeetingSession(() => r.result), join = session.connect(credentials);
   await session.disconnect(); pending.resolve();
-  await expect(join).rejects.toThrow('cancelled');
+  await expect(join).rejects.toMatchObject({
+   name: 'BrowserMeetingConnectionFailure', stage: 'post_connect_guard',
+   cause: expect.objectContaining({ message: 'Meeting connection cancelled' }),
+  });
   expect(session.getSnapshot().status).toBe('disconnected');
   expect(r.result.disconnect).toHaveBeenCalledTimes(2);
  });
@@ -48,7 +51,8 @@ describe('browser meeting session', () => {
   const old = room(), next = room(), pending = deferred(); vi.mocked(old.result.connect).mockReturnValue(pending.promise);
   const factory = vi.fn().mockReturnValueOnce(old.result).mockReturnValueOnce(next.result);
   const session = new BrowserMeetingSession(factory), first = session.connect(credentials);
-  await session.connect(credentials); pending.resolve(); await expect(first).rejects.toThrow('cancelled');
+  await session.connect(credentials); pending.resolve();
+  await expect(first).rejects.toMatchObject({ stage: 'post_connect_guard' });
   expect(session.getSnapshot().status).toBe('connected'); expect(next.result.disconnect).not.toHaveBeenCalled();
  });
  it('keeps receiving media when initial camera permission is unavailable', async () => {
@@ -89,5 +93,43 @@ describe('browser meeting session', () => {
   r.emit('reconnected'); expect(session.getSnapshot().status).toBe('connected');
   r.emit('disconnected'); expect(session.getSnapshot()).toMatchObject({ status: 'disconnected', participants: [] });
   expect(session.getSnapshot().error).toBeTruthy(); expect([...r.events.values()].every(set => set.size === 0)).toBe(true);
+ });
+
+ it.each([
+  ['room_create', (r: ReturnType<typeof room>) => () => { throw new Error('private room constructor detail'); }],
+  ['event_bind', (r: ReturnType<typeof room>) => () => {
+   r.result.on = () => { throw new Error('private event detail'); };
+   return r.result;
+  }],
+  ['signal_connect', (r: ReturnType<typeof room>) => () => {
+   vi.mocked(r.result.connect).mockRejectedValue(new Error('private signal detail'));
+   return r.result;
+  }],
+  ['participant_refresh', (r: ReturnType<typeof room>) => () => {
+   Object.defineProperty(r.result.localParticipant, 'identity', {
+    configurable: true,
+    get: () => { throw new Error('private participant detail'); },
+   });
+   return r.result;
+  }],
+ ] as const)('reports the fixed %s boundary while retaining the original cause', async (stage, arrange) => {
+  const r = room();
+  const session = new BrowserMeetingSession(arrange(r));
+  const failure = await session.connect(credentials).catch(error => error);
+
+  expect(failure).toBeInstanceOf(BrowserMeetingConnectionFailure);
+  expect(failure).toMatchObject({ stage });
+  expect(failure.cause).toBeInstanceOf(Error);
+  expect(failure.message).not.toContain('private');
+ });
+
+ it('reports prior-room cleanup separately from constructing the replacement', async () => {
+  const first = room(), next = room();
+  const session = new BrowserMeetingSession(vi.fn().mockReturnValueOnce(first.result).mockReturnValueOnce(next.result));
+  await session.connect(credentials);
+  vi.mocked(first.result.disconnect).mockRejectedValueOnce(new Error('private cleanup detail'));
+
+  await expect(session.connect(credentials)).rejects.toMatchObject({ stage: 'room_cleanup' });
+  expect(next.result.connect).not.toHaveBeenCalled();
  });
 });

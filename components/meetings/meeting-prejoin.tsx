@@ -14,10 +14,7 @@ import {
   initialMeetingSelection,
   type AdmittedMeeting,
 } from "@/lib/meetings/admitted-selection";
-import {
-  meetingJoinFailureStage,
-  type MeetingJoinStage,
-} from "@/lib/meetings/join-failure";
+import { meetingJoinFailureReference } from "@/lib/meetings/join-failure";
 
 export interface MeetingJoinPreferences {
   meetingCode: string;
@@ -63,7 +60,7 @@ export function MeetingPrejoin({
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [failureStage, setFailureStage] = useState<MeetingJoinStage | null>(null);
+  const [failureReference, setFailureReference] = useState<string | null>(null);
   const joinInFlight = useRef(false);
   const unavailable =
     unavailableReason ||
@@ -77,7 +74,7 @@ export function MeetingPrejoin({
     joinInFlight.current = true;
     setJoining(true);
     setError(null);
-    setFailureStage(null);
+    setFailureReference(null);
     try {
       await onJoin({
         meetingCode: meetingCode.trim(),
@@ -86,7 +83,7 @@ export function MeetingPrejoin({
         cameraEnabled,
       });
     } catch (cause) {
-      setFailureStage(meetingJoinFailureStage(cause) ?? null);
+      setFailureReference(meetingJoinFailureReference(cause) ?? null);
       setError(
         admittedMeetings === undefined
           ? "Could not open this meeting. Check the meeting code and your connection, then try again."
@@ -306,13 +303,13 @@ export function MeetingPrejoin({
                 >
                   {error}
                 </Text>
-                {failureStage && (
+                {failureReference && (
                   <Text
                     testID="meeting-join-stage"
-                    accessibilityLabel={`Join stage reference: ${failureStage}`}
+                    accessibilityLabel={`Join stage reference: ${failureReference}`}
                     style={[styles.stageReference, { color: colors.muted }]}
                   >
-                    Reference: {failureStage}
+                    Reference: {failureReference}
                   </Text>
                 )}
               </View>
