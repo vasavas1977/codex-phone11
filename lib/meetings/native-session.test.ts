@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     lifecycleEvents,
     startAudioSession: vi.fn(async () => { lifecycleEvents.push("audio-start"); }),
     stopAudioSession: vi.fn(async () => {}),
+    roomConnect: vi.fn(async () => { lifecycleEvents.push("room-connect"); }),
     registerGlobals: vi.fn(),
     sipState: { incomingCall: null, activeCalls: {} as Record<string, { status: string }> },
   };
@@ -45,7 +46,7 @@ vi.mock("livekit-client", () => ({
       setCameraEnabled: vi.fn(async (enabled: boolean) => { this.localParticipant.isCameraEnabled = enabled; }),
     };
     remoteParticipants = new Map();
-    connect = vi.fn(async () => { mocks.lifecycleEvents.push("room-connect"); });
+    connect = vi.fn(async () => mocks.roomConnect());
     disconnect = vi.fn(async () => {});
     on = vi.fn();
     off = vi.fn();
@@ -71,6 +72,9 @@ beforeEach(async () => {
     mocks.lifecycleEvents.push("audio-start");
   });
   mocks.stopAudioSession.mockResolvedValue(undefined);
+  mocks.roomConnect.mockImplementation(async () => {
+    mocks.lifecycleEvents.push("room-connect");
+  });
   native = await import("./native-session");
   registry = await import("./native-session-registry");
 });
@@ -89,10 +93,22 @@ describe("native meeting lifecycle", () => {
     mocks.startAudioSession.mockRejectedValueOnce(new Error("native audio activation failed"));
 
     await expect(native.NativeMeetingLifecycle.join("meeting-audio-reject", admission, preferences))
-      .rejects.toThrow("native audio activation failed");
+      .rejects.toMatchObject({ name: "MeetingJoinFailure", stage: "audio_start" });
 
     expect(mocks.rooms).toHaveLength(0);
     expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+  });
+
+  it("returns only a room-connect stage when the SDK connection rejects", async () => {
+    mocks.rooms.length = 0;
+    mocks.roomConnect.mockRejectedValueOnce(new Error("native connection failed"));
+
+    await expect(native.NativeMeetingLifecycle.join("meeting-room-reject", admission, preferences))
+      .rejects.toMatchObject({ name: "MeetingJoinFailure", stage: "room_connect" });
+
+    expect(mocks.rooms[0].disconnect).toHaveBeenCalledWith(true);
     expect(registry.getActiveNativeMeeting()).toBeUndefined();
     expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
   });
@@ -104,7 +120,7 @@ describe("native meeting lifecycle", () => {
     });
 
     await expect(native.NativeMeetingLifecycle.join("meeting-race", admission, preferences))
-      .rejects.toThrow("Phone call started before the meeting audio could start");
+      .rejects.toMatchObject({ name: "MeetingJoinFailure", stage: "audio_start" });
 
     expect(registry.getActiveNativeMeeting()).toBeUndefined();
     expect(mocks.rooms).toHaveLength(0);

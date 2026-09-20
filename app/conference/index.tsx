@@ -4,6 +4,11 @@ import { router } from "expo-router";
 import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
 import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
+import {
+  MeetingJoinFailure,
+  meetingJoinFailureStage,
+  type MeetingJoinStage,
+} from "@/lib/meetings/join-failure";
 
 function EnabledMeetingPrejoin({
   user,
@@ -20,31 +25,40 @@ function EnabledMeetingPrejoin({
       initialDisplayName={user.name ?? ""}
       admittedMeetings={admittedMeetings}
       onJoin={async (preferences) => {
-        // Default-off builds never load a native meeting/SIP implementation
-        // until the authenticated server has made joining available.
-        const [{ useSipCallStore }, { NativeMeetingLifecycle }] =
-          await Promise.all([
-            import("@/lib/sip/call-store"),
-            import("@/lib/meetings/native-session"),
-          ]);
-        const calls = useSipCallStore.getState();
-        const sipBusy =
-          Boolean(
-            calls.incomingCall && calls.incomingCall.status !== "disconnected",
-          ) ||
-          Object.values(calls.activeCalls).some(
-            (call) => call.status !== "disconnected",
-          );
-        if (sipBusy)
-          throw new Error("Finish your Phone call before joining a meeting.");
-        const admission = await join.mutateAsync({
-          meetingId: preferences.meetingCode,
-        });
-        await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
-          microphone: preferences.microphoneEnabled,
-          camera: preferences.cameraEnabled,
-        });
-        router.push("/conference/room");
+        let stage: MeetingJoinStage = "bindings";
+        try {
+          // Default-off builds never load a native meeting/SIP implementation
+          // until the authenticated server has made joining available.
+          const [{ useSipCallStore }, { NativeMeetingLifecycle }] =
+            await Promise.all([
+              import("@/lib/sip/call-store"),
+              import("@/lib/meetings/native-session"),
+            ]);
+          stage = "audio_start";
+          const calls = useSipCallStore.getState();
+          const sipBusy =
+            Boolean(
+              calls.incomingCall && calls.incomingCall.status !== "disconnected",
+            ) ||
+            Object.values(calls.activeCalls).some(
+              (call) => call.status !== "disconnected",
+            );
+          if (sipBusy)
+            throw new Error("Finish your Phone call before joining a meeting.");
+          stage = "admission";
+          const admission = await join.mutateAsync({
+            meetingId: preferences.meetingCode,
+          });
+          await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
+            microphone: preferences.microphoneEnabled,
+            camera: preferences.cameraEnabled,
+          });
+          stage = "connected";
+          router.push("/conference/room");
+        } catch (error) {
+          if (meetingJoinFailureStage(error)) throw error;
+          throw new MeetingJoinFailure(stage);
+        }
       }}
       onBack={onBack}
     />

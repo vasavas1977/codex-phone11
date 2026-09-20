@@ -6,6 +6,7 @@ import {
   BrowserMeetingSession,
   type BrowserRoom,
 } from "./browser-session";
+import { MeetingJoinFailure, type MeetingJoinStage } from "./join-failure";
 import { MediaOwnershipCoordinator, type MediaLease } from "./media-ownership";
 import {
   clearActiveNativeMeeting,
@@ -121,9 +122,14 @@ export class NativeMeetingLifecycle {
     if (!owner) throw new Error("Sign in before joining a meeting.");
     if (!meetingId || hasLiveSipCall()) throw new Error("Finish your Phone call before joining a meeting.");
     // A different account can never retain a process-global native room.
-    const previous = getActiveNativeMeeting();
-    if (previous) await previous.leave();
-    const bindings = await loadNativeBindings();
+    let bindings: NativeBindings;
+    try {
+      const previous = getActiveNativeMeeting();
+      if (previous) await previous.leave();
+      bindings = await loadNativeBindings();
+    } catch {
+      throw new MeetingJoinFailure("bindings");
+    }
     if (getAuthSnapshot().user?.id !== owner.id) throw new Error("Your Phone11 account changed before the meeting could connect.");
     const lifecycle = new NativeMeetingLifecycle(
       meetingId,
@@ -152,6 +158,7 @@ export class NativeMeetingLifecycle {
       // can stop tracks before audio; only an external disconnect releases here.
       if (status === "disconnected" && !lifecycle.leaving) void lifecycle.releaseAfterMediaStops();
     });
+    let stage: MeetingJoinStage = "audio_start";
     try {
       await request.ready;
       if (!lifecycle.ownerIsCurrent()) throw new Error("Your Phone11 account changed before the meeting could connect.");
@@ -170,6 +177,7 @@ export class NativeMeetingLifecycle {
         await lifecycle.releaseAfterMediaStops().catch(() => undefined);
         throw new Error("A Phone call started before the meeting audio could start.");
       }
+      stage = "room_connect";
       await lifecycle.session.connect({
         url: admission.url,
         token: admission.token,
@@ -177,6 +185,7 @@ export class NativeMeetingLifecycle {
         camera: preferences.camera,
         receiveOnly: lifecycle.receiveOnly,
       });
+      stage = "connected";
       if (!lifecycle.ownerIsCurrent() || !phone11MediaOwnership.isCurrent(request.lease)) throw new Error("Meeting connection was cancelled.");
       // SIP can acquire the lease while native setup or room connection is
       // awaiting. Do not publish this room as active unless this exact meeting
@@ -187,9 +196,9 @@ export class NativeMeetingLifecycle {
       }
       setActiveNativeMeeting(lifecycle);
       return lifecycle;
-    } catch (error) {
+    } catch {
       await lifecycle.leave().catch(() => undefined);
-      throw error;
+      throw new MeetingJoinFailure(stage);
     }
   }
 

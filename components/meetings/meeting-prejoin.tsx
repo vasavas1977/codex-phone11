@@ -14,6 +14,10 @@ import {
   initialMeetingSelection,
   type AdmittedMeeting,
 } from "@/lib/meetings/admitted-selection";
+import {
+  meetingJoinFailureStage,
+  type MeetingJoinStage,
+} from "@/lib/meetings/join-failure";
 
 export interface MeetingJoinPreferences {
   meetingCode: string;
@@ -59,6 +63,7 @@ export function MeetingPrejoin({
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [failureStage, setFailureStage] = useState<MeetingJoinStage | null>(null);
   const joinInFlight = useRef(false);
   const unavailable =
     unavailableReason ||
@@ -72,6 +77,7 @@ export function MeetingPrejoin({
     joinInFlight.current = true;
     setJoining(true);
     setError(null);
+    setFailureStage(null);
     try {
       await onJoin({
         meetingCode: meetingCode.trim(),
@@ -79,7 +85,8 @@ export function MeetingPrejoin({
         microphoneEnabled,
         cameraEnabled,
       });
-    } catch {
+    } catch (cause) {
+      setFailureStage(meetingJoinFailureStage(cause) ?? null);
       setError(
         admittedMeetings === undefined
           ? "Could not open this meeting. Check the meeting code and your connection, then try again."
@@ -291,13 +298,24 @@ export function MeetingPrejoin({
               </Text>
             </View>
             {error && (
-              <Text
-                accessibilityRole="alert"
-                accessibilityLiveRegion="polite"
-                style={[styles.description, { color: colors.error }]}
-              >
-                {error}
-              </Text>
+              <View style={styles.failure}>
+                <Text
+                  accessibilityRole="alert"
+                  accessibilityLiveRegion="polite"
+                  style={[styles.description, { color: colors.error }]}
+                >
+                  {error}
+                </Text>
+                {failureStage && (
+                  <Text
+                    testID="meeting-join-stage"
+                    accessibilityLabel={`Join stage reference: ${failureStage}`}
+                    style={[styles.stageReference, { color: colors.muted }]}
+                  >
+                    Reference: {failureStage}
+                  </Text>
+                )}
+              </View>
             )}
             <Pressable
               accessibilityRole="button"
@@ -344,6 +362,8 @@ const styles = StyleSheet.create({
   description: { fontSize: 16, lineHeight: 24 },
   card: { borderWidth: 1, borderRadius: 20, padding: 20, gap: 14 },
   unavailableCard: { borderWidth: 1, borderRadius: 20, padding: 20, gap: 16 },
+  failure: { gap: 4 },
+  stageReference: { fontSize: 13, lineHeight: 18 },
   label: { fontSize: 16, fontWeight: "600" },
   input: {
     minHeight: 50,
