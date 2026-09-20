@@ -60,7 +60,7 @@ function MessageAlertSettings() {
     <Text style={[styles.body, { color: colors.muted }]}>Message text is not shown in alerts.</Text>
     {feedback && matchesView(feedback.action) && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.foreground }]}>{feedback.text}</Text>}
     {enrolled && <Text style={[styles.body, { color: colors.foreground }]}>Message notifications are enabled for this phone and workspace.</Text>}
-    <Pressable accessibilityRole="button" accessibilityLabel="Enable message notifications" disabled={!ownsWorkspace || matchesView(busy)} onPress={enable}
+    <Pressable accessibilityRole="button" accessibilityLabel={enrolled ? "Refresh message notifications" : "Enable message notifications"} disabled={!ownsWorkspace || matchesView(busy)} onPress={enable}
       style={[styles.button, { backgroundColor: colors.primary, opacity: !ownsWorkspace || matchesView(busy) ? 0.5 : 1 }]}>
       <Text style={styles.buttonText}>{matchesView(busy) ? "Setting up…" : enrolled ? "Refresh message notifications" : "Enable message notifications"}</Text>
     </Pressable>

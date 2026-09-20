@@ -36,7 +36,7 @@ it("requires an explicit action and discloses selected workspace before reportin
 });
 it("shows the server-confirmed enrolled state only for its account and workspace",()=>{
   m.enabled=true;m.enrollment={ownerId:1,tenantId:10,status:"enabled"};
-  let html=render();expect(html).toContain("Message notifications are enabled");expect(html).toContain("Refresh message notifications");expect(m.enable).not.toHaveBeenCalled();
+  let html=render();expect(html).toContain("Message notifications are enabled");expect(html).toContain("Refresh message notifications");expect(m.buttons.has("Refresh message notifications")).toBe(true);expect(m.buttons.has("Enable message notifications")).toBe(false);expect(m.enable).not.toHaveBeenCalled();
   m.state={userId:1,workspace:{id:20,name:"Other"}};html=render();expect(html).not.toContain("Message notifications are enabled");expect(html).toContain("Enable message notifications");
 });
 it.each(["permission-denied", "unavailable", "session-changed"])("does not claim setup succeeded after %s", async status => {
