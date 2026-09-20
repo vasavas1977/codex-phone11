@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
 /** The signed build that this operator run is allowed to accept. */
-export const CURRENT_BUILD_ID = "a8bbfe6b-2e3f-4ff4-9843-562d1117b930";
+export const CURRENT_BUILD_ID = "ab6de8f0-a31a-4caf-ad5a-8c2962c3dc87";
 export const HARNESS_SCHEMA_VERSION = 1;
 
 export const REQUIRED_CHECKS = Object.freeze([

@@ -1,7 +1,7 @@
 # Phone11 two-iPhone conference acceptance harness
 
 This is a manual, nonproduction acceptance run for the signed Phone11 build
-`a8bbfe6b-2e3f-4ff4-9843-562d1117b930`. It records what two physical iPhones
+`ab6de8f0-a31a-4caf-ad5a-8c2962c3dc87`. It records what two physical iPhones
 show and hear; it does not create a meeting, call a provider, mint a token, or
 change a server, database, EAS project, or production route.
 
