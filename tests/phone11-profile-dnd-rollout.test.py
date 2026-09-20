@@ -53,7 +53,8 @@ def manifest(**changes: object) -> dict[str, object]:
         "rollback": {
             "image": OLD_DIGEST, "build": "old-build",
             "normalized_runtime_sha256": SHA,
-            "failed_baseline_attempt_receipt_sha256": None,
+            "baseline_operation_id": "11111111-1111-4111-8111-111111111111",
+            "baseline_intent_sha256": SHA2,
             "compose": compose("/root/rollback.json", "backend"),
             "disabled_compose": compose("/root/rollback-disabled.json", "backend"),
         },
@@ -128,22 +129,11 @@ def guard_snapshot(*, attempted: int = 0, new_attempted: int = 0) -> dict[str, o
     }
 
 
-def attempt_receipt(current, *, container_id: str = "f" * 64) -> bytes:
-    return rollout.canonical_bytes({
-        "schema": rollout.ATTEMPT_RECEIPT_SCHEMA,
-        "action": "replace_baseline",
-        "compose_sha256": current.baseline_compose.sha256,
-        "compose_rendered_sha256": current.baseline_compose.rendered_sha256,
-        "before_container_id": current.baseline.container_id,
-        "before_image": current.baseline.image,
-        "before_runtime_sha256": current.baseline.runtime_sha256,
-        "before_build": current.baseline.build,
-        "after_container_id": container_id,
-        "after_image": current.image,
-        "after_runtime_sha256": SHA2,
-        "after_normalized_runtime_sha256": current.rollback_normalized_runtime_sha256,
-        "after_build": current.release_build,
-    })
+def pin_intent(current, baseline_config: dict[str, object]) -> bytes:
+    operator = rollout.Operator(current, FakeSystem())
+    raw = rollout.canonical_bytes(operator.baseline_intent_document(baseline_config))
+    object.__setattr__(current, "baseline_intent_sha256", rollout.sha256_bytes(raw))
+    return raw
 
 
 class FakeSystem(rollout.System):
@@ -285,10 +275,10 @@ class ProfileDndRolloutTests(unittest.TestCase):
         operator.guard = Mock(side_effect=lambda phase, **kwargs: events.append(phase) or guard_snapshot(attempted=3))
         operator.wake = Mock(side_effect=lambda: events.append("wake"))
         operator.save_runtime_receipt = Mock()
-        operator.save_baseline_attempt_receipt = Mock()
+        operator.write_baseline_intent = Mock(side_effect=lambda *_args: events.append("intent"))
         operator.require_worker_topology = Mock()
         operator.baseline_config, operator.candidate_config = {"name": "baseline"}, {"name": "candidate"}
-        replacement = {"Id": "d" * 64, "Image": DIGEST, "State": {"Running": True, "OOMKilled": False, "ExitCode": 0}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=" + current.release_build, "PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"], "Labels": {"com.docker.compose.project": "baseline", "com.docker.compose.service": "backend"}}}
+        replacement = {"Id": "d" * 64, "Image": DIGEST, "State": {"Running": True, "OOMKilled": False, "ExitCode": 0}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=" + current.release_build, "PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"], "Labels": {"com.docker.compose.project": "phone11", "com.docker.compose.service": "backend"}}, "HostConfig": {"PortBindings": {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3000"}]}}}
         document = {"name": "phone11", "services": {"backend": {}}}
         with patch.object(rollout, "validate_runtime", return_value={"Id": current.baseline.container_id}), \
              patch.object(rollout, "health"), \
@@ -300,7 +290,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
             operator.replace_baseline()
         self.assertLess(events.index("replace-baseline-before"), events.index("stop-up"))
         operator._up.assert_called_once_with(document, current.baseline_compose, stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id), fence_id=current.guard_fence_id, since_ms=ANY, stopped_phase="replace-baseline-stopped")
-        operator.save_baseline_attempt_receipt.assert_called_once()
+        self.assertLess(events.index("intent"), events.index("stop-up"))
         self.assertFalse(any("kill" in command for command in system.commands))
 
     def test_post_exposure_baseline_failure_never_restarts_old_enabled_dispatcher(self) -> None:
@@ -310,6 +300,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         operator.receipt = Mock()
         operator.guard = Mock(return_value=guard_snapshot(attempted=3))
         operator.wake = Mock()
+        operator.write_baseline_intent = Mock()
         operator._up = Mock(return_value=guard_snapshot(attempted=3))
         with patch.object(rollout, "validate_runtime", return_value={"Id": current.baseline.container_id}), \
              patch.object(rollout, "render_compose", return_value={"name": "phone11"}), \
@@ -325,6 +316,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         operator.receipt = Mock()
         operator.guard = Mock(return_value=guard_snapshot(attempted=3))
         operator.wake = Mock()
+        operator.write_baseline_intent = Mock()
         operator._up = Mock(return_value=guard_snapshot(attempted=3))
         operator.require_worker_topology = Mock()
         operator.baseline_config, operator.candidate_config = {"name": "baseline"}, {"name": "candidate"}
@@ -342,6 +334,46 @@ class ProfileDndRolloutTests(unittest.TestCase):
             call(rollback_document, current.rollback_compose, stop=None, fence_id=current.guard_fence_id, since_ms=ANY, stopped_phase="baseline-auto-rollback-stopped"),
         ])
         self.assertTrue(any(item.args == ("baseline-auto-rollback",) for item in operator.guard.call_args_list))
+
+    def _assert_pre_mutation_intent_survives_up_fault(self, stage: str) -> None:
+        normalized = rollout.canonical_hash({"same": True})
+        current = pins(
+            nginx__route="baseline", nginx__dnd_exposed=True,
+            migration__receipt_sha256=SHA,
+            rollback__normalized_runtime_sha256=normalized,
+        )
+        document = {"name": "phone11", "services": {"backend": {}}}
+        expected_intent = pin_intent(current, document)
+        operator = rollout.Operator(current, FakeSystem())
+        operator.prepare = Mock()
+        operator.receipt = Mock()
+        operator.guard = Mock(return_value=guard_snapshot())
+        operator.wake = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            state_root = Path(directory)
+            intent_path = state_root / "baseline-intent.json"
+
+            def fail_after_create(*_args, **_kwargs):
+                self.assertEqual(intent_path.read_bytes(), expected_intent)
+                raise rollout.GuardError(stage)
+
+            operator._up = Mock(side_effect=fail_after_create)
+            with patch.object(rollout, "STATE_ROOT", state_root), \
+                 patch.object(rollout, "BASELINE_INTENT", intent_path), \
+                 patch.object(rollout, "ensure_private_directory"), \
+                 patch.object(rollout.os, "fchown"), \
+                 patch.object(rollout, "validate_runtime", return_value={"Id": current.baseline.container_id}), \
+                 patch.object(rollout, "render_compose", return_value=document), \
+                 self.assertRaises(rollout.GuardError) as error:
+                operator.replace_baseline()
+            self.assertEqual(error.exception.stage, stage)
+            self.assertEqual(intent_path.read_bytes(), expected_intent)
+
+    def test_intent_is_durable_before_up_creates_container_then_errors(self) -> None:
+        self._assert_pre_mutation_intent_survives_up_fault("compose_created_then_error")
+
+    def test_intent_is_durable_before_compose_timeout(self) -> None:
+        self._assert_pre_mutation_intent_survives_up_fault("command_timeout")
 
     def test_disabled_rollback_uses_only_disabled_artifact_and_verifies_gate_off(self) -> None:
         normalized = rollout.canonical_hash({"same": True})
@@ -448,35 +480,71 @@ class ProfileDndRolloutTests(unittest.TestCase):
             operator.rollback_preflight()
         health_call.assert_not_called()
 
-    def test_disabled_rollback_accepts_pinned_approved_failed_replacement(self) -> None:
+    def test_disabled_rollback_accepts_intended_replacement_without_post_receipt(self) -> None:
         normalized = rollout.canonical_hash({"same": True})
         current = pins(
             nginx__route="baseline", nginx__dnd_exposed=True,
             migration__receipt_sha256=SHA,
             rollback__normalized_runtime_sha256=normalized,
-            rollback__failed_baseline_attempt_receipt_sha256=SHA2,
         )
         operator = rollout.Operator(current, FakeSystem())
         failed_id = "f" * 64
         operator.named_container_id = Mock(return_value=failed_id)
-        inspect = {"Config": {"Env": ["PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"]}}
-        with patch.object(rollout, "pinned_read", return_value=attempt_receipt(current, container_id=failed_id)), \
-             patch.object(rollout, "validate_runtime", return_value=inspect) as validate, \
+        baseline_config = {"name": "baseline"}
+        intent = pin_intent(current, baseline_config)
+        inspect = {"Id": failed_id, "Image": DIGEST, "State": {"Running": False}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=new-build", "PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"], "Labels": {"com.docker.compose.project": "baseline", "com.docker.compose.service": "backend"}}, "HostConfig": {"PortBindings": {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3000"}]}}}
+        with patch.object(rollout, "pinned_read", return_value=intent), \
+             patch.object(rollout, "one_inspect", return_value=inspect), \
+             patch.object(rollout, "runtime_shape", return_value={"runtime": True}), \
              patch.object(rollout, "normalized_runtime_release", return_value={"same": True}):
             before, stop = operator.rollback_baseline_identity({"name": "baseline"})
         self.assertEqual(before.container_id, failed_id)
         self.assertEqual(stop, (rollout.BASELINE_CONTAINER, failed_id))
-        self.assertEqual(validate.call_args.args[2].container_id, failed_id)
-        self.assertIs(validate.call_args.kwargs["require_healthy"], False)
+
+    def test_disabled_rollback_rejects_intended_container_with_runtime_mismatch(self) -> None:
+        normalized = rollout.canonical_hash({"approved": True})
+        current = pins(
+            nginx__route="baseline", nginx__dnd_exposed=True,
+            migration__receipt_sha256=SHA,
+            rollback__normalized_runtime_sha256=normalized,
+        )
+        operator = rollout.Operator(current, FakeSystem())
+        failed_id = "f" * 64
+        operator.named_container_id = Mock(return_value=failed_id)
+        baseline_config = {"name": "baseline"}
+        intent = pin_intent(current, baseline_config)
+        inspect = {"Id": failed_id, "Image": DIGEST, "State": {"Running": False}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=new-build", "PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"], "Labels": {"com.docker.compose.project": "baseline", "com.docker.compose.service": "backend"}}, "HostConfig": {"PortBindings": {"3000/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3000"}]}}}
+        with patch.object(rollout, "pinned_read", return_value=intent), \
+             patch.object(rollout, "one_inspect", return_value=inspect), \
+             patch.object(rollout, "normalized_runtime_release", return_value={"tampered": True}), \
+             self.assertRaises(rollout.GuardError) as error:
+            operator.rollback_baseline_identity(baseline_config)
+        self.assertEqual(error.exception.stage, "baseline_identity")
+
+    def test_disabled_rollback_rejects_replayed_stale_intent(self) -> None:
+        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        operator = rollout.Operator(current, FakeSystem())
+        failed_id = "f" * 64
+        operator.named_container_id = Mock(return_value=failed_id)
+        baseline_config = {"name": "baseline"}
+        stale_intent = pin_intent(current, baseline_config)
+        object.__setattr__(current, "baseline_operation_id", "22222222-2222-4222-8222-222222222222")
+        with patch.object(rollout, "pinned_read", return_value=stale_intent), \
+             patch.object(rollout, "one_inspect") as inspect, \
+             self.assertRaises(rollout.GuardError) as error:
+            operator.rollback_baseline_identity(baseline_config)
+        self.assertEqual(error.exception.stage, "baseline_intent")
+        inspect.assert_not_called()
 
     def test_disabled_rollback_rejects_unknown_replacement_container(self) -> None:
         current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
         operator = rollout.Operator(current, FakeSystem())
         operator.named_container_id = Mock(return_value="u" * 64)
-        with patch.object(rollout, "validate_runtime") as validate, \
+        with patch.object(rollout, "pinned_read", side_effect=rollout.GuardError("baseline_intent")), \
+             patch.object(rollout, "validate_runtime") as validate, \
              self.assertRaises(rollout.GuardError) as error:
             operator.rollback_baseline_identity({"name": "baseline"})
-        self.assertEqual(error.exception.stage, "baseline_identity")
+        self.assertEqual(error.exception.stage, "baseline_intent")
         validate.assert_not_called()
 
     def test_candidate_replacement_requires_baseline_route_before_stop(self) -> None:
@@ -718,6 +786,25 @@ class ProfileDndRolloutTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), content)
         self.assertGreater(len(writes), 1)
         self.assertEqual(len(fsyncs), 2)
+
+    def test_atomic_intent_publish_is_exclusive_and_fsyncs_file_and_directory(self) -> None:
+        fsyncs: list[int] = []
+        real_fsync = os.fsync
+
+        def tracked_fsync(descriptor):
+            fsyncs.append(descriptor)
+            return real_fsync(descriptor)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(rollout.os, "fchown"), \
+             patch.object(rollout.os, "fsync", side_effect=tracked_fsync):
+            target = Path(directory) / "baseline-intent.json"
+            rollout.atomic_write_exclusive(target, b"first", uid=os.getuid(), gid=os.getgid())
+            with self.assertRaises(rollout.AtomicWriteError) as error:
+                rollout.atomic_write_exclusive(target, b"second", uid=os.getuid(), gid=os.getgid())
+            self.assertFalse(error.exception.committed)
+            self.assertEqual(target.read_bytes(), b"first")
+        self.assertGreaterEqual(len(fsyncs), 3)
 
     def test_cli_exposes_only_the_eight_reviewed_modes(self) -> None:
         modes = (

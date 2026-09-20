@@ -37,7 +37,7 @@ from urllib.parse import urlsplit
 
 SCHEMA = "phone11-profile-dnd-rollout/v1"
 RECEIPT_SCHEMA = "phone11-migration-receipt/v1"
-ATTEMPT_RECEIPT_SCHEMA = "phone11-runtime-attempt-receipt/v1"
+INTENT_SCHEMA = "phone11-runtime-mutation-intent/v1"
 GUARD_SCHEMA = "phone11-profile-dnd-guard/v1"
 PROBE_SCHEMA = "phone11-profile-dnd-probes/v1"
 BASELINE_CONTAINER = "cp11-backend"
@@ -51,7 +51,7 @@ STATE_ROOT = Path("/var/lib/phone11-profile-dnd-rollout")
 ROUTE_SITE = STATE_ROOT / "nginx-site.before"
 ROUTE_RECEIPT = STATE_ROOT / "route-receipt.json"
 BASELINE_RECEIPT = STATE_ROOT / "baseline-receipt.json"
-BASELINE_ATTEMPT_RECEIPT = STATE_ROOT / "baseline-attempt-receipt.json"
+BASELINE_INTENT = STATE_ROOT / "baseline-intent.json"
 CANDIDATE_RECEIPT = STATE_ROOT / "candidate-receipt.json"
 DISABLED_ROLLBACK_RECEIPT = STATE_ROOT / "disabled-rollback-receipt.json"
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -231,6 +231,47 @@ def atomic_write(path: Path, content: bytes, *, mode: int = 0o600, uid: int = 0,
                 pass
 
 
+def atomic_write_exclusive(path: Path, content: bytes, *, mode: int = 0o600, uid: int = 0, gid: int = 0) -> None:
+    """Durably publish complete bytes without replacing an existing path."""
+    descriptor: int | None = None
+    directory_descriptor: int | None = None
+    temporary: str | None = None
+    published = False
+    try:
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        os.fchmod(descriptor, mode)
+        os.fchown(descriptor, uid, gid)
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "short write")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.link(temporary, path, follow_symlinks=False)
+        published = True
+        os.unlink(temporary)
+        temporary = None
+        directory_descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        os.fsync(directory_descriptor)
+        os.close(directory_descriptor)
+        directory_descriptor = None
+    except OSError as error:
+        raise AtomicWriteError(committed=published) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
+        if temporary is not None:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 @contextmanager
 def operator_lock(path: Path = LOCK_FILE):
     descriptor: int | None = None
@@ -291,7 +332,8 @@ class Pins:
     rollback_image: str
     rollback_build: str
     rollback_normalized_runtime_sha256: str
-    failed_baseline_attempt_receipt_sha256: str | None
+    baseline_operation_id: str
+    baseline_intent_sha256: str
     migration_artifacts: tuple[MigrationArtifact, ...]
     migration_verify: Path
     migration_verify_sha256: str
@@ -349,7 +391,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     exact_keys(release, {"sha", "build", "image", "bundle_sha256", "lock_sha256"})
     exact_keys(current, {"baseline", "candidate"})
     exact_keys(compose, {"baseline", "candidate"})
-    exact_keys(rollback, {"image", "build", "normalized_runtime_sha256", "failed_baseline_attempt_receipt_sha256", "compose", "disabled_compose"})
+    exact_keys(rollback, {"image", "build", "normalized_runtime_sha256", "baseline_operation_id", "baseline_intent_sha256", "compose", "disabled_compose"})
     exact_keys(migration, {"artifacts", "verify", "verify_sha256", "database_sha256", "before_catalog_sha256", "after_catalog_sha256", "receipt", "receipt_sha256"})
     exact_keys(probes, {"file", "sha256"})
     exact_keys(guard, {"program", "sha256", "fence_id", "fence_evidence_sha256"})
@@ -362,8 +404,8 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
         guarded(is_sha256(value), "manifest")
     guarded(is_digest(rollback.get("image")) and isinstance(rollback.get("build"), str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", rollback["build"])), "manifest")
     guarded(is_sha256(rollback.get("normalized_runtime_sha256")), "manifest")
-    failed_attempt_sha = rollback.get("failed_baseline_attempt_receipt_sha256")
-    guarded(failed_attempt_sha is None or is_sha256(failed_attempt_sha), "manifest")
+    guarded(isinstance(rollback.get("baseline_operation_id"), str) and bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", rollback["baseline_operation_id"])), "manifest")
+    guarded(is_sha256(rollback.get("baseline_intent_sha256")), "manifest")
     guarded(release["image"] != rollback["image"], "manifest")
     for section, name in ((migration, "verify"), (migration, "receipt"), (probes, "file"), (guard, "program"), (nginx, "site")):
         guarded(isinstance(section.get(name), str) and section[name].startswith("/"), "manifest")
@@ -397,7 +439,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     return Pins(
         release["sha"], release["build"], release["image"], release["bundle_sha256"], release["lock_sha256"],
         baseline, candidate, _compose(compose["baseline"]), _compose(compose["candidate"]),
-        _compose(rollback["compose"]), _compose(rollback["disabled_compose"]), rollback["image"], rollback["build"], rollback["normalized_runtime_sha256"], failed_attempt_sha,
+        _compose(rollback["compose"]), _compose(rollback["disabled_compose"]), rollback["image"], rollback["build"], rollback["normalized_runtime_sha256"], rollback["baseline_operation_id"], rollback["baseline_intent_sha256"],
         tuple(parsed_artifacts), Path(migration["verify"]), migration["verify_sha256"],
         migration["database_sha256"], migration["before_catalog_sha256"], migration["after_catalog_sha256"],
         Path(migration["receipt"]), receipt_sha, Path(probes["file"]), probes["sha256"],
@@ -1210,7 +1252,108 @@ class Operator:
             "before_attempted_notifications": before_attempted_notifications,
         }))
 
-    def validate_baseline_attempt_identity(
+    def baseline_intent_document(self, baseline_config: Mapping[str, Any]) -> Mapping[str, Any]:
+        def runtime_contract(pin: RuntimePin) -> Mapping[str, Any]:
+            return {
+                "container_id": pin.container_id, "image": pin.image,
+                "runtime_sha256": pin.runtime_sha256, "build": pin.build,
+                "replacement_receipt_sha256": pin.replacement_receipt_sha256,
+            }
+
+        def compose_contract(pin: ComposePin) -> Mapping[str, Any]:
+            return {
+                "file": str(pin.path), "sha256": pin.sha256,
+                "rendered_sha256": pin.rendered_sha256, "service": pin.service,
+            }
+
+        manifest_contract = {
+            "schema": SCHEMA,
+            "release": {
+                "sha": self.pins.release_sha, "build": self.pins.release_build,
+                "image": self.pins.image, "bundle_sha256": self.pins.bundle_sha256,
+                "lock_sha256": self.pins.lock_sha256,
+            },
+            "current": {
+                "baseline": runtime_contract(self.pins.baseline),
+                "candidate": runtime_contract(self.pins.candidate),
+            },
+            "compose": {
+                "baseline": compose_contract(self.pins.baseline_compose),
+                "candidate": compose_contract(self.pins.candidate_compose),
+            },
+            "rollback": {
+                "image": self.pins.rollback_image, "build": self.pins.rollback_build,
+                "normalized_runtime_sha256": self.pins.rollback_normalized_runtime_sha256,
+                "baseline_operation_id": self.pins.baseline_operation_id,
+                "compose": compose_contract(self.pins.rollback_compose),
+                "disabled_compose": compose_contract(self.pins.rollback_disabled_compose),
+            },
+            "migration": {
+                "artifacts": [
+                    {"name": item.name, "file": str(item.path), "sha256": item.sha256}
+                    for item in self.pins.migration_artifacts
+                ],
+                "verify": str(self.pins.migration_verify),
+                "verify_sha256": self.pins.migration_verify_sha256,
+                "database_sha256": self.pins.database_sha256,
+                "before_catalog_sha256": self.pins.before_catalog_sha256,
+                "after_catalog_sha256": self.pins.after_catalog_sha256,
+                "receipt": str(self.pins.migration_receipt),
+                "receipt_sha256": self.pins.migration_receipt_sha256,
+            },
+            "probes": {"file": str(self.pins.probes_file), "sha256": self.pins.probes_sha256},
+            "guard": {
+                "program": str(self.pins.guard_program), "sha256": self.pins.guard_sha256,
+                "fence_id": self.pins.guard_fence_id,
+                "fence_evidence_sha256": self.pins.guard_fence_evidence_sha256,
+            },
+            "nginx": {
+                "site": str(self.pins.nginx_site), "site_sha256": self.pins.nginx_site_sha256,
+                "dump_sha256": self.pins.nginx_dump_sha256, "marker": self.pins.nginx_marker,
+                "route": self.pins.route, "dnd_exposed": self.pins.dnd_exposed,
+            },
+            "kamailio": {
+                "config_path": self.pins.kamailio_path,
+                "config_sha256": self.pins.kamailio_sha256,
+                "wake_occurrences": self.pins.wake_occurrences,
+            },
+            "public_origin": self.pins.public_origin,
+        }
+        return {
+            "schema": INTENT_SCHEMA,
+            "operation_id": self.pins.baseline_operation_id,
+            "phase": "replace_baseline",
+            "dnd_exposed": self.pins.dnd_exposed,
+            "manifest_contract_sha256": canonical_hash(manifest_contract),
+            "before_container_id": self.pins.baseline.container_id,
+            "desired": {
+                "container_name": BASELINE_CONTAINER,
+                "image": self.pins.image,
+                "build": self.pins.release_build,
+                "normalized_runtime_sha256": self.pins.rollback_normalized_runtime_sha256,
+                "compose_sha256": self.pins.baseline_compose.sha256,
+                "compose_rendered_sha256": self.pins.baseline_compose.rendered_sha256,
+                "compose_project": baseline_config["name"],
+                "compose_service": self.pins.baseline_compose.service,
+                "runtime_role": "default",
+                "port": BASELINE_PORT,
+                "ordinary_chat_notifications": "1",
+            },
+        }
+
+    def write_baseline_intent(self, baseline_config: Mapping[str, Any]) -> None:
+        ensure_private_directory(STATE_ROOT, create=True)
+        raw = canonical_bytes(self.baseline_intent_document(baseline_config))
+        guarded(sha256_bytes(raw) == self.pins.baseline_intent_sha256, "baseline_intent")
+        atomic_write_exclusive(BASELINE_INTENT, raw)
+
+    def validate_baseline_intent(self, baseline_config: Mapping[str, Any]) -> Mapping[str, Any]:
+        raw = pinned_read(BASELINE_INTENT, self.pins.baseline_intent_sha256, "baseline_intent")
+        intent = strict_json(raw, "baseline_intent")
+        guarded(intent == self.baseline_intent_document(baseline_config), "baseline_intent")
+        return intent
+
+    def validate_desired_baseline_identity(
         self,
         inspect: Mapping[str, Any],
         *,
@@ -1220,7 +1363,8 @@ class Operator:
         container_id = inspect.get("Id")
         state = inspect.get("State")
         labels = inspect.get("Config", {}).get("Labels")
-        env = environment(inspect, "baseline_attempt")
+        env = environment(inspect, "baseline_identity")
+        bindings = inspect.get("HostConfig", {}).get("PortBindings", {}).get(f"{BASELINE_PORT}/tcp")
         guarded(
             isinstance(container_id, str) and bool(re.fullmatch(r"[0-9a-f]{64}", container_id))
             and container_id != before_container_id and inspect.get("Image") == self.pins.image
@@ -1230,73 +1374,34 @@ class Operator:
             and env.get("PHONE11_RUNTIME_ROLE", "default") == "default"
             and env.get("PHONE11_BUILD_SHA") == self.pins.release_build
             and env.get("PORT", str(BASELINE_PORT)) == str(BASELINE_PORT)
-            and env.get("PHONE11_CHAT_NOTIFICATIONS_ENABLED") == "1",
-            "baseline_attempt",
+            and env.get("PHONE11_CHAT_NOTIFICATIONS_ENABLED") == "1"
+            and bindings == [{"HostIp": "127.0.0.1", "HostPort": str(BASELINE_PORT)}],
+            "baseline_identity",
         )
         normalized_sha = canonical_hash(normalized_runtime_release(inspect, normalize_notifications=True))
-        guarded(normalized_sha == self.pins.rollback_normalized_runtime_sha256, "baseline_attempt")
+        guarded(normalized_sha == self.pins.rollback_normalized_runtime_sha256, "baseline_identity")
         return RuntimePin(container_id, self.pins.image, canonical_hash(runtime_shape(inspect)), self.pins.release_build, None)
-
-    def save_baseline_attempt_receipt(self, *, before: RuntimePin, after: RuntimePin) -> None:
-        ensure_private_directory(STATE_ROOT, create=True)
-        guarded(not os.path.lexists(BASELINE_ATTEMPT_RECEIPT), "runtime_attempt_receipt")
-        atomic_write(BASELINE_ATTEMPT_RECEIPT, canonical_bytes({
-            "schema": ATTEMPT_RECEIPT_SCHEMA,
-            "action": "replace_baseline",
-            "compose_sha256": self.pins.baseline_compose.sha256,
-            "compose_rendered_sha256": self.pins.baseline_compose.rendered_sha256,
-            "before_container_id": before.container_id,
-            "before_image": before.image,
-            "before_runtime_sha256": before.runtime_sha256,
-            "before_build": before.build,
-            "after_container_id": after.container_id,
-            "after_image": after.image,
-            "after_runtime_sha256": after.runtime_sha256,
-            "after_normalized_runtime_sha256": self.pins.rollback_normalized_runtime_sha256,
-            "after_build": after.build,
-        }))
-
-    def failed_baseline_attempt_pin(self) -> RuntimePin:
-        digest = self.pins.failed_baseline_attempt_receipt_sha256
-        guarded(digest is not None, "baseline_identity")
-        receipt = strict_json(pinned_read(BASELINE_ATTEMPT_RECEIPT, digest, "runtime_attempt_receipt"), "runtime_attempt_receipt")
-        exact_keys(receipt, {
-            "schema", "action", "compose_sha256", "compose_rendered_sha256",
-            "before_container_id", "before_image", "before_runtime_sha256", "before_build",
-            "after_container_id", "after_image", "after_runtime_sha256",
-            "after_normalized_runtime_sha256", "after_build",
-        }, "runtime_attempt_receipt")
-        guarded(
-            receipt.get("schema") == ATTEMPT_RECEIPT_SCHEMA
-            and receipt.get("action") == "replace_baseline"
-            and receipt.get("compose_sha256") == self.pins.baseline_compose.sha256
-            and receipt.get("compose_rendered_sha256") == self.pins.baseline_compose.rendered_sha256
-            and receipt.get("before_container_id") == self.pins.baseline.container_id
-            and receipt.get("before_image") == self.pins.baseline.image
-            and receipt.get("before_runtime_sha256") == self.pins.baseline.runtime_sha256
-            and receipt.get("before_build") == self.pins.baseline.build
-            and isinstance(receipt.get("after_container_id"), str)
-            and bool(re.fullmatch(r"[0-9a-f]{64}", receipt["after_container_id"]))
-            and receipt.get("after_container_id") != self.pins.baseline.container_id
-            and receipt.get("after_image") == self.pins.image
-            and is_sha256(receipt.get("after_runtime_sha256"))
-            and receipt.get("after_normalized_runtime_sha256") == self.pins.rollback_normalized_runtime_sha256
-            and receipt.get("after_build") == self.pins.release_build,
-            "runtime_attempt_receipt",
-        )
-        return RuntimePin(receipt["after_container_id"], receipt["after_image"], receipt["after_runtime_sha256"], receipt["after_build"], None)
 
     def rollback_baseline_identity(self, baseline_config: Mapping[str, Any]) -> tuple[RuntimePin | None, tuple[str, str] | None]:
         current_id = self.named_container_id(BASELINE_CONTAINER)
         if current_id is None:
             return None, None
-        pin = self.pins.baseline if current_id == self.pins.baseline.container_id else self.failed_baseline_attempt_pin()
-        guarded(current_id == pin.container_id, "baseline_identity")
-        inspect = validate_runtime(
-            self.system, BASELINE_CONTAINER, pin,
-            role="default", port=BASELINE_PORT, require_healthy=False,
-            compose_project=baseline_config["name"], compose_service=self.pins.baseline_compose.service,
-        )
+        if current_id == self.pins.baseline.container_id:
+            pin = self.pins.baseline
+            inspect = validate_runtime(
+                self.system, BASELINE_CONTAINER, pin,
+                role="default", port=BASELINE_PORT, require_healthy=False,
+                compose_project=baseline_config["name"], compose_service=self.pins.baseline_compose.service,
+            )
+        else:
+            self.validate_baseline_intent(baseline_config)
+            inspect = one_inspect(self.system, BASELINE_CONTAINER, "baseline_identity")
+            pin = self.validate_desired_baseline_identity(
+                inspect,
+                before_container_id=self.pins.baseline.container_id,
+                baseline_config=baseline_config,
+            )
+            guarded(pin.container_id == current_id, "baseline_identity")
         env = environment(inspect, "baseline_identity")
         guarded(env.get("PHONE11_CHAT_NOTIFICATIONS_ENABLED") == "1", "baseline_identity")
         guarded(
@@ -1325,11 +1430,12 @@ class Operator:
     def replace_baseline(self) -> None:
         self.prepare()
         self.receipt()
-        guarded(not os.path.lexists(BASELINE_ATTEMPT_RECEIPT), "runtime_attempt_receipt")
+        guarded(not os.path.lexists(BASELINE_INTENT), "baseline_intent")
         before = self.guard("replace-baseline-before", require_fence=True, min_fence_remaining_ms=150_000)
         old = validate_runtime(self.system, BASELINE_CONTAINER, self.pins.baseline, role="default", port=BASELINE_PORT)
         document = render_compose(self.system, self.pins.baseline_compose, container=BASELINE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="default", port=BASELINE_PORT, notifications="1")
         self.wake()
+        self.write_baseline_intent(document)
         try:
             stopped = self._up(
                 document,
@@ -1341,12 +1447,11 @@ class Operator:
             )
             guarded(stopped is not None, "admission_fence")
             replacement = one_inspect(self.system, BASELINE_CONTAINER, "baseline_replacement")
-            attempt_pin = self.validate_baseline_attempt_identity(
+            self.validate_desired_baseline_identity(
                 replacement,
                 before_container_id=self.pins.baseline.container_id,
-                baseline_config=self.baseline_config,
+                baseline_config=document,
             )
-            self.save_baseline_attempt_receipt(before=self.pins.baseline, after=attempt_pin)
             state = replacement.get("State", {})
             guarded(replacement.get("Id") != old.get("Id") and replacement.get("Image") == self.pins.image and state.get("Running") is True and state.get("OOMKilled") is not True and state.get("ExitCode", 0) == 0, "baseline_replacement")
             env = environment(replacement, "baseline_replacement")
