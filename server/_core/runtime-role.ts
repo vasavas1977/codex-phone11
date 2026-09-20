@@ -8,22 +8,22 @@ export interface Phone11RuntimePlan {
   readonly bindsPortExactly: boolean;
 }
 
-export type StopRuntimeService = () => void;
+export type StopRuntimeService = () => void | Promise<void>;
 
 export interface Phone11BackgroundServices {
-  startChatNotificationDispatcher(): void;
+  startChatNotificationDispatcher(): StopRuntimeService;
   startChatMediaRetention(): StopRuntimeService;
   startRecordingAnalysis(): StopRuntimeService;
   startRecordingRetention(): StopRuntimeService;
   startRecordingCapture(): StopRuntimeService;
   startFreeSwitchEventListener(): void;
-  stopFreeSwitchEventListener(): void;
-  shutdownWebSockets(): void;
+  stopFreeSwitchEventListener(): void | Promise<void>;
+  shutdownWebSockets(): void | Promise<void>;
 }
 
 export interface Phone11BackgroundLifecycle {
   start(): void;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export interface Phone11RuntimeLifecycle {
@@ -32,6 +32,11 @@ export interface Phone11RuntimeLifecycle {
 }
 
 function noop(): void {}
+
+const stoppedBackground: Phone11BackgroundLifecycle = {
+  start: noop,
+  stop: async () => undefined,
+};
 
 /**
  * Parses the one process-wide Phone11 backend role. An unknown role must fail
@@ -89,10 +94,12 @@ export function createPhone11BackgroundLifecycle(
   services: Phone11BackgroundServices,
 ): Phone11BackgroundLifecycle {
   if (!plan.startsBackgroundServices) {
-    return { start: noop, stop: noop };
+    return stoppedBackground;
   }
 
   let started = false;
+  let stopPromise: Promise<void> | undefined;
+  let stopChatNotificationDispatcher: StopRuntimeService = noop;
   let stopChatMediaRetention: StopRuntimeService = noop;
   let stopRecordingAnalysis: StopRuntimeService = noop;
   let stopRecordingRetention: StopRuntimeService = noop;
@@ -100,25 +107,107 @@ export function createPhone11BackgroundLifecycle(
 
   return {
     start() {
-      if (started) return;
+      if (started || stopPromise) return;
       started = true;
-      services.startChatNotificationDispatcher();
+      stopChatNotificationDispatcher = services.startChatNotificationDispatcher();
       stopChatMediaRetention = services.startChatMediaRetention();
       stopRecordingAnalysis = services.startRecordingAnalysis();
       stopRecordingRetention = services.startRecordingRetention();
       stopRecordingCapture = services.startRecordingCapture();
       services.startFreeSwitchEventListener();
     },
-    stop() {
+    async stop() {
+      if (stopPromise) return stopPromise;
       if (!started) return;
       started = false;
-      stopRecordingAnalysis();
-      stopRecordingRetention();
-      stopRecordingCapture();
-      stopChatMediaRetention();
-      services.stopFreeSwitchEventListener();
-      services.shutdownWebSockets();
+      const stops: StopRuntimeService[] = [
+        stopChatNotificationDispatcher,
+        stopRecordingAnalysis,
+        stopRecordingRetention,
+        stopRecordingCapture,
+        stopChatMediaRetention,
+        services.stopFreeSwitchEventListener,
+        services.shutdownWebSockets,
+      ];
+      stopPromise = (async () => {
+        const results = await Promise.allSettled(stops.map(stop => {
+          try {
+            return Promise.resolve(stop());
+          } catch (error) {
+            return Promise.reject(error);
+          }
+        }));
+        const failures = results.filter(
+          (result): result is PromiseRejectedResult => result.status === "rejected",
+        );
+        if (failures.length) {
+          throw new AggregateError(
+            failures.map(result => result.reason),
+            "Phone11 background shutdown failed",
+          );
+        }
+      })();
+      return stopPromise;
     },
+  };
+}
+
+export const PHONE11_SHUTDOWN_TIMEOUT_MS = 15_000;
+
+export class Phone11ShutdownTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Phone11 graceful shutdown timed out after ${timeoutMs}ms`);
+    this.name = "Phone11ShutdownTimeoutError";
+  }
+}
+
+export interface Phone11HttpServerLifecycle {
+  close(callback: (error?: Error) => void): void;
+  closeAllConnections?(): void;
+}
+
+/**
+ * Stops HTTP admission immediately, then waits for existing requests and all
+ * background provider work. One shared promise makes repeated signals safe.
+ */
+export function createPhone11Shutdown(
+  server: Phone11HttpServerLifecycle,
+  background: Phone11BackgroundLifecycle,
+  timeoutMs = PHONE11_SHUTDOWN_TIMEOUT_MS,
+): () => Promise<void> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+    throw new Error("Invalid Phone11 shutdown timeout");
+  }
+
+  let shutdownPromise: Promise<void> | undefined;
+  return () => {
+    if (shutdownPromise) return shutdownPromise;
+
+    const httpClosed = new Promise<void>((resolve, reject) => {
+      try {
+        server.close(error => error ? reject(error) : resolve());
+      } catch (error) {
+        reject(error);
+      }
+    });
+    const backgroundStopped = background.stop();
+    shutdownPromise = new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Phone11ShutdownTimeoutError(timeoutMs)), timeoutMs);
+      Promise.all([httpClosed, backgroundStopped]).then(
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        error => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    }).catch(error => {
+      server.closeAllConnections?.();
+      throw error;
+    });
+    return shutdownPromise;
   };
 }
 

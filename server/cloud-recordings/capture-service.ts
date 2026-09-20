@@ -166,10 +166,22 @@ export function configuredRecordingCapture(cleanupOnly=false){
  }
  return service;
 }
-export function startRecordingCaptureService():()=>void {
+export function startRecordingCaptureService(options:{
+ instance?:{tick():Promise<void>};
+ intervalMs?:number;
+}={}):()=>Promise<void> {
  let instance:ReturnType<typeof createRecordingCaptureService>|null;
- try{instance=configuredRecordingCapture(true);}catch{console.warn('[Recordings] Capture configuration unavailable');return ()=>{};}
- if(!instance)return ()=>{};
- let stopped=false;const tick=()=>{if(!stopped)void instance!.tick().catch(()=>console.warn('[Recordings] Capture reconciliation unavailable'));};
- const timer=setInterval(tick,2000) as unknown as NodeJS.Timeout;timer.unref();tick();return ()=>{stopped=true;clearInterval(timer);};
+ try{instance=(options.instance as ReturnType<typeof createRecordingCaptureService>|undefined)??configuredRecordingCapture(true);}catch{console.warn('[Recordings] Capture configuration unavailable');return async()=>{};}
+ if(!instance)return async()=>{};
+ let stopped=false,activeTick:Promise<void>|undefined,stopPromise:Promise<void>|undefined;
+ const tick=()=>{
+  if(stopped||activeTick)return;
+  const current=instance!.tick().catch(()=>console.warn('[Recordings] Capture reconciliation unavailable'));
+  activeTick=current;void current.finally(()=>{if(activeTick===current)activeTick=undefined;});
+ };
+ const timer=setInterval(tick,options.intervalMs??2000) as unknown as NodeJS.Timeout;timer.unref();tick();
+ return ()=>{
+  if(stopPromise)return stopPromise;
+  stopped=true;clearInterval(timer);stopPromise=activeTick??Promise.resolve();return stopPromise;
+ };
 }

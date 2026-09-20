@@ -10,13 +10,14 @@ import {
 
 function services() {
   const stopped = {
+    chatNotification: vi.fn(),
     chatMedia: vi.fn(),
     recordingAnalysis: vi.fn(),
     recordingRetention: vi.fn(),
     recordingCapture: vi.fn(),
   };
   const service: Phone11BackgroundServices = {
-    startChatNotificationDispatcher: vi.fn(),
+    startChatNotificationDispatcher: vi.fn(() => stopped.chatNotification),
     startChatMediaRetention: vi.fn(() => stopped.chatMedia),
     startRecordingAnalysis: vi.fn(() => stopped.recordingAnalysis),
     startRecordingRetention: vi.fn(() => stopped.recordingRetention),
@@ -54,13 +55,18 @@ describe("Phone11 runtime roles", () => {
     expect(service.startRecordingCapture).toHaveBeenCalledOnce();
     expect(service.startFreeSwitchEventListener).toHaveBeenCalledOnce();
 
-    runtime.background.stop();
+    await runtime.background.stop();
+    expect(stopped.chatNotification).toHaveBeenCalledOnce();
     expect(stopped.chatMedia).toHaveBeenCalledOnce();
     expect(stopped.recordingAnalysis).toHaveBeenCalledOnce();
     expect(stopped.recordingRetention).toHaveBeenCalledOnce();
     expect(stopped.recordingCapture).toHaveBeenCalledOnce();
     expect(service.stopFreeSwitchEventListener).toHaveBeenCalledOnce();
     expect(service.shutdownWebSockets).toHaveBeenCalledOnce();
+
+    await runtime.background.stop();
+    expect(stopped.chatNotification).toHaveBeenCalledOnce();
+    expect(service.stopFreeSwitchEventListener).toHaveBeenCalledOnce();
   });
 
   it("keeps an API candidate API-only, on the exact requested port", async () => {
@@ -80,7 +86,7 @@ describe("Phone11 runtime roles", () => {
     expect(findAvailablePort).not.toHaveBeenCalled();
 
     runtime.background.start();
-    runtime.background.stop();
+    await runtime.background.stop();
     for (const effect of [
       service.startChatNotificationDispatcher,
       service.startChatMediaRetention,
@@ -90,6 +96,7 @@ describe("Phone11 runtime roles", () => {
       service.startFreeSwitchEventListener,
       service.stopFreeSwitchEventListener,
       service.shutdownWebSockets,
+      stopped.chatNotification,
       stopped.chatMedia,
       stopped.recordingAnalysis,
       stopped.recordingRetention,

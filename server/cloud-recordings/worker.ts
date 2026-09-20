@@ -62,29 +62,47 @@ export async function processRecordingJob(deps: {
     return "failed" as const;
   } finally { bytes?.fill(0); }
 }
-export function startRecordingAnalysisWorker() {
-  if (process.env.PHONE11_RECORDING_AI_ENABLED !== "true") return () => {};
+export function startRecordingAnalysisWorker(options: {
+  repository?: Repository;
+  workerId?: string;
+  processJob?: typeof processRecordingJob;
+  intervalMs?: number;
+} = {}) {
+  if (process.env.PHONE11_RECORDING_AI_ENABLED !== "true") return async () => {};
   if (!process.env.GEMINI_API_KEY || !process.env.PHONE11_RECORDING_GEMINI_MODEL) {
     console.warn("[RecordingAnalysis] Worker disabled: provider configuration missing");
-    return () => {};
+    return async () => {};
   }
-  const repository = createCloudRecordingRepository();
-  const workerId = `recording-${randomUUID()}`;
-  let running = false, stopped = false;
-  const tick = async () => {
-    if (running || stopped) return;
-    running = true;
-    try { await processRecordingJob({ repository, workerId }); }
-    catch { console.warn("[RecordingAnalysis] Worker tick unavailable"); }
-    finally { running = false; }
+  const repository = options.repository ?? createCloudRecordingRepository();
+  const workerId = options.workerId ?? `recording-${randomUUID()}`;
+  const processJob = options.processJob ?? processRecordingJob;
+  let stopped = false, activeTick: Promise<void> | undefined, stopPromise: Promise<void> | undefined;
+  const tick = () => {
+    if (activeTick || stopped) return;
+    const current = (async () => {
+      try { await processJob({ repository, workerId }); }
+      catch { console.warn("[RecordingAnalysis] Worker tick unavailable"); }
+    })();
+    activeTick = current;
+    void current.finally(() => { if (activeTick === current) activeTick = undefined; });
   };
-  const timer = setInterval(() => void tick(), 5000) as unknown as NodeJS.Timeout;
+  const timer = setInterval(tick, options.intervalMs ?? 5000) as unknown as NodeJS.Timeout;
   timer.unref();
-  void tick();
-  return () => { stopped = true; clearInterval(timer); };
+  tick();
+  return () => {
+    if (stopPromise) return stopPromise;
+    stopped = true;
+    clearInterval(timer);
+    stopPromise = activeTick ?? Promise.resolve();
+    return stopPromise;
+  };
 }
 
 interface PurgeJob { callUuid: string; tenantId: number; storageKey: string | null; purgeToken: string }
+interface PurgeRepository {
+  claimPurge(): Promise<PurgeJob | null>;
+  completePurge(callUuid: string, token: string): Promise<boolean>;
+}
 export async function removeExpiredRecording(job: PurgeJob, root = process.env.RECORDINGS_PATH || "/opt/phone11ai/recordings") {
   if (!job.storageKey) return;
   if (!Number.isSafeInteger(job.tenantId) || job.tenantId <= 0) throw new Error("Invalid recording tenant");
@@ -99,7 +117,7 @@ export async function removeExpiredRecording(job: PurgeJob, root = process.env.R
   try { await fs.unlink(target); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
 export async function processRecordingPurge(deps: {
-  repository: { claimPurge(): Promise<PurgeJob | null>; completePurge(callUuid: string, token: string): Promise<boolean> };
+  repository: PurgeRepository;
   remove?: (job: PurgeJob) => Promise<void>;
 }) {
   const job = await deps.repository.claimPurge();
@@ -107,17 +125,30 @@ export async function processRecordingPurge(deps: {
   await (deps.remove ?? removeExpiredRecording)(job);
   return await deps.repository.completePurge(job.callUuid, job.purgeToken) ? "completed" as const : "stale" as const;
 }
-export function startRecordingRetentionWorker() {
-  if (process.env.PHONE11_RECORDING_RETENTION_ENABLED !== "true") return () => {};
-  const repository = createCloudRecordingRepository();
-  let running = false, stopped = false;
-  const tick = async () => {
-    if (running || stopped) return;
-    running = true;
-    try { for (let count = 0; count < 20 && !stopped; count++) if (await processRecordingPurge({ repository }) === "idle") break; }
-    catch { console.warn("[RecordingRetention] Cleanup unavailable; lease will retry"); }
-    finally { running = false; }
+export function startRecordingRetentionWorker(options: {
+  repository?: PurgeRepository;
+  processPurge?: typeof processRecordingPurge;
+  intervalMs?: number;
+} = {}) {
+  if (process.env.PHONE11_RECORDING_RETENTION_ENABLED !== "true") return async () => {};
+  const repository = options.repository ?? createCloudRecordingRepository();
+  const processPurge = options.processPurge ?? processRecordingPurge;
+  let stopped = false, activeTick: Promise<void> | undefined, stopPromise: Promise<void> | undefined;
+  const tick = () => {
+    if (activeTick || stopped) return;
+    const current = (async () => {
+      try { for (let count = 0; count < 20 && !stopped; count++) if (await processPurge({ repository }) === "idle") break; }
+      catch { console.warn("[RecordingRetention] Cleanup unavailable; lease will retry"); }
+    })();
+    activeTick = current;
+    void current.finally(() => { if (activeTick === current) activeTick = undefined; });
   };
-  const timer = setInterval(() => void tick(), 60_000) as unknown as NodeJS.Timeout; timer.unref(); void tick();
-  return () => { stopped = true; clearInterval(timer); };
+  const timer = setInterval(tick, options.intervalMs ?? 60_000) as unknown as NodeJS.Timeout; timer.unref(); tick();
+  return () => {
+    if (stopPromise) return stopPromise;
+    stopped = true;
+    clearInterval(timer);
+    stopPromise = activeTick ?? Promise.resolve();
+    return stopPromise;
+  };
 }

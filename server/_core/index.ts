@@ -19,7 +19,9 @@ import { fsEventListener } from "../pbx/fs-event-listener";
 import { registerWakeRoutes } from "../push/wake-routes";
 import {
   createPhone11RuntimeLifecycle,
+  createPhone11Shutdown,
   parsePhone11RuntimePort,
+  Phone11ShutdownTimeoutError,
   selectPhone11RuntimePort,
 } from "./runtime-role";
 
@@ -137,15 +139,31 @@ export async function startServer() {
     runtime.background.start();
   });
 
-  if (runtime.plan.startsBackgroundServices) {
-    // The candidate must not install a process-wide shutdown listener: its
-    // workers and event delivery remain owned by the default backend.
-    process.on("SIGTERM", () => {
-      runtime.background.stop();
-      console.log("[api] SIGTERM received, shutting down...");
-      server.close();
-    });
-  }
+  const shutdown = createPhone11Shutdown(server, runtime.background);
+  let signalHandled = false;
+  const handleSignal = (signal: "SIGTERM" | "SIGINT") => {
+    if (signalHandled) return;
+    signalHandled = true;
+    console.log(`[api] ${signal} received, draining...`);
+    void shutdown().then(
+      () => {
+        console.log("[api] Graceful shutdown complete");
+        process.exit(0);
+      },
+      error => {
+        if (error instanceof Phone11ShutdownTimeoutError) {
+          console.error(`[api] ${error.message}`);
+        } else {
+          // Shutdown errors can wrap provider failures. Keep the process result
+          // honest without writing raw provider, database, or credential data.
+          console.error("[api] Graceful shutdown failed");
+        }
+        process.exit(1);
+      },
+    );
+  };
+  process.once("SIGTERM", () => handleSignal("SIGTERM"));
+  process.once("SIGINT", () => handleSignal("SIGINT"));
 }
 
 startServer().catch(console.error);

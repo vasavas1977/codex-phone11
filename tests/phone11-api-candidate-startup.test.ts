@@ -79,6 +79,15 @@ describe("api-candidate process startup", () => {
         child.once("exit", code => code === 0 ? resolve() : reject(new Error(`fixture exited ${code}`)));
         child.once("error", reject);
       });
+      await expect(new Promise<void>((resolve, reject) => {
+        const call = request({ hostname: "127.0.0.1", port, path: "/api/health", timeout: 500 }, response => {
+          response.resume();
+          reject(new Error("candidate listener remained open"));
+        });
+        call.once("error", () => resolve());
+        call.once("timeout", () => { call.destroy(); resolve(); });
+        call.end();
+      })).resolves.toBeUndefined();
       expect(existsSync(marker) ? readFileSync(marker, "utf8") : "").toBe("");
     } finally {
       rmSync(directory, { recursive: true, force: true });

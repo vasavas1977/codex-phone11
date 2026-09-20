@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 
 import {
   createPhone11RuntimeLifecycle,
+  createPhone11Shutdown,
   parsePhone11RuntimePort,
 } from "../../server/_core/runtime-role";
 
@@ -15,7 +16,10 @@ function worker(name: string): void {
 }
 
 const runtime = createPhone11RuntimeLifecycle(process.env.PHONE11_RUNTIME_ROLE, {
-  startChatNotificationDispatcher: () => worker("chat-notification"),
+  startChatNotificationDispatcher: () => {
+    worker("chat-notification");
+    return () => worker("chat-notification-stop");
+  },
   startChatMediaRetention: () => {
     worker("chat-media-retention");
     return () => worker("chat-media-retention-stop");
@@ -52,4 +56,7 @@ const server = createServer((request, response) => {
 });
 
 server.listen(port, "127.0.0.1", () => runtime.background.start());
-process.on("SIGTERM", () => server.close(() => process.exit(0)));
+const shutdown = createPhone11Shutdown(server, runtime.background, 5_000);
+process.on("SIGTERM", () => {
+  void shutdown().then(() => process.exit(0), () => process.exit(1));
+});

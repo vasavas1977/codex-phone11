@@ -35,7 +35,13 @@ interface FsEvent {
   [key: string]: string | undefined;
 }
 
-class FreeSwitchEventListener {
+export interface FreeSwitchEventListenerDependencies {
+  createSocket(): net.Socket;
+  loadConfig(): ReturnType<typeof getFreeSwitchConfig>;
+  reconnectDelayMs: number;
+}
+
+export class FreeSwitchEventListener {
   private socket: net.Socket | null = null;
   private connected = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -43,54 +49,71 @@ class FreeSwitchEventListener {
   private host = "";
   private port = 8021;
   private password = "";
+  private stopped = true;
+
+  constructor(private readonly dependencies: FreeSwitchEventListenerDependencies = {
+    createSocket: () => new net.Socket(),
+    loadConfig: getFreeSwitchConfig,
+    reconnectDelayMs: 5000,
+  }) {}
 
   /**
    * Start the event listener — connect to FreeSWITCH ESL
    */
   start(): void {
+    if (!this.stopped) return;
     // Validate at start so tooling can import the module without live credentials.
-    const config = getFreeSwitchConfig();
+    const config = this.dependencies.loadConfig();
     this.host = config.host;
     this.port = config.port;
     this.password = config.password;
+    this.stopped = false;
     this.connect();
   }
 
   private connect(): void {
-    if (this.socket) {
-      this.socket.destroy();
-    }
+    if (this.stopped) return;
 
-    this.socket = new net.Socket();
+    const previous = this.socket;
+    this.socket = null;
+    previous?.destroy();
+    const socket = this.dependencies.createSocket();
+    this.socket = socket;
     this.buffer = "";
 
-    this.socket.connect(this.port, this.host, () => {
+    socket.connect(this.port, this.host, () => {
       console.log(`[ESL] Connected to FreeSWITCH at ${this.host}:${this.port}`);
     });
 
-    this.socket.on("data", (data) => {
+    socket.on("data", (data) => {
+      if (this.socket !== socket || this.stopped) return;
       this.buffer += data.toString();
       this.processBuffer();
     });
 
-    this.socket.on("close", () => {
+    socket.on("close", () => {
+      if (this.socket !== socket) return;
+      this.socket = null;
       this.connected = false;
+      if (this.stopped) return;
       console.log("[ESL] Connection closed, reconnecting in 5s...");
       this.scheduleReconnect();
     });
 
-    this.socket.on("error", (err) => {
+    socket.on("error", (err) => {
+      if (this.socket !== socket || this.stopped) return;
       console.error("[ESL] Connection error:", err.message);
       this.scheduleReconnect();
     });
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectTimer) return;
+    if (this.stopped || this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      if (this.stopped) return;
       this.connect();
-    }, 5000) as unknown as NodeJS.Timeout;
+    }, this.dependencies.reconnectDelayMs) as unknown as NodeJS.Timeout;
   }
 
   private processBuffer(): void {
@@ -250,14 +273,20 @@ class FreeSwitchEventListener {
   /**
    * Stop the event listener
    */
-  stop(): void {
+  async stop(): Promise<void> {
+    this.stopped = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
-    }
-    if (this.socket) {
-      this.socket.destroy();
+      this.reconnectTimer = null;
     }
     this.connected = false;
+    const socket = this.socket;
+    this.socket = null;
+    if (!socket || socket.closed) return;
+    await new Promise<void>(resolve => {
+      socket.once("close", resolve);
+      socket.destroy();
+    });
   }
 }
 

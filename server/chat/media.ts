@@ -356,9 +356,23 @@ export async function purgeExpiredChatMedia(limit = 100): Promise<number> {
   finally { db.release(); }
 }
 
-export function startChatMediaRetention(): () => void {
-  if (!process.env.PHONE11_CHAT_MEDIA_PATH) return () => undefined;
-  const run = () => purgeExpiredChatMedia().catch(() => undefined);
-  run(); const timer = setInterval(run, 15 * 60 * 1000) as unknown as NodeJS.Timeout; timer.unref();
-  return () => clearInterval(timer);
+export function startChatMediaRetention(options: {
+  enabled?: boolean;
+  purge?: () => Promise<number>;
+  intervalMs?: number;
+} = {}): () => Promise<void> {
+  if (!(options.enabled ?? !!process.env.PHONE11_CHAT_MEDIA_PATH)) return async () => undefined;
+  const purge = options.purge ?? purgeExpiredChatMedia;
+  let stopped = false, activeTick: Promise<void> | undefined, stopPromise: Promise<void> | undefined;
+  const run = () => {
+    if (stopped || activeTick) return;
+    const current = purge().then(() => undefined, () => undefined);
+    activeTick = current;
+    void current.finally(() => { if (activeTick === current) activeTick = undefined; });
+  };
+  run(); const timer = setInterval(run, options.intervalMs ?? 15 * 60 * 1000) as unknown as NodeJS.Timeout; timer.unref();
+  return () => {
+    if (stopPromise) return stopPromise;
+    stopped = true; clearInterval(timer); stopPromise = activeTick ?? Promise.resolve(); return stopPromise;
+  };
 }
