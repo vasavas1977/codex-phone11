@@ -42,28 +42,33 @@ catalog fingerprint remained unchanged and matched on both attempts.
   SQL artifact, and the pinned artifact hash;
 - keeps database credentials inside the backend container and suppresses raw
   database diagnostics;
-- obtains a fixed transaction advisory lock with `lock_timeout = '2s'` and
-  applies under `statement_timeout = '30s'`;
-- revalidates the exact identity and pre-migration catalog in the same
+- obtains a fixed transaction advisory lock with `lock_timeout = '2s'` before
+  reading the pinned identity/catalog baseline, and applies under
+  `statement_timeout = '30s'`;
+- revalidates the exact identity and pre-migration catalog in the same locked
   transaction as the DDL;
 - rejects missing, partial, pre-existing, differently owned, RLS-enabled, or
   externally granted prerequisites/targets;
-- verifies the exact post-migration columns, constraints, indexes, ownership,
-  grants, policies, and absence of unrelated scoped catalog changes;
-- writes an exclusive, root-owned mode `0600`
-  `phone11-migration-receipt/v1` only after commit;
+- verifies the exact post-migration columns, constraints, index definitions,
+  ownership, grants, policies, and absence of unrelated scoped catalog changes
+  **before commit**, using one contract shared with the outer operator check;
+- atomically publishes an exclusive, root-owned mode `0600`
+  `phone11-migration-receipt/v1` only after commit, so an interrupted write
+  cannot expose a partial final receipt;
 - provides `--recover-receipt` as a read-only recovery path if commit succeeds
   but receipt creation fails. Recovery re-proves the exact post-state and
-  refuses drift before writing the missing receipt.
+  refuses drift before writing the missing receipt, or validates an already
+  complete receipt left by a failure after atomic publication.
 
 ## Rehearsal evidence
 
 The automated suite ran against a real disposable PostgreSQL 17 cluster and
-passed 10/10 checks. It covers the immutable artifact pin, exact post-state,
+passed 12/12 checks. It covers the immutable artifact pin, exact post-state,
 unrelated drift rejection, identity/policy rejection, secure file handling,
-exclusive receipt creation and recovery verification, successful DDL,
-re-apply rejection, incompatible-prerequisite rollback, and advisory-lock
-timeout rollback.
+exclusive atomic receipt creation and recovery verification, partial-write
+cleanup, successful guarded DDL, pre-commit rollback when inherited default
+grants alter the target shape, re-apply rejection, incompatible-prerequisite
+rollback, and advisory-lock timeout rollback.
 
 Commands executed:
 

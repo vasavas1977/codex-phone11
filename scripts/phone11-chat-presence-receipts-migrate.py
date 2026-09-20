@@ -21,6 +21,7 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -164,8 +165,9 @@ const fs = require("node:fs");
 const crypto = require("node:crypto");
 const pg = require("pg");
 const action = process.argv[1];
-const expectedIdentity = "6901e1f28e6fc33ebba8eefaa8708e663f1145a22ccdeb5bdc960cd849b4a552";
-const expectedCatalog = "c1bc10833710e9ceb2a25e0f713c384fc25d70982cd7862e1f6aceaa35526f6c";
+const contract = JSON.parse(process.argv[2]);
+const expectedIdentity = contract.database_fingerprint;
+const expectedCatalog = contract.before_catalog_fingerprint;
 const names = [
   "users", "tenants", "tenant_memberships", "user_extensions", "extensions",
   "phone11_chat_conversations", "phone11_chat_members", "phone11_chat_messages",
@@ -263,6 +265,68 @@ async function catalog(client) {
     ORDER BY tablename,policyname`, [names])).rows;
   return {relations, columns, constraints, indexes, grants, policies};
 }
+function withoutTargets(value) {
+  const targets = new Set(contract.targets);
+  const result = {};
+  for (const section of ["relations", "columns", "constraints", "indexes", "grants"]) {
+    const key = section === "relations" ? "name" : "table_name";
+    result[section] = value[section].filter(row => !targets.has(row[key]));
+  }
+  result.policies = value.policies.filter(row => !targets.has(row.tablename));
+  return result;
+}
+function equal(left, right) { return canonical(left) === canonical(right); }
+function verifyAfter(before, after) {
+  if (sha(before) !== expectedCatalog || !equal(withoutTargets(before), withoutTargets(after))) {
+    throw new Error("catalog_drift");
+  }
+  const targets = new Set(contract.targets);
+  const targetRows = (section) => after[section].filter(row =>
+    targets.has(section === "relations" ? row.name : section === "policies" ? row.tablename : row.table_name));
+  const relations = targetRows("relations");
+  if (relations.length !== contract.targets.length ||
+      !equal(relations.map(row => row.name).sort(), [...contract.targets].sort()) ||
+      !relations.every(row => row.relkind === "r" && row.owner === contract.owner &&
+        row.rls === false && row.force_rls === false)) throw new Error("relations");
+  const columns = targetRows("columns");
+  for (const table of contract.targets) {
+    const actual = columns.filter(row => row.table_name === table).map(row =>
+      [row.column_name, row.data_type, row.not_null, row.default_expr]);
+    if (!equal(actual, contract.columns[table])) throw new Error("columns");
+  }
+  const constraints = targetRows("constraints");
+  for (const table of contract.targets) {
+    const actual = constraints.filter(row => row.table_name === table);
+    if (actual.length !== contract.constraints[table].length ||
+        !actual.every(row => row.validated === true && row.deferrable === false) ||
+        !equal(actual.map(row => row.definition).sort(), [...contract.constraints[table]].sort())) {
+      throw new Error("constraints");
+    }
+  }
+  const indexes = Object.fromEntries(targetRows("indexes").map(row =>
+    [row.name, {table_name: row.table_name, definition: row.definition}]));
+  if (!equal(indexes, contract.indexes)) throw new Error("indexes");
+  const grants = targetRows("grants");
+  for (const table of contract.targets) {
+    const actual = grants.filter(row => row.table_name === table);
+    if (actual.length !== contract.privileges.length ||
+        !equal(actual.map(row => row.privilege_type).sort(), [...contract.privileges].sort()) ||
+        !actual.every(row => row.grantee === contract.owner && row.is_grantable === "YES")) {
+      throw new Error("grants");
+    }
+  }
+  if (targetRows("policies").length !== 0) throw new Error("policies");
+  const afterFingerprint = sha(after);
+  const verification = {
+    source_base_sha: contract.source_base_sha,
+    artifact_sha256: contract.artifact_sha256,
+    database_fingerprint: contract.database_fingerprint,
+    before_catalog_fingerprint: contract.before_catalog_fingerprint,
+    after_catalog_fingerprint: afterFingerprint,
+    added_tables: [...contract.targets].sort()
+  };
+  return {after_catalog_fingerprint: afterFingerprint, verification_sha256: sha(verification)};
+}
 (async () => {
   const client = new pg.Client(config());
   try {
@@ -271,6 +335,9 @@ async function catalog(client) {
     await client.query(action === "apply" ? "BEGIN" : "BEGIN TRANSACTION READ ONLY");
     await client.query("SET LOCAL statement_timeout='30000ms'");
     await client.query("SET LOCAL lock_timeout='2000ms'");
+    if (action === "apply") await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended('phone11-chat-presence-receipts-live-delta-20260920', 0))"
+    );
     const beforeIdentity = await identity(client);
     const beforeCatalog = await catalog(client);
     if (sha(beforeIdentity) !== expectedIdentity ||
@@ -278,10 +345,18 @@ async function catalog(client) {
       throw new Error("pin");
     }
     if (action !== "apply") {
+      let nodeVerification;
+      if (action === "recover") {
+        const reconstructedBefore = withoutTargets(beforeCatalog);
+        nodeVerification = verifyAfter(reconstructedBefore, beforeCatalog);
+      }
       await client.query("ROLLBACK");
       const result = {ok: true, action, identity_fingerprint: sha(beforeIdentity),
         catalog_fingerprint: sha(beforeCatalog)};
-      if (action === "recover") result.catalog = beforeCatalog;
+      if (action === "recover") {
+        result.catalog = beforeCatalog;
+        result.node_verification = nodeVerification;
+      }
       console.log(JSON.stringify(result));
       return;
     }
@@ -290,9 +365,10 @@ async function catalog(client) {
     const afterIdentity = await identity(client);
     const afterCatalog = await catalog(client);
     if (sha(afterIdentity) !== expectedIdentity) throw new Error("identity");
+    const nodeVerification = verifyAfter(beforeCatalog, afterCatalog);
     await client.query("COMMIT");
     console.log(JSON.stringify({ok: true, action, identity_fingerprint: sha(afterIdentity),
-      before_catalog: beforeCatalog, after_catalog: afterCatalog}));
+      before_catalog: beforeCatalog, after_catalog: afterCatalog, node_verification: nodeVerification}));
   } catch (_error) {
     try { await client.query("ROLLBACK"); } catch (_ignored) {}
     console.log(JSON.stringify({ok: false, error: "MIGRATION_BLOCKED"}));
@@ -317,6 +393,7 @@ def run_database(action: str, sql: bytes = b"") -> Mapping[str, Any]:
                 "-e",
                 NODE_PROGRAM,
                 action,
+                json.dumps(verification_contract(), sort_keys=True, separators=(",", ":")),
             ],
             input=sql,
             stdout=subprocess.PIPE,
@@ -399,6 +476,44 @@ EXPECTED_CONSTRAINT_DEFINITIONS = {
     },
 }
 
+EXPECTED_INDEXES = {
+    "phone11_chat_presence_sessions_pkey": {
+        "table_name": "phone11_chat_presence_sessions",
+        "definition": "CREATE UNIQUE INDEX phone11_chat_presence_sessions_pkey ON public.phone11_chat_presence_sessions USING btree (tenant_id, user_id, session_id)",
+    },
+    "phone11_chat_presence_sessions_fresh": {
+        "table_name": "phone11_chat_presence_sessions",
+        "definition": "CREATE INDEX phone11_chat_presence_sessions_fresh ON public.phone11_chat_presence_sessions USING btree (tenant_id, user_id, lease_expires_at DESC)",
+    },
+    "phone11_chat_read_receipts_pkey": {
+        "table_name": "phone11_chat_read_receipts",
+        "definition": "CREATE UNIQUE INDEX phone11_chat_read_receipts_pkey ON public.phone11_chat_read_receipts USING btree (tenant_id, conversation_id, message_id, reader_id)",
+    },
+    "phone11_chat_read_receipts_sender_lookup": {
+        "table_name": "phone11_chat_read_receipts",
+        "definition": "CREATE INDEX phone11_chat_read_receipts_sender_lookup ON public.phone11_chat_read_receipts USING btree (tenant_id, conversation_id, message_id, read_at, reader_id)",
+    },
+}
+
+FULL_PRIVILEGES = {"DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE"}
+
+
+def verification_contract() -> dict[str, Any]:
+    """One contract consumed by both the in-transaction and operator checks."""
+
+    return {
+        "source_base_sha": SOURCE_BASE_SHA,
+        "artifact_sha256": EXPECTED_ARTIFACT_SHA256,
+        "database_fingerprint": EXPECTED_DATABASE_FINGERPRINT,
+        "before_catalog_fingerprint": EXPECTED_BEFORE_CATALOG_FINGERPRINT,
+        "owner": EXPECTED_OWNER,
+        "targets": sorted(TARGET_TABLES),
+        "columns": {table: [list(value) for value in values] for table, values in EXPECTED_COLUMNS.items()},
+        "constraints": {table: sorted(values) for table, values in EXPECTED_CONSTRAINT_DEFINITIONS.items()},
+        "indexes": EXPECTED_INDEXES,
+        "privileges": sorted(FULL_PRIVILEGES),
+    }
+
 
 def verify_after(document: Mapping[str, Any]) -> tuple[str, str]:
     guarded(document.get("identity_fingerprint") == EXPECTED_DATABASE_FINGERPRINT, "verification")
@@ -438,33 +553,38 @@ def verify_after(document: Mapping[str, Any]) -> tuple[str, str]:
 
     constraints = target_rows(after, "constraints")
     for table, expected in EXPECTED_CONSTRAINT_DEFINITIONS.items():
+        table_constraints = [constraint for constraint in constraints if constraint.get("table_name") == table]
         actual = {
             constraint.get("definition")
-            for constraint in constraints
-            if constraint.get("table_name") == table
-            and constraint.get("validated") is True
+            for constraint in table_constraints
         }
-        guarded(actual == expected, "verification")
+        guarded(
+            len(table_constraints) == len(expected)
+            and actual == expected
+            and all(
+                constraint.get("validated") is True
+                and constraint.get("deferrable") is False
+                for constraint in table_constraints
+            ),
+            "verification",
+        )
 
     indexes = target_rows(after, "indexes")
-    index_names = {index.get("name") for index in indexes}
-    guarded(
-        index_names
-        == {
-            "phone11_chat_presence_sessions_pkey",
-            "phone11_chat_presence_sessions_fresh",
-            "phone11_chat_read_receipts_pkey",
-            "phone11_chat_read_receipts_sender_lookup",
-        },
-        "verification",
-    )
+    actual_indexes = {
+        index.get("name"): {
+            "table_name": index.get("table_name"),
+            "definition": index.get("definition"),
+        }
+        for index in indexes
+    }
+    guarded(actual_indexes == EXPECTED_INDEXES, "verification")
 
     grants = target_rows(after, "grants")
-    full_privileges = {"DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE"}
     for table in TARGET_TABLES:
         table_grants = [grant for grant in grants if grant.get("table_name") == table]
         guarded(
-            {grant.get("privilege_type") for grant in table_grants} == full_privileges
+            len(table_grants) == len(FULL_PRIVILEGES)
+            and {grant.get("privilege_type") for grant in table_grants} == FULL_PRIVILEGES
             and all(
                 grant.get("grantee") == EXPECTED_OWNER
                 and grant.get("is_grantable") == "YES"
@@ -483,7 +603,17 @@ def verify_after(document: Mapping[str, Any]) -> tuple[str, str]:
         "after_catalog_fingerprint": after_fingerprint,
         "added_tables": sorted(TARGET_TABLES),
     }
-    return after_fingerprint, sha256_bytes(canonical_bytes(verification))
+    verification_sha256 = sha256_bytes(canonical_bytes(verification))
+    node_verification = document.get("node_verification")
+    if node_verification is not None:
+        guarded(
+            node_verification == {
+                "after_catalog_fingerprint": after_fingerprint,
+                "verification_sha256": verification_sha256,
+            },
+            "verification",
+        )
+    return after_fingerprint, verification_sha256
 
 
 def verify_recovery(document: Mapping[str, Any]) -> tuple[str, str]:
@@ -499,6 +629,7 @@ def verify_recovery(document: Mapping[str, Any]) -> tuple[str, str]:
             "identity_fingerprint": document.get("identity_fingerprint"),
             "before_catalog": before,
             "after_catalog": after,
+            "node_verification": document.get("node_verification"),
         },
     )
 
@@ -511,6 +642,8 @@ def write_receipt(
     expected_gid: int = 0,
 ) -> None:
     guarded(path.is_absolute(), "receipt")
+    descriptor: int | None = None
+    temporary: str | None = None
     try:
         parent = path.parent.lstat()
         guarded(
@@ -531,12 +664,9 @@ def write_receipt(
                 "verification_sha256": verification_sha256,
             },
         )
-        descriptor = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         try:
+            os.fchmod(descriptor, 0o600)
             os.fchown(descriptor, expected_uid, expected_gid)
             view = memoryview(receipt)
             while view:
@@ -554,6 +684,21 @@ def write_receipt(
             )
         finally:
             os.close(descriptor)
+            descriptor = None
+        os.link(temporary, path, follow_symlinks=False)
+        os.unlink(temporary)
+        temporary = None
+        published = path.lstat()
+        guarded(
+            stat.S_ISREG(published.st_mode)
+            and not stat.S_ISLNK(published.st_mode)
+            and published.st_uid == expected_uid
+            and published.st_gid == expected_gid
+            and stat.S_IMODE(published.st_mode) == 0o600
+            and published.st_nlink == 1
+            and published.st_size == len(receipt),
+            "receipt",
+        )
         directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory)
@@ -563,6 +708,39 @@ def write_receipt(
         raise
     except OSError as error:
         raise MigrationError("receipt") from error
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def verify_existing_receipt(
+    path: Path,
+    verification_sha256: str,
+    *,
+    expected_uid: int = 0,
+    expected_gid: int = 0,
+) -> None:
+    expected = canonical_bytes(
+        {
+            "schema": RECEIPT_SCHEMA,
+            "status": "applied",
+            "artifact_sha256": EXPECTED_ARTIFACT_SHA256,
+            "database_fingerprint": EXPECTED_DATABASE_FINGERPRINT,
+            "verification_sha256": verification_sha256,
+        },
+    )
+    guarded(
+        secure_read(path, expected_uid=expected_uid, expected_gid=expected_gid) == expected,
+        "receipt",
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -593,14 +771,20 @@ def run(arguments: argparse.Namespace) -> int:
             print("migration=PREPARE_READY apply=NOT_RUN")
             return 0
         guarded(arguments.receipt is not None, "arguments")
-        guarded(not os.path.lexists(arguments.receipt), "receipt")
         if arguments.recover_receipt:
             document = run_database("recover")
+            guarded(isinstance(document.get("node_verification"), Mapping), "verification")
             _after_fingerprint, verification_sha256 = verify_recovery(document)
+            if os.path.lexists(arguments.receipt):
+                verify_existing_receipt(arguments.receipt, verification_sha256)
+                print("migration=ALREADY_APPLIED receipt=ALREADY_PRESENT")
+                return 0
             write_receipt(arguments.receipt, verification_sha256)
             print("migration=ALREADY_APPLIED receipt=RECOVERED")
             return 0
+        guarded(not os.path.lexists(arguments.receipt), "receipt")
         document = run_database("apply", sql)
+        guarded(isinstance(document.get("node_verification"), Mapping), "verification")
         _after_fingerprint, verification_sha256 = verify_after(document)
         write_receipt(arguments.receipt, verification_sha256)
         print("migration=APPLIED receipt=WRITTEN")

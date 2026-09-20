@@ -54,12 +54,10 @@ def synthetic_catalog(*, include_targets: bool) -> dict:
             catalog["constraints"].append({"table_name": table, "name": f"constraint_{index}", "type": "c", "validated": True, "deferrable": False, "definition": definition})
         for privilege in sorted(FULL_PRIVILEGES):
             catalog["grants"].append({"table_name": table, "grantee": "phone11ai", "privilege_type": privilege, "is_grantable": "YES"})
-    catalog["indexes"].extend([
-        {"table_name": "phone11_chat_presence_sessions", "name": "phone11_chat_presence_sessions_pkey", "definition": "pkey"},
-        {"table_name": "phone11_chat_presence_sessions", "name": "phone11_chat_presence_sessions_fresh", "definition": "fresh"},
-        {"table_name": "phone11_chat_read_receipts", "name": "phone11_chat_read_receipts_pkey", "definition": "pkey"},
-        {"table_name": "phone11_chat_read_receipts", "name": "phone11_chat_read_receipts_sender_lookup", "definition": "lookup"},
-    ])
+    catalog["indexes"].extend(
+        {"name": name, **definition}
+        for name, definition in operator.EXPECTED_INDEXES.items()
+    )
     return catalog
 
 
@@ -153,6 +151,12 @@ class OperatorUnitTests(unittest.TestCase):
             self.assertEqual(receipt["status"], "applied")
             self.assertEqual(receipt["artifact_sha256"], operator.EXPECTED_ARTIFACT_SHA256)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            operator.verify_existing_receipt(
+                path,
+                "1" * 64,
+                expected_uid=os.getuid(),
+                expected_gid=os.getgid(),
+            )
             with self.assertRaises(operator.MigrationError):
                 operator.write_receipt(
                     path,
@@ -160,6 +164,22 @@ class OperatorUnitTests(unittest.TestCase):
                     expected_uid=os.getuid(),
                     expected_gid=os.getgid(),
                 )
+
+    def test_receipt_write_failure_never_publishes_partial_final_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            path = root / "receipt.json"
+            with patch.object(operator.os, "write", side_effect=OSError("simulated")):
+                with self.assertRaises(operator.MigrationError):
+                    operator.write_receipt(
+                        path,
+                        "1" * 64,
+                        expected_uid=os.getuid(),
+                        expected_gid=os.getgid(),
+                    )
+            self.assertFalse(path.exists())
+            self.assertEqual(list(root.iterdir()), [])
 
 
 BASELINE = r"""
@@ -271,14 +291,7 @@ class DisposablePostgresTests(unittest.TestCase):
     def apply_delta(self, database: str) -> subprocess.CompletedProcess:
         return self.psql_run(database, "BEGIN;\n" + SQL.read_text() + "\nCOMMIT;\n")
 
-    def node_snapshot(self, database: str) -> dict:
-        pin_check = """    if (sha(beforeIdentity) !== expectedIdentity ||
-        (action !== \"recover\" && sha(beforeCatalog) !== expectedCatalog)) {
-      throw new Error(\"pin\");
-    }
-"""
-        program = operator.NODE_PROGRAM.replace(pin_check, "")
-        self.assertNotEqual(program, operator.NODE_PROGRAM)
+    def node_environment(self, database: str) -> dict[str, str]:
         environment = os.environ.copy()
         environment.update({
             "PG_HOST": "127.0.0.1",
@@ -288,24 +301,56 @@ class DisposablePostgresTests(unittest.TestCase):
             "PG_DATABASE": database,
             "PG_SSL": "false",
         })
+        return environment
+
+    def node_snapshot(self, database: str) -> dict:
+        pin_check = """    if (sha(beforeIdentity) !== expectedIdentity ||
+        (action !== \"recover\" && sha(beforeCatalog) !== expectedCatalog)) {
+      throw new Error(\"pin\");
+    }
+"""
+        program = operator.NODE_PROGRAM.replace(pin_check, "")
+        self.assertNotEqual(program, operator.NODE_PROGRAM)
+        recover_check = """      if (action === \"recover\") {
+        const reconstructedBefore = withoutTargets(beforeCatalog);
+        nodeVerification = verifyAfter(reconstructedBefore, beforeCatalog);
+      }
+"""
+        program = program.replace(recover_check, "")
+        self.assertNotEqual(program, operator.NODE_PROGRAM)
         result = subprocess.run(
-            [self.node, "-e", program, "recover"],
+            [self.node, "-e", program, "recover", json.dumps(operator.verification_contract())],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env=environment,
+            env=self.node_environment(database),
             check=False,
             timeout=40,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def node_apply(self, database: str, before: dict) -> subprocess.CompletedProcess:
+        contract = operator.verification_contract()
+        contract["database_fingerprint"] = before["identity_fingerprint"]
+        contract["before_catalog_fingerprint"] = before["catalog_fingerprint"]
+        return subprocess.run(
+            [self.node, "-e", operator.NODE_PROGRAM, "apply", json.dumps(contract)],
+            input=SQL.read_text(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self.node_environment(database),
+            check=False,
+            timeout=40,
+        )
+
     def test_real_postgres_success_and_reapply_rejection(self) -> None:
         database = "phone11_success"
         self.new_database(database)
         before = self.node_snapshot(database)
-        first = self.apply_delta(database)
+        first = self.node_apply(database, before)
         self.assertEqual(first.returncode, 0, first.stderr)
         after = self.node_snapshot(database)
         with (
@@ -329,6 +374,25 @@ class DisposablePostgresTests(unittest.TestCase):
         result = self.apply_delta(database)
         self.assertNotEqual(result.returncode, 0)
         probe = self.psql_run(database, "SELECT to_regclass('phone11_chat_presence_sessions') IS NULL AND to_regclass('phone11_chat_read_receipts') IS NULL;", check=True)
+        self.assertIn("t", probe.stdout)
+
+    def test_in_transaction_post_verification_rolls_back_default_grant_drift(self) -> None:
+        database = "phone11_default_grant"
+        self.new_database(database)
+        self.psql_run("postgres", "CREATE ROLE phone11_leak;", check=True)
+        self.psql_run(
+            database,
+            "ALTER DEFAULT PRIVILEGES FOR ROLE phone11ai IN SCHEMA public GRANT SELECT ON TABLES TO phone11_leak;",
+            check=True,
+        )
+        before = self.node_snapshot(database)
+        result = self.node_apply(database, before)
+        self.assertNotEqual(result.returncode, 0)
+        probe = self.psql_run(
+            database,
+            "SELECT to_regclass('phone11_chat_presence_sessions') IS NULL AND to_regclass('phone11_chat_read_receipts') IS NULL;",
+            check=True,
+        )
         self.assertIn("t", probe.stdout)
 
     def test_real_postgres_advisory_lock_timeout_rolls_back(self) -> None:
