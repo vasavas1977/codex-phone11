@@ -131,3 +131,27 @@ backend release; do not present them as live features of this package alone.
 - The rollout operator is held for correction after independent review found
   transaction, failure rollback, release identity and idle-window race issues.
   No live schema or backend replacement is authorized by passing source tests.
+
+## Backend follow-up verification — 21 September, after Build 77
+
+- Rollout recovery correction `4e038d11d8e4caf920f8945a964f8cf6b6bf6ad8`
+  passed independent review for the final crash-gap scope. Durable pre-mutation
+  intent permits recovery after Compose creates a replacement and then fails;
+  unknown runtime identities still fail closed. Validation: 33 rollout tests,
+  34 existing parallel-API tests and 11 candidate-preparation tests passed.
+- Runtime drain `741ac46` plus ordering correction
+  `d05a32ab4e80db25d681a75a08d124e3819c295b` closes HTTP admission, waits for
+  admitted handlers, then stops and drains background workers within one
+  15-second deadline. Timeout remains a failure with best-effort cleanup.
+  The lead inspected the correction and regression test addressing the
+  independent review's producer-after-worker-stop finding. Validation: 52
+  focused tests, full TypeScript and diff checks passed.
+- These changes are source-only. They cannot change shutdown behavior of the
+  already-running old server. No backend image, migration or deployment was
+  performed during this follow-up.
+- Deployment remains pending a concrete, reviewed host maintenance procedure
+  and artifacts. The rollout operator still requires an uncommissioned external
+  admission fence; source approval does not satisfy that guard. The inspection
+  found no existing source implementation of that fence. Do not manufacture
+  evidence or bypass it. Resolve the bounded maintenance contract explicitly
+  before trying to activate the profile/DND/presence server release.
