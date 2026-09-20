@@ -248,6 +248,10 @@ export default function ChatRoomScreen() {
           : "Private conversation"
       : "";
   usePresencePolling(chat.workspace?.id, directPeerId ? [directPeerId] : [], Boolean(ownsWorkspace && directPeerId));
+  const mentionPresenceIds = mentionOpen && details && actionIsCurrent(detailsScope.current)
+    ? details.members.map(member => member.id)
+    : [];
+  usePresencePolling(chat.workspace?.id, mentionPresenceIds, Boolean(ownsWorkspace && mentionOpen && mentionPresenceIds.length));
   useFocusEffect(useCallback(() => {
     setTypingFocused(true);
     return () => {
@@ -1798,6 +1802,7 @@ export default function ChatRoomScreen() {
                       <MentionPicker
                         people={details && actionIsCurrent(detailsScope.current) ? details.members : []}
                         query={mentionTrigger?.query || ""}
+                        tenantId={chat.workspace?.id}
                         loading={mentionLoading}
                         onPick={pickMention}
                       />
