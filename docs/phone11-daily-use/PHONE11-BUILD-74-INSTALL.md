@@ -22,6 +22,18 @@ The receipt implementation passed 79 focused tests and 43 disposable PostgreSQL 
 
 The known working live backend image `sha256:d42c70f34d5062bff779c235dd2b6e415bede3b3a86b9de73892acf35b392619` was rechecked running without replacement during preparation. Parallel API rollout is reviewed separately so SIP wake and existing workers remain running.
 
+## Two-iPhone installation checkpoint
+
+Build 74 was installed in place on both paired physical pilot iPhones without
+uninstalling Phone11. Fresh device inventory reports version `1.0.0`, bundle
+version `74` on both the iPhone 17 Pro Max and iPhone 15 Pro Max. The first
+device launched to the conference deep link. The second device rejected launch
+while locked; no unlock was attempted or bypassed.
+
+This closes package installation only. It does not mark any camera, microphone,
+remote media, lifecycle, SIP-boundary, or eviction observation as passed. Both
+phones must be unlocked and the manual physical matrix must still be completed.
+
 After server rollout, use the two-iPhone acceptance steps in [the receipt design](./READ-RECEIPTS-DESIGN-20260920.md), including background-notification exclusion, named group readers, thread isolation, and calling regression checks. Package verification is not handset or live delivery evidence.
 
 ## Test now on both iPhones

@@ -113,6 +113,11 @@ derived-not-raw behavior. Provider proof receipt SHA-256:
 No interpreter, bot, recording, transcript, agent dispatch, eviction, or media
 session was started.
 
+The verified signed Build 74 package was then installed in place on both paired
+physical pilot iPhones. Device inventory reports bundle version `74` on each.
+One phone launched the conference route; the other remained locked and refused
+foreground launch, so no physical media result has been inferred.
+
 ## Guarded migration and fixture behavior
 
 `server/meetings/plain-video-admission-live-delta-20260920.sql` creates only:
