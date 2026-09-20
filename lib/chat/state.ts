@@ -22,12 +22,14 @@ function newId() {
   });
 }
 export function chatDraftKey(roomId: string, rootId?: string) { return rootId ? `${roomId}:thread:${rootId}` : roomId; }
-export function chatError(error: unknown): string {
+export function chatError(error: unknown, directMessageBlocked = false): string {
   const code = (error as any)?.data?.code;
   if (code === "UNAUTHORIZED") return "Your session expired. Sign in again to use Team Chat.";
   if (code === "FORBIDDEN") return "You no longer have access to this workspace. Contact your administrator.";
   if (code === "NOT_FOUND") return "Team Chat is not available for this conversation. Refresh or contact your administrator.";
-  if (code === "PRECONDITION_FAILED") return "Direct messaging is blocked for this workspace relationship.";
+  if (code === "PRECONDITION_FAILED") return directMessageBlocked
+    ? "Direct messaging is blocked for this workspace relationship."
+    : "This Team Chat feature is not available yet. Your conversation is still usable.";
   // Do not expose raw server/SQL errors to the app.
   return "Could not connect to Team Chat. Check your connection and try again.";
 }
@@ -143,9 +145,10 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         await persist();
       } catch (error) {
         if (current !== generation) return;
-        const blocked = (error as any)?.data?.code === "PRECONDITION_FAILED";
+        const blocked = (error as any)?.data?.code === "PRECONDITION_FAILED" && !pending.allMention
+          && state.channels.some(channel => channel.id === id && channel.kind === "direct");
         set(s => ({ messages: { ...s.messages, [id]: (s.messages[id] || []).map(m => matchesPending(m) && m.status !== "sent" ? { ...m, status: "failed" } : m) },
-          roomErrors: { ...s.roomErrors, [id]: chatError(error) }, channels: blocked ? s.channels.map(channel => channel.id === id ? { ...channel, blocked: true } : channel) : s.channels }));
+          roomErrors: { ...s.roomErrors, [id]: chatError(error, blocked) }, channels: blocked ? s.channels.map(channel => channel.id === id ? { ...channel, blocked: true } : channel) : s.channels }));
         await persist();
       }
     };

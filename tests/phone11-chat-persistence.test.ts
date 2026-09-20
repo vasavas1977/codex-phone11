@@ -11,8 +11,8 @@ function memoryStorage() {
     removeItem: async k => { rows.delete(k); }, getAllKeys: async () => [...rows.keys()] };
   return { rows, storage };
 }
-const api = (tenant = 10): ChatTransport => ({
-  list: async () => ({ workspace: { id: tenant, name: "Work" }, workspaces: [], channels: [{ id: room, name: "Private", kind: "direct", memberIds: [1, 2], lastMessage: null, lastMessageAt: 0, unreadCount: 0, blocked: false }] }),
+const api = (tenant = 10, kind: "direct" | "group" = "direct"): ChatTransport => ({
+  list: async () => ({ workspace: { id: tenant, name: "Work" }, workspaces: [], channels: [{ id: room, name: "Private", kind, memberIds: [1, 2], lastMessage: null, lastMessageAt: 0, unreadCount: 0, blocked: false }] }),
   search: async () => ({ messages: [], hasMore: false }),
   directory: async () => [], create: async () => ({ id: room }), history: async () => ({ messages: [], hasMore: false }), thread: async () => ({ root: message(), replies: [], hasMore: false }),
   send: vi.fn(async (_tenant, _id, clientId, content) => ({ ...message(), id: "persisted", clientId, content, status: "sent" as const, sequence: 5 })), report: async () => ({ recorded: true as const }), block: async () => ({ blocked: true as const }), unblock: async () => ({ blocked: false as const }), read: async () => ({ ok: true }),
@@ -48,6 +48,21 @@ describe("durable user and tenant scoped drafts/outbox", () => {
     expect(pending.allMention).toEqual({ start: 0, length: 4 });
     await second.getState().retryMessage(room, pending.clientId);
     expect(network.send).toHaveBeenLastCalledWith(10, room, pending.clientId, "@all update", undefined, [], [], { start: 0, length: 4 });
+  });
+  it("keeps a restored group usable when its @all retry reaches an older server", async () => {
+    const { storage } = memoryStorage(); const persistence = createChatPersistence(storage);
+    const pending = { ...message(), content: "@all update", allMention: { start: 0, length: 4 as const } };
+    await persistence.save(1, 10, { drafts: {}, messages: { [room]: [pending] } });
+    const network = api(10, "group");
+    vi.mocked(network.send).mockRejectedValueOnce({ data: { code: "PRECONDITION_FAILED" } });
+    const restarted = createChatStore(network, persistence); restarted.getState().setUser(1); await restarted.getState().loadChannels();
+    await restarted.getState().retryMessage(room, pending.clientId);
+    expect(restarted.getState().messages[room][0].status).toBe("failed");
+    expect(restarted.getState().channels[0].blocked).toBe(false);
+    expect(restarted.getState().roomErrors[room]).toContain("conversation is still usable");
+    await restarted.getState().sendMessage(room, "ordinary fallback");
+    expect(network.send).toHaveBeenCalledTimes(2);
+    expect(restarted.getState().channels[0].blocked).toBe(false);
   });
   it("does not hydrate another user or tenant's pending text", async () => {
     const { storage } = memoryStorage(), persistence = createChatPersistence(storage);

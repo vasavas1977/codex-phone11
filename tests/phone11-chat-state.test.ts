@@ -37,6 +37,14 @@ describe("Team Chat network state", () => {
     expect(send.mock.calls[0]).toEqual(send.mock.calls[1]); expect(store.getState().messages.room).toHaveLength(1); expect(store.getState().messages.room[0].status).toBe("sent");
     expect(store.getState().roomErrors.room).toBeNull();
   });
+  it("marks only a direct-message precondition failure as blocked", async () => {
+    const direct = { ...channel, kind: "direct" as const };
+    const { store } = setup({ list: vi.fn(async () => ({ workspace: { id: 10, name: "Alpha" }, workspaces: [], channels: [direct] })),
+      send: vi.fn().mockRejectedValue({ data: { code: "PRECONDITION_FAILED" } }) });
+    await store.getState().loadChannels(); await store.getState().sendMessage("room", "blocked");
+    expect(store.getState().channels[0].blocked).toBe(true);
+    expect(store.getState().roomErrors.room).toContain("Direct messaging is blocked");
+  });
   it("retains verified mention ids and ranges on an offline retry", async () => {
     const send = vi.fn().mockRejectedValueOnce(new Error("offline")).mockImplementation(async (_t, _r, clientId, content) => saved({ clientId, content, mentions: [{ userId: 2, name: "Bob", start: 6, length: 4 }] }));
     const { store } = setup({ directory: vi.fn(async () => [{ id: 2, name: "Bob", extension: "1002" }]), send });
