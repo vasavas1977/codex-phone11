@@ -79,3 +79,20 @@ and no build was dispatched this turn.
   a bounded diagnostic change to separate room construction, event binding,
   SDK connection and post-connect work and classify allowlisted reason enums.
   No root-cause fix or further handset success is claimed.
+
+## Diagnostic update in progress
+
+- Source `91fe9abdedf0ad0e5838172276a481d028143757` separates connection
+  boundaries and maps only allowlisted SDK connection reasons and validated
+  HTTP status codes into the existing Reference line. Raw SDK causes remain
+  in memory and are not rendered. Validation: 35 focused tests and TypeScript
+  passed; the lead inspected the diagnostic and adapter changes.
+- Phone11 dispatched exactly one signed daily-pilot workflow:
+  [35529898146](https://github.com/vasavas1977/codex-phone11/actions/runs/35529898146).
+  Actual build number, package verification and installation remain pending.
+  Do not label this a root-cause fix or ask for another retry on Build 77.
+- Connect11 confirmed in-place provider authentication probing is unavailable:
+  the running API service/task has ECS Execute Command disabled and no managed
+  execution agent. No execution feature, credential or infrastructure setting
+  was changed. Saved CLI credentials are separate evidence from API signer
+  credentials and must not be substituted as proof.
