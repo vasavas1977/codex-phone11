@@ -135,6 +135,9 @@ jobs:
             tests/phone11-profile-scope.test.tsx \
             server/profile/service.test.ts \
             lib/meetings/native-session.test.ts \
+            lib/meetings/browser-session.test.ts \
+            tests/phone11-meeting-prejoin.test.tsx \
+            tests/phone11-graceful-shutdown.test.ts \
             tests/phone11-chat-persistence.test.ts \
             tests/phone11-chat-scope-ui.test.tsx \
             tests/phone11-chat-transport.test.ts \
