@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { Redirect } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
@@ -10,8 +10,9 @@ import { ConversationDetails } from "@/components/chat/conversation-details";
 import { VoiceNote } from "@/components/chat/voice-note";
 import { useColors } from "@/hooks/use-colors";
 import { useThemeContext } from "@/lib/theme-provider";
-import type { ChatConversationDetails, ChatMessage } from "@/lib/chat/types";
-const sampleDetails: ChatConversationDetails = { members: [{ id: 1, name: "You", extension: "1001" }, { id: 2, name: "Nathasa", extension: "1002" }, { id: 3, name: "Somchai", extension: "1003" }], media: [], links: [{ messageId: "3", url: "https://phone11.ai" }] };
+import type { ChatConversationDetails, ChatMention, ChatMessage } from "@/lib/chat/types";
+import { findMentionTrigger, insertMention, reconcileMentions, selectionAfterEdit, type ComposerSelection } from "@/lib/chat/mentions";
+const sampleDetails: ChatConversationDetails = { members: [{ id: 1, name: "You", extension: "1001" }, { id: 2, name: "Nathasa", extension: "1002" }, { id: 3, name: "Somchai", extension: "1003" }, { id: 4, name: "มนตรี ใจดี", extension: "1004" }], media: [], links: [{ messageId: "3", url: "https://phone11.ai" }] };
 const sample: ChatMessage[] = [
   {
     id: "1",
@@ -62,16 +63,28 @@ const sample: ChatMessage[] = [
   },
 ];
 export default function ChatPreview() {
+  const composerInput = useRef<TextInput>(null);
   const c = useColors(),
     theme = useThemeContext(),
     [messages, setMessages] = useState(sample),
     [replies, setReplies] = useState(false),
     [draft, setDraft] = useState(""),
-    [mentionsOpen, setMentionsOpen] = useState(false),
+    [draftMentions, setDraftMentions] = useState<ChatMention[]>([]),
+    [selection, setSelection] = useState<ComposerSelection>({ start: 0, end: 0 }),
     [detailsOpen, setDetailsOpen] = useState(false),
     [receiptsOpen, setReceiptsOpen] = useState(false),
     [voiceOpen, setVoiceOpen] = useState(false),
     [voiceStatus, setVoiceStatus] = useState<string | null>(null);
+  const mentionTrigger = findMentionTrigger(draft, selection, draftMentions);
+  const updateDraft = (value: string, nextSelection = selectionAfterEdit(draft, value, selection)) => {
+    setDraftMentions(reconcileMentions(draft, value, draftMentions));
+    setDraft(value);
+    setSelection(nextSelection);
+  };
+  const insertMentionCharacter = () => {
+    const value = draft.slice(0, selection.start) + "@" + draft.slice(selection.end);
+    updateDraft(value, { start: selection.start + 1, end: selection.start + 1 });
+  };
   if (!__DEV__) return <Redirect href="/(tabs)/teamchat" />;
   return (
     <ScreenContainer>
@@ -105,7 +118,7 @@ export default function ChatPreview() {
             <Text
               style={{ fontSize: 17, fontWeight: "700", color: c.foreground }}
             >
-              {replies ? "Replies" : "Nathasa"}
+              {replies ? "Replies" : "Team updates"}
             </Text>
             <Text style={{ fontSize: 12, color: c.muted }}>
               Design preview · sample messages
@@ -162,7 +175,16 @@ export default function ChatPreview() {
             ),
           )}
         </ScrollView>
-        {mentionsOpen && <MentionPicker people={sampleDetails.members} onPick={person => { setDraft(value => `${value}${value ? " " : ""}@${person.name} `); setMentionsOpen(false); }} />}
+        {mentionTrigger && <MentionPicker people={sampleDetails.members} query={mentionTrigger.query} onPick={person => {
+          const result = insertMention(draft, mentionTrigger, person, draftMentions);
+          setDraft(result.value);
+          setDraftMentions(result.mentions);
+          setSelection(result.selection);
+          requestAnimationFrame(() => {
+            composerInput.current?.focus();
+            composerInput.current?.setNativeProps({ selection: result.selection });
+          });
+        }} />}
         <View
           style={{
             flexDirection: "row",
@@ -174,12 +196,15 @@ export default function ChatPreview() {
           }}
         >
           <MaterialIcons name="add" size={26} color={c.muted} />
-          <Pressable accessibilityLabel="Open sample mention picker" onPress={() => setMentionsOpen(open => !open)} style={{ minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" }}><MaterialIcons name="alternate-email" size={23} color={c.muted} /></Pressable>
+          <Pressable accessibilityLabel="Insert sample mention" onPress={insertMentionCharacter} style={{ minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" }}><MaterialIcons name="alternate-email" size={23} color={c.muted} /></Pressable>
           <TextInput
+            ref={composerInput}
             accessibilityLabel="Preview draft"
             value={draft}
-            onChangeText={setDraft}
-            placeholder={replies ? "Reply…" : "Message Nathasa"}
+            selection={selection}
+            onSelectionChange={event => setSelection(event.nativeEvent.selection)}
+            onChangeText={updateDraft}
+            placeholder={replies ? "Reply…" : "Message Team updates"}
             placeholderTextColor={c.muted}
             style={{
               flex: 1,

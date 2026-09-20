@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   list: null as any,
   voice: null as any,
   upload: vi.fn(),
+  details: vi.fn(),
   refs: [] as any[],
   values: [] as any[],
   stateIndex: 0,
@@ -140,6 +141,8 @@ beforeEach(() => {
   mocks.list = null;
   mocks.voice = null;
   mocks.upload.mockReset();
+  mocks.details.mockReset();
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
   mocks.refs = [];
   mocks.values = [];
   mocks.stateIndex = 0;
@@ -160,7 +163,13 @@ beforeEach(() => {
     loadThread: mocks.thread,
     reportMessage: mocks.report,
     setDraft: mocks.draft,
+    loadDetails: mocks.details,
   };
+  mocks.details.mockResolvedValue({
+    members: [{ id: 1, name: "You", extension: "1001" }, { id: 2, name: "Nathasa", extension: "1002" }],
+    media: [],
+    links: [],
+  });
   mocks.thread.mockResolvedValue({
     root: {
       id: "parent",
@@ -206,6 +215,24 @@ it("a double tap sends one message while the first request is in flight", async 
   await first;
   await second;
   expect(mocks.state.drafts.room).toBe("Next message");
+});
+it("opens on a typed @, inserts at the caret, and sends a structured member mention", async () => {
+  mocks.state.channels[0].kind = "group";
+  mocks.state.drafts.room = "  ";
+  mocks.draft.mockImplementation((key: string, value: string) => { mocks.state.drafts[key] = value; });
+  render();
+  mocks.input.onSelectionChange({ nativeEvent: { selection: { start: 2, end: 2 } } });
+  mocks.input.onChangeText("  @");
+  await Promise.resolve();
+  await Promise.resolve();
+  render();
+  expect(mocks.press.has("Mention Nathasa")).toBe(true);
+  mocks.press.get("Mention Nathasa")!.press();
+  render();
+  await mocks.press.get("Send message")!.press();
+  expect(mocks.send).toHaveBeenCalledWith("room", "@Nathasa", undefined, [], [
+    { userId: 2, start: 0, length: 8 },
+  ]);
 });
 it("resizes the full chat route for the keyboard and preserves the message anchor", () => {
   render();
