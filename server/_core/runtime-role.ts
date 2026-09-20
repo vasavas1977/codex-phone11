@@ -167,8 +167,9 @@ export interface Phone11HttpServerLifecycle {
 }
 
 /**
- * Stops HTTP admission immediately, then waits for existing requests and all
- * background provider work. One shared promise makes repeated signals safe.
+ * Stops HTTP admission immediately. Admitted handlers finish before background
+ * producers stop, so a handler cannot enqueue work after its worker drained.
+ * Both phases share one deadline and one promise for repeated signals.
  */
 export function createPhone11Shutdown(
   server: Phone11HttpServerLifecycle,
@@ -183,6 +184,16 @@ export function createPhone11Shutdown(
   return () => {
     if (shutdownPromise) return shutdownPromise;
 
+    let backgroundStopPromise: Promise<void> | undefined;
+    const stopBackground = () => {
+      if (backgroundStopPromise) return backgroundStopPromise;
+      try {
+        backgroundStopPromise = Promise.resolve(background.stop());
+      } catch (error) {
+        backgroundStopPromise = Promise.reject(error);
+      }
+      return backgroundStopPromise;
+    };
     const httpClosed = new Promise<void>((resolve, reject) => {
       try {
         server.close(error => error ? reject(error) : resolve());
@@ -190,22 +201,28 @@ export function createPhone11Shutdown(
         reject(error);
       }
     });
-    const backgroundStopped = background.stop();
+    const drained = httpClosed.then(stopBackground);
     shutdownPromise = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Phone11ShutdownTimeoutError(timeoutMs)), timeoutMs);
-      Promise.all([httpClosed, backgroundStopped]).then(
+      const timer = setTimeout(() => {
+        // A stuck admitted request must not leave schedulers, sockets, or the
+        // listener alive until the container kills them. This is best effort;
+        // the timeout remains the reported shutdown result.
+        void stopBackground().catch(() => undefined);
+        server.closeAllConnections?.();
+        reject(new Phone11ShutdownTimeoutError(timeoutMs));
+      }, timeoutMs);
+      drained.then(
         () => {
           clearTimeout(timer);
           resolve();
         },
         error => {
           clearTimeout(timer);
+          void stopBackground().catch(() => undefined);
+          server.closeAllConnections?.();
           reject(error);
         },
       );
-    }).catch(error => {
-      server.closeAllConnections?.();
-      throw error;
     });
     return shutdownPromise;
   };

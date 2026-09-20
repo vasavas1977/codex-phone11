@@ -39,13 +39,15 @@ afterEach(() => {
 });
 
 describe("Phone11 graceful shutdown", () => {
-  it("closes HTTP admission, then waits for an in-flight request and background drain", async () => {
+  it("lets an admitted producer finish before stopping and draining its background worker", async () => {
     const requestStarted = deferred();
     const releaseRequest = deferred();
     const releaseBackground = deferred();
+    const producer = vi.fn();
     const server = createServer(async (_request, response) => {
       requestStarted.resolve();
       await releaseRequest.promise;
+      producer();
       response.end("done");
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -69,7 +71,7 @@ describe("Phone11 graceful shutdown", () => {
     const shutdown = createPhone11Shutdown(server, background, 2_000);
     const first = shutdown();
     expect(shutdown()).toBe(first);
-    expect(background.stop).toHaveBeenCalledOnce();
+    expect(background.stop).not.toHaveBeenCalled();
 
     const refused = await new Promise<boolean>(resolve => {
       const call = request({ hostname: "127.0.0.1", port: address.port, timeout: 250 }, response => {
@@ -84,11 +86,16 @@ describe("Phone11 graceful shutdown", () => {
 
     let drained = false;
     void first.then(() => { drained = true; });
-    releaseBackground.resolve();
-    await flushMicrotasks();
-    expect(drained).toBe(false);
     releaseRequest.resolve();
     await activeRequest;
+    await flushMicrotasks();
+    expect(producer).toHaveBeenCalledOnce();
+    expect(background.stop).toHaveBeenCalledOnce();
+    expect(producer.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(background.stop).mock.invocationCallOrder[0],
+    );
+    expect(drained).toBe(false);
+    releaseBackground.resolve();
     await expect(first).resolves.toBeUndefined();
   });
 
@@ -102,9 +109,11 @@ describe("Phone11 graceful shutdown", () => {
     };
     const shutdown = createPhone11Shutdown(server, background, 25);
     const result = shutdown();
+    expect(background.stop).not.toHaveBeenCalled();
     const rejection = expect(result).rejects.toBeInstanceOf(Phone11ShutdownTimeoutError);
     await vi.advanceTimersByTimeAsync(25);
     await rejection;
+    expect(background.stop).toHaveBeenCalledOnce();
     expect(closeAllConnections).toHaveBeenCalledOnce();
     expect(shutdown()).toBe(result);
   });
