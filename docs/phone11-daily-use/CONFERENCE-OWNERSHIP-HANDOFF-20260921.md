@@ -58,3 +58,24 @@ Validation rerun this turn: installed Vitest directly; browser-session 9 tests
 and native-session 9 tests passed (18 total). These mocked tests do not establish
 real-device connection or audio/video acceptance. No runtime code was changed
 and no build was dispatched this turn.
+
+## Coordinated USB retry — 21 September, 01:35 ICT
+
+- The owner connected the failing iPhone by USB and confirmed one requested
+  join retry still returned `Reference: room_connect`.
+- Connect11 correlated the only new request/token pair in that retry window:
+  preceding request HTTP 200 at `2026-09-20T18:35:00.122Z`, token HTTP 200 at
+  `18:35:00.190Z`. This establishes successful admission response, not provider
+  WebSocket acceptance or media connection.
+- Phone11-only syslog capture ran for three minutes. It retained allowlisted
+  category labels/timestamps only, never raw log lines, tokens or identifiers.
+  It saw 4,889 process lines but no allowlisted SDK reason/connection exception.
+  Generic DNS/TLS/timeout mentions were also present during idle polling and
+  are not evidence that DNS, TLS or a timeout caused the failed meeting.
+- Provider historical console access is sign-in gated. The saved provider CLI
+  configuration authenticated a read-only request to the deployed host, but
+  this does not verify the deployed API signer credentials or handset token.
+- Source inspection found no concrete static client/SDK mismatch. Phone11 owns
+  a bounded diagnostic change to separate room construction, event binding,
+  SDK connection and post-connect work and classify allowlisted reason enums.
+  No root-cause fix or further handset success is claimed.
