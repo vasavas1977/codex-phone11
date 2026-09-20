@@ -96,3 +96,16 @@ and no build was dispatched this turn.
   execution agent. No execution feature, credential or infrastructure setting
   was changed. Saved CLI credentials are separate evidence from API signer
   credentials and must not be substituted as proof.
+
+## Verified diagnostic Build 78
+
+Workflow 35529898146 finished successfully for exact source `91fe9ab` above.
+EAS build `6e3c95a8-69d4-4733-9baf-d3bb320f532e` is FINISHED, internal daily-pilot,
+version 1.0.0/build 78. Siprix/native bridge/strict signature checks and all 22
+signed configuration/provisioning checks passed. Retained IPA SHA-256:
+`fc48563af1d2d9bc312dddd14eb8c2b14cc63fe5699388e8a551172a8fc04040`.
+
+[Install Build 78](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/6e3c95a8-69d4-4733-9baf-d3bb320f532e).
+Update the failing phone in place and request one join attempt, reporting the
+full new Reference line. The package is diagnostic-only: no root cause, actual
+installation, provider join, or media success has yet been established for it.
