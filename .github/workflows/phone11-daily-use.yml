@@ -132,6 +132,7 @@ jobs:
             tests/phone11-chat-mention-picker.test.tsx \
             tests/phone11-chat-all-mentions.test.ts \
             tests/phone11-profile-menu.test.tsx \
+            tests/phone11-profile-scope.test.tsx \
             server/profile/service.test.ts \
             lib/meetings/native-session.test.ts \
             tests/phone11-chat-persistence.test.ts \

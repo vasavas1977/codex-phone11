@@ -69,3 +69,17 @@ destinations. Use actual Phone11 identity and supported account capabilities.
 
 A passed source test or registration check does not complete these handset
 steps. The owner has not yet reported locked-screen message-alert delivery.
+
+## Integration verification — 21 September
+
+- Final compact profile preview at 390×844: status preset selection, save and
+  return to the hub, reopening with the existing timed expiry displayed passed.
+  Preview changes are local sample data only.
+- Root reran isolated PostgreSQL suites sequentially after integration: profile
+  3/3, chat 46/46, ordinary notifications 32/32. The owned cluster was stopped
+  and removed. Profile expiry tests now use the database clock.
+- Profile source follows the auth-owned Team Chat workspace; owner/workspace
+  changes unmount the previous editor and suppress stale asynchronous effects.
+- The rollout operator is held for correction after independent review found
+  transaction, failure rollback, release identity and idle-window race issues.
+  No live schema or backend replacement is authorized by passing source tests.
