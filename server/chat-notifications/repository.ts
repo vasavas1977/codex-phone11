@@ -17,6 +17,12 @@ const authorized = `${active}
  JOIN phone11_chat_messages msg ON msg.id=o.message_id AND msg.tenant_id=d.tenant_id
  JOIN phone11_chat_members m ON m.conversation_id=msg.conversation_id AND m.tenant_id=d.tenant_id AND m.user_id=d.user_id`;
 const valid = `d.revision=o.device_revision AND o.expires_at>clock_timestamp() AND ${assigned}`;
+async function notificationAllowed(db:PoolClient) {
+ const profileStatusAvailable=(await db.query("SELECT to_regclass('public.phone11_workspace_profile_status') IS NOT NULL AS supported")).rows[0]?.supported===true;
+ return profileStatusAvailable ? `NOT EXISTS(SELECT 1 FROM phone11_workspace_profile_status profile
+   WHERE profile.tenant_id=d.tenant_id AND profile.user_id=d.user_id AND profile.manual_availability='dnd'
+     AND profile.manual_availability_expires_at>clock_timestamp())` : 'TRUE';
+}
 // Conversation mute is a per-member preference. Check it both when creating
 // outbox work and immediately before provider contact, so changing the setting
 // while an alert waits in the queue takes effect without a dispatcher restart.
@@ -28,11 +34,12 @@ const unmuted = `NOT EXISTS(SELECT 1 FROM phone11_chat_notification_preferences 
 export async function enqueueChatNotifications(db:PoolClient,messageId:string) {
  await db.query("SET LOCAL statement_timeout = '3000ms'");
  await db.query("SET LOCAL lock_timeout = '2000ms'");
+ const allowed=await notificationAllowed(db);
  await db.query(`INSERT INTO phone11_chat_notification_outbox(id,device_id,device_revision,message_id)
   SELECT gen_random_uuid(),d.id,d.revision,msg.id FROM phone11_chat_messages msg
   JOIN phone11_chat_members m ON m.tenant_id=msg.tenant_id AND m.conversation_id=msg.conversation_id AND m.user_id<>msg.sender_id
   JOIN phone11_chat_notification_devices d ON d.user_id=m.user_id AND d.tenant_id=m.tenant_id ${active}
-  WHERE msg.id=$1 AND msg.sequence>m.last_read_sequence AND ${assigned} AND ${unmuted}
+  WHERE msg.id=$1 AND msg.sequence>m.last_read_sequence AND ${assigned} AND ${unmuted} AND ${allowed}
   ON CONFLICT(device_id,message_id) DO NOTHING`,[messageId]);
 }
 export function createChatNotificationRepository(transaction:Transaction=withTransaction) {
@@ -79,11 +86,12 @@ export function createChatNotificationRepository(transaction:Transaction=withTra
   },
   async claim():Promise<ChatDelivery|null> {
    return bounded(async db=>{
+    const allowed=await notificationAllowed(db);
     // Lock and mark before network. A crash/uncertain response is intentionally
     // not replayed: attempted rows are never reclaimed by another worker.
     const rows=await db.query(`SELECT o.id,d.revision,d.token,d.bundle_id,d.environment,d.registered_at,d.registered_at::text AS registered_version,o.expires_at
       FROM phone11_chat_notification_outbox o JOIN phone11_chat_notification_devices d ON d.id=o.device_id ${authorized}
-      WHERE o.state='pending' AND ${valid} AND ${unmuted} AND msg.sequence>m.last_read_sequence
+      WHERE o.state='pending' AND ${valid} AND ${unmuted} AND ${allowed} AND msg.sequence>m.last_read_sequence
       ORDER BY o.created_at LIMIT 1 FOR UPDATE OF o SKIP LOCKED`);
     const r=rows.rows[0];if(!r)return null;
     await db.query(`UPDATE phone11_chat_notification_outbox SET state='attempted',attempted_at=clock_timestamp() WHERE id=$1`,[r.id]);
@@ -91,9 +99,9 @@ export function createChatNotificationRepository(transaction:Transaction=withTra
    });
   },
   async current(delivery:ChatDelivery) {
-   return bounded(async db=>(await db.query(`SELECT 1 FROM phone11_chat_notification_outbox o
+   return bounded(async db=>{const allowed=await notificationAllowed(db);return (await db.query(`SELECT 1 FROM phone11_chat_notification_outbox o
      JOIN phone11_chat_notification_devices d ON d.id=o.device_id ${authorized}
-     WHERE o.id=$1 AND d.revision=$2 AND o.state='attempted' AND ${valid} AND ${unmuted} AND msg.sequence>m.last_read_sequence`,[delivery.id,delivery.revision])).rows.length===1);
+     WHERE o.id=$1 AND d.revision=$2 AND o.state='attempted' AND ${valid} AND ${unmuted} AND ${allowed} AND msg.sequence>m.last_read_sequence`,[delivery.id,delivery.revision])).rows.length===1;});
   },
   async finish(delivery:ChatDelivery,accepted:boolean) {
    await bounded(db=>db.query(`UPDATE phone11_chat_notification_outbox o SET state=$2 FROM phone11_chat_notification_devices d

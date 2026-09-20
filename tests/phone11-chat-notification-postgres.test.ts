@@ -29,6 +29,7 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   await pool.query(await readFile(new URL('../server/chat/migration.sql',import.meta.url),'utf8'));
   await pool.query(await readFile(new URL('../server/chat/collaboration-migration.sql',import.meta.url),'utf8'));
   await pool.query(await readFile(new URL('../server/chat/media-migration.sql',import.meta.url),'utf8'));
+  await pool.query(await readFile(new URL('../server/profile/migration.sql',import.meta.url),'utf8'));
   const sql=await readFile(new URL('../server/chat-notifications/migration.sql',import.meta.url),'utf8');await pool.query(sql);await pool.query(sql);
  });
  beforeEach(async()=>{
@@ -46,6 +47,44 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
  it('registers separate APNs devices and rejects foreign session/tenant',async()=>{
   await repo.register(2,'s2',device);await expect(repo.register(2,'s3',device)).rejects.toThrow();await expect(repo.register(2,'s2',{...device,tenantId:20})).rejects.toThrow();
   expect((await pool.query('SELECT count(*) n FROM phone11_chat_notification_devices')).rows[0].n).toBe('1');
+ });
+ it('uses only a fresh, authorized mobile enrollment as standby reachability',async()=>{
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({userId:2,status:'offline',source:'none'})]);
+  await repo.register(2,'s2',device);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({userId:2,status:'available',source:'mobile',available:true})]);
+  const sessionId=randomUUID(),generation=randomUUID();
+  await chat.heartbeat(2,10,{sessionId,generation,sequence:1,status:'on_call',active:true});
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'on_call',source:'call'})]);
+  await chat.heartbeat(2,10,{sessionId,generation,sequence:2,status:'on_call',active:false});
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'available',source:'mobile'})]);
+  await pool.query("UPDATE phone11_chat_notification_devices SET registered_at=clock_timestamp()-interval '7 days 1 second'");
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'offline',source:'none',available:false})]);
+  await repo.register(2,'s2',device);await repo.unregister(2,'s2',device.deviceId);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'offline',source:'none'})]);
+ });
+ it('removes mobile standby reachability after APNs invalidates the exact enrollment',async()=>{
+  await repo.register(2,'s2',device);await message();const claim=(await repo.claim())!;
+  await repo.removeInvalid(claim,Date.now()+1000);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'offline',source:'none'})]);
+ });
+ it('applies manual status only to reachable colleagues with DND above call and meeting',async()=>{
+  await repo.register(2,'s2',device);
+  await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,status_text,work_location)
+    VALUES(10,2,'away','Back soon','remote')`);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({
+    status:'available',effectiveStatus:'away',manualAvailability:'away',source:'manual',statusText:'Back soon',workLocation:'remote',
+  })]);
+  const sessionId=randomUUID(),generation=randomUUID();
+  await chat.heartbeat(2,10,{sessionId,generation,sequence:1,status:'in_meeting',active:true});
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'in_meeting',effectiveStatus:'in_meeting',source:'meeting'})]);
+  await pool.query(`UPDATE phone11_workspace_profile_status SET manual_availability='dnd',
+    manual_availability_expires_at=clock_timestamp()+interval '1 hour' WHERE tenant_id=10 AND user_id=2`);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'in_meeting',effectiveStatus:'dnd',source:'manual'})]);
+  await chat.heartbeat(2,10,{sessionId,generation,sequence:2,status:'in_meeting',active:false});
+  await repo.unregister(2,'s2',device.deviceId);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({
+    status:'offline',effectiveStatus:'offline',manualAvailability:null,source:'none',statusText:null,workLocation:null,
+  })]);
  });
  it.each([
   "DELETE FROM phone11_auth_identity WHERE auth_user_id='auth2'",
@@ -101,6 +140,18 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
  it('read messages do not dispatch later stale alerts',async()=>{await repo.register(2,'s2',device);const m=await message();await chat.read(2,10,conversation,m.sequence);expect(await repo.claim()).toBeNull();});
  it('does not enqueue an alert for a member who muted this conversation',async()=>{await repo.register(2,'s2',device);await chat.setNotificationMute(2,10,conversation,true);await message();expect(await count()).toBe(0);});
  it('rechecks a mute added after enqueue before claim or dispatch',async()=>{await repo.register(2,'s2',device);await message();expect(await count()).toBe(1);await chat.setNotificationMute(2,10,conversation,true);expect(await repo.claim()).toBeNull();});
+ it('suppresses new and queued alerts while unexpired Do not disturb is active',async()=>{
+  await repo.register(2,'s2',device);
+  await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
+   VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
+  await message();expect(await count()).toBe(0);
+  await pool.query(`UPDATE phone11_workspace_profile_status SET manual_availability=NULL,manual_availability_expires_at=NULL WHERE tenant_id=10 AND user_id=2`);
+  await message();expect(await count()).toBe(1);
+  await pool.query(`UPDATE phone11_workspace_profile_status SET manual_availability='dnd',manual_availability_expires_at=clock_timestamp()+interval '1 hour' WHERE tenant_id=10 AND user_id=2`);
+  expect(await repo.claim()).toBeNull();
+  await pool.query(`UPDATE phone11_workspace_profile_status SET manual_availability_expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=10 AND user_id=2`);
+  expect(await repo.claim()).not.toBeNull();
+ });
  it('uncertain provider acceptance never retries or changes persisted message',async()=>{
   await repo.register(2,'s2',device);const msg=await message();const send=vi.fn(async()=>{throw new PushProviderError('transport');});const dispatch=createChatNotificationDispatcher(repo,send,()=>true);
   expect(await dispatch()).toBe(true);expect(await dispatch()).toBe(false);expect(send).toHaveBeenCalledOnce();expect((await chat.history(1,10,conversation)).messages[0].id).toBe(msg.id);
@@ -116,6 +167,15 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   expect((await chat.history(1,10,conversation)).messages[0].id).toBe(saved.id);
  });
  it('disabled worker does not claim or contact provider',async()=>{await repo.register(2,'s2',device);await message();const send=vi.fn();expect(await createChatNotificationDispatcher(repo,send,()=>false)()).toBe(false);expect(send).not.toHaveBeenCalled();expect((await pool.query('SELECT state FROM phone11_chat_notification_outbox')).rows[0].state).toBe('pending');});
+ it('observes the profile migration after startup instead of caching its earlier absence',async()=>{
+  await repo.register(2,'s2',device);
+  await pool.query('DROP TABLE phone11_workspace_profile_status');
+  await message();expect(await count()).toBe(1);
+  await pool.query(await readFile(new URL('../server/profile/migration.sql',import.meta.url),'utf8'));
+  await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
+   VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
+  await message();expect(await count()).toBe(1);
+ });
  it('bounded advisory lock contention fails instead of wedging enrollment',async()=>{
   const blocker=await pool.connect();try{await blocker.query('BEGIN');await blocker.query('SELECT pg_advisory_xact_lock(731104,2)');const started=Date.now();await expect(repo.register(2,'s2',device)).rejects.toThrow();expect(Date.now()-started).toBeLessThan(4000);}finally{await blocker.query('ROLLBACK');blocker.release();}
  });

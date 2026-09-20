@@ -12,6 +12,7 @@ import { formatChatTime, type ChatKind } from "@/lib/chat/types";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { PresenceIndicator } from "@/components/chat/presence-indicator";
 import { usePresencePolling } from "@/lib/chat/presence-store";
+import { NotificationEnrollmentPrompt } from "@/components/chat/notification-enrollment-prompt";
 
 type Filter = "all" | "unread" | "chats" | "group" | "channel" | "drafts";
 type ScopedAction = { owner: ReturnType<typeof useAuth>["user"]; workspaceId: number };
@@ -133,6 +134,7 @@ export default function TeamChatScreen() {
       </View>
       {!user ? <View style={styles.empty}><Text style={[styles.emptyTitle, fg]}>Sign in to use Team Chat</Text><Text style={{ color: colors.muted }}>Your conversations are shared with your workspace.</Text></View> : <>
         {ownsWorkspace && chat.workspaces.length > 1 && <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.workspaceStrip} contentContainerStyle={styles.filters}>{chat.workspaces.map(workspace => <Pressable key={workspace.id} accessibilityRole="button" accessibilityLabel={`Switch to ${workspace.name}`} onPress={() => currentScope()?.loadChannels(workspace.id)} style={[styles.chip, { borderColor: colors.border, backgroundColor: workspace.id === chat.workspace?.id ? colors.primary : colors.surface }]}><Text style={{ color: workspace.id === chat.workspace?.id ? "white" : colors.foreground }}>{workspace.name}</Text></Pressable>)}</ScrollView>}
+        <NotificationEnrollmentPrompt ownerId={user?.id} tenantId={chat.workspace?.id} />
         {searchOpen && <TextInput autoFocus accessibilityLabel="Search conversations" value={search} onChangeText={setSearch} placeholder="Search conversations" placeholderTextColor={colors.muted} style={[styles.search, fg, { backgroundColor: colors.surface, borderColor: colors.border }]} />}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterStrip} contentContainerStyle={styles.filters}>
           {([ ["all", "All"], ["unread", "Unread"], ["chats", "Chats"], ["channel", "Channels"] ] as [Filter, string][]).map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${label} conversations`} accessibilityState={{ selected: filter === value }} onPress={() => setFilter(value)} style={[styles.chip, { borderColor: colors.border, backgroundColor: filter === value ? colors.primary : colors.surface }]}><Text style={{ color: filter === value ? "white" : colors.foreground, fontSize: 14 }}>{label}</Text></Pressable>)}

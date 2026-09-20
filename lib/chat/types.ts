@@ -17,13 +17,24 @@ export interface ChatReaction {
   users: ChatReactionUser[];
 }
 export interface ChatBookmark { messageId: string; channelId: string; createdAt: number }
-export type ChatPresenceStatus = "available" | "away" | "offline" | "on_call" | "in_meeting";
+export type ChatAutomaticPresenceStatus = "available" | "away" | "offline" | "on_call" | "in_meeting";
+export type ChatManualAvailability = "available" | "away" | "busy" | "out_of_office" | "dnd";
+export type ChatPresenceStatus = ChatAutomaticPresenceStatus | "busy" | "out_of_office" | "dnd";
+export type ChatPresenceSource = "active" | "mobile" | "call" | "meeting" | "manual" | "none";
 export interface ChatPresence {
   userId: number;
   /** Kept for older clients; true means a current lease exists. */
   available: boolean;
   status: ChatPresenceStatus;
+  /** New clients apply manual profile state while status stays compatible with older clients. */
+  effectiveStatus?: ChatPresenceStatus;
+  manualAvailability?: ChatManualAvailability | null;
+  /** Additive source lets new clients distinguish foreground activity from a reachable signed-in phone. */
+  source?: ChatPresenceSource;
   lastSeenAt: number | null;
+  statusText?: string | null;
+  statusExpiresAt?: number | null;
+  workLocation?: "office" | "remote" | null;
 }
 export interface ChatReadReceiptSummary { messageId: string; count: number }
 export interface ChatReadReceipt { userId: number; name: string; readAt: number }

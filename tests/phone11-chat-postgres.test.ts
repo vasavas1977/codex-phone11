@@ -305,7 +305,9 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await expect(service.pinnedMessages(5, 10, id)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
   it("uses an explicit fresh heartbeat with active account mapping for presence", async () => {
-    expect(await service.presence(1, 10, [2, 3, 4])).toEqual([{ userId: 2, available: false, status: "offline", lastSeenAt: null }]);
+    expect(await service.presence(1, 10, [2, 3, 4])).toEqual([
+      expect.objectContaining({ userId: 2, available: false, status: "offline", lastSeenAt: null }),
+    ]);
     const heartbeat = await service.heartbeat(2, 10); expect(heartbeat.lastSeenAt).toEqual(expect.any(Number));
     expect(await service.presence(1, 10, [2])).toEqual([expect.objectContaining({ userId: 2, available: true, status: "available", lastSeenAt: expect.any(Number) })]);
     await pool.query("UPDATE tenant_memberships SET status = 'inactive' WHERE user_id = 2 AND tenant_id = 10");

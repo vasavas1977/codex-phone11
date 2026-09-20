@@ -9,6 +9,7 @@ import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useChatStore } from "@/lib/chat/store";
 import { chatNotificationClientEnabled } from "@/lib/notifications/client";
 import { enableChatNotifications } from "@/lib/notifications/chat-notifications";
+import { useChatNotificationEnrollment } from "@/lib/notifications/enrollment-status";
 
 export default function Screen() {
   if (chatNotificationClientEnabled()) return <MessageAlertSettings />;
@@ -19,6 +20,7 @@ function MessageAlertSettings() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
   const chat = useChatStore();
+  const enrollment = useChatNotificationEnrollment();
   type Action = { owner: typeof user; tenantId: number };
   const mounted = useRef(true), pending = useRef<Action | null>(null);
   const [busy, setBusy] = useState<Action | null>(null);
@@ -31,6 +33,7 @@ function MessageAlertSettings() {
       state.userId === auth.user?.id && state.workspace?.id === action.tenantId;
   };
   const ownsWorkspace = Boolean(user && chat.userId === user.id && chat.workspace);
+  const enrolled = Boolean(ownsWorkspace && enrollment.ownerId === user?.id && enrollment.tenantId === chat.workspace?.id && enrollment.status === "enabled");
   const enable = async () => {
     if (!ownsWorkspace || !chat.workspace || matchesView(pending.current)) return;
     const action = { owner: user, tenantId: chat.workspace.id };
@@ -56,9 +59,10 @@ function MessageAlertSettings() {
     <Text style={[styles.body, { color: colors.foreground }]}>{ownsWorkspace ? `Selected workspace: ${chat.workspace?.name}` : user ? "Open Team Chat and select a workspace first." : "Sign in and open Team Chat to set up message alerts."}</Text>
     <Text style={[styles.body, { color: colors.muted }]}>Message text is not shown in alerts.</Text>
     {feedback && matchesView(feedback.action) && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.foreground }]}>{feedback.text}</Text>}
-    <Pressable accessibilityRole="button" accessibilityLabel="Enable message alerts" disabled={!ownsWorkspace || matchesView(busy)} onPress={enable}
+    {enrolled && <Text style={[styles.body, { color: colors.foreground }]}>Message notifications are enabled for this phone and workspace.</Text>}
+    <Pressable accessibilityRole="button" accessibilityLabel="Enable message notifications" disabled={!ownsWorkspace || matchesView(busy)} onPress={enable}
       style={[styles.button, { backgroundColor: colors.primary, opacity: !ownsWorkspace || matchesView(busy) ? 0.5 : 1 }]}>
-      <Text style={styles.buttonText}>{matchesView(busy) ? "Setting up…" : "Enable message alerts"}</Text>
+      <Text style={styles.buttonText}>{matchesView(busy) ? "Setting up…" : enrolled ? "Refresh message notifications" : "Enable message notifications"}</Text>
     </Pressable>
     <Pressable accessibilityRole="button" onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/settings")} style={styles.button}>
       <Text style={{ color: colors.primary }}>Back</Text>

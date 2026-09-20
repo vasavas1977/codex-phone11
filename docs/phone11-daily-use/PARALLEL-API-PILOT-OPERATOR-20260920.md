@@ -4,6 +4,15 @@ Status: source and hermetic tests only. No candidate image, reviewed pin manifes
 
 The operator is [`scripts/phone11-parallel-api-pilot.py`](../../scripts/phone11-parallel-api-pilot.py). It leaves `cp11-backend` on port 3000 as the sole owner of SIP wake, chat notification, media retention, recording, ESL, and WebSocket shutdown behavior. It starts a separate `cp11-api-candidate` on host loopback port 3002 and routes only exact `/api/trpc` and prefix `/api/trpc/` traffic to it. The proxy uses `proxy_pass http://127.0.0.1:3002` without a trailing slash, so the full path and query remain intact; Nginx preserves the request method, body, authorization, and cookies.
 
+This candidate-only route does **not** activate Do not disturb suppression for
+ordinary chat notifications. Enqueue runs in the routed API candidate, but the
+claim and final authorization checks run in the notification dispatcher owned
+by the unchanged `cp11-backend` runtime. DND can be claimed only after the
+reviewed profile migration and the matching dispatcher code are deployed to
+that worker runtime together. Preserve the current baseline until that separate
+worker upgrade and rollback have been reviewed; never infer live DND behavior
+from candidate API probes alone.
+
 ## Required reviewed inputs
 
 The root-owned manifest must be mode `0600`, use schema `phone11-parallel-api-pilot/v1`, and pin all of the following before even read-only prepare can pass:

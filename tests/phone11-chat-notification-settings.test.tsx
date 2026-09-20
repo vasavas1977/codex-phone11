@@ -3,7 +3,7 @@ import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as { renderToStaticMarkup(node: ReactNode): string };
 const m = vi.hoisted(() => ({ enabled: false, owner: { id: 1 } as { id: number } | null, state: {} as any,
-  enable: vi.fn(), buttons: new Map<string, any>(), frame: { values: [] as any[], index: 0 } }));
+  enable: vi.fn(), enrollment: { ownerId: null as number|null, tenantId: null as number|null, status: "unsupported" }, buttons: new Map<string, any>(), frame: { values: [] as any[], index: 0 } }));
 vi.mock("react", async () => {
   const actual = await vi.importActual<typeof import("react")>("react");
   return { ...actual,
@@ -23,15 +23,21 @@ vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.owner, l
 vi.mock("../lib/chat/store", () => ({ useChatStore: Object.assign(() => m.state, { getState: () => m.state }) }));
 vi.mock("../lib/notifications/client", () => ({ chatNotificationClientEnabled: () => m.enabled }));
 vi.mock("../lib/notifications/chat-notifications", () => ({ enableChatNotifications: () => m.enable() }));
+vi.mock("../lib/notifications/enrollment-status", () => ({ useChatNotificationEnrollment: () => m.enrollment }));
 import Preferences from "../app/notifications/preferences";
 function render() { m.frame.index = 0; m.buttons.clear(); return renderToStaticMarkup(createElement(Preferences)); }
-const action = () => m.buttons.get("Enable message alerts");
+const action = () => m.buttons.get("Enable message notifications");
 function deferred() { let resolve!: (v: any) => void; const promise = new Promise(yes => { resolve = yes; }); return { resolve, promise }; }
-beforeEach(() => { vi.resetAllMocks(); m.enabled = false; m.owner = { id: 1 }; m.state = { userId: 1, workspace: { id: 10, name: "Work" } }; m.frame = { values: [], index: 0 }; m.enable.mockResolvedValue({ status: "enabled" }); });
+beforeEach(() => { vi.resetAllMocks(); m.enabled = false; m.owner = { id: 1 }; m.state = { userId: 1, workspace: { id: 10, name: "Work" } }; m.enrollment={ownerId:null,tenantId:null,status:"unsupported"};m.frame = { values: [], index: 0 }; m.enable.mockResolvedValue({ status: "enabled" }); });
 it("default off has no permission action or prompt", () => { expect(render()).toContain("Notification settings are not available yet"); expect(action()).toBeUndefined(); expect(m.enable).not.toHaveBeenCalled(); });
 it("requires an explicit action and discloses selected workspace before reporting saved setup", async () => {
   m.enabled = true; const html = render(); expect(html).toContain("workspace currently selected in Team Chat"); expect(m.enable).not.toHaveBeenCalled();
   await action().onPress(); expect(render()).toContain("Alert setup saved for Work."); expect(m.enable).toHaveBeenCalledTimes(1);
+});
+it("shows the server-confirmed enrolled state only for its account and workspace",()=>{
+  m.enabled=true;m.enrollment={ownerId:1,tenantId:10,status:"enabled"};
+  let html=render();expect(html).toContain("Message notifications are enabled");expect(html).toContain("Refresh message notifications");expect(m.enable).not.toHaveBeenCalled();
+  m.state={userId:1,workspace:{id:20,name:"Other"}};html=render();expect(html).not.toContain("Message notifications are enabled");expect(html).toContain("Enable message notifications");
 });
 it.each(["permission-denied", "unavailable", "session-changed"])("does not claim setup succeeded after %s", async status => {
   m.enabled = true; m.enable.mockResolvedValue({ status }); render(); await action().onPress(); const html = render(); expect(html).not.toContain("Alert setup saved");

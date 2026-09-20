@@ -8,6 +8,7 @@ vi.mock("../lib/notifications/store", () => { throw new Error("Demo notification
 vi.mock("../lib/conference/store", () => { throw new Error("Local conference engine must stay unreachable"); });
 vi.mock("../lib/notifications/client", () => ({ chatNotificationClientEnabled: () => false }));
 vi.mock("../lib/notifications/chat-notifications", () => ({ enableChatNotifications: vi.fn() }));
+vi.mock("../lib/notifications/enrollment-status", () => ({ useChatNotificationEnrollment: () => ({ ownerId:null,tenantId:null,status:"unsupported" }) }));
 vi.mock("../lib/chat/store", () => ({ useChatStore: vi.fn() }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: vi.fn() }));
 vi.mock("../hooks/use-auth", () => ({ useAuth: vi.fn(() => ({ user: null })) }));

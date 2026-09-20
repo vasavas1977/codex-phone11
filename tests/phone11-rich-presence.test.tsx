@@ -19,7 +19,7 @@ vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: m.owner }) }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: ({ name }: any) => createElement("i", null, name) }));
 
 import { PresenceIndicator } from "../components/chat/presence-indicator";
-import { createPresencePublisherController, localPresenceStatus, presenceLabel, useChatPresenceStore } from "../lib/chat/presence";
+import { automaticPresenceIsActive, createPresencePublisherController, localPresenceStatus, presenceLabel, useChatPresenceStore } from "../lib/chat/presence";
 import { startForegroundPresencePolling } from "../lib/chat/presence-store";
 import { useSipCallStore } from "../lib/sip/call-store";
 import { clearActiveNativeMeeting, setActiveNativeMeeting } from "../lib/meetings/native-session-registry";
@@ -68,6 +68,13 @@ describe("truthful local presence lifecycle", () => {
   it("ignores a stale prior-owner call", () => {
     useSipCallStore.setState({ activeCalls: { call: { id: "call", status: "active", history: { ownerUserId: 99 } } as any } });
     expect(localPresenceStatus(1)).toBe("available");
+  });
+
+  it("retires plain standby activity while preserving real background call and meeting leases", () => {
+    expect(automaticPresenceIsActive("available", "active")).toBe(true);
+    expect(automaticPresenceIsActive("away", "background")).toBe(false);
+    expect(automaticPresenceIsActive("on_call", "background")).toBe(true);
+    expect(automaticPresenceIsActive("in_meeting", "background")).toBe(true);
   });
 });
 
@@ -127,11 +134,12 @@ it("suppresses a publication after its captured auth or workspace boundary chang
   expect(send).not.toHaveBeenCalled();
 });
 
-it("renders all five public labels plus an explicit unknown state", () => {
-  const statuses = ["available", "away", "offline", "on_call", "in_meeting", null] as const;
+it("renders automatic and manual labels plus an explicit unknown state", () => {
+  const statuses = ["available", "away", "busy", "out_of_office", "dnd", "offline", "on_call", "in_meeting", null] as const;
   const html = renderToStaticMarkup(createElement("main", null,
     ...statuses.map((status, index) => createElement(PresenceIndicator, { key: index, status }))));
-  for (const label of ["Available", "Away", "Offline", "On a call", "In a meeting", "Status unavailable"])
+  for (const label of ["Available", "Away", "Busy", "Out of office", "Do not disturb", "Offline", "On a call", "In a meeting", "Status unavailable"])
     expect(html).toContain(label);
   expect(presenceLabel(undefined)).toBe("Status unavailable");
+  expect(presenceLabel("available", "mobile")).toBe("Available on mobile");
 });

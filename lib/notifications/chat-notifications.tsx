@@ -7,13 +7,16 @@ import { useChatStore } from '../chat/store';
 import { createChatNotificationCoordinator, type ChatNotificationEnableResult } from './coordinator';
 import { createEnrollmentRecovery } from './enrollment-recovery';
 import { chatNotificationClientEnabled,chatNotificationPermission,ordinaryApnsToken,parseOrdinaryApnsToken,registerChatNotificationToken,resolveChatNotification } from './client';
+import { enrollmentStatusForResult,installChatNotificationEnableAction,publishChatNotificationEnrollment,requestChatNotificationEnrollment } from './enrollment-status';
 let enable:()=>Promise<ChatNotificationEnableResult>=async()=>({status:"unavailable"});
 /** Invoke from an explicit notification-permission action, never on launch. */
-export const enableChatNotifications=()=>enable();
+export const enableChatNotifications=()=>requestChatNotificationEnrollment();
 export function ChatNotifications() {
  useEffect(()=>{
   // Default-off means no native token request, listener, prompt or enrollment.
-  if(!chatNotificationClientEnabled())return;
+  if(!chatNotificationClientEnabled()){
+   publishChatNotificationEnrollment({ownerId:null,tenantId:null,status:'unsupported'});return;
+  }
   const identity=()=>({owner:getAuthSnapshot().user,tenantId:useChatStore.getState().workspace?.id??null,
    active:AppState.currentState==='active',enabled:chatNotificationClientEnabled()&&!getAuthSnapshot().loading});
   let observedToken:string|null=null,lookup:Promise<string>|null=null,stopped=false;
@@ -30,7 +33,18 @@ export function ChatNotifications() {
     router.push({pathname:'/chat/[id]',params:{id:destination.conversationId,tenantId:String(destination.tenantId)}});
    },unavailable:()=>Alert.alert('Message unavailable','Open Team Chat to see your current conversations.')});
   let last=identity();
-  const recovery=createEnrollmentRecovery({identity,refresh:explicit=>coordinator.refresh(explicit)});
+  const publish=(status:ReturnType<typeof enrollmentStatusForResult>)=>{
+   const current=identity();publishChatNotificationEnrollment({ownerId:(current.owner as {id?:number}|null)?.id??null,tenantId:current.tenantId,status});
+  };
+  const refreshCoordinator=async(explicit:boolean)=>{
+   const origin=identity();
+   if(explicit)publish('enabling');else if(origin.owner&&origin.tenantId)publish('checking');
+   const result=await coordinator.refresh(explicit);
+   const current=identity();
+   if(origin.owner===current.owner&&origin.tenantId===current.tenantId)publish(enrollmentStatusForResult(result));
+   return result;
+  };
+  const recovery=createEnrollmentRecovery({identity,refresh:refreshCoordinator});
   const refresh=()=>void recovery.refresh().catch(()=>{});
   const sync=()=>{
    const next=identity();if(next.owner!==last.owner||next.tenantId!==last.tenantId||next.active!==last.active||next.enabled!==last.enabled){
@@ -57,8 +71,8 @@ export function ChatNotifications() {
    void Notifications.clearLastNotificationResponseAsync().catch(()=>{});
   });
   void Notifications.getLastNotificationResponseAsync().then(value=>{if(value){void coordinator.tap(value.notification.request.content.data);void Notifications.clearLastNotificationResponseAsync().catch(()=>{});}}).catch(()=>{});
-  const request=()=>recovery.refresh(true);enable=request;refresh();
-  return ()=>{stopped=true;observedToken=null;recovery.stop();coordinator.stop();offAuth();offChat();activity.remove();token.remove();response.remove();if(enable===request)enable=async()=>({status:"unavailable"});};
+  const request=()=>recovery.refresh(true);enable=request;installChatNotificationEnableAction(request);refresh();
+  return ()=>{stopped=true;observedToken=null;recovery.stop();coordinator.stop();offAuth();offChat();activity.remove();token.remove();response.remove();if(enable===request){enable=async()=>({status:"unavailable"});installChatNotificationEnableAction(null);publishChatNotificationEnrollment({ownerId:null,tenantId:null,status:'unsupported'});}};
  },[]);
  return null;
 }

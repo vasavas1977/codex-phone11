@@ -112,9 +112,11 @@ export function usePresencePolling(tenantId: number | undefined, userIds: number
   }, [enabled, ids, owner, tenantId]);
 }
 
-export const presenceLabel = (status: ChatPresenceStatus | undefined): string => status ? ({
+export const presenceLabel = (status: ChatPresenceStatus | undefined, source?: ChatPresence["source"]): string => status ? source === "mobile" && status === "available" ? "Available on mobile" : ({
   available: "Available", away: "Away", offline: "Offline", on_call: "On a call", in_meeting: "In a meeting",
+  busy: "Busy", out_of_office: "Out of office", dnd: "Do not disturb",
 }[status]) : "Status unavailable";
 export const presenceColor = (status: ChatPresenceStatus | undefined): string => status ? ({
   available: "#22C55E", away: "#F59E0B", offline: "#94A3B8", on_call: "#EF4444", in_meeting: "#8B5CF6",
+  busy: "#EF4444", out_of_office: "#64748B", dnd: "#8B5CF6",
 }[status]) : "#94A3B8";

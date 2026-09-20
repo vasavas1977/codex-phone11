@@ -16,12 +16,21 @@ vi.mock('../lib/notifications/client',()=>({chatNotificationClientEnabled:()=>f.
  registerChatNotificationToken:f.register,resolveChatNotification:vi.fn(async()=>null)}));
 import {ChatNotifications,enableChatNotifications} from '../lib/notifications/chat-notifications';
 import {ChatNotificationSetupError} from '../lib/notifications/coordinator';
+import {useChatNotificationEnrollment} from '../lib/notifications/enrollment-status';
 const cleanups:(()=>void)[]=[];
 function mount(){ChatNotifications();const off=f.effect!();if(typeof off==='function')cleanups.push(off);return off;}
-beforeEach(()=>{vi.useFakeTimers();f.enabled=false;f.owner={id:2};f.active='active';f.tenantId=10;f.effect=null;f.callbacks={};for(const k of Object.keys(f.listeners) as Array<keyof typeof f.listeners>)f.listeners[k]=0;vi.resetAllMocks();f.permission.mockResolvedValue(false);f.token.mockResolvedValue('a'.repeat(64));f.register.mockResolvedValue(true);});
+beforeEach(()=>{vi.useFakeTimers();f.enabled=false;f.owner={id:2};f.active='active';f.tenantId=10;f.effect=null;f.callbacks={};for(const k of Object.keys(f.listeners) as Array<keyof typeof f.listeners>)f.listeners[k]=0;vi.resetAllMocks();f.permission.mockResolvedValue(false);f.token.mockResolvedValue('a'.repeat(64));f.register.mockResolvedValue(true);useChatNotificationEnrollment.setState({ownerId:null,tenantId:null,status:'unsupported'});});
 afterEach(()=>{cleanups.splice(0).forEach(off=>off());vi.useRealTimers();});
 it('disabled mounted component registers no observers, token request or permission work',async()=>{mount();await vi.advanceTimersByTimeAsync(0);expect(f.listeners).toEqual({auth:0,chat:0,activity:0,token:0,response:0});expect(f.permission).not.toHaveBeenCalled();expect(f.token).not.toHaveBeenCalled();expect(await enableChatNotifications()).toEqual({status:'unavailable'});});
 it('mount cleanup and remount retain one observer of each type',async()=>{f.enabled=true;mount();expect(f.listeners).toEqual({auth:1,chat:1,activity:1,token:1,response:1});await vi.advanceTimersByTimeAsync(0);cleanups.pop()!();expect(f.listeners).toEqual({auth:0,chat:0,activity:0,token:0,response:0});expect(await enableChatNotifications()).toEqual({status:'unavailable'});mount();expect(f.listeners).toEqual({auth:1,chat:1,activity:1,token:1,response:1});expect(await enableChatNotifications()).toEqual({status:'permission-denied'});expect(f.token).not.toHaveBeenCalled();});
+it('publishes a scoped permission prompt and reconciles an already-granted enrollment without prompting',async()=>{
+ f.enabled=true;mount();await vi.advanceTimersByTimeAsync(0);
+ expect(useChatNotificationEnrollment.getState()).toEqual({ownerId:2,tenantId:10,status:'permission-required'});
+ f.permission.mockResolvedValue(true);expect(await enableChatNotifications()).toEqual({status:'enabled'});
+ expect(f.permission).toHaveBeenLastCalledWith(true);expect(useChatNotificationEnrollment.getState()).toEqual({ownerId:2,tenantId:10,status:'enabled'});
+ cleanups.pop()!();mount();await vi.advanceTimersByTimeAsync(0);
+ expect(f.permission).toHaveBeenLastCalledWith(false);expect(useChatNotificationEnrollment.getState().status).toBe('enabled');
+});
 it('synchronous native token re-emission does not loop or invalidate explicit enable',async()=>{
  f.enabled=true;mount();await vi.advanceTimersByTimeAsync(0);f.permission.mockResolvedValue(true);
  f.token.mockImplementation(async()=>{emit('token',{type:'ios',data:'A'.repeat(64)});return 'a'.repeat(64);});

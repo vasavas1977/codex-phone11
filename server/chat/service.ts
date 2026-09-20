@@ -5,8 +5,9 @@ import type { PoolClient } from "pg";
 import { withTransaction } from "../pbx/db";
 import { ChatIntelligenceError, chatIntelligenceAvailable, generateChatIntelligence } from "./intelligence";
 import { LinkPreviewError, previewChatLink } from "./link-preview";
-import type { ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatPresenceStatus, ChatReadReceipt, ChatReadReceiptSummary, ChatWorkspace } from "../../lib/chat/types";
+import type { ChatAutomaticPresenceStatus, ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatPresenceStatus, ChatReadReceipt, ChatReadReceiptSummary, ChatWorkspace } from "../../lib/chat/types";
 import { chatTypingRegistry, type ChatTypingRegistry } from "./typing";
+import { getWorkspaceProfileStatuses } from "../profile/status";
 
 // Live Phone11 grants workspace access through an active tenant membership plus
 // an explicit user_extensions assignment. No inferred tenant 1 or
@@ -549,7 +550,7 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
         return { tenantId: workspace.id, version: result.rows[0]?.supported === true ? 2 as const : 1 as const };
       });
     },
-    heartbeat(userId: number, tenantId: number, session?: { sessionId: string; generation: string; sequence: number; status: Exclude<ChatPresenceStatus, "offline">; active: boolean }) {
+    heartbeat(userId: number, tenantId: number, session?: { sessionId: string; generation: string; sequence: number; status: Exclude<ChatAutomaticPresenceStatus, "offline">; active: boolean }) {
       return scoped(userId, tenantId, async (db, workspace) => {
         if (session) {
           // Keep tombstones for one day: they reject delayed lower-sequence
@@ -691,11 +692,32 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
             status: row.available ? "available" as const : "offline" as const,
             lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).getTime() : null }));
         }
+        const notificationCapability = chatNotificationsEnabled()
+          ? await db.query(`SELECT to_regclass('phone11_chat_notification_devices') IS NOT NULL AS supported`)
+          : { rows: [{ supported: false }] };
+        const mobileJoin = notificationCapability.rows[0]?.supported === true ? `LEFT JOIN LATERAL (
+            SELECT TRUE AS reachable, MAX(d.registered_at) AS registered_at
+            FROM phone11_chat_notification_devices d
+            JOIN phone11_auth_session auth_session ON auth_session.id = d.session_id AND auth_session."expiresAt" > clock_timestamp()
+            JOIN phone11_auth_identity auth_identity ON auth_identity.auth_user_id = auth_session."userId"
+              AND auth_identity.legacy_user_id = d.user_id AND auth_identity.disabled_at IS NULL
+            WHERE d.tenant_id = e.tenant_id AND d.user_id = ue.user_id
+              AND d.registered_at > clock_timestamp() - interval '7 days'
+              AND EXISTS (SELECT 1 FROM user_extensions mobile_assignment JOIN extensions mobile_extension ON mobile_extension.id = mobile_assignment.extension_id
+                WHERE mobile_assignment.user_id = d.user_id AND mobile_extension.tenant_id = d.tenant_id
+                  AND mobile_extension.status = 'active' AND mobile_extension.deleted_at IS NULL)
+            HAVING COUNT(*) > 0
+          ) mobile ON TRUE` : `LEFT JOIN LATERAL (SELECT FALSE AS reachable, NULL::timestamptz AS registered_at) mobile ON TRUE`;
         const rows = await db.query(`SELECT DISTINCT ue.user_id,
-            CASE WHEN sessions.authoritative THEN sessions.last_seen_at ELSE legacy.last_seen_at END AS last_seen_at,
-            CASE WHEN sessions.authoritative THEN COALESCE(sessions.status, 'offline')
+            CASE WHEN sessions.status IS NOT NULL THEN sessions.last_seen_at
+              WHEN mobile.reachable THEN mobile.registered_at
+              WHEN sessions.authoritative THEN sessions.last_seen_at ELSE legacy.last_seen_at END AS last_seen_at,
+            CASE WHEN sessions.status IS NOT NULL THEN sessions.status
+              WHEN mobile.reachable THEN 'available'
+              WHEN sessions.authoritative THEN 'offline'
               WHEN legacy.last_seen_at >= clock_timestamp() - interval '2 minutes' THEN 'available'
-              ELSE 'offline' END AS status
+              ELSE 'offline' END AS status,
+            sessions.status AS session_status, mobile.reachable AS mobile_reachable
           FROM user_extensions ue JOIN extensions e ON e.id = ue.extension_id
           JOIN tenant_memberships tm ON tm.user_id = ue.user_id AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
           LEFT JOIN phone11_chat_presence legacy ON legacy.tenant_id = e.tenant_id AND legacy.user_id = ue.user_id
@@ -708,13 +730,30 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
             WHERE ps.tenant_id = e.tenant_id AND ps.user_id = ue.user_id
             HAVING COUNT(*) > 0
           ) sessions ON TRUE
+          ${mobileJoin}
           WHERE e.tenant_id = $1 AND e.status = 'active' AND e.deleted_at IS NULL
             AND ($2::integer[] IS NULL OR ue.user_id = ANY($2::integer[]))
             AND (ue.user_id = $3 OR NOT EXISTS (SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id=e.tenant_id
               AND ((b.blocker_id=$3 AND b.blocked_id=ue.user_id) OR (b.blocked_id=$3 AND b.blocker_id=ue.user_id))))
           ORDER BY ue.user_id LIMIT 500`, [workspace.id, userIds?.length ? userIds : null, userId]);
-        return rows.rows.map((row: any) => ({ userId: Number(row.user_id), available: row.status !== "offline", status: row.status as ChatPresenceStatus,
-          lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).getTime() : null }));
+        const profileLookup = await getWorkspaceProfileStatuses(db, userId, workspace.id, rows.rows.map((row: any) => Number(row.user_id)));
+        const profiles = new Map(profileLookup.rows.map(profile => [profile.userId, profile]));
+        return rows.rows.map((row: any) => {
+          const status = row.status as ChatAutomaticPresenceStatus;
+          const profile = status === "offline" ? undefined : profiles.get(Number(row.user_id));
+          const manual = profile?.manualAvailability ?? null;
+          const effectiveStatus: ChatPresenceStatus = manual === "dnd" ? "dnd"
+            : status === "on_call" ? "on_call" : status === "in_meeting" ? "in_meeting"
+              : manual ?? status;
+          const source = manual === "dnd" ? "manual" as const : status === "on_call" ? "call" as const : status === "in_meeting" ? "meeting" as const
+            : manual ? "manual" as const
+            : row.session_status ? "active" as const : row.mobile_reachable ? "mobile" as const
+              : status === "available" ? "active" as const : "none" as const;
+          return { userId: Number(row.user_id), available: status !== "offline", status, effectiveStatus,
+            manualAvailability: manual, source, lastSeenAt: row.last_seen_at ? new Date(row.last_seen_at).getTime() : null,
+            statusText: profile?.statusText ?? null, statusExpiresAt: profile?.statusExpiresAt?.getTime() ?? null,
+            workLocation: profile?.workLocation ?? null };
+        });
       });
     },
     report(userId: number, tenantId: number, id: string, category: "harassment" | "spam" | "safety" | "other", comment?: string, messageId?: string) {

@@ -6,7 +6,7 @@ import { useSipCallStore } from "../sip/call-store";
 import { createChatTransport } from "./transport";
 import { useChatStore } from "./store";
 import { resetPresenceOwner, richPresenceAvailable } from "./presence-store";
-import type { ChatPresenceStatus } from "./types";
+import type { ChatAutomaticPresenceStatus } from "./types";
 import { useAuth } from "@/hooks/use-auth";
 
 export { presenceColor, presenceLabel, useChatPresence, useChatPresenceStore, usePresencePolling } from "./presence-store";
@@ -22,9 +22,9 @@ function uuid(): string {
 }
 const processSessionId = uuid();
 
-type PublishedPresence = { sequence: number; status: Exclude<ChatPresenceStatus, "offline">; active: boolean };
+type PublishedPresence = { sequence: number; status: Exclude<ChatAutomaticPresenceStatus, "offline">; active: boolean };
 export function createPresencePublisherController(options: {
-  getStatus: () => Exclude<ChatPresenceStatus, "offline">;
+  getStatus: () => Exclude<ChatAutomaticPresenceStatus, "offline">;
   nextSequence: () => number;
   canSend: (active: boolean) => Promise<boolean>;
   send: (presence: PublishedPresence) => Promise<unknown>;
@@ -61,7 +61,7 @@ export function createPresencePublisherController(options: {
   return { publish, stop: () => { stopped = true; publish(false, true); } };
 }
 
-export function localPresenceStatus(ownerId: number): Exclude<ChatPresenceStatus, "offline"> {
+export function localPresenceStatus(ownerId: number): Exclude<ChatAutomaticPresenceStatus, "offline"> {
   const calls = useSipCallStore.getState();
   const callStates = new Set(["calling", "incoming", "connecting", "active", "held"]);
   const ownedCall = [calls.incomingCall, ...Object.values(calls.activeCalls)]
@@ -71,6 +71,13 @@ export function localPresenceStatus(ownerId: number): Exclude<ChatPresenceStatus
   const meetingStatus = meeting?.session.getSnapshot().status;
   if (meetingStatus === "connected" || meetingStatus === "reconnecting") return "in_meeting";
   return AppState.currentState === "active" ? "available" : "away";
+}
+
+export function automaticPresenceIsActive(
+  status: Exclude<ChatAutomaticPresenceStatus, "offline">,
+  appState: string = AppState.currentState,
+): boolean {
+  return status === "on_call" || status === "in_meeting" || appState === "active";
 }
 
 /** One publisher at the app root keeps presence current across every tab. */
@@ -100,11 +107,15 @@ export function Phone11PresencePublisher() {
       },
       send: next => api.heartbeat(tenantId, { sessionId: processSessionId, generation, ...next }),
     });
-    controller.publish(true, true);
-    const callUnsubscribe = useSipCallStore.subscribe(() => controller.publish());
-    const meetingUnsubscribe = subscribeNativeMeetingRegistry(() => controller.publish());
-    const appSubscription = AppState.addEventListener("change", () => controller.publish());
-    const timer = setInterval(() => controller.publish(true, true), POLL_MS);
+    const publish = (force = false) => {
+      const status = localPresenceStatus(owner.id);
+      controller.publish(automaticPresenceIsActive(status), force);
+    };
+    publish(true);
+    const callUnsubscribe = useSipCallStore.subscribe(() => publish());
+    const meetingUnsubscribe = subscribeNativeMeetingRegistry(() => publish());
+    const appSubscription = AppState.addEventListener("change", () => publish());
+    const timer = setInterval(() => publish(true), POLL_MS);
     return () => {
       callUnsubscribe(); meetingUnsubscribe(); appSubscription.remove(); clearInterval(timer);
       controller.stop();
