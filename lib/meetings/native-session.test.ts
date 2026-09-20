@@ -3,11 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   const listeners = new Set<() => void>();
   const rooms: any[] = [];
+  const lifecycleEvents: string[] = [];
   return {
     authUser: { id: 11 },
     listeners,
     rooms,
-    startAudioSession: vi.fn(async () => {}),
+    lifecycleEvents,
+    startAudioSession: vi.fn(async () => { lifecycleEvents.push("audio-start"); }),
     stopAudioSession: vi.fn(async () => {}),
     registerGlobals: vi.fn(),
     sipState: { incomingCall: null, activeCalls: {} as Record<string, { status: string }> },
@@ -43,7 +45,7 @@ vi.mock("livekit-client", () => ({
       setCameraEnabled: vi.fn(async (enabled: boolean) => { this.localParticipant.isCameraEnabled = enabled; }),
     };
     remoteParticipants = new Map();
-    connect = vi.fn(async () => {});
+    connect = vi.fn(async () => { mocks.lifecycleEvents.push("room-connect"); });
     disconnect = vi.fn(async () => {});
     on = vi.fn();
     off = vi.fn();
@@ -63,8 +65,11 @@ beforeEach(async () => {
   mocks.authUser = { id: 11 };
   mocks.listeners.clear();
   mocks.rooms.length = 0;
+  mocks.lifecycleEvents.length = 0;
   mocks.sipState = { incomingCall: null, activeCalls: {} };
-  mocks.startAudioSession.mockResolvedValue(undefined);
+  mocks.startAudioSession.mockImplementation(async () => {
+    mocks.lifecycleEvents.push("audio-start");
+  });
   mocks.stopAudioSession.mockResolvedValue(undefined);
   native = await import("./native-session");
   registry = await import("./native-session-registry");
@@ -73,6 +78,13 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("native meeting lifecycle", () => {
+  it("starts the manually managed native audio session before connecting the server-issued room", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-audio-order", admission, preferences);
+
+    expect(mocks.lifecycleEvents).toEqual(["audio-start", "room-connect"]);
+    await lifecycle.leave();
+  });
+
   it("rechecks ownership after native audio start and never registers a meeting raced by SIP", async () => {
     mocks.startAudioSession.mockImplementation(async () => {
       const sip = native.phone11MediaOwnership.requestSip("sip:race");
@@ -83,7 +95,8 @@ describe("native meeting lifecycle", () => {
       .rejects.toThrow("Phone call started before the meeting audio could start");
 
     expect(registry.getActiveNativeMeeting()).toBeUndefined();
-    expect(mocks.rooms[0].disconnect).toHaveBeenCalledWith(true);
+    expect(mocks.rooms).toHaveLength(0);
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
     expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({ kind: "sip", id: "sip:race" });
   });
 

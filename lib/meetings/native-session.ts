@@ -77,6 +77,7 @@ export class NativeMeetingLifecycle {
   private leaving = false;
   private releaseTask?: Promise<void>;
   private mediaReleased = false;
+  private audioStarted = false;
   private audioStopped = false;
   private unsubscribe?: () => void;
   private unsubscribeOwner?: () => void;
@@ -157,6 +158,15 @@ export class NativeMeetingLifecycle {
       if (hasLiveSipCall() || !phone11MediaOwnership.isCurrent(request.lease)) {
         throw new Error("A Phone call started before the meeting could connect.");
       }
+      // The native SDK requires its manually managed audio session before a
+      // room starts connecting. Starting it afterwards makes an otherwise
+      // valid server-issued admission fail at the native media boundary.
+      await bindings.startAudioSession();
+      lifecycle.audioStarted = true;
+      if (!lifecycle.ownerIsCurrent() || hasLiveSipCall() || !phone11MediaOwnership.isCurrent(request.lease)) {
+        await lifecycle.releaseAfterMediaStops().catch(() => undefined);
+        throw new Error("A Phone call started before the meeting audio could start.");
+      }
       await lifecycle.session.connect({
         url: admission.url,
         token: admission.token,
@@ -165,9 +175,9 @@ export class NativeMeetingLifecycle {
         receiveOnly: lifecycle.receiveOnly,
       });
       if (!lifecycle.ownerIsCurrent() || !phone11MediaOwnership.isCurrent(request.lease)) throw new Error("Meeting connection was cancelled.");
-      await bindings.startAudioSession();
-      // SIP can acquire the lease while the native audio API is awaiting. Do
-      // not publish this room as active unless this exact meeting still owns it.
+      // SIP can acquire the lease while native setup or room connection is
+      // awaiting. Do not publish this room as active unless this exact meeting
+      // still owns it.
       if (!lifecycle.ownerIsCurrent() || hasLiveSipCall() || !phone11MediaOwnership.isCurrent(request.lease)) {
         await lifecycle.releaseAfterMediaStops().catch(() => undefined);
         throw new Error("A Phone call started before the meeting audio could start.");
@@ -197,7 +207,7 @@ export class NativeMeetingLifecycle {
       // BrowserMeetingSession.disconnect(true) stops all local tracks first.
       // A failed native audio stop is surfaced, but cannot retain a room,
       // media lease, or old-account registry entry. A later leave retries it.
-      if (this.bindings && !this.audioStopped) {
+      if (this.bindings && this.audioStarted && !this.audioStopped) {
         try {
           await this.bindings.stopAudioSession();
           this.audioStopped = true;
