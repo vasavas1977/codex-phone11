@@ -549,7 +549,7 @@ export default function ChatRoomScreen() {
     composerSelection.current = selection;
     requestAnimationFrame(() => {
       composerInput.current?.focus();
-      composerInput.current?.setNativeProps({ selection });
+      composerInput.current?.setNativeProps?.({ selection });
     });
   };
   const openMentions = () => {

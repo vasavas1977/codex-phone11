@@ -182,7 +182,7 @@ export default function ChatPreview() {
           setSelection(result.selection);
           requestAnimationFrame(() => {
             composerInput.current?.focus();
-            composerInput.current?.setNativeProps({ selection: result.selection });
+            composerInput.current?.setNativeProps?.({ selection: result.selection });
           });
         }} />}
         <View
