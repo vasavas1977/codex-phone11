@@ -30,6 +30,8 @@ TENANT_NAMESPACE = "6fa4634ade063138"
 CONNECT11_API_URL = "https://api.connect11.ai"
 CONNECT11_RTC_URL = "wss://connect11-platform-zm6g4d8f.livekit.cloud"
 LIVE_KEY_PREFIX = "c11_live_"
+TOKEN_KEY_PREFIX_PATTERN = re.compile(r"c11_live_[0-9a-f]{8}\Z")
+TOKEN_PATTERN = re.compile(r"c11_live_[0-9a-f]{8}_[A-Za-z0-9_-]{43}\Z")
 INSTANCE_ID = "i-0851dd1ea1cfeef71"
 REGION = "ap-southeast-7"
 AVAILABILITY_ZONE = "ap-southeast-7a"
@@ -99,10 +101,7 @@ def validate_metadata(metadata: Any) -> dict[str, dict[str, Any]]:
         guarded(valid_opaque_metadata(credential_id))
         guarded(valid_metadata_name(record.get("name")))
         guarded(
-            isinstance(key_prefix, str)
-            and len(key_prefix) > len(LIVE_KEY_PREFIX)
-            and key_prefix.startswith(LIVE_KEY_PREFIX)
-            and not any(character.isspace() for character in key_prefix)
+            isinstance(key_prefix, str) and bool(TOKEN_KEY_PREFIX_PATTERN.fullmatch(key_prefix))
         )
         guarded(record.get("customer_id") == CUSTOMER_ID)
         guarded(record.get("tenant_namespace") == TENANT_NAMESPACE)
@@ -126,12 +125,11 @@ def validate_metadata(metadata: Any) -> dict[str, dict[str, Any]]:
 def validate_token(token: Any, *, prefix: str) -> str:
     guarded(
         isinstance(token, str)
-        and 1 <= len(token) <= 4096
+        and bool(TOKEN_PATTERN.fullmatch(token))
         and token == token.strip()
-        and "\n" not in token
-        and "\r" not in token
-        and "\x00" not in token
-        and token.startswith(prefix),
+        and isinstance(prefix, str)
+        and bool(TOKEN_KEY_PREFIX_PATTERN.fullmatch(prefix))
+        and token.startswith(prefix + "_"),
     )
     return token
 

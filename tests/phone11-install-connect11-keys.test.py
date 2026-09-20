@@ -21,6 +21,11 @@ installer = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = installer
 SPEC.loader.exec_module(installer)
 
+STATUS_PREFIX = "c11_live_0123abcd"
+JOIN_PREFIX = "c11_live_fedcba98"
+STATUS_TOKEN = STATUS_PREFIX + "_" + "A" * 43
+JOIN_TOKEN = JOIN_PREFIX + "_" + "B" * 43
+
 
 def valid_metadata(**overrides: object) -> dict[str, dict[str, object]]:
     document: dict[str, dict[str, object]] = {
@@ -29,7 +34,7 @@ def valid_metadata(**overrides: object) -> dict[str, dict[str, object]]:
             "customer_id": installer.CUSTOMER_ID,
             "tenant_namespace": installer.TENANT_NAMESPACE,
             "name": "Phone11 status",
-            "key_prefix": "c11_live_status_",
+            "key_prefix": STATUS_PREFIX,
             "scopes": ["realtime:plain-video:status"],
             "environment": "live",
             "product_code": "connect11",
@@ -41,7 +46,7 @@ def valid_metadata(**overrides: object) -> dict[str, dict[str, object]]:
             "customer_id": installer.CUSTOMER_ID,
             "tenant_namespace": installer.TENANT_NAMESPACE,
             "name": "Phone11 join and evict",
-            "key_prefix": "c11_live_join_",
+            "key_prefix": JOIN_PREFIX,
             "scopes": ["realtime:plain-video:join", "realtime:plain-video:evict"],
             "environment": "live",
             "product_code": "connect11",
@@ -59,8 +64,8 @@ class Connect11InstallerTests(unittest.TestCase):
     def test_payload_is_exactly_compatible_with_guard_contract(self) -> None:
         payload = installer.build_payload(
             valid_metadata(),
-            "c11_live_status_secret",
-            "c11_live_join_secret",
+            STATUS_TOKEN,
+            JOIN_TOKEN,
         )
         self.assertTrue(payload["env"].startswith(installer.CONFIG_VARIABLE + "={"))
         mapping = json.loads(payload["env"].split("=", 1)[1])
@@ -75,25 +80,44 @@ class Connect11InstallerTests(unittest.TestCase):
             valid_metadata(status__scopes=["realtime:plain-video:join"]),
             valid_metadata(join_evict__tenant_namespace="Phone11tenant1"),
             valid_metadata(join_evict__id="key-status-01"),
-            valid_metadata(join_evict__key_prefix="c11_live_status_"),
+            valid_metadata(join_evict__key_prefix=STATUS_PREFIX),
+            valid_metadata(status__key_prefix="c11_live_0123abcg"),
             valid_metadata(status__status="revoked"),
         )
         for metadata in invalid:
             with self.subTest(metadata=metadata):
                 with self.assertRaises(installer.InstallerError):
-                    installer.build_payload(metadata, "c11_live_status_secret", "c11_live_join_secret")
+                    installer.build_payload(metadata, STATUS_TOKEN, JOIN_TOKEN)
 
     def test_tokens_must_bind_to_their_role_prefix_and_be_distinct(self) -> None:
         metadata = valid_metadata()
         for status, join in (
-            ("c11_live_wrong_secret", "c11_live_join_secret"),
-            ("c11_live_status_secret", "c11_live_wrong_secret"),
-            ("c11_live_status_same", "c11_live_status_same"),
-            (" c11_live_status_secret", "c11_live_join_secret"),
+            (JOIN_TOKEN, JOIN_TOKEN),
+            (STATUS_TOKEN, STATUS_TOKEN),
+            (" " + STATUS_TOKEN, JOIN_TOKEN),
         ):
             with self.subTest(status=status, join=join):
                 with self.assertRaises(installer.InstallerError):
                     installer.build_payload(metadata, status, join)
+
+    def test_tokens_require_exact_canonical_generator_shape(self) -> None:
+        metadata = installer.validate_metadata(valid_metadata())
+        self.assertEqual(metadata["status"]["key_prefix"], STATUS_PREFIX)
+        self.assertEqual(installer.validate_token(STATUS_TOKEN, prefix=STATUS_PREFIX), STATUS_TOKEN)
+        invalid = (
+            STATUS_TOKEN + " " + STATUS_TOKEN,
+            STATUS_TOKEN + STATUS_TOKEN,
+            STATUS_PREFIX + "A" * 42,
+            STATUS_PREFIX + "A" * 44,
+            "c11_live_0123abcg_" + "A" * 43,
+            "c11_live_0123ABCD_" + "A" * 43,
+            STATUS_TOKEN + "\n",
+            STATUS_TOKEN + "\x00",
+        )
+        for token in invalid:
+            with self.subTest(token_length=len(token)):
+                with self.assertRaises(installer.InstallerError):
+                    installer.validate_token(token, prefix=STATUS_PREFIX)
 
     def writer_namespace(self, directory: Path) -> dict[str, object]:
         namespace: dict[str, object] = {"__name__": "phone11_remote_writer_test"}
@@ -114,7 +138,7 @@ class Connect11InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_directory:
             directory = Path(raw_directory)
             namespace = self.writer_namespace(directory)
-            payload = installer.build_payload(valid_metadata(), "c11_live_status_secret", "c11_live_join_secret")
+            payload = installer.build_payload(valid_metadata(), STATUS_TOKEN, JOIN_TOKEN)
             self.assertEqual(self.writer_main(namespace, payload), 0)
             config = namespace["CONFIG_FILE"]
             metadata = namespace["METADATA_FILE"]
@@ -129,7 +153,7 @@ class Connect11InstallerTests(unittest.TestCase):
             config = directory / "connect11-plain-video.env"
             config.write_text("keep")
             namespace = self.writer_namespace(directory)
-            payload = installer.build_payload(valid_metadata(), "c11_live_status_secret", "c11_live_join_secret")
+            payload = installer.build_payload(valid_metadata(), STATUS_TOKEN, JOIN_TOKEN)
             self.assertEqual(self.writer_main(namespace, payload), 1)
             self.assertEqual(config.read_text(), "keep")
 
@@ -139,7 +163,7 @@ class Connect11InstallerTests(unittest.TestCase):
             target.write_text("keep")
             (directory / "connect11-plain-video.env").symlink_to(target)
             namespace = self.writer_namespace(directory)
-            payload = installer.build_payload(valid_metadata(), "c11_live_status_secret", "c11_live_join_secret")
+            payload = installer.build_payload(valid_metadata(), STATUS_TOKEN, JOIN_TOKEN)
             self.assertEqual(self.writer_main(namespace, payload), 1)
             self.assertEqual(target.read_text(), "keep")
 
@@ -158,7 +182,7 @@ class Connect11InstallerTests(unittest.TestCase):
                 original(path, content)
 
             namespace["write_new_file"] = fail_second
-            payload = installer.build_payload(valid_metadata(), "c11_live_status_secret", "c11_live_join_secret")
+            payload = installer.build_payload(valid_metadata(), STATUS_TOKEN, JOIN_TOKEN)
             self.assertEqual(self.writer_main(namespace, payload), 1)
             self.assertFalse((directory / "connect11-plain-video.env").exists())
             self.assertFalse((directory / "connect11-plain-video-credential-metadata.json").exists())
@@ -170,7 +194,7 @@ class Connect11InstallerTests(unittest.TestCase):
             original_write = namespace["os"].write
             namespace["os"].write = lambda _descriptor, _content: (_ for _ in ()).throw(OSError())
             try:
-                payload = installer.build_payload(valid_metadata(), "c11_live_status_secret", "c11_live_join_secret")
+                payload = installer.build_payload(valid_metadata(), STATUS_TOKEN, JOIN_TOKEN)
                 self.assertEqual(self.writer_main(namespace, payload), 1)
             finally:
                 namespace["os"].write = original_write
@@ -184,7 +208,7 @@ class Connect11InstallerTests(unittest.TestCase):
             output = io.StringIO()
             with contextlib.redirect_stdout(output), patch.object(installer, "authorize_and_install") as transport:
                 self.assertEqual(
-                    installer.run(args, prompt=lambda _prompt: "c11_live_status_secret" if "status" in _prompt else "c11_live_join_secret"),
+                    installer.run(args, prompt=lambda _prompt: STATUS_TOKEN if "status" in _prompt else JOIN_TOKEN),
                     0,
                 )
             transport.assert_not_called()
@@ -206,7 +230,7 @@ class Connect11InstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw_directory:
             known_hosts = Path(raw_directory) / "known_hosts"
             known_hosts.write_text("43.210.122.111 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEvidenceOnly\n")
-            payload = installer.build_payload(valid_metadata(), "c11_live_status_secret", "c11_live_join_secret")
+            payload = installer.build_payload(valid_metadata(), STATUS_TOKEN, JOIN_TOKEN)
             with (
                 patch.object(installer, "require_aws_target"),
                 patch.object(installer, "require_known_host"),
@@ -222,7 +246,7 @@ class Connect11InstallerTests(unittest.TestCase):
         writer_calls = [(args, stdin) for args, stdin in calls if stdin is not None]
         self.assertEqual(len(writer_calls), 1)
         self.assertTrue(any(installer.REMOTE_WRITER in argument for argument in writer_calls[0][0]))
-        self.assertIn(b"c11_live_status_secret", writer_calls[0][1])
+        self.assertIn(STATUS_TOKEN.encode("utf-8"), writer_calls[0][1])
         self.assertFalse(any("/tmp/" in argument for args, _stdin in calls for argument in args))
 
     def test_prepare_is_credential_free_and_uses_only_the_remote_read_check(self) -> None:
