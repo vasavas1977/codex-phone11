@@ -2,9 +2,9 @@
 
 ## Outcome
 
-The live database is compatible with the minimal Phone11 session-presence and
-read-receipt delta. The guarded operator passed an exact, read-only production
-preflight. No production DDL was executed during this preparation.
+The live database was compatible with the minimal Phone11 session-presence and
+read-receipt delta. After exact-head review, the guarded operator applied the
+delta successfully and independently revalidated the committed post-state.
 
 The historical base, collaboration, and media migrations must **not** be
 replayed. Their objects are already present. Only these four objects are absent:
@@ -80,17 +80,42 @@ git diff --check
 
 The embedded production `prepare` action was also executed over the pinned EC2
 Instance Connect path. Result: identity pin matched, catalog pin matched,
-`apply=NOT_RUN`.
+`apply=NOT_RUN` during rehearsal.
+
+## Production apply evidence
+
+The reviewed operator at commit
+`284ddeaf6297939189250be8f0a6373226be3bd6` ran on 2026-09-20 from this new
+root-owned mode `0700` directory:
+
+`/opt/phone11ai/chat-presence-receipts-migration-20260920T095458Z`
+
+The SQL and operator copies are root-owned mode `0600` and retained their
+pinned hashes. The sequence completed as:
+
+1. `--prepare`: `READY`, with both live pins matching.
+2. `--apply`: `APPLIED`, with the exact post-state verified before commit.
+3. `--recover-receipt`: `VALID`, read-only validation of the existing receipt.
+4. Original backend container/image: still pinned, running, and healthy.
+5. Public `https://api.phone11.ai/api/health`: HTTP `200` after the apply.
+
+Evidence hashes:
+
+- SQL: `dffee7ecb0d713a04cad25de1de493d71780b2d5b8f2d9be3101680e0ccfc93f`
+- operator: `c0dfc3b749aea85708248a2483c1e31475b284d2823f86eed832c805c9f390e5`
+- receipt: `072fb0c46ad5dfaf4a955015c11de0951d92117c77b79c034294344774d9ea63`
+- post-catalog verification:
+  `7cf2807f99bc193fd626d57442234a04b7537b7c3ac12bcf95fe35a978251901`
+
+No candidate service, proxy, calling configuration, provider credential, or
+meeting schema was changed by this migration step.
 
 ## Remaining activation gates
 
-1. Independent review of this exact migration/operator commit.
-2. A controlled production apply using the reviewed immutable files, followed
-   by receipt verification. This document does not authorize or claim it.
-3. Candidate deployment and API probes remain separate evidence.
-4. On the first fresh API process, `phone.getConfig` invokes
+1. Candidate deployment and API probes remain separate evidence.
+2. On the first fresh API process, `phone.getConfig` invokes
    `ensurePhoneProvisioningSchema`. Its existing idempotent provisioning DDL is
    outside this delta and must be observed as a separate activation-compatibility
    gate rather than being silently treated as covered here.
-5. Real Phone11 handset conference join, media, participant, lifecycle, and
+3. Real Phone11 handset conference join, media, participant, lifecycle, and
    locked/background behavior remain separate device-acceptance evidence.
