@@ -17,6 +17,11 @@ import { storageRouter } from "../pbx/recording-storage";
 import { wsManager } from "../pbx/websocket";
 import { fsEventListener } from "../pbx/fs-event-listener";
 import { registerWakeRoutes } from "../push/wake-routes";
+import {
+  createPhone11RuntimeLifecycle,
+  parsePhone11RuntimePort,
+  selectPhone11RuntimePort,
+} from "./runtime-role";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -37,11 +42,28 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-async function startServer() {
-  let stopRecordingAnalysis = () => {};
-  let stopRecordingRetention = () => {};
-  let stopRecordingCapture = () => {};
-  let stopChatMediaRetention = () => {};
+export async function startServer() {
+  const runtime = createPhone11RuntimeLifecycle(
+    process.env.PHONE11_RUNTIME_ROLE,
+    {
+      startChatNotificationDispatcher,
+      startChatMediaRetention,
+      startRecordingAnalysis: startRecordingAnalysisWorker,
+      startRecordingRetention: startRecordingRetentionWorker,
+      startRecordingCapture: startRecordingCaptureService,
+      startFreeSwitchEventListener: () => {
+        try {
+          fsEventListener.start();
+        } catch (error: any) {
+          console.warn(
+            `[ESL] Failed to start event listener: ${error.message}`,
+          );
+        }
+      },
+      stopFreeSwitchEventListener: () => fsEventListener.stop(),
+      shutdownWebSockets: () => wsManager.shutdown(),
+    },
+  );
   const app = express();
   const server = createServer(app);
 
@@ -65,6 +87,7 @@ async function startServer() {
       timestamp: Date.now(),
       build: process.env.PHONE11_BUILD_SHA || "unknown",
       service: "phone11-backend",
+      runtimeRole: runtime.plan.role,
     });
   });
 
@@ -85,10 +108,14 @@ async function startServer() {
     }),
   );
 
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  const port = await findAvailablePort(preferredPort);
+  const preferredPort = parsePhone11RuntimePort(runtime.plan, process.env.PORT);
+  const port = await selectPhone11RuntimePort(
+    runtime.plan,
+    preferredPort,
+    findAvailablePort,
+  );
 
-  if (port !== preferredPort) {
+  if (!runtime.plan.bindsPortExactly && port !== preferredPort) {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
@@ -107,31 +134,18 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`[api] server listening on port ${port}`);
-    startChatNotificationDispatcher();
-    stopChatMediaRetention = startChatMediaRetention();
-    stopRecordingAnalysis = startRecordingAnalysisWorker();
-    stopRecordingRetention = startRecordingRetentionWorker();
-    stopRecordingCapture = startRecordingCaptureService();
-
-    // Start FreeSWITCH ESL event listener after server is up
-    try {
-      fsEventListener.start();
-    } catch (e: any) {
-      console.warn(`[ESL] Failed to start event listener: ${e.message}`);
-    }
+    runtime.background.start();
   });
 
-  // Graceful shutdown
-  process.on("SIGTERM", () => {
-    stopRecordingAnalysis();
-    stopRecordingRetention();
-    stopRecordingCapture();
-    stopChatMediaRetention();
-    console.log("[api] SIGTERM received, shutting down...");
-    fsEventListener.stop();
-    wsManager.shutdown();
-    server.close();
-  });
+  if (runtime.plan.startsBackgroundServices) {
+    // The candidate must not install a process-wide shutdown listener: its
+    // workers and event delivery remain owned by the default backend.
+    process.on("SIGTERM", () => {
+      runtime.background.stop();
+      console.log("[api] SIGTERM received, shutting down...");
+      server.close();
+    });
+  }
 }
 
 startServer().catch(console.error);
