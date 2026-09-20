@@ -46,10 +46,12 @@ for read-only diagnosis. The failure is not a handset test result.
 Candidate activation, public API behavior, and physical device behavior are
 separate gates. The database update above does not pass them.
 Connect11 meeting admission and two-device media acceptance are also separate.
-An additional read-only production catalog check found no
-`phone11_plain_video_*` or `phone11_meeting*` relations. Protected Connect11
-credentials alone therefore do not make a meeting available; the admission
-schema and authorized meeting records still need their separate rollout.
+Before the conference migration, a read-only production catalog check found
+no `phone11_plain_video_*` or `phone11_meeting*` relations. A later independent
+read-only check confirmed that all four plain-video admission tables exist
+and each has zero rows. Protected Connect11 credentials and empty tables alone
+do not make a meeting available; authorized meeting records and provider/device
+acceptance remain separate gates.
 
 ## Two-iPhone test sequence
 
