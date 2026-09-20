@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 
 SCHEMA = "phone11-profile-dnd-rollout/v1"
 RECEIPT_SCHEMA = "phone11-migration-receipt/v1"
+ATTEMPT_RECEIPT_SCHEMA = "phone11-runtime-attempt-receipt/v1"
 GUARD_SCHEMA = "phone11-profile-dnd-guard/v1"
 PROBE_SCHEMA = "phone11-profile-dnd-probes/v1"
 BASELINE_CONTAINER = "cp11-backend"
@@ -50,6 +51,7 @@ STATE_ROOT = Path("/var/lib/phone11-profile-dnd-rollout")
 ROUTE_SITE = STATE_ROOT / "nginx-site.before"
 ROUTE_RECEIPT = STATE_ROOT / "route-receipt.json"
 BASELINE_RECEIPT = STATE_ROOT / "baseline-receipt.json"
+BASELINE_ATTEMPT_RECEIPT = STATE_ROOT / "baseline-attempt-receipt.json"
 CANDIDATE_RECEIPT = STATE_ROOT / "candidate-receipt.json"
 DISABLED_ROLLBACK_RECEIPT = STATE_ROOT / "disabled-rollback-receipt.json"
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -288,6 +290,8 @@ class Pins:
     rollback_disabled_compose: ComposePin
     rollback_image: str
     rollback_build: str
+    rollback_normalized_runtime_sha256: str
+    failed_baseline_attempt_receipt_sha256: str | None
     migration_artifacts: tuple[MigrationArtifact, ...]
     migration_verify: Path
     migration_verify_sha256: str
@@ -345,7 +349,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     exact_keys(release, {"sha", "build", "image", "bundle_sha256", "lock_sha256"})
     exact_keys(current, {"baseline", "candidate"})
     exact_keys(compose, {"baseline", "candidate"})
-    exact_keys(rollback, {"image", "build", "compose", "disabled_compose"})
+    exact_keys(rollback, {"image", "build", "normalized_runtime_sha256", "failed_baseline_attempt_receipt_sha256", "compose", "disabled_compose"})
     exact_keys(migration, {"artifacts", "verify", "verify_sha256", "database_sha256", "before_catalog_sha256", "after_catalog_sha256", "receipt", "receipt_sha256"})
     exact_keys(probes, {"file", "sha256"})
     exact_keys(guard, {"program", "sha256", "fence_id", "fence_evidence_sha256"})
@@ -357,6 +361,9 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     for value in (release.get("bundle_sha256"), release.get("lock_sha256"), migration.get("verify_sha256"), migration.get("database_sha256"), migration.get("before_catalog_sha256"), migration.get("after_catalog_sha256"), probes.get("sha256"), guard.get("sha256"), nginx.get("site_sha256"), nginx.get("dump_sha256"), kamailio.get("config_sha256")):
         guarded(is_sha256(value), "manifest")
     guarded(is_digest(rollback.get("image")) and isinstance(rollback.get("build"), str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", rollback["build"])), "manifest")
+    guarded(is_sha256(rollback.get("normalized_runtime_sha256")), "manifest")
+    failed_attempt_sha = rollback.get("failed_baseline_attempt_receipt_sha256")
+    guarded(failed_attempt_sha is None or is_sha256(failed_attempt_sha), "manifest")
     guarded(release["image"] != rollback["image"], "manifest")
     for section, name in ((migration, "verify"), (migration, "receipt"), (probes, "file"), (guard, "program"), (nginx, "site")):
         guarded(isinstance(section.get(name), str) and section[name].startswith("/"), "manifest")
@@ -390,7 +397,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     return Pins(
         release["sha"], release["build"], release["image"], release["bundle_sha256"], release["lock_sha256"],
         baseline, candidate, _compose(compose["baseline"]), _compose(compose["candidate"]),
-        _compose(rollback["compose"]), _compose(rollback["disabled_compose"]), rollback["image"], rollback["build"],
+        _compose(rollback["compose"]), _compose(rollback["disabled_compose"]), rollback["image"], rollback["build"], rollback["normalized_runtime_sha256"], failed_attempt_sha,
         tuple(parsed_artifacts), Path(migration["verify"]), migration["verify_sha256"],
         migration["database_sha256"], migration["before_catalog_sha256"], migration["after_catalog_sha256"],
         Path(migration["receipt"]), receipt_sha, Path(probes["file"]), probes["sha256"],
@@ -491,7 +498,12 @@ def normalized_runtime_release(inspect: Mapping[str, Any], *, normalize_notifica
     labels = shape["Config"].get("Labels")
     if isinstance(labels, dict):
         for key in list(labels):
-            if key in {"com.phone11.source-sha", "com.phone11.bundle-sha256", "com.phone11.lock-sha256", "com.phone11.candidate-build"}:
+            if key in {
+                "com.phone11.source-sha", "com.phone11.bundle-sha256",
+                "com.phone11.lock-sha256", "com.phone11.candidate-build",
+                "com.docker.compose.config-hash",
+                "com.docker.compose.project.config_files",
+            }:
                 labels.pop(key)
     return shape
 
@@ -1074,17 +1086,23 @@ class Operator:
         self.wake()
         self.guard("prepare")
 
-    def rollback_preflight(self) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
-        """Validate immutable rollback inputs while tolerating failed port 3000."""
+    def rollback_preflight(self) -> tuple[Mapping[str, Any], Mapping[str, Any], RuntimePin | None, tuple[str, str] | None]:
+        """Validate rollback inputs without requiring either service healthy."""
         guarded(self.pins.dnd_exposed and self.pins.migration_receipt_sha256 is not None, "dnd_exposure")
         self.image()
         baseline_config, candidate_config = self.compose_inputs()
-        self.current(baseline_config, candidate_config, require_baseline_healthy=False)
         self.receipt()
         self.probes = load_probes(pinned_read(self.pins.probes_file, self.pins.probes_sha256, "probes"))
         self.nginx()
         self.wake()
-        return baseline_config, candidate_config
+        before_pin, stop = self.rollback_baseline_identity(baseline_config)
+        validate_runtime(
+            self.system, CANDIDATE_CONTAINER, self.pins.candidate,
+            role="api-candidate", port=CANDIDATE_PORT, require_healthy=False,
+            compose_project=candidate_config["name"], compose_service=self.pins.candidate_compose.service,
+        )
+        self.require_worker_topology(baseline_config, candidate_config, require_default_running=None)
+        return baseline_config, candidate_config, before_pin, stop
 
     def apply_migration(self) -> None:
         guarded(self.pins.migration_receipt_sha256 is None, "migration_receipt")
@@ -1171,7 +1189,7 @@ class Operator:
         path: Path,
         *,
         action: str,
-        before: RuntimePin,
+        before: RuntimePin | None,
         after: Mapping[str, Any],
         after_image: str,
         after_build: str,
@@ -1182,13 +1200,111 @@ class Operator:
         guarded(not os.path.lexists(path), "runtime_receipt")
         atomic_write(path, canonical_bytes({
             "schema": SCHEMA, "action": action,
-            "before_container_id": before.container_id, "before_image": before.image,
-            "before_runtime_sha256": before.runtime_sha256, "before_build": before.build,
+            "before_container_id": before.container_id if before is not None else None,
+            "before_image": before.image if before is not None else None,
+            "before_runtime_sha256": before.runtime_sha256 if before is not None else None,
+            "before_build": before.build if before is not None else None,
             "after_container_id": after.get("Id"), "after_image": after_image,
             "after_build": after_build, "after_runtime_sha256": canonical_hash(runtime_shape(after)),
             "ordinary_chat_notifications": notifications,
             "before_attempted_notifications": before_attempted_notifications,
         }))
+
+    def validate_baseline_attempt_identity(
+        self,
+        inspect: Mapping[str, Any],
+        *,
+        before_container_id: str,
+        baseline_config: Mapping[str, Any],
+    ) -> RuntimePin:
+        container_id = inspect.get("Id")
+        state = inspect.get("State")
+        labels = inspect.get("Config", {}).get("Labels")
+        env = environment(inspect, "baseline_attempt")
+        guarded(
+            isinstance(container_id, str) and bool(re.fullmatch(r"[0-9a-f]{64}", container_id))
+            and container_id != before_container_id and inspect.get("Image") == self.pins.image
+            and isinstance(state, Mapping) and isinstance(labels, Mapping)
+            and labels.get("com.docker.compose.project") == baseline_config["name"]
+            and labels.get("com.docker.compose.service") == self.pins.baseline_compose.service
+            and env.get("PHONE11_RUNTIME_ROLE", "default") == "default"
+            and env.get("PHONE11_BUILD_SHA") == self.pins.release_build
+            and env.get("PORT", str(BASELINE_PORT)) == str(BASELINE_PORT)
+            and env.get("PHONE11_CHAT_NOTIFICATIONS_ENABLED") == "1",
+            "baseline_attempt",
+        )
+        normalized_sha = canonical_hash(normalized_runtime_release(inspect, normalize_notifications=True))
+        guarded(normalized_sha == self.pins.rollback_normalized_runtime_sha256, "baseline_attempt")
+        return RuntimePin(container_id, self.pins.image, canonical_hash(runtime_shape(inspect)), self.pins.release_build, None)
+
+    def save_baseline_attempt_receipt(self, *, before: RuntimePin, after: RuntimePin) -> None:
+        ensure_private_directory(STATE_ROOT, create=True)
+        guarded(not os.path.lexists(BASELINE_ATTEMPT_RECEIPT), "runtime_attempt_receipt")
+        atomic_write(BASELINE_ATTEMPT_RECEIPT, canonical_bytes({
+            "schema": ATTEMPT_RECEIPT_SCHEMA,
+            "action": "replace_baseline",
+            "compose_sha256": self.pins.baseline_compose.sha256,
+            "compose_rendered_sha256": self.pins.baseline_compose.rendered_sha256,
+            "before_container_id": before.container_id,
+            "before_image": before.image,
+            "before_runtime_sha256": before.runtime_sha256,
+            "before_build": before.build,
+            "after_container_id": after.container_id,
+            "after_image": after.image,
+            "after_runtime_sha256": after.runtime_sha256,
+            "after_normalized_runtime_sha256": self.pins.rollback_normalized_runtime_sha256,
+            "after_build": after.build,
+        }))
+
+    def failed_baseline_attempt_pin(self) -> RuntimePin:
+        digest = self.pins.failed_baseline_attempt_receipt_sha256
+        guarded(digest is not None, "baseline_identity")
+        receipt = strict_json(pinned_read(BASELINE_ATTEMPT_RECEIPT, digest, "runtime_attempt_receipt"), "runtime_attempt_receipt")
+        exact_keys(receipt, {
+            "schema", "action", "compose_sha256", "compose_rendered_sha256",
+            "before_container_id", "before_image", "before_runtime_sha256", "before_build",
+            "after_container_id", "after_image", "after_runtime_sha256",
+            "after_normalized_runtime_sha256", "after_build",
+        }, "runtime_attempt_receipt")
+        guarded(
+            receipt.get("schema") == ATTEMPT_RECEIPT_SCHEMA
+            and receipt.get("action") == "replace_baseline"
+            and receipt.get("compose_sha256") == self.pins.baseline_compose.sha256
+            and receipt.get("compose_rendered_sha256") == self.pins.baseline_compose.rendered_sha256
+            and receipt.get("before_container_id") == self.pins.baseline.container_id
+            and receipt.get("before_image") == self.pins.baseline.image
+            and receipt.get("before_runtime_sha256") == self.pins.baseline.runtime_sha256
+            and receipt.get("before_build") == self.pins.baseline.build
+            and isinstance(receipt.get("after_container_id"), str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", receipt["after_container_id"]))
+            and receipt.get("after_container_id") != self.pins.baseline.container_id
+            and receipt.get("after_image") == self.pins.image
+            and is_sha256(receipt.get("after_runtime_sha256"))
+            and receipt.get("after_normalized_runtime_sha256") == self.pins.rollback_normalized_runtime_sha256
+            and receipt.get("after_build") == self.pins.release_build,
+            "runtime_attempt_receipt",
+        )
+        return RuntimePin(receipt["after_container_id"], receipt["after_image"], receipt["after_runtime_sha256"], receipt["after_build"], None)
+
+    def rollback_baseline_identity(self, baseline_config: Mapping[str, Any]) -> tuple[RuntimePin | None, tuple[str, str] | None]:
+        current_id = self.named_container_id(BASELINE_CONTAINER)
+        if current_id is None:
+            return None, None
+        pin = self.pins.baseline if current_id == self.pins.baseline.container_id else self.failed_baseline_attempt_pin()
+        guarded(current_id == pin.container_id, "baseline_identity")
+        inspect = validate_runtime(
+            self.system, BASELINE_CONTAINER, pin,
+            role="default", port=BASELINE_PORT, require_healthy=False,
+            compose_project=baseline_config["name"], compose_service=self.pins.baseline_compose.service,
+        )
+        env = environment(inspect, "baseline_identity")
+        guarded(env.get("PHONE11_CHAT_NOTIFICATIONS_ENABLED") == "1", "baseline_identity")
+        guarded(
+            canonical_hash(normalized_runtime_release(inspect, normalize_notifications=True))
+            == self.pins.rollback_normalized_runtime_sha256,
+            "baseline_identity",
+        )
+        return pin, (BASELINE_CONTAINER, current_id)
 
     def validate_replacement_receipt(self, *, action: str, pin: RuntimePin, path: Path, notifications: str | None) -> None:
         guarded(pin.image == self.pins.image and pin.build == self.pins.release_build, "release_target")
@@ -1209,6 +1325,7 @@ class Operator:
     def replace_baseline(self) -> None:
         self.prepare()
         self.receipt()
+        guarded(not os.path.lexists(BASELINE_ATTEMPT_RECEIPT), "runtime_attempt_receipt")
         before = self.guard("replace-baseline-before", require_fence=True, min_fence_remaining_ms=150_000)
         old = validate_runtime(self.system, BASELINE_CONTAINER, self.pins.baseline, role="default", port=BASELINE_PORT)
         document = render_compose(self.system, self.pins.baseline_compose, container=BASELINE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="default", port=BASELINE_PORT, notifications="1")
@@ -1224,6 +1341,12 @@ class Operator:
             )
             guarded(stopped is not None, "admission_fence")
             replacement = one_inspect(self.system, BASELINE_CONTAINER, "baseline_replacement")
+            attempt_pin = self.validate_baseline_attempt_identity(
+                replacement,
+                before_container_id=self.pins.baseline.container_id,
+                baseline_config=self.baseline_config,
+            )
+            self.save_baseline_attempt_receipt(before=self.pins.baseline, after=attempt_pin)
             state = replacement.get("State", {})
             guarded(replacement.get("Id") != old.get("Id") and replacement.get("Image") == self.pins.image and state.get("Running") is True and state.get("OOMKilled") is not True and state.get("ExitCode", 0) == 0, "baseline_replacement")
             env = environment(replacement, "baseline_replacement")
@@ -1354,22 +1477,35 @@ class Operator:
 
     def rollback_baseline_disabled(self) -> None:
         guarded(self.pins.dnd_exposed, "dnd_exposure")
-        baseline_config, candidate_config = self.rollback_preflight()
+        baseline_config, candidate_config, before_pin, stop = self.rollback_preflight()
         before_guard = self.guard("rollback-baseline-disabled-before", require_readiness=False, require_fence=True, min_fence_remaining_ms=150_000)
-        before = validate_runtime(self.system, BASELINE_CONTAINER, self.pins.baseline, role="default", port=BASELINE_PORT, require_healthy=False, compose_project=baseline_config["name"], compose_service=self.pins.baseline_compose.service)
         document = render_compose(self.system, self.pins.rollback_disabled_compose, container=BASELINE_CONTAINER, image=self.pins.rollback_image, build=self.pins.rollback_build, role="default", port=BASELINE_PORT, notifications="0")
         self.wake()
-        stopped = self._up(document, self.pins.rollback_disabled_compose, stop=(BASELINE_CONTAINER, self.pins.baseline.container_id), fence_id=before_guard["admission_fence_id"], since_ms=before_guard["sampled_at_epoch_ms"], stopped_phase="rollback-baseline-disabled-stopped")
+        stopped = self._up(document, self.pins.rollback_disabled_compose, stop=stop, fence_id=before_guard["admission_fence_id"], since_ms=before_guard["sampled_at_epoch_ms"], stopped_phase="rollback-baseline-disabled-stopped")
         guarded(stopped is not None, "admission_fence")
         inspect = one_inspect(self.system, BASELINE_CONTAINER, "rollback_baseline_disabled")
         env = environment(inspect, "rollback_baseline_disabled")
-        guarded(inspect.get("Image") == self.pins.rollback_image and inspect.get("State", {}).get("Running") is True and env.get("PHONE11_CHAT_NOTIFICATIONS_ENABLED") == "0", "rollback_baseline_disabled")
-        guarded(inspect.get("Id") != before.get("Id") and canonical_hash(normalized_runtime_release(inspect, normalize_notifications=True)) == canonical_hash(normalized_runtime_release(before, normalize_notifications=True)), "rollback_runtime_delta")
+        labels = inspect.get("Config", {}).get("Labels")
+        guarded(
+            isinstance(inspect.get("Id"), str) and bool(re.fullmatch(r"[0-9a-f]{64}", inspect["Id"]))
+            and (before_pin is None or inspect.get("Id") != before_pin.container_id)
+            and inspect.get("Image") == self.pins.rollback_image
+            and inspect.get("State", {}).get("Running") is True
+            and isinstance(labels, Mapping)
+            and labels.get("com.docker.compose.project") == baseline_config["name"]
+            and labels.get("com.docker.compose.service") == self.pins.rollback_disabled_compose.service
+            and env.get("PHONE11_RUNTIME_ROLE", "default") == "default"
+            and env.get("PHONE11_BUILD_SHA") == self.pins.rollback_build
+            and env.get("PORT", str(BASELINE_PORT)) == str(BASELINE_PORT)
+            and env.get("PHONE11_CHAT_NOTIFICATIONS_ENABLED") == "0",
+            "rollback_baseline_disabled",
+        )
+        guarded(canonical_hash(normalized_runtime_release(inspect, normalize_notifications=True)) == self.pins.rollback_normalized_runtime_sha256, "rollback_runtime_delta")
         self.require_worker_topology(baseline_config, candidate_config)
         health(self.system, BASELINE_PORT, self.pins.rollback_build, "default")
         self.guard("rollback-baseline-disabled-after", since_ms=stopped["sampled_at_epoch_ms"], require_fence=True, expected_fence_id=before_guard["admission_fence_id"], require_readiness=False, require_wake=True)
         self.wake()
-        self.save_runtime_receipt(DISABLED_ROLLBACK_RECEIPT, action="rollback_baseline_disabled", before=self.pins.baseline, after=inspect, after_image=self.pins.rollback_image, after_build=self.pins.rollback_build, notifications="disabled")
+        self.save_runtime_receipt(DISABLED_ROLLBACK_RECEIPT, action="rollback_baseline_disabled", before=before_pin, after=inspect, after_image=self.pins.rollback_image, after_build=self.pins.rollback_build, notifications="disabled")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

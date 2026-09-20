@@ -154,6 +154,16 @@ The important sections are:
   hash, and exact service name. The baseline and old rollback renderings may
   differ only by image/build. The disabled rollback may additionally change
   only `PHONE11_CHAT_NOTIFICATIONS_ENABLED` from `1` to `0`.
+- `rollback.normalized_runtime_sha256`: canonical hash of the approved baseline
+  runtime after normalizing container ID, image/build and reviewed release
+  labels, Compose-generated config hash/path labels, and the emergency
+  notification gate. This remains the runtime-shape authority when the failed
+  baseline container is absent.
+- `rollback.failed_baseline_attempt_receipt_sha256`: normally `null`. Set it
+  only to the exact SHA-256 of the operator-created
+  `/var/lib/phone11-profile-dnd-rollout/baseline-attempt-receipt.json` after a
+  failed recreation produced a different container ID. Never create or edit
+  this receipt manually.
 - `migration.artifacts`: required first item named `profile`; an optional second
   item named `all_mentions`. Each item has its own exact committed file and
   SHA-256. Do not add `all_mentions` until that implementation and migration are
@@ -244,6 +254,22 @@ port-3000 stop/start while public tRPC remains on port 3002. Its safety depends
 on the independently enforced fence and fresh zero-active evidence throughout;
 the 20-second stop timeout alone is never sufficient.
 
+Before changing the baseline, the operator requires the attempt-receipt path to
+be absent. After Compose creates a replacement whose image, build, runtime
+shape, Compose project/service, default role, port, and notification gate match
+the approved operation, it writes an exclusive root-only attempt receipt before
+requiring health. If a later health/readiness check fails, retain that receipt.
+During incident preparation, hash it without printing its contents and repin
+only that digest in the rollback manifest:
+
+```sh
+sudo sha256sum \
+  /var/lib/phone11-profile-dnd-rollout/baseline-attempt-receipt.json
+```
+
+Archive the receipt only after the operation is closed; an existing receipt
+blocks a new baseline replacement rather than being overwritten.
+
 ## Rollback
 
 For a candidate/API failure after routing to the new candidate:
@@ -268,14 +294,18 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
 The manifest must say `dnd_exposed=true`; the operator accepts only the exact
 old rollback image/config with ordinary chat notifications set to `0`. Wake,
 recording, ESL, mounts, networks, limits, and restart policy remain pinned.
-Its rollback preflight accepts an unhealthy or crashed but identity-pinned
-baseline, so recovery does not depend on the failed service's health endpoint.
-It still fails closed on container identity, image/runtime drift, Compose
-project/service labels, file ownership/permissions, route, receipts, candidate
-health, and unchanged Kamailio wake configuration. It establishes the external
-admission fence before stop, requires the restored service to become healthy,
-requires live wake readiness again, and checks for notification attempts since
-the actual stopped snapshot.
+Its rollback preflight accepts the exact pinned baseline even if unhealthy, an
+absent baseline container, or a different failed-replacement ID proven by the
+pinned operator attempt receipt. Any other named or Phone11-like container is
+rejected. Recovery does not depend on either backend's health endpoint: the
+candidate may be unhealthy, but its exact container ID, image, runtime shape,
+role, port, and Compose labels must still match the manifest. The preflight
+continues to fail closed on rollback image/runtime/Compose drift, file
+ownership/permissions, route, migration receipt, worker inventory, and
+unchanged Kamailio wake configuration. It establishes the external admission
+fence before restart, requires the restored service to become healthy, requires
+live wake readiness again, and checks for notification attempts since the
+actual stopped snapshot.
 Pending outbox/profile rows are retained. Do not re-enable ordinary alerts on
 the old dispatcher; restore them only with the reviewed new dispatcher image.
 

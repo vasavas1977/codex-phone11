@@ -51,8 +51,9 @@ def manifest(**changes: object) -> dict[str, object]:
             "candidate": compose("/root/candidate.json", "candidate"),
         },
         "rollback": {
-            "image": OLD_DIGEST,
-            "build": "old-build",
+            "image": OLD_DIGEST, "build": "old-build",
+            "normalized_runtime_sha256": SHA,
+            "failed_baseline_attempt_receipt_sha256": None,
             "compose": compose("/root/rollback.json", "backend"),
             "disabled_compose": compose("/root/rollback-disabled.json", "backend"),
         },
@@ -125,6 +126,24 @@ def guard_snapshot(*, attempted: int = 0, new_attempted: int = 0) -> dict[str, o
         "wake_ready": True,
         "notifications_ready": True,
     }
+
+
+def attempt_receipt(current, *, container_id: str = "f" * 64) -> bytes:
+    return rollout.canonical_bytes({
+        "schema": rollout.ATTEMPT_RECEIPT_SCHEMA,
+        "action": "replace_baseline",
+        "compose_sha256": current.baseline_compose.sha256,
+        "compose_rendered_sha256": current.baseline_compose.rendered_sha256,
+        "before_container_id": current.baseline.container_id,
+        "before_image": current.baseline.image,
+        "before_runtime_sha256": current.baseline.runtime_sha256,
+        "before_build": current.baseline.build,
+        "after_container_id": container_id,
+        "after_image": current.image,
+        "after_runtime_sha256": SHA2,
+        "after_normalized_runtime_sha256": current.rollback_normalized_runtime_sha256,
+        "after_build": current.release_build,
+    })
 
 
 class FakeSystem(rollout.System):
@@ -256,7 +275,8 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertNotIn("reload", flattened)
 
     def test_replace_baseline_rechecks_idle_immediately_before_stop_and_never_kills(self) -> None:
-        current = pins(nginx__route="candidate")
+        normalized = rollout.canonical_hash({"same": True})
+        current = pins(nginx__route="candidate", rollback__normalized_runtime_sha256=normalized)
         system = FakeSystem()
         operator = rollout.Operator(current, system)
         events: list[str] = []
@@ -265,12 +285,14 @@ class ProfileDndRolloutTests(unittest.TestCase):
         operator.guard = Mock(side_effect=lambda phase, **kwargs: events.append(phase) or guard_snapshot(attempted=3))
         operator.wake = Mock(side_effect=lambda: events.append("wake"))
         operator.save_runtime_receipt = Mock()
+        operator.save_baseline_attempt_receipt = Mock()
         operator.require_worker_topology = Mock()
         operator.baseline_config, operator.candidate_config = {"name": "baseline"}, {"name": "candidate"}
-        replacement = {"Id": "n" * 64, "Image": DIGEST, "State": {"Running": True, "OOMKilled": False, "ExitCode": 0}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=" + current.release_build, "PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"]}}
+        replacement = {"Id": "d" * 64, "Image": DIGEST, "State": {"Running": True, "OOMKilled": False, "ExitCode": 0}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=" + current.release_build, "PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"], "Labels": {"com.docker.compose.project": "baseline", "com.docker.compose.service": "backend"}}}
         document = {"name": "phone11", "services": {"backend": {}}}
         with patch.object(rollout, "validate_runtime", return_value={"Id": current.baseline.container_id}), \
              patch.object(rollout, "health"), \
+             patch.object(rollout, "runtime_shape", return_value={"runtime": True}), \
              patch.object(rollout, "normalized_runtime_release", return_value={"same": True}), \
              patch.object(rollout, "render_compose", return_value=document), \
              patch.object(rollout, "one_inspect", return_value=replacement):
@@ -278,6 +300,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
             operator.replace_baseline()
         self.assertLess(events.index("replace-baseline-before"), events.index("stop-up"))
         operator._up.assert_called_once_with(document, current.baseline_compose, stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id), fence_id=current.guard_fence_id, since_ms=ANY, stopped_phase="replace-baseline-stopped")
+        operator.save_baseline_attempt_receipt.assert_called_once()
         self.assertFalse(any("kill" in command for command in system.commands))
 
     def test_post_exposure_baseline_failure_never_restarts_old_enabled_dispatcher(self) -> None:
@@ -321,9 +344,10 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertTrue(any(item.args == ("baseline-auto-rollback",) for item in operator.guard.call_args_list))
 
     def test_disabled_rollback_uses_only_disabled_artifact_and_verifies_gate_off(self) -> None:
-        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        normalized = rollout.canonical_hash({"same": True})
+        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA, rollback__normalized_runtime_sha256=normalized)
         operator = rollout.Operator(current, FakeSystem())
-        operator.rollback_preflight = Mock(return_value=({"name": "baseline"}, {"name": "candidate"}))
+        operator.rollback_preflight = Mock(return_value=({"name": "baseline"}, {"name": "candidate"}, current.baseline, (rollout.BASELINE_CONTAINER, current.baseline.container_id)))
         before_snapshot = guard_snapshot()
         stopped_snapshot = guard_snapshot()
         stopped_snapshot["sampled_at_epoch_ms"] = before_snapshot["sampled_at_epoch_ms"] + 10
@@ -333,7 +357,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         operator.save_runtime_receipt = Mock()
         operator.require_worker_topology = Mock()
         document = {"name": "rollback-disabled"}
-        inspect = {"Id": "r" * 64, "Image": OLD_DIGEST, "State": {"Running": True}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_CHAT_NOTIFICATIONS_ENABLED=0"]}}
+        inspect = {"Id": "e" * 64, "Image": OLD_DIGEST, "State": {"Running": True}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=old-build", "PHONE11_CHAT_NOTIFICATIONS_ENABLED=0"], "Labels": {"com.docker.compose.project": "baseline", "com.docker.compose.service": "backend"}}}
         with patch.object(rollout, "render_compose", return_value=document) as render_call, \
              patch.object(rollout, "health"), \
              patch.object(rollout, "validate_runtime", return_value={"Id": current.baseline.container_id}), \
@@ -347,21 +371,113 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertEqual(operator.guard.call_args_list[1].kwargs["since_ms"], stopped_snapshot["sampled_at_epoch_ms"])
         self.assertIs(operator.guard.call_args_list[1].kwargs["require_wake"], True)
 
-    def test_disabled_rollback_preflight_tolerates_crashed_pinned_baseline(self) -> None:
+    def test_disabled_rollback_recreates_absent_baseline_without_stop(self) -> None:
+        normalized = rollout.canonical_hash({"same": True})
+        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA, rollback__normalized_runtime_sha256=normalized)
+        operator = rollout.Operator(current, FakeSystem())
+        configs = ({"name": "baseline"}, {"name": "candidate"})
+        operator.rollback_preflight = Mock(return_value=(*configs, None, None))
+        before_snapshot, stopped_snapshot = guard_snapshot(), guard_snapshot()
+        operator.guard = Mock(side_effect=[before_snapshot, guard_snapshot()])
+        operator.wake = Mock()
+        operator._up = Mock(return_value=stopped_snapshot)
+        operator.save_runtime_receipt = Mock()
+        operator.require_worker_topology = Mock()
+        document = {"name": "rollback-disabled"}
+        restored = {"Id": "e" * 64, "Image": OLD_DIGEST, "State": {"Running": True}, "Config": {"Env": ["PHONE11_RUNTIME_ROLE=default", "PHONE11_BUILD_SHA=old-build", "PHONE11_CHAT_NOTIFICATIONS_ENABLED=0"], "Labels": {"com.docker.compose.project": "baseline", "com.docker.compose.service": "backend"}}}
+        with patch.object(rollout, "render_compose", return_value=document), \
+             patch.object(rollout, "health"), \
+             patch.object(rollout, "normalized_runtime_release", return_value={"same": True}), \
+             patch.object(rollout, "one_inspect", return_value=restored):
+            operator.rollback_baseline_disabled()
+        operator._up.assert_called_once_with(
+            document, current.rollback_disabled_compose, stop=None,
+            fence_id=current.guard_fence_id, since_ms=ANY,
+            stopped_phase="rollback-baseline-disabled-stopped",
+        )
+        self.assertIsNone(operator.save_runtime_receipt.call_args.kwargs["before"])
+
+    def test_disabled_rollback_preflight_accepts_absent_baseline(self) -> None:
         current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
         operator = rollout.Operator(current, FakeSystem())
         operator.image = Mock()
         configs = ({"name": "baseline"}, {"name": "candidate"})
         operator.compose_inputs = Mock(return_value=configs)
-        operator.current = Mock()
         operator.receipt = Mock()
-        operator.database = Mock()
         operator.nginx = Mock()
         operator.wake = Mock()
-        with patch.object(rollout, "pinned_read", return_value=b"{}"), patch.object(rollout, "load_probes", return_value=[]):
-            self.assertEqual(operator.rollback_preflight(), configs)
-        operator.current.assert_called_once_with(*configs, require_baseline_healthy=False)
-        operator.database.assert_not_called()
+        operator.named_container_id = Mock(return_value=None)
+        operator.require_worker_topology = Mock()
+        with patch.object(rollout, "pinned_read", return_value=b"{}"), \
+             patch.object(rollout, "load_probes", return_value=[]), \
+             patch.object(rollout, "validate_runtime") as validate:
+            self.assertEqual(operator.rollback_preflight(), (*configs, None, None))
+        validate.assert_called_once_with(
+            operator.system, rollout.CANDIDATE_CONTAINER, current.candidate,
+            role="api-candidate", port=rollout.CANDIDATE_PORT, require_healthy=False,
+            compose_project="candidate", compose_service=current.candidate_compose.service,
+        )
+
+    def test_disabled_rollback_preflight_does_not_require_candidate_health(self) -> None:
+        document = manifest(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        candidate_shape = {"candidate": "approved"}
+        document["current"]["candidate"]["runtime_sha256"] = rollout.canonical_hash(candidate_shape)
+        current = rollout.parse_manifest(document)
+        operator = rollout.Operator(current, FakeSystem())
+        operator.image = Mock()
+        operator.compose_inputs = Mock(return_value=({"name": "baseline"}, {"name": "candidate"}))
+        operator.receipt = Mock()
+        operator.nginx = Mock()
+        operator.wake = Mock()
+        operator.named_container_id = Mock(return_value=None)
+        operator.require_worker_topology = Mock()
+        unhealthy = {
+            "Id": current.candidate.container_id, "Image": current.candidate.image,
+            "State": {"Running": False, "OOMKilled": False},
+            "Config": {
+                "Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PHONE11_BUILD_SHA=old-candidate", "PORT=3002"],
+                "Labels": {"com.docker.compose.project": "candidate", "com.docker.compose.service": "candidate"},
+            },
+            "HostConfig": {"PortBindings": {"3002/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3002"}]}},
+        }
+        with patch.object(rollout, "pinned_read", return_value=b"{}"), \
+             patch.object(rollout, "load_probes", return_value=[]), \
+             patch.object(rollout, "one_inspect", return_value=unhealthy), \
+             patch.object(rollout, "runtime_shape", return_value=candidate_shape), \
+             patch.object(rollout, "health") as health_call:
+            operator.rollback_preflight()
+        health_call.assert_not_called()
+
+    def test_disabled_rollback_accepts_pinned_approved_failed_replacement(self) -> None:
+        normalized = rollout.canonical_hash({"same": True})
+        current = pins(
+            nginx__route="baseline", nginx__dnd_exposed=True,
+            migration__receipt_sha256=SHA,
+            rollback__normalized_runtime_sha256=normalized,
+            rollback__failed_baseline_attempt_receipt_sha256=SHA2,
+        )
+        operator = rollout.Operator(current, FakeSystem())
+        failed_id = "f" * 64
+        operator.named_container_id = Mock(return_value=failed_id)
+        inspect = {"Config": {"Env": ["PHONE11_CHAT_NOTIFICATIONS_ENABLED=1"]}}
+        with patch.object(rollout, "pinned_read", return_value=attempt_receipt(current, container_id=failed_id)), \
+             patch.object(rollout, "validate_runtime", return_value=inspect) as validate, \
+             patch.object(rollout, "normalized_runtime_release", return_value={"same": True}):
+            before, stop = operator.rollback_baseline_identity({"name": "baseline"})
+        self.assertEqual(before.container_id, failed_id)
+        self.assertEqual(stop, (rollout.BASELINE_CONTAINER, failed_id))
+        self.assertEqual(validate.call_args.args[2].container_id, failed_id)
+        self.assertIs(validate.call_args.kwargs["require_healthy"], False)
+
+    def test_disabled_rollback_rejects_unknown_replacement_container(self) -> None:
+        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        operator = rollout.Operator(current, FakeSystem())
+        operator.named_container_id = Mock(return_value="u" * 64)
+        with patch.object(rollout, "validate_runtime") as validate, \
+             self.assertRaises(rollout.GuardError) as error:
+            operator.rollback_baseline_identity({"name": "baseline"})
+        self.assertEqual(error.exception.stage, "baseline_identity")
+        validate.assert_not_called()
 
     def test_candidate_replacement_requires_baseline_route_before_stop(self) -> None:
         current = pins(nginx__route="candidate")
