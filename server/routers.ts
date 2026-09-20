@@ -15,6 +15,7 @@ import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_
 import { pbxRouter } from "./pbx/pbx-router";
 import { ivrRouter } from "./pbx/ivr-router";
 import { chatRouter } from "./chat/router";
+import { profileRouter } from "./profile/router";
 import { wakeService,wakeEnrollSchema,wakeIdentitySchema } from "./push/wake-service";
 import { resolvePushSession } from "./push/session";
 import { WakeError } from "./push/wake-repository";
@@ -120,6 +121,7 @@ export const appRouter = router({
   meetings: meetingsRouter,
   conference: conferenceRouter,
   cloudRecordings: cloudRecordingsRouter,
+  profile: profileRouter,
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),

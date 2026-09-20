@@ -57,6 +57,7 @@ export default function SettingsScreen() {
       <Text style={[styles.detail, { color: colors.muted }]}>{account ? `Extension ${account.username}` : "No extension connected"}</Text>
       <Text style={{ color: state === "registered" && account ? colors.success : colors.warning, marginTop: 12 }}>{status}</Text>
     </View>
+    {row("My profile", "View your work account and phone extension", () => router.push("/profile"))}
     {row("Phone account", "View your assigned extension and connection", () => router.push(user ? "/settings/sip" : "/auth/sign-in"))}
     {account && row(busy ? "Connecting…" : "Reconnect", "Refresh your phone connection", reconnect)}
     {row("About Phone11", "Current calling features and availability", () => router.push("/settings/about"))}
