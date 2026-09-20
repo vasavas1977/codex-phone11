@@ -1,5 +1,11 @@
 # Parallel API operator review follow-ups
 
+## Final independent source verdict
+
+On 20 September 2026, the independent Sol High reviewer returned **APPROVE_SOURCE_ONLY** for exact commit `34d7cf059e629ad241bb0c89abd184743ebd75c0`, with no remaining P0/P1/P2 in the bounded operator scope. The exact-head 24-test suite and Python syntax check passed. Script SHA-256: `08d7fef9dd22ad3b33464e617f5715fd3908a76973a9cb8bd384699bfe20b215`; test SHA-256: `1b8a9fe8f8c39d5a5c4e599a62a05f671dc2b57b3d204b4d16bffc556434beed`.
+
+This closes the source-review gate only. Fresh candidate image, protected manifest, migration receipt, authenticated probe set, exact host pins, guarded prepare/activation, and two-device acceptance remain pending. No production activation is recorded here. Historical findings and their corrections follow.
+
 Source review of the initial uncommitted operator. Status: **activation blocked**, not approved for production. Twelve hermetic operator tests pass, but the following must be corrected and tested before preparing a manifest.
 
 1. `prepare()` and post-activation validation require exactly one literal wake URL. The prior live inspection found four occurrences. Pin the exact reviewed Kamailio config hash and expected nonzero occurrence count in the manifest, and verify both before/after; do not weaken this to an arbitrary substring check.
