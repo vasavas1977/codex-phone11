@@ -146,6 +146,8 @@ describe.skipIf(!socket)('cloud recordings isolated PostgreSQL',()=>{
    INSERT INTO phone11_wake_bindings(id,session_id,session_binding,user_id,tenant_id,extension_id,device_id,push_revision,grant_hash,expires_at)
    VALUES('00000000-0000-4000-8000-000000000011','tenant-pair-session','00000000-0000-4000-8000-000000000012',2,10,11,'test-device','00000000-0000-4000-8000-000000000013',repeat('a',64),now()+interval '1 day')`);
   await expect(pool.query(`INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id)
+   VALUES('00000000-0000-4000-8000-000000000015','00000000-0000-4000-8000-000000000099',10,11,'missing-binding')`)).rejects.toMatchObject({code:'23514'});
+  await expect(pool.query(`INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id)
    VALUES('00000000-0000-4000-8000-000000000014','00000000-0000-4000-8000-000000000011',20,21,'cross-tenant')`)).rejects.toMatchObject({code:'23514'});
   await pool.query(`INSERT INTO phone11_recording_wake_links(wake_uuid,binding_id,tenant_id,extension_id,sip_call_id)
    VALUES('00000000-0000-4000-8000-000000000014','00000000-0000-4000-8000-000000000011',10,11,'tenant-safe')`);
