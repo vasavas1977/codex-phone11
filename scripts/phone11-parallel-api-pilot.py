@@ -68,6 +68,12 @@ class GuardError(RuntimeError):
         self.stage = stage
 
 
+class AtomicWriteError(GuardError):
+    def __init__(self, *, committed: bool) -> None:
+        super().__init__("atomic_write")
+        self.committed = committed
+
+
 def guarded(condition: bool, stage: str) -> None:
     if not condition:
         raise GuardError(stage)
@@ -496,6 +502,7 @@ def atomic_write(path: Path, content: bytes, *, mode: int, uid: int, gid: int) -
     descriptor: int | None = None
     directory_descriptor: int | None = None
     temporary: str | None = None
+    committed = False
     try:
         descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         os.fchmod(descriptor, mode)
@@ -511,6 +518,7 @@ def atomic_write(path: Path, content: bytes, *, mode: int, uid: int, gid: int) -
         descriptor = None
         os.replace(temporary, path)
         temporary = None
+        committed = True
         directory_descriptor = os.open(
             path.parent,
             os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
@@ -519,7 +527,7 @@ def atomic_write(path: Path, content: bytes, *, mode: int, uid: int, gid: int) -
         os.close(directory_descriptor)
         directory_descriptor = None
     except OSError as error:
-        raise GuardError("atomic_write") from error
+        raise AtomicWriteError(committed=committed) from error
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -677,11 +685,23 @@ class Operator:
         else:
             guarded(sha256_bytes(current) == receipt.get("active"), "rollback")
         info = self.pins.nginx_site.stat()
-        atomic_write(self.pins.nginx_site, original, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
+        durability_error: AtomicWriteError | None = None
+        try:
+            atomic_write(self.pins.nginx_site, original, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
+        except AtomicWriteError as error:
+            if not error.committed:
+                raise
+            # The rename committed but its directory sync failed. Verify the
+            # safe bytes and complete the runtime restore before reporting that
+            # durability could not be proven.
+            guarded(secure_read(self.pins.nginx_site) == original, "rollback")
+            durability_error = error
         self.system.command(["nginx", "-t"])
         self.system.command(["nginx", "-s", "reload"])
         self.active()
         self.candidate_running()
+        if durability_error is not None:
+            raise durability_error
 
     def activate(self) -> None:
         self.prepare()
@@ -709,8 +729,8 @@ class Operator:
         # Candidate startup/probes can take time. Never overwrite an operator's
         # intervening edit, even if the earlier prepare phase passed.
         guarded(self.pinned_nginx() == original, "nginx_config")
-        atomic_write(self.pins.nginx_site, activated, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
         try:
+            atomic_write(self.pins.nginx_site, activated, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
             self.system.command(["nginx", "-t"])
             self.system.command(["nginx", "-s", "reload"])
             run_probes(self.system, self.pins.public_origin, self.probes)
@@ -719,7 +739,13 @@ class Operator:
             self.wake_target()
         except GuardError as error:
             try:
-                self.restore_proxy(expected_current=activated)
+                current = secure_read(self.pins.nginx_site)
+                if current == activated:
+                    self.restore_proxy(expected_current=activated)
+                else:
+                    # A pre-commit write failure leaves the reviewed original
+                    # in place and must not trigger an unnecessary reload.
+                    guarded(current == original, "rollback")
             except GuardError as rollback_error:
                 raise GuardError("rollback_failed") from rollback_error
             raise error

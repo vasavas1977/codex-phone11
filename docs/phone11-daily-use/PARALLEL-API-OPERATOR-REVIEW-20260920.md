@@ -17,7 +17,7 @@ temporary file, and runs only that snapshot with its pinned project name and
 explicit original project directory. The durable writer now handles partial
 writes, rejects zero-length writes, syncs the file before replacement, syncs
 the parent directory after replacement, and removes temporary files on failure.
-Twenty-two hermetic operator tests cover hostile public origins, intervening
+Twenty-four hermetic operator tests cover hostile public origins, intervening
 Compose edits, frozen execution semantics, partial and zero-length writes, and
 file/directory durability. Docker Compose v5.1.4 also reproduced an identical
 canonical model after a rendered JSON round trip containing ordinary dollars,
@@ -25,3 +25,13 @@ canonical model after a rendered JSON round trip containing ordinary dollars,
 escaping, so the frozen writer preserves its strings exactly instead of escaping
 them a second time. This is correction evidence only. It does not approve
 activation or establish any live pin, migration, candidate image, or probe result.
+
+The durability follow-up also moves the live Nginx site write inside activation's
+recovery boundary. A write now reports whether its atomic replacement committed.
+A pre-commit failure leaves the reviewed original untouched and does not reload;
+a post-replacement directory-sync failure verifies the current bytes and restores
+the original before returning failure. If restoration itself commits but its
+directory sync fails, the operator verifies the original bytes, syntax-checks and
+reloads that safe configuration, then still reports the durability failure. An
+activation-level injected second-sync failure proves the final site bytes and the
+only reload both use the original route. This remains source evidence only.

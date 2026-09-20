@@ -260,6 +260,7 @@ class ParallelApiPilotTests(unittest.TestCase):
             with self.assertRaises(pilot.GuardError) as error:
                 pilot.atomic_write(target, b"content", mode=0o600, uid=os.getuid(), gid=os.getgid())
             self.assertEqual(error.exception.stage, "atomic_write")
+            self.assertFalse(error.exception.committed)
             self.assertFalse(target.exists())
             self.assertEqual(list(Path(directory).iterdir()), [])
 
@@ -280,8 +281,128 @@ class ParallelApiPilotTests(unittest.TestCase):
             with self.assertRaises(pilot.GuardError) as error:
                 pilot.atomic_write(target, b"content", mode=0o600, uid=os.getuid(), gid=os.getgid())
             self.assertEqual(error.exception.stage, "atomic_write")
+            self.assertTrue(error.exception.committed)
             self.assertEqual(calls, 2)
             self.assertEqual(list(Path(directory).glob(".result.*")), [])
+
+    def test_activation_postreplace_fsync_failure_restores_original_before_safe_reload(self) -> None:
+        original = b"server {\n    # PHONE11_PARALLEL_API_INSERT reviewed-123\n}\n"
+        activated = original.replace(
+            b"# PHONE11_PARALLEL_API_INSERT reviewed-123",
+            pilot.proxy_fragment("# PHONE11_PARALLEL_API_INSERT reviewed-123").rstrip(b"\n"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            site = root / "site"
+            rollback_site = root / "before"
+            rollback_receipt = root / "receipt"
+            site.write_bytes(original)
+            rollback_site.write_bytes(original)
+            rollback_receipt.write_text(json.dumps({
+                "schema": pilot.SCHEMA,
+                "site": str(site),
+                "before": pilot.sha256_bytes(original),
+                "active": pilot.sha256_bytes(activated),
+            }, sort_keys=True, separators=(",", ":")))
+            current = pins(
+                nginx__site=str(site),
+                nginx__site_sha256=pilot.sha256_bytes(original),
+            )
+            system = FakeSystem()
+            reload_bytes: list[bytes] = []
+
+            def command(args, *, timeout=30):
+                system.commands.append(list(args))
+                if list(args) == ["nginx", "-s", "reload"]:
+                    reload_bytes.append(site.read_bytes())
+                return b""
+
+            system.command = command
+            operator = pilot.Operator(current, system)
+            operator.prepare = Mock()
+            operator.candidate_config = Mock(return_value=rendered_config(current))
+            operator.candidate = Mock()
+            operator.candidate_running = Mock()
+            operator.active = Mock(return_value={"Id": current.active_container_id})
+            operator.pinned_nginx = Mock(return_value=original)
+            operator.save_rollback = Mock()
+            real_fsync = os.fsync
+            calls = 0
+
+            def fail_live_directory_fsync(descriptor):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("live directory fsync failed")
+                return real_fsync(descriptor)
+
+            @contextmanager
+            def frozen(_document):
+                yield root / "frozen.json"
+
+            with patch.object(pilot, "ROLLBACK_SITE", rollback_site), \
+                 patch.object(pilot, "ROLLBACK_RECEIPT", rollback_receipt), \
+                 patch.object(pilot, "secure_read", side_effect=lambda path, mode=None: Path(path).read_bytes()), \
+                 patch.object(pilot, "frozen_candidate_config", frozen), \
+                 patch.object(pilot.os, "fsync", side_effect=fail_live_directory_fsync), \
+                 self.assertRaises(pilot.AtomicWriteError) as error:
+                operator.activate()
+            self.assertTrue(error.exception.committed)
+            self.assertEqual(site.read_bytes(), original)
+            self.assertEqual(reload_bytes, [original])
+
+    def test_restore_postreplace_fsync_failure_reloads_verified_original_then_reports(self) -> None:
+        original = b"server { original; }"
+        activated = b"server { candidate; }"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            site = root / "site"
+            rollback_site = root / "before"
+            rollback_receipt = root / "receipt"
+            site.write_bytes(activated)
+            rollback_site.write_bytes(original)
+            rollback_receipt.write_text(json.dumps({
+                "schema": pilot.SCHEMA,
+                "site": str(site),
+                "before": pilot.sha256_bytes(original),
+                "active": pilot.sha256_bytes(activated),
+            }, sort_keys=True, separators=(",", ":")))
+            current = pins(
+                nginx__site=str(site),
+                nginx__site_sha256=pilot.sha256_bytes(original),
+            )
+            system = FakeSystem()
+            reload_bytes: list[bytes] = []
+
+            def command(args, *, timeout=30):
+                system.commands.append(list(args))
+                if list(args) == ["nginx", "-s", "reload"]:
+                    reload_bytes.append(site.read_bytes())
+                return b""
+
+            system.command = command
+            operator = pilot.Operator(current, system)
+            operator.active = Mock()
+            operator.candidate_running = Mock()
+            real_fsync = os.fsync
+            calls = 0
+
+            def fail_directory_fsync(descriptor):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("restore directory fsync failed")
+                return real_fsync(descriptor)
+
+            with patch.object(pilot, "ROLLBACK_SITE", rollback_site), \
+                 patch.object(pilot, "ROLLBACK_RECEIPT", rollback_receipt), \
+                 patch.object(pilot, "secure_read", side_effect=lambda path, mode=None: Path(path).read_bytes()), \
+                 patch.object(pilot.os, "fsync", side_effect=fail_directory_fsync), \
+                 self.assertRaises(pilot.AtomicWriteError) as error:
+                operator.restore_proxy(expected_current=activated)
+            self.assertTrue(error.exception.committed)
+            self.assertEqual(site.read_bytes(), original)
+            self.assertEqual(reload_bytes, [original])
 
     def test_stale_nginx_configuration_fingerprint_is_rejected(self) -> None:
         reviewed = b"server { reviewed; }"
@@ -506,8 +627,12 @@ class ParallelApiPilotTests(unittest.TestCase):
             return real_command(args, timeout=timeout)
         system.command = fail_reload
         fake_stat = Mock(st_mode=0o100644, st_uid=0, st_gid=0)
+        activated = original.replace(
+            current.nginx_insert_marker.encode(),
+            pilot.proxy_fragment(current.nginx_insert_marker).rstrip(b"\n"),
+        )
         with (
-            patch.object(pilot, "secure_read", return_value=original),
+            patch.object(pilot, "secure_read", return_value=activated),
             patch.object(pilot, "frozen_candidate_config") as frozen,
             patch.object(pilot, "atomic_write"),
             patch.object(Path, "stat", return_value=fake_stat),
