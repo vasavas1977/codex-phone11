@@ -60,6 +60,10 @@ EXPECTED_PROBES = {
     "mixed_batch",
     "denied_tenant",
 }
+CANDIDATE_HEADER = "x-phone11-api-candidate"
+READINESS_TIMEOUT_SECONDS = 15.0
+READINESS_INTERVAL_SECONDS = 0.25
+PUBLIC_READINESS_SUCCESSES = 3
 
 
 class GuardError(RuntimeError):
@@ -72,6 +76,13 @@ class AtomicWriteError(GuardError):
     def __init__(self, *, committed: bool) -> None:
         super().__init__("atomic_write")
         self.committed = committed
+
+
+@dataclass(frozen=True)
+class HttpResult:
+    status: int
+    body: bytes
+    headers: Mapping[str, tuple[str, ...]]
 
 
 def guarded(condition: bool, stage: str) -> None:
@@ -150,6 +161,8 @@ class Pins:
     candidate_image: str
     candidate_build: str
     candidate_config_sha256: str
+    candidate_reuse_container_id: str | None
+    candidate_reuse_runtime_sha256: str | None
     compose_file: Path
     compose_sha256: str
     credential_config_sha256: str
@@ -188,7 +201,8 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     for value in (active, candidate, credentials, migration, probes, nginx, kamailio):
         guarded(isinstance(value, Mapping), "manifest")
     exact_keys(active, {"container_id", "image", "runtime_sha256", "health_build"}, "manifest")
-    exact_keys(candidate, {"image", "build", "config_sha256", "compose_file", "compose_sha256"}, "manifest")
+    candidate_keys = {"image", "build", "config_sha256", "compose_file", "compose_sha256"}
+    guarded(set(candidate) in (candidate_keys, candidate_keys | {"reuse"}), "manifest")
     exact_keys(credentials, {"config_sha256", "metadata_sha256"}, "manifest")
     exact_keys(migration, {"receipt_file", "receipt_sha256"}, "manifest")
     exact_keys(probes, {"file", "sha256"}, "manifest")
@@ -202,6 +216,16 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     guarded(isinstance(active.get("health_build"), str) and bool(active["health_build"]), "manifest")
     guarded(is_image_digest(candidate.get("image")) and candidate.get("image") != ACTIVE_IMAGE, "manifest")
     guarded(isinstance(candidate.get("build"), str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", candidate["build"])), "manifest")
+    reuse = candidate.get("reuse")
+    if reuse is not None:
+        guarded(isinstance(reuse, Mapping), "manifest")
+        exact_keys(reuse, {"container_id", "runtime_sha256"}, "manifest")
+        guarded(
+            isinstance(reuse.get("container_id"), str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", reuse["container_id"])),
+            "manifest",
+        )
+        guarded(is_sha256(reuse.get("runtime_sha256")), "manifest")
     for value in (
         candidate.get("config_sha256"), candidate.get("compose_sha256"),
         credentials.get("config_sha256"), credentials.get("metadata_sha256"),
@@ -223,6 +247,8 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
         active_container_id=active["container_id"], active_runtime_sha256=active["runtime_sha256"],
         active_health_build=active["health_build"], candidate_image=candidate["image"],
         candidate_build=candidate["build"], candidate_config_sha256=candidate["config_sha256"],
+        candidate_reuse_container_id=reuse["container_id"] if reuse is not None else None,
+        candidate_reuse_runtime_sha256=reuse["runtime_sha256"] if reuse is not None else None,
         compose_file=Path(candidate["compose_file"]), compose_sha256=candidate["compose_sha256"],
         credential_config_sha256=credentials["config_sha256"], credential_metadata_sha256=credentials["metadata_sha256"],
         migration_receipt=Path(migration["receipt_file"]), migration_receipt_sha256=migration["receipt_sha256"],
@@ -278,20 +304,42 @@ class System:
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise GuardError(stage) from error
 
-    def request(self, origin: str, probe: Mapping[str, Any]) -> tuple[int, bytes]:
+    def request(self, origin: str, probe: Mapping[str, Any]) -> HttpResult:
         parsed = urlsplit(origin)
         connection_type = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-        connection = connection_type(parsed.hostname, parsed.port, timeout=10)
+        timeout = probe.get("_timeout", 10)
+        guarded(isinstance(timeout, (int, float)) and 0 < timeout <= 10, "probe")
+        connection = connection_type(parsed.hostname, parsed.port, timeout=timeout)
         try:
             connection.request(probe["method"], probe["path"], body=probe.get("body", "").encode(), headers=probe["headers"])
             response = connection.getresponse()
             body = response.read(1_048_577)
             guarded(len(body) <= 1_048_576, "probe")
-            return response.status, body
+            raw_headers = response.getheaders()
+            guarded(len(raw_headers) <= 128, "probe")
+            headers: dict[str, list[str]] = {}
+            total = 0
+            for name, value in raw_headers:
+                guarded(isinstance(name, str) and isinstance(value, str), "probe")
+                total += len(name) + len(value)
+                guarded(total <= 65_536, "probe")
+                headers.setdefault(name.lower(), []).append(value)
+            return HttpResult(response.status, body, {name: tuple(values) for name, values in headers.items()})
         except (OSError, http.client.HTTPException, socket.timeout) as error:
             raise GuardError("probe") from error
         finally:
             connection.close()
+
+
+def request_result(value: Any) -> HttpResult:
+    """Normalize request doubles while production always returns bounded headers."""
+
+    if isinstance(value, HttpResult):
+        return value
+    guarded(isinstance(value, tuple) and len(value) == 2, "probe")
+    status_code, body = value
+    guarded(isinstance(status_code, int) and isinstance(body, bytes), "probe")
+    return HttpResult(status_code, body, {})
 
 
 def runtime_shape(inspect: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -310,6 +358,19 @@ def runtime_shape(inspect: Mapping[str, Any]) -> Mapping[str, Any]:
             key=lambda item: str(item.get("Destination")),
         ),
         "Networks": sorted((network.get("Networks") or {}).keys()),
+    }
+
+
+def candidate_runtime_shape(inspect: Mapping[str, Any]) -> Mapping[str, Any]:
+    config = inspect.get("Config")
+    state = inspect.get("State")
+    guarded(isinstance(config, Mapping) and isinstance(state, Mapping), "candidate_runtime")
+    return {
+        "runtime": runtime_shape(inspect),
+        "env": sorted(environment(inspect, "candidate_runtime").items()),
+        "healthcheck": config.get("Healthcheck"),
+        "labels": config.get("Labels"),
+        "health_status": state.get("Health", {}).get("Status") if isinstance(state.get("Health"), Mapping) else None,
     }
 
 
@@ -336,10 +397,10 @@ def health(system: System, origin: str, build: str, role: str | None) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
-            status_code, raw = system.request(origin, probe)
-            body = json.loads(raw)
+            result = request_result(system.request(origin, probe))
+            body = json.loads(result.body)
             if (
-                status_code == 200 and isinstance(body, Mapping) and body.get("ok") is True
+                result.status == 200 and isinstance(body, Mapping) and body.get("ok") is True
                 and body.get("service") == "phone11-backend" and body.get("build") == build
                 and (role is None or body.get("runtimeRole") == role)
             ):
@@ -456,6 +517,14 @@ def load_probes(raw: bytes, pins: Pins) -> list[Mapping[str, Any]]:
         guarded("Authorization" in headers or "Cookie" in headers, "probes")
         guarded(isinstance(probe.get("body"), str) and isinstance(probe.get("status"), int), "probes")
         guarded(all(isinstance(values, list) and all(isinstance(v, str) for v in values) for values in (probe.get("required"), probe.get("forbidden"))), "probes")
+        if label == "existing_phone":
+            parsed_path = urlsplit(path)
+            guarded(
+                probe.get("method") == "GET" and probe.get("body") == ""
+                and parsed_path.scheme == parsed_path.netloc == parsed_path.fragment == ""
+                and parsed_path.path == "/api/trpc/phone.getConfig",
+                "probes",
+            )
         if label == "mixed_batch":
             guarded("," in path and re.search(r"(?:\?|&)batch=1(?:&|$)", path) is not None, "probes")
     guarded(labels == EXPECTED_PROBES, "probes")
@@ -464,17 +533,72 @@ def load_probes(raw: bytes, pins: Pins) -> list[Mapping[str, Any]]:
 
 def run_probes(system: System, origin: str, probes: Sequence[Mapping[str, Any]]) -> None:
     for probe in probes:
-        status_code, body = system.request(origin, probe)
-        guarded(status_code == probe["status"], "probes")
+        result = request_result(system.request(origin, probe))
+        guarded(result.status == probe["status"], "probes")
         try:
-            text = body.decode("utf-8", errors="strict")
+            text = result.body.decode("utf-8", errors="strict")
         except UnicodeDecodeError as error:
             raise GuardError("probes") from error
         guarded(all(value in text for value in probe["required"]), "probes")
         guarded(all(value not in text for value in probe["forbidden"]), "probes")
 
 
-def proxy_fragment(marker: str) -> bytes:
+def readiness_probe(probes: Sequence[Mapping[str, Any]], *, host: str | None = None) -> Mapping[str, Any]:
+    matches = [probe for probe in probes if probe.get("label") == "existing_phone"]
+    guarded(len(matches) == 1, "readiness")
+    source = matches[0]
+    guarded(source.get("method") == "GET" and source.get("body") == "", "readiness")
+    headers = {key: value for key, value in source["headers"].items() if key.lower() not in {"connection", "host"}}
+    headers["Connection"] = "close"
+    if host is not None:
+        headers["Host"] = host
+    return {**source, "headers": headers}
+
+
+def readiness_matches(result: HttpResult, probe: Mapping[str, Any], build: str) -> bool:
+    try:
+        text = result.body.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return False
+    return (
+        result.status == probe["status"]
+        and result.headers.get(CANDIDATE_HEADER) == (build,)
+        and all(value in text for value in probe["required"])
+        and all(value not in text for value in probe["forbidden"])
+    )
+
+
+def wait_for_candidate_route(
+    system: System,
+    origin: str,
+    probe: Mapping[str, Any],
+    build: str,
+    deadline: float,
+    *,
+    consecutive: int,
+) -> None:
+    guarded(type(consecutive) is int and 1 <= consecutive <= 10, "readiness")
+    successes = 0
+    while time.monotonic() < deadline:
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            bounded_probe = {**probe, "_timeout": min(10.0, remaining)}
+            result = request_result(system.request(origin, bounded_probe))
+            successes = successes + 1 if readiness_matches(result, probe, build) else 0
+            if successes == consecutive:
+                return
+        except GuardError:
+            successes = 0
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(READINESS_INTERVAL_SECONDS, remaining))
+    raise GuardError("readiness")
+
+
+def proxy_fragment(marker: str, build: str) -> bytes:
+    guarded(bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", build)), "nginx_route")
     return (
         "    location = /api/trpc {\n"
         "        proxy_pass http://127.0.0.1:3002;\n"
@@ -484,6 +608,7 @@ def proxy_fragment(marker: str) -> bytes:
         "        proxy_set_header X-Real-IP $remote_addr;\n"
         "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
         "        proxy_set_header X-Forwarded-Proto $scheme;\n"
+        f"        add_header X-Phone11-Api-Candidate {build} always;\n"
         "    }\n"
         "    location ^~ /api/trpc/ {\n"
         "        proxy_pass http://127.0.0.1:3002;\n"
@@ -493,6 +618,7 @@ def proxy_fragment(marker: str) -> bytes:
         "        proxy_set_header X-Real-IP $remote_addr;\n"
         "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
         "        proxy_set_header X-Forwarded-Proto $scheme;\n"
+        f"        add_header X-Phone11-Api-Candidate {build} always;\n"
         "    }\n"
         f"    {marker}\n"
     ).encode()
@@ -629,7 +755,8 @@ class Operator:
 
     def prepare(self) -> None:
         self.active()
-        self.candidate_absent_and_port_free()
+        if self.pins.candidate_reuse_container_id is None:
+            self.candidate_absent_and_port_free()
         image = self.system.json_command(["docker", "image", "inspect", self.pins.candidate_image], "candidate_image")
         guarded(isinstance(image, list) and len(image) == 1 and image[0].get("Id") == self.pins.candidate_image, "candidate_image")
         self.candidate_config()
@@ -640,20 +767,36 @@ class Operator:
         validate_credentials(credential_config, credential_metadata)
         validate_migration_receipt(secure_read(self.pins.migration_receipt, mode=0o600), self.pins)
         self.probes = load_probes(secure_read(self.pins.probes_file, mode=0o600), self.pins)
-        self.pinned_nginx()
+        original = self.pinned_nginx()
+        if self.pins.candidate_reuse_container_id is not None:
+            self.validate_prior_rollback(original)
+            self.candidate()
         self.system.command(["nginx", "-t"])
         self.wake_target()
 
     def candidate(self) -> None:
         inspect = one_inspect(self.system, CANDIDATE_CONTAINER, "candidate_runtime")
         guarded(inspect.get("Image") == self.pins.candidate_image, "candidate_runtime")
+        if self.pins.candidate_reuse_container_id is not None:
+            guarded(inspect.get("Id") == self.pins.candidate_reuse_container_id, "candidate_runtime")
+            guarded(
+                canonical_hash(candidate_runtime_shape(inspect)) == self.pins.candidate_reuse_runtime_sha256,
+                "candidate_runtime",
+            )
         state = inspect.get("State")
-        guarded(isinstance(state, Mapping) and state.get("Running") is True, "candidate_runtime")
+        guarded(
+            isinstance(state, Mapping) and state.get("Running") is True
+            and isinstance(state.get("Health"), Mapping) and state["Health"].get("Status") == "healthy",
+            "candidate_runtime",
+        )
         env = environment(inspect, "candidate_runtime")
         guarded(env.get("PHONE11_RUNTIME_ROLE") == CANDIDATE_ROLE, "candidate_runtime")
         guarded(env.get("PHONE11_BUILD_SHA") == self.pins.candidate_build and env.get("PORT") == str(CANDIDATE_PORT), "candidate_runtime")
         bindings = inspect.get("HostConfig", {}).get("PortBindings", {}).get(f"{CANDIDATE_PORT}/tcp")
         guarded(bindings == [{"HostIp": "127.0.0.1", "HostPort": str(CANDIDATE_PORT)}], "candidate_runtime")
+        labels = inspect.get("Config", {}).get("Labels")
+        guarded(isinstance(labels, Mapping) and labels.get("com.phone11.candidate-build") == self.pins.candidate_build, "candidate_runtime")
+        guarded(isinstance(inspect.get("Config", {}).get("Healthcheck"), Mapping), "candidate_runtime")
         health(self.system, "http://127.0.0.1:3002", self.pins.candidate_build, CANDIDATE_ROLE)
 
     def candidate_running(self) -> None:
@@ -672,6 +815,19 @@ class Operator:
             sort_keys=True, separators=(",", ":"),
         ).encode()
         atomic_write(ROLLBACK_RECEIPT, receipt, mode=0o600, uid=0, gid=0)
+
+    def validate_prior_rollback(self, original: bytes) -> None:
+        receipt = strict_json(secure_read(ROLLBACK_RECEIPT, mode=0o600), "rollback")
+        exact_keys(receipt, {"schema", "site", "before", "active"}, "rollback")
+        guarded(
+            receipt.get("schema") == SCHEMA
+            and receipt.get("site") == str(self.pins.nginx_site)
+            and receipt.get("before") == self.pins.nginx_site_sha256 == sha256_bytes(original)
+            and is_sha256(receipt.get("active"))
+            and receipt.get("active") != receipt.get("before"),
+            "rollback",
+        )
+        guarded(secure_read(ROLLBACK_SITE, mode=0o600) == original, "rollback")
 
     def restore_proxy(self, expected_current: bytes | None = None) -> None:
         receipt = strict_json(secure_read(ROLLBACK_RECEIPT, mode=0o600), "rollback")
@@ -706,23 +862,28 @@ class Operator:
     def activate(self) -> None:
         self.prepare()
         baseline_id = self.pins.active_container_id
-        # Re-render after prepare, validate the exact pinned model, then run only
-        # that protected snapshot. Source Compose/.env edits cannot alter `up`.
-        rendered = self.candidate_config()
-        with frozen_candidate_config(rendered) as frozen:
-            self.system.command([
-                "docker", "compose",
-                "--project-name", rendered["name"],
-                "--project-directory", str(self.pins.compose_file.parent),
-                "-f", str(frozen),
-                "up", "-d", "--no-deps", CANDIDATE_SERVICE,
-            ], timeout=90)
+        if self.pins.candidate_reuse_container_id is None:
+            # Re-render after prepare, validate the exact pinned model, then run
+            # only that protected snapshot. Source Compose/.env edits cannot
+            # alter `up`.
+            rendered = self.candidate_config()
+            with frozen_candidate_config(rendered) as frozen:
+                self.system.command([
+                    "docker", "compose",
+                    "--project-name", rendered["name"],
+                    "--project-directory", str(self.pins.compose_file.parent),
+                    "-f", str(frozen),
+                    "up", "-d", "--no-deps", CANDIDATE_SERVICE,
+                ], timeout=90)
         self.candidate()
         guarded(self.active().get("Id") == baseline_id, "active_changed")
-        run_probes(self.system, "http://127.0.0.1:3002", self.probes)
         original = self.pinned_nginx()
         marker = self.pins.nginx_insert_marker.encode()
-        activated = original.replace(marker, proxy_fragment(self.pins.nginx_insert_marker).rstrip(b"\n"), 1)
+        activated = original.replace(
+            marker,
+            proxy_fragment(self.pins.nginx_insert_marker, self.pins.candidate_build).rstrip(b"\n"),
+            1,
+        )
         guarded(activated != original and activated.count(b"location = /api/trpc") == 1 and activated.count(b"location ^~ /api/trpc/") == 1, "nginx_route")
         self.save_rollback(original, activated)
         info = self.pins.nginx_site.stat()
@@ -733,6 +894,27 @@ class Operator:
             atomic_write(self.pins.nginx_site, activated, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
             self.system.command(["nginx", "-t"])
             self.system.command(["nginx", "-s", "reload"])
+            deadline = time.monotonic() + READINESS_TIMEOUT_SECONDS
+            wait_for_candidate_route(
+                self.system,
+                "http://127.0.0.1",
+                readiness_probe(self.probes, host="api.phone11.ai"),
+                self.pins.candidate_build,
+                deadline,
+                consecutive=1,
+            )
+            wait_for_candidate_route(
+                self.system,
+                self.pins.public_origin,
+                readiness_probe(self.probes),
+                self.pins.candidate_build,
+                deadline,
+                consecutive=PUBLIC_READINESS_SUCCESSES,
+            )
+            # Mutation-bearing probes cannot run until both route barriers have
+            # attested the candidate. Preserve the complete direct and public
+            # probe sets after that gate.
+            run_probes(self.system, "http://127.0.0.1:3002", self.probes)
             run_probes(self.system, self.pins.public_origin, self.probes)
             guarded(self.active().get("Id") == baseline_id, "active_changed")
             self.candidate()
