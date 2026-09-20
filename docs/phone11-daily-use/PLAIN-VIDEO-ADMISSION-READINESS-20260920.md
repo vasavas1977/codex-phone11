@@ -2,10 +2,10 @@
 
 ## Decision
 
-Phone11's reviewed plain-video schema migration was applied to production with
-the guarded operator. The schema is empty and the two-user pilot fixture has
-not been created. Conference capability remains fail-closed while the pilot
-candidate is commissioned.
+Phone11's reviewed plain-video schema migration, two-user pilot fixture, public
+API route, and bounded provider-join probes have been completed. The admitted
+pilot is limited to tenant `1`, users `1` and `2`. Native two-handset media
+acceptance remains required before conferencing is called customer-ready.
 
 The historical draft migration is not suitable for direct production replay:
 its `IF NOT EXISTS`, `CREATE OR REPLACE`, and trigger replacement statements can
@@ -73,6 +73,46 @@ formats two valid partial-index predicates with an explicit `::text` cast. That
 diagnostic does not authorize or invalidate the migration; the guarded
 operator's exact target fingerprint and receipt are authoritative.
 
+## Pilot activation and provider proof
+
+The independently reviewed parallel-API operator at commit
+`50b6c3b62298b21baa778053d08ce1054422c608` completed guarded preparation and
+activation. The five direct probes passed before the Nginx write, followed by
+the local build-marker barrier, three consecutive public build-marker probes,
+and the complete public probe set. The original backend, wake route, and reused
+candidate remained unchanged and healthy. Full route evidence is recorded in
+[the parallel API activation record](READ-RECEIPTS-PARALLEL-API-ACTIVATION-20260920.md).
+
+The reviewed fixture source SHA-256
+`5dfc695030ac03b3fdd520e148796bffbc4ddb8a595b1dbe514c95387dcbe17b`
+was compiled into a dedicated bundle with SHA-256
+`62c838cc03f105436916a5207200267faa81c3b6467871a3d29d93a39c777b6a`.
+After an exact dry-run and zero-row recheck, one guarded apply created one open
+tenant-1 room and two admitted interactive members for users `1` and `2`.
+Leases and eviction operations remained empty at fixture commit. The protected
+stage is `/opt/phone11ai/plain-video-fixture-20260920T144601Z`; fixture receipt
+SHA-256 is
+`5fda6ee9688082e0a528b003549e81d7dae7eafef7be93b950dbb1e70d41cf0f`.
+Opaque meeting and participant references are retained only in the root-owned
+private receipt.
+
+Public authenticated checks then proved both users see available video
+capability and only the same admitted meeting. An unauthenticated request
+returned `401`; an authorized request for an unknown meeting returned `404`.
+Exactly one join was attempted for each pilot user. Both returned the expected
+`phone11-plain-video.v1` interactive grant, configured WSS origin, and bounded
+five-minute expiry; the two tokens were distinct and were neither printed nor
+persisted. Two distinct tenant-1 admission leases are now durably `issued` for
+the same meeting and users `1` and `2`.
+
+Connect11 intentionally does not copy raw Phone11 participant references into
+LiveKit identities. Its reviewed contract derives customer-, meeting-, and
+participant-bound HMAC room and identity values. The live tokens exhibited this
+derived-not-raw behavior. Provider proof receipt SHA-256:
+`57bff91c806b4269b29444d6f208048efaa16bc72a32dc65a5e5e3511164595b`.
+No interpreter, bot, recording, transcript, agent dispatch, eviction, or media
+session was started.
+
 ## Guarded migration and fixture behavior
 
 `server/meetings/plain-video-admission-live-delta-20260920.sql` creates only:
@@ -128,15 +168,11 @@ tenant selection, or fixture path.
 
 ## Recommended controlled sequence
 
-1. Run the fixture dry-run for tenant `1`, users `1` and `2`; then create one
-   pilot room with the same utility under an explicit fixture authorization.
-2. Start the candidate API with the protected tenant mapping and bounded
-   database lock/statement options. Prove both authenticated users list only
-   their admitted meeting.
-3. Mint a fresh per-join token for each participant through the server-only
-   Connect11 facade; never cache/reuse tokens or expose keys. Validate the
-   returned WSS origin and five-minute expiry.
-4. Complete the two-handset Phone11 test: join, camera/microphone, two-way
+1. Install a fresh signed Phone11 build containing the admitted meeting path on
+   both pilot handsets.
+2. Mint fresh per-join tokens only when each handset starts its live acceptance
+   session; the commissioning tokens above expire and must not be reused.
+3. Complete the two-handset Phone11 test: join, camera/microphone, two-way
    audio/video, participant state, leave/rejoin, revocation/remint denial,
    eviction acknowledgement, background/lock behavior, and media release.
 
