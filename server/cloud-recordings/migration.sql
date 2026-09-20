@@ -123,21 +123,30 @@ BEGIN
       RAISE EXCEPTION 'recording route must match the cloud recording tenant and extension'
         USING ERRCODE = '23514';
     END IF;
-  ELSIF TG_TABLE_NAME = 'phone11_recording_routes' AND EXISTS (
-    SELECT 1 FROM phone11_cloud_recordings r
-    WHERE r.call_uuid = NEW.channel_uuid::text
-      AND (r.tenant_id, r.extension_id) IS DISTINCT FROM (NEW.tenant_id, NEW.extension_id)
-  ) THEN
-    RAISE EXCEPTION 'recording route must match the cloud recording tenant and extension'
-      USING ERRCODE = '23514';
-  ELSIF TG_TABLE_NAME = 'phone11_recording_wake_links' AND NOT EXISTS (
-    SELECT 1 FROM phone11_wake_bindings wb
-    WHERE wb.id = NEW.binding_id
-      AND wb.tenant_id = NEW.tenant_id
-      AND wb.extension_id = NEW.extension_id
-  ) THEN
-    RAISE EXCEPTION 'recording wake link must match its wake binding tenant and extension'
-      USING ERRCODE = '23514';
+  ELSIF TG_TABLE_NAME = 'phone11_recording_routes' THEN
+    IF EXISTS (
+      SELECT 1 FROM phone11_cloud_recordings r
+      WHERE r.call_uuid = NEW.channel_uuid::text
+        AND (r.tenant_id, r.extension_id) IS DISTINCT FROM (NEW.tenant_id, NEW.extension_id)
+    ) THEN
+      RAISE EXCEPTION 'recording route must match the cloud recording tenant and extension'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'phone11_recording_wake_links' THEN
+    -- Wake links intentionally outlive transient wake bindings; enforce the
+    -- pair only while the referenced binding is still retained.
+    IF EXISTS (
+      SELECT 1 FROM phone11_wake_bindings wb
+      WHERE wb.id = NEW.binding_id
+    ) AND NOT EXISTS (
+      SELECT 1 FROM phone11_wake_bindings wb
+      WHERE wb.id = NEW.binding_id
+        AND wb.tenant_id = NEW.tenant_id
+        AND wb.extension_id = NEW.extension_id
+    ) THEN
+      RAISE EXCEPTION 'recording wake link must match its wake binding tenant and extension'
+        USING ERRCODE = '23514';
+    END IF;
   END IF;
   RETURN NEW;
 END;
