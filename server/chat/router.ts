@@ -95,6 +95,12 @@ export const chatRouter = router({
     .mutation(({ ctx, input: i }) => service.block(ctx.user.id, i.tenantId, i.userId)),
   unblock: chatProcedure.input(z.object({ tenantId: tenant, userId: tenant }))
     .mutation(({ ctx, input: i }) => service.unblock(ctx.user.id, i.tenantId, i.userId)),
+  publishReadReceipts: chatProcedure.input(channel.extend({ messageIds: z.array(z.string().uuid()).min(1).max(50), threadRootId: z.string().uuid().optional() }).strict())
+    .mutation(({ ctx, input: i }) => service.publishReadReceipts(ctx.user.id, i.tenantId, i.id, i.messageIds, i.threadRootId)),
+  readReceiptSummaries: chatProcedure.input(channel.extend({ messageIds: z.array(z.string().uuid()).min(1).max(50), threadRootId: z.string().uuid().optional() }).strict())
+    .query(({ ctx, input: i }) => service.readReceiptSummaries(ctx.user.id, i.tenantId, i.id, i.messageIds, i.threadRootId)),
+  readReceiptDetails: chatProcedure.input(messageAction.extend({ threadRootId: z.string().uuid().optional() }).strict())
+    .query(({ ctx, input: i }) => service.readReceiptDetails(ctx.user.id, i.tenantId, i.id, i.messageId, i.threadRootId)),
   read: chatProcedure.input(channel.extend({ through: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }))
     .mutation(({ ctx, input: i }) => service.read(ctx.user.id, i.tenantId, i.id, i.through)),
 });

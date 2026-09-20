@@ -25,6 +25,11 @@ describe("chat authentication", () => {
     const caller = chatRouter.createCaller({ user: null, req: {} as any, res: {} as any });
     await expect(caller.list()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
+  it("rejects receipt batches above 50 before storage access", async () => {
+    const caller = chatRouter.createCaller({ user: { id: 1 } as any, req: { headers: { "x-phone11-chat-owner": "1" } } as any, res: {} as any });
+    await expect(caller.publishReadReceipts({ tenantId: 10, id: randomUUID(), messageIds: Array.from({ length: 51 }, () => randomUUID()) }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
 });
 describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persistence and isolation", () => {
   beforeAll(async () => {
@@ -35,10 +40,11 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
       CREATE TABLE IF NOT EXISTS tenant_memberships (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), tenant_id INTEGER REFERENCES tenants(id), role TEXT, status TEXT, is_default BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id, tenant_id));`);
     await pool.query(await readFile(new URL("../server/chat/migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/collaboration-migration.sql", import.meta.url), "utf8"));
+    await pool.query(await readFile(new URL("../server/chat/read-receipts-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/media-migration.sql", import.meta.url), "utf8"));
   });
   beforeEach(async () => {
-    await pool.query(`TRUNCATE phone11_chat_reports, phone11_chat_blocks, phone11_chat_notification_preferences, phone11_chat_pins, phone11_chat_bookmarks, phone11_chat_reactions, phone11_chat_attachments, phone11_chat_messages, phone11_chat_members, phone11_chat_conversations, user_extensions, tenant_memberships, extensions, users, tenants RESTART IDENTITY CASCADE;
+    await pool.query(`TRUNCATE phone11_chat_read_receipts, phone11_chat_reports, phone11_chat_blocks, phone11_chat_notification_preferences, phone11_chat_pins, phone11_chat_bookmarks, phone11_chat_reactions, phone11_chat_attachments, phone11_chat_messages, phone11_chat_members, phone11_chat_conversations, user_extensions, tenant_memberships, extensions, users, tenants RESTART IDENTITY CASCADE;
       INSERT INTO users VALUES (1,'Alice'),(2,'Bob'),(3,'Other tenant'),(4,'No assignment'),(5,'Not in conversation'),(6,'Beta teammate');
       INSERT INTO tenants VALUES (10,'Alpha','active'),(20,'Beta','active');
       INSERT INTO tenant_memberships(user_id,tenant_id,role,status,is_default) VALUES (1,10,'owner','active',true),(2,10,'user','active',false),(3,20,'owner','active',true),(5,10,'user','active',false),(6,20,'user','active',false);
@@ -241,6 +247,54 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     expect((await service.list(1, 10)).channels[0].notificationsMuted).toBe(true);
     expect((await service.list(2, 10)).channels[0].notificationsMuted).toBe(false);
     await expect(service.setPin(5, 10, id, saved.id, false)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+  it("records a server-time first read once and never derives it from the unread cursor", async () => {
+    const { id } = await room();
+    const sent = await service.send(1, 10, id, randomUUID(), "Visible message");
+    await service.read(2, 10, id, sent.sequence);
+    expect(await service.readReceiptSummaries(1, 10, id, [sent.id])).toEqual([{ messageId: sent.id, count: 0 }]);
+    await service.publishReadReceipts(2, 10, id, [sent.id, sent.id]);
+    const first = await service.readReceiptDetails(1, 10, id, sent.id);
+    await pool.query("SELECT pg_sleep(0.01)");
+    await service.publishReadReceipts(2, 10, id, [sent.id]);
+    expect(await service.readReceiptDetails(1, 10, id, sent.id)).toEqual(first);
+    expect(first).toEqual([{ userId: 2, name: "Bob", readAt: expect.any(Number) }]);
+    expect(Number((await pool.query("SELECT COUNT(*) AS count FROM phone11_chat_read_receipts WHERE message_id=$1", [sent.id])).rows[0].count)).toBe(1);
+  });
+  it("requires exact conversation and thread context and excludes own or deleted messages", async () => {
+    const first = await room();
+    const second = await service.create(1, 10, "group", "Second", [2]);
+    const elsewhere = await service.send(1, 10, second.id, randomUUID(), "Elsewhere");
+    await expect(service.publishReadReceipts(2, 10, first.id, [elsewhere.id])).rejects.toMatchObject({ code: "NOT_FOUND" });
+    const root = await service.send(1, 10, first.id, randomUUID(), "Root");
+    const reply = await service.send(1, 10, first.id, randomUUID(), "Reply", root.id);
+    await expect(service.publishReadReceipts(2, 10, first.id, [reply.id])).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(service.publishReadReceipts(2, 10, first.id, [reply.id], elsewhere.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(service.publishReadReceipts(2, 10, first.id, [reply.id], root.id)).resolves.toEqual({ recorded: 1 });
+    const own = await service.send(2, 10, first.id, randomUUID(), "Own");
+    await service.delete(1, 10, first.id, root.id);
+    await expect(service.publishReadReceipts(2, 10, first.id, [own.id, root.id])).resolves.toEqual({ recorded: 0 });
+  });
+  it("returns receipt identities only to the sender and removes revoked or blocked readers", async () => {
+    const group = await service.create(1, 10, "group", "Readers", [2, 5]);
+    const sent = await service.send(1, 10, group.id, randomUUID(), "Group update");
+    await service.publishReadReceipts(2, 10, group.id, [sent.id]);
+    await service.publishReadReceipts(5, 10, group.id, [sent.id]);
+    expect(await service.readReceiptSummaries(1, 10, group.id, [sent.id])).toEqual([{ messageId: sent.id, count: 2 }]);
+    await expect(service.readReceiptDetails(2, 10, group.id, sent.id)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await pool.query("UPDATE tenant_memberships SET status='inactive' WHERE tenant_id=10 AND user_id=5");
+    expect((await service.readReceiptDetails(1, 10, group.id, sent.id)).map(row => row.userId)).toEqual([2]);
+    await service.block(1, 10, 2);
+    expect(await service.readReceiptDetails(1, 10, group.id, sent.id)).toEqual([]);
+    expect(await service.readReceiptSummaries(1, 10, group.id, [sent.id])).toEqual([{ messageId: sent.id, count: 0 }]);
+  });
+  it("requires active membership and extension assignment for receipt publication", async () => {
+    const { id } = await room(); const sent = await service.send(1, 10, id, randomUUID(), "Access guarded");
+    await pool.query("UPDATE extensions SET status='inactive' WHERE id=2");
+    await expect(service.publishReadReceipts(2, 10, id, [sent.id])).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await pool.query("UPDATE extensions SET status='active' WHERE id=2");
+    await service.block(1, 10, 2);
+    expect(await service.publishReadReceipts(2, 10, id, [sent.id])).toEqual({ recorded: 0 });
   });
   it("returns saved and pinned message bodies only to an authorized room member", async () => {
     const { id } = await room(); const saved = await service.send(1, 10, id, randomUUID(), "Find me later");

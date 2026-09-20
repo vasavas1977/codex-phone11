@@ -13,6 +13,8 @@ export function ChatMessageRow({
   onReplies,
   onReaction,
   onRetry,
+  receiptLabel,
+  onReadReceipts,
 }: {
   message: ChatMessage;
   own: boolean;
@@ -22,6 +24,8 @@ export function ChatMessageRow({
   onReplies: () => void;
   onReaction: (emoji: string, selected: boolean) => void;
   onRetry: () => void;
+  receiptLabel?: string;
+  onReadReceipts?: () => void;
 }) {
   const c = useColors();
   const time = new Date(message.timestamp).toLocaleTimeString([], {
@@ -131,6 +135,16 @@ export function ChatMessageRow({
           <Text style={{ color: c.muted, fontSize: 11, marginTop: 4 }}>
             {message.status === "sending" ? "Sending…" : "Not sent"}
           </Text>
+        )}
+        {own && message.status === "sent" && receiptLabel && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${receiptLabel}. View read receipts`}
+            onPress={onReadReceipts}
+            style={{ alignSelf: "flex-start", minHeight: 32, justifyContent: "center" }}
+          >
+            <Text style={{ color: c.primary, fontSize: 11 }}>{receiptLabel}</Text>
+          </Pressable>
         )}
         {!message.deletedAt &&
           message.status === "sent" &&

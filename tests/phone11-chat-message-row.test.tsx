@@ -67,6 +67,17 @@ function render(message: ChatMessage) {
   );
   return { html, ...actions };
 }
+it("shows a compact accessible receipt control only when a positive label is supplied", () => {
+  const onReadReceipts = vi.fn();
+  const html = renderToStaticMarkup(createElement(ChatMessageRow, {
+    message: base, own: true, grouped: false, root: false, receiptLabel: "Read by 3",
+    onReadReceipts, onActions: vi.fn(), onReplies: vi.fn(), onReaction: vi.fn(), onRetry: vi.fn(),
+  }));
+  expect(html).toContain("Read by 3");
+  m.buttons.get("Read by 3. View read receipts").onPress();
+  expect(onReadReceipts).toHaveBeenCalledOnce();
+  expect(render(base).html).not.toContain("View read receipts");
+});
 it("keeps replies reachable after the parent is deleted without exposing deleted text or media", () => {
   const { html, onReplies } = render({
     ...base,

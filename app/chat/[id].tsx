@@ -14,6 +14,7 @@ import {
   Text,
   TextInput,
   View,
+  type ViewToken,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
@@ -30,7 +31,9 @@ import {
   type ChatConversationDetails,
   type ChatMessage,
   type ChatMention,
+  type ChatReadReceipt,
 } from "@/lib/chat/types";
+import { createReadReceiptController, createReadReceiptRequestGuard, createReadReceiptSummaryLoader, READ_RECEIPT_VIEW_AREA_PERCENT } from "@/lib/chat/read-receipts";
 
 import { ConversationRail } from "@/components/chat/conversation-rail";
 import { PresenceIndicator } from "@/components/chat/presence-indicator";
@@ -44,6 +47,7 @@ import {
 } from "@/components/chat/assistant-sheet";
 import { VoiceNote } from "@/components/chat/voice-note";
 import { ChatMessageRow } from "@/components/chat/message-row";
+import { ReadReceiptSheet } from "@/components/chat/read-receipt-sheet";
 import { MentionPicker } from "@/components/chat/mention-picker";
 import { ConversationDetails } from "@/components/chat/conversation-details";
 import { createChatTransport } from "@/lib/chat/transport";
@@ -62,6 +66,11 @@ type SendAction = {
   roomId: string;
 };
 type ThreadAction = SendAction & { parentMessageId: string };
+type ReceiptScope = { owner: { id: number } | null | undefined; workspaceId: number; roomId: string; threadRootId?: string };
+function sameReceiptScope(left: ReceiptScope | null, right: ReceiptScope | null) {
+  return !!left && !!right && left.owner === right.owner && left.workspaceId === right.workspaceId &&
+    left.roomId === right.roomId && left.threadRootId === right.threadRootId;
+}
 
 function initials(name?: string) {
   return (name || "?")
@@ -146,6 +155,12 @@ export default function ChatRoomScreen() {
   } | null>(null);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [typingFocused, setTypingFocused] = useState(false);
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
+  const [receiptCountState, setReceiptCountState] = useState<{ scope: ReceiptScope | null; counts: Record<string, number> }>({ scope: null, counts: {} });
+  const [receiptTarget, setReceiptTarget] = useState<ChatMessage | null>(null);
+  const [receiptRows, setReceiptRows] = useState<ChatReadReceipt[]>([]);
+  const [receiptLoading, setReceiptLoading] = useState(false);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
   const [localPreviews, setLocalPreviews] = useState<Record<string, string>>(
     {},
   );
@@ -221,7 +236,11 @@ export default function ChatRoomScreen() {
   usePresencePolling(chat.workspace?.id, directPeerId ? [directPeerId] : [], Boolean(ownsWorkspace && directPeerId));
   useFocusEffect(useCallback(() => {
     setTypingFocused(true);
-    return () => setTypingFocused(false);
+    return () => {
+      receiptActivityRef.current = false;
+      receiptControllerRef.current?.setEnabled(false);
+      setTypingFocused(false);
+    };
   }, []));
   const typing = useChatTyping({ owner: user, tenantId: chat.workspace?.id, conversationId: id,
     threadRootId: threadIsCurrent ? thread?.root.id : undefined, enabled: canCompose,
@@ -262,12 +281,29 @@ export default function ChatRoomScreen() {
     setActionError(null);
     setMenuOpen(false);
     setMessageMenuTarget(null);
+    setReceiptCountState({ scope: null, counts: {} });
+    receiptTargetScopeRef.current = null;
+    setReceiptTarget(null);
+    setReceiptRows([]);
+    setReceiptError(null);
+    setReceiptLoading(false);
     setSafetyOpen(false);
     setSafetyTarget(null);
     setSafetyConfirm(null);
     setSafetyError(null);
     setSafetyComment("");
   }, [user, id, tenantId, chat.workspace?.id, stopTyping]);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", state => {
+      const active = state === "active";
+      if (!active) {
+        receiptActivityRef.current = false;
+        receiptControllerRef.current?.setEnabled(false);
+      }
+      setAppActive(active);
+    });
+    return () => subscription.remove();
+  }, []);
   useEffect(() => {
     let current = true;
     setSearchResult({ messages: [], hasMore: false });
@@ -740,6 +776,151 @@ export default function ChatRoomScreen() {
     : threadMessages
       ? threadMessages
       : messages.filter((item) => !item.parent);
+  const activeReceiptThreadRootId = threadIsCurrent ? thread?.root.id : undefined;
+  const receiptScopeRef = useRef<ReceiptScope | null>(null);
+  receiptScopeRef.current = ownsWorkspace && user && chat.workspace ? {
+    owner: user,
+    workspaceId: chat.workspace.id,
+    roomId: id,
+    ...(activeReceiptThreadRootId ? { threadRootId: activeReceiptThreadRootId } : {}),
+  } : null;
+  const receiptCounts = sameReceiptScope(receiptCountState.scope, receiptScopeRef.current) ? receiptCountState.counts : {};
+  const receiptTargetScopeRef = useRef<ReceiptScope | null>(null);
+  const receiptTargetIsCurrent = !!receiptTarget && sameReceiptScope(receiptTargetScopeRef.current, receiptScopeRef.current);
+  const receiptObscured = !!(receiptTargetIsCurrent || messageMenuTarget || menuOpen || safetyOpen || detailsOpen || savedOpen ||
+    voiceOpen || forwardTarget || attachmentOpen || editing || aiMode || mentionOpen || emojiOpen);
+  const receiptCanObserve = Boolean(ownsWorkspace && typingFocused && appActive && !receiptObscured && !searching);
+  const receiptActivityRef = useRef(receiptCanObserve);
+  receiptActivityRef.current = receiptCanObserve;
+  const receiptSearchRef = useRef(searching);
+  receiptSearchRef.current = searching;
+  const visibleReceiptsRef = useRef<{ scope: ReceiptScope; incomingIds: string[]; ownIds: string[] } | null>(null);
+  const receiptControllerRef = useRef<ReturnType<typeof createReadReceiptController<ReceiptScope>> | null>(null);
+  if (!receiptControllerRef.current) receiptControllerRef.current = createReadReceiptController<ReceiptScope>({
+    capture: () => receiptScopeRef.current,
+    current: captured => {
+      const scope = receiptScopeRef.current;
+      const state = useChatStore.getState();
+      return receiptActivityRef.current && sameReceiptScope(scope, captured) && getAuthSnapshot().user === captured.owner &&
+        state.userId === captured.owner?.id && state.workspace?.id === captured.workspaceId && captured.roomId === liveScopeRef.current?.roomId;
+    },
+    send: async (messageIds, scope) => {
+      return messageApi.publishReadReceipts(scope.workspaceId, scope.roomId, messageIds, scope.threadRootId);
+    },
+  });
+  const receiptSummaryLoaderRef = useRef<ReturnType<typeof createReadReceiptSummaryLoader<ReceiptScope, { messageId: string; count: number }>> | null>(null);
+  if (!receiptSummaryLoaderRef.current) receiptSummaryLoaderRef.current = createReadReceiptSummaryLoader({
+    load: (scope, ids) => messageApi.readReceiptSummaries(scope.workspaceId, scope.roomId, ids, scope.threadRootId),
+    current: scope => receiptActivityRef.current && sameReceiptScope(receiptScopeRef.current, scope) && getAuthSnapshot().user === scope.owner,
+    apply: (scope, rows) => setReceiptCountState(previous => ({ scope, counts: {
+      ...(sameReceiptScope(previous.scope, scope) ? previous.counts : {}),
+      ...Object.fromEntries(rows.map(row => [row.messageId, row.count])),
+    } })),
+    clear: (scope, ids) => setReceiptCountState(previous => {
+      const counts = { ...(sameReceiptScope(previous.scope, scope) ? previous.counts : {}) };
+      ids.forEach(messageId => delete counts[messageId]);
+      return { scope, counts };
+    }),
+    latest: () => {
+      const visible = visibleReceiptsRef.current;
+      return visible && receiptActivityRef.current && sameReceiptScope(receiptScopeRef.current, visible.scope)
+        ? { scope: visible.scope, ids: visible.ownIds } : null;
+    },
+    sameScope: (left, right) => sameReceiptScope(left, right),
+  });
+  useEffect(() => {
+    receiptControllerRef.current?.replaceScope();
+    receiptSummaryLoaderRef.current?.replaceScope();
+  }, [user, chat.workspace?.id, id, activeReceiptThreadRootId]);
+  useEffect(() => {
+    receiptControllerRef.current?.setEnabled(receiptCanObserve);
+    const visible = visibleReceiptsRef.current;
+    if (receiptCanObserve && sameReceiptScope(receiptScopeRef.current, visible?.scope || null)) {
+      receiptControllerRef.current?.visible(visible?.incomingIds || []);
+      refreshReceiptSummariesRef.current(visible!.scope, visible!.ownIds);
+    }
+  }, [receiptCanObserve, user, chat.workspace?.id, id, activeReceiptThreadRootId]);
+  useEffect(() => { if (searching) visibleReceiptsRef.current = null; }, [searching]);
+  useEffect(() => () => receiptControllerRef.current?.dispose(), []);
+  const refreshReceiptSummariesRef = useRef<(scope: ReceiptScope, ids: string[]) => void>(() => undefined);
+  refreshReceiptSummariesRef.current = (scope, ids) => receiptSummaryLoaderRef.current?.request(scope, ids);
+  useEffect(() => {
+    if (!receiptCanObserve) return;
+    const refresh = () => {
+      const visible = visibleReceiptsRef.current;
+      const scope = receiptScopeRef.current;
+      if (!scope || !visible || !sameReceiptScope(scope, visible.scope) || !visible.ownIds.length) return;
+      refreshReceiptSummariesRef.current(scope, visible.ownIds);
+    };
+    refresh();
+    const timer = setInterval(refresh, 5_000);
+    return () => clearInterval(timer);
+  }, [receiptCanObserve, user, chat.workspace?.id, id, activeReceiptThreadRootId]);
+  const receiptViewabilityConfig = useRef({
+    viewAreaCoveragePercentThreshold: READ_RECEIPT_VIEW_AREA_PERCENT,
+  }).current;
+  const onReceiptViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken<ChatMessage>[] }) => {
+    const scope = receiptScopeRef.current;
+    const state = useChatStore.getState();
+    if (!scope || getAuthSnapshot().user !== scope.owner || state.workspace?.id !== scope.workspaceId) return;
+    if (receiptSearchRef.current) { visibleReceiptsRef.current = null; return; }
+    const visible = viewableItems.map(token => token.item).filter(Boolean);
+    const incomingIds = visible.filter(item => item.status === "sent" && !item.deletedAt && item.senderId !== scope.owner?.id).map(item => item.id);
+    const ownIds = visible.filter(item => item.status === "sent" && !item.deletedAt && item.senderId === scope.owner?.id).map(item => item.id).slice(0, 50);
+    visibleReceiptsRef.current = { scope, incomingIds, ownIds };
+    if (!receiptActivityRef.current) return;
+    receiptControllerRef.current?.visible(incomingIds);
+    refreshReceiptSummariesRef.current(scope, ownIds);
+  }).current;
+  const receiptTargetRef = useRef<ChatMessage | null>(receiptTarget);
+  receiptTargetRef.current = receiptTarget;
+  const receiptDetailGuardRef = useRef<ReturnType<typeof createReadReceiptRequestGuard<ReceiptScope>> | null>(null);
+  if (!receiptDetailGuardRef.current) receiptDetailGuardRef.current = createReadReceiptRequestGuard<ReceiptScope>({
+    currentScope: () => receiptScopeRef.current,
+    currentTarget: () => receiptTargetRef.current?.id || null,
+    sameScope: sameReceiptScope,
+  });
+  useEffect(() => {
+    if (!receiptTarget || !receiptTargetIsCurrent || !typingFocused || !appActive || !ownsWorkspace) return;
+    const scope = receiptScopeRef.current;
+    if (!scope || receiptTarget.senderId !== scope.owner?.id) return;
+    let active = true, inFlight = false, first = true;
+    const targetId = receiptTarget.id;
+    const request = receiptDetailGuardRef.current!.begin(scope, targetId);
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const rows = await messageApi.readReceiptDetails(scope.workspaceId, scope.roomId, targetId, scope.threadRootId);
+        if (active && receiptDetailGuardRef.current?.current(request) && getAuthSnapshot().user === scope.owner) {
+          setReceiptRows(rows); setReceiptError(null);
+        }
+      } catch {
+        if (active && receiptDetailGuardRef.current?.current(request) && getAuthSnapshot().user === scope.owner)
+          setReceiptError("Read receipts are unavailable. Try again later.");
+      } finally {
+        inFlight = false;
+        if (active && receiptDetailGuardRef.current?.current(request) && first) { first = false; setReceiptLoading(false); }
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 5_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [receiptTarget, receiptTargetIsCurrent, typingFocused, appActive, ownsWorkspace, user, chat.workspace?.id, id, activeReceiptThreadRootId]);
+  const openReadReceipts = (item: ChatMessage) => {
+    const scope = receiptScopeRef.current;
+    if (!scope || item.senderId !== scope.owner?.id || item.status !== "sent") return;
+    receiptDetailGuardRef.current?.invalidate();
+    receiptTargetRef.current = item;
+    receiptTargetScopeRef.current = scope;
+    setMessageMenuTarget(null); setReceiptRows([]); setReceiptError(null); setReceiptLoading(true); setReceiptTarget(item);
+  };
+  const closeReadReceipts = () => {
+    receiptDetailGuardRef.current?.invalidate();
+    receiptTargetRef.current = null;
+    receiptTargetScopeRef.current = null;
+    setReceiptTarget(null);
+  };
   const safetySubject =
     safetyTarget?.senderName || channel?.name || "this conversation";
   const closeSafety = () => {
@@ -1189,6 +1370,8 @@ export default function ChatRoomScreen() {
                   }
                   keyboardShouldPersistTaps="handled"
                   maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+                  viewabilityConfig={receiptViewabilityConfig}
+                  onViewableItemsChanged={onReceiptViewableItemsChanged}
                   onLayout={() => {
                     if (
                       !searching &&
@@ -1305,6 +1488,8 @@ export default function ChatRoomScreen() {
                             )
                           }
                           onRetry={() => void retryThreadMessage(item)}
+                          receiptLabel={receiptCounts[item.id] > 0 ? (channel?.kind === "direct" ? "Read" : `Read by ${receiptCounts[item.id]}`) : undefined}
+                          onReadReceipts={() => void openReadReceipts(item)}
                         />
                       </View>
                     );
@@ -2271,6 +2456,16 @@ export default function ChatRoomScreen() {
                               </Pressable>
                             </>
                           )}
+                        {messageMenuTarget.senderId === user?.id && messageMenuTarget.status === "sent" && (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Message details"
+                            style={styles.sheetAction}
+                            onPress={() => void openReadReceipts(messageMenuTarget)}
+                          >
+                            <Text style={{ color: colors.foreground }}>Message details</Text>
+                          </Pressable>
+                        )}
                       </>
                     )}
                     <Pressable
@@ -2321,6 +2516,7 @@ export default function ChatRoomScreen() {
                 </Pressable>
               </Pressable>
             </Modal>
+            <ReadReceiptSheet visible={receiptTargetIsCurrent} loading={receiptLoading} rows={receiptRows} error={receiptError} onClose={closeReadReceipts} />
             <Modal
               visible={safetyOpen && !searching}
               transparent

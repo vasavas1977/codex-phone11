@@ -25,6 +25,8 @@ export interface ChatPresence {
   status: ChatPresenceStatus;
   lastSeenAt: number | null;
 }
+export interface ChatReadReceiptSummary { messageId: string; count: number }
+export interface ChatReadReceipt { userId: number; name: string; readAt: number }
 /** Safe server descriptor. It intentionally contains no storage key or URL. */
 export interface ChatAttachment {
   id: string; conversationId: string; filename: string; mimeType: string; sizeBytes: number;

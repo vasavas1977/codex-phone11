@@ -134,7 +134,10 @@ jobs:
             tests/phone11-chat-owner.test.ts \
             tests/phone11-rich-presence.test.tsx \
             tests/phone11-chat-typing.test.ts \
+            tests/phone11-chat-read-receipts.test.ts \
+            tests/phone11-chat-read-receipt-sheet.test.tsx \
             tests/phone11-runtime-role.test.ts \
+            tests/phone11-api-candidate-startup.test.ts \
             tests/phone11-chat-foreground.test.ts \
             tests/phone11-legacy-unavailable.test.tsx \
             tests/phone11-chat-notification-client.test.ts \

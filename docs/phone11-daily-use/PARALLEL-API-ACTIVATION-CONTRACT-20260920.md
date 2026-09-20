@@ -1,6 +1,10 @@
-# Parallel API activation contract — pending implementation
+# Parallel API activation contract — source implemented, deployment pending
 
 Purpose: deploy the admitted conference/presence API without replacing the backend that currently owns working SIP wake, recording, and dispatch workers. This is a bounded operator specification, not evidence of deployment.
+
+The source operator and follow-up findings are documented in [PARALLEL-API-PILOT-OPERATOR-20260920.md](./PARALLEL-API-PILOT-OPERATOR-20260920.md) and [PARALLEL-API-OPERATOR-REVIEW-20260920.md](./PARALLEL-API-OPERATOR-REVIEW-20260920.md). Fifteen hermetic operator tests and five runtime/startup tests pass. Independent final operator review and a freshly pinned candidate remain required before activation.
+
+The Connect11 task reported the protected credential correction complete on 20 September: status capability HTTP 200 with `available=true` and contract `phone11-plain-video.v1`; join/evict credential HTTP 404 for a nonexistent eviction resource, proving authentication. Protected files remain root-owned mode 0600. Only the duplicated join value was corrected, without restart or key reissue. No key setup remains for the owner. This is credential evidence only, not Phone11 server activation, tenant admission, or device conference acceptance.
 
 ## Observed baseline
 

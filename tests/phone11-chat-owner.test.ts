@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-const m = vi.hoisted(() => ({ service: { list: vi.fn(), directory: vi.fn(), create: vi.fn(), history: vi.fn(), search: vi.fn(), thread: vi.fn(), send: vi.fn(), report: vi.fn(), block: vi.fn(), unblock: vi.fn(), read: vi.fn(), presenceCapability: vi.fn(), heartbeat: vi.fn(), typingPublish: vi.fn(), typing: vi.fn() } }));
+const m = vi.hoisted(() => ({ service: { list: vi.fn(), directory: vi.fn(), create: vi.fn(), history: vi.fn(), search: vi.fn(), thread: vi.fn(), send: vi.fn(), report: vi.fn(), block: vi.fn(), unblock: vi.fn(), read: vi.fn(), presenceCapability: vi.fn(), heartbeat: vi.fn(), typingPublish: vi.fn(), typing: vi.fn(), publishReadReceipts: vi.fn(), readReceiptSummaries: vi.fn(), readReceiptDetails: vi.fn() } }));
 vi.mock("../server/chat/service", () => ({ createChatService: () => m.service }));
 vi.mock("../server/_core/phone11-auth", () => ({ readAuthConfig: () => ({ trustedOrigins: ["https://phone11.example.test"] }) }));
 import { chatRouter } from "../server/chat/router";
@@ -9,7 +9,7 @@ function caller(header: string | string[] | undefined, userId = 2) {
   return chatRouter.createCaller({ user: { id: userId } as any, req: { headers: { "x-phone11-chat-owner": header } } as any, res: {} as any });
 }
 beforeEach(() => vi.clearAllMocks());
-it.each(["list", "directory", "create", "history", "search", "thread", "send", "report", "block", "unblock", "read", "presenceCapability", "typingPublish", "typing"] as const)("blocks %s before service access if browser cookies identify a replacement actor", async operation => {
+it.each(["list", "directory", "create", "history", "search", "thread", "send", "report", "block", "unblock", "read", "presenceCapability", "typingPublish", "typing", "publishReadReceipts", "readReceiptSummaries", "readReceiptDetails"] as const)("blocks %s before service access if browser cookies identify a replacement actor", async operation => {
   const api = caller("1");
   const calls = {
     list: () => api.list({ tenantId: 10 }), directory: () => api.directory({ tenantId: 10 }),
@@ -19,6 +19,9 @@ it.each(["list", "directory", "create", "history", "search", "thread", "send", "
     read: () => api.read({ tenantId: 10, id: room, through: 1 }), presenceCapability: () => api.presenceCapability({ tenantId: 10 }),
     typingPublish: () => api.typingPublish({ tenantId: 10, id: room, sessionId: room, generation: room, sequence: 1, active: true }),
     typing: () => api.typing({ tenantId: 10, id: room }),
+    publishReadReceipts: () => api.publishReadReceipts({ tenantId: 10, id: room, messageIds: [room] }),
+    readReceiptSummaries: () => api.readReceiptSummaries({ tenantId: 10, id: room, messageIds: [room] }),
+    readReceiptDetails: () => api.readReceiptDetails({ tenantId: 10, id: room, messageId: room }),
   };
   await expect(calls[operation]()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   for (const method of Object.values(m.service)) expect(method).not.toHaveBeenCalled();

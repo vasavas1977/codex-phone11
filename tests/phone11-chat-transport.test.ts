@@ -41,3 +41,10 @@ it("preserves browser HttpOnly cookie transport without reading a native bearer"
   expect(new Headers(m.fetch.mock.calls[0][1].headers).has("authorization")).toBe(false);
   expect(new Headers(m.fetch.mock.calls[0][1].headers).get("x-phone11-chat-owner")).toBe("1");
 });
+it("sends explicit receipt ids and exact thread context without using an unread cursor", async () => {
+  await createChatTransport().publishReadReceipts(10, "room", ["message"], "root");
+  const [url, init] = m.fetch.mock.calls[0];
+  expect(String(url)).toContain("chat.publishReadReceipts");
+  expect(JSON.parse(init.body)["0"].json).toEqual({ tenantId: 10, id: "room", messageIds: ["message"], threadRootId: "root" });
+  expect(JSON.parse(init.body)["0"].json).not.toHaveProperty("through");
+});

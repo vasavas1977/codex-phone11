@@ -5,7 +5,7 @@ import type { PoolClient } from "pg";
 import { withTransaction } from "../pbx/db";
 import { ChatIntelligenceError, chatIntelligenceAvailable, generateChatIntelligence } from "./intelligence";
 import { LinkPreviewError, previewChatLink } from "./link-preview";
-import type { ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatPresenceStatus, ChatWorkspace } from "../../lib/chat/types";
+import type { ChatBookmark, ChatChannel, ChatConversationDetails, ChatKind, ChatMention, ChatMessage, ChatPerson, ChatPresenceStatus, ChatReadReceipt, ChatReadReceiptSummary, ChatWorkspace } from "../../lib/chat/types";
 import { chatTypingRegistry, type ChatTypingRegistry } from "./typing";
 
 // Live Phone11 grants workspace access through an active tenant membership plus
@@ -752,6 +752,98 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
         await lockSafetyPair(db, workspace.id, userId, targetUserId);
         await db.query(`DELETE FROM phone11_chat_blocks WHERE tenant_id = $1 AND blocker_id = $2 AND blocked_id = $3`, [workspace.id, userId, targetUserId]);
         return { blocked: false as const };
+      });
+    },
+    publishReadReceipts(userId: number, tenantId: number, id: string, messageIds: string[], threadRootId?: string) {
+      return scoped(userId, tenantId, async (db, workspace) => {
+        await authorizeConversation(db, userId, workspace.id, id);
+        const uniqueIds = [...new Set(messageIds)];
+        if (!uniqueIds.length) return { recorded: 0 };
+        const messages = await db.query(`SELECT id, sender_id, parent_message_id, deleted_at
+          FROM phone11_chat_messages WHERE tenant_id = $1 AND conversation_id = $2 AND id = ANY($3::uuid[])
+          FOR KEY SHARE`, [workspace.id, id, uniqueIds]);
+        if (messages.rows.length !== uniqueIds.length)
+          throw new TRPCError({ code: "NOT_FOUND", message: "A visible message is unavailable." });
+        if (threadRootId) {
+          const root = await db.query(`SELECT 1 FROM phone11_chat_messages WHERE tenant_id=$1 AND conversation_id=$2
+            AND id=$3 AND parent_message_id IS NULL AND deleted_at IS NULL`, [workspace.id, id, threadRootId]);
+          if (!root.rows[0])
+            throw new TRPCError({ code: "NOT_FOUND", message: "The original message is unavailable." });
+          if (messages.rows.some((row: any) => row.id !== threadRootId && row.parent_message_id !== threadRootId))
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Read receipts must match the open thread." });
+        } else if (messages.rows.some((row: any) => row.parent_message_id)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Thread replies require their exact thread context." });
+        }
+        const eligible = messages.rows.filter((row: any) => !row.deleted_at && Number(row.sender_id) !== userId);
+        let recorded = 0;
+        for (const row of eligible) {
+          if (await pairIsBlocked(db, workspace.id, userId, Number(row.sender_id))) continue;
+          await db.query(`INSERT INTO phone11_chat_read_receipts
+            (tenant_id, conversation_id, message_id, reader_id) VALUES($1,$2,$3,$4)
+            ON CONFLICT DO NOTHING`, [workspace.id, id, row.id, userId]);
+          recorded++;
+        }
+        return { recorded };
+      });
+    },
+    readReceiptSummaries(userId: number, tenantId: number, id: string, messageIds: string[], threadRootId?: string) {
+      return scoped(userId, tenantId, async (db, workspace): Promise<ChatReadReceiptSummary[]> => {
+        await authorizeConversation(db, userId, workspace.id, id);
+        const uniqueIds = [...new Set(messageIds)];
+        if (!uniqueIds.length) return [];
+        const rows = await db.query(`SELECT msg.id, msg.parent_message_id, msg.deleted_at,
+            COUNT(receipt.reader_id) FILTER (WHERE tm.status = 'active' AND e.id IS NOT NULL AND block.reader_id IS NULL)::integer AS receipt_count
+          FROM phone11_chat_messages msg
+          LEFT JOIN phone11_chat_read_receipts receipt ON receipt.tenant_id=msg.tenant_id AND receipt.conversation_id=msg.conversation_id AND receipt.message_id=msg.id
+          LEFT JOIN tenant_memberships tm ON tm.tenant_id=msg.tenant_id AND tm.user_id=receipt.reader_id
+          LEFT JOIN LATERAL (SELECT ue.id FROM user_extensions ue JOIN extensions ex ON ex.id=ue.extension_id
+            WHERE ue.user_id=receipt.reader_id AND ex.tenant_id=msg.tenant_id AND ex.status='active' AND ex.deleted_at IS NULL LIMIT 1) e ON TRUE
+          LEFT JOIN LATERAL (SELECT receipt.reader_id FROM phone11_chat_blocks b WHERE b.tenant_id=msg.tenant_id
+            AND ((b.blocker_id=$3 AND b.blocked_id=receipt.reader_id) OR (b.blocked_id=$3 AND b.blocker_id=receipt.reader_id)) LIMIT 1) block ON TRUE
+          WHERE msg.tenant_id=$1 AND msg.conversation_id=$2 AND msg.id=ANY($4::uuid[]) AND msg.sender_id=$3
+          GROUP BY msg.id, msg.parent_message_id, msg.deleted_at`, [workspace.id, id, userId, uniqueIds]);
+        if (rows.rows.length !== uniqueIds.length)
+          throw new TRPCError({ code: "FORBIDDEN", message: "Only the sender can view read receipts." });
+        if (rows.rows.some((row: any) => row.deleted_at))
+          throw new TRPCError({ code: "NOT_FOUND", message: "Message is unavailable." });
+        if (threadRootId) {
+          const root = await db.query(`SELECT 1 FROM phone11_chat_messages WHERE tenant_id=$1 AND conversation_id=$2
+            AND id=$3 AND parent_message_id IS NULL AND deleted_at IS NULL`, [workspace.id, id, threadRootId]);
+          if (!root.rows[0] || rows.rows.some((row: any) => row.id !== threadRootId && row.parent_message_id !== threadRootId))
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Read receipts must match the open thread." });
+        } else if (rows.rows.some((row: any) => row.parent_message_id))
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Thread replies require their exact thread context." });
+        return rows.rows.map((row: any) => ({ messageId: row.id, count: Number(row.receipt_count) }));
+      });
+    },
+    readReceiptDetails(userId: number, tenantId: number, id: string, messageId: string, threadRootId?: string) {
+      return scoped(userId, tenantId, async (db, workspace): Promise<ChatReadReceipt[]> => {
+        await authorizeConversation(db, userId, workspace.id, id);
+        const target = await db.query(`SELECT id, sender_id, parent_message_id, deleted_at FROM phone11_chat_messages
+          WHERE tenant_id=$1 AND conversation_id=$2 AND id=$3`, [workspace.id, id, messageId]);
+        const row = target.rows[0];
+        if (!row || row.deleted_at) throw new TRPCError({ code: "NOT_FOUND", message: "Message is unavailable." });
+        if (Number(row.sender_id) !== userId) throw new TRPCError({ code: "FORBIDDEN", message: "Only the sender can view read receipts." });
+        if ((threadRootId && row.id !== threadRootId && row.parent_message_id !== threadRootId) ||
+            (!threadRootId && row.parent_message_id))
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Read receipts must match the open thread." });
+        if (threadRootId) {
+          const root = await db.query(`SELECT 1 FROM phone11_chat_messages WHERE tenant_id=$1 AND conversation_id=$2
+            AND id=$3 AND parent_message_id IS NULL AND deleted_at IS NULL`, [workspace.id, id, threadRootId]);
+          if (!root.rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "The original message is unavailable." });
+        }
+        const receipts = await db.query(`SELECT receipt.reader_id, COALESCE(u.name, 'Team member') AS name, receipt.read_at
+          FROM phone11_chat_read_receipts receipt
+          JOIN phone11_chat_members member ON member.tenant_id=receipt.tenant_id AND member.conversation_id=receipt.conversation_id AND member.user_id=receipt.reader_id
+          JOIN tenant_memberships tm ON tm.tenant_id=receipt.tenant_id AND tm.user_id=receipt.reader_id AND tm.status='active'
+          JOIN users u ON u.id=receipt.reader_id
+          WHERE receipt.tenant_id=$1 AND receipt.conversation_id=$2 AND receipt.message_id=$3
+            AND EXISTS (SELECT 1 FROM user_extensions ue JOIN extensions e ON e.id=ue.extension_id
+              WHERE ue.user_id=receipt.reader_id AND e.tenant_id=receipt.tenant_id AND e.status='active' AND e.deleted_at IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id=receipt.tenant_id
+              AND ((b.blocker_id=$4 AND b.blocked_id=receipt.reader_id) OR (b.blocked_id=$4 AND b.blocker_id=receipt.reader_id)))
+          ORDER BY receipt.read_at, receipt.reader_id LIMIT 100`, [workspace.id, id, messageId, userId]);
+        return receipts.rows.map((receipt: any) => ({ userId: Number(receipt.reader_id), name: receipt.name, readAt: new Date(receipt.read_at).getTime() }));
       });
     },
     read(userId: number, tenantId: number, id: string, through: number) {

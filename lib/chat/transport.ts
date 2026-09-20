@@ -234,5 +234,11 @@ export function createChatTransport() {
       withClient((c) =>
         c.chat.reactionUsers.query({ tenantId, id, messageId, emoji }),
       ),
+    publishReadReceipts: (tenantId: number, id: string, messageIds: string[], threadRootId?: string) =>
+      withClient((c) => c.chat.publishReadReceipts.mutate({ tenantId, id, messageIds, ...(threadRootId ? { threadRootId } : {}) })),
+    readReceiptSummaries: (tenantId: number, id: string, messageIds: string[], threadRootId?: string) =>
+      withClient((c) => c.chat.readReceiptSummaries.query({ tenantId, id, messageIds, ...(threadRootId ? { threadRootId } : {}) })),
+    readReceiptDetails: (tenantId: number, id: string, messageId: string, threadRootId?: string) =>
+      withClient((c) => c.chat.readReceiptDetails.query({ tenantId, id, messageId, ...(threadRootId ? { threadRootId } : {}) })),
   };
 }

@@ -4,6 +4,7 @@ import { Redirect } from "expo-router";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { ScreenContainer } from "@/components/screen-container";
 import { ChatMessageRow } from "@/components/chat/message-row";
+import { ReadReceiptSheet } from "@/components/chat/read-receipt-sheet";
 import { MentionPicker } from "@/components/chat/mention-picker";
 import { ConversationDetails } from "@/components/chat/conversation-details";
 import { VoiceNote } from "@/components/chat/voice-note";
@@ -68,6 +69,7 @@ export default function ChatPreview() {
     [draft, setDraft] = useState(""),
     [mentionsOpen, setMentionsOpen] = useState(false),
     [detailsOpen, setDetailsOpen] = useState(false),
+    [receiptsOpen, setReceiptsOpen] = useState(false),
     [voiceOpen, setVoiceOpen] = useState(false),
     [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   if (!__DEV__) return <Redirect href="/(tabs)/teamchat" />;
@@ -133,6 +135,8 @@ export default function ChatPreview() {
                 onActions={() => {}}
                 onReplies={() => setReplies(true)}
                 onRetry={() => {}}
+                receiptLabel={m.senderId === 1 ? "Read by 2" : undefined}
+                onReadReceipts={() => setReceiptsOpen(true)}
                 onReaction={(emoji, selected) =>
                   setMessages((items) =>
                     items.map((item) =>
@@ -214,6 +218,10 @@ export default function ChatPreview() {
           </Text>
         )}
         <ConversationDetails visible={detailsOpen} loading={false} details={sampleDetails} error={null} onRetry={() => {}} onClose={() => setDetailsOpen(false)} />
+        <ReadReceiptSheet visible={receiptsOpen} loading={false} error={null} rows={[
+          { userId: 2, name: "Nathasa", readAt: Date.now() - 180000 },
+          { userId: 3, name: "Somchai", readAt: Date.now() - 60000 },
+        ]} onClose={() => setReceiptsOpen(false)} />
         <Modal
           visible={voiceOpen}
           transparent

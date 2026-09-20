@@ -2,6 +2,8 @@
 
 This replaces the sample channels and local-only messages with authenticated, persisted text conversations. The mobile app supports a workspace directory, direct/group/private-channel creation, conversation search/filtering, search within saved messages, unread counts, paged history, and sending/failed/retry states. A message becomes **Sent** only after the backend confirms its database transaction. This is server acceptance, not a recipient delivery/read receipt.
 
+Read receipts require `read-receipts-migration.sql` after the base and collaboration migrations. They record explicit, server-time per-message visibility and remain separate from `last_read_sequence`, which continues to drive unread badges. Older servers or databases without this migration fail closed and the client shows no inferred receipt state.
+
 ## Data and access
 
 - Uses `server/pbx/db.ts` and the same PostgreSQL database as Phone11 owned authentication.
@@ -18,9 +20,9 @@ This replaces the sample channels and local-only messages with authenticated, pe
 ## Deployment
 
 1. Confirm the backend's actual PostgreSQL database contains `users`, `tenants`, `user_extensions`, and `extensions` with the columns queried by `service.ts`.
-2. Review/apply `migration.sql` to that database. It creates only the `phone11_chat_*` tables and indexes, then adds the nullable `parent_message_id` relation plus report/block policy tables. It grants no users or assignments and inserts no sample messages. This source migration is never run by the app; existing migrations cannot be assumed to include it.
-3. Deploy the backend containing `chatRouter` registered in `fullRouter` and the updated mobile build.
-4. Use two explicitly authorized test accounts with active assignments in the same tenant. Create one conversation; send, receive, reload on the second client, retry a dropped response, and check unread/reset. Also confirm an unrelated tenant/account cannot list or read it.
+2. Review/apply `migration.sql`, `collaboration-migration.sql`, then `read-receipts-migration.sql` to that database. They create only the `phone11_chat_*` tables and indexes. They grant no users or assignments and insert no sample messages. These source migrations are never run by the app; an existing deployment cannot be assumed to include them.
+3. Deploy the backend containing `chatRouter` registered in `fullRouter` before releasing the updated mobile build. A new client fails closed when the receipt endpoints or table are absent.
+4. Use two explicitly authorized test accounts with active assignments in the same tenant. Create one conversation; send, receive, leave a message visibly on screen, and confirm the sender sees its receipt. Also confirm an unrelated tenant/account cannot list or read it and that search/notification previews do not publish receipts.
 
 ## Verification
 
