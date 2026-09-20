@@ -10,9 +10,7 @@ import type {
   Connect11PlainVideoAdmissionClient,
   Connect11PlainVideoAdmissionResolver,
 } from "./connect11-plain-video-provider";
-import {
-  createPlainVideoAdmissionResolver,
-} from "./plain-video-admission-resolver";
+import { createPlainVideoAdmissionResolver } from "./plain-video-admission-resolver";
 import {
   createPlainVideoAdmissionLeaseRepository,
   createPlainVideoPostgresIssuanceTransaction,
@@ -30,7 +28,9 @@ import {
 } from "./service";
 
 type PlainVideoClientFactory = {
-  create(config: Connect11PlainVideoTenantExternalConfig): Connect11PlainVideoAdmissionClient;
+  create(
+    config: Connect11PlainVideoTenantExternalConfig,
+  ): Connect11PlainVideoAdmissionClient;
 };
 
 /** Test seams only; production defaults stay server-side and credential-free in source. */
@@ -44,11 +44,12 @@ export type MeetingsRouterDependencies = {
 
 function defaultClientFactory(): PlainVideoClientFactory {
   return {
-    create: (tenant) => createConnect11PlainVideoFacade({
-      baseUrl: tenant.apiBaseUrl,
-      statusCredential: tenant.statusCredential,
-      joinCredential: tenant.joinCredential,
-    }),
+    create: (tenant) =>
+      createConnect11PlainVideoFacade({
+        baseUrl: tenant.apiBaseUrl,
+        statusCredential: tenant.statusCredential,
+        joinCredential: tenant.joinCredential,
+      }),
   };
 }
 
@@ -57,28 +58,46 @@ function createConfiguredMeetingService(
   dependencies: MeetingsRouterDependencies,
 ) {
   const configuration = readServerConnect11PlainVideoTenantConfiguration(env);
-  if (!configuration.enabled) return createMeetingService({ authorize: async () => null });
+  if (!configuration.enabled)
+    return {
+      service: createMeetingService({ authorize: async () => null }),
+      configuredTenantIds: [] as readonly number[],
+    };
 
   try {
     let transaction = dependencies.transaction;
-    const getTransaction = () => transaction ??= createPlainVideoPostgresReadOnlyTransaction(getPool());
+    const getTransaction = () =>
+      (transaction ??= createPlainVideoPostgresReadOnlyTransaction(getPool()));
     let issuanceTransaction = dependencies.issuanceTransaction;
-    const getIssuanceTransaction = () => issuanceTransaction ??=
-      createPlainVideoPostgresIssuanceTransaction(getPool());
-    const repository = dependencies.repository ?? createPlainVideoMeetingRepository(getTransaction());
-    const resolver = dependencies.resolver ?? createPlainVideoAdmissionResolver(
-      getIssuanceTransaction(),
-      createPlainVideoAdmissionLeaseRepository(getIssuanceTransaction()),
-    );
+    const getIssuanceTransaction = () =>
+      (issuanceTransaction ??=
+        createPlainVideoPostgresIssuanceTransaction(getPool()));
+    const repository =
+      dependencies.repository ??
+      createPlainVideoMeetingRepository(getTransaction());
+    const resolver =
+      dependencies.resolver ??
+      createPlainVideoAdmissionResolver(
+        getIssuanceTransaction(),
+        createPlainVideoAdmissionLeaseRepository(getIssuanceTransaction()),
+      );
     const provider = createConnect11PlainVideoTenantProvider(
       configuration,
       resolver,
       dependencies.clientFactory ?? defaultClientFactory(),
     );
-    return createMeetingService(repository, provider);
+    return {
+      service: createMeetingService(repository, provider),
+      configuredTenantIds: configuration.tenants.map(
+        (tenant) => tenant.tenantId,
+      ),
+    };
   } catch {
     // A broken server composition must fail closed like missing configuration.
-    return createMeetingService({ authorize: async () => null });
+    return {
+      service: createMeetingService({ authorize: async () => null }),
+      configuredTenantIds: [] as readonly number[],
+    };
   }
 }
 
@@ -91,12 +110,25 @@ export function createMeetingsRouter(
   env: Readonly<Record<string, string | undefined>> = process.env,
   dependencies: MeetingsRouterDependencies = {},
 ) {
-  const service = createConfiguredMeetingService(env, dependencies);
+  const configured = createConfiguredMeetingService(env, dependencies);
   return router({
-  capabilities: protectedProcedure.query(() => service.capabilities()),
-  available: protectedProcedure.query(() => service.availableMeetingsFor()),
-  join: protectedProcedure.input(joinMeetingSchema).mutation(({ ctx, input }) =>
-    service.join(ctx.user.id, input)),
+    capabilities: protectedProcedure.query(({ ctx }) =>
+      configured.service.capabilitiesFor(
+        ctx.user.id,
+        configured.configuredTenantIds,
+      ),
+    ),
+    available: protectedProcedure.query(({ ctx }) =>
+      configured.service.availableMeetingsFor(
+        ctx.user.id,
+        configured.configuredTenantIds,
+      ),
+    ),
+    join: protectedProcedure
+      .input(joinMeetingSchema)
+      .mutation(({ ctx, input }) =>
+        configured.service.join(ctx.user.id, input),
+      ),
   });
 }
 

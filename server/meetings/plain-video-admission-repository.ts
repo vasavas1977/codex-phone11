@@ -5,17 +5,28 @@ import type { MeetingGrant, MeetingRepository } from "./service";
 
 const opaqueIdentifier = z.string().regex(/^[A-Za-z0-9_-]{1,96}$/);
 
-export const plainVideoAdmissionRowSchema = z.object({
-  meeting_id: z.string().uuid(),
-  tenant_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
-  user_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
-  participant_id: opaqueIdentifier,
-  grant_profile: z.enum(["interactive", "listener"]),
-  room_revision: z.string().uuid(),
-  member_revision: z.string().uuid(),
-}).strict();
+export const plainVideoAdmissionRowSchema = z
+  .object({
+    meeting_id: z.string().uuid(),
+    tenant_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
+    user_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
+    participant_id: opaqueIdentifier,
+    grant_profile: z.enum(["interactive", "listener"]),
+    room_revision: z.string().uuid(),
+    member_revision: z.string().uuid(),
+  })
+  .strict();
 
-export type PlainVideoAdmissionRecord = z.infer<typeof plainVideoAdmissionRowSchema>;
+export type PlainVideoAdmissionRecord = z.infer<
+  typeof plainVideoAdmissionRowSchema
+>;
+const availableMeetingGrantSchema = z
+  .object({
+    meeting_id: z.string().uuid(),
+    tenant_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
+    user_id: z.coerce.number().int().positive().refine(Number.isSafeInteger),
+  })
+  .strict();
 export type PlainVideoAdmissionQuery = Pick<PoolClient, "query">;
 export type PlainVideoReadOnlyTransaction = <T>(
   fn: (db: PlainVideoAdmissionQuery) => Promise<T>,
@@ -71,9 +82,16 @@ export function createPlainVideoAdmissionRepository() {
         [meetingId, userId],
       );
       if (result.rows.length !== 1) return null;
-      const record = parseExactPlainVideoAdmissionRecord(result.rows[0], { meetingId, userId });
+      const record = parseExactPlainVideoAdmissionRecord(result.rows[0], {
+        meetingId,
+        userId,
+      });
       return record
-        ? { meetingId: record.meeting_id, tenantId: record.tenant_id, userId: record.user_id }
+        ? {
+            meetingId: record.meeting_id,
+            tenantId: record.tenant_id,
+            userId: record.user_id,
+          }
         : null;
     },
 
@@ -88,6 +106,72 @@ export function createPlainVideoAdmissionRepository() {
       );
       if (result.rows.length !== 1) return null;
       return parseExactPlainVideoAdmissionRecord(result.rows[0], grant);
+    },
+
+    async hasAvailablePlainVideoAdmission(
+      db: PlainVideoAdmissionQuery,
+      userId: number,
+      configuredTenantIds: readonly number[],
+    ): Promise<boolean> {
+      if (
+        !Number.isSafeInteger(userId) ||
+        userId < 1 ||
+        !configuredTenantIds.length
+      )
+        return false;
+      const result = await db.query(
+        `WITH candidates AS (
+           ${plainVideoAdmissionSelection}
+            WHERE m.user_id = $1 AND r.tenant_id = ANY($2::integer[])
+              AND ${plainVideoAdmissionAdmitted}
+         )
+         SELECT 1 FROM candidates
+          GROUP BY meeting_id, tenant_id, user_id
+         HAVING count(*) = 1
+         LIMIT 1`,
+        [userId, configuredTenantIds],
+      );
+      return result.rows.length === 1;
+    },
+
+    async listAvailablePlainVideoMeetings(
+      db: PlainVideoAdmissionQuery,
+      userId: number,
+      configuredTenantIds: readonly number[],
+    ): Promise<readonly MeetingGrant[]> {
+      if (
+        !Number.isSafeInteger(userId) ||
+        userId < 1 ||
+        !configuredTenantIds.length
+      )
+        return [];
+      const result = await db.query(
+        `WITH candidates AS (
+           ${plainVideoAdmissionSelection}
+            WHERE m.user_id = $1 AND r.tenant_id = ANY($2::integer[])
+              AND ${plainVideoAdmissionAdmitted}
+         )
+         SELECT meeting_id, tenant_id, user_id FROM candidates
+          GROUP BY meeting_id, tenant_id, user_id
+         HAVING count(*) = 1
+          ORDER BY meeting_id
+         LIMIT 10`,
+        [userId, configuredTenantIds],
+      );
+      return result.rows.flatMap((row) => {
+        const parsed = availableMeetingGrantSchema.safeParse(row);
+        return parsed.success &&
+          parsed.data.user_id === userId &&
+          configuredTenantIds.includes(parsed.data.tenant_id)
+          ? [
+              {
+                meetingId: parsed.data.meeting_id,
+                tenantId: parsed.data.tenant_id,
+                userId: parsed.data.user_id,
+              },
+            ]
+          : [];
+      });
     },
   };
 }
@@ -104,6 +188,22 @@ export function createPlainVideoMeetingRepository(
   return {
     authorize: (userId, meetingId) =>
       transaction((db) => repository.authorize(db, userId, meetingId)),
+    hasAvailablePlainVideoAdmission: (userId, configuredTenantIds) =>
+      transaction((db) =>
+        repository.hasAvailablePlainVideoAdmission(
+          db,
+          userId,
+          configuredTenantIds,
+        ),
+      ),
+    listAvailablePlainVideoMeetings: (userId, configuredTenantIds) =>
+      transaction((db) =>
+        repository.listAvailablePlainVideoMeetings(
+          db,
+          userId,
+          configuredTenantIds,
+        ),
+      ),
   };
 }
 

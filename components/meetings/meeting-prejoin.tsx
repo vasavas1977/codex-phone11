@@ -81,7 +81,9 @@ export function MeetingPrejoin({
       });
     } catch {
       setError(
-        "Could not open this meeting. Check the meeting code and your connection, then try again.",
+        admittedMeetings === undefined
+          ? "Could not open this meeting. Check the meeting code and your connection, then try again."
+          : "Could not join. Check your connection and try again.",
       );
     } finally {
       joinInFlight.current = false;

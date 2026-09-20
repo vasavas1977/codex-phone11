@@ -81,6 +81,7 @@ export default function ConferenceScreen() {
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
       {user && capabilities.data?.available && admittedMeetings.data?.length ? (
         <EnabledMeetingPrejoin
+          key={user.id}
           user={user}
           admittedMeetings={admittedMeetings.data}
           onBack={() =>
