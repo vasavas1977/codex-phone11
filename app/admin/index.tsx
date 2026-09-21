@@ -113,6 +113,12 @@ export default function AdminDashboard() {
       facility: "businessHours",
     },
     {
+      icon: "gearshape.fill",
+      iconColor: "#6366F1",
+      label: "Workspace settings",
+      route: "/admin/workspace-settings",
+    },
+    {
       icon: "chart.bar.fill",
       iconColor: "#14B8A6",
       label: "Call analytics",
