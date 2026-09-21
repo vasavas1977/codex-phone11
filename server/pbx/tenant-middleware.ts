@@ -8,8 +8,7 @@
  * 2. Middleware resolves user's tenant memberships
  * 3. Active tenant is determined from:
  *    a. X-Tenant-Id header (for multi-tenant users)
- *    b. Default tenant membership
- *    c. First tenant membership
+ *    b. The oldest active membership (legacy read behavior)
  * 4. All subsequent queries are scoped to the active tenant
  */
 import { TRPCError } from "@trpc/server";
@@ -20,16 +19,16 @@ export interface TenantMembership {
   userId: number;
   tenantId: number;
   tenantName: string;
-  tenantSlug: string;
+  tenantSlug: string | null;
   tenantStatus: string;
   role: string;
-  isDefault: boolean;
+  isDefault: boolean | null;
 }
 
 export interface TenantContext {
   tenantId: number;
   tenantName: string;
-  tenantSlug: string;
+  tenantSlug: string | null;
   role: string;  // owner, admin, manager, user
   memberships: TenantMembership[];
 }
@@ -44,12 +43,14 @@ export async function resolveTenantMemberships(userId: number): Promise<TenantMe
     300, // 5 min cache
     async () => {
       const result = await query(
-        `SELECT tm.user_id, tm.tenant_id, tm.role, tm.is_default,
-                t.name as tenant_name, t.slug as tenant_slug, t.status as tenant_status
+        `SELECT tm.user_id, tm.tenant_id, tm.role,
+                NULL::boolean AS is_default,
+                t.name as tenant_name, NULL::text AS tenant_slug,
+                t.status as tenant_status
          FROM tenant_memberships tm
          JOIN tenants t ON tm.tenant_id = t.id
          WHERE tm.user_id = $1 AND tm.status = 'active' AND t.status = 'active'
-         ORDER BY tm.is_default DESC, tm.created_at ASC`,
+         ORDER BY tm.created_at ASC, tm.tenant_id ASC`,
         [userId]
       );
       return result.rows.map((r: any) => ({
@@ -70,8 +71,7 @@ export async function resolveTenantMemberships(userId: number): Promise<TenantMe
  * 
  * Priority:
  * 1. X-Tenant-Id header (explicit selection)
- * 2. Default membership
- * 3. First membership
+ * 2. The oldest active membership (legacy read behavior)
  */
 export async function resolveTenantContext(
   userId: number,
@@ -98,8 +98,7 @@ export async function resolveTenantContext(
     }
     activeMembership = found;
   } else {
-    // Use default or first
-    activeMembership = memberships.find((m) => m.isDefault) || memberships[0];
+    activeMembership = memberships[0];
   }
 
   return {

@@ -9,6 +9,35 @@ import { query, withTransaction } from "./db";
 import { writeAuditLog } from "./audit";
 import { invalidateCache } from "./redis";
 import { hasRole, resolveTenantContext } from "./tenant-middleware";
+import { readManagementCapabilities, type ManagementCapabilities } from "./schema-capabilities";
+
+function unavailableFacility(name: string): never {
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: `${name} is unavailable on this server`,
+  });
+}
+
+async function requireFacilityAdmin(
+  ctx: any,
+  capability: keyof Pick<ManagementCapabilities, "ivr" | "ringGroups" | "queues" | "businessHours">,
+  name: string,
+  requestedTenantId?: number,
+) {
+  const tenant = await requireTenantAdmin(ctx, requestedTenantId);
+  const capabilities = await readManagementCapabilities();
+  if (!capabilities[capability]) unavailableFacility(name);
+  return tenant;
+}
+
+const requireIvrAdmin = (ctx: any, requestedTenantId?: number) =>
+  requireFacilityAdmin(ctx, "ivr", "IVR", requestedTenantId);
+const requireRingGroupAdmin = (ctx: any, requestedTenantId?: number) =>
+  requireFacilityAdmin(ctx, "ringGroups", "Ring groups", requestedTenantId);
+const requireQueueAdmin = (ctx: any, requestedTenantId?: number) =>
+  requireFacilityAdmin(ctx, "queues", "Call queues", requestedTenantId);
+const requireBusinessHoursAdmin = (ctx: any, requestedTenantId?: number) =>
+  requireFacilityAdmin(ctx, "businessHours", "Business hours", requestedTenantId);
 
 type TenantResourceTable = "ivr_menus" | "ring_groups" | "call_queues" | "time_conditions";
 
@@ -392,7 +421,7 @@ export const ivrRouter = router({
     list: protectedProcedure
       .input(z.object({ tenant_id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireIvrAdmin(ctx, input.tenant_id);
         const res = await query(
           `SELECT m.*, 
             (SELECT count(*) FROM ivr_actions WHERE menu_id = m.id) as action_count
@@ -405,7 +434,7 @@ export const ivrRouter = router({
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx);
         const menu = await query(`SELECT * FROM ivr_menus WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         if (!menu.rows[0]) throw new Error("IVR menu not found");
         const actions = await query(
@@ -418,7 +447,7 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number() }).merge(ivrMenuInput))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireIvrAdmin(ctx, input.tenant_id);
         const { tenant_id: _tenantId, ...data } = input;
         const res = await query(
           `INSERT INTO ivr_menus (tenant_id, name, description, greeting_file, greeting_tts, timeout_ms, max_retries, digit_timeout_ms, invalid_sound, exit_action, exit_target, is_active)
@@ -433,7 +462,7 @@ export const ivrRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number() }).merge(ivrMenuInput.partial()))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx);
         await requireTenantResource("ivr_menus", input.id, tenant.tenantId);
         const { id, ...data } = input;
         const sets = Object.entries(data)
@@ -454,7 +483,7 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx);
         await requireTenantResource("ivr_menus", input.id, tenant.tenantId);
         await query(`DELETE FROM ivr_menus WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         await invalidateCache(`ivr:menu:${input.id}`);
@@ -469,7 +498,7 @@ export const ivrRouter = router({
         actions: z.array(ivrActionInput),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx);
         await requireTenantResource("ivr_menus", input.menu_id, tenant.tenantId);
         const normalizedActions = input.actions.map((action) => ({
           ...action,
@@ -498,7 +527,7 @@ export const ivrRouter = router({
     list: protectedProcedure
       .input(z.object({ tenant_id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireRingGroupAdmin(ctx, input.tenant_id);
         const res = await query(
           `SELECT rg.*, 
             (SELECT count(*) FROM ring_group_members rgm
@@ -516,7 +545,7 @@ export const ivrRouter = router({
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireRingGroupAdmin(ctx);
         const group = await query(`SELECT * FROM ring_groups WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         if (!group.rows[0]) throw new Error("Ring group not found");
         const members = await query(
@@ -535,7 +564,7 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number() }).merge(ringGroupInput))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireRingGroupAdmin(ctx, input.tenant_id);
         const { tenant_id: _tenantId, ...data } = input;
         await requireRingGroupFallbackTarget(data.fallback_action, data.fallback_target, tenant.tenantId);
         const res = await query(
@@ -551,7 +580,7 @@ export const ivrRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number() }).merge(ringGroupInput.partial()))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireRingGroupAdmin(ctx);
         await requireTenantResource("ring_groups", input.id, tenant.tenantId);
         const { id, ...inputData } = input;
         const data: Record<string, unknown> = { ...inputData };
@@ -583,7 +612,7 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireRingGroupAdmin(ctx);
         await requireTenantResource("ring_groups", input.id, tenant.tenantId);
         await query(`DELETE FROM ring_groups WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         await invalidateCache(`ringgroup:${input.id}`);
@@ -602,7 +631,7 @@ export const ivrRouter = router({
         })),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireRingGroupAdmin(ctx);
         await requireTenantResource("ring_groups", input.ring_group_id, tenant.tenantId);
         const extensionIds = input.members.map((member) => member.extension_id);
         if (new Set(extensionIds).size !== extensionIds.length) {
@@ -630,7 +659,7 @@ export const ivrRouter = router({
     list: protectedProcedure
       .input(z.object({ tenant_id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireQueueAdmin(ctx, input.tenant_id);
         const res = await query(
           `SELECT q.*, 
             (SELECT count(*) FROM queue_agents qa
@@ -654,7 +683,7 @@ export const ivrRouter = router({
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireQueueAdmin(ctx);
         const queue = await query(`SELECT * FROM call_queues WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         if (!queue.rows[0]) throw new Error("Queue not found");
         const agents = await query(
@@ -674,7 +703,7 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number() }).merge(callQueueInput))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireQueueAdmin(ctx, input.tenant_id);
         const { tenant_id: _tenantId, ...data } = input;
         await requireQueueOverflowTarget(data.overflow_action, data.overflow_target, tenant.tenantId);
         const res = await query(
@@ -690,7 +719,7 @@ export const ivrRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number() }).merge(callQueueInput.partial()))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireQueueAdmin(ctx);
         await requireTenantResource("call_queues", input.id, tenant.tenantId);
         const { id, ...inputData } = input;
         const current = await query(`SELECT overflow_action, overflow_target FROM call_queues WHERE id = $1 AND tenant_id = $2`, [id, tenant.tenantId]);
@@ -717,7 +746,7 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireQueueAdmin(ctx);
         await requireTenantResource("call_queues", input.id, tenant.tenantId);
         await query(`DELETE FROM call_queues WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         await invalidateCache(`queue:${input.id}`);
@@ -738,7 +767,7 @@ export const ivrRouter = router({
         })),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireQueueAdmin(ctx);
         await requireTenantResource("call_queues", input.queue_id, tenant.tenantId);
         const extensionIds = input.agents.map((agent) => agent.extension_id);
         if (new Set(extensionIds).size !== extensionIds.length) {
@@ -763,7 +792,7 @@ export const ivrRouter = router({
     agentLogin: protectedProcedure
       .input(z.object({ queue_id: z.number(), extension_id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireQueueAdmin(ctx);
         await requireTenantResource("call_queues", input.queue_id, tenant.tenantId);
         await requireTenantExtensions([input.extension_id], tenant.tenantId);
         await query(
@@ -777,7 +806,7 @@ export const ivrRouter = router({
     agentLogout: protectedProcedure
       .input(z.object({ queue_id: z.number(), extension_id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireQueueAdmin(ctx);
         await requireTenantResource("call_queues", input.queue_id, tenant.tenantId);
         await requireTenantExtensions([input.extension_id], tenant.tenantId);
         await query(
@@ -791,7 +820,7 @@ export const ivrRouter = router({
     stats: protectedProcedure
       .input(z.object({ queue_id: z.number(), hours: z.number().default(24) }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireQueueAdmin(ctx);
         await requireTenantResource("call_queues", input.queue_id, tenant.tenantId);
         const res = await query(
           `SELECT * FROM queue_stats 
@@ -808,7 +837,7 @@ export const ivrRouter = router({
     list: protectedProcedure
       .input(z.object({ tenant_id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireBusinessHoursAdmin(ctx, input.tenant_id);
         const res = await query(
           `SELECT tc.*, 
             (SELECT count(*) FROM time_condition_rules WHERE time_condition_id = tc.id) as rule_count
@@ -821,7 +850,7 @@ export const ivrRouter = router({
     get: protectedProcedure
       .input(z.object({ id: z.number() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireBusinessHoursAdmin(ctx);
         const tc = await query(`SELECT * FROM time_conditions WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         if (!tc.rows[0]) throw new Error("Time condition not found");
         const rules = await query(
@@ -834,7 +863,7 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number().int().positive() }).merge(timeConditionInput))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx, input.tenant_id);
+        const tenant = await requireBusinessHoursAdmin(ctx, input.tenant_id);
         requireSupportedTimezone(input.timezone);
         await requireTimeConditionRoute({ query }, input.match_action, input.match_target, tenant.tenantId);
         await requireTimeConditionRoute({ query }, input.nomatch_action, input.nomatch_target, tenant.tenantId);
@@ -864,7 +893,7 @@ export const ivrRouter = router({
         rules: z.array(timeConditionRuleInput).min(1),
       }).merge(timeConditionInput))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireBusinessHoursAdmin(ctx);
         await requireTenantResource("time_conditions", input.id, tenant.tenantId);
         requireSupportedTimezone(input.timezone);
         let updated: any;
@@ -910,7 +939,7 @@ export const ivrRouter = router({
         rules: z.array(timeConditionRuleInput),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireBusinessHoursAdmin(ctx);
         await requireTenantResource("time_conditions", input.time_condition_id, tenant.tenantId);
         await withTransaction(async (client) => {
           await client.query(`DELETE FROM time_condition_rules WHERE time_condition_id = $1`, [input.time_condition_id]);
@@ -930,7 +959,7 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireTenantAdmin(ctx);
+        const tenant = await requireBusinessHoursAdmin(ctx);
         await requireTenantResource("time_conditions", input.id, tenant.tenantId);
         await query(`DELETE FROM time_conditions WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         await invalidateCache(`timecondition:${input.id}`);

@@ -31,6 +31,17 @@ beforeEach(() => {
 });
 
 describe("legacy phone administration tenant isolation", () => {
+  it("keeps ordinary phone configuration independent of management workspace selection", async () => {
+    provisioning.getPhoneConfig.mockResolvedValueOnce({ extension: "4101" });
+
+    await expect(
+      appRouter.createCaller(context()).phone.getConfig(),
+    ).resolves.toEqual({ extension: "4101" });
+
+    expect(provisioning.getPhoneConfig).toHaveBeenCalledWith(9, undefined);
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
   it("does not let a global administrator select a tenant without a live workspace-admin membership", async () => {
     db.query.mockResolvedValue({ rows: [] });
 
@@ -63,6 +74,39 @@ describe("legacy phone administration tenant isolation", () => {
     expect(provisioning.createExtension).toHaveBeenCalledWith(expect.objectContaining({ orgId: 7 }));
     expect(provisioning.createDidNumber).toHaveBeenCalledWith(expect.objectContaining({ orgId: 7 }));
     expect(db.query.mock.calls.map(([, values]) => values)).toEqual([[9, 7], [9, 7]]);
+  });
+
+  it.each(["createExtension", "createDid"] as const)(
+    "requires an explicit workspace for ambiguous %s writes",
+    async (operation) => {
+      db.query.mockResolvedValueOnce({
+        rows: [{ tenant_id: 7 }, { tenant_id: 8 }],
+      });
+      const caller = appRouter.createCaller(context());
+      const request = operation === "createExtension"
+        ? caller.phone.createExtension({ extensionNumber: "4101" })
+        : caller.phone.createDid({ number: "+6620000000" });
+
+      await expect(request).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(provisioning.createExtension).not.toHaveBeenCalled();
+      expect(provisioning.createDidNumber).not.toHaveBeenCalled();
+      expect(String(db.query.mock.calls[0][0])).not.toContain("tm.is_default");
+    },
+  );
+
+  it("preserves the oldest authorized workspace for a legacy read without a selection", async () => {
+    db.query.mockResolvedValueOnce({
+      rows: [{ tenant_id: 7 }, { tenant_id: 8 }],
+    });
+    provisioning.listExtensions.mockResolvedValueOnce([{ id: 41 }]);
+
+    await expect(
+      appRouter.createCaller(context()).phone.listExtensions(),
+    ).resolves.toEqual([{ id: 41 }]);
+
+    expect(provisioning.listExtensions).toHaveBeenCalledWith(7);
+    expect(String(db.query.mock.calls[0][0])).toContain("tm.created_at ASC");
+    expect(String(db.query.mock.calls[0][0])).not.toContain("tm.is_default");
   });
 
   it("does not assign an extension from another tenant even when the caller is a platform administrator", async () => {

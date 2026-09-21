@@ -24,14 +24,11 @@ export function createConferenceRepository(
   return {
     async scope(userId) {
       const { rows } = await db.query(
-        `SELECT tm.tenant_id,tm.is_default FROM tenant_memberships tm JOIN tenants t ON t.id=tm.tenant_id
-    WHERE tm.user_id=$1 AND tm.status='active' AND t.status='active' ORDER BY tm.is_default DESC,tm.tenant_id`,
+        `SELECT tm.tenant_id FROM tenant_memberships tm JOIN tenants t ON t.id=tm.tenant_id
+    WHERE tm.user_id=$1 AND tm.status='active' AND t.status='active' ORDER BY tm.created_at,tm.tenant_id`,
         [userId],
       );
-      if (
-        !rows.length ||
-        (rows.length > 1 && (!rows[0].is_default || rows[1].is_default))
-      )
+      if (rows.length !== 1)
         throw new TRPCError({
           code: "FORBIDDEN",
           message: "A single active workspace is required",

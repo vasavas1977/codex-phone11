@@ -49,10 +49,24 @@ const membership = (
   user_id: 9,
   tenant_id: tenantId,
   role,
-  is_default: true,
+  is_default: null,
   tenant_name: "Acme",
-  tenant_slug: "acme",
+  tenant_slug: null,
   tenant_status: "active",
+});
+
+const schemaRows = (tables: Record<string, readonly string[]>) =>
+  Object.entries(tables).flatMap(([table_name, columns]) =>
+    columns.map((column_name) => ({ table_name, column_name })),
+  );
+
+const phoneNumberSchemaRows = schemaRows({
+  phone_numbers: [
+    "id", "tenant_id", "number_e164", "number_display", "country",
+    "number_type", "provider", "status", "assigned_route_type",
+    "assigned_route_id", "e911_address_id", "deleted_at", "updated_at",
+  ],
+  emergency_addresses: ["id", "tenant_id", "street", "city"],
 });
 
 beforeEach(() => {
@@ -60,6 +74,26 @@ beforeEach(() => {
   db.withTransaction.mockImplementation(async (callback) =>
     callback({ query: db.query }),
   );
+});
+
+describe("PBX management capabilities", () => {
+  it("reports every absent production facility without touching its tables", async () => {
+    db.query.mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context()).capabilities(),
+    ).resolves.toEqual({
+      phoneNumbers: false,
+      sites: false,
+      ringGroups: false,
+      queues: false,
+      ivr: false,
+      businessHours: false,
+    });
+
+    expect(db.query).toHaveBeenCalledTimes(1);
+    expect(String(db.query.mock.calls[0][0])).toContain("information_schema.columns");
+  });
 });
 
 describe("PBX workspace administrator authorization", () => {
@@ -349,6 +383,39 @@ describe("PBX workspace administrator authorization", () => {
 });
 
 describe("DID route assignment", () => {
+  it("reports phone-number management unavailable without querying the absent table", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context()).phoneNumbers.assignRoute({
+        id: 44,
+        assignedRouteType: null,
+        assignedRouteId: null,
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(db.query).toHaveBeenCalledTimes(2);
+    expect(String(db.query.mock.calls[1][0])).toContain(
+      "information_schema.columns",
+    );
+  });
+
+  it("returns an explicit unavailable empty phone-number inventory", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("user")] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context()).phoneNumbers.list(),
+    ).resolves.toMatchObject({
+      available: false,
+      data: [],
+      pagination: { total: 0 },
+    });
+    expect(db.query).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ["extension", "extensions", "sa.status = 'active'"],
     ["ring_group", "ring_groups", "strategy IN ('simultaneous', 'sequential')"],
@@ -360,6 +427,7 @@ describe("DID route assignment", () => {
     async (routeType, table, activeCondition) => {
       db.query
         .mockResolvedValueOnce({ rows: [membership("admin")] })
+        .mockResolvedValueOnce({ rows: phoneNumberSchemaRows })
         .mockResolvedValueOnce({ rows: [{ id: 44 }] })
         .mockResolvedValueOnce({ rows: [{ id: 23 }] })
         .mockResolvedValueOnce({ rows: [] });
@@ -372,16 +440,16 @@ describe("DID route assignment", () => {
         }),
       ).resolves.toEqual({ success: true });
 
-      expect(db.query.mock.calls[2][0]).toContain(`FROM ${table}`);
-      expect(db.query.mock.calls[2][0]).toContain(activeCondition);
-      expect(db.query.mock.calls[2][1]).toEqual([23, 7]);
+      expect(db.query.mock.calls[3][0]).toContain(`FROM ${table}`);
+      expect(db.query.mock.calls[3][0]).toContain(activeCondition);
+      expect(db.query.mock.calls[3][1]).toEqual([23, 7]);
       if (routeType === "extension") {
-        expect(db.query.mock.calls[2][0]).toContain(
+        expect(db.query.mock.calls[3][0]).toContain(
           "sa.tenant_id = e.tenant_id",
         );
-        expect(db.query.mock.calls[2][0]).toContain("sa.user_id IS NOT NULL");
+        expect(db.query.mock.calls[3][0]).toContain("sa.user_id IS NOT NULL");
       }
-      expect(db.query.mock.calls[3]).toEqual([
+      expect(db.query.mock.calls[4]).toEqual([
         expect.stringContaining("WHERE id = $3 AND tenant_id = $4"),
         [routeType, 23, 44, 7],
       ]);
@@ -391,6 +459,7 @@ describe("DID route assignment", () => {
   it("rejects a missing or cross-tenant destination before updating the DID", async () => {
     db.query
       .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: phoneNumberSchemaRows })
       .mockResolvedValueOnce({ rows: [{ id: 44 }] })
       .mockResolvedValueOnce({ rows: [] });
 
@@ -421,6 +490,7 @@ describe("DID route assignment", () => {
     async (routeType, requiredClause, activeClause) => {
       db.query
         .mockResolvedValueOnce({ rows: [membership("owner")] })
+        .mockResolvedValueOnce({ rows: phoneNumberSchemaRows })
         .mockResolvedValueOnce({ rows: [{ id: 44 }] })
         .mockResolvedValueOnce({ rows: [] });
 
@@ -432,8 +502,8 @@ describe("DID route assignment", () => {
         }),
       ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-      expect(db.query.mock.calls[2][0]).toContain(requiredClause);
-      expect(db.query.mock.calls[2][0]).toContain(activeClause);
+      expect(db.query.mock.calls[3][0]).toContain(requiredClause);
+      expect(db.query.mock.calls[3][0]).toContain(activeClause);
       expect(
         db.query.mock.calls.some(([sql]) =>
           String(sql).includes("UPDATE phone_numbers"),
@@ -458,6 +528,7 @@ describe("DID route assignment", () => {
   it("allows an administrator to clear a DID route", async () => {
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: phoneNumberSchemaRows })
       .mockResolvedValueOnce({ rows: [{ id: 44 }] })
       .mockResolvedValueOnce({ rows: [] });
 
@@ -468,7 +539,7 @@ describe("DID route assignment", () => {
         assignedRouteId: null,
       }),
     ).resolves.toEqual({ success: true });
-    expect(db.query.mock.calls[2]).toEqual([
+    expect(db.query.mock.calls[3]).toEqual([
       expect.stringContaining("WHERE id = $3 AND tenant_id = $4"),
       [null, null, 44, 7],
     ]);
@@ -502,26 +573,37 @@ describe("PBX call-record isolation", () => {
 
 describe("PBX member self-service isolation", () => {
   it("lists only extensions assigned to the signed-in active member", async () => {
-    const assigned = [{ id: 41, extension_number: "3101", phone_numbers: [] }];
+    const assigned = [
+      {
+        id: 41,
+        extension_number: "3101",
+        phone_numbers_available: false,
+        phone_numbers: [],
+      },
+    ];
     db.query
       .mockResolvedValueOnce({ rows: [membership("user")] })
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: assigned });
 
     await expect(
       pbxRouter.createCaller(context()).selfService.overview(),
     ).resolves.toEqual(assigned);
 
-    expect(db.query.mock.calls[1]).toEqual([
+    expect(db.query.mock.calls[2]).toEqual([
       expect.stringContaining(
         "JOIN user_extensions ue ON ue.user_id = tm.user_id",
       ),
       [7, 9],
     ]);
-    expect(db.query.mock.calls[1][0]).toContain("tm.status = 'active'");
-    expect(db.query.mock.calls[1][0]).toContain("e.tenant_id = tm.tenant_id");
-    expect(db.query.mock.calls[1][0]).not.toContain("dnd_enabled");
-    expect(db.query.mock.calls[1][0]).not.toContain("cfu_destination");
+    expect(db.query.mock.calls[2][0]).toContain("tm.status = 'active'");
+    expect(db.query.mock.calls[2][0]).toContain("e.tenant_id = tm.tenant_id");
+    expect(db.query.mock.calls[2][0]).not.toContain("phone_numbers pn");
+    expect(db.query.mock.calls[2][0]).not.toContain("dnd_enabled");
+    expect(db.query.mock.calls[2][0]).not.toContain("cfu_destination");
     expect(db.query.mock.calls[0][0]).not.toContain("tm.id");
+    expect(db.query.mock.calls[0][0]).not.toContain("tm.is_default");
+    expect(db.query.mock.calls[0][0]).not.toContain("t.slug");
     expect(db.query.mock.calls[0][0]).toContain("tm.user_id, tm.tenant_id");
   });
 
@@ -568,6 +650,33 @@ describe("PBX member self-service isolation", () => {
     expect(db.query.mock.calls[2]?.[0]).toContain(
       "cr.to_number AS callee_number",
     );
+  });
+});
+
+describe("PBX dashboard compatibility", () => {
+  it("reports phone numbers unavailable without querying an uncommissioned table", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ c: "3" }] })
+      .mockResolvedValueOnce({ rows: [{ c: "2" }] })
+      .mockResolvedValueOnce({ rows: [{ c: "5" }] })
+      .mockResolvedValueOnce({ rows: [{ c: "1" }] })
+      .mockResolvedValueOnce({ rows: [{ avg: "20" }] });
+
+    await expect(
+      pbxRouter.createCaller(context()).dashboard.stats(),
+    ).resolves.toMatchObject({
+      totalExtensions: 3,
+      activeExtensions: 2,
+      phoneNumbers: 0,
+      phoneNumbersAvailable: false,
+    });
+    expect(
+      db.query.mock.calls.some(([sql]) =>
+        String(sql).includes("FROM phone_numbers WHERE"),
+      ),
+    ).toBe(false);
   });
 });
 

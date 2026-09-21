@@ -70,7 +70,11 @@ const legacyRecordingAnalysisSchema = z.object({
  * request reads the current tenant membership directly, so a revocation takes
  * effect before the next provisioning operation.
  */
-async function requirePhoneTenantAdmin(userId: number, requestedTenantId?: number): Promise<number> {
+async function requirePhoneTenantAdmin(
+  userId: number,
+  requestedTenantId?: number,
+  failOnAmbiguousImplicit = false,
+): Promise<number> {
   const values = requestedTenantId === undefined ? [userId] : [userId, requestedTenantId];
   const requestedClause = requestedTenantId === undefined ? "" : "AND tm.tenant_id = $2";
   const result = await getPool().query(
@@ -81,11 +85,20 @@ async function requirePhoneTenantAdmin(userId: number, requestedTenantId?: numbe
         AND tm.status = 'active'
         AND tm.role IN ('owner', 'admin')
         ${requestedClause}
-      ORDER BY tm.is_default DESC, tm.created_at ASC
-      LIMIT 1`,
+      ORDER BY tm.created_at ASC, tm.tenant_id ASC`,
     values,
   );
 
+  if (
+    failOnAmbiguousImplicit &&
+    requestedTenantId === undefined &&
+    result.rows.length !== 1
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Select a workspace before changing phone settings.",
+    });
+  }
   const tenantId = result.rows[0]?.tenant_id;
   if (!Number.isSafeInteger(tenantId) || tenantId <= 0) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Workspace administrator access is required." });
@@ -101,7 +114,7 @@ async function listPhoneAdminTenants(userId: number): Promise<number[]> {
       WHERE tm.user_id = $1
         AND tm.status = 'active'
         AND tm.role IN ('owner', 'admin')
-      ORDER BY tm.is_default DESC, tm.created_at ASC`,
+      ORDER BY tm.created_at ASC, tm.tenant_id ASC`,
     [userId],
   );
   const tenantIds: number[] = [];
@@ -166,7 +179,7 @@ export const appRouter = router({
         password: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId);
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId, true);
         return createExtension({ ...input, orgId: tenantId });
       }),
 
@@ -215,7 +228,7 @@ export const appRouter = router({
         destinationValue: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId);
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId, true);
         return createDidNumber({ ...input, orgId: tenantId });
       }),
   }),

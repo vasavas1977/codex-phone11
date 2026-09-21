@@ -5,11 +5,15 @@ const db = vi.hoisted(() => ({
   withTransaction: vi.fn(),
 }));
 const cache = vi.hoisted(() => ({ invalidateCache: vi.fn() }));
+const capabilities = vi.hoisted(() => ({ readManagementCapabilities: vi.fn() }));
 
 vi.mock("../server/pbx/db", () => ({ query: db.query, withTransaction: db.withTransaction }));
 vi.mock("../server/pbx/redis", () => ({
   cacheGetOrSet: vi.fn((_key, _ttl, callback) => callback()),
   invalidateCache: cache.invalidateCache,
+}));
+vi.mock("../server/pbx/schema-capabilities", () => ({
+  readManagementCapabilities: capabilities.readManagementCapabilities,
 }));
 
 import { ivrRouter } from "../server/pbx/ivr-router";
@@ -39,10 +43,39 @@ const membership = (role: "owner" | "admin" | "manager" | "user" = "admin") => (
 
 beforeEach(() => {
   vi.clearAllMocks();
+  capabilities.readManagementCapabilities.mockResolvedValue({
+    phoneNumbers: true,
+    sites: true,
+    ringGroups: true,
+    queues: true,
+    ivr: true,
+    businessHours: true,
+  });
   db.withTransaction.mockImplementation(async (callback) => callback({ query: db.query }));
 });
 
 describe("PBX voice application administration", () => {
+  it.each([
+    ["ivr", () => ivrRouter.createCaller(context()).ivr.list({ tenant_id: 7 })],
+    ["ringGroups", () => ivrRouter.createCaller(context()).ringGroups.list({ tenant_id: 7 })],
+    ["queues", () => ivrRouter.createCaller(context()).queues.list({ tenant_id: 7 })],
+    ["businessHours", () => ivrRouter.createCaller(context()).timeConditions.list({ tenant_id: 7 })],
+  ] as const)("fails closed when %s schema is unavailable", async (facility, invoke) => {
+    capabilities.readManagementCapabilities.mockResolvedValueOnce({
+      phoneNumbers: false,
+      sites: false,
+      ringGroups: false,
+      queues: false,
+      ivr: false,
+      businessHours: false,
+    });
+    db.query.mockResolvedValueOnce({ rows: [membership("admin")] });
+    await expect(invoke()).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(db.query).toHaveBeenCalledTimes(1);
+    expect(String(db.query.mock.calls[0][0])).toContain("tenant_memberships");
+    expect(capabilities.readManagementCapabilities).toHaveBeenCalledTimes(1);
+  });
+
   it("requires authentication before any IVR, queue, ring-group, or schedule database access", async () => {
     const caller = ivrRouter.createCaller(anonymousContext());
     await expect(caller.ivr.list({ tenant_id: 7 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });

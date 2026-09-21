@@ -18,6 +18,7 @@ import {
 } from "./tenant-middleware";
 import { buildPaginationSQL, buildPaginatedResponse } from "./pagination";
 import { invalidateCache } from "./redis";
+import { readManagementCapabilities } from "./schema-capabilities";
 import {
   getCallStats,
   getVoicemails,
@@ -166,10 +167,23 @@ async function requireAssignableTenantMember(
   }
 }
 
+async function phoneNumberSchemaAvailable(): Promise<boolean> {
+  return (await readManagementCapabilities()).phoneNumbers;
+}
+
+function phoneNumberSchemaUnavailable(): TRPCError {
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: "Phone number management is not available for this workspace.",
+  });
+}
+
 // ============================================================================
 // PBX Router
 // ============================================================================
 export const pbxRouter = router({
+  capabilities: protectedProcedure.query(() => readManagementCapabilities()),
+
   // ========================================================================
   // TENANT
   // ========================================================================
@@ -468,21 +482,33 @@ export const pbxRouter = router({
      */
     overview: protectedProcedure.query(async ({ ctx }) => {
       const tc = await getTenantCtx(ctx);
+      const phoneNumbersAvailable = await phoneNumberSchemaAvailable();
+      const phoneNumberProjection = phoneNumbersAvailable
+        ? `COALESCE(
+             json_agg(
+               json_build_object(
+                 'id', pn.id,
+                 'number_e164', pn.number_e164,
+                 'number_display', pn.number_display,
+                 'status', pn.status
+               ) ORDER BY pn.number_e164
+             ) FILTER (WHERE pn.id IS NOT NULL),
+             '[]'::json
+           )`
+        : `'[]'::json`;
+      const phoneNumberJoin = phoneNumbersAvailable
+        ? `LEFT JOIN phone_numbers pn
+             ON pn.tenant_id = e.tenant_id
+            AND pn.assigned_route_type = 'extension'
+            AND pn.assigned_route_id = e.id
+            AND pn.deleted_at IS NULL`
+        : "";
       const result = await query(
         `SELECT e.id, e.extension_number, e.display_name, e.status,
                 ue.is_primary,
                 sa.status AS sip_status, sa.last_registered_at,
-                COALESCE(
-                  json_agg(
-                    json_build_object(
-                      'id', pn.id,
-                      'number_e164', pn.number_e164,
-                      'number_display', pn.number_display,
-                      'status', pn.status
-                    ) ORDER BY pn.number_e164
-                  ) FILTER (WHERE pn.id IS NOT NULL),
-                  '[]'::json
-                ) AS phone_numbers
+                ${phoneNumbersAvailable ? "TRUE" : "FALSE"} AS phone_numbers_available,
+                ${phoneNumberProjection} AS phone_numbers
          FROM tenant_memberships tm
          JOIN user_extensions ue ON ue.user_id = tm.user_id
          JOIN extensions e
@@ -494,11 +520,7 @@ export const pbxRouter = router({
           AND sa.tenant_id = e.tenant_id
           AND sa.user_id = tm.user_id
           AND sa.deleted_at IS NULL
-         LEFT JOIN phone_numbers pn
-           ON pn.tenant_id = e.tenant_id
-          AND pn.assigned_route_type = 'extension'
-          AND pn.assigned_route_id = e.id
-          AND pn.deleted_at IS NULL
+         ${phoneNumberJoin}
          WHERE tm.tenant_id = $1
            AND tm.user_id = $2
            AND tm.status = 'active'
@@ -1016,6 +1038,12 @@ export const pbxRouter = router({
       .query(async ({ ctx, input }) => {
         const tc = await getTenantCtx(ctx);
         const p = buildPaginationSQL(input || {});
+        if (!(await phoneNumberSchemaAvailable())) {
+          return {
+            ...buildPaginatedResponse([], 0, input || {}),
+            available: false,
+          };
+        }
 
         const [dataResult, countResult] = await Promise.all([
           query(
@@ -1032,11 +1060,14 @@ export const pbxRouter = router({
           ),
         ]);
 
-        return buildPaginatedResponse(
-          dataResult.rows,
-          parseInt(countResult.rows[0]?.total || "0"),
-          input || {},
-        );
+        return {
+          ...buildPaginatedResponse(
+            dataResult.rows,
+            parseInt(countResult.rows[0]?.total || "0"),
+            input || {},
+          ),
+          available: true,
+        };
       }),
 
     /** Add a phone number */
@@ -1053,6 +1084,9 @@ export const pbxRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminCtx(ctx);
+        if (!(await phoneNumberSchemaAvailable())) {
+          throw phoneNumberSchemaUnavailable();
+        }
         const normalized = normalizeToE164(input.number);
 
         const result = await query(
@@ -1112,6 +1146,9 @@ export const pbxRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminCtx(ctx);
+        if (!(await phoneNumberSchemaAvailable())) {
+          throw phoneNumberSchemaUnavailable();
+        }
         if (
           !(await validateTenantOwnership(
             "phone_numbers",
@@ -1560,6 +1597,7 @@ export const pbxRouter = router({
   dashboard: router({
     stats: protectedProcedure.query(async ({ ctx }) => {
       const tc = await getTenantAdminCtx(ctx);
+      const phoneNumbersAvailable = await phoneNumberSchemaAvailable();
 
       const [
         extensionCount,
@@ -1577,10 +1615,12 @@ export const pbxRouter = router({
           `SELECT COUNT(*) as c FROM extensions WHERE tenant_id = $1 AND status = 'active' AND deleted_at IS NULL`,
           [tc.tenantId],
         ),
-        query(
-          `SELECT COUNT(*) as c FROM phone_numbers WHERE tenant_id = $1 AND deleted_at IS NULL`,
-          [tc.tenantId],
-        ),
+        phoneNumbersAvailable
+          ? query(
+              `SELECT COUNT(*) as c FROM phone_numbers WHERE tenant_id = $1 AND deleted_at IS NULL`,
+              [tc.tenantId],
+            )
+          : Promise.resolve({ rows: [{ c: "0" }] }),
         query(
           `SELECT COUNT(*) as c FROM call_records WHERE tenant_id = $1 AND started_at >= CURRENT_DATE`,
           [tc.tenantId],
@@ -1599,6 +1639,7 @@ export const pbxRouter = router({
         totalExtensions: parseInt(extensionCount.rows[0]?.c || "0"),
         activeExtensions: parseInt(activeExtensions.rows[0]?.c || "0"),
         phoneNumbers: parseInt(phoneNumberCount.rows[0]?.c || "0"),
+        phoneNumbersAvailable,
         callsToday: parseInt(callsToday.rows[0]?.c || "0"),
         missedCallsToday: parseInt(missedToday.rows[0]?.c || "0"),
         avgCallDuration: Math.round(
