@@ -51,6 +51,32 @@ def pins(**changes):
     return blue.parse_manifest(manifest(**changes))
 
 
+def settings_manifest():
+    return {
+        "schema": blue.SETTINGS_SCHEMA,
+        "topology": blue.settings_topology_document(),
+        "baseline": {"container_id": "a" * 64, "image": BASE_IMAGE, "runtime_sha256": SHA, "build": "baseline-a131764"},
+        "retained_candidate": {"container_id": "b" * 64, "image": CURRENT_IMAGE, "runtime_sha256": SHA, "build": "retained-a0f5c46"},
+        "active_candidate": {
+            "container_id": "c" * 64, "image": "sha256:" + "5" * 64, "runtime_sha256": SHA,
+            "build": "active-39523ae", "compose_file": "/root/active-3003.json",
+            "compose_sha256": SHA, "rendered_sha256": SHA,
+        },
+        "recovery_candidate": {"container_id": "d" * 64, "image": "sha256:" + "6" * 64, "runtime_sha256": SHA, "build": "recovery-bbd14cf"},
+        "release": {"image": RELEASE_IMAGE, "build": "settings-9804c2f", "source_sha": "7" * 40, "bundle_sha256": SHA, "lock_sha256": SHA},
+        "target": {"project": blue.SETTINGS_TARGET_PROJECT, "tenant_id": 1, "denied_tenant_id": 2_147_483_647},
+        "probes": {"file": "/root/probes.json", "sha256": SHA},
+        "nginx": {"site": "/etc/nginx/sites-enabled/phone11ai", "site_sha256": SHA, "dump_sha256": SHA,
+                  "marker": "# PHONE11_PARALLEL_API_INSERT reviewed-123"},
+        "kamailio": {"config_path": "/etc/kamailio/kamailio.cfg", "config_sha256": SHA, "wake_occurrences": 4},
+        "public_origin": blue.PUBLIC_ORIGIN,
+    }
+
+
+def settings_pins():
+    return blue.parse_manifest(settings_manifest())
+
+
 def inspect(current_pins):
     return {
         "Id": current_pins.current.container_id,
@@ -63,6 +89,85 @@ def inspect(current_pins):
             ],
         },
     }
+
+
+def settings_inspect(current_pins):
+    return {
+        "Id": current_pins.current.container_id,
+        "Image": current_pins.current.image,
+        "Config": {
+            "Image": "phone11-backend:management-39523ae",
+            "Env": [
+                "PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3003",
+                f"PHONE11_BUILD_SHA={current_pins.current.build}", "DATABASE_URL=postgres://user:pa$$word@db/live",
+            ],
+        },
+    }
+
+
+def settings_inventory_arguments():
+    return blue.parse_args([
+        "--inventory", "--settings-topology", "--output", "/root/settings.json",
+        "--current-compose-file", "/root/active-3003.json", "--probes-file", "/root/probes.json",
+        "--nginx-site", "/etc/nginx/sites-enabled/phone11ai", "--release-image", RELEASE_IMAGE,
+        "--release-build", "settings-9804c2f", "--release-source-sha", "7" * 40,
+        "--tenant-id", "1", "--denied-tenant-id", "2147483647",
+    ])
+
+
+def settings_inventory_runtimes(document):
+    active = settings_inspect(settings_pins())
+    return [
+        ({"Id": "a" * 64}, document["baseline"]),
+        ({"Id": "b" * 64}, document["retained_candidate"]),
+        (active, {key: value for key, value in document["active_candidate"].items()
+                  if key in {"container_id", "image", "runtime_sha256", "build"}}),
+        ({"Id": "d" * 64}, document["recovery_candidate"]),
+    ]
+
+
+def settings_inventory_system():
+    document = settings_manifest()
+    system = Mock()
+    system.json_command.side_effect = [settings_rendered(), [{
+        "Id": RELEASE_IMAGE,
+        "Config": {"Labels": {
+            "com.phone11.source-sha": "7" * 40,
+            "com.phone11.bundle-sha256": SHA,
+            "com.phone11.lock-sha256": SHA,
+        }},
+    }]]
+    system.command.side_effect = [
+        b"cp11-backend\ncp11-api-candidate\ncp11-api-candidate-next\ncp11-password-recovery\n",
+        blue.pilot.WAKE_URL.encode(),
+        b"nginx dump",
+    ]
+    return document, system
+
+
+def settings_inventory_reader(arguments, site):
+    raw_probes = json.dumps(probe_document(), separators=(",", ":")).encode()
+
+    def protected_read(path, **_kwargs):
+        if path == arguments.current_compose_file:
+            return b"active compose"
+        if path == arguments.probes_file:
+            return raw_probes
+        if path == arguments.nginx_site:
+            return site
+        raise AssertionError(path)
+
+    return protected_read
+
+
+def settings_inventory_site(document):
+    marker = document["nginx"]["marker"]
+    return (
+        b"server {\n"
+        + blue.recovery_route_fragment(document["recovery_candidate"]["build"])
+        + blue.proxy_fragment(marker, document["active_candidate"]["build"], 3003, {3003, 3005})
+        + b"}\n"
+    )
 
 
 def rendered():
@@ -82,6 +187,17 @@ def rendered():
         },
         "networks": {"default": {"name": "phone11-owned-auth_default"}},
     }
+
+
+def settings_rendered():
+    value = rendered()
+    service = value["services"]["candidate"]
+    service["container_name"] = blue.SETTINGS_CURRENT_CONTAINER
+    service["image"] = "phone11-backend:management-39523ae"
+    service["environment"]["PORT"] = "3003"
+    service["ports"][0].update({"published": 3003, "target": 3003})
+    service["healthcheck"]["test"][1] = "curl http://127.0.0.1:3003/api/health && test active-39523ae"
+    return value
 
 
 def probe_document():
@@ -107,6 +223,153 @@ class BlueGreenTests(unittest.TestCase):
         changed["public_origin"] = "https://evil.example"
         with self.assertRaises(blue.GuardError):
             blue.parse_manifest(changed)
+
+    def test_settings_manifest_requires_the_fixed_four_retained_ports_and_3005_target(self):
+        current = settings_pins()
+        self.assertEqual(current.schema, blue.SETTINGS_SCHEMA)
+        self.assertEqual(
+            (current.topology.baseline_port, current.topology.retained_port,
+             current.topology.current_port, current.topology.recovery_port,
+             current.topology.target_port),
+            (3000, 3002, 3003, 3004, 3005),
+        )
+        self.assertEqual(current.topology.current_container, blue.SETTINGS_CURRENT_CONTAINER)
+        self.assertEqual(current.topology.target_container, blue.SETTINGS_TARGET_CONTAINER)
+        self.assertEqual(current.topology.target_service, blue.SETTINGS_TARGET_SERVICE)
+        self.assertEqual(current.topology.state_root, blue.SETTINGS_STATE_ROOT)
+        changed = settings_manifest()
+        changed["topology"]["target_candidate"]["port"] = 3006
+        with self.assertRaises(blue.GuardError):
+            blue.parse_manifest(changed)
+        changed = settings_manifest()
+        changed["topology"]["recovery_candidate"]["container"] = "cp11-api-candidate-recovery"
+        with self.assertRaises(blue.GuardError):
+            blue.parse_manifest(changed)
+
+    def test_settings_clone_starts_only_the_explicit_3005_candidate_from_3003(self):
+        current = settings_pins()
+        target = blue.cloned_config(settings_rendered(), settings_inspect(current), current)
+        self.assertEqual(set(target["services"]), {blue.SETTINGS_TARGET_SERVICE})
+        service = target["services"][blue.SETTINGS_TARGET_SERVICE]
+        self.assertEqual(service["container_name"], blue.SETTINGS_TARGET_CONTAINER)
+        self.assertEqual(service["environment"]["PORT"], "3005")
+        self.assertEqual(service["ports"], [{
+            "host_ip": "127.0.0.1", "published": "3005", "target": 3005,
+            "protocol": "tcp", "mode": "ingress",
+        }])
+        self.assertIn(":3005", service["healthcheck"]["test"][1])
+        self.assertNotIn(":3003", service["healthcheck"]["test"][1])
+        self.assertEqual(service["environment"]["DATABASE_URL"], "postgres://user:pa$$$$word@db/live")
+
+    def test_settings_target_absence_never_claims_the_live_3003_port(self):
+        operator = blue.Operator(settings_pins(), Mock())
+        operator.system.command.return_value = b"cp11-backend\ncp11-api-candidate\ncp11-api-candidate-next\ncp11-password-recovery\n"
+        fake_socket = Mock()
+        with patch.object(blue.socket, "socket", return_value=fake_socket):
+            operator.target_absent()
+        fake_socket.bind.assert_called_once_with(("127.0.0.1", 3005))
+
+    def test_settings_preservation_rechecks_baseline_retained_active_and_recovery(self):
+        operator = blue.Operator(settings_pins(), Mock())
+        operator.runtime = Mock(return_value={"Id": "pinned"})
+        operator.preserved_runtimes()
+        self.assertEqual(
+            [call.args[0] for call in operator.runtime.call_args_list],
+            [blue.BASELINE_CONTAINER, blue.SETTINGS_CURRENT_CONTAINER,
+             blue.SETTINGS_RETAINED_CONTAINER, blue.SETTINGS_RECOVERY_CONTAINER],
+        )
+
+    def test_settings_inventory_argument_selects_only_the_fixed_project(self):
+        arguments = settings_inventory_arguments()
+        self.assertTrue(arguments.settings_topology)
+        self.assertEqual(arguments.target_project, blue.SETTINGS_TARGET_PROJECT)
+
+    def test_settings_inventory_seals_all_retained_slots_before_writing_a_v2_manifest(self):
+        arguments = settings_inventory_arguments()
+        document, system = settings_inventory_system()
+        fake_socket = Mock()
+
+        with patch.object(blue, "inventory_runtime", side_effect=settings_inventory_runtimes(document)) as inventory, \
+             patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, settings_inventory_site(document))), \
+             patch.object(blue, "atomic_write") as write, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            blue.emit_settings_inventory(arguments, system)
+
+        fake_socket.bind.assert_called_once_with(("127.0.0.1", 3005))
+        self.assertEqual(inventory.call_args_list[1].args[1:4], (blue.SETTINGS_RETAINED_CONTAINER, blue.ROLE, 3002))
+        self.assertEqual(inventory.call_args_list[2].args[1:4], (blue.SETTINGS_CURRENT_CONTAINER, blue.ROLE, 3003))
+        self.assertEqual(inventory.call_args_list[3].args[1:4], (blue.SETTINGS_RECOVERY_CONTAINER, blue.ROLE, 3004))
+        sealed = json.loads(write.call_args.args[1])
+        self.assertEqual(sealed["schema"], blue.SETTINGS_SCHEMA)
+        self.assertEqual(sealed["topology"], blue.settings_topology_document())
+        self.assertEqual(sealed["target"]["project"], blue.SETTINGS_TARGET_PROJECT)
+
+    def test_settings_inventory_blocks_existing_3005_target_before_any_runtime_reads(self):
+        arguments = settings_inventory_arguments()
+        system = Mock()
+        system.command.return_value = b"cp11-api-candidate-settings\n"
+        with patch.object(blue, "inventory_runtime") as inventory, \
+             patch.object(blue.os, "geteuid", return_value=0):
+            with self.assertRaises(blue.GuardError) as error:
+                blue.emit_settings_inventory(arguments, system)
+        self.assertEqual(error.exception.stage, "target_absent")
+        inventory.assert_not_called()
+
+    def test_settings_inventory_blocks_an_occupied_3005_port_before_any_runtime_reads(self):
+        arguments = settings_inventory_arguments()
+        system = Mock()
+        system.command.return_value = b""
+        fake_socket = Mock()
+        fake_socket.bind.side_effect = OSError("occupied")
+        with patch.object(blue, "inventory_runtime") as inventory, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            with self.assertRaises(blue.GuardError) as error:
+                blue.emit_settings_inventory(arguments, system)
+        self.assertEqual(error.exception.stage, "target_port")
+        inventory.assert_not_called()
+
+    def test_settings_inventory_rejects_comment_lookalike_and_missing_recovery_fragments(self):
+        document = settings_manifest()
+        valid = settings_inventory_site(document)
+        recovery = blue.recovery_route_fragment(document["recovery_candidate"]["build"])
+        candidates = {
+            "comment": valid.replace(recovery, b"    # proxy_pass http://127.0.0.1:3004;\n", 1),
+            "lookalike": valid.replace(
+                b"X-Phone11-Recovery-Candidate recovery-bbd14cf",
+                b"X-Phone11-Recovery-Candidate unrelated-recovery", 1,
+            ),
+            "missing_route": valid.replace(
+                b"location = /api/mobile/config {",
+                b"location = /api/mobile/config-missing {", 1,
+            ),
+        }
+        for name, site in candidates.items():
+            with self.subTest(name=name):
+                arguments = settings_inventory_arguments()
+                inventory_document, system = settings_inventory_system()
+                fake_socket = Mock()
+                with patch.object(blue, "inventory_runtime", side_effect=settings_inventory_runtimes(inventory_document)), \
+                     patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, site)), \
+                     patch.object(blue, "atomic_write") as write, \
+                     patch.object(blue.os, "geteuid", return_value=0), \
+                     patch.object(blue.socket, "socket", return_value=fake_socket):
+                    with self.assertRaises(blue.GuardError) as error:
+                        blue.emit_settings_inventory(arguments, system)
+                self.assertEqual(error.exception.stage, "inventory")
+                write.assert_not_called()
+
+    def test_settings_rollback_receipt_is_separate_and_topology_bound(self):
+        legacy = blue.Operator(pins(), Mock())
+        settings = blue.Operator(settings_pins(), Mock())
+        self.assertEqual(legacy.rollback_site, blue.ROLLBACK_SITE)
+        self.assertEqual(settings.rollback_site, blue.SETTINGS_STATE_ROOT / "nginx.before")
+        self.assertNotEqual(settings.rollback_receipt, legacy.rollback_receipt)
+        receipt = json.loads(settings.rollback_document(b"before", b"active"))
+        self.assertEqual(receipt["schema"], blue.SETTINGS_SCHEMA)
+        self.assertEqual(receipt["topology"], "settings-3003-to-3005")
+        self.assertEqual(receipt["target_container"], blue.SETTINGS_TARGET_CONTAINER)
 
     def test_clone_keeps_secret_environment_in_memory_and_changes_only_candidate_identity(self):
         current = pins()
