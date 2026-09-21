@@ -167,3 +167,39 @@ and a real existing-session/reconnect test across the restart. Review baseline
 replacement separately from the later candidate/admission route switch. See
 `server/_core/runtime-role.ts` drain behavior and each phase of
 `scripts/phone11-profile-dnd-rollout.py` before changing the guard contract.
+
+## Current operator review state
+
+The settings candidate rollout's corrected fixed 3003-to-3005 topology passed
+independent source review and is committed as `15d90f9` (21 focused tests reported).
+The tenant-settings migration operator's Sol High correction passed 13 isolated
+PostgreSQL 16.13 checks, passed independent source re-review, and is committed as
+`fe32ad3`. Its production backup,
+restore, mutation receipt, image deployment and authenticated acceptance remain
+separate steps.
+
+The uncommitted edge/aggregate maintenance proposal is **REQUEST_CHANGES**, not
+ready to deploy: edge release publication/recovery must remain durable through
+write/fsync failures and must drain the exact predecessor worker generations;
+the unconditional provider blocker must precede lock creation; local SIP release
+needs recoverable evidence if publication fails after release. The narrow SIP
+absolute-expiry change was separately found to preserve legacy behavior. Do not
+interpret aggregate passing tests as closure of these findings.
+
+## Settings image and migration staging
+
+The exact `9804c2f` source archive and frozen lockfile produced candidate image
+`sha256:2669c5032ebda82381c2e1c947cbd804132457355bb05931f1e921d064f1c8a9`
+using cached base `sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32`.
+The main agent independently verified source/archive/lock labels and read back
+`/app/dist/index.mjs` SHA-256 `a402622920fadd4fb7216452ac68b5d9c27e15ec804eedace25d255665442305`
+from a disposable network-isolated, read-only container. This production build
+output is distinct from the earlier local minimal build output. No service was
+started or replaced. The reviewed migration operator and SQL are staged as
+root-owned mode-0600 files under `/opt/phone11ai/tenant-settings`; the mode-0700
+journal directory exists and its migration receipt was absent. No migration ran.
+
+Integration found that the candidate operator still required
+`settingsAvailable:false` in its tenant response probe. Its v2 path must require
+the newly available `businessHoursTimezone` capability while preserving legacy
+v1 behavior. That correction and review must finish before activation.
