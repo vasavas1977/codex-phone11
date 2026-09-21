@@ -19,15 +19,19 @@ The deployed database has no optional tenant-settings, phone-number, sites, ring
 
 ## Static release
 
-- Frontend source: `f386ae58dd04f486cdfa2a5e265998cbe1de89b3`.
+- Active frontend source: `076ddac068dd6efbca91a152f75886127a22c0b2`.
 - Export API origin: `https://api.phone11.ai`.
-- Archive SHA-256: `60a1e652b7a3d5f39ed0edb0a21508c2bc3b9305892f9234d0150794085928a5`.
+- Archive SHA-256: `b3c3b2986f289bb7c2ffcb3d31acfe2ac58ad42b74259a45e002a7787ab4ad37`.
+- Export manifest SHA-256: `fc78b9ad1dcb321b49d605121559fe4fa644a06596ce95c6750a88b07aa228f2`.
+- Release marker SHA-256: `a3b9d7befcc885493a49a37da2fe46156f3f663aee24ce5fb089fb944eabd40c`.
+- Managed activation receipt SHA-256: `136c4109932f60b30fc7ce4198b93439b2e37610d993d86a8cf2ed14d2cc5825`.
 - Live user URL: `https://1toall.phone11.ai/portal`.
 - Live administrator URL: `https://1toall.phone11.ai/admin`.
+- Live recovery URLs: `https://1toall.phone11.ai/auth/sign-in`, `/auth/forgot-password` and `/auth/reset-password`.
 - Static release tree is sealed root-owned on the existing edge host. The first publication attempt rolled back; the original Nginx bytes, includes, absent current-link and public response were independently verified restored. The independently reviewed retry/re-arm correction then passed prepare and activation. The prior receipt was archived intact; no failure metadata was fabricated for the legacy attempt.
 
-- Publication proved HTTPS root/portal responses, exact public release marker, denial of same-origin API forwarding and credentialed CORS to the existing API origin. Browser checks verified the rendered signed-out portal, navigation to the email/password sign-in page and the administrator sign-in gate. The live portal remains open for the user. No credentials were entered during browser verification.
-- Static operator SHA-256: `f13d855d3671fa791b45115d9ed35fff2e1ad267af62698552361cce37bbe24c`; tests: `e458980ef7082be770c516f0eb41c0829b4017b93d6c03d3590416dcddfcf103`. Thirteen focused tests and Python compilation passed; independent final review found no P0–P2 findings.
+- Runtime verification of the first recovery export found that the active legacy mobile config omitted both password-recovery capability fields, so the guarded operator restored `f386ae5`. Source `076ddac` adds a strictly bounded compatibility rule: only that complete two-field omission defaults recovery to disabled; partial, malformed and inconsistent capability shapes still fail closed. Its clean-archive export was then published. Sign-in, forgot-password, reset-password, the marker and the main JavaScript asset return HTTP 200 with their exact sealed hashes; same-origin `/api/phone11-static-portal-probe` remains HTTP 404. An independent browser refresh rendered the minimal Sign in page against the live legacy config with editable Email and Password fields, an enabled Sign In control and no unavailable error. No credentials were submitted.
+- Static operator SHA-256: `fbde518cf994fe82e3b69e5b363b2308b3ed77c15cd8c84b439b018a2514955d`. Twenty operator tests, 62 focused client tests, Python compilation, TypeScript and diff checks passed. No credentials were entered and no API, PBX or handset runtime was changed by this static publication.
 
 ## Validation and limits
 
@@ -48,7 +52,7 @@ This restores the prior workerless candidate route and leaves both candidates ru
 Static rollback on the edge host, as root:
 
 ```sh
-python3 /opt/phone11ai/portal-operator/phone11-static-portal-rollout.py --rollback --manifest /root/phone11-static-portal-f386ae5.json
+python3 /opt/phone11ai/portal-operator/076ddac068dd6efbca91a152f75886127a22c0b2/phone11-static-portal-rollout.py --rollback --manifest /root/phone11-static-portal-076ddac.json
 ```
 
-The static operator restores the former site file, legacy includes and prior current-link, then proves their public fingerprints. Marketing and API proxy server blocks are preserved.
+The managed rollback has passed its non-mutating dry run. It restores the prior `f386ae5` current-link and proves its sealed export plus public fingerprints. The Nginx site and configuration remain unchanged by activation and rollback.

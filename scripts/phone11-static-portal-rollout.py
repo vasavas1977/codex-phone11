@@ -32,7 +32,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 SCHEMA = "phone11-static-portal-rollout/v1"
 EXPORT_SCHEMA = "phone11-static-portal-export/v1"
-RELEASE_SHA = "f386ae58dd04f486cdfa2a5e265998cbe1de89b3"
+RELEASE_SHA = "076ddac068dd6efbca91a152f75886127a22c0b2"
 HOSTNAME = "1toall.phone11.ai"
 EDGE_IP = "43.209.112.208"
 API_ORIGIN = "https://api.phone11.ai"
@@ -47,6 +47,9 @@ MAX_MANIFEST_BYTES = 256 * 1024
 MAX_REQUIRED_FILE_BYTES = 16 * 1024 * 1024
 MAX_ORIGIN_SCAN_BYTES = 64 * 1024 * 1024
 RELEASE_MARKER = "phone11-static-portal-release.json"
+EXPORT_MANIFEST_NAME = "export-manifest.json"
+INITIAL_CONVERSION = "initial"
+MANAGED_UPDATE = "managed"
 # A reload briefly leaves both generations of workers accepting connections.
 # Bound probe retries give the old workers time to drain without masking a
 # persistent bad configuration or a wrong release marker.
@@ -250,6 +253,13 @@ class Manifest:
     release: Release
     nginx: NginxPins
     state_dir: Path
+
+
+@dataclass(frozen=True)
+class Prepared:
+    before: bytes
+    active: bytes
+    mode: str
 
 
 def parse_manifest(path: Path) -> Manifest:
@@ -516,21 +526,59 @@ def static_locations(current_link: Path) -> str:
     )
 
 
-def rewrite_site(source: bytes, current_link: Path) -> bytes:
-    try:
-        text = source.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise RolloutError("nginx_encoding") from error
+def target_tls_server(text: str) -> tuple[int, int, str]:
     candidates: list[tuple[int, int, str]] = []
     for start, end, _header in _lexical_blocks(text, "server"):
         block = text[start:end]
         if HOSTNAME in _server_names(block) and _is_tls(block):
             candidates.append((start, end, block))
     require(len(candidates) == 1, "nginx_target")
-    server_start, _server_end, server = candidates[0]
+    server_start, server_end, server = candidates[0]
     require(_server_names(server) == {HOSTNAME}, "nginx_target")
     require(_has_exact_directive(server, "ssl_certificate", str(CERTIFICATE)), "nginx_target")
     require(_has_exact_directive(server, "ssl_certificate_key", str(CERTIFICATE_KEY)), "nginx_target")
+    return server_start, server_end, server
+
+
+def decode_nginx_site(source: bytes) -> str:
+    try:
+        return source.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise RolloutError("nginx_encoding") from error
+
+
+def is_exact_managed_static_site(source: bytes, current_link: Path) -> bool:
+    """Recognize only the controller's byte-exact static location contract."""
+    text = decode_nginx_site(source)
+    _server_start, _server_end, server = target_tls_server(text)
+    expected = static_locations(current_link)
+    if expected not in server:
+        # A current-link root or API-denial location means someone attempted a
+        # static configuration.  It must be byte-exact rather than being
+        # mistaken for the initial proxied vhost.
+        clean = _remove_comments(server)
+        if str(current_link) in clean or re.search(r"(?m)^\s*location\s+(?:=\s*)?/api", clean):
+            raise RolloutError("nginx_target")
+        return False
+
+    require(server.count(expected) == 1, "nginx_target")
+    locations = _lexical_blocks(server, "location")
+    require(
+        [header for _start, _end, header in locations]
+        == ["= /", "= /api", "^~ /api/", "/"],
+        "nginx_target",
+    )
+    clean = _remove_comments(server)
+    require(
+        "proxy_pass" not in clean and "fastcgi_pass" not in clean and "uwsgi_pass" not in clean,
+        "nginx_target",
+    )
+    return True
+
+
+def rewrite_site(source: bytes, current_link: Path) -> bytes:
+    text = decode_nginx_site(source)
+    server_start, _server_end, server = target_tls_server(text)
     locations = _lexical_blocks(server, "location")
     roots = [(start, end) for start, end, header in locations if header == "/"]
     require(len(roots) == 1, "nginx_target")
@@ -667,6 +715,18 @@ def probe_static(manifest: Manifest, system: System) -> None:
     retry_fresh_connection_probe(system, once)
 
 
+def managed_predecessor_baseline(system: System, predecessor: Release) -> tuple[int, int, str]:
+    """Prove the live predecessor before using it as a managed rollback point."""
+    root_status = curl_status(system, f"{PUBLIC_ORIGIN}/")
+    require(root_status == 200, "managed_probe")
+    marker_status, marker_sha256 = curl_fingerprint(system, f"{PUBLIC_ORIGIN}/{RELEASE_MARKER}")
+    require(
+        marker_status == 200 and marker_sha256 == marker_digest(predecessor),
+        "managed_probe",
+    )
+    return root_status, marker_status, marker_sha256
+
+
 def operation_directory(manifest: Manifest) -> Path:
     return manifest.state_dir / manifest.release.source_sha
 
@@ -689,18 +749,28 @@ def check_pins(manifest: Manifest, system: System) -> bytes:
     site = read_regular(manifest.nginx.site, "nginx_site", 4 * 1024 * 1024)
     require(sha256_bytes(site) == manifest.nginx.site_sha256, "nginx_site")
     require(sha256_bytes(nginx_dump(system)) == manifest.nginx.dump_sha256, "nginx_dump")
-    for legacy in manifest.nginx.legacy_includes:
-        require(sha256_bytes(read_regular(legacy.path, "legacy_include", 4 * 1024 * 1024)) == legacy.sha256, "legacy_include")
+    if is_exact_managed_static_site(site, manifest.release.current_link):
+        # The first conversion preserves these files under its receipt.  A
+        # managed update must never reactivate the duplicate enabled includes.
+        for legacy in manifest.nginx.legacy_includes:
+            require(not legacy.path.exists() and not legacy.path.is_symlink(), "legacy_include")
+    else:
+        for legacy in manifest.nginx.legacy_includes:
+            require(sha256_bytes(read_regular(legacy.path, "legacy_include", 4 * 1024 * 1024)) == legacy.sha256, "legacy_include")
     return site
 
 
-def prepare(manifest: Manifest, system: System) -> tuple[bytes, bytes]:
+def prepare(manifest: Manifest, system: System) -> Prepared:
     validate_release(manifest.release)
     site = check_pins(manifest, system)
+    if is_exact_managed_static_site(site, manifest.release.current_link):
+        validate_managed_predecessor(manifest, site)
+        nginx_test(system)
+        return Prepared(site, site, MANAGED_UPDATE)
     candidate = rewrite_site(site, manifest.release.current_link)
     require(candidate != site, "nginx_target")
     nginx_test(system)
-    return site, candidate
+    return Prepared(site, candidate, INITIAL_CONVERSION)
 
 
 def link_state(path: Path) -> str | None:
@@ -710,15 +780,122 @@ def link_state(path: Path) -> str | None:
     return os.readlink(path)
 
 
+def receipt_mode(receipt: dict[str, Any], stage: str) -> str:
+    legacy_keys = {
+        "schema", "release_sha", "site", "before_sha256", "active_sha256", "current_link",
+        "previous_link", "root_status_before", "marker_status_before", "marker_sha256_before",
+        "legacy_includes",
+    }
+    keys = set(receipt)
+    require(keys == legacy_keys or keys == legacy_keys | {"mode"}, stage)
+    mode = receipt.get("mode", INITIAL_CONVERSION)
+    require(mode in {INITIAL_CONVERSION, MANAGED_UPDATE}, stage)
+    legacy = receipt["legacy_includes"]
+    require(isinstance(legacy, list), stage)
+    if mode == INITIAL_CONVERSION:
+        require(len(legacy) == len(LEGACY_INCLUDE_NAMES), stage)
+    else:
+        require(legacy == [], stage)
+    return mode
+
+
+def sealed_predecessor_release(manifest: Manifest, target: object, stage: str) -> Release:
+    require(isinstance(target, str), stage)
+    directory = Path(target)
+    require(
+        directory.is_absolute()
+        and directory.parent == manifest.release.directory.parent
+        and bool(re.fullmatch(r"[0-9a-f]{40}", directory.name))
+        and directory.name != manifest.release.source_sha,
+        stage,
+    )
+    export_manifest = directory / EXPORT_MANIFEST_NAME
+    export_manifest_sha256 = sha256_bytes(read_regular(export_manifest, stage))
+    return Release(directory.name, directory, export_manifest, export_manifest_sha256, manifest.release.current_link)
+
+
+def managed_predecessor_release(manifest: Manifest) -> Release:
+    return sealed_predecessor_release(manifest, link_state(manifest.release.current_link), "managed_state")
+
+
+def receipt_predecessor_release(manifest: Manifest, receipt: dict[str, Any]) -> Release:
+    return sealed_predecessor_release(manifest, receipt["previous_link"], "rollback")
+
+
+def validate_managed_predecessor(manifest: Manifest, site: bytes) -> Release:
+    """Bind a live static vhost to the preceding controller receipt."""
+    try:
+        predecessor = managed_predecessor_release(manifest)
+        validate_release(predecessor)
+        directory = predecessor.directory
+        release_info = directory.lstat()
+        require(stat.S_ISDIR(release_info.st_mode) and not stat.S_ISLNK(release_info.st_mode), "managed_state")
+        operation = manifest.state_dir / directory.name
+        operation_info = operation.lstat()
+        require(stat.S_ISDIR(operation_info.st_mode) and not stat.S_ISLNK(operation_info.st_mode), "managed_state")
+        if os.geteuid() == 0:
+            require(operation_info.st_uid == 0 and stat.S_IMODE(operation_info.st_mode) == 0o700, "managed_state")
+        receipt = read_json(operation / "receipt.json", "managed_state")
+        mode = receipt_mode(receipt, "managed_state")
+        require(
+            receipt["schema"] == SCHEMA
+            and receipt["release_sha"] == directory.name
+            and receipt["site"] == str(manifest.nginx.site)
+            and receipt["current_link"] == str(manifest.release.current_link)
+            and is_sha256(receipt["before_sha256"])
+            and is_sha256(receipt["active_sha256"])
+            and isinstance(receipt["previous_link"], (str, type(None)))
+            and (mode != MANAGED_UPDATE or isinstance(receipt["previous_link"], str))
+            and isinstance(receipt["root_status_before"], int)
+            and isinstance(receipt["marker_status_before"], int)
+            and is_sha256(receipt["marker_sha256_before"])
+            and sha256_bytes(site) == receipt["active_sha256"],
+            "managed_state",
+        )
+        before = read_regular(operation / "site.before", "managed_state", 4 * 1024 * 1024)
+        require(sha256_bytes(before) == receipt["before_sha256"], "managed_state")
+        require(not (operation / "failure.json").exists() and not (operation / "failure.json").is_symlink(), "managed_state")
+        legacy = receipt["legacy_includes"]
+        if mode == INITIAL_CONVERSION:
+            expected_names = set(LEGACY_INCLUDE_NAMES)
+            seen_names: set[str] = set()
+            for item in legacy:
+                exact_keys(item, {"path", "sha256", "saved_as"}, "managed_state")
+                original = absolute(item["path"], "managed_state")
+                saved_as = item["saved_as"]
+                require(
+                    original.parent == manifest.nginx.enabled_site.parent
+                    and original.name in expected_names
+                    and saved_as == f"legacy/{original.name}"
+                    and is_sha256(item["sha256"]),
+                    "managed_state",
+                )
+                seen_names.add(original.name)
+                saved = operation / saved_as
+                require(
+                    sha256_bytes(read_regular(saved, "managed_state", 4 * 1024 * 1024)) == item["sha256"],
+                    "managed_state",
+                )
+            require(seen_names == expected_names, "managed_state")
+        return predecessor
+    except RolloutError:
+        raise
+    except OSError as error:
+        raise RolloutError("managed_state") from error
+
+
 def write_receipt(
     manifest: Manifest,
     before: bytes,
     active: bytes,
+    mode: str,
     previous_link: str | None,
     root_status: int,
     marker_status: int,
     marker_sha256: str,
 ) -> Path:
+    require(mode in {INITIAL_CONVERSION, MANAGED_UPDATE}, "operation")
+    require(mode != MANAGED_UPDATE or isinstance(previous_link, str), "operation")
     operation = operation_directory(manifest)
     create_root_directory(operation, "operation")
     try:
@@ -727,6 +904,7 @@ def write_receipt(
         receipt = {
             "schema": SCHEMA,
             "release_sha": manifest.release.source_sha,
+            "mode": mode,
             "site": str(manifest.nginx.site),
             "before_sha256": sha256_bytes(before),
             "active_sha256": sha256_bytes(active),
@@ -738,7 +916,7 @@ def write_receipt(
             "legacy_includes": [
                 {"path": str(item.path), "sha256": item.sha256, "saved_as": f"legacy/{item.path.name}"}
                 for item in manifest.nginx.legacy_includes
-            ],
+            ] if mode == INITIAL_CONVERSION else [],
         }
         atomic_write(
             operation / "receipt.json",
@@ -747,7 +925,8 @@ def write_receipt(
             os.geteuid(),
             os.getegid(),
         )
-        create_root_directory(operation / "legacy", "operation")
+        if mode == INITIAL_CONVERSION:
+            create_root_directory(operation / "legacy", "operation")
         return operation
     except BaseException:
         try:
@@ -820,21 +999,14 @@ def restore_legacy(receipt: dict[str, Any], operation: Path) -> None:
 def load_receipt(manifest: Manifest) -> tuple[Path, dict[str, Any], bytes]:
     operation = operation_directory(manifest)
     receipt = read_json(operation / "receipt.json", "rollback")
-    exact_keys(
-        receipt,
-        {
-            "schema", "release_sha", "site", "before_sha256", "active_sha256", "current_link",
-            "previous_link", "root_status_before", "marker_status_before", "marker_sha256_before",
-            "legacy_includes",
-        },
-        "rollback",
-    )
+    mode = receipt_mode(receipt, "rollback")
     require(
         receipt["schema"] == SCHEMA
         and receipt["release_sha"] == manifest.release.source_sha
         and receipt["site"] == str(manifest.nginx.site)
         and receipt["current_link"] == str(manifest.release.current_link)
         and isinstance(receipt["previous_link"], (str, type(None)))
+        and (mode != MANAGED_UPDATE or isinstance(receipt["previous_link"], str))
         and isinstance(receipt["root_status_before"], int)
         and isinstance(receipt["marker_status_before"], int)
         and is_sha256(receipt["marker_sha256_before"])
@@ -937,6 +1109,7 @@ def restore(
     if not dry_run and require_root:
         require(os.geteuid() == 0, "root")
     operation, receipt, before = load_receipt(manifest)
+    mode = receipt_mode(receipt, "rollback")
     verify_enabled_site(manifest.nginx)
     active = read_regular(manifest.nginx.site, "rollback", 4 * 1024 * 1024)
     active_hash = sha256_bytes(active)
@@ -951,13 +1124,32 @@ def restore(
         require(current_target == str(manifest.release.directory), "rollback")
     else:
         require(current_target in {None, str(manifest.release.directory), previous}, "rollback")
+    if mode == MANAGED_UPDATE:
+        require(
+            receipt["before_sha256"] == receipt["active_sha256"] == sha256_bytes(active),
+            "rollback",
+        )
+        require(is_exact_managed_static_site(active, manifest.release.current_link), "rollback")
+        require(sha256_bytes(nginx_dump(system)) == manifest.nginx.dump_sha256, "rollback")
+        predecessor = receipt_predecessor_release(manifest, receipt)
+        try:
+            validate_release(predecessor)
+        except RolloutError as error:
+            raise RolloutError("rollback") from error
+        require(
+            receipt["root_status_before"] == 200
+            and receipt["marker_status_before"] == 200
+            and receipt["marker_sha256_before"] == marker_digest(predecessor),
+            "rollback",
+        )
     if dry_run:
         return
-    info = manifest.nginx.site.stat()
     try:
         verify_enabled_site(manifest.nginx)
-        atomic_write(manifest.nginx.site, before, stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid)
-        restore_legacy(receipt, operation)
+        if mode == INITIAL_CONVERSION:
+            info = manifest.nginx.site.stat()
+            atomic_write(manifest.nginx.site, before, stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid)
+            restore_legacy(receipt, operation)
         if previous is None:
             if manifest.release.current_link.is_symlink():
                 require(os.readlink(manifest.release.current_link) == str(manifest.release.directory), "rollback")
@@ -966,8 +1158,9 @@ def restore(
                 require(not manifest.release.current_link.exists(), "rollback")
         else:
             atomic_symlink(manifest.release.current_link, previous)
-        nginx_test(system)
-        nginx_reload(system)
+        if mode == INITIAL_CONVERSION:
+            nginx_test(system)
+            nginx_reload(system)
         probe_rollback_http(manifest, system, receipt)
         require(sha256_bytes(nginx_dump(system)) == manifest.nginx.dump_sha256, "rollback_probe")
     except RolloutError:
@@ -985,27 +1178,48 @@ def activate(
 ) -> None:
     if not dry_run and require_root:
         require(os.geteuid() == 0, "root")
-    before, active = prepare(manifest, system)
+    prepared = prepare(manifest, system)
     if dry_run:
         return
     rearm_recovered_operation(manifest, system)
     previous_link = link_state(manifest.release.current_link)
-    root_status = curl_status(system, f"{PUBLIC_ORIGIN}/")
-    marker_status, marker_sha256 = curl_fingerprint(system, f"{PUBLIC_ORIGIN}/{RELEASE_MARKER}")
-    operation = write_receipt(manifest, before, active, previous_link, root_status, marker_status, marker_sha256)
+    if prepared.mode == MANAGED_UPDATE:
+        predecessor = validate_managed_predecessor(manifest, prepared.before)
+        root_status, marker_status, marker_sha256 = managed_predecessor_baseline(system, predecessor)
+    else:
+        root_status = curl_status(system, f"{PUBLIC_ORIGIN}/")
+        marker_status, marker_sha256 = curl_fingerprint(system, f"{PUBLIC_ORIGIN}/{RELEASE_MARKER}")
+    operation = write_receipt(
+        manifest,
+        prepared.before,
+        prepared.active,
+        prepared.mode,
+        previous_link,
+        root_status,
+        marker_status,
+        marker_sha256,
+    )
     changed = False
     try:
-        move_legacy_out(manifest, operation)
-        verify_enabled_site(manifest.nginx)
-        info = manifest.nginx.site.stat()
         # Re-hash the complete regular-file export tree at the last safe point,
         # immediately before making it reachable through ``current``.
         validate_release(manifest.release)
-        atomic_symlink(manifest.release.current_link, str(manifest.release.directory))
-        atomic_write(manifest.nginx.site, active, stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid)
+        if prepared.mode == INITIAL_CONVERSION:
+            move_legacy_out(manifest, operation)
+            verify_enabled_site(manifest.nginx)
+            info = manifest.nginx.site.stat()
+        else:
+            managed_site = check_pins(manifest, system)
+            require(sha256_bytes(managed_site) == sha256_bytes(prepared.before), "nginx_site")
+            validate_managed_predecessor(manifest, managed_site)
+        # Arm rollback before os.replace() can change current but fsync fails.
         changed = True
-        nginx_test(system)
-        nginx_reload(system)
+        atomic_symlink(manifest.release.current_link, str(manifest.release.directory))
+        if prepared.mode == INITIAL_CONVERSION:
+            atomic_write(manifest.nginx.site, prepared.active, stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid)
+        if prepared.mode == INITIAL_CONVERSION:
+            nginx_test(system)
+            nginx_reload(system)
         probe_static(manifest, system)
     except BaseException as error:
         original_stage = safe_failure_stage(error, "activation")
@@ -1015,7 +1229,10 @@ def activate(
             original_stage=original_stage,
             rollback_stage=None,
         )
-        if changed or any((operation / "legacy" / item.path.name).exists() for item in manifest.nginx.legacy_includes):
+        if changed or (
+            prepared.mode == INITIAL_CONVERSION
+            and any((operation / "legacy" / item.path.name).exists() for item in manifest.nginx.legacy_includes)
+        ):
             try:
                 restore(manifest, system, require_active=False, require_root=False)
             except BaseException as rollback_error:
@@ -1052,13 +1269,13 @@ def run(arguments: argparse.Namespace, system: System | None = None) -> int:
     runner = system or System()
     if arguments.prepare:
         prepare(manifest, runner)
-        print("prepare=PASS release=f386ae5 origin=https://1toall.phone11.ai")
+        print(f"prepare=PASS release={RELEASE_SHA[:7]} origin={PUBLIC_ORIGIN}")
     elif arguments.activate:
         activate(manifest, runner, dry_run=arguments.dry_run)
-        print("activate=DRY_RUN" if arguments.dry_run else "activate=PASS release=f386ae5 origin=https://1toall.phone11.ai")
+        print("activate=DRY_RUN" if arguments.dry_run else f"activate=PASS release={RELEASE_SHA[:7]} origin={PUBLIC_ORIGIN}")
     else:
         restore(manifest, runner, dry_run=arguments.dry_run)
-        print("rollback=DRY_RUN" if arguments.dry_run else "rollback=PASS release=f386ae5")
+        print("rollback=DRY_RUN" if arguments.dry_run else f"rollback=PASS release={RELEASE_SHA[:7]}")
     return 0
 
 

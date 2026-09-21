@@ -40,3 +40,13 @@ A dedicated key named `Phone11 production email` was then created with sending a
 ## Rollback
 
 Hide and drain the recovery routes first, then restore the exact credential sign-in route to the previous backend. Remove the password-reset runtime settings and redeploy the previous candidate artifact. Recovery then reports disabled and new reset requests return a generic service-unavailable response. Existing sign-in and sign-out paths remain available. Revoke the dedicated Resend key after the rollback backend is healthy. No database rollback is required; expired or outstanding verification rows remain bounded by Better Auth expiry and cannot create a session without a successful single-use reset.
+
+## Tracking readback (2026-09-22)
+
+The live Phone11 domain Configuration page still shows **Enable tracking metrics → Configure**. Opening Configure shows **New tracking subdomain**, not an existing tracking configuration. No tracking subdomain was submitted or created. Resend's current official [tracking documentation](https://resend.com/docs/dashboard/domains/tracking) states both tracking features are disabled by default and documents this same Configure → Add domain → DNS verification activation flow. This establishes the dashboard's unconfigured/default-off state; it is not an API boolean readback. The checked click-tracking option in the unsaved new-domain form is a creation default, not an active setting. The real email's direct link and lack of a tracking image remain a separate delivery check.
+
+## Live owner delivery (2026-09-22)
+
+Frontend `076ddac068dd6efbca91a152f75886127a22c0b2` was verified in a real browser with working sign-in controls, then displayed Forgot password after backend `recovery-bbd14cf` activation. One owner-authorized reset request was submitted through that form. The page returned the generic Check your email result. Resend email ID `01a0c54d-d8c2-721d-8212-bbcf76187f05` reports **Delivered**, subject Reset your Phone11 password, sender Phone11 <noreply@phone11.ai>. Provider email HTML contains exactly one anchor to `https://1toall.phone11.ai/auth/reset-password`, token only in the fragment, no token query parameter, and no image tag. No token was written to this record. This is provider delivery/HTML evidence, not an inbox-source observation.
+
+The owner was asked to enter and submit a new password privately and confirm sign-in; that real-account single-use/session-revocation acceptance is pending. Existing automated transaction/race tests and the live invalid-token rejection do not replace the owner's completion.
