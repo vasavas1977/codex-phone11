@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -149,7 +150,17 @@ class OperatorUnitTests(unittest.TestCase):
         with patch.object(operator.subprocess, "run", side_effect=completed) as invoked:
             operator.run_database("prepare")
         self.assertEqual(invoked.call_args_list[0].args[0][-1], operator.TARGET_CONTAINER_ID)
-        self.assertEqual(invoked.call_args_list[1].args[0][4], operator.TARGET_CONTAINER_ID)
+        self.assertEqual(invoked.call_args_list[1].args[0][5], operator.TARGET_CONTAINER_ID)
+        self.assertEqual(invoked.call_args_list[1].args[0][0:5], [
+            "/usr/bin/docker", "exec", "--interactive", "--workdir", "/app",
+        ])
+
+    def test_real_subprocess_forwards_exact_sql_bytes_to_child_stdin(self) -> None:
+        sql = b"BEGIN;\nSELECT 'tenant-settings';\nCOMMIT;\n"
+        command = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"]
+        result = operator.run_with_input(command, sql, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, sql)
 
     def test_fixture_environment_does_not_inherit_connection_overrides(self) -> None:
         with patch.dict(os.environ, {

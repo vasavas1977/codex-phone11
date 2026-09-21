@@ -269,6 +269,24 @@ async function snapshot(client) {
 '''
 
 
+def database_command(container_id: str, action: str, contract: str) -> list[str]:
+    return [
+        "/usr/bin/docker", "exec", "--interactive", "--workdir", "/app",
+        container_id, "node", "-e", NODE_PROGRAM, action, contract,
+    ]
+
+
+def run_with_input(command: Sequence[str], payload: bytes, *, timeout: int) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        command,
+        input=payload,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+        check=False,
+    )
+
+
 def run_database(action: str, sql: bytes = b"") -> Mapping[str, Any]:
     contract = canonical_bytes(
         {
@@ -278,15 +296,7 @@ def run_database(action: str, sql: bytes = b"") -> Mapping[str, Any]:
     ).decode("utf-8")
     try:
         container_id = inspect_target()
-        result = subprocess.run(
-            ["/usr/bin/docker", "exec", "--workdir", "/app", container_id, "node", "-e", NODE_PROGRAM, action, contract],
-            input=sql,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=45,
-            check=False,
-        )
+        result = run_with_input(database_command(container_id, action, contract), sql, timeout=45)
         guarded(result.returncode == 0 and 0 < len(result.stdout) <= MAX_NODE_OUTPUT_BYTES, "database")
         document = strict_json(result.stdout, "database")
         return document
