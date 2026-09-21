@@ -328,9 +328,10 @@ def ensure_target_absent(system: System, topology: Topology) -> None:
         sock.close()
 
 
-def recovery_route_fragment(build: str) -> bytes:
+def recovery_route_fragment(marker: str, build: str) -> bytes:
     guarded(bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", build)), "nginx_route")
-    return "".join(
+    guarded(marker.startswith("# PHONE11_PARALLEL_API_INSERT ") and "\n" not in marker and "\r" not in marker, "nginx_route")
+    return ("".join(
         f"    location = {path} {{\n"
         "        proxy_pass http://127.0.0.1:3004;\n"
         "        proxy_http_version 1.1;\n"
@@ -342,7 +343,97 @@ def recovery_route_fragment(build: str) -> bytes:
         f"        add_header X-Phone11-Recovery-Candidate {build} always;\n"
         "    }\n"
         for path in RECOVERY_ROUTE_PATHS
-    ).encode()
+    ) + f"    {marker}\n").encode()
+
+
+def trpc_route_fragment(marker: str, build: str, port: int, allowed_ports: set[int] | None = None) -> bytes:
+    """Return only the two exact tRPC locations, excluding the shared marker."""
+
+    complete = proxy_fragment(marker, build, port, allowed_ports)
+    marker_line = f"    {marker}\n".encode()
+    guarded(complete.endswith(marker_line), "nginx_route")
+    return complete[:-len(marker_line)]
+
+
+def settings_route_fragment(marker: str, trpc_build: str, recovery_build: str, port: int) -> bytes:
+    """Reproduce the deployed tRPC-then-recovery marker replacement sequence."""
+
+    original = f"    {marker}\n".encode()
+    with_trpc = original.replace(
+        marker.encode(),
+        proxy_fragment(marker, trpc_build, port, {SETTINGS_CURRENT_PORT, SETTINGS_TARGET_PORT}).rstrip(b"\n"),
+    )
+    return with_trpc.replace(
+        marker.encode(), recovery_route_fragment(marker, recovery_build).rstrip(b"\n")
+    )
+
+
+def nginx_tokens(raw: bytes, stage: str) -> list[str]:
+    """Tokenize the pinned Nginx source while excluding comments."""
+
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise GuardError(stage) from error
+    tokens: list[str] = []
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character == "#":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+            continue
+        if character in "{};":
+            tokens.append(character)
+            index += 1
+            continue
+        value: list[str] = []
+        quote = character if character in "\"'" else None
+        if quote is not None:
+            index += 1
+        while index < len(text):
+            character = text[index]
+            if character == "\\":
+                guarded(index + 1 < len(text), stage)
+                value.extend((character, text[index + 1]))
+                index += 2
+                continue
+            if quote is not None:
+                if character == quote:
+                    index += 1
+                    break
+            elif character.isspace() or character in "{};#":
+                break
+            value.append(character)
+            index += 1
+        else:
+            guarded(quote is None, stage)
+        tokens.append("".join(value))
+    return tokens
+
+
+def validate_settings_site_routes(raw: bytes, expected: bytes, stage: str) -> None:
+    """Require the six known routes and reject competing candidate routes."""
+
+    guarded(raw.count(expected) == 1 and b"127.0.0.1:3005" not in raw, stage)
+    remainder = raw.replace(expected, b"", 1)
+    tokens = nginx_tokens(remainder, stage)
+    for index, token in enumerate(tokens):
+        lowered = token.lower()
+        if lowered == "location":
+            end = index + 1
+            while end < len(tokens) and tokens[end] not in {"{", ";", "}"}:
+                end += 1
+            guarded(end < len(tokens) and tokens[end] == "{", stage)
+            argument = "".join(tokens[index + 1:end]).replace("\\", "").lower()
+            guarded("trpc" not in argument and all(path.lower() not in argument for path in RECOVERY_ROUTE_PATHS), stage)
+        if lowered == "proxy_pass":
+            guarded(index + 1 < len(tokens), stage)
+            destination = tokens[index + 1].replace("\\", "").lower()
+            guarded(not re.search(r":(?:3003|3004)(?![0-9])", destination), stage)
 
 
 def inventory_runtime(system: System, name: str, role: str, port: int) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
@@ -413,9 +504,11 @@ def emit_settings_inventory(arguments: argparse.Namespace, system: System) -> No
     parsed = parse_manifest(document)
     load_probes(probe_raw, parsed)
     cloned_config(rendered, active, parsed)
-    current_fragment = proxy_fragment(marker, parsed.current.build, parsed.topology.current_port, {parsed.topology.current_port, parsed.topology.target_port}).rstrip(b"\n")
-    recovery_fragment = recovery_route_fragment(parsed.recovery.build) if parsed.recovery is not None else b""
-    guarded(site_raw.count(recovery_fragment + current_fragment) == 1 and b"127.0.0.1:3005" not in site_raw, "inventory")
+    guarded(parsed.recovery is not None, "inventory")
+    current_fragment = settings_route_fragment(
+        marker, parsed.current.build, parsed.recovery.build, parsed.topology.current_port
+    ).rstrip(b"\n")
+    validate_settings_site_routes(site_raw, current_fragment, "inventory")
     raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
     atomic_write(arguments.output, raw, mode=0o600, uid=0, gid=0)
     print(f"inventory=READY topology=settings-3003-to-3005 manifest_sha256={sha256_bytes(raw)}")
@@ -758,7 +851,18 @@ class Operator:
         topology = self.pins.topology
         raw = secure_read(self.pins.nginx_site)
         require_sha256(raw, self.pins.nginx_site_sha256, "nginx")
-        current = proxy_fragment(self.pins.nginx_marker, self.pins.current.build, topology.current_port, {topology.current_port, topology.target_port}).rstrip(b"\n")
+        if self.pins.schema == SETTINGS_SCHEMA:
+            guarded(self.pins.recovery is not None, "nginx")
+            current = settings_route_fragment(
+                self.pins.nginx_marker, self.pins.current.build,
+                self.pins.recovery.build, topology.current_port,
+            ).rstrip(b"\n")
+            validate_settings_site_routes(raw, current, "nginx")
+        else:
+            current = proxy_fragment(
+                self.pins.nginx_marker, self.pins.current.build,
+                topology.current_port, {topology.current_port, topology.target_port},
+            ).rstrip(b"\n")
         target_origin = f"127.0.0.1:{topology.target_port}".encode()
         guarded(raw.count(current) == 1 and target_origin not in raw and b"location = /api/profile" not in current, "nginx")
         require_sha256(self.system.command(["nginx", "-T"]), self.pins.nginx_dump_sha256, "nginx")
@@ -915,9 +1019,27 @@ class Operator:
         guarded(baseline.get("Id") == baseline_id, "baseline_changed")
         guarded(current.get("Id") == current_id, "candidate_changed")
         original = self.nginx()
-        current_fragment = proxy_fragment(self.pins.nginx_marker, self.pins.current.build, topology.current_port, {topology.current_port, topology.target_port}).rstrip(b"\n")
-        target_fragment = proxy_fragment(self.pins.nginx_marker, self.pins.release_build, topology.target_port, {topology.current_port, topology.target_port}).rstrip(b"\n")
+        current_fragment = trpc_route_fragment(
+            self.pins.nginx_marker, self.pins.current.build,
+            topology.current_port, {topology.current_port, topology.target_port},
+        ).rstrip(b"\n")
+        target_fragment = trpc_route_fragment(
+            self.pins.nginx_marker, self.pins.release_build,
+            topology.target_port, {topology.current_port, topology.target_port},
+        ).rstrip(b"\n")
         routed = original.replace(current_fragment, target_fragment, 1)
+        if self.pins.schema == SETTINGS_SCHEMA:
+            guarded(self.pins.recovery is not None, "nginx_route")
+            target_routes = settings_route_fragment(
+                self.pins.nginx_marker, self.pins.release_build,
+                self.pins.recovery.build, topology.target_port,
+            ).rstrip(b"\n")
+            guarded(
+                original.count(current_fragment) == 1
+                and routed.count(target_routes) == 1
+                and routed.replace(target_fragment, current_fragment, 1) == original,
+                "nginx_route",
+            )
         guarded(routed != original and routed.count(b"location = /api/trpc") == 1 and routed.count(b"location ^~ /api/trpc/") == 1 and b"/api/profile" not in target_fragment, "nginx_route")
         self.save_rollback(original, routed)
         info = self.pins.nginx_site.stat()

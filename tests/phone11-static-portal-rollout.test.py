@@ -43,7 +43,7 @@ server {
     }
 }
 """
-MARKER = b'{"api_origin":"https://api.phone11.ai","public_origin":"https://1toall.phone11.ai","schema":"phone11-static-portal-release/v1","source_sha":"076ddac068dd6efbca91a152f75886127a22c0b2"}'
+MARKER = b'{"api_origin":"https://api.phone11.ai","public_origin":"https://1toall.phone11.ai","schema":"phone11-static-portal-release/v1","source_sha":"1de803b476f35659a45af77ba4b02a7a7d525f66"}'
 
 
 class FakeSystem(portal.System):
@@ -138,6 +138,23 @@ class FakeSystem(portal.System):
 
 
 class StaticPortalRolloutTests(unittest.TestCase):
+    def use_fixture_candidate_pins(self, export_manifest: bytes, main_javascript: bytes) -> None:
+        """Keep small fixtures while exercising candidate-only pin enforcement."""
+        original = {
+            "RELEASE_EXPORT_MANIFEST_SHA256": portal.RELEASE_EXPORT_MANIFEST_SHA256,
+            "RELEASE_MAIN_JAVASCRIPT": portal.RELEASE_MAIN_JAVASCRIPT,
+            "RELEASE_MAIN_JAVASCRIPT_SHA256": portal.RELEASE_MAIN_JAVASCRIPT_SHA256,
+        }
+        portal.RELEASE_EXPORT_MANIFEST_SHA256 = digest(export_manifest)
+        portal.RELEASE_MAIN_JAVASCRIPT = "_expo/static/app.js"
+        portal.RELEASE_MAIN_JAVASCRIPT_SHA256 = digest(main_javascript)
+
+        def restore() -> None:
+            for name, value in original.items():
+                setattr(portal, name, value)
+
+        self.addCleanup(restore)
+
     def create_manifest(self, temp: Path) -> tuple[portal.Manifest, Path, Path, bytes]:
         nginx_dir = temp / "etc" / "nginx"
         enabled = nginx_dir / "sites-enabled"
@@ -161,7 +178,8 @@ class StaticPortalRolloutTests(unittest.TestCase):
         (release_dir / "index.html").write_bytes(index)
         (release_dir / "portal" / "index.html").write_bytes(portal_index)
         (release_dir / "_expo" / "static").mkdir(parents=True)
-        (release_dir / "_expo" / "static" / "app.js").write_text("const api='https://api.phone11.ai';")
+        main_javascript = b"const api='https://api.phone11.ai';"
+        (release_dir / "_expo" / "static" / "app.js").write_bytes(main_javascript)
         (release_dir / portal.RELEASE_MARKER).write_bytes(MARKER)
         export = {
             "schema": portal.EXPORT_SCHEMA,
@@ -177,6 +195,7 @@ class StaticPortalRolloutTests(unittest.TestCase):
         export_path = release_dir / "export-manifest.json"
         export_raw = json.dumps(export, sort_keys=True, separators=(",", ":")).encode()
         export_path.write_bytes(export_raw)
+        self.use_fixture_candidate_pins(export_raw, main_javascript)
         current_link = release_dir.parents[1] / "current"
         state_dir = nginx_dir / "phone11-static-portal-rollout"
         manifest_raw = {
@@ -213,7 +232,7 @@ class StaticPortalRolloutTests(unittest.TestCase):
         temp: Path,
     ) -> tuple[portal.Manifest, Path, Path, bytes, str, dict[str, bytes]]:
         manifest, site, current, _initial_dump = self.create_manifest(temp)
-        predecessor_sha = "a" * 40
+        predecessor_sha = portal.LIVE_RELEASE_SHA
         predecessor_marker = (
             b'{"api_origin":"https://api.phone11.ai","public_origin":"https://1toall.phone11.ai",'
             b'"schema":"phone11-static-portal-release/v1","source_sha":"'
@@ -290,6 +309,44 @@ class StaticPortalRolloutTests(unittest.TestCase):
             {predecessor_sha: predecessor_marker, portal.RELEASE_SHA: MARKER},
         )
 
+    def reseal_fixture_file(self, release: portal.Release, relative: str, value: bytes) -> portal.Release:
+        path = release.directory / relative
+        path.write_bytes(value)
+        export = json.loads(release.export_manifest.read_bytes())
+        export["files"][relative] = digest(value)
+        export_raw = json.dumps(export, sort_keys=True, separators=(",", ":")).encode()
+        release.export_manifest.write_bytes(export_raw)
+        return replace(release, export_manifest_sha256=digest(export_raw))
+
+    def test_candidate_exact_export_pins_match_the_clean_archive_evidence(self):
+        self.assertEqual(portal.RELEASE_SHA, "1de803b476f35659a45af77ba4b02a7a7d525f66")
+        self.assertEqual(portal.LIVE_RELEASE_SHA, "076ddac068dd6efbca91a152f75886127a22c0b2")
+        self.assertEqual(portal.RELEASE_EXPORT_MANIFEST_SHA256, "a7e918e791abdea2a008b5ac9b5e6a766a0cddd25937219d852dd142f21d3aa5")
+        self.assertEqual(digest(MARKER), portal.RELEASE_MARKER_SHA256)
+        self.assertEqual(portal.RELEASE_MAIN_JAVASCRIPT, "_expo/static/js/web/entry-6a39610a85e778790e8633a3c4be57d4.js")
+        self.assertEqual(portal.RELEASE_MAIN_JAVASCRIPT_SHA256, "c8fc050f716e8fd3f4de5a665c1e9b7ec32bbe3466c69ad7174cac0ed740c6c8")
+
+    def test_target_rejects_a_resealed_marker_or_entry_bundle_that_is_not_the_reviewed_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, _site, _current, _dump = self.create_manifest(Path(directory))
+            changed = self.reseal_fixture_file(
+                manifest.release,
+                portal.RELEASE_MARKER,
+                b'{"source_sha":"repacked"}',
+            )
+            with self.assertRaisesRegex(portal.RolloutError, "release"):
+                portal.validate_target_release(changed)
+
+        with tempfile.TemporaryDirectory() as directory:
+            manifest, _site, _current, _dump = self.create_manifest(Path(directory))
+            changed = self.reseal_fixture_file(
+                manifest.release,
+                portal.RELEASE_MAIN_JAVASCRIPT,
+                b"const api='https://api.phone11.ai';/* repacked */",
+            )
+            with self.assertRaisesRegex(portal.RolloutError, "release"):
+                portal.validate_target_release(changed)
+
     def test_rewrites_only_the_dedicated_tls_root_location(self):
         with tempfile.TemporaryDirectory() as directory:
             current = Path(directory) / "current"
@@ -331,6 +388,10 @@ class StaticPortalRolloutTests(unittest.TestCase):
             ) = self.create_managed_update_manifest(Path(directory))
             system = FakeSystem(dump, current_link=current, markers=markers)
             static_before = site.read_bytes()
+            predecessor_release = manifest.release.directory.parent / predecessor_sha
+            predecessor_export = (predecessor_release / portal.EXPORT_MANIFEST_NAME).read_bytes()
+            predecessor_marker = (predecessor_release / portal.RELEASE_MARKER).read_bytes()
+            self.assertEqual(predecessor_sha, portal.LIVE_RELEASE_SHA)
 
             prepared = portal.prepare(manifest, system)
             self.assertEqual(prepared.mode, portal.MANAGED_UPDATE)
@@ -349,7 +410,11 @@ class StaticPortalRolloutTests(unittest.TestCase):
 
             portal.restore(manifest, system, require_root=False)
             self.assertEqual(site.read_bytes(), static_before)
-            self.assertEqual(os.readlink(current), str(manifest.release.directory.parent / predecessor_sha))
+            self.assertEqual(os.readlink(current), str(predecessor_release))
+            self.assertEqual((predecessor_release / portal.EXPORT_MANIFEST_NAME).read_bytes(), predecessor_export)
+            self.assertEqual((predecessor_release / portal.RELEASE_MARKER).read_bytes(), predecessor_marker)
+            restored = portal.sealed_predecessor_release(manifest, os.readlink(current), "rollback")
+            portal.validate_release(restored)
             self.assertEqual(system.reloads, 0)
 
     def test_managed_update_rejects_a_non_200_predecessor_root_baseline(self):

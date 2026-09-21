@@ -32,7 +32,16 @@ from typing import Any, Callable, Iterable, Sequence
 
 SCHEMA = "phone11-static-portal-rollout/v1"
 EXPORT_SCHEMA = "phone11-static-portal-export/v1"
-RELEASE_SHA = "076ddac068dd6efbca91a152f75886127a22c0b2"
+# The candidate is intentionally pinned as a complete export, rather than by
+# source SHA alone.  These values are from the clean archive built for this
+# controller; the managed predecessor remains generic and is revalidated from
+# its own sealed export before a link is changed or restored.
+RELEASE_SHA = "1de803b476f35659a45af77ba4b02a7a7d525f66"
+LIVE_RELEASE_SHA = "076ddac068dd6efbca91a152f75886127a22c0b2"
+RELEASE_EXPORT_MANIFEST_SHA256 = "a7e918e791abdea2a008b5ac9b5e6a766a0cddd25937219d852dd142f21d3aa5"
+RELEASE_MARKER_SHA256 = "e35b46d49ba675dc33e6e4563b6e3599d6bd4c0b58768d1aa048fbdde6c798e3"
+RELEASE_MAIN_JAVASCRIPT = "_expo/static/js/web/entry-6a39610a85e778790e8633a3c4be57d4.js"
+RELEASE_MAIN_JAVASCRIPT_SHA256 = "c8fc050f716e8fd3f4de5a665c1e9b7ec32bbe3466c69ad7174cac0ed740c6c8"
 HOSTNAME = "1toall.phone11.ai"
 EDGE_IP = "43.209.112.208"
 API_ORIGIN = "https://api.phone11.ai"
@@ -277,7 +286,7 @@ def parse_manifest(path: Path) -> Manifest:
     directory = absolute(release_raw["directory"], "manifest")
     export_manifest = absolute(release_raw["manifest"], "manifest")
     current_link = absolute(release_raw["current_link"], "manifest")
-    require(is_sha256(release_raw["manifest_sha256"]), "manifest")
+    require(release_raw["manifest_sha256"] == RELEASE_EXPORT_MANIFEST_SHA256, "manifest")
     require(directory.name == source_sha and export_manifest.parent == directory, "manifest")
     require(current_link.parent == directory.parent.parent and current_link.name == "current", "manifest")
 
@@ -397,6 +406,38 @@ def validate_release(release: Release) -> None:
         raise
     except OSError as error:
         raise RolloutError("release") from error
+
+
+def validate_target_release(release: Release) -> None:
+    """Validate the exact reviewed candidate without constraining rollback.
+
+    ``validate_release`` deliberately remains generic because a managed
+    rollback needs to validate the sealed release selected by the existing
+    ``current`` link.  Only the candidate supplied by this operator is pinned
+    to the exact export manifest, marker, and browser entry bundle.
+    """
+    validate_release(release)
+    require(
+        release.source_sha == RELEASE_SHA
+        and release.export_manifest_sha256 == RELEASE_EXPORT_MANIFEST_SHA256,
+        "release",
+    )
+    require(
+        sha256_bytes(read_regular(release.directory / RELEASE_MARKER, "release", MAX_REQUIRED_FILE_BYTES))
+        == RELEASE_MARKER_SHA256,
+        "release",
+    )
+    require(
+        sha256_bytes(
+            read_regular(
+                release.directory / RELEASE_MAIN_JAVASCRIPT,
+                "release",
+                MAX_REQUIRED_FILE_BYTES,
+            )
+        )
+        == RELEASE_MAIN_JAVASCRIPT_SHA256,
+        "release",
+    )
 
 
 def _lexical_blocks(text: str, keyword: str) -> list[tuple[int, int, str]]:
@@ -761,7 +802,7 @@ def check_pins(manifest: Manifest, system: System) -> bytes:
 
 
 def prepare(manifest: Manifest, system: System) -> Prepared:
-    validate_release(manifest.release)
+    validate_target_release(manifest.release)
     site = check_pins(manifest, system)
     if is_exact_managed_static_site(site, manifest.release.current_link):
         validate_managed_predecessor(manifest, site)
@@ -1203,7 +1244,7 @@ def activate(
     try:
         # Re-hash the complete regular-file export tree at the last safe point,
         # immediately before making it reachable through ``current``.
-        validate_release(manifest.release)
+        validate_target_release(manifest.release)
         if prepared.mode == INITIAL_CONVERSION:
             move_legacy_out(manifest, operation)
             verify_enabled_site(manifest.nginx)

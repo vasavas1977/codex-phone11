@@ -19,6 +19,13 @@ blue = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = blue
 SPEC.loader.exec_module(blue)
 
+RECOVERY_SCRIPT = Path(__file__).parents[1] / "scripts" / "phone11-recovery-rollout.py"
+RECOVERY_SPEC = importlib.util.spec_from_file_location("phone11_recovery_rollout_fixture", RECOVERY_SCRIPT)
+assert RECOVERY_SPEC is not None and RECOVERY_SPEC.loader is not None
+recovery = importlib.util.module_from_spec(RECOVERY_SPEC)
+sys.modules[RECOVERY_SPEC.name] = recovery
+RECOVERY_SPEC.loader.exec_module(recovery)
+
 SHA = "1" * 64
 BASE_IMAGE = "sha256:" + "2" * 64
 CURRENT_IMAGE = "sha256:" + "3" * 64
@@ -60,7 +67,7 @@ def settings_manifest():
         "retained_candidate": {"container_id": "b" * 64, "image": CURRENT_IMAGE, "runtime_sha256": SHA, "build": "retained-a0f5c46"},
         "active_candidate": {
             "container_id": "c" * 64, "image": "sha256:" + "5" * 64, "runtime_sha256": SHA,
-            "build": "active-39523ae", "compose_file": "/root/active-3003.json",
+            "build": "management-39523ae", "compose_file": "/root/active-3003.json",
             "compose_sha256": SHA, "rendered_sha256": SHA,
         },
         "recovery_candidate": {"container_id": "d" * 64, "image": "sha256:" + "6" * 64, "runtime_sha256": SHA, "build": "recovery-bbd14cf"},
@@ -68,7 +75,7 @@ def settings_manifest():
         "target": {"project": blue.SETTINGS_TARGET_PROJECT, "tenant_id": 1, "denied_tenant_id": 2_147_483_647},
         "probes": {"file": "/root/probes.json", "sha256": SHA},
         "nginx": {"site": "/etc/nginx/sites-enabled/phone11ai", "site_sha256": SHA, "dump_sha256": SHA,
-                  "marker": "# PHONE11_PARALLEL_API_INSERT reviewed-123"},
+                  "marker": "# PHONE11_PARALLEL_API_INSERT read-receipts-a0f5c46-0c3c4e227148"},
         "kamailio": {"config_path": "/etc/kamailio/kamailio.cfg", "config_sha256": SHA, "wake_occurrences": 4},
         "public_origin": blue.PUBLIC_ORIGIN,
     }
@@ -163,11 +170,16 @@ def settings_inventory_reader(arguments, site):
 
 def settings_inventory_site(document):
     marker = document["nginx"]["marker"]
-    return (
-        b"server {\n"
-        + blue.recovery_route_fragment(document["recovery_candidate"]["build"])
-        + blue.proxy_fragment(marker, document["active_candidate"]["build"], 3003, {3003, 3005})
-        + b"}\n"
+    original = f"server {{\n    {marker}\n}}\n".encode()
+    with_trpc = original.replace(
+        marker.encode(),
+        blue.proxy_fragment(
+            marker, document["active_candidate"]["build"], 3003, {3003, 3005}
+        ).rstrip(b"\n"),
+    )
+    return with_trpc.replace(
+        marker.encode(),
+        recovery.proxy_fragment(marker, document["recovery_candidate"]["build"]).rstrip(b"\n"),
     )
 
 
@@ -197,7 +209,7 @@ def settings_rendered():
     service["image"] = "phone11-backend:management-39523ae"
     service["environment"]["PORT"] = "3003"
     service["ports"][0].update({"published": 3003, "target": 3003})
-    service["healthcheck"]["test"][1] = "curl http://127.0.0.1:3003/api/health && test active-39523ae"
+    service["healthcheck"]["test"][1] = "curl http://127.0.0.1:3003/api/health && test management-39523ae"
     return value
 
 
@@ -334,9 +346,15 @@ class BlueGreenTests(unittest.TestCase):
     def test_settings_inventory_rejects_comment_lookalike_and_missing_recovery_fragments(self):
         document = settings_manifest()
         valid = settings_inventory_site(document)
-        recovery = blue.recovery_route_fragment(document["recovery_candidate"]["build"])
+        def additional_route(fragment):
+            self.assertTrue(valid.endswith(b"}\n"))
+            return valid[:-2] + fragment + b"}\n"
+
         candidates = {
-            "comment": valid.replace(recovery, b"    # proxy_pass http://127.0.0.1:3004;\n", 1),
+            "comment": valid.replace(
+                b"        proxy_pass http://127.0.0.1:3004;",
+                b"        # proxy_pass http://127.0.0.1:3004;", 1,
+            ),
             "lookalike": valid.replace(
                 b"X-Phone11-Recovery-Candidate recovery-bbd14cf",
                 b"X-Phone11-Recovery-Candidate unrelated-recovery", 1,
@@ -344,6 +362,23 @@ class BlueGreenTests(unittest.TestCase):
             "missing_route": valid.replace(
                 b"location = /api/mobile/config {",
                 b"location = /api/mobile/config-missing {", 1,
+            ),
+            "longer_trpc_prefix": additional_route(
+                b"    location /api/trpc/special {\n"
+                b"        proxy_pass http://127.0.0.1:3003;\n"
+                b"    }\n"
+            ),
+            "fifth_recovery_route": additional_route(
+                b"    location = /api/auth/recovery-status {\n"
+                b"        proxy_pass http://127.0.0.1:3004$request_uri;\n"
+                b"    }\n"
+            ),
+            "nested_regex_trpc": additional_route(
+                b"    location /outer {\n"
+                b"        location ~ \"^\\/api\\/(trpc)(?:\\/|$)\" {\n"
+                b"            proxy_pass http://127.0.0.1:3000;\n"
+                b"        }\n"
+                b"    }\n"
             ),
         }
         for name, site in candidates.items():
@@ -360,6 +395,44 @@ class BlueGreenTests(unittest.TestCase):
                         blue.emit_settings_inventory(arguments, system)
                 self.assertEqual(error.exception.stage, "inventory")
                 write.assert_not_called()
+
+    def test_settings_inventory_ignores_comments_and_non_directive_lookalikes(self):
+        document = settings_manifest()
+        valid = settings_inventory_site(document)
+        site = valid[:-2] + (
+            b"    # location /api/trpc/special { proxy_pass http://127.0.0.1:3003; }\n"
+            b"    # proxy_pass http://127.0.0.1:3004;\n"
+            b"    add_header X-Route-Lookalike \"location /api/trpc/special; proxy_pass http://127.0.0.1:3004;\";\n"
+            b"}\n"
+        )
+        arguments = settings_inventory_arguments()
+        inventory_document, system = settings_inventory_system()
+        fake_socket = Mock()
+        with patch.object(blue, "inventory_runtime", side_effect=settings_inventory_runtimes(inventory_document)), \
+             patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, site)), \
+             patch.object(blue, "atomic_write") as write, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            blue.emit_settings_inventory(arguments, system)
+        write.assert_called_once()
+
+    def test_settings_inventory_fixture_uses_exact_recovery_operator_generation(self):
+        document = settings_manifest()
+        marker = document["nginx"]["marker"]
+        expected = recovery.proxy_fragment(marker, document["recovery_candidate"]["build"])
+        self.assertEqual(
+            blue.recovery_route_fragment(marker, document["recovery_candidate"]["build"]),
+            expected,
+        )
+        site = settings_inventory_site(document)
+        self.assertLess(site.index(b"location = /api/trpc"), site.index(b"location = /api/auth/sign-in/email"))
+        self.assertIn(b"\n        location = /api/trpc {\n", site)
+        self.assertIn(b"\n    location ^~ /api/trpc/ {\n", site)
+        self.assertIn(b"\n        location = /api/auth/sign-in/email {\n", site)
+        self.assertIn(b"\n    location = /api/mobile/config {\n", site)
+        self.assertEqual(site.count(b"127.0.0.1:3003"), 2)
+        self.assertEqual(site.count(b"127.0.0.1:3004"), 4)
+        self.assertEqual(site.count(marker.encode()), 1)
 
     def test_settings_rollback_receipt_is_separate_and_topology_bound(self):
         legacy = blue.Operator(pins(), Mock())
@@ -586,6 +659,62 @@ class BlueGreenTests(unittest.TestCase):
                  self.assertRaises(blue.GuardError):
                 operator.activate()
             operator.restore.assert_called_once_with(expected=routed)
+
+    def test_settings_activation_changes_only_trpc_and_keeps_generated_recovery_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory) / "phone11ai"
+            document = settings_manifest()
+            original = settings_inventory_site(document)
+            site.write_bytes(original)
+            current = replace(
+                settings_pins(), nginx_site=site,
+                nginx_site_sha256=blue.sha256_bytes(original),
+            )
+            operator = blue.Operator(current, Mock())
+            operator.prepare = Mock()
+            operator.target_config = settings_rendered()
+            operator.probes = []
+            operator.wait_target = Mock()
+            operator.photos_absent = Mock()
+            operator.wake = Mock()
+            operator.preserved_runtimes = Mock(return_value=(
+                {"Id": current.baseline.container_id}, {"Id": current.current.container_id},
+            ))
+            operator.target = Mock()
+            operator.nginx = Mock(return_value=original)
+            operator.save_rollback = Mock()
+            operator.restore = Mock()
+            operator.system.command.return_value = b""
+            context = Mock()
+            context.__enter__ = Mock(return_value=Path("/root/frozen-3005.json"))
+            context.__exit__ = Mock(return_value=False)
+            written = {}
+
+            def capture_write(_path, raw, **_kwargs):
+                written["site"] = raw
+
+            with patch.object(blue, "frozen_candidate_config", return_value=context), \
+                 patch.object(blue, "atomic_write", side_effect=capture_write), \
+                 patch.object(blue, "secure_read", side_effect=lambda _path, **_kwargs: written["site"]), \
+                 patch.object(blue, "wait_for_route", side_effect=blue.GuardError("readiness")), \
+                 self.assertRaises(blue.GuardError):
+                operator.activate()
+
+            current_trpc = blue.trpc_route_fragment(
+                current.nginx_marker, current.current.build, 3003, {3003, 3005}
+            ).rstrip(b"\n")
+            target_trpc = blue.trpc_route_fragment(
+                current.nginx_marker, current.release_build, 3005, {3003, 3005}
+            ).rstrip(b"\n")
+            expected = original.replace(current_trpc, target_trpc, 1)
+            self.assertEqual(written["site"], expected)
+            self.assertEqual(expected.replace(target_trpc, current_trpc, 1), original)
+            recovery_fragment = recovery.proxy_fragment(
+                current.nginx_marker, current.recovery.build
+            ).rstrip(b"\n")
+            self.assertEqual(original.count(recovery_fragment), 1)
+            self.assertEqual(expected.count(recovery_fragment), 1)
+            operator.restore.assert_called_once_with(expected=expected)
 
 
 if __name__ == "__main__":
