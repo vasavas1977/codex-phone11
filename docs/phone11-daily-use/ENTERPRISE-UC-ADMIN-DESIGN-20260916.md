@@ -4,7 +4,16 @@ Research and source inspection: 16 September 2026. This design extends Phone11; 
 
 ## Current capability
 
-Settings exposes workspace administration to owners/admins. `/admin` links extensions, numbers, IVR, ring groups, queues and business hours to PBX APIs. The extension view lists assignments and creates unassigned extensions; person assignment explicitly remains read-only until a real directory is connected. `/admin/users` is unavailable. Therefore Phone11 has a PBX administration foundation, not complete employee lifecycle management. Source-backed screens still require deployment and tenant acceptance tests.
+Settings exposes workspace administration to owners/admins. `/admin` links people, extensions, numbers, IVR, ring groups, queues and business hours to PBX APIs. The people view manages existing tenant memberships but cannot invite or create identities. Therefore Phone11 has a PBX administration foundation, not complete employee lifecycle management. Source-backed screens still require deployment and tenant acceptance tests.
+
+## Management UI source state — 21 September 2026
+
+- Workspace administration is linked only after the signed-in membership resolves to `owner` or `admin`. The PBX server remains the authority for every direct route and mutation; the client guard does not grant access.
+- The admin overview, people directory, extensions, carrier-provisioned number inventory, IVR, ring groups, queues, business-hours rules, and CDR-backed analytics are source-backed. Loading, retry, empty, and direct-URL permission states are visible. This is source-ready only, not deployment, carrier, or handset evidence.
+- The personal Phone11 portal reads only extensions directly assigned to the signed-in active member, their assigned direct numbers, CDR-backed call activity, and the existing owner-scoped voicemail inbox. It does not present sample balances, invoices, payment methods, purchasable numbers, ticket history, profile edits, or synthetic forwarding rules.
+- Personal call activity is visible only when a CDR records the member's immutable call-time identity. Reassigning an extension never transfers historical call visibility; legacy CDRs without either participant identity are intentionally omitted until the CDR pipeline supplies that identity.
+- Billing and company membership are owned by Super Number. Phone11 has no verified shared-service integration, so the portal keeps billing and support-ticket pages explicitly unavailable and does not construct external links.
+- Personal forwarding and DND are deliberately unavailable. The source has no verified active-dialplan implementation for those preferences, and no UI may claim a saved choice will change an incoming call.
 
 ## Reference findings
 
@@ -19,16 +28,16 @@ These are product design recommendations derived from the cited capabilities, no
 
 Desktop: persistent left navigation, company selector and current role at the top, searchable list in the centre, selected record detail on the right. Constrain content width for forms; use dense accessible tables for large directories. Mobile: Settings > Workspace administration, single-column lists and pushed detail screens with persistent Back. Use system/light/dark appearance consistently.
 
-| Section | Contents |
-| --- | --- |
-| Overview | Setup tasks, real usage totals, service alerts with timestamps |
-| People & access | Employees, invitations, groups, roles, sites |
-| Phone system | Extensions, numbers, auto attendants/IVR, ring groups, queues, schedules, voicemail |
-| Devices | Assigned desk phones and app registrations, last seen, provisioning state |
-| Policies | Calling, recording/AI, retention, emergency location |
-| Reports | Call activity, queue outcomes, quality; only measured values |
-| Security & audit | Admin changes, sessions, SSO/SCIM configuration when supported |
-| Integrations | Explicit account/tenant mappings for Super Number, LINE and providers |
+| Section          | Contents                                                                            |
+| ---------------- | ----------------------------------------------------------------------------------- |
+| Overview         | Setup tasks, real usage totals, service alerts with timestamps                      |
+| People & access  | Employees, invitations, groups, roles, sites                                        |
+| Phone system     | Extensions, numbers, auto attendants/IVR, ring groups, queues, schedules, voicemail |
+| Devices          | Assigned desk phones and app registrations, last seen, provisioning state           |
+| Policies         | Calling, recording/AI, retention, emergency location                                |
+| Reports          | Call activity, queue outcomes, quality; only measured values                        |
+| Security & audit | Admin changes, sessions, SSO/SCIM configuration when supported                      |
+| Integrations     | Explicit account/tenant mappings for Super Number, LINE and providers               |
 
 Unsupported sections remain absent from primary navigation until usable. Search, filters and clear empty/error/loading states replace decorative cards. Errors must not appear as zero users or zero calls. No billable-call action is included.
 

@@ -29,11 +29,20 @@ describe("enterprise PBX admin schedules", () => {
   });
 
   it("loads editable weekday hours from persisted rules with SQL time precision", () => {
-    expect(businessHoursFromRules([
-      { day_of_week: [1, 2, 3, 4, 5], start_time: "08:30:00", end_time: "17:15:00" },
-    ])).toEqual({ startTime: "08:30", endTime: "17:15" });
-    expect(businessHoursFromRules([{ day_of_week: [0], start_time: "09:00", end_time: "17:00" }]))
-      .toEqual({ startTime: "09:00", endTime: "18:00" });
+    expect(
+      businessHoursFromRules([
+        {
+          day_of_week: [1, 2, 3, 4, 5],
+          start_time: "08:30:00",
+          end_time: "17:15:00",
+        },
+      ]),
+    ).toEqual({ startTime: "08:30", endTime: "17:15" });
+    expect(
+      businessHoursFromRules([
+        { day_of_week: [0], start_time: "09:00", end_time: "17:00" },
+      ]),
+    ).toEqual({ startTime: "09:00", endTime: "18:00" });
   });
 
   it("describes open and closed routing without inventing destinations", () => {
@@ -144,7 +153,9 @@ describe("enterprise PBX admin screens", () => {
       "utf8",
     );
     expect(system).toContain("UnavailableAdminScreen");
-    expect(system).not.toMatch(/MOCK_USERS|Math\.random|All systems operational/);
+    expect(system).not.toMatch(
+      /MOCK_USERS|Math\.random|All systems operational/,
+    );
 
     expect(unavailable).toContain("Not available yet");
     expect(unavailable).toContain("live service");
@@ -155,5 +166,17 @@ describe("enterprise PBX admin screens", () => {
     expect(settings).toContain('["owner", "admin"].includes');
     expect(settings).toContain('router.push("/admin")');
     expect(settings).toContain("canManageWorkspace && row");
+  });
+
+  it("does not render dashboard data before sign-in and workspace authorization resolve", () => {
+    expect(dashboard).toContain("useAuth({ autoFetch: false })");
+    expect(dashboard).toContain("useTenant(Boolean(user))");
+    expect(dashboard).toContain("Sign in to use workspace administration");
+    expect(dashboard).toContain("Checking workspace access");
+    expect(dashboard).toContain("Workspace administration is unavailable");
+    expect(dashboard).toContain(
+      "Only workspace owners and administrators can open this area.",
+    );
+    expect(dashboard).toContain("router.replace(SIGN_IN_ROUTE)");
   });
 });

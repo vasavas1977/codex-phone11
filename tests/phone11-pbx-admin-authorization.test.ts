@@ -108,7 +108,7 @@ describe("PBX workspace administrator authorization", () => {
       "utf8",
     );
     expect(source).not.toContain("adminProcedure");
-    expect(source.match(/await getTenantAdminCtx\(ctx/g)).toHaveLength(18);
+    expect(source.match(/await getTenantAdminCtx\(ctx/g)).toHaveLength(20);
   });
 
   it.each(["owner", "admin"] as const)(
@@ -159,7 +159,9 @@ describe("PBX workspace administrator authorization", () => {
       vi.mocked(getCallStats).mockResolvedValueOnce(report as any);
 
       await expect(
-        pbxRouter.createCaller(context("user")).dashboard.analytics({ period: "week" }),
+        pbxRouter
+          .createCaller(context("user"))
+          .dashboard.analytics({ period: "week" }),
       ).resolves.toEqual(report);
       expect(getCallStats).toHaveBeenCalledWith(7, "week");
     },
@@ -171,7 +173,9 @@ describe("PBX workspace administrator authorization", () => {
       db.query.mockResolvedValueOnce({ rows: [membership(role)] });
 
       await expect(
-        pbxRouter.createCaller(context("admin")).dashboard.analytics({ period: "month" }),
+        pbxRouter
+          .createCaller(context("admin"))
+          .dashboard.analytics({ period: "month" }),
       ).rejects.toMatchObject({ code: "FORBIDDEN" });
       expect(getCallStats).not.toHaveBeenCalled();
     },
@@ -497,13 +501,94 @@ describe("PBX call-record isolation", () => {
   });
 });
 
+describe("PBX member self-service isolation", () => {
+  it("lists only extensions assigned to the signed-in active member", async () => {
+    const assigned = [{ id: 41, extension_number: "3101", phone_numbers: [] }];
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("user")] })
+      .mockResolvedValueOnce({ rows: assigned });
+
+    await expect(
+      pbxRouter.createCaller(context()).selfService.overview(),
+    ).resolves.toEqual(assigned);
+
+    expect(db.query.mock.calls[1]).toEqual([
+      expect.stringContaining(
+        "JOIN user_extensions ue ON ue.user_id = tm.user_id",
+      ),
+      [7, 9],
+    ]);
+    expect(db.query.mock.calls[1][0]).toContain("tm.status = 'active'");
+    expect(db.query.mock.calls[1][0]).toContain("e.tenant_id = tm.tenant_id");
+    expect(db.query.mock.calls[1][0]).not.toContain("dnd_enabled");
+    expect(db.query.mock.calls[1][0]).not.toContain("cfu_destination");
+  });
+
+  it("scopes call activity to immutable call-time member identities", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("user")] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            total_calls: "2",
+            answered_calls: "1",
+            missed_calls: "1",
+            total_duration_seconds: "48",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [{ id: 99, caller_number: "+6620000000" }],
+      });
+
+    await expect(
+      pbxRouter.createCaller(context()).selfService.usage({ period: "week" }),
+    ).resolves.toEqual({
+      totalCalls: 2,
+      answeredCalls: 1,
+      missedCalls: 1,
+      totalDurationSeconds: 48,
+      calls: [{ id: 99, caller_number: "+6620000000" }],
+    });
+
+    for (const call of db.query.mock.calls.slice(1)) {
+      expect(call[0]).toContain("cr.caller_user_id = $2");
+      expect(call[0]).toContain("cr.callee_user_id = $2");
+      expect(call[0]).toContain("JOIN extensions e");
+      expect(call[0]).toContain("e.tenant_id = cl.tenant_id");
+      expect(call[0]).toContain("e.deleted_at IS NULL");
+      expect(call[0]).toContain("cl.tenant_id = cr.tenant_id");
+      expect(call[0]).not.toContain("JOIN user_extensions ue");
+      expect(call[1]).toEqual([7, 9, "7 days"]);
+    }
+    expect(db.query.mock.calls[2]?.[0]).toContain(
+      "cr.from_number AS caller_number",
+    );
+    expect(db.query.mock.calls[2]?.[0]).toContain(
+      "cr.to_number AS callee_number",
+    );
+  });
+});
+
 describe("PBX workspace member lifecycle", () => {
   it.each(["owner", "admin"] as const)(
     "lists active and inactive members only in the current workspace for a %s",
     async (role) => {
       const members = [
-        { id: 88, name: "Nok", email: "nok@example.com", role: "user", status: "active" },
-        { id: 89, name: "Mai", email: "mai@example.com", role: "user", status: "inactive" },
+        {
+          id: 88,
+          name: "Nok",
+          email: "nok@example.com",
+          role: "user",
+          status: "active",
+        },
+        {
+          id: 89,
+          name: "Mai",
+          email: "mai@example.com",
+          role: "user",
+          status: "inactive",
+        },
       ];
       db.query
         .mockResolvedValueOnce({ rows: [membership(role)] })
@@ -564,10 +649,20 @@ describe("PBX workspace member lifecycle", () => {
       .mockResolvedValueOnce({ rows: [membership("owner")] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
-        rows: [{ user_id: 88, role: "admin", status: "active", name: "Nok", email: "nok@example.com" }],
+        rows: [
+          {
+            user_id: 88,
+            role: "admin",
+            status: "active",
+            name: "Nok",
+            email: "nok@example.com",
+          },
+        ],
       })
       .mockResolvedValueOnce({ rows: [{ user_id: 9 }, { user_id: 88 }] })
-      .mockResolvedValueOnce({ rows: [{ id: 88, role: "user", status: "active" }] });
+      .mockResolvedValueOnce({
+        rows: [{ id: 88, role: "user", status: "active" }],
+      });
 
     await expect(
       pbxRouter.createCaller(context()).tenant.updateMember({
@@ -589,7 +684,15 @@ describe("PBX workspace member lifecycle", () => {
       .mockResolvedValueOnce({ rows: [membership("owner")] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
-        rows: [{ user_id: 88, role: "admin", status: "active", name: "Nok", email: "nok@example.com" }],
+        rows: [
+          {
+            user_id: 88,
+            role: "admin",
+            status: "active",
+            name: "Nok",
+            email: "nok@example.com",
+          },
+        ],
       })
       .mockResolvedValueOnce({ rows: [{ user_id: 88 }] });
 
@@ -614,7 +717,15 @@ describe("PBX workspace member lifecycle", () => {
       .mockResolvedValueOnce({ rows: [membership("admin")] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
-        rows: [{ user_id: 88, role: "user", status: "active", name: "Nok", email: "nok@example.com" }],
+        rows: [
+          {
+            user_id: 88,
+            role: "user",
+            status: "active",
+            name: "Nok",
+            email: "nok@example.com",
+          },
+        ],
       });
 
     await expect(
@@ -635,7 +746,15 @@ describe("PBX workspace member lifecycle", () => {
       .mockResolvedValueOnce({ rows: [membership("owner")] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
-        rows: [{ user_id: 88, role: "owner", status: "active", name: "Nok", email: "nok@example.com" }],
+        rows: [
+          {
+            user_id: 88,
+            role: "owner",
+            status: "active",
+            name: "Nok",
+            email: "nok@example.com",
+          },
+        ],
       });
 
     await expect(
@@ -656,9 +775,19 @@ describe("PBX workspace member lifecycle", () => {
       .mockResolvedValueOnce({ rows: [membership("owner")] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
-        rows: [{ user_id: 88, role: "manager", status: "active", name: "Nok", email: "nok@example.com" }],
+        rows: [
+          {
+            user_id: 88,
+            role: "manager",
+            status: "active",
+            name: "Nok",
+            email: "nok@example.com",
+          },
+        ],
       })
-      .mockResolvedValueOnce({ rows: [{ id: 88, role: "manager", status: "inactive" }] });
+      .mockResolvedValueOnce({
+        rows: [{ id: 88, role: "manager", status: "inactive" }],
+      });
 
     await expect(
       pbxRouter.createCaller(context()).tenant.updateMember({

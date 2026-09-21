@@ -10,17 +10,19 @@ import { trpc } from "@/lib/trpc";
 // ============================================================================
 // Dashboard
 // ============================================================================
-export function usePbxDashboardStats() {
+export function usePbxDashboardStats(enabled: boolean = true) {
   return trpc.pbx.dashboard.stats.useQuery(undefined, {
+    enabled,
     staleTime: 30_000, // 30s cache
     refetchInterval: 60_000, // Auto-refresh every 60s
   });
 }
 
-export function usePbxRecentCalls(limit: number = 10) {
+export function usePbxRecentCalls(limit: number = 10, enabled: boolean = true) {
   return trpc.pbx.dashboard.recentCalls.useQuery(
     { limit },
     {
+      enabled,
       staleTime: 15_000,
       refetchInterval: 30_000,
     },
@@ -45,8 +47,9 @@ export function usePbxCallAnalytics(period: PbxAnalyticsPeriod) {
 // ============================================================================
 // Tenant
 // ============================================================================
-export function useTenant() {
+export function useTenant(enabled: boolean = true) {
   return trpc.pbx.tenant.get.useQuery(undefined, {
+    enabled,
     staleTime: 300_000, // 5 min cache
   });
 }
@@ -91,6 +94,44 @@ export function useUpdateTenantSettings() {
     onSuccess: () => {
       utils.pbx.tenant.get.invalidate();
     },
+  });
+}
+
+// ============================================================================
+// Member self-service (the server derives both user and tenant from auth)
+// ============================================================================
+export function usePbxSelfService(enabled: boolean = true) {
+  return trpc.pbx.selfService.overview.useQuery(undefined, {
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useOwnCallUsage(
+  period: "week" | "month",
+  enabled: boolean = true,
+) {
+  return trpc.pbx.selfService.usage.useQuery(
+    { period },
+    { enabled, staleTime: 15_000 },
+  );
+}
+
+export function useOwnVoicemails() {
+  return trpc.pbx.voicemail.list.useQuery(undefined, { staleTime: 15_000 });
+}
+
+export function useMarkOwnVoicemailRead() {
+  const utils = trpc.useUtils();
+  return trpc.pbx.voicemail.markRead.useMutation({
+    onSuccess: () => void utils.pbx.voicemail.list.invalidate(),
+  });
+}
+
+export function useDeleteOwnVoicemail() {
+  const utils = trpc.useUtils();
+  return trpc.pbx.voicemail.delete.useMutation({
+    onSuccess: () => void utils.pbx.voicemail.list.invalidate(),
   });
 }
 

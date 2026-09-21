@@ -1,293 +1,309 @@
-import { useState } from "react";
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet } from "react-native";
-import * as Haptics from "expo-haptics";
+import {
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { router } from "expo-router";
-
-import { ScreenContainer } from "@/components/screen-container";
+import { PortalShell, PortalState } from "@/components/portal/portal-shell";
+import { SIGN_IN_ROUTE } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useAuth } from "@/hooks/use-auth";
+import { usePbxSelfService } from "@/hooks/use-pbx-admin";
 
-interface ServiceCard {
-  id: string;
-  icon: any;
-  title: string;
-  subtitle: string;
-  route: string;
-  badge?: string;
-}
-
-const ACCOUNT = {
-  name: "CloudPhone11 Subscriber",
-  email: "user@company.com",
-  accountId: "CP11-2024-00847",
-  plan: "Business Pro",
-  balance: "$124.50",
-  dueDate: "May 1, 2026",
-  status: "Active" as const,
+type PhoneNumber = {
+  id: number;
+  number_e164?: string | null;
+  number_display?: string | null;
+  status?: string | null;
+};
+type Extension = {
+  id: number;
+  extension_number?: string | null;
+  display_name?: string | null;
+  status?: string | null;
+  is_primary?: boolean;
+  phone_numbers?: PhoneNumber[] | null;
 };
 
-const QUICK_STATS = [
-  { label: "Voice Minutes", value: "1,247", limit: "2,000", percent: 62 },
-  { label: "SMS Messages", value: "342", limit: "500", percent: 68 },
-  { label: "Active DIDs", value: "5", limit: "10", percent: 50 },
-  { label: "Extensions", value: "12", limit: "25", percent: 48 },
-];
-
-const SERVICES: ServiceCard[] = [
-  { id: "profile", icon: "person.fill", title: "My Profile", subtitle: "Edit account details & password", route: "/portal/profile" },
-  { id: "billing", icon: "creditcard.fill", title: "Billing & Invoices", subtitle: "View balance, pay bills, auto-pay", route: "/portal/billing", badge: "1 Due" },
-  { id: "dids", icon: "phone.badge.plus", title: "My Numbers", subtitle: "Manage DIDs & forwarding rules", route: "/portal/dids" },
-  { id: "forwarding", icon: "arrow.triangle.branch", title: "Call Forwarding", subtitle: "Set forwarding rules & schedules", route: "/portal/forwarding" },
-  { id: "usage", icon: "chart.bar.fill", title: "Usage & Analytics", subtitle: "Voice, SMS, data breakdown", route: "/portal/usage" },
-  { id: "voicemail", icon: "recordingtape", title: "Voicemail", subtitle: "Listen, download, manage greetings", route: "/portal/voicemail-mgmt" },
-  { id: "support", icon: "questionmark.circle.fill", title: "Support & Tickets", subtitle: "Submit tickets, view FAQ", route: "/portal/support" },
-];
+const labelForExtension = (extension: Extension) =>
+  extension.display_name?.trim() ||
+  extension.extension_number ||
+  `Extension ${extension.id}`;
 
 export default function PortalDashboard() {
   const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
+  const overviewQuery = usePbxSelfService(Boolean(user));
+  const extensions = (overviewQuery.data || []) as Extension[];
+  const assignedNumbers = extensions.reduce(
+    (count, extension) => count + (extension.phone_numbers?.length || 0),
+    0,
+  );
 
   return (
-    <ScreenContainer edges={["top", "left", "right"]}>
-      {/* Header */}
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.foreground }]}>My Account</Text>
-        <View style={{ width: 34 }} />
-      </View>
-
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-        {/* Account Card */}
-        <View style={[styles.accountCard, { backgroundColor: colors.primary }]}>
-          <View style={styles.accountHeader}>
-            <View style={styles.accountAvatar}>
-              <Text style={styles.accountAvatarText}>
-                {ACCOUNT.name.split(" ").map(w => w[0]).join("").slice(0, 2)}
+    <PortalShell title="My phone" active="home">
+      {!user ? (
+        <PortalState
+          title="Sign in to view your phone"
+          detail="Your assigned extensions and call activity are available after you sign in."
+          actionLabel="Sign in"
+          onAction={() => router.replace(SIGN_IN_ROUTE)}
+        />
+      ) : overviewQuery.isLoading ? (
+        <View style={styles.loading}>
+          <ActivityIndicator color={colors.primary} />
+          <Text style={{ color: colors.muted }}>
+            Loading your Phone11 details…
+          </Text>
+        </View>
+      ) : overviewQuery.isError ? (
+        <PortalState
+          title="Your phone details could not be loaded"
+          detail="Phone11 could not read the extensions assigned to your current workspace."
+          actionLabel="Try again"
+          onAction={() => void overviewQuery.refetch()}
+        />
+      ) : extensions.length === 0 ? (
+        <PortalState
+          title="No phone extension assigned"
+          detail="Your account is signed in, but it does not currently have an active Phone11 extension in this workspace."
+        />
+      ) : (
+        <>
+          <View
+            style={[
+              styles.summary,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.summaryTitle, { color: colors.foreground }]}>
+                Your Phone11 account
+              </Text>
+              <Text style={[styles.summaryDetail, { color: colors.muted }]}>
+                Extensions and assigned phone numbers from your current
+                workspace.
               </Text>
             </View>
-            <View style={styles.accountInfo}>
-              <Text style={styles.accountName}>{ACCOUNT.name}</Text>
-              <Text style={styles.accountEmail}>{ACCOUNT.email}</Text>
-              <View style={styles.accountBadge}>
-                <View style={[styles.statusDot, { backgroundColor: "#4ADE80" }]} />
-                <Text style={styles.accountPlan}>{ACCOUNT.plan} · {ACCOUNT.status}</Text>
-              </View>
+            <View
+              style={[styles.count, { backgroundColor: colors.primary + "15" }]}
+            >
+              <Text style={[styles.countValue, { color: colors.primary }]}>
+                {extensions.length}
+              </Text>
+              <Text style={[styles.countLabel, { color: colors.muted }]}>
+                extensions
+              </Text>
             </View>
           </View>
-          <View style={styles.balanceRow}>
-            <View>
-              <Text style={styles.balanceLabel}>Current Balance</Text>
-              <Text style={styles.balanceValue}>{ACCOUNT.balance}</Text>
-            </View>
-            <View style={styles.balanceRight}>
-              <Text style={styles.balanceLabel}>Due Date</Text>
-              <Text style={styles.dueDateValue}>{ACCOUNT.dueDate}</Text>
-            </View>
-          </View>
-          <TouchableOpacity
-            style={styles.payNowBtn}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push("/portal/billing" as any);
-            }}
-          >
-            <Text style={styles.payNowText}>Pay Now</Text>
-          </TouchableOpacity>
-        </View>
 
-        {/* Quick Stats */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Usage Overview</Text>
-        <View style={styles.statsGrid}>
-          {QUICK_STATS.map((stat, i) => (
-            <View key={i} style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <Text style={[styles.statLabel, { color: colors.muted }]}>{stat.label}</Text>
-              <Text style={[styles.statValue, { color: colors.foreground }]}>{stat.value}</Text>
-              <Text style={[styles.statLimit, { color: colors.muted }]}>of {stat.limit}</Text>
-              <View style={[styles.progressBg, { backgroundColor: colors.border }]}>
-                <View style={[styles.progressFill, {
-                  width: `${stat.percent}%`,
-                  backgroundColor: stat.percent > 80 ? colors.warning : colors.primary,
-                }]} />
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>
+            ASSIGNED EXTENSIONS
+          </Text>
+          {extensions.map((extension) => (
+            <View
+              key={extension.id}
+              style={[
+                styles.extension,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <View
+                style={[
+                  styles.extensionIcon,
+                  { backgroundColor: colors.primary + "15" },
+                ]}
+              >
+                <IconSymbol
+                  name="phone.fill"
+                  size={20}
+                  color={colors.primary}
+                />
+              </View>
+              <View style={{ flex: 1, gap: 3 }}>
+                <View style={styles.extensionHeading}>
+                  <Text
+                    style={[styles.extensionName, { color: colors.foreground }]}
+                  >
+                    {labelForExtension(extension)}
+                  </Text>
+                  {extension.is_primary && (
+                    <Text style={[styles.primary, { color: colors.primary }]}>
+                      PRIMARY
+                    </Text>
+                  )}
+                </View>
+                <Text style={[styles.extensionNumber, { color: colors.muted }]}>
+                  Extension {extension.extension_number || "unavailable"} ·{" "}
+                  {extension.status || "status unavailable"}
+                </Text>
+                {(extension.phone_numbers || []).map((number) => (
+                  <Text
+                    key={number.id}
+                    style={[styles.phoneNumber, { color: colors.foreground }]}
+                  >
+                    {number.number_display ||
+                      number.number_e164 ||
+                      "Phone number unavailable"}
+                  </Text>
+                ))}
               </View>
             </View>
           ))}
-        </View>
 
-        {/* Services Grid */}
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>Manage Services</Text>
-        {SERVICES.map((service) => (
-          <TouchableOpacity
-            key={service.id}
-            style={[styles.serviceRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              router.push(service.route as any);
-            }}
-            activeOpacity={0.7}
-          >
-            <View style={[styles.serviceIcon, { backgroundColor: colors.primary + "15" }]}>
-              <IconSymbol name={service.icon} size={22} color={colors.primary} />
-            </View>
-            <View style={styles.serviceInfo}>
-              <Text style={[styles.serviceTitle, { color: colors.foreground }]}>{service.title}</Text>
-              <Text style={[styles.serviceSubtitle, { color: colors.muted }]}>{service.subtitle}</Text>
-            </View>
-            {service.badge && (
-              <View style={[styles.serviceBadge, { backgroundColor: colors.error }]}>
-                <Text style={styles.serviceBadgeText}>{service.badge}</Text>
-              </View>
-            )}
-            <IconSymbol name="chevron.right" size={16} color={colors.muted} />
-          </TouchableOpacity>
-        ))}
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>
+            SELF-SERVICE
+          </Text>
+          <PortalAction
+            icon="number"
+            title="My numbers"
+            detail={`${assignedNumbers} assigned phone number${assignedNumbers === 1 ? "" : "s"}`}
+            onPress={() => router.push("/portal/dids")}
+          />
+          <PortalAction
+            icon="chart.bar.fill"
+            title="Call activity"
+            detail="Your call records from the last 7 or 30 days"
+            onPress={() => router.push("/portal/usage")}
+          />
+          <PortalAction
+            icon="recordingtape"
+            title="Voicemail"
+            detail="Messages assigned to your extensions"
+            onPress={() => router.push("/voicemail")}
+          />
+          <PortalAction
+            icon="person.fill"
+            title="My profile"
+            detail="Manage the profile linked to this Phone11 account"
+            onPress={() => router.push("/profile")}
+          />
+          <Text style={[styles.note, { color: colors.muted }]}>
+            Call activity can appear after call processing. Billing, payment
+            methods, and support tickets are not managed in Phone11.
+          </Text>
+        </>
+      )}
+    </PortalShell>
+  );
+}
 
-        {/* Account ID */}
-        <View style={[styles.accountIdRow, { borderTopColor: colors.border }]}>
-          <Text style={[styles.accountIdLabel, { color: colors.muted }]}>Account ID</Text>
-          <Text style={[styles.accountIdValue, { color: colors.foreground }]}>{ACCOUNT.accountId}</Text>
-        </View>
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    </ScreenContainer>
+function PortalAction({
+  icon,
+  title,
+  detail,
+  onPress,
+}: {
+  icon: string;
+  title: string;
+  detail: string;
+  onPress: () => void;
+}) {
+  const colors = useColors();
+  return (
+    <TouchableOpacity
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      onPress={onPress}
+      style={[
+        styles.action,
+        { backgroundColor: colors.surface, borderColor: colors.border },
+      ]}
+    >
+      <View
+        style={[styles.actionIcon, { backgroundColor: colors.primary + "15" }]}
+      >
+        <IconSymbol name={icon as any} size={19} color={colors.primary} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.actionTitle, { color: colors.foreground }]}>
+          {title}
+        </Text>
+        <Text style={[styles.actionDetail, { color: colors.muted }]}>
+          {detail}
+        </Text>
+      </View>
+      <IconSymbol name="chevron.right" size={16} color={colors.muted} />
+    </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 0.5,
-  },
-  backBtn: { padding: 6 },
-  headerTitle: { fontSize: 18, fontWeight: "700" },
-  content: { paddingBottom: 20 },
-  accountCard: {
-    margin: 16,
-    borderRadius: 16,
-    padding: 20,
-  },
-  accountHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-    marginBottom: 16,
-  },
-  accountAvatar: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    alignItems: "center",
+  loading: {
+    minHeight: 180,
     justifyContent: "center",
+    alignItems: "center",
+    gap: 10,
   },
-  accountAvatarText: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#fff",
-  },
-  accountInfo: { flex: 1 },
-  accountName: { fontSize: 17, fontWeight: "700", color: "#fff" },
-  accountEmail: { fontSize: 13, color: "rgba(255,255,255,0.8)", marginTop: 2 },
-  accountBadge: {
+  summary: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    marginTop: 4,
-  },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  accountPlan: { fontSize: 12, color: "rgba(255,255,255,0.9)", fontWeight: "600" },
-  balanceRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.2)",
-  },
-  balanceLabel: { fontSize: 11, color: "rgba(255,255,255,0.7)", fontWeight: "600", letterSpacing: 0.5 },
-  balanceValue: { fontSize: 28, fontWeight: "800", color: "#fff", marginTop: 2 },
-  balanceRight: { alignItems: "flex-end" },
-  dueDateValue: { fontSize: 15, fontWeight: "600", color: "#fff", marginTop: 2 },
-  payNowBtn: {
-    backgroundColor: "rgba(255,255,255,0.2)",
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: "center",
-    marginTop: 16,
-  },
-  payNowText: { fontSize: 15, fontWeight: "700", color: "#fff" },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: "700",
-    paddingHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 12,
-  },
-  statsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    paddingHorizontal: 12,
-    gap: 8,
-    marginBottom: 16,
-  },
-  statCard: {
-    width: "48%",
-    flexGrow: 1,
-    flexBasis: "46%",
-    borderRadius: 12,
-    padding: 14,
     borderWidth: 1,
-  },
-  statLabel: { fontSize: 11, fontWeight: "600", letterSpacing: 0.3 },
-  statValue: { fontSize: 22, fontWeight: "800", marginTop: 4 },
-  statLimit: { fontSize: 11, marginTop: 2 },
-  progressBg: {
-    height: 4,
-    borderRadius: 2,
-    marginTop: 8,
-  },
-  progressFill: {
-    height: 4,
-    borderRadius: 2,
-  },
-  serviceRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginHorizontal: 16,
-    marginBottom: 8,
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: 1,
+    borderRadius: 16,
+    padding: 18,
     gap: 12,
   },
-  serviceIcon: {
-    width: 44,
-    height: 44,
+  summaryTitle: { fontSize: 18, fontWeight: "700" },
+  summaryDetail: { fontSize: 13, lineHeight: 19, marginTop: 4 },
+  count: {
+    minWidth: 68,
+    paddingVertical: 8,
+    paddingHorizontal: 7,
+    alignItems: "center",
     borderRadius: 12,
+  },
+  countValue: { fontSize: 22, fontWeight: "800" },
+  countLabel: { fontSize: 10, fontWeight: "600" },
+  sectionTitle: {
+    fontSize: 12,
+    letterSpacing: 0.5,
+    fontWeight: "700",
+    marginTop: 14,
+  },
+  extension: {
+    flexDirection: "row",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+  },
+  extensionIcon: {
+    width: 42,
+    height: 42,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 12,
   },
-  serviceInfo: { flex: 1 },
-  serviceTitle: { fontSize: 15, fontWeight: "600" },
-  serviceSubtitle: { fontSize: 12, marginTop: 2 },
-  serviceBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  serviceBadgeText: { fontSize: 10, fontWeight: "700", color: "#fff" },
-  accountIdRow: {
+  extensionHeading: { flexDirection: "row", alignItems: "center", gap: 8 },
+  extensionName: { fontSize: 15, fontWeight: "700", flexShrink: 1 },
+  primary: { fontSize: 10, letterSpacing: 0.4, fontWeight: "800" },
+  extensionNumber: { fontSize: 12 },
+  phoneNumber: { fontSize: 13, fontWeight: "600", marginTop: 3 },
+  action: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    marginHorizontal: 16,
-    marginTop: 20,
-    paddingTop: 16,
-    borderTopWidth: 1,
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 13,
   },
-  accountIdLabel: { fontSize: 13 },
-  accountIdValue: { fontSize: 13, fontWeight: "600" },
+  actionIcon: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  actionTitle: { fontSize: 15, fontWeight: "700" },
+  actionDetail: { fontSize: 12, lineHeight: 17, marginTop: 2 },
+  note: {
+    fontSize: 12,
+    lineHeight: 18,
+    textAlign: "center",
+    marginTop: 8,
+    paddingHorizontal: 8,
+  },
 });

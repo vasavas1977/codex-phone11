@@ -24,6 +24,7 @@ import {
   requireVoicemailStorage,
   VoicemailStorageUnavailableError,
 } from "./cdr-processor";
+import { SELF_SERVICE_CALL_OWNERSHIP_SQL } from "../../lib/pbx/self-service-usage";
 
 // ============================================================================
 // Zod Schemas
@@ -453,6 +454,102 @@ export const pbxRouter = router({
         });
 
         return { success: true, member: result.member };
+      }),
+  }),
+
+  // ========================================================================
+  // MEMBER SELF-SERVICE
+  // ========================================================================
+  selfService: router({
+    /**
+     * Return only extensions explicitly assigned to the signed-in member.
+     * Tenant membership by itself never grants access to another person's
+     * extension preferences or direct numbers.
+     */
+    overview: protectedProcedure.query(async ({ ctx }) => {
+      const tc = await getTenantCtx(ctx);
+      const result = await query(
+        `SELECT e.id, e.extension_number, e.display_name, e.status,
+                ue.is_primary,
+                sa.status AS sip_status, sa.last_registered_at,
+                COALESCE(
+                  json_agg(
+                    json_build_object(
+                      'id', pn.id,
+                      'number_e164', pn.number_e164,
+                      'number_display', pn.number_display,
+                      'status', pn.status
+                    ) ORDER BY pn.number_e164
+                  ) FILTER (WHERE pn.id IS NOT NULL),
+                  '[]'::json
+                ) AS phone_numbers
+         FROM tenant_memberships tm
+         JOIN user_extensions ue ON ue.user_id = tm.user_id
+         JOIN extensions e
+           ON e.id = ue.extension_id
+          AND e.tenant_id = tm.tenant_id
+          AND e.deleted_at IS NULL
+         LEFT JOIN sip_accounts sa
+           ON sa.extension_id = e.id
+          AND sa.tenant_id = e.tenant_id
+          AND sa.user_id = tm.user_id
+          AND sa.deleted_at IS NULL
+         LEFT JOIN phone_numbers pn
+           ON pn.tenant_id = e.tenant_id
+          AND pn.assigned_route_type = 'extension'
+          AND pn.assigned_route_id = e.id
+          AND pn.deleted_at IS NULL
+         WHERE tm.tenant_id = $1
+           AND tm.user_id = $2
+           AND tm.status = 'active'
+         GROUP BY e.id, ue.is_primary, sa.status, sa.last_registered_at
+         ORDER BY ue.is_primary DESC, e.extension_number`,
+        [tc.tenantId, ctx.user!.id],
+      );
+      return result.rows;
+    }),
+
+    /** CDR-backed usage for the signed-in member's assigned extensions. */
+    usage: protectedProcedure
+      .input(z.object({ period: z.enum(["week", "month"]).default("month") }).optional())
+      .query(async ({ ctx, input }) => {
+        const tc = await getTenantCtx(ctx);
+        const interval = input?.period === "week" ? "7 days" : "30 days";
+        const ownership = SELF_SERVICE_CALL_OWNERSHIP_SQL;
+        const [summary, calls] = await Promise.all([
+          query(
+            `SELECT COUNT(*) AS total_calls,
+                    COUNT(*) FILTER (WHERE disposition = 'answered') AS answered_calls,
+                    COUNT(*) FILTER (WHERE disposition = 'missed') AS missed_calls,
+                    COALESCE(SUM(total_duration_seconds), 0) AS total_duration_seconds
+             FROM call_records cr
+             WHERE cr.tenant_id = $1
+               AND cr.started_at >= NOW() - $3::interval
+               AND ${ownership}`,
+            [tc.tenantId, ctx.user!.id, interval],
+          ),
+          query(
+            `SELECT cr.id, cr.direction, cr.disposition,
+                    cr.from_number AS caller_number,
+                    cr.to_number AS callee_number,
+                    cr.total_duration_seconds, cr.started_at
+             FROM call_records cr
+             WHERE cr.tenant_id = $1
+               AND cr.started_at >= NOW() - $3::interval
+               AND ${ownership}
+             ORDER BY cr.started_at DESC
+             LIMIT 50`,
+            [tc.tenantId, ctx.user!.id, interval],
+          ),
+        ]);
+        const row = summary.rows[0] || {};
+        return {
+          totalCalls: Number(row.total_calls || 0),
+          answeredCalls: Number(row.answered_calls || 0),
+          missedCalls: Number(row.missed_calls || 0),
+          totalDurationSeconds: Number(row.total_duration_seconds || 0),
+          calls: calls.rows,
+        };
       }),
   }),
 
@@ -1462,7 +1559,7 @@ export const pbxRouter = router({
   // ========================================================================
   dashboard: router({
     stats: protectedProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantCtx(ctx);
+      const tc = await getTenantAdminCtx(ctx);
 
       const [
         extensionCount,
@@ -1516,7 +1613,7 @@ export const pbxRouter = router({
         z.object({ limit: z.number().min(1).max(50).default(10) }).optional(),
       )
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminCtx(ctx);
         const result = await query(
           `SELECT * FROM call_records WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT $2`,
           [tc.tenantId, input?.limit || 10],
