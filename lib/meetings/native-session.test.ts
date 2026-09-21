@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => {
     roomConnect: vi.fn(async () => {
       lifecycleEvents.push("room-connect");
     }),
+    roomConstructorError: undefined as unknown,
     registerGlobals: vi.fn(),
     ConnectionError: undefined as unknown as new (
       message: string,
@@ -92,9 +93,14 @@ vi.mock("livekit-client", () => {
       remoteParticipants = new Map();
       connect = vi.fn(async () => mocks.roomConnect());
       disconnect = vi.fn(async () => {});
-      on = vi.fn();
-      off = vi.fn();
+      on() {}
+      off() {}
+      setMaxListeners() {
+        return this;
+      }
       constructor() {
+        if (mocks.roomConstructorError !== undefined)
+          throw mocks.roomConstructorError;
         mocks.rooms.push(this);
       }
     },
@@ -117,6 +123,7 @@ beforeEach(async () => {
   mocks.listeners.clear();
   mocks.rooms.length = 0;
   mocks.lifecycleEvents.length = 0;
+  mocks.roomConstructorError = undefined;
   mocks.sipState = { incomingCall: null, activeCalls: {} };
   mocks.startAudioSession.mockImplementation(async () => {
     mocks.lifecycleEvents.push("audio-start");
@@ -187,6 +194,106 @@ describe("native meeting lifecycle", () => {
     expect(mocks.rooms[0].disconnect).toHaveBeenCalledWith(true);
     expect(registry.getActiveNativeMeeting()).toBeUndefined();
     expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+  });
+
+  it.each([
+    [
+      new ReferenceError("private constructor URL wss://secret"),
+      "reference_error",
+    ],
+    [new TypeError("private constructor token=secret"), "type_error"],
+    [new RangeError("private constructor participant=user-1"), "range_error"],
+    [new SyntaxError("private constructor room=private"), "syntax_error"],
+    [new EvalError("private constructor detail"), "eval_error"],
+    [new URIError("private constructor detail"), "uri_error"],
+    [new Error("private constructor detail"), "error"],
+  ] as const)(
+    "reduces a Room constructor %s to its fixed built-in class",
+    async (constructorError, errorType) => {
+      mocks.roomConstructorError = constructorError;
+
+      const failure = await native.NativeMeetingLifecycle.join(
+        `meeting-constructor-${errorType}`,
+        admission,
+        preferences,
+      ).catch((error) => error);
+
+      expect(failure).toMatchObject({
+        name: "MeetingJoinFailure",
+        stage: "room_create",
+        reason: undefined,
+        errorType,
+      });
+      expect(failure.message).not.toContain("private");
+      expect(failure.cause).toMatchObject({ cause: constructorError });
+      expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("identifies a missing AbortController without exposing its raw constructor error", async () => {
+    const originalAbortController = globalThis.AbortController;
+    mocks.roomConstructorError = new ReferenceError(
+      "wss://private.example token=secret AbortController",
+    );
+    Object.defineProperty(globalThis, "AbortController", {
+      configurable: true,
+      value: undefined,
+      writable: true,
+    });
+
+    try {
+      const failure = await native.NativeMeetingLifecycle.join(
+        "meeting-missing-abort-controller",
+        admission,
+        preferences,
+      ).catch((error) => error);
+
+      expect(failure).toMatchObject({
+        stage: "room_create",
+        reason: "abort_controller_missing",
+        constructorSite: "data_channel",
+        errorType: "reference_error",
+      });
+      expect(failure.message).not.toContain("private.example");
+      expect(failure.message).not.toContain("secret");
+    } finally {
+      Object.defineProperty(globalThis, "AbortController", {
+        configurable: true,
+        value: originalAbortController,
+        writable: true,
+      });
+    }
+  });
+
+  it("identifies the EventEmitter methods required by the installed Room constructor", async () => {
+    const client = await import("livekit-client");
+    const roomPrototype = client.Room.prototype as {
+      setMaxListeners?: unknown;
+    };
+    const originalSetMaxListeners = roomPrototype.setMaxListeners;
+    mocks.roomConstructorError = new TypeError(
+      "wss://private.example token=secret setMaxListeners",
+    );
+    roomPrototype.setMaxListeners = undefined;
+
+    try {
+      const failure = await native.NativeMeetingLifecycle.join(
+        "meeting-event-emitter-incompatible",
+        admission,
+        preferences,
+      ).catch((error) => error);
+
+      expect(failure).toMatchObject({
+        stage: "room_create",
+        reason: "event_emitter_incompatible",
+        constructorSite: "room",
+        errorType: "type_error",
+      });
+      expect(failure.message).not.toContain("private");
+      expect(failure.message).not.toContain("secret");
+    } finally {
+      roomPrototype.setMaxListeners = originalSetMaxListeners;
+    }
   });
 
   it("reduces a LiveKit connection error to allowlisted reason and HTTP status only", async () => {

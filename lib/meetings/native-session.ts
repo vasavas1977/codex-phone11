@@ -15,6 +15,7 @@ import {
   type MeetingJoinStage,
 } from "./join-failure";
 import { MediaOwnershipCoordinator, type MediaLease } from "./media-ownership";
+import { classifyRoomConstructionFailure } from "./room-construction-diagnostic";
 import {
   clearActiveNativeMeeting,
   getActiveNativeMeeting,
@@ -37,7 +38,10 @@ type NativeBindings = {
   Room: new () => BrowserRoom;
   startAudioSession: () => Promise<void>;
   stopAudioSession: () => Promise<void>;
-  classifyConnectionFailure: (error: unknown) => MeetingJoinDiagnostic;
+  classifyJoinFailure: (
+    error: unknown,
+    stage: MeetingJoinStage,
+  ) => MeetingJoinDiagnostic;
 };
 
 let bindingsPromise: Promise<NativeBindings> | undefined;
@@ -78,7 +82,10 @@ async function loadNativeBindings(): Promise<NativeBindings> {
           Room: client.Room as unknown as NativeBindings["Room"],
           startAudioSession: native.AudioSession.startAudioSession,
           stopAudioSession: native.AudioSession.stopAudioSession,
-          classifyConnectionFailure: (error: unknown) => {
+          classifyJoinFailure: (error: unknown, stage: MeetingJoinStage) => {
+            if (stage === "room_create") {
+              return classifyRoomConstructionFailure(error, client.Room);
+            }
             let candidate = error;
             for (let depth = 0; depth < 4; depth += 1) {
               if (candidate instanceof client.ConnectionError) {
@@ -279,7 +286,7 @@ export class NativeMeetingLifecycle {
         error instanceof BrowserMeetingConnectionFailure ? error.stage : stage;
       throw new MeetingJoinFailure(
         failureStage,
-        bindings.classifyConnectionFailure(error),
+        bindings.classifyJoinFailure(error, failureStage),
         error,
       );
     }

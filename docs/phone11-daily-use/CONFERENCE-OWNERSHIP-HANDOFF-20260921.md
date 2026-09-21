@@ -109,3 +109,31 @@ signed configuration/provisioning checks passed. Retained IPA SHA-256:
 Update the failing phone in place and request one join attempt, reporting the
 full new Reference line. The package is diagnostic-only: no root cause, actual
 installation, provider join, or media success has yet been established for it.
+
+## Build 78 handset result and constructor discriminator
+
+The owner installed Build 78 and retried the admitted meeting. The new result
+was **Reference: room_create**. This proves native bindings and manual audio
+startup completed, then the synchronous SDK `Room` constructor failed before
+Phone11 bound room events or attempted a provider connection. It provides no
+evidence of a transport, token, provider or media failure.
+
+The exact constructor expression still cannot be established from the retained
+handset evidence: the allowlisted syslog capture contains no SDK exception, no
+device is currently attached, and no simulator is booted. Source inspection
+does not support changing transport settings or moving LiveKit registration.
+React Native 0.81 installs `AbortController` before the app entry, and a missing
+`TextEncoder` or `DOMException` would fail during the earlier SDK module import,
+not at `room_create`. The installed React Native SDK 3.0.0 already carries its
+DOMException polyfill for the upstream Hermes issue.
+
+The next source candidate therefore remains diagnostic-only. It classifies a
+Room construction failure by fixed built-in error class and an allowlisted
+installed-SDK constructor area (`data_channel`, `data_stream`, `data_track`,
+`signal_client`, `engine`, `rpc`, `participant`, `frame_metadata`, or `room`).
+It also checks the two concrete constructor contracts: LiveKit 2.22.3 creates
+three `AbortController` instances in its data-channel wrappers, and Room
+requires inherited EventEmitter `setMaxListeners`/`on` methods. Raw messages,
+stacks, URLs, tokens, room and participant identifiers remain only in memory
+and are never formatted into the Reference line. No new build, installation,
+provider action or handset acceptance is claimed for this source candidate.

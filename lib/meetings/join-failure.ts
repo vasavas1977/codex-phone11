@@ -24,12 +24,45 @@ export const meetingJoinReasons = [
   "timeout",
   "websocket",
   "service_not_found",
+  "abort_controller_missing",
+  "event_emitter_incompatible",
 ] as const;
 
 export type MeetingJoinReason = (typeof meetingJoinReasons)[number];
 
+/** Built-in JavaScript error classes only; arbitrary SDK names are discarded. */
+export const meetingJoinErrorTypes = [
+  "reference_error",
+  "type_error",
+  "range_error",
+  "syntax_error",
+  "eval_error",
+  "uri_error",
+  "error",
+] as const;
+
+export type MeetingJoinErrorType = (typeof meetingJoinErrorTypes)[number];
+
+/** Fixed constructor areas derived only from allowlisted installed-SDK frame names. */
+export const meetingJoinConstructorSites = [
+  "data_channel",
+  "data_stream",
+  "data_track",
+  "signal_client",
+  "engine",
+  "rpc",
+  "participant",
+  "frame_metadata",
+  "room",
+] as const;
+
+export type MeetingJoinConstructorSite =
+  (typeof meetingJoinConstructorSites)[number];
+
 export type MeetingJoinDiagnostic = Readonly<{
   reason?: MeetingJoinReason;
+  errorType?: MeetingJoinErrorType;
+  constructorSite?: MeetingJoinConstructorSite;
   /** A validated HTTP status from the SDK, never its message or context. */
   httpStatus?: number;
 }>;
@@ -54,10 +87,18 @@ export class MeetingJoinFailure extends Error {
     this.reason = meetingJoinReasons.find(
       (reason) => reason === diagnostic.reason,
     );
+    this.errorType = meetingJoinErrorTypes.find(
+      (errorType) => errorType === diagnostic.errorType,
+    );
+    this.constructorSite = meetingJoinConstructorSites.find(
+      (constructorSite) => constructorSite === diagnostic.constructorSite,
+    );
     this.httpStatus = safeMeetingJoinHttpStatus(diagnostic.httpStatus);
   }
 
   readonly reason?: MeetingJoinReason;
+  readonly errorType?: MeetingJoinErrorType;
+  readonly constructorSite?: MeetingJoinConstructorSite;
   readonly httpStatus?: number;
 }
 
@@ -73,8 +114,12 @@ export function meetingJoinFailureReference(
 ): string | undefined {
   if (!(error instanceof MeetingJoinFailure)) return undefined;
   const reason = error.reason ? ` / ${error.reason}` : "";
+  const constructorSite = error.constructorSite
+    ? ` / ${error.constructorSite}`
+    : "";
+  const errorType = error.errorType ? ` / ${error.errorType}` : "";
   const status = error.httpStatus ? ` / ${error.httpStatus}` : "";
-  return `${error.stage}${reason}${status}`;
+  return `${error.stage}${reason}${constructorSite}${errorType}${status}`;
 }
 
 export function safeMeetingJoinHttpStatus(value: unknown): number | undefined {
