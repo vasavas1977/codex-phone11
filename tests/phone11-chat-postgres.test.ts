@@ -43,9 +43,10 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await pool.query(await readFile(new URL("../server/chat/all-mentions-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/read-receipts-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/media-migration.sql", import.meta.url), "utf8"));
+    await pool.query(await readFile(new URL("../server/profile/photo-migration.sql", import.meta.url), "utf8"));
   });
   beforeEach(async () => {
-    await pool.query(`TRUNCATE phone11_chat_message_all_mentions, phone11_chat_read_receipts, phone11_chat_reports, phone11_chat_blocks, phone11_chat_notification_preferences, phone11_chat_pins, phone11_chat_bookmarks, phone11_chat_reactions, phone11_chat_attachments, phone11_chat_messages, phone11_chat_members, phone11_chat_conversations, user_extensions, tenant_memberships, extensions, users, tenants RESTART IDENTITY CASCADE;
+    await pool.query(`TRUNCATE phone11_profile_photo_deletions, phone11_workspace_profile_photos, phone11_chat_message_all_mentions, phone11_chat_read_receipts, phone11_chat_reports, phone11_chat_blocks, phone11_chat_notification_preferences, phone11_chat_pins, phone11_chat_bookmarks, phone11_chat_reactions, phone11_chat_attachments, phone11_chat_messages, phone11_chat_members, phone11_chat_conversations, user_extensions, tenant_memberships, extensions, users, tenants RESTART IDENTITY CASCADE;
       INSERT INTO users VALUES (1,'Alice'),(2,'Bob'),(3,'Other tenant'),(4,'No assignment'),(5,'Not in conversation'),(6,'Beta teammate');
       INSERT INTO tenants VALUES (10,'Alpha','active'),(20,'Beta','active');
       INSERT INTO tenant_memberships(user_id,tenant_id,role,status,is_default) VALUES (1,10,'owner','active',true),(2,10,'user','active',false),(3,20,'owner','active',true),(5,10,'user','active',false),(6,20,'user','active',false);
@@ -60,7 +61,7 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await expect(service.list(4)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
   it("directory returns only active assigned teammates and safe call targets", async () => {
-    expect(await service.directory(1, 10)).toEqual([{ id: 2, name: "Bob", extension: "1002" }, { id: 5, name: "Not in conversation", extension: "1005" }]);
+    expect(await service.directory(1, 10)).toEqual([{ id: 2, name: "Bob", extension: "1002", photoUrl: null }, { id: 5, name: "Not in conversation", extension: "1005", photoUrl: null }]);
     await pool.query("UPDATE extensions SET status = 'inactive' WHERE id = 2");
     expect((await service.directory(1, 10)).map(p => p.id)).toEqual([5]);
   });
@@ -74,6 +75,23 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await expect(service.details(5, 10, id)).rejects.toMatchObject({ code: "NOT_FOUND" });
     const beta = await service.create(3, 20, "direct", "Beta", [6]);
     await expect(service.details(1, 10, beta.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+  it("exposes only server-generated tenant-scoped photo paths in directory, details, and messages", async () => {
+    const aliceVersion = "11111111-1111-4111-8111-111111111111";
+    const bobVersion = "22222222-2222-4222-8222-222222222222";
+    await pool.query(`INSERT INTO phone11_workspace_profile_photos
+      (tenant_id,user_id,version,storage_key,mime_type,size_bytes,content_sha256) VALUES
+      (10,1,$1,'10/profile/1/alice.png','image/png',10,repeat('a',64)),
+      (10,2,$2,'10/profile/2/bob.png','image/png',10,repeat('b',64))`, [aliceVersion, bobVersion]);
+    expect((await service.directory(1, 10)).find(person => person.id === 2)?.photoUrl)
+      .toBe(`/api/profile/photo/10/2?v=${bobVersion}`);
+    const { id } = await room();
+    const members = await service.details(1, 10, id);
+    expect(members.members.find(person => person.id === 1)?.photoUrl).toBe(`/api/profile/photo/10/1?v=${aliceVersion}`);
+    expect(members.members.find(person => person.id === 2)?.photoUrl).toBe(`/api/profile/photo/10/2?v=${bobVersion}`);
+    await service.send(1, 10, id, randomUUID(), "Photo-backed sender");
+    expect((await service.history(2, 10, id)).messages[0].senderPhotoUrl)
+      .toBe(`/api/profile/photo/10/1?v=${aliceVersion}`);
   });
   it("authorizes and persists @all without inventing a member identity", async () => {
     const group = await service.create(1, 10, "group", "Team", [2]);

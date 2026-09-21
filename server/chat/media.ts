@@ -356,13 +356,37 @@ export async function purgeExpiredChatMedia(limit = 100): Promise<number> {
   finally { db.release(); }
 }
 
+export async function runMediaRetentionCycle(dependencies: {
+  purgeChat?: () => Promise<number>;
+  maintainProfile?: () => Promise<number>;
+} = {}): Promise<number> {
+  const purgeChat = dependencies.purgeChat ?? purgeExpiredChatMedia;
+  const maintainProfile = dependencies.maintainProfile ?? (async () => {
+    const { maintainProfilePhotoStorage } = await import("../profile/photo");
+    return maintainProfilePhotoStorage();
+  });
+  // Each private-media lifecycle runs even if the other one fails. The caller
+  // still receives an error so the retention tick remains observable.
+  const [chat, profile] = await Promise.allSettled([
+    Promise.resolve().then(() => purgeChat()),
+    Promise.resolve().then(() => maintainProfile()),
+  ]);
+  const failures: unknown[] = [];
+  if (chat.status === "rejected") failures.push(chat.reason);
+  if (profile.status === "rejected") failures.push(profile.reason);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Media retention failed");
+  if (chat.status !== "fulfilled") throw new Error("Chat media retention did not complete");
+  return chat.value;
+}
+
 export function startChatMediaRetention(options: {
   enabled?: boolean;
   purge?: () => Promise<number>;
   intervalMs?: number;
 } = {}): () => Promise<void> {
   if (!(options.enabled ?? !!process.env.PHONE11_CHAT_MEDIA_PATH)) return async () => undefined;
-  const purge = options.purge ?? purgeExpiredChatMedia;
+  const purge = options.purge ?? runMediaRetentionCycle;
   let stopped = false, activeTick: Promise<void> | undefined, stopPromise: Promise<void> | undefined;
   const run = () => {
     if (stopped || activeTick) return;

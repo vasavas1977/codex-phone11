@@ -1,6 +1,10 @@
 export type ChatKind = "direct" | "group" | "channel";
 export interface ChatWorkspace { id: number; name: string }
-export interface ChatPerson { id: number; name: string; extension: string | null }
+export interface ChatPerson {
+  id: number; name: string; extension: string | null;
+  /** Authenticated server-relative path; omitted by older servers. */
+  photoUrl?: string | null;
+}
 export interface ChatChannel {
   id: string; name: string; kind: ChatKind; memberIds: number[];
   lastMessage: string | null; lastMessageAt: number; unreadCount: number; blocked: boolean;
@@ -58,6 +62,8 @@ export interface ChatMessage {
   id: string; clientId: string; channelId: string; senderId: number; senderName: string;
   content: string; timestamp: number; sequence: number;
   status: "sending" | "sent" | "failed";
+  /** Authenticated server-relative path; omitted by older servers. */
+  senderPhotoUrl?: string | null;
   parent: ChatParentPreview | null;
   /** Server-authoritative direct-reply total, never inferred from loaded pages. */
   replyCount?: number;

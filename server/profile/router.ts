@@ -4,6 +4,8 @@ import { protectedProcedure, router } from "../_core/trpc";
 import { getPool } from "../pbx/db";
 import { createProfileService, dndDurationMinutes, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, statusExpiryPresets } from "./service";
 import { manualAvailabilityValues, workLocationValues } from "./status";
+import { authorizeWorkspace } from "../chat/service";
+import { MAX_PROFILE_PHOTO_BYTES, profilePhotosAvailable, profilePhotoStorageReady } from "./photo";
 
 const tenantId = z.number().int().positive();
 const manualAvailability = z.enum(manualAvailabilityValues);
@@ -52,6 +54,18 @@ export function createProfileRouter(service?: ReturnType<typeof createProfileSer
   let resolvedService = service;
   const currentService = () => (resolvedService ??= createProfileService(getPool()));
   return router({
+    photoCapability: protectedProcedure.input(z.object({ tenantId }).strict()).query(async ({ ctx, input }) => {
+      try {
+        const db = getPool();
+        await authorizeWorkspace(db, ctx.user.id, input.tenantId);
+        return { available: await profilePhotosAvailable(db) && await profilePhotoStorageReady(),
+          maxBytes: MAX_PROFILE_PHOTO_BYTES, mimeTypes: ["image/jpeg", "image/png", "image/webp"] as const };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        return { available: false, maxBytes: MAX_PROFILE_PHOTO_BYTES,
+          mimeTypes: ["image/jpeg", "image/png", "image/webp"] as const };
+      }
+    }),
     self: protectedProcedure.input(z.object({ tenantId }).strict()).query(async ({ ctx, input }) => {
       try { return await currentService().self(ctx.user.id, input.tenantId); }
       catch (error) { return trpcError(error); }

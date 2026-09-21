@@ -60,6 +60,16 @@ it("rejects unsupported files and a changed workspace before any upload", async 
   expect(m.fetch).not.toHaveBeenCalled();
 });
 
+it("rejects known inputs above the final 2 MB and 2048 pixel limits before upload", async () => {
+  await expect(uploadWorkspaceProfilePhoto(20, {
+    uri: "file://large.jpg", mimeType: "image/jpeg", sizeBytes: 2 * 1024 * 1024 + 1,
+  })).rejects.toThrow("smaller than 2 MB");
+  await expect(uploadWorkspaceProfilePhoto(20, {
+    uri: "file://wide.jpg", mimeType: "image/jpeg", width: 2049, height: 100,
+  })).rejects.toThrow("up to 2048 by 2048");
+  expect(m.fetch).not.toHaveBeenCalled();
+});
+
 it("uses the selected workspace again for deletion", async () => {
   m.fetch.mockResolvedValueOnce({
     ok: true,

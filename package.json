@@ -44,6 +44,8 @@
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/webp": "1.5.0",
     "@livekit/react-native": "3.0.0",
     "@livekit/react-native-webrtc": "144.2.0",
     "@noble/hashes": "2.4.0",

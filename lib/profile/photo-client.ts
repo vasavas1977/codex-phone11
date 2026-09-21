@@ -3,13 +3,16 @@ import { getApiBaseUrl } from "@/constants/oauth";
 import { getAuthSnapshot, getSessionToken } from "@/lib/_core/auth";
 import { useChatStore } from "@/lib/chat/store";
 
-const MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024;
+const MAX_PROFILE_PHOTO_BYTES = 2 * 1024 * 1024;
+const MAX_PROFILE_PHOTO_EDGE = 2048;
 const profilePhotoMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export type ProfilePhotoUpload = {
   uri: string;
   mimeType: string;
   sizeBytes?: number | null;
+  width?: number | null;
+  height?: number | null;
   /** The browser picker supplies a File. Native upload uses the local URI. */
   file?: Blob;
 };
@@ -24,9 +27,9 @@ export type ProfilePhotoDescriptor = {
 function requestError(status: number): Error {
   if (status === 401) return new Error("Sign in again to change your profile photo.");
   if (status === 403) return new Error("This workspace is unavailable for your account.");
-  if (status === 413) return new Error("Choose a photo smaller than 5 MB.");
+  if (status === 413) return new Error("Choose a photo smaller than 2 MB.");
   if (status === 415) return new Error("Choose a JPEG, PNG, or WebP photo.");
-  if (status === 400) return new Error("Choose a valid photo up to 4096 by 4096 pixels.");
+  if (status === 400) return new Error("Choose a valid photo up to 2048 by 2048 pixels.");
   return new Error("Could not update your profile photo. Please try again.");
 }
 
@@ -99,14 +102,19 @@ export async function uploadWorkspaceProfilePhoto(
   if (!input.uri || !isSupportedMime(input.mimeType))
     throw new Error("Choose a JPEG, PNG, or WebP photo.");
   if (input.sizeBytes !== undefined && input.sizeBytes !== null && input.sizeBytes > MAX_PROFILE_PHOTO_BYTES)
-    throw new Error("Choose a photo smaller than 5 MB.");
+    throw new Error("Choose a photo smaller than 2 MB.");
+  if (
+    (input.width !== undefined && input.width !== null && input.width > MAX_PROFILE_PHOTO_EDGE) ||
+    (input.height !== undefined && input.height !== null && input.height > MAX_PROFILE_PHOTO_EDGE)
+  )
+    throw new Error("Choose a photo up to 2048 by 2048 pixels.");
   const session = await profilePhotoSession(tenantId);
   const url = `${getApiBaseUrl()}/api/profile/photo`;
   let response: Response;
   if (Platform.OS === "web") {
     const body = input.file ?? (await (await fetch(input.uri)).blob());
     if (body.size > MAX_PROFILE_PHOTO_BYTES)
-      throw new Error("Choose a photo smaller than 5 MB.");
+      throw new Error("Choose a photo smaller than 2 MB.");
     session.assertCurrent();
     response = await fetch(url, {
       method: "POST",
@@ -153,4 +161,4 @@ export async function removeWorkspaceProfilePhoto(
   return responseDescriptor(await response.json().catch(() => null));
 }
 
-export { MAX_PROFILE_PHOTO_BYTES, isSupportedMime };
+export { MAX_PROFILE_PHOTO_BYTES, MAX_PROFILE_PHOTO_EDGE, isSupportedMime };

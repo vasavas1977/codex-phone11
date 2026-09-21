@@ -74,6 +74,8 @@ export default function ProfileScreen() {
       uri: asset.uri,
       mimeType,
       sizeBytes: asset.fileSize,
+      width: asset.width,
+      height: asset.height,
       file: asset.file,
     };
     await workspaceProfile.uploadPhoto(upload);

@@ -6,6 +6,7 @@ import {
   type WorkLocation,
   type WorkspaceProfileStatus,
 } from "./status";
+import { profilePhotoDescriptors } from "./photo";
 
 export const dndDurationMinutes = [20, 60, 240, 480, 1440] as const;
 export type DndDurationMinutes = (typeof dndDurationMinutes)[number];
@@ -93,19 +94,23 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
     return result.rows;
   }
 
-  const self = async (userId: number, tenantId: number): Promise<WorkspaceProfileStatus> => {
+  const self = async (userId: number, tenantId: number): Promise<WorkspaceProfileStatus & { photoUrl: string | null; photoVersion: string | null }> => {
     await requireWorkspaceMember(userId, tenantId);
     const row = (await lookup(userId, tenantId, [userId]))[0];
     if (!row) throw new ProfileWorkspaceAccessError("Workspace access is unavailable.");
-    return row;
+    const photo = (await profilePhotoDescriptors(db, tenantId, [userId])).get(userId);
+    return { ...row, photoUrl: photo?.photoUrl ?? null, photoVersion: photo?.photoVersion ?? null };
   };
 
   return {
     self,
 
-    async colleagues(userId: number, tenantId: number, userIds: readonly number[]): Promise<WorkspaceProfileStatus[]> {
+    async colleagues(userId: number, tenantId: number, userIds: readonly number[]): Promise<Array<WorkspaceProfileStatus & { photoUrl: string | null; photoVersion: string | null }>> {
       await requireWorkspaceMember(userId, tenantId);
-      return lookup(userId, tenantId, userIds);
+      const rows = await lookup(userId, tenantId, userIds);
+      const photos = await profilePhotoDescriptors(db, tenantId, rows.map(row => row.userId));
+      return rows.map(row => ({ ...row, photoUrl: photos.get(row.userId)?.photoUrl ?? null,
+        photoVersion: photos.get(row.userId)?.photoVersion ?? null }));
     },
 
     async update(userId: number, tenantId: number, input: ProfileUpdate): Promise<WorkspaceProfileStatus> {

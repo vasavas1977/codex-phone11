@@ -115,3 +115,19 @@ it("refuses a self update after membership is removed", async () => {
   const service = createProfileService({ query: vi.fn(async () => ({ rows: [] })) } as any);
   await expect(service.update(7, 4, { workLocation: "office" })).rejects.toBeInstanceOf(ProfileWorkspaceAccessError);
 });
+
+it("adds the current tenant-scoped photo descriptor to profile self", async () => {
+  const version = "11111111-1111-4111-8111-111111111111";
+  const query = vi.fn(async (sql: string) => {
+    if (sql.includes("membership.user_id") && sql.includes("LIMIT 1")) return { rows: [{ time_zone: "Asia/Bangkok" }] };
+    if (sql.includes("to_regclass('public.phone11_workspace_profile_status')")) return { rows: [{ relation: "phone11_workspace_profile_status" }] };
+    if (sql.includes("to_regclass('public.phone11_workspace_profile_photos')")) return { rows: [{ photos: "phone11_workspace_profile_photos", deletions: "phone11_profile_photo_deletions" }] };
+    if (sql.includes("FROM phone11_workspace_profile_photos")) return { rows: [{ tenant_id: 4, user_id: 7, version, mime_type: "image/png" }] };
+    return { rows: [profileRow] };
+  });
+  await expect(createProfileService({ query } as any).self(7, 4)).resolves.toMatchObject({
+    userId: 7,
+    photoVersion: version,
+    photoUrl: `/api/profile/photo/4/7?v=${version}`,
+  });
+});

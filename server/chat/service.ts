@@ -139,11 +139,14 @@ async function hydrateMessages(db: Pick<PoolClient, "query">, userId: number, te
     reaction.users.push({ id: Number(row.user_id), name: row.user_name });
     perMessage.set(row.emoji, reaction); reactions.set(row.message_id, perMessage);
   }
+  const { profilePhotoDescriptors } = await import("../profile/photo");
+  const photos = await profilePhotoDescriptors(db, tenantId, result.map(row => row.senderId));
   return result.map(row => ({ ...row, replyCount: replyCount.get(row.id) || 0,
     reactions: [...(reactions.get(row.id)?.values() || [])].map(reaction => ({ ...reaction, count: reaction.users.length,
       reacted: reaction.users.some(user => user.id === userId) })),
     isBookmarked: bookmarked.has(row.id), isPinned: pinned.has(row.id), attachments: attachments.get(row.id) || [],
-    mentions: messageMentions.get(row.id) || [], allMention: allMentions.get(row.id) }));
+    mentions: messageMentions.get(row.id) || [], allMention: allMentions.get(row.id),
+    senderPhotoUrl: photos.get(row.senderId)?.photoUrl ?? null }));
 }
 
 type MentionInput = Pick<ChatMention, "userId" | "start" | "length">;
@@ -245,7 +248,10 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
             AND NOT EXISTS(SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id = $1
               AND ((b.blocker_id = $2 AND b.blocked_id = u.id) OR (b.blocker_id = u.id AND b.blocked_id = $2)))
           ORDER BY name, u.id LIMIT 500`, [workspace.id, userId]);
-        return result.rows.map((r: any): ChatPerson => ({ id: Number(r.id), name: r.name, extension: r.extension ?? null }));
+        const { profilePhotoDescriptors } = await import("../profile/photo");
+        const photos = await profilePhotoDescriptors(db, workspace.id, result.rows.map((row: any) => Number(row.id)));
+        return result.rows.map((r: any): ChatPerson => ({ id: Number(r.id), name: r.name, extension: r.extension ?? null,
+          photoUrl: photos.get(Number(r.id))?.photoUrl ?? null }));
       });
     },
     create(userId: number, tenantId: number, kind: ChatKind, name: string, memberIds: number[]) {
@@ -428,7 +434,10 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
         for (const row of messageRows.rows as any[]) for (const url of String(row.content).match(/https?:\/\/[^\s<>]+/g) || []) {
           if (links.length < 100 && !seen.has(url)) { seen.add(url); links.push({ messageId: row.id, url }); }
         }
-        return { members: memberRows.rows.map((row: any) => ({ id: Number(row.id), name: row.name, extension: row.extension ?? null })), canMentionAll: permissionRows.rows.length === 1,
+        const { profilePhotoDescriptors } = await import("../profile/photo");
+        const photos = await profilePhotoDescriptors(db, workspace.id, memberRows.rows.map((row: any) => Number(row.id)));
+        return { members: memberRows.rows.map((row: any) => ({ id: Number(row.id), name: row.name, extension: row.extension ?? null,
+          photoUrl: photos.get(Number(row.id))?.photoUrl ?? null })), canMentionAll: permissionRows.rows.length === 1,
           media: messageIds.flatMap(messageId => (descriptors.get(messageId) || []).map(attachment => ({ messageId, attachment }))), links };
       });
     },

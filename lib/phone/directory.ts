@@ -2,6 +2,8 @@ export interface DirectoryContact {
   id: number;
   name: string;
   extension: string | null;
+  /** Authenticated server-relative path; absent on older servers. */
+  photoUrl?: string | null;
 }
 export interface DirectoryWorkspace {
   id: number;
@@ -45,7 +47,9 @@ export function readDirectory(value: unknown): DirectoryContact[] {
       typeof person.name !== "string" ||
       !person.name.trim() ||
       ids.has(person.id) ||
-      !(person.extension === null || typeof person.extension === "string")
+      !(person.extension === null || typeof person.extension === "string") ||
+      !(person.photoUrl === undefined || person.photoUrl === null ||
+        (typeof person.photoUrl === "string" && /^\/api\/profile\/photo\/[1-9]\d*\/[1-9]\d*\?v=[0-9a-f-]{36}$/i.test(person.photoUrl)))
     ) {
       throw new Error("Invalid directory response");
     }
@@ -54,6 +58,7 @@ export function readDirectory(value: unknown): DirectoryContact[] {
       id: person.id,
       name: person.name.trim(),
       extension: person.extension,
+      ...(person.photoUrl !== undefined ? { photoUrl: person.photoUrl } : {}),
     };
   });
 }

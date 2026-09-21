@@ -13,6 +13,10 @@ export type StatusExpiryPreset = "1h" | "4h" | "today" | "week" | "always";
 
 export type WorkspaceProfileStatus = {
   userId: number;
+  /** Authenticated server-relative path; omitted by older servers. */
+  photoUrl?: string | null;
+  /** Changes whenever the stored photo changes; omitted by older servers. */
+  photoVersion?: string | null;
   manualAvailability: ManualAvailability | null;
   manualAvailabilityExpiresAt: Date | null;
   statusText: string | null;

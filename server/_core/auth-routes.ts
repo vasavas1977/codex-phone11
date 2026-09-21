@@ -23,7 +23,7 @@ export const phone11Cors: RequestHandler = (req, res, next) => {
     }
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Phone11-Chat-Owner, X-Phone11-Chat-Tenant, X-Phone11-Chat-Conversation, X-Phone11-Chat-Client-Id, X-Phone11-Chat-Filename");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Phone11-Chat-Owner, X-Phone11-Chat-Tenant, X-Phone11-Chat-Conversation, X-Phone11-Chat-Client-Id, X-Phone11-Chat-Filename, X-Phone11-Profile-Tenant");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   }
   if (req.method === "OPTIONS") { res.sendStatus(204); return; }
