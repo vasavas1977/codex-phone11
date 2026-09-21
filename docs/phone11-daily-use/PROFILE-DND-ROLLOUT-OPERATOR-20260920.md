@@ -8,6 +8,9 @@ the required host admission-fence controller/helper, its root-owned evidence
 record, production manifests, frozen Compose inputs, or immutable release
 image. The commands below are the reviewed interface for a later controlled
 maintenance window; they are not evidence that the host preconditions exist.
+The concrete two-control maintenance contract, source inventory command and
+remaining telephony-owner decision are recorded in
+`PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md`.
 
 The guarded operator is
 `scripts/phone11-profile-dnd-rollout.py`. It implements the eight phases in the

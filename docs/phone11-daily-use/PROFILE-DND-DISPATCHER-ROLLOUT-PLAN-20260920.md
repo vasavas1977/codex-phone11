@@ -3,6 +3,12 @@
 **Owner:** Phone11 operations | **Frequency:** one controlled pilot rollout
 **Last updated:** 20 September 2026 | **Status:** plan only; no production action authorized or run
 
+The host admission requirement is now decomposed into the executable contract
+in `PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md`: an edge HTTP mutation
+gate plus an all-source initial-SIP-INVITE gate, followed by bounded aggregate
+drain evidence. The SIP control is not commissioned, so rollout remains
+blocked; zero-active snapshots alone are not stop authority.
+
 ## Purpose and current boundary
 
 Deploy the workspace-profile schema and the matching Team Chat notification
