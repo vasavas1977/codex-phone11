@@ -113,7 +113,10 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
   useEffect(() => {
     const a = audio.addListener?.("playbackStatusUpdate", (status) => {
       if (status.didJustFinish) {
-        markFinished(audioDuration.current <= 0);
+        const eventDuration = Number.isFinite(status.duration)
+          ? status.duration
+          : audioDuration.current;
+        markFinished(eventDuration <= 0);
       }
     });
     const v = video.addListener?.("playToEnd", () => {

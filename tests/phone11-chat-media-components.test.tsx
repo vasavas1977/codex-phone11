@@ -658,10 +658,21 @@ it("turns a completed zero-duration voice clip into a retry state", async () => 
   render(node);
   m.press.get("Play voice.m4a")!.onPress();
   await flush();
-  m.audioListener?.({ didJustFinish: true });
+  m.audioListener?.({ didJustFinish: true, duration: 0 });
   await flush();
   expect(m.coordinator.getSnapshot().owner).toBeNull();
   expect(render(node)).toContain("Tap to retry");
+});
+
+it("keeps a completed valid clip playable when the rendered duration is stale", async () => {
+  const node = createElement(ReceivedMedia, { attachment });
+  render(node);
+  m.press.get("Play voice.m4a")!.onPress();
+  await flush();
+  m.audioListener?.({ didJustFinish: true, duration: 3 });
+  await flush();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
+  expect(render(node)).not.toContain("Tap to retry");
 });
 
 it("replays a completed voice clip from zero while retaining its protected source", async () => {
