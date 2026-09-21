@@ -68,7 +68,7 @@ The following hidden or incomplete paths must not be used as operational evidenc
 - **People / Users:** the source-backed directory lists existing tenant memberships and permits the reviewed role/status changes. Invitation, identity verification, suspension/provisioning reconciliation, offboarding, and bulk lifecycle remain unavailable.
 - **Phone-number provisioning:** the visible number inventory is live and tenant-scoped, but ordering, porting, and route editing are intentionally unavailable until a carrier-backed provisioning workflow exists.
 - **Analytics:** the administration screen reads available tenant CDRs. It is not live PBX telemetry, carrier evidence, call-quality measurement, or an operational report until its data pipeline is commissioned and verified.
-- **System health:** `app/admin/system.tsx` still contains static server, SIP-trunk, codec, version, uptime, capacity, and health values. Its refresh delay, restart prompts, and export confirmation do not call operational services.
+- **System health:** `app/admin/system.tsx` now presents an explicit unavailable screen until workspace telemetry is connected. It does not show fabricated health values or offer simulated operations.
 - **Advanced routing editors:** IVR digit actions, ring-group members and fallbacks, queue agents/availability/overflow, and holiday/exception schedules still need complete API-backed management.
 - **Personal self-service:** the portal reads assigned extensions, direct numbers, CDR-backed call activity, and owner-scoped voicemail only. Call activity requires an immutable caller or callee user identity captured at call time, so legacy identity-free records stay hidden and an extension reassignment never exposes its former user's history. It does not manage billing, payment methods, support tickets, profile/password changes, number acquisition, or forwarding/DND because no verified service path supports those actions.
 - **Operations and governance:** live QoS, endpoint inventory, alerts, emergency locations/policies, recording governance, bulk lifecycle, delegated scopes, approvals, and audit review remain release work.
@@ -82,7 +82,7 @@ The following hidden or incomplete paths must not be used as operational evidenc
 5. Create two isolated test users/extensions and one test DID with no customer traffic. Assign explicit IVR, ring-group, queue, and time-condition targets through the approved admin/API path.
 6. Prove each inbound route with the real carrier DID and exact handset build, including missing/inactive targets, timeout/overflow, after-hours behavior, two-way audio, and CDR/audit correlation.
 7. Prove a second tenant cannot read, change, join, or receive calls from the first tenant's objects.
-8. Keep the remaining mock Users, Analytics, and System Health routes hidden until they are replaced with live data; keep number provisioning explicitly unavailable until it is carrier-backed.
+8. Verify the source-backed Users and Analytics routes against the deployed tenant APIs; keep System Health and number provisioning explicitly unavailable until their operational services are connected.
 
 ## Release slices
 
