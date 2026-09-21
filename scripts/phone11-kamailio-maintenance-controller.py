@@ -409,22 +409,36 @@ class Controller:
         self.identity = identity
         self.clock = clock
 
-    def activate(self, operation_id: str, duration_seconds: int) -> Mapping[str, Any]:
+    def activate(
+        self,
+        operation_id: str,
+        duration_seconds: int | None = None,
+        *,
+        expires_at_epoch_seconds: int | None = None,
+    ) -> Mapping[str, Any]:
         operation_id = validate_operation_id(operation_id)
-        guarded(MIN_DURATION_SECONDS <= duration_seconds <= MAX_DURATION_SECONDS, "duration")
+        guarded((duration_seconds is None) != (expires_at_epoch_seconds is None), "duration")
         with self.store.locked():
             now = self.clock()
+            if expires_at_epoch_seconds is not None:
+                guarded(type(expires_at_epoch_seconds) is int, "duration")
+                expires = expires_at_epoch_seconds
+                ttl_seconds = expires - now
+            else:
+                guarded(type(duration_seconds) is int, "duration")
+                ttl_seconds = duration_seconds
+                expires = now + ttl_seconds
+            guarded(MIN_DURATION_SECONDS <= ttl_seconds <= MAX_DURATION_SECONDS, "duration")
             current = get_value(self.rpc)
             guarded(current is None or state_expiry(current) <= now, "already_active")
             if current is not None:
                 restore_expected(self.rpc, current)
             before = dict(self.identity())
-            expires = now + duration_seconds
             state_value = f"{expires}:{operation_id}"
             mutation_started = False
             try:
                 mutation_started = True
-                self.rpc.call("htable.setxs", [TABLE, KEY, state_value, duration_seconds])
+                self.rpc.call("htable.setxs", [TABLE, KEY, state_value, ttl_seconds])
                 guarded(get_value(self.rpc) == state_value, "activation_verify")
                 guarded(dict(self.identity()) == before, "identity_drift")
                 verified_at = self.clock()
@@ -436,13 +450,13 @@ class Controller:
                     "operation_id": operation_id,
                     "created_at_epoch_ms": created_ms,
                     "expires_at_epoch_ms": expires * 1000,
-                    "duration_seconds": duration_seconds,
+                    "duration_seconds": ttl_seconds,
                     "identity": before,
                     "state": {
                         "table": TABLE,
                         "key": KEY,
                         "value": state_value,
-                        "ttl_seconds": duration_seconds,
+                        "ttl_seconds": ttl_seconds,
                     },
                     "restore_state": {"present": False},
                 }
@@ -541,7 +555,9 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("action", choices=("activate", "status", "release"))
     value.add_argument("--operation-id", required=True)
-    value.add_argument("--duration-seconds", type=int, default=600)
+    expiry = value.add_mutually_exclusive_group()
+    expiry.add_argument("--duration-seconds", type=int)
+    expiry.add_argument("--expires-at-epoch-seconds", type=int)
     value.add_argument("--activation-sha256")
     value.add_argument("--config", type=Path, required=True)
     value.add_argument("--expected-config-sha256", required=True)
@@ -600,8 +616,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.action == "activate":
             guarded(args.activation_sha256 is None, "arguments")
-            result = controller.activate(operation_id, args.duration_seconds)
+            if args.expires_at_epoch_seconds is None:
+                duration_seconds = 600 if args.duration_seconds is None else args.duration_seconds
+                result = controller.activate(operation_id, duration_seconds)
+            else:
+                result = controller.activate(
+                    operation_id,
+                    expires_at_epoch_seconds=args.expires_at_epoch_seconds,
+                )
         else:
+            guarded(args.duration_seconds is None and args.expires_at_epoch_seconds is None, "arguments")
             guarded(args.activation_sha256 is not None, "arguments")
             digest = validate_sha256(args.activation_sha256, "arguments")
             result = (

@@ -119,6 +119,44 @@ class MaintenanceControllerTest(unittest.TestCase):
         self.assertIsNone(self.rpc.value)
         self.assertFalse(json.loads(Path(released["release_record"]).read_text())["was_active"])
 
+    def test_absolute_expiry_is_preserved_and_enforces_remaining_lifetime_bounds(self) -> None:
+        with self.assertRaises(controller.ControlError) as below:
+            self.control.activate(
+                self.operation_id,
+                expires_at_epoch_seconds=self.clock.now + controller.MIN_DURATION_SECONDS - 1,
+            )
+        self.assertEqual(below.exception.stage, "duration")
+        with self.assertRaises(controller.ControlError) as above:
+            self.control.activate(
+                self.operation_id,
+                expires_at_epoch_seconds=self.clock.now + controller.MAX_DURATION_SECONDS + 1,
+            )
+        self.assertEqual(above.exception.stage, "duration")
+
+        requested_expiry = self.clock.now + controller.MIN_DURATION_SECONDS
+        result = self.control.activate(
+            self.operation_id,
+            expires_at_epoch_seconds=requested_expiry,
+        )
+        self.assertEqual(result["expires_at_epoch_ms"], requested_expiry * 1000)
+        self.assertEqual(self.rpc.value, f"{requested_expiry}:{self.operation_id}")
+        self.assertEqual(self.rpc.calls[-2], (
+            "htable.setxs",
+            [controller.TABLE, controller.KEY, self.rpc.value, controller.MIN_DURATION_SECONDS],
+        ))
+
+    def test_activation_requires_exactly_one_relative_or_absolute_lifetime(self) -> None:
+        with self.assertRaises(controller.ControlError) as neither:
+            self.control.activate(self.operation_id)
+        self.assertEqual(neither.exception.stage, "duration")
+        with self.assertRaises(controller.ControlError) as both:
+            self.control.activate(
+                self.operation_id,
+                600,
+                expires_at_epoch_seconds=self.clock.now + 600,
+            )
+        self.assertEqual(both.exception.stage, "duration")
+
     def test_duplicate_activation_is_rejected_without_shortening_existing_gate(self) -> None:
         first = self.activate(900)
         expiry = self.rpc.value
@@ -288,6 +326,7 @@ class MaintenanceControllerTest(unittest.TestCase):
         }
         config = {"path": str(CONFIG), "sha256": "a" * 64}
         with patch.object(controller.os, "geteuid", return_value=0), \
+             patch.object(controller.time, "time", return_value=self.clock.now), \
              patch.object(controller, "validate_config", return_value=config), \
              patch.object(controller, "process_identity", return_value=process), \
              patch.object(controller, "fifo_identity", return_value=fifo), \
@@ -299,7 +338,6 @@ class MaintenanceControllerTest(unittest.TestCase):
             result = controller.main([
                 "activate",
                 "--operation-id", self.operation_id,
-                "--duration-seconds", "600",
                 "--config", str(CONFIG),
                 "--expected-config-sha256", "a" * 64,
                 "--pid", "1",
@@ -310,6 +348,67 @@ class MaintenanceControllerTest(unittest.TestCase):
         value = json.loads(output.buffer.getvalue())
         self.assertTrue(value["active"])
         self.assertEqual(value["operation_id"], self.operation_id)
+        self.assertEqual(value["expires_at_epoch_ms"], (self.clock.now + 600) * 1000)
+
+    def test_main_accepts_absolute_expiry_without_recomputing_it(self) -> None:
+        output = type("Output", (), {"buffer": io.BytesIO()})()
+        errors = io.StringIO()
+        process = {
+            "pid": 1,
+            "start_ticks": 123,
+            "uid": os.geteuid(),
+            "gid": os.getegid(),
+            "exe_path": "/usr/sbin/kamailio",
+            "exe_sha256": "b" * 64,
+            "cmdline_sha256": "c" * 64,
+        }
+        fifo = {
+            "path": "/var/run/kamailio/kamailio_rpc.fifo",
+            "device": 1,
+            "inode": 2,
+            "uid": os.geteuid(),
+            "gid": os.getegid(),
+            "mode": 0o660,
+        }
+        config = {"path": str(CONFIG), "sha256": "a" * 64}
+        requested_expiry = self.clock.now + controller.MIN_DURATION_SECONDS
+        with patch.object(controller.os, "geteuid", return_value=0), \
+             patch.object(controller.time, "time", return_value=self.clock.now), \
+             patch.object(controller, "validate_config", return_value=config), \
+             patch.object(controller, "process_identity", return_value=process), \
+             patch.object(controller, "fifo_identity", return_value=fifo), \
+             patch.object(controller, "sha256_file", return_value="d" * 64), \
+             patch.object(controller, "FifoRpc", return_value=self.rpc), \
+             patch.object(controller, "RecordStore", return_value=self.store), \
+             patch.object(controller.sys, "stdout", output), \
+             patch.object(controller.sys, "stderr", errors):
+            result = controller.main([
+                "activate",
+                "--operation-id", self.operation_id,
+                "--expires-at-epoch-seconds", str(requested_expiry),
+                "--config", str(CONFIG),
+                "--expected-config-sha256", "a" * 64,
+                "--pid", "1",
+                "--expected-process-exe-sha256", "b" * 64,
+                "--evidence-dir", str(self.evidence),
+            ])
+        self.assertEqual(result, 0, errors.getvalue())
+        value = json.loads(output.buffer.getvalue())
+        self.assertEqual(value["expires_at_epoch_ms"], requested_expiry * 1000)
+
+    def test_cli_rejects_relative_and_absolute_lifetime_together(self) -> None:
+        with patch.object(controller.sys, "stderr", io.StringIO()), self.assertRaises(SystemExit):
+            controller.parser().parse_args([
+                "activate",
+                "--operation-id", self.operation_id,
+                "--duration-seconds", "600",
+                "--expires-at-epoch-seconds", str(self.clock.now + 600),
+                "--config", str(CONFIG),
+                "--expected-config-sha256", "a" * 64,
+                "--pid", "1",
+                "--expected-process-exe-sha256", "b" * 64,
+                "--evidence-dir", str(self.evidence),
+            ])
 
 
 if __name__ == "__main__":

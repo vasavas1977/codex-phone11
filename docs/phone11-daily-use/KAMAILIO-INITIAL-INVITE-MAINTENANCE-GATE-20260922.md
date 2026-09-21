@@ -23,10 +23,14 @@ local JSON-RPC FIFO and the `htable.setxs` operation to set
 `expiry_epoch:operation_uuid` and its TTL together. The route reads only the
 expiry field, while controller status and release require the complete value.
 This prevents an old receipt from claiming or releasing a later activation
-that happens to have the same expiry. The controller accepts only 180 through
-1,800 seconds, rejects a second active operation, and never shortens an active
-gate. Its activation evidence is written only after exact readback and a second
-identity check.
+that happens to have the same expiry. The controller accepts either a relative
+duration or an explicit absolute expiry, never both. It preserves the legacy
+600-second CLI default when neither option is supplied and accepts only 180
+through 1,800 seconds of remaining lifetime. The absolute form lets the
+cross-host aggregate plan and SIP state retain the exact same expiry even when
+the controller starts later. The controller rejects a second active operation
+and never shortens an active gate. Its activation evidence is written only
+after exact readback and a second identity check.
 
 Activation and release records are canonical JSON, create-only, mode `0600`
 files under a pre-created root-owned mode `0700` directory. They bind the
@@ -61,8 +65,9 @@ classes, preservation of ACK/BYE/CANCEL/re-INVITE/REGISTER/OPTIONS/SUBSCRIBE/
 PUBLISH/MESSAGE, activation, no premature release before expiry, expiry,
 duplicate activation, RPC timeout after a possible set, ambiguous restore,
 competing-writer preservation, same-expiry stale-receipt rejection, CLI wiring,
-identity drift, evidence-write failure, foreign state, exact release and
-evidence tampering.
+absolute-expiry boundary validation and preservation, mutually exclusive
+lifetime inputs, legacy default duration, identity drift, evidence-write
+failure, foreign state, exact release and evidence tampering.
 
 ## Commissioning gate
 
@@ -70,9 +75,9 @@ Do not add this controller to `guard.program` or a production rollout manifest
 from source evidence alone. Before any live use, the telephony owner must:
 
 1. Parse the exact rendered production config with the pinned Kamailio 5.8.8
-   image and record the config digest. No parser run was possible in this source
-   workspace because the pinned image was unavailable and the local Docker
-   daemon was not running.
+   image and record the config digest. The isolated 5.8.4 result below proves
+   compatibility with the existing project image only and does not close this
+   5.8.8 CI gate.
 2. Establish the reviewed execution location. The tracked production Compose
    file does not expose `/var/run/kamailio` to the host, while the controller
    intentionally requires local FIFO access and Linux `/proc` identity. Pin the
@@ -96,10 +101,44 @@ from source evidence alone. Before any live use, the telephony owner must:
    edge and SIP controls active, require the same evidence digest through stop,
    restart and rollback, and require at least the rollout operator's remaining
    150-second lifetime at every protected phase.
-6. During the authorized maintenance window, activate with a fresh UUID and a
-   duration that covers drain, replacement and rollback margin. Release only
-   after the replacement receipt and independent healthy-call proof. Archive
-   both records without editing or reusing them.
+6. During the authorized maintenance window, activate with a fresh UUID and an
+   absolute expiry that covers drain, replacement and rollback margin. Release
+   only after the replacement receipt and independent healthy-call proof.
+   Archive both records without editing or reusing them.
 
 No live daemon, host file, provider, call, deployment, migration, edge gate or
 production process was changed while preparing this source prerequisite.
+
+## Isolated existing-image compatibility evidence
+
+On 22 September 2026, the exact reviewed config from commit `9341268`
+(`1689014d4845a4214b28ae4c33de39de40525f568c07a639226b0da769d28b89`)
+passed `kamailio -c` in the exact project image already present on the VoIP
+host:
+`sha256:f7c3a2412b49f1372c70b2ad06da6f28cb34a044ee3ae408c7b960ef484bb5b7`
+(upstream label `5.8.4-bookworm`). The parser exited zero with
+`config file ok, exiting...`.
+
+The validation container used no network, published ports, live configuration,
+live FIFO, secrets or production process. Its root filesystem and staged config
+were read-only; only an isolated container-local `/var/run/kamailio` tmpfs was
+writable for module initialization. The image entrypoint was bypassed so that
+it could not discard the parser flags. The temporary container was removed.
+Evidence remains at
+`/opt/phone11ai/maintenance-validation-9341268/parser-evidence-tmpfs.json`
+with SHA-256
+`2a2e9ad2c3b60137a7fbf2c7adfce04c131ab3142b83f786645f0f713f249998`.
+The preceding expected failure from a fully read-only FIFO path is retained at
+`/opt/phone11ai/maintenance-validation-9341268/parser-evidence.json` with
+SHA-256
+`45a5317add8787c4cf8b6a7c94995eb3966a88e802ec6a6eb9064a991c3598ee`.
+
+This establishes syntax and module-load compatibility with the existing 5.8.4
+project image only. The tracked pinned 5.8.8 CI parser gate remains open. This
+evidence does not commission the controller, activate maintenance, prove SIP
+traffic behavior, or authorize a profile/DND rollout.
+
+The absolute-expiry input was added after reviewed commit `9341268`. It does
+not alter the config bytes covered by the parser evidence, but the controller
+and focused-test delta requires a new independent exact-diff source review
+before any runtime activation.
