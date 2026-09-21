@@ -69,6 +69,14 @@ const phoneNumberSchemaRows = schemaRows({
   emergency_addresses: ["id", "tenant_id", "street", "city"],
 });
 
+const tenantSettingsSchemaRows = schemaRows({
+  tenant_settings: [
+    "tenant_id", "default_caller_id", "emergency_address_required",
+    "recording_default_policy", "voicemail_default_enabled",
+    "business_hours_timezone", "max_ring_timeout_seconds", "updated_at",
+  ],
+});
+
 const advancedRoutingSchemaRows = schemaRows({
   call_queues: [
     "id", "tenant_id", "name", "description", "extension", "strategy",
@@ -142,10 +150,64 @@ describe("PBX management capabilities", () => {
 });
 
 describe("PBX workspace administrator authorization", () => {
+  it("returns tenant identity with explicit unavailable settings on the production schema", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 7,
+          name: "Acme",
+          plan: "business",
+          status: "active",
+          default_caller_id: null,
+          emergency_address_required: null,
+          recording_default_policy: null,
+          voicemail_default_enabled: null,
+          business_hours_timezone: null,
+          max_ring_timeout_seconds: null,
+        }],
+      });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.get(),
+    ).resolves.toMatchObject({
+      id: 7,
+      name: "Acme",
+      userRole: "admin",
+      settingsAvailable: false,
+      default_caller_id: null,
+      business_hours_timezone: null,
+    });
+
+    expect(String(db.query.mock.calls[1][0])).toContain("information_schema.columns");
+    expect(String(db.query.mock.calls[2][0])).not.toContain("tenant_settings");
+  });
+
+  it("rejects tenant setting writes before accessing an absent settings table", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(
+      pbxRouter.createCaller(context()).tenant.updateSettings({
+        tenantId: 7,
+        businessHoursTimezone: "Asia/Bangkok",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(db.query).toHaveBeenCalledTimes(2);
+    expect(
+      db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE tenant_settings")),
+    ).toBe(false);
+  });
+
   it.each(["owner", "admin"] as const)(
     "allows a workspace %s with an ordinary platform account",
     async (role) => {
-      db.query.mockResolvedValueOnce({ rows: [membership(role)] });
+      db.query
+        .mockResolvedValueOnce({ rows: [membership(role)] })
+        .mockResolvedValueOnce({ rows: tenantSettingsSchemaRows });
 
       await expect(
         pbxRouter

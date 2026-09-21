@@ -18,7 +18,10 @@ import {
 } from "./tenant-middleware";
 import { buildPaginationSQL, buildPaginatedResponse } from "./pagination";
 import { invalidateCache } from "./redis";
-import { readManagementCapabilities } from "./schema-capabilities";
+import {
+  readManagementCapabilities,
+  schemaHasRequiredColumns,
+} from "./schema-capabilities";
 import {
   getCallStats,
   getVoicemails,
@@ -201,6 +204,30 @@ function phoneNumberSchemaUnavailable(): TRPCError {
   });
 }
 
+const tenantSettingsRequirements = {
+  tenant_settings: [
+    "tenant_id",
+    "default_caller_id",
+    "emergency_address_required",
+    "recording_default_policy",
+    "voicemail_default_enabled",
+    "business_hours_timezone",
+    "max_ring_timeout_seconds",
+    "updated_at",
+  ],
+} as const;
+
+async function tenantSettingsSchemaAvailable(): Promise<boolean> {
+  return schemaHasRequiredColumns(tenantSettingsRequirements);
+}
+
+function tenantSettingsUnavailable(): TRPCError {
+  return new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message: "Workspace phone settings are unavailable on this server",
+  });
+}
+
 // ============================================================================
 // PBX Router
 // ============================================================================
@@ -214,18 +241,28 @@ export const pbxRouter = router({
     /** Get current tenant details */
     get: protectedProcedure.query(async ({ ctx }) => {
       const tc = await getTenantCtx(ctx);
+      const settingsAvailable = await tenantSettingsSchemaAvailable();
       const result = await query(
-        `SELECT t.*, ts.default_caller_id, ts.emergency_address_required, 
-                ts.recording_default_policy, ts.voicemail_default_enabled,
-                ts.business_hours_timezone, ts.max_ring_timeout_seconds
+        `SELECT t.*,
+                ${settingsAvailable
+                  ? `ts.default_caller_id, ts.emergency_address_required,
+                     ts.recording_default_policy, ts.voicemail_default_enabled,
+                     ts.business_hours_timezone, ts.max_ring_timeout_seconds`
+                  : `NULL::text AS default_caller_id,
+                     NULL::boolean AS emergency_address_required,
+                     NULL::text AS recording_default_policy,
+                     NULL::boolean AS voicemail_default_enabled,
+                     NULL::text AS business_hours_timezone,
+                     NULL::integer AS max_ring_timeout_seconds`}
          FROM tenants t
-         LEFT JOIN tenant_settings ts ON t.id = ts.tenant_id
+         ${settingsAvailable ? "LEFT JOIN tenant_settings ts ON t.id = ts.tenant_id" : ""}
          WHERE t.id = $1`,
         [tc.tenantId],
       );
       if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
       return {
         ...result.rows[0],
+        settingsAvailable,
         userRole: tc.role,
         memberships: tc.memberships,
       };
@@ -256,6 +293,9 @@ export const pbxRouter = router({
         const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
+        if (!(await tenantSettingsSchemaAvailable())) {
+          throw tenantSettingsUnavailable();
+        }
 
         const sets: string[] = [];
         const vals: any[] = [];
