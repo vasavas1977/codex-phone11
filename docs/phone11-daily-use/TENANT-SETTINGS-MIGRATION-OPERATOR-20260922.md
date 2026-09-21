@@ -1,8 +1,12 @@
 # Phone11 tenant-settings guarded migration operator
 
-**Status:** prepared source only. The operator has not been copied to the VOIP
-host or run there. No backup, restore, database migration, route change,
-container replacement, service restart, or customer-data access was performed.
+**Status:** the corrected operator (`53bf8de`) passed independent source review
+and was applied on the pinned VoIP database on 22 September 2026. A fresh backup
+and isolated restore preceded the mutation. The receipt reports `APPLIED`, and
+read-only recovery reports `RECOVERY_VALID status=APPLIED`. See
+`PROJECT-COMPLETION-20260922.md` for protected evidence paths and hashes.
+The validation and original provisioning notes below describe the preparation
+stage; they are not a claim that production is still unmigrated.
 
 ## Exact target and scope
 
@@ -55,13 +59,13 @@ create a root-owned mode-0700 journal directory, generate the two fresh proof
 files, and then run:
 
 ```text
-sudo /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
+sudo python3 /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
   --prepare \
   --sql /opt/phone11ai/tenant-settings/tenant-settings-migration.sql \
   --backup-proof /root/phone11-tenant-settings/backup-proof.json \
   --restore-proof /root/phone11-tenant-settings/restore-proof.json
 
-sudo /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
+sudo python3 /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
   --apply \
   --sql /opt/phone11ai/tenant-settings/tenant-settings-migration.sql \
   --backup-proof /root/phone11-tenant-settings/backup-proof.json \
@@ -85,7 +89,7 @@ choose another receipt path. Run the read-only recovery path against the same
 SQL, proof files and journal:
 
 ```text
-sudo /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
+sudo python3 /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
   --recover \
   --sql /opt/phone11ai/tenant-settings/tenant-settings-migration.sql \
   --backup-proof /root/phone11-tenant-settings/backup-proof.json \

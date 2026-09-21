@@ -203,3 +203,38 @@ Integration found that the candidate operator still required
 `settingsAvailable:false` in its tenant response probe. Its v2 path must require
 the newly available `businessHoursTimezone` capability while preserving legacy
 v1 behavior. That correction and review must finish before activation.
+
+## Live tenant-settings migration
+
+A fresh protected PostgreSQL 16.13 dump (202,904 bytes, SHA-256
+`141d776de725922a75bbceeb9f77eba631c4c96c446fe9bc0414fe13e70e24da`)
+was restored successfully into an isolated, disposable cluster; restored catalog
+matched the pinned absent-state catalog. The backup and linked proof files are
+retained root-only under
+`/opt/phone11ai/codex-phone11-deploy/infra/compose/pg-backup/tenant-settings-20260921T201120Z`.
+The main agent independently verified all protected file hashes and permissions.
+
+The first real preflight found a Python subprocess input/stdin conflict before
+DB access. Commit `53bf8de` corrects that wrapper and Docker stdin forwarding,
+with a real child-process stdin regression, isolated PostgreSQL checks and
+independent source approval. The corrected production preflight returned
+`PREPARE_READY`; apply returned `APPLIED receipt=WRITTEN`; the required read-only
+recovery then returned `RECOVERY_VALID status=APPLIED`. The root-only receipt
+`/var/lib/phone11-tenant-settings/receipt.json` has SHA-256
+`5f7d86a4dd3773e4bdd17e8dfc6270544e7e96d1a0ccfb213543d2ab614b71e5`.
+The additive migration creates the settings table without saving workspace rows.
+
+The current 3003 Compose label referenced a deleted temporary file. Its exact
+configuration was regenerated through the retained v1 manifest and cloning
+code, then compared to the immutable running container: image, environment,
+ports, mounts and access modes, networks, user, working directory, command,
+entrypoint and healthcheck all matched. Protected recovered configuration:
+`/root/phone11-current-3003-recovered-compose.json`, SHA-256
+`75743a59eb0dbd6edf3c1ce6c2ec865d1d08b27e718d1ad6c78f9def838d9e58`.
+No container was started or replaced.
+
+The v2 rollout inventory subsequently refused the actual layered Nginx layout:
+the existing recovery operator inserts its four locations between tRPC and the
+shared marker. A bounded source correction is underway; routes remain unchanged.
+The minimal workspace settings screen is committed as `1de803b` with seven
+interaction checks and TypeScript passing; its static export is being prepared.
