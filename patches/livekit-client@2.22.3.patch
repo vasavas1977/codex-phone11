@@ -1,0 +1,31 @@
+diff --git a/dist/livekit-client.esm.mjs b/dist/livekit-client.esm.mjs
+index 0bdf98540d93d7deb581737dca7afb299308d307..ab6717749609796b6b0d4ffe4d71ef004570a3a1 100644
+--- a/dist/livekit-client.esm.mjs
++++ b/dist/livekit-client.esm.mjs
+@@ -17588,7 +17588,7 @@ var BehavioralFsm = class BehavioralFsm {
+       untilState: item.untilState
+     } : {}));
+     writes.push(() => {
+-      if (!this.clients.has(client)) this.knownClients.add(new WeakRef(client));
++      if (!this.clients.has(client) && typeof WeakRef !== "undefined") this.knownClients.add(new WeakRef(client));
+       this.clients.set(client, {
+         state,
+         deferredQueue
+@@ -17609,7 +17609,7 @@ var BehavioralFsm = class BehavioralFsm {
+       if (!childLink) throw new Error("rehydrate: state \"".concat(state, "\" in FSM \"").concat(this.id, "\" has no _child, but composite path \"").concat(compositeState, "\" requires one."));
+       childLink.rehydrate(client, childPath);
+     }
+-    if (!this.clients.has(client)) this.knownClients.add(new WeakRef(client));
++    if (!this.clients.has(client) && typeof WeakRef !== "undefined") this.knownClients.add(new WeakRef(client));
+     this.clients.set(client, {
+       state,
+       deferredQueue: []
+@@ -17872,7 +17872,7 @@ var BehavioralFsm = class BehavioralFsm {
+       deferredQueue: []
+     };
+     this.clients.set(client, meta);
+-    this.knownClients.add(new WeakRef(client));
++    if (typeof WeakRef !== "undefined") this.knownClients.add(new WeakRef(client));
+     this.transition(client, this.initialState);
+     return meta;
+   }

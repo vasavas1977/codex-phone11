@@ -8,6 +8,7 @@ import {
 import { classifyRoomConstructionFailure } from "./room-construction-diagnostic";
 
 const originalAbortController = globalThis.AbortController;
+const originalWeakRef = globalThis.WeakRef;
 const originalSetMaxListeners = Room.prototype.setMaxListeners;
 const originalOn = Room.prototype.on;
 
@@ -17,11 +18,24 @@ afterEach(() => {
     value: originalAbortController,
     writable: true,
   });
+  Object.defineProperty(globalThis, "WeakRef", {
+    configurable: true,
+    value: originalWeakRef,
+    writable: true,
+  });
   Room.prototype.setMaxListeners = originalSetMaxListeners;
   Room.prototype.on = originalOn;
 });
 
 describe("installed Room constructor diagnostics", () => {
+  it("constructs the real installed Room when Hermes does not provide WeakRef", () => {
+    expect(Reflect.deleteProperty(globalThis, "WeakRef")).toBe(true);
+    expect(typeof globalThis.WeakRef).toBe("undefined");
+
+    expect(() => new Room()).not.toThrow();
+    expect(Object.hasOwn(globalThis, "WeakRef")).toBe(false);
+  });
+
   it("identifies the real installed data-channel failure when AbortController is absent", () => {
     Object.defineProperty(globalThis, "AbortController", {
       configurable: true,
