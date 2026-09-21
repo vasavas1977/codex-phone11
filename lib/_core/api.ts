@@ -132,24 +132,48 @@ export async function apiCall<T>(
 }
 
 export async function getMobileAuthConfig(): Promise<MobileAuthConfig> {
-  const { data } = await requestJson<MobileAuthConfig>(
+  const { data } = await requestJson<unknown>(
     "/api/mobile/config",
     {},
     false,
   );
   if (
-    !data ||
-    data.authProvider !== "phone11" ||
-    typeof data.emailPasswordEnabled !== "boolean" ||
-    typeof data.passwordResetEnabled !== "boolean" ||
-    !["disabled", "pilot", "general"].includes(
-      data.passwordResetAvailability,
-    ) ||
-    (data.passwordResetEnabled &&
-      data.passwordResetAvailability === "disabled") ||
-    (!data.passwordResetEnabled &&
-      data.passwordResetAvailability !== "disabled") ||
-    data.registrationEnabled !== false
+    typeof data !== "object" ||
+    data === null ||
+    Array.isArray(data)
+  ) {
+    throw new ApiError(
+      "Phone11 sign-in is unavailable right now. Please try again.",
+    );
+  }
+  const raw = data as Record<string, unknown>;
+  const hasPasswordResetEnabled = Object.prototype.hasOwnProperty.call(
+    raw,
+    "passwordResetEnabled",
+  );
+  const hasPasswordResetAvailability = Object.prototype.hasOwnProperty.call(
+    raw,
+    "passwordResetAvailability",
+  );
+  const legacyPasswordResetConfig =
+    !hasPasswordResetEnabled && !hasPasswordResetAvailability;
+  const passwordResetEnabled = legacyPasswordResetConfig
+    ? false
+    : raw.passwordResetEnabled;
+  const passwordResetAvailability = legacyPasswordResetConfig
+    ? "disabled"
+    : raw.passwordResetAvailability;
+  if (
+    raw.authProvider !== "phone11" ||
+    typeof raw.emailPasswordEnabled !== "boolean" ||
+    hasPasswordResetEnabled !== hasPasswordResetAvailability ||
+    typeof passwordResetEnabled !== "boolean" ||
+    (passwordResetAvailability !== "disabled" &&
+      passwordResetAvailability !== "pilot" &&
+      passwordResetAvailability !== "general") ||
+    (passwordResetEnabled && passwordResetAvailability === "disabled") ||
+    (!passwordResetEnabled && passwordResetAvailability !== "disabled") ||
+    raw.registrationEnabled !== false
   ) {
     throw new ApiError(
       "Phone11 sign-in is unavailable right now. Please try again.",
@@ -157,9 +181,9 @@ export async function getMobileAuthConfig(): Promise<MobileAuthConfig> {
   }
   return {
     authProvider: "phone11",
-    emailPasswordEnabled: data.emailPasswordEnabled,
-    passwordResetEnabled: data.passwordResetEnabled,
-    passwordResetAvailability: data.passwordResetAvailability,
+    emailPasswordEnabled: raw.emailPasswordEnabled,
+    passwordResetEnabled,
+    passwordResetAvailability,
     registrationEnabled: false,
   };
 }

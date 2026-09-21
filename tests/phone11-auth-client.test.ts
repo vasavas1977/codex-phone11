@@ -262,6 +262,41 @@ describe("Phone11 email/password client", () => {
     },
   );
 
+  it("defaults password recovery to disabled for the complete legacy config shape", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({
+        authProvider: "phone11",
+        emailPasswordEnabled: true,
+        registrationEnabled: false,
+      }),
+    );
+
+    await expect(api.getMobileAuthConfig()).resolves.toEqual(config);
+  });
+
+  it.each([
+    {
+      authProvider: "phone11",
+      emailPasswordEnabled: true,
+      passwordResetEnabled: false,
+      registrationEnabled: false,
+    },
+    {
+      authProvider: "phone11",
+      emailPasswordEnabled: true,
+      passwordResetAvailability: "disabled",
+      registrationEnabled: false,
+    },
+    { ...config, passwordResetEnabled: "false" },
+    { ...config, passwordResetAvailability: null },
+  ])("rejects partial or malformed password-recovery capability fields", async (data) => {
+    fetchMock.mockResolvedValueOnce(json(data));
+
+    await expect(api.getMobileAuthConfig()).rejects.toThrow(
+      "Phone11 sign-in is unavailable",
+    );
+  });
+
   it("allows retry after a config failure without caching the failed response", async () => {
     fetchMock
       .mockRejectedValueOnce(new Error("offline"))
