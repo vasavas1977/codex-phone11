@@ -1,5 +1,14 @@
 # Runbook: Phone11 profile/DND host admission and maintenance
 
+> **22 September status:** The original controller sequence below is an admission
+> requirement, not a commissioned runtime. The source proposal in
+> `PROFILE-DND-AGGREGATE-MAINTENANCE-GUARD-20260922.md` uses explicit edge-first
+> activation and separate SIP-first/edge-last release through existing temporary
+> host access. It does not promise atomic cross-host restoration. The required
+> Connect11 provider session/token reconnect fence does not exist yet; protected
+> replacement phases must refuse `provider_fence_uncommissioned`. No baseline
+> replacement is authorized by source tests or a zero-count snapshot alone.
+
 **Owner:** Phone11 operations and telephony owner | **Frequency:** one controlled rollout
 **Last updated:** 21 September 2026 | **Last run:** never
 

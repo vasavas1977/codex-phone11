@@ -67,13 +67,19 @@ shell flag, an operator lock, a zero-call snapshot, or a broad network block.
 
 ### Controller evidence contract
 
-The controller must atomically activate and restore the exact edge and SIP
-controls. Its evidence record must bind the operation ID, expiry, active and
-restore configuration hashes, controller/config/process identities, both control
-states, and the aggregate coverage required by `phone11-profile-dnd-guard/v1`.
+The selected source design uses two explicit host steps through the existing
+temporary Instance Connect access: activate the edge first, then let the VoIP
+guard verify fresh edge evidence before activating local SIP. It does not claim
+atomic cross-host activation or restoration. Partial failure keeps the edge
+closed until a separate owner-bound release. Release SIP first and edge last.
+The evidence record must bind the operation ID, identical absolute expiry, active
+and restore configuration hashes, controller/config/process identities, both
+control states, and the aggregate coverage required by `phone11-profile-dnd-guard/v1`.
 Any expired, missing, ambiguous, mismatched, or restarted control generation is
 a failed fence. The rollout operator must then refuse a baseline stop; a failed
-activation restores both controls before reporting failure.
+activation must not allow baseline replacement or silently release a foreign
+operation. Provider-media admission remains an additional uncommissioned
+boundary, so source guard work alone cannot establish production readiness.
 
 ### Required tests before a production manifest
 
@@ -137,3 +143,27 @@ The exact SIP configuration in `9341268` passed an isolated `kamailio -c` parser
 ## Management database target
 
 A read-only catalog and Nginx route check established that public `/api/trpc` and `/api/trpc/` use VoIP port 3003 (`cp11-api-candidate-next`, image prefix `2e7225e80ec7`). Its `phone11ai/public` database has no `tenant_settings` table and has the required single-column `tenants(id)` primary key. The older edge-host application has a different, incompatible 22-column table despite the same database/schema names; do not apply the new migration there. No production schema or customer rows were changed by discovery. The minimal settings migration and API slice passed independent source review and were committed as `9804c2f`; 72 focused tests against isolated PostgreSQL and TypeScript passed. Production still requires the target-bound backup, restore rehearsal, migration receipt, candidate release and authenticated browser acceptance.
+
+## Connect11 maintenance coordination
+
+The `Complete Connect11 project` task reviewed Connect11 source `70734db4779351c4dfb554abf285b66fb89ef100` and reported no existing authoritative, tenant-scoped aggregate media-session/pending-operation count route. The capabilities route proves configuration readiness only; eviction status proves one customer-scoped durable operation, not provider occupancy. Phone11 admission leases and eviction-operation records can supply scoped control-plane counts but cannot stand in for media counts.
+
+Previously issued plain-video tokens can start provider connections after Phone11 HTTP admission is fenced. Existing provider sessions can receive refreshed tokens and reconnect beyond the initial token lifetime. Neither waiting five minutes nor observing zero pending leases proves media quiescence. The baseline maintenance release must remain blocked until a reviewed tenant-scoped provider mapping/read and token/reconnect admission control establish the required guarantee. No provider or tenant-mapping changes were requested or applied during this coordination.
+
+Reusable pointers supplied by that task: Connect11 `backend/app/api/v1/realtime.py` (plain-video routes), `backend/app/services/phone11_plain_video_evictions.py` (customer-scoped room/identity derivation and eviction status), and Phone11 `server/meetings/connect11-plain-video-config.ts`, `server/meetings/tenant-provider.ts`, and `server/meetings/plain-video-admission-repository.ts`. Recheck exact paths/source before implementation. Do not use project-wide room listing as tenant authorization, or expired leases as proof of disconnected media.
+
+### Recommended architecture to evaluate next
+
+Connect11 recommends reviewing a **Phone11 control-plane drain while external
+provider media continues**, rather than adding permanent membership eviction as
+a temporary maintenance operation. This is not clearance to remove the current
+`provider_fence_uncommissioned` refusal. Phone11 does not carry WebRTC media, but
+a safe release still needs exact route/container ownership for all meeting
+capability, list, join, eviction and status requests; preserved server-only tenant
+mapping and auth on replacement/rollback; drained mint/confirm and local eviction
+operations; provider outbox ownership; graceful HTTP/background shutdown and
+single notification/recording worker ownership; compatible schemas/sessions;
+and a real existing-session/reconnect test across the restart. Review baseline
+replacement separately from the later candidate/admission route switch. See
+`server/_core/runtime-role.ts` drain behavior and each phase of
+`scripts/phone11-profile-dnd-rollout.py` before changing the guard contract.
