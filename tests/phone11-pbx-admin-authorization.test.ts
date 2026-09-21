@@ -73,7 +73,7 @@ const tenantSettingsSchemaRows = schemaRows({
   tenant_settings: [
     "tenant_id", "default_caller_id", "emergency_address_required",
     "recording_default_policy", "voicemail_default_enabled",
-    "business_hours_timezone", "max_ring_timeout_seconds", "updated_at",
+    "business_hours_timezone", "max_ring_timeout_seconds", "created_at", "updated_at",
   ],
 });
 

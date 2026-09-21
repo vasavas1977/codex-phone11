@@ -207,15 +207,25 @@ function phoneNumberSchemaUnavailable(): TRPCError {
 const tenantSettingsRequirements = {
   tenant_settings: [
     "tenant_id",
-    "default_caller_id",
-    "emergency_address_required",
-    "recording_default_policy",
-    "voicemail_default_enabled",
     "business_hours_timezone",
-    "max_ring_timeout_seconds",
+    "created_at",
     "updated_at",
   ],
 } as const;
+
+const businessHoursTimezoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine((timeZone) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone }).format();
+      return true;
+    } catch {
+      return false;
+    }
+  }, "Use a supported IANA time zone");
 
 async function tenantSettingsSchemaAvailable(): Promise<boolean> {
   return schemaHasRequiredColumns(tenantSettingsRequirements);
@@ -224,8 +234,35 @@ async function tenantSettingsSchemaAvailable(): Promise<boolean> {
 function tenantSettingsUnavailable(): TRPCError {
   return new TRPCError({
     code: "PRECONDITION_FAILED",
-    message: "Workspace phone settings are unavailable on this server",
+    message: "Workspace settings are unavailable on this server",
   });
+}
+
+export async function upsertBusinessHoursTimezone(
+  execute: SqlQuery,
+  tenantId: number,
+  actorUserId: number,
+  businessHoursTimezone: string,
+): Promise<{ rows: Array<{ business_hours_timezone: string }> }> {
+  return execute(
+    `INSERT INTO tenant_settings (
+       tenant_id, business_hours_timezone, created_at, updated_at
+     )
+     SELECT tm.tenant_id, $2, NOW(), NOW()
+       FROM tenant_memberships tm
+       JOIN tenants t ON t.id = tm.tenant_id
+      WHERE tm.user_id = $3
+        AND tm.tenant_id = $1
+        AND tm.status = 'active'
+        AND tm.role::text IN ('owner', 'admin')
+        AND t.status = 'active'
+      FOR UPDATE OF tm, t
+     ON CONFLICT (tenant_id) DO UPDATE
+       SET business_hours_timezone = EXCLUDED.business_hours_timezone,
+           updated_at = NOW()
+     RETURNING business_hours_timezone`,
+    [tenantId, businessHoursTimezone, actorUserId],
+  ) as Promise<{ rows: Array<{ business_hours_timezone: string }> }>;
 }
 
 // ============================================================================
@@ -244,16 +281,11 @@ export const pbxRouter = router({
       const settingsAvailable = await tenantSettingsSchemaAvailable();
       const result = await query(
         `SELECT t.*,
-                ${settingsAvailable
-                  ? `ts.default_caller_id, ts.emergency_address_required,
-                     ts.recording_default_policy, ts.voicemail_default_enabled,
-                     ts.business_hours_timezone, ts.max_ring_timeout_seconds`
-                  : `NULL::text AS default_caller_id,
-                     NULL::boolean AS emergency_address_required,
-                     NULL::text AS recording_default_policy,
-                     NULL::boolean AS voicemail_default_enabled,
-                     NULL::text AS business_hours_timezone,
-                     NULL::integer AS max_ring_timeout_seconds`}
+                ${
+                  settingsAvailable
+                    ? "ts.business_hours_timezone"
+                    : "NULL::text AS business_hours_timezone"
+                }
          FROM tenants t
          ${settingsAvailable ? "LEFT JOIN tenant_settings ts ON t.id = ts.tenant_id" : ""}
          WHERE t.id = $1`,
@@ -263,6 +295,7 @@ export const pbxRouter = router({
       return {
         ...result.rows[0],
         settingsAvailable,
+        supportedSettings: settingsAvailable ? ["businessHoursTimezone"] : [],
         userRole: tc.role,
         memberships: tc.memberships,
       };
@@ -271,23 +304,12 @@ export const pbxRouter = router({
     /** Update tenant settings */
     updateSettings: protectedProcedure
       .input(
-        z.object({
-          tenantId: z.number().optional(),
-          defaultCallerId: z.string().optional(),
-          emergencyAddressRequired: z.boolean().optional(),
-          recordingDefaultPolicy: z
-            .enum([
-              "disabled",
-              "always",
-              "on_demand",
-              "inbound_only",
-              "outbound_only",
-            ])
-            .optional(),
-          voicemailDefaultEnabled: z.boolean().optional(),
-          businessHoursTimezone: z.string().optional(),
-          maxRingTimeoutSeconds: z.number().min(10).max(120).optional(),
-        }),
+        z
+          .object({
+            tenantId: z.number().int().positive().optional(),
+            businessHoursTimezone: businessHoursTimezoneSchema.optional(),
+          })
+          .strict(),
       )
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
@@ -297,44 +319,23 @@ export const pbxRouter = router({
           throw tenantSettingsUnavailable();
         }
 
-        const sets: string[] = [];
-        const vals: any[] = [];
-        let idx = 1;
+        if (input.businessHoursTimezone === undefined) return { success: true };
 
-        if (input.defaultCallerId !== undefined) {
-          sets.push(`default_caller_id = $${idx++}`);
-          vals.push(input.defaultCallerId);
-        }
-        if (input.emergencyAddressRequired !== undefined) {
-          sets.push(`emergency_address_required = $${idx++}`);
-          vals.push(input.emergencyAddressRequired);
-        }
-        if (input.recordingDefaultPolicy !== undefined) {
-          sets.push(`recording_default_policy = $${idx++}`);
-          vals.push(input.recordingDefaultPolicy);
-        }
-        if (input.voicemailDefaultEnabled !== undefined) {
-          sets.push(`voicemail_default_enabled = $${idx++}`);
-          vals.push(input.voicemailDefaultEnabled);
-        }
-        if (input.businessHoursTimezone !== undefined) {
-          sets.push(`business_hours_timezone = $${idx++}`);
-          vals.push(input.businessHoursTimezone);
-        }
-        if (input.maxRingTimeoutSeconds !== undefined) {
-          sets.push(`max_ring_timeout_seconds = $${idx++}`);
-          vals.push(input.maxRingTimeoutSeconds);
-        }
-
-        if (sets.length === 0) return { success: true };
-
-        sets.push(`updated_at = NOW()`);
-        vals.push(tc.tenantId);
-
-        await query(
-          `UPDATE tenant_settings SET ${sets.join(", ")} WHERE tenant_id = $${idx}`,
-          vals,
+        // Recheck and lock the membership inside the write statement so a
+        // concurrent revocation cannot race an already-resolved request.
+        const saved = await upsertBusinessHoursTimezone(
+          query,
+          tc.tenantId,
+          ctx.user!.id,
+          input.businessHoursTimezone,
         );
+        if (saved.rows.length !== 1) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message:
+              "Workspace administrator access changed before the setting was saved",
+          });
+        }
 
         await writeAuditLog({
           tenantId: tc.tenantId,
@@ -346,7 +347,10 @@ export const pbxRouter = router({
           ipAddress: ctx.req.ip,
         });
 
-        return { success: true };
+        return {
+          success: true,
+          businessHoursTimezone: saved.rows[0].business_hours_timezone,
+        };
       }),
 
     /** List user's tenant memberships */
