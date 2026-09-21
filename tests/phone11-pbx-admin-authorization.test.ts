@@ -69,6 +69,39 @@ const phoneNumberSchemaRows = schemaRows({
   emergency_addresses: ["id", "tenant_id", "street", "city"],
 });
 
+const advancedRoutingSchemaRows = schemaRows({
+  call_queues: [
+    "id", "tenant_id", "name", "description", "extension", "strategy",
+    "max_wait_time", "max_callers", "wrap_up_time", "announce_position",
+    "announce_frequency", "moh_file", "join_announcement",
+    "agent_announcement", "overflow_action", "overflow_target",
+    "service_level_secs", "record_calls", "is_active", "created_at", "updated_at",
+  ],
+  queue_agents: [
+    "queue_id", "extension_id", "priority", "skills", "max_no_answer",
+    "is_logged_in", "last_call_at", "created_at", "updated_at",
+  ],
+  queue_stats: [
+    "queue_id", "interval_start", "interval_end", "offered_calls",
+    "answered_calls", "abandoned_calls", "overflowed_calls",
+    "service_level_calls", "total_wait_seconds", "total_talk_seconds",
+  ],
+  extensions: [
+    "id", "tenant_id", "extension_number", "display_name", "first_name",
+    "last_name", "type", "user_id", "status", "deleted_at",
+  ],
+  sip_accounts: ["extension_id", "tenant_id", "user_id", "status", "deleted_at"],
+  ivr_menus: [
+    "id", "tenant_id", "name", "description", "greeting_file", "greeting_tts",
+    "timeout_ms", "max_retries", "digit_timeout_ms", "invalid_sound",
+    "exit_action", "exit_target", "is_active", "created_at", "updated_at",
+  ],
+  ivr_actions: [
+    "id", "menu_id", "digit", "action_type", "target", "description",
+    "sort_order", "created_at",
+  ],
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   db.withTransaction.mockImplementation(async (callback) =>
@@ -93,6 +126,18 @@ describe("PBX management capabilities", () => {
 
     expect(db.query).toHaveBeenCalledTimes(1);
     expect(String(db.query.mock.calls[0][0])).toContain("information_schema.columns");
+  });
+
+  it("recognizes the reviewed queue and IVR migration column names", async () => {
+    db.query.mockResolvedValueOnce({ rows: advancedRoutingSchemaRows });
+
+    await expect(
+      pbxRouter.createCaller(context()).capabilities(),
+    ).resolves.toMatchObject({ queues: true, ivr: true });
+
+    const queriedTables = db.query.mock.calls[0][1][0] as string[];
+    expect(queriedTables).toContain("queue_agents");
+    expect(queriedTables).toContain("ivr_actions");
   });
 });
 
@@ -141,8 +186,27 @@ describe("PBX workspace administrator authorization", () => {
       "utf8",
     );
     expect(source).not.toContain("adminProcedure");
-    expect(source.match(/await getTenantAdminCtx\(ctx/g)).toHaveLength(20);
+    expect(source.match(/await getTenantAdmin(?:Mutation)?Ctx\(ctx/g)).toHaveLength(21);
   });
+
+  it.each(["updateSettings", "updateMember", "createExtension"] as const)(
+    "fails closed for an ambiguous implicit %s mutation",
+    async (operation) => {
+      db.query.mockResolvedValueOnce({
+        rows: [membership("owner", 7), membership("owner", 8)],
+      });
+      const caller = pbxRouter.createCaller(context());
+      const request = operation === "updateSettings"
+        ? caller.tenant.updateSettings({})
+        : operation === "updateMember"
+          ? caller.tenant.updateMember({ userId: 88, role: "admin" })
+          : caller.extensions.create({ extensionNumber: "3101" });
+
+      await expect(request).rejects.toMatchObject({ code: "FORBIDDEN" });
+      expect(db.withTransaction).not.toHaveBeenCalled();
+      expect(db.query).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each(["owner", "admin"] as const)(
     "lists only active people in the current workspace for a %s",
@@ -544,6 +608,28 @@ describe("DID route assignment", () => {
       [null, null, 44, 7],
     ]);
   });
+});
+
+describe("PBX site capability guard", () => {
+  it.each(["list", "create"] as const)(
+    "rejects %s before accessing an uncommissioned sites table",
+    async (operation) => {
+      db.query
+        .mockResolvedValueOnce({ rows: [membership("admin")] })
+        .mockResolvedValueOnce({ rows: [] });
+      const caller = pbxRouter.createCaller(context());
+      const request = operation === "list"
+        ? caller.sites.list()
+        : caller.sites.create({ name: "Bangkok" });
+
+      await expect(request).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+      expect(db.query).toHaveBeenCalledTimes(2);
+      expect(String(db.query.mock.calls[1][0])).toContain("information_schema.columns");
+      expect(
+        db.query.mock.calls.some(([sql]) => /(?:FROM|INTO) sites\b/.test(String(sql))),
+      ).toBe(false);
+    },
+  );
 });
 
 describe("PBX call-record isolation", () => {

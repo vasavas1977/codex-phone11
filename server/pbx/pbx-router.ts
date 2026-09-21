@@ -54,6 +54,17 @@ async function getTenantAdminCtx(ctx: any, requestedTenantId?: number) {
   return tenant;
 }
 
+async function getTenantAdminMutationCtx(ctx: any, requestedTenantId?: number) {
+  const tenant = await getTenantAdminCtx(ctx, requestedTenantId);
+  if (requestedTenantId === undefined && tenant.memberships.length !== 1) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Select a workspace before changing phone settings",
+    });
+  }
+  return tenant;
+}
+
 function voicemailUnavailable(error: unknown): never {
   if (error instanceof VoicemailStorageUnavailableError) {
     throw new TRPCError({
@@ -171,6 +182,18 @@ async function phoneNumberSchemaAvailable(): Promise<boolean> {
   return (await readManagementCapabilities()).phoneNumbers;
 }
 
+async function requireManagementCapability(
+  facility: "sites",
+  name: string,
+) {
+  if (!(await readManagementCapabilities())[facility]) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `${name} is unavailable on this server`,
+    });
+  }
+}
+
 function phoneNumberSchemaUnavailable(): TRPCError {
   return new TRPCError({
     code: "PRECONDITION_FAILED",
@@ -230,7 +253,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx, input.tenantId);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
@@ -375,7 +398,7 @@ export const pbxRouter = router({
           }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         const actorUserId = ctx.user!.id;
 
         const result = await withTransaction(async (client) => {
@@ -654,7 +677,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
@@ -769,7 +792,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         const sets: string[] = [];
         const vals: any[] = [];
         let idx = 1;
@@ -929,7 +952,7 @@ export const pbxRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         if (
           !(await validateTenantOwnership("extensions", input.id, tc.tenantId))
         ) {
@@ -967,7 +990,7 @@ export const pbxRouter = router({
     resetPassword: protectedProcedure
       .input(z.object({ extensionId: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         if (
           !(await validateTenantOwnership(
             "extensions",
@@ -1083,7 +1106,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         if (!(await phoneNumberSchemaAvailable())) {
           throw phoneNumberSchemaUnavailable();
         }
@@ -1145,7 +1168,7 @@ export const pbxRouter = router({
           ),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         if (!(await phoneNumberSchemaAvailable())) {
           throw phoneNumberSchemaUnavailable();
         }
@@ -1202,6 +1225,7 @@ export const pbxRouter = router({
   sites: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const tc = await getTenantCtx(ctx);
+      await requireManagementCapability("sites", "Sites");
       const result = await query(
         `SELECT * FROM sites WHERE tenant_id = $1 AND status = 'active' ORDER BY is_main DESC, name`,
         [tc.tenantId],
@@ -1223,7 +1247,8 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
+        await requireManagementCapability("sites", "Sites");
         const result = await query(
           `INSERT INTO sites (tenant_id, name, address_line1, city, state_province, postal_code, country, timezone, is_main)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -1270,7 +1295,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         const result = await query(
           `INSERT INTO emergency_addresses (tenant_id, site_id, label, street, city, state_province, postal_code, country, caller_name)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -1319,7 +1344,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
@@ -1526,7 +1551,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         const result = await query(
           `INSERT INTO audio_files (tenant_id, name, category, file_url, duration_ms, format, language, description, owner_user_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -1548,7 +1573,7 @@ export const pbxRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx);
         if (
           !(await validateTenantOwnership("audio_files", input.id, tc.tenantId))
         ) {
