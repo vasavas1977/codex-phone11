@@ -39,12 +39,14 @@ function isCancelled(cause: unknown) {
 export function VoiceNote({
   onReady,
   onClose,
+  onReturnToKeyboard,
 }: {
   onReady: (
     upload: ChatUpload,
     delivery?: { signal: AbortSignal; commit: () => boolean },
   ) => void | Promise<void>;
   onClose?: () => void;
+  onReturnToKeyboard?: () => void;
 }) {
   const colors = useColors();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -359,14 +361,16 @@ export function VoiceNote({
     releaseRequested.current = true;
     if (recordingStarted.current) void finishAndSend();
   };
-  const close = async () => {
+  const closeWith = async (afterClose?: () => void) => {
     if (deliveryCommitted.current) {
-      onClose?.();
+      afterClose?.();
       return;
     }
     await cancel();
-    if (alive.current) onClose?.();
+    if (alive.current) afterClose?.();
   };
+  const close = () => closeWith(onClose);
+  const returnToKeyboard = () => closeWith(onReturnToKeyboard ?? onClose);
 
   const recording = gestureActive || state.isRecording;
   return (
@@ -462,7 +466,7 @@ export function VoiceNote({
           accessibilityLabel="Return to message keyboard"
           accessibilityHint={recording ? "Cancel the recording and return to typing." : undefined}
           onPress={() => {
-            void close();
+            void returnToKeyboard();
           }}
           style={[styles.keyboardReturn, { borderColor: colors.border }]}
         >

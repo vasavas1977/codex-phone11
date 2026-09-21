@@ -442,6 +442,18 @@ it("does not commit a voice message when its upload is cancelled", async () => {
   expect(commit).not.toHaveBeenCalled();
   expect(mocks.send).not.toHaveBeenCalled();
 });
+it("returns to the message composer from the voice-note keyboard action", () => {
+  mocks.state.drafts.room = "";
+  render();
+  const focus = vi.fn();
+  const setNativeProps = vi.fn();
+  mocks.refs[4].current = { focus, setNativeProps };
+  mocks.press.get("Record voice note")!.press();
+  render();
+  mocks.voice.onReturnToKeyboard();
+  expect(focus).toHaveBeenCalledOnce();
+  expect(setNativeProps).toHaveBeenCalledWith({ selection: { start: 0, end: 0 } });
+});
 it("keeps message actions in a long press instead of the conversation canvas", () => {
   const parent = {
     id: "parent",

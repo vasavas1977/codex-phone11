@@ -571,6 +571,10 @@ export default function ChatRoomScreen() {
       composerInput.current?.setNativeProps?.({ selection });
     });
   };
+  const returnToComposerFromVoiceNote = () => {
+    setVoiceOpen(false);
+    if (canCompose) focusComposerAt(composerSelection.current);
+  };
   const openMentions = () => {
     if (!canCompose || (channel?.kind !== "group" && channel?.kind !== "channel")) return;
     const selection = composerSelection.current;
@@ -2049,6 +2053,7 @@ export default function ChatRoomScreen() {
                     <VoiceNote
                       onReady={attachVoice}
                       onClose={() => setVoiceOpen(false)}
+                      onReturnToKeyboard={returnToComposerFromVoiceNote}
                     />
                   )}
                 </View>

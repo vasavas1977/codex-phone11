@@ -183,6 +183,25 @@ it("keeps the idle panel to one recording action and keyboard return", () => {
   expect(markup).not.toContain("Voice waveform");
 });
 
+it("returns to the composer only after the recorder has been cancelled", async () => {
+  const onClose = vi.fn();
+  const onReturnToKeyboard = vi.fn();
+  const prepare = deferred<void>();
+  m.recorder.prepareToRecordAsync.mockReturnValue(prepare.promise);
+  render(createElement(VoiceNote, { onReady: vi.fn(), onClose, onReturnToKeyboard }));
+  m.press.get("Hold to record voice note")!.onPressIn({ nativeEvent: { pageX: 200 } });
+  await flush();
+  m.press.get("Return to message keyboard")!.onPress();
+  await flush();
+  expect(onReturnToKeyboard).not.toHaveBeenCalled();
+  prepare.resolve();
+  await flush();
+  expect(m.recorder.stop).toHaveBeenCalledOnce();
+  expect(onReturnToKeyboard).toHaveBeenCalledOnce();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
+});
+
 it("closes safely while microphone permission is pending", async () => {
   const permission = deferred<{ granted: boolean }>();
   const onClose = vi.fn();
@@ -627,7 +646,26 @@ it("turns an asynchronous native load failure into a retry state", async () => {
   expect(render(node)).toContain("Tap to retry");
 });
 
+it("turns a completed zero-duration voice clip into a retry state", async () => {
+  m.audioStatus = {
+    currentTime: 0,
+    duration: 0,
+    playing: false,
+    isLoaded: true,
+    playbackState: "readyToPlay",
+  };
+  const node = createElement(ReceivedMedia, { attachment });
+  render(node);
+  m.press.get("Play voice.m4a")!.onPress();
+  await flush();
+  m.audioListener?.({ didJustFinish: true });
+  await flush();
+  expect(m.coordinator.getSnapshot().owner).toBeNull();
+  expect(render(node)).toContain("Tap to retry");
+});
+
 it("replays a completed voice clip from zero while retaining its protected source", async () => {
+  m.audioStatus = { currentTime: 0, duration: 3, playing: false, isLoaded: true, playbackState: "readyToPlay" };
   const node = createElement(ReceivedMedia, { attachment });
   render(node);
   m.press.get("Play voice.m4a")!.onPress();

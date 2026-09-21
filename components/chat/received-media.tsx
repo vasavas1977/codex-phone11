@@ -37,6 +37,8 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
   const isVideo = attachment.mimeType.startsWith("video/");
   const elapsed = Number.isFinite(audioStatus.currentTime) ? audioStatus.currentTime : 0;
   const duration = Number.isFinite(audioStatus.duration) ? audioStatus.duration : 0;
+  const audioDuration = useRef(duration);
+  audioDuration.current = duration;
   const progress = duration > 0 ? Math.min(1, Math.max(0, elapsed / duration)) : 0;
   const clock = (seconds: number) => {
     const safe = Math.max(0, Math.round(seconds));
@@ -84,8 +86,10 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
     source.current?.release();
     source.current = null;
   };
-  const markFinished = () => {
+  const markFinished = (unplayable = false) => {
     finished.current = true;
+    if (unplayable && mounted.current)
+      setError("This voice message could not be played. Tap to retry.");
     void latest.current().catch(() => {
       // Preserve the lease if a native player rejects its final pause.
     });
@@ -109,7 +113,7 @@ export function ReceivedMedia({ attachment }: { attachment: ChatAttachment }) {
   useEffect(() => {
     const a = audio.addListener?.("playbackStatusUpdate", (status) => {
       if (status.didJustFinish) {
-        markFinished();
+        markFinished(audioDuration.current <= 0);
       }
     });
     const v = video.addListener?.("playToEnd", () => {
