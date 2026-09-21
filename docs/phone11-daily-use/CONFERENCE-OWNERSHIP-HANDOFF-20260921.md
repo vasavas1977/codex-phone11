@@ -140,9 +140,9 @@ provider action or handset acceptance is claimed for this source candidate.
 
 ## Verified diagnostic Build 79
 
-Build 79 is a signed package for the current Room-constructor discriminator and
-the bounded Team Chat voice controls. It is not a root-cause finding for
-`room_create`, and it has not been installed or tested on a handset.
+Build 79 is the signed package that introduced the current Room-constructor
+discriminator and the bounded Team Chat voice controls. At package-verification
+time it had not yet been installed and did not itself establish a root cause.
 
 - Exact source: `841d2894f415951562fd031107094f84db839aaf`.
 - [Successful CI run 35554062293](https://github.com/vasavas1977/codex-phone11/actions/runs/35554062293)
@@ -166,3 +166,46 @@ state. Normal voice clips already work; this package does not claim a general
 audio repair. Physical checks remain separate for keyboard return/cancel,
 failed-clip retry, SIP interruption, the Room constructor reference, and real
 conference media.
+
+## Build 79 handset result and confirmed constructor cause
+
+The owner subsequently installed Build 79 and retried the admitted meeting.
+The exact result was **Reference: room_create / signal_client /
+reference_error**. The installed LiveKit 2.22.3 path explains all three labels:
+`Room` creates `RTCEngine`, which creates `SignalClient`; its constructor calls
+`createSignalMachine()` and Machina 7.0.1 `createFsm()`, whose initial transition
+executes an unguarded `new WeakRef(client)`. Removing `WeakRef` and constructing
+the real installed `Room` reproduces the same `ReferenceError` and constructor
+stack before any provider connection.
+
+The matching runtime evidence is specific but is not a direct JavaScript probe
+of the failing handset. Exact source `841d2894` sets `newArchEnabled: false`, and
+the retained signed Build 79 IPA sets `RCTNewArchEnabled=false`. React Native
+0.81.5 passes its bridgeless-architecture flag into Hermes microtask-queue
+configuration. The pinned Hermes defines the `WeakRef` global only when that
+queue is enabled; the bundled matching Hermes compiler reports `undefined` by
+default and `function` with its microtask-queue flag. IPA `WeakRef` symbols only
+prove that the engine contains the capability. Together with the exact handset
+reference and installed-SDK reproduction, this establishes the constructor
+cause without claiming an on-handset `typeof WeakRef` capture.
+
+Source commit `2b92d3d9bd838cad7a08d332769f2326330235a2` pins a package patch for
+LiveKit 2.22.3's ESM bundle. It guards Machina's three optional weak-client
+registry insertions when `WeakRef` is absent. It does not install a global shim,
+enable the new architecture or alter SIP, manual audio, provider or transport
+behavior. Machina continues to store client state in its `WeakMap`; its
+single-client `Fsm` still owns the signal context. Native-`WeakRef` runtimes keep
+the original behavior.
+
+Validation passed 60 focused constructor/native/browser meeting tests,
+TypeScript, formatting and diff checks. A fresh frozen pnpm install applied the
+patch, then the real installed `Room` constructed with `WeakRef` deleted and did
+not add the global. The independent Sol High review of `2b92d3d` remains a
+release prerequisite; incorporate any required review fix before packaging.
+No build, installation or deployment has been started from this fix.
+
+The remaining acceptance gate is a newly signed and verified package after
+review, followed by an in-place handset install and a real two-party meeting
+join proving room connection, local and remote video, and two-way audio. Keep
+the existing SIP/manual-audio regression checks in that package gate. Source
+and clean-install tests do not constitute physical-device conference acceptance.
