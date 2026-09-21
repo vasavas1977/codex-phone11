@@ -26,3 +26,23 @@ The owner reported that signed Build72's voice sheet had no clear Cancel action 
 5. During an incoming or active SIP call, chat playback must stop or remain blocked; calling audio must remain usable.
 
 Use only the existing signed internal daily-pilot profile. Never install an Expo development launcher, uninstall the working app, or alter its native identity for this repair.
+
+## Build 79 package evidence — 21 September
+
+The bounded follow-up is in signed Build 79, exact source
+`841d2894f415951562fd031107094f84db839aaf`. Its
+[successful CI run](https://github.com/vasavas1977/codex-phone11/actions/runs/35554062293)
+and EAS internal daily-pilot build
+[`61fe406b-2a88-45f8-9337-136d4f1f5889`](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/61fe406b-2a88-45f8-9337-136d4f1f5889)
+match that source. Version `1.0.0` / build `79` has IPA SHA-256
+`0f7862f85985c87112047fb07454ee38c84e40d141562e2209cb681d9297e9e7`.
+
+The retained IPA passed the native Siprix/bridge/strict-signature gate and all
+22 signed configuration/provisioning checks against Build 49. Evidence is at
+`~/Library/Application Support/Phone11/verified-builds/79/`. No iPhone was
+installed or tested for this build.
+
+This increment only makes keyboard return wait for safe recorder cancellation
+before returning focus to the composer, and exposes retry when a clip finishes
+with zero duration. Normal Team Chat voice clips already work; no general audio
+repair or handset playback success is claimed here.

@@ -137,3 +137,32 @@ requires inherited EventEmitter `setMaxListeners`/`on` methods. Raw messages,
 stacks, URLs, tokens, room and participant identifiers remain only in memory
 and are never formatted into the Reference line. No new build, installation,
 provider action or handset acceptance is claimed for this source candidate.
+
+## Verified diagnostic Build 79
+
+Build 79 is a signed package for the current Room-constructor discriminator and
+the bounded Team Chat voice controls. It is not a root-cause finding for
+`room_create`, and it has not been installed or tested on a handset.
+
+- Exact source: `841d2894f415951562fd031107094f84db839aaf`.
+- [Successful CI run 35554062293](https://github.com/vasavas1977/codex-phone11/actions/runs/35554062293)
+  completed `daily-use-check`, `native-check`, and the signed build job.
+- [Install Build 79](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/61fe406b-2a88-45f8-9337-136d4f1f5889)
+  is the EAS build-details page. EAS build `61fe406b-2a88-45f8-9337-136d4f1f5889`
+  finished with the internal `preview-ios-siprix-daily-pilot` profile, version
+  `1.0.0`, build `79`, and the same source SHA.
+- IPA SHA-256: `0f7862f85985c87112047fb07454ee38c84e40d141562e2209cb681d9297e9e7`.
+  The combined package gate passed Siprix linkage, native bridge, legacy-bridge
+  absence, strict signature, embedded JavaScript, and all 22 signed
+  configuration/provisioning checks against Build 49. The archive has no
+  development-launcher payload entries; device launch behavior still requires
+  a physical check.
+- The IPA, package-verification JSON, and metadata are retained under
+  `~/Library/Application Support/Phone11/verified-builds/79/`.
+
+The Team Chat portion changes keyboard return after safe recorder cancellation
+and turns an immediately completed zero-duration clip into the existing retry
+state. Normal voice clips already work; this package does not claim a general
+audio repair. Physical checks remain separate for keyboard return/cancel,
+failed-clip retry, SIP interruption, the Room constructor reference, and real
+conference media.
