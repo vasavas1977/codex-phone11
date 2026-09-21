@@ -18,8 +18,10 @@ RUN apk add --no-cache bash curl ca-certificates
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
-# Copy package manifests and postinstall helpers
+# Copy package manifests, patched dependency input, linked package, and postinstall helpers
 COPY package.json pnpm-lock.yaml ./
+COPY patches/ ./patches/
+COPY modules/phone11-siprix/ ./modules/phone11-siprix/
 COPY scripts/ ./scripts/
 
 # Install production dependencies only
@@ -43,12 +45,15 @@ RUN apk add --no-cache bash curl ca-certificates
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
 
 COPY package.json pnpm-lock.yaml ./
+COPY patches/ ./patches/
+COPY modules/phone11-siprix/ ./modules/phone11-siprix/
 COPY scripts/ ./scripts/
 RUN pnpm install --frozen-lockfile
 
 # Copy source
 COPY server/ ./server/
 COPY shared/ ./shared/
+COPY lib/ ./lib/
 COPY drizzle/ ./drizzle/
 COPY drizzle.config.ts ./
 COPY tsconfig.json ./
