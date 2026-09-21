@@ -13,11 +13,13 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { UnavailableAdminScreen } from "@/components/admin/unavailable-admin-screen";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import {
   useCreateTimeCondition,
   useDeleteTimeCondition,
+  usePbxCapabilities,
   useSetTimeConditionRules,
   useTenant,
   useTimeCondition,
@@ -44,14 +46,16 @@ export default function AdminSchedules() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
-  const schedulesQuery = useTimeConditions(tenantId);
+  const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
+  const businessHoursAvailable = capabilitiesQuery.data?.businessHours === true;
+  const schedulesQuery = useTimeConditions(tenantId, businessHoursAvailable);
   const createMutation = useCreateTimeCondition();
   const updateMutation = useUpdateTimeCondition();
   const rulesMutation = useSetTimeConditionRules();
   const deleteMutation = useDeleteTimeCondition();
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<number>();
-  const scheduleQuery = useTimeCondition(editingId ?? 0);
+  const scheduleQuery = useTimeCondition(editingId ?? 0, businessHoursAvailable);
   const [name, setName] = useState("");
   const [timezone, setTimezone] = useState("Asia/Bangkok");
   const [startTime, setStartTime] = useState("09:00");
@@ -256,6 +260,25 @@ export default function AdminSchedules() {
 
   const loading = tenantQuery.isLoading || schedulesQuery.isLoading;
   const error = tenantQuery.error || schedulesQuery.error;
+
+  if (capabilitiesQuery.isLoading) {
+    return (
+      <UnavailableAdminScreen
+        checking
+        title="Business hours"
+        description="Phone11 is checking whether business-hours management is available for this workspace."
+      />
+    );
+  }
+
+  if (!businessHoursAvailable) {
+    return (
+      <UnavailableAdminScreen
+        title="Business hours"
+        description="This feature is not available for your workspace yet. Phone11 will not load or change call schedules."
+      />
+    );
+  }
 
   return (
     <ScreenContainer>

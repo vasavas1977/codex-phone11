@@ -11,10 +11,12 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { UnavailableAdminScreen } from "@/components/admin/unavailable-admin-screen";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import {
   useCreateRingGroup,
+  usePbxCapabilities,
   useDeleteRingGroup,
   useExtensions,
   useRingGroup,
@@ -57,12 +59,18 @@ export default function AdminRingGroups() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
-  const ringGroupsQuery = useRingGroups(tenantId);
+  const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
+  const ringGroupsAvailable = capabilitiesQuery.data?.ringGroups === true;
+  const ringGroupsQuery = useRingGroups(tenantId, ringGroupsAvailable);
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
-  const groupDetailQuery = useRingGroup(editingGroupId ?? 0);
+  const groupDetailQuery = useRingGroup(editingGroupId ?? 0, ringGroupsAvailable);
   const [editingSettingsId, setEditingSettingsId] = useState<number | null>(null);
-  const settingsQuery = useRingGroup(editingSettingsId ?? 0);
-  const extensionsQuery = useExtensions(1, 100, editingGroupId !== null && tenantId > 0);
+  const settingsQuery = useRingGroup(editingSettingsId ?? 0, ringGroupsAvailable);
+  const extensionsQuery = useExtensions(
+    1,
+    100,
+    ringGroupsAvailable && editingGroupId !== null && tenantId > 0,
+  );
   const createMutation = useCreateRingGroup();
   const updateMutation = useUpdateRingGroup();
   const deleteMutation = useDeleteRingGroup();
@@ -314,6 +322,25 @@ export default function AdminRingGroups() {
     </View>
     );
   };
+
+  if (capabilitiesQuery.isLoading) {
+    return (
+      <UnavailableAdminScreen
+        checking
+        title="Ring groups"
+        description="Phone11 is checking whether ring-group management is available for this workspace."
+      />
+    );
+  }
+
+  if (!ringGroupsAvailable) {
+    return (
+      <UnavailableAdminScreen
+        title="Ring groups"
+        description="This feature is not available for your workspace yet. Phone11 will not load or change ring groups."
+      />
+    );
+  }
 
   return (
     <ScreenContainer>

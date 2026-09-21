@@ -7,6 +7,30 @@
  */
 import { trpc } from "@/lib/trpc";
 
+export type PbxManagementCapabilities = {
+  phoneNumbers: boolean;
+  sites: boolean;
+  ringGroups: boolean;
+  queues: boolean;
+  ivr: boolean;
+  businessHours: boolean;
+};
+
+/**
+ * The server derives these flags from the live database schema. Keep the
+ * client result immediately stale so opening or refreshing a management page
+ * never turns an old schema observation into an enabled action.
+ */
+export function usePbxCapabilities(enabled: boolean = true) {
+  return trpc.pbx.capabilities.useQuery(undefined, {
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+  });
+}
+
 // ============================================================================
 // Dashboard
 // ============================================================================
@@ -232,8 +256,9 @@ export function useAssignPhoneNumberRoute() {
 // ============================================================================
 // Sites
 // ============================================================================
-export function useSites() {
+export function useSites(enabled: boolean = true) {
   return trpc.pbx.sites.list.useQuery(undefined, {
+    enabled,
     staleTime: 300_000,
   });
 }
@@ -343,21 +368,21 @@ export function useAuditLogs(params?: {
 // ============================================================================
 // IVR Menus (Milestone 7)
 // ============================================================================
-export function useIvrMenus(tenantId: number) {
+export function useIvrMenus(tenantId: number, enabled: boolean = true) {
   return trpc.ivr.ivr.list.useQuery(
     { tenant_id: tenantId },
     {
-      enabled: tenantId > 0,
+      enabled: tenantId > 0 && enabled,
       staleTime: 30_000,
     },
   );
 }
 
-export function useIvrMenu(id: number) {
+export function useIvrMenu(id: number, enabled: boolean = true) {
   return trpc.ivr.ivr.get.useQuery(
     { id },
     {
-      enabled: id > 0,
+      enabled: id > 0 && enabled,
       staleTime: 30_000,
     },
   );
@@ -403,21 +428,21 @@ export function useSetIvrActions() {
 // ============================================================================
 // Ring Groups (Milestone 7)
 // ============================================================================
-export function useRingGroups(tenantId: number) {
+export function useRingGroups(tenantId: number, enabled: boolean = true) {
   return trpc.ivr.ringGroups.list.useQuery(
     { tenant_id: tenantId },
     {
-      enabled: tenantId > 0,
+      enabled: tenantId > 0 && enabled,
       staleTime: 30_000,
     },
   );
 }
 
-export function useRingGroup(id: number) {
+export function useRingGroup(id: number, enabled: boolean = true) {
   return trpc.ivr.ringGroups.get.useQuery(
     { id },
     {
-      enabled: id > 0,
+      enabled: id > 0 && enabled,
       staleTime: 30_000,
     },
   );
@@ -463,21 +488,21 @@ export function useSetRingGroupMembers() {
 // ============================================================================
 // Call Queues (Milestone 7)
 // ============================================================================
-export function useCallQueues(tenantId: number) {
+export function useCallQueues(tenantId: number, enabled: boolean = true) {
   return trpc.ivr.queues.list.useQuery(
     { tenant_id: tenantId },
     {
-      enabled: tenantId > 0,
+      enabled: tenantId > 0 && enabled,
       staleTime: 30_000,
     },
   );
 }
 
-export function useCallQueue(id: number) {
+export function useCallQueue(id: number, enabled: boolean = true) {
   return trpc.ivr.queues.get.useQuery(
     { id },
     {
-      enabled: id > 0,
+      enabled: id > 0 && enabled,
       staleTime: 30_000,
     },
   );
@@ -540,11 +565,15 @@ export function useQueueAgentLogout() {
   });
 }
 
-export function useQueueStats(queueId: number, hours: number = 24) {
+export function useQueueStats(
+  queueId: number,
+  hours: number = 24,
+  enabled: boolean = true,
+) {
   return trpc.ivr.queues.stats.useQuery(
     { queue_id: queueId, hours },
     {
-      enabled: queueId > 0,
+      enabled: queueId > 0 && enabled,
       staleTime: 30_000,
       refetchInterval: 60_000,
     },
@@ -554,21 +583,21 @@ export function useQueueStats(queueId: number, hours: number = 24) {
 // ============================================================================
 // Time Conditions (Milestone 7)
 // ============================================================================
-export function useTimeConditions(tenantId: number) {
+export function useTimeConditions(tenantId: number, enabled: boolean = true) {
   return trpc.ivr.timeConditions.list.useQuery(
     { tenant_id: tenantId },
     {
-      enabled: tenantId > 0,
+      enabled: tenantId > 0 && enabled,
       staleTime: 60_000,
     },
   );
 }
 
-export function useTimeCondition(id: number) {
+export function useTimeCondition(id: number, enabled: boolean = true) {
   return trpc.ivr.timeConditions.get.useQuery(
     { id },
     {
-      enabled: id > 0,
+      enabled: id > 0 && enabled,
       staleTime: 60_000,
     },
   );

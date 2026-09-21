@@ -11,7 +11,7 @@ import { SIGN_IN_ROUTE } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useAuth } from "@/hooks/use-auth";
-import { usePbxSelfService } from "@/hooks/use-pbx-admin";
+import { usePbxCapabilities, usePbxSelfService } from "@/hooks/use-pbx-admin";
 
 type PhoneNumber = {
   id: number;
@@ -25,6 +25,7 @@ type Extension = {
   display_name?: string | null;
   status?: string | null;
   is_primary?: boolean;
+  phone_numbers_available?: boolean;
   phone_numbers?: PhoneNumber[] | null;
 };
 
@@ -36,12 +37,23 @@ const labelForExtension = (extension: Extension) =>
 export default function PortalDashboard() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
+  const capabilitiesQuery = usePbxCapabilities(Boolean(user));
   const overviewQuery = usePbxSelfService(Boolean(user));
   const extensions = (overviewQuery.data || []) as Extension[];
-  const assignedNumbers = extensions.reduce(
-    (count, extension) => count + (extension.phone_numbers?.length || 0),
-    0,
-  );
+  const phoneNumbersAvailable =
+    capabilitiesQuery.data?.phoneNumbers === true &&
+    extensions.every((extension) => extension.phone_numbers_available !== false);
+  const numberAvailabilityDetail = capabilitiesQuery.isLoading
+    ? "Checking number availability"
+    : phoneNumbersAvailable
+      ? null
+      : "Number inventory is not available yet";
+  const assignedNumbers = phoneNumbersAvailable
+    ? extensions.reduce(
+        (count, extension) => count + (extension.phone_numbers?.length || 0),
+        0,
+      )
+    : null;
 
   return (
     <PortalShell title="My phone" active="home">
@@ -84,8 +96,11 @@ export default function PortalDashboard() {
                 Your Phone11 account
               </Text>
               <Text style={[styles.summaryDetail, { color: colors.muted }]}>
-                Extensions and assigned phone numbers from your current
-                workspace.
+                {capabilitiesQuery.isLoading
+                  ? "Extensions from your current workspace. Phone11 is checking number availability."
+                  : phoneNumbersAvailable
+                    ? "Extensions and assigned phone numbers from your current workspace."
+                    : "Extensions from your current workspace. Phone-number inventory is not available yet."}
               </Text>
             </View>
             <View
@@ -160,7 +175,11 @@ export default function PortalDashboard() {
           <PortalAction
             icon="number"
             title="My numbers"
-            detail={`${assignedNumbers} assigned phone number${assignedNumbers === 1 ? "" : "s"}`}
+            detail={
+              numberAvailabilityDetail ||
+              `${assignedNumbers} assigned phone number${assignedNumbers === 1 ? "" : "s"}`
+            }
+            disabled={!phoneNumbersAvailable}
             onPress={() => router.push("/portal/dids")}
           />
           <PortalAction
@@ -196,21 +215,26 @@ function PortalAction({
   title,
   detail,
   onPress,
+  disabled = false,
 }: {
   icon: string;
   title: string;
   detail: string;
   onPress: () => void;
+  disabled?: boolean;
 }) {
   const colors = useColors();
   return (
     <TouchableOpacity
       accessibilityRole="button"
+      accessibilityState={{ disabled }}
       accessibilityLabel={title}
+      disabled={disabled}
       onPress={onPress}
       style={[
         styles.action,
         { backgroundColor: colors.surface, borderColor: colors.border },
+        disabled && styles.actionDisabled,
       ]}
     >
       <View
@@ -299,6 +323,7 @@ const styles = StyleSheet.create({
   },
   actionTitle: { fontSize: 15, fontWeight: "700" },
   actionDetail: { fontSize: 12, lineHeight: 17, marginTop: 2 },
+  actionDisabled: { opacity: 0.58 },
   note: {
     fontSize: 12,
     lineHeight: 18,

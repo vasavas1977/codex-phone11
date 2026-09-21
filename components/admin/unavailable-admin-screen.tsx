@@ -7,16 +7,18 @@ import { useColors } from "@/hooks/use-colors";
 type UnavailableAdminScreenProps = {
   title: string;
   description: string;
+  checking?: boolean;
 };
 
 /**
  * An honest placeholder for an enterprise administration area whose live
- * data source has not yet been commissioned. This avoids presenting demo
+ * data source is unavailable. This avoids presenting demo
  * records or simulated infrastructure data as an operational workspace.
  */
 export function UnavailableAdminScreen({
   title,
   description,
+  checking = false,
 }: UnavailableAdminScreenProps) {
   const colors = useColors();
 
@@ -37,18 +39,28 @@ export function UnavailableAdminScreen({
         <View style={[styles.icon, { backgroundColor: colors.primary + "14" }]}>
           <IconSymbol name="clock.fill" size={24} color={colors.primary} />
         </View>
-        <Text style={[styles.heading, { color: colors.foreground }]}>Not available yet</Text>
-        <Text style={[styles.description, { color: colors.muted }]}>{description}</Text>
-        <Text style={[styles.note, { color: colors.muted }]}>
-          Phone11 will show information here only after it is connected to your workspace’s live service.
+        <Text style={[styles.heading, { color: colors.foreground }]}>
+          {checking ? "Checking availability" : "Not available for this workspace"}
         </Text>
-        <TouchableOpacity
-          accessibilityLabel="Back to workspace administration"
-          onPress={() => router.back()}
-          style={[styles.action, { borderColor: colors.primary + "55" }]}
-        >
-          <Text style={[styles.actionText, { color: colors.primary }]}>Back to administration</Text>
-        </TouchableOpacity>
+        <Text style={[styles.description, { color: colors.muted }]}>{description}</Text>
+        {checking ? (
+          <Text style={[styles.note, { color: colors.muted }]}>
+            No administration actions are shown until Phone11 confirms the live workspace capability.
+          </Text>
+        ) : (
+          <>
+            <Text style={[styles.note, { color: colors.muted }]}>
+              Phone11 will show information here only after it is connected to your workspace’s live service.
+            </Text>
+            <TouchableOpacity
+              accessibilityLabel="Back to workspace administration"
+              onPress={() => router.back()}
+              style={[styles.action, { borderColor: colors.primary + "55" }]}
+            >
+              <Text style={[styles.actionText, { color: colors.primary }]}>Back to administration</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
     </ScreenContainer>
   );

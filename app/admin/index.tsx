@@ -25,6 +25,8 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import {
+  type PbxManagementCapabilities,
+  usePbxCapabilities,
   usePbxDashboardStats,
   usePbxRecentCalls,
   useTenant,
@@ -35,6 +37,7 @@ interface QuickAction {
   iconColor: string;
   label: string;
   route: string;
+  facility?: keyof PbxManagementCapabilities;
 }
 
 export default function AdminDashboard() {
@@ -47,6 +50,9 @@ export default function AdminDashboard() {
   const tenantQuery = useTenant(Boolean(user));
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
+  );
+  const capabilitiesQuery = usePbxCapabilities(
+    tenantQuery.isSuccess && canManage,
   );
   // Admin-only queries wait until the signed-in workspace role is known.
   const statsQuery = usePbxDashboardStats(tenantQuery.isSuccess && canManage);
@@ -76,30 +82,35 @@ export default function AdminDashboard() {
       iconColor: "#8B5CF6",
       label: "Phone numbers",
       route: "/admin/dids",
+      facility: "phoneNumbers",
     },
     {
       icon: "rectangle.grid.3x2.fill",
       iconColor: "#FF9500",
       label: "IVR menus",
       route: "/admin/ivr",
+      facility: "ivr",
     },
     {
       icon: "person.3.fill",
       iconColor: "#10B981",
       label: "Ring Groups",
       route: "/admin/ring-groups",
+      facility: "ringGroups",
     },
     {
       icon: "person.line.dotted.person.fill",
       iconColor: "#F59E0B",
       label: "Queues",
       route: "/admin/queues",
+      facility: "queues",
     },
     {
       icon: "calendar.badge.clock",
       iconColor: "#F97316",
       label: "Business Hours",
       route: "/admin/schedules",
+      facility: "businessHours",
     },
     {
       icon: "chart.bar.fill",
@@ -115,9 +126,10 @@ export default function AdminDashboard() {
       statsQuery.refetch(),
       recentCallsQuery.refetch(),
       tenantQuery.refetch(),
+      capabilitiesQuery.refetch(),
     ]);
     setRefreshing(false);
-  }, [statsQuery, recentCallsQuery, tenantQuery]);
+  }, [capabilitiesQuery, statsQuery, recentCallsQuery, tenantQuery]);
 
   const formatDuration = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -269,10 +281,20 @@ export default function AdminDashboard() {
               },
               {
                 label: "Phone Numbers",
-                value: String(stats?.phoneNumbers || 0),
+                value:
+                  capabilitiesQuery.data?.phoneNumbers === true &&
+                  stats?.phoneNumbersAvailable === true
+                    ? String(stats.phoneNumbers || 0)
+                    : "—",
                 icon: "number",
                 iconColor: "#8B5CF6",
-                sub: "DID numbers",
+                sub:
+                  capabilitiesQuery.data?.phoneNumbers === true &&
+                  stats?.phoneNumbersAvailable === true
+                    ? "DID numbers"
+                    : capabilitiesQuery.isLoading
+                      ? "Checking availability"
+                      : "Not available",
               },
               {
                 label: "Calls Today",
@@ -331,33 +353,52 @@ export default function AdminDashboard() {
           MANAGEMENT
         </Text>
         <View style={styles.actionsGrid}>
-          {quickActions.map((action, i) => (
-            <TouchableOpacity
-              key={i}
-              style={[
-                styles.actionCard,
-                { backgroundColor: colors.surface, borderColor: colors.border },
-              ]}
-              onPress={() => router.push(action.route as any)}
-              activeOpacity={0.7}
-            >
-              <View
+          {quickActions.map((action, i) => {
+            const available =
+              !action.facility || capabilitiesQuery.data?.[action.facility] === true;
+            const checking = Boolean(action.facility) && capabilitiesQuery.isLoading;
+            return (
+              <TouchableOpacity
+                key={i}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: !available }}
+                accessibilityLabel={
+                  available
+                    ? action.label
+                    : `${action.label}: ${checking ? "checking availability" : "not available"}`
+                }
+                disabled={!available}
                 style={[
-                  styles.actionIcon,
-                  { backgroundColor: action.iconColor + "15" },
+                  styles.actionCard,
+                  { backgroundColor: colors.surface, borderColor: colors.border },
+                  !available && styles.actionCardDisabled,
                 ]}
+                onPress={() => router.push(action.route as any)}
+                activeOpacity={available ? 0.7 : 1}
               >
-                <IconSymbol
-                  name={action.icon as any}
-                  size={22}
-                  color={action.iconColor}
-                />
-              </View>
-              <Text style={[styles.actionLabel, { color: colors.foreground }]}>
-                {action.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
+                <View
+                  style={[
+                    styles.actionIcon,
+                    { backgroundColor: action.iconColor + "15" },
+                  ]}
+                >
+                  <IconSymbol
+                    name={action.icon as any}
+                    size={22}
+                    color={action.iconColor}
+                  />
+                </View>
+                <Text style={[styles.actionLabel, { color: colors.foreground }]}>
+                  {action.label}
+                </Text>
+                {action.facility && !available ? (
+                  <Text style={[styles.actionAvailability, { color: colors.muted }]}>
+                    {checking ? "Checking availability" : "Not available"}
+                  </Text>
+                ) : null}
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         {/* Recent Calls */}
@@ -513,6 +554,7 @@ const styles = StyleSheet.create({
     borderWidth: 0.5,
     gap: 8,
   },
+  actionCardDisabled: { opacity: 0.58 },
   actionIcon: {
     width: 44,
     height: 44,
@@ -521,6 +563,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   actionLabel: { fontSize: 13, fontWeight: "600" },
+  actionAvailability: { fontSize: 10, fontWeight: "600", textAlign: "center" },
   section: {
     marginHorizontal: 16,
     borderRadius: 14,

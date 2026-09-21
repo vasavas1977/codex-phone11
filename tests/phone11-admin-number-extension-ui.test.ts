@@ -101,13 +101,13 @@ describe("enterprise phone-number administration", () => {
   it("uses tenant-scoped, active human-labelled route choices and preserves retry state", () => {
     for (const hook of [
       "useExtensions(",
-      "useRingGroups(routeTenantId)",
-      "useCallQueues(routeTenantId)",
-      "useIvrMenus(routeTenantId)",
-      "useTimeConditions(routeTenantId)",
     ]) {
       expect(phoneNumbers).toContain(hook);
     }
+    expect(phoneNumbers).toContain("routeDestinationsEnabled && capabilitiesQuery.data?.ringGroups === true");
+    expect(phoneNumbers).toContain("routeDestinationsEnabled && capabilitiesQuery.data?.queues === true");
+    expect(phoneNumbers).toContain("routeDestinationsEnabled && capabilitiesQuery.data?.ivr === true");
+    expect(phoneNumbers).toContain("routeDestinationsEnabled && capabilitiesQuery.data?.businessHours === true");
     expect(phoneNumbers).toContain(
       "const routeTenantId = canManage ? tenantId : 0;",
     );

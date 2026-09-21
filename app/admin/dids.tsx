@@ -27,6 +27,8 @@ import {
   useCallQueues,
   useExtensions,
   useIvrMenus,
+  type PbxManagementCapabilities,
+  usePbxCapabilities,
   usePhoneNumbers,
   useRingGroups,
   useTenant,
@@ -87,6 +89,17 @@ const ROUTE_TYPES: Array<{ value: RouteType; label: string }> = [
   { value: "ivr", label: "IVR menu" },
   { value: "time_condition", label: "Business hours" },
 ];
+
+const ROUTE_CAPABILITY: Record<
+  RouteType,
+  keyof PbxManagementCapabilities | null
+> = {
+  extension: null,
+  ring_group: "ringGroups",
+  queue: "queues",
+  ivr: "ivr",
+  time_condition: "businessHours",
+};
 
 function routeTypeLabel(routeType?: string | null) {
   return ROUTE_TYPES.find((item) => item.value === routeType)?.label;
@@ -178,18 +191,38 @@ export default function AdminDIDs() {
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
   );
+  const capabilitiesQuery = usePbxCapabilities(
+    tenantQuery.isSuccess && canManage,
+  );
+  const schemaPhoneNumbersAvailable =
+    capabilitiesQuery.data?.phoneNumbers === true;
   const routeTenantId = canManage ? tenantId : 0;
   const numbersQuery = usePhoneNumbers(
     1,
     100,
-    tenantQuery.isSuccess && canManage,
+    tenantQuery.isSuccess && canManage && schemaPhoneNumbersAvailable,
   );
+  const phoneNumbersAvailable =
+    schemaPhoneNumbersAvailable && numbersQuery.data?.available !== false;
+  const routeDestinationsEnabled = phoneNumbersAvailable && routeTenantId > 0;
   const routeMutation = useAssignPhoneNumberRoute();
-  const extensionsQuery = useExtensions(1, 100, routeTenantId > 0);
-  const ringGroupsQuery = useRingGroups(routeTenantId);
-  const queuesQuery = useCallQueues(routeTenantId);
-  const ivrMenusQuery = useIvrMenus(routeTenantId);
-  const timeConditionsQuery = useTimeConditions(routeTenantId);
+  const extensionsQuery = useExtensions(1, 100, routeDestinationsEnabled);
+  const ringGroupsQuery = useRingGroups(
+    routeTenantId,
+    routeDestinationsEnabled && capabilitiesQuery.data?.ringGroups === true,
+  );
+  const queuesQuery = useCallQueues(
+    routeTenantId,
+    routeDestinationsEnabled && capabilitiesQuery.data?.queues === true,
+  );
+  const ivrMenusQuery = useIvrMenus(
+    routeTenantId,
+    routeDestinationsEnabled && capabilitiesQuery.data?.ivr === true,
+  );
+  const timeConditionsQuery = useTimeConditions(
+    routeTenantId,
+    routeDestinationsEnabled && capabilitiesQuery.data?.businessHours === true,
+  );
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<NumberFilter>("all");
   const [editingNumber, setEditingNumber] = useState<PhoneNumberRow | null>(
@@ -242,6 +275,14 @@ export default function AdminDIDs() {
       ),
     }),
     [allDestinations],
+  );
+  const availableRouteTypes = useMemo(
+    () =>
+      ROUTE_TYPES.filter((route) => {
+        const facility = ROUTE_CAPABILITY[route.value];
+        return !facility || capabilitiesQuery.data?.[facility] === true;
+      }),
+    [capabilitiesQuery.data],
   );
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -405,6 +446,22 @@ export default function AdminDIDs() {
         Ask a workspace owner or administrator to view phone numbers.
       </Text>
     </View>
+  ) : capabilitiesQuery.isLoading ? (
+    <View style={styles.state}>
+      <ActivityIndicator color={colors.primary} />
+      <Text style={[styles.stateText, { color: colors.muted }]}>
+        Checking phone-number availability…
+      </Text>
+    </View>
+  ) : !phoneNumbersAvailable ? (
+    <View style={styles.state}>
+      <Text style={[styles.stateTitle, { color: colors.foreground }]}>
+        Phone number management is unavailable
+      </Text>
+      <Text style={[styles.stateText, { color: colors.muted }]}>
+        This feature is not available for your workspace yet. Phone-number inventory and routing actions are unavailable.
+      </Text>
+    </View>
   ) : numbersQuery.isError ? (
     <View style={styles.state}>
       <Text style={[styles.stateTitle, { color: colors.foreground }]}>
@@ -464,7 +521,7 @@ export default function AdminDIDs() {
             {tenantQuery.data?.name || "Current workspace"}
           </Text>
         </View>
-        {canManage && (
+        {canManage && phoneNumbersAvailable && (
           <TouchableOpacity
             onPress={() => numbersQuery.refetch()}
             style={styles.headerButton}
@@ -482,7 +539,7 @@ export default function AdminDIDs() {
         )}
       </View>
 
-      {canManage && (
+      {canManage && phoneNumbersAvailable && (
         <>
           <View
             style={[
@@ -604,7 +661,7 @@ export default function AdminDIDs() {
                     Unassigned
                   </Text>
                 </TouchableOpacity>
-                {ROUTE_TYPES.map((route) => (
+                {availableRouteTypes.map((route) => (
                   <TouchableOpacity
                     key={route.value}
                     accessibilityRole="radio"

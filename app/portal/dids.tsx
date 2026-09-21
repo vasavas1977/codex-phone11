@@ -5,7 +5,7 @@ import { SIGN_IN_ROUTE } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
-import { usePbxSelfService } from "@/hooks/use-pbx-admin";
+import { usePbxCapabilities, usePbxSelfService } from "@/hooks/use-pbx-admin";
 
 type PhoneNumber = {
   id: number;
@@ -17,14 +17,20 @@ type Extension = {
   id: number;
   extension_number?: string | null;
   display_name?: string | null;
+  phone_numbers_available?: boolean;
   phone_numbers?: PhoneNumber[] | null;
 };
 
 export default function PortalDidsScreen() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
+  const capabilitiesQuery = usePbxCapabilities(Boolean(user));
   const overviewQuery = usePbxSelfService(Boolean(user));
-  const numbers = ((overviewQuery.data || []) as Extension[]).flatMap(
+  const extensions = (overviewQuery.data || []) as Extension[];
+  const phoneNumbersAvailable =
+    capabilitiesQuery.data?.phoneNumbers === true &&
+    extensions.every((extension) => extension.phone_numbers_available !== false);
+  const numbers = extensions.flatMap(
     (extension) =>
       (extension.phone_numbers || []).map((number) => ({
         ...number,
@@ -54,6 +60,16 @@ export default function PortalDidsScreen() {
           detail="Phone11 could not read the numbers assigned to your extensions."
           actionLabel="Try again"
           onAction={() => void overviewQuery.refetch()}
+        />
+      ) : capabilitiesQuery.isLoading ? (
+        <PortalState
+          title="Checking number availability"
+          detail="Phone11 is confirming whether direct-number inventory is available for this workspace."
+        />
+      ) : !phoneNumbersAvailable ? (
+        <PortalState
+          title="Phone numbers are unavailable"
+          detail="Direct-number inventory is not available for this workspace yet, so Phone11 cannot show assigned numbers."
         />
       ) : numbers.length === 0 ? (
         <PortalState

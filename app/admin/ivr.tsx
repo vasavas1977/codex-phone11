@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { UnavailableAdminScreen } from "@/components/admin/unavailable-admin-screen";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import {
@@ -21,6 +22,7 @@ import {
 } from "@/lib/pbx/ivr-actions";
 import {
   useCallQueues,
+  usePbxCapabilities,
   useCreateIvrMenu,
   useDeleteIvrMenu,
   useExtensions,
@@ -41,12 +43,24 @@ export default function AdminIVR() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
-  const menusQuery = useIvrMenus(tenantId);
+  const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
+  const ivrAvailable = capabilitiesQuery.data?.ivr === true;
+  const menusQuery = useIvrMenus(tenantId, ivrAvailable);
   const [editingMenuId, setEditingMenuId] = useState<number | null>(null);
-  const menuDetailQuery = useIvrMenu(editingMenuId ?? 0);
-  const extensionsQuery = useExtensions(1, 100, editingMenuId !== null && tenantId > 0);
-  const queuesQuery = useCallQueues(tenantId);
-  const ringGroupsQuery = useRingGroups(tenantId);
+  const menuDetailQuery = useIvrMenu(editingMenuId ?? 0, ivrAvailable);
+  const extensionsQuery = useExtensions(
+    1,
+    100,
+    ivrAvailable && editingMenuId !== null && tenantId > 0,
+  );
+  const queuesQuery = useCallQueues(
+    tenantId,
+    ivrAvailable && capabilitiesQuery.data?.queues === true,
+  );
+  const ringGroupsQuery = useRingGroups(
+    tenantId,
+    ivrAvailable && capabilitiesQuery.data?.ringGroups === true,
+  );
   const createMutation = useCreateIvrMenu();
   const deleteMutation = useDeleteIvrMenu();
   const actionsMutation = useSetIvrActions();
@@ -253,6 +267,25 @@ export default function AdminIVR() {
       </View>
     </View>
   );
+
+  if (capabilitiesQuery.isLoading) {
+    return (
+      <UnavailableAdminScreen
+        checking
+        title="IVR menus"
+        description="Phone11 is checking whether IVR management is available for this workspace."
+      />
+    );
+  }
+
+  if (!ivrAvailable) {
+    return (
+      <UnavailableAdminScreen
+        title="IVR menus"
+        description="This feature is not available for your workspace yet. Phone11 will not load or change IVR configuration."
+      />
+    );
+  }
 
   return (
     <ScreenContainer>

@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { UnavailableAdminScreen } from "@/components/admin/unavailable-admin-screen";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import {
@@ -20,6 +21,7 @@ import {
   useDeleteCallQueue,
   useExtensions,
   useIvrMenus,
+  usePbxCapabilities,
   useSetQueueAgents,
   useTenant,
   useUpdateCallQueue,
@@ -30,15 +32,29 @@ export default function AdminQueues() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
-  const queuesQuery = useCallQueues(tenantId);
+  const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
+  const queuesAvailable = capabilitiesQuery.data?.queues === true;
+  const queuesQuery = useCallQueues(tenantId, queuesAvailable);
   const createMutation = useCreateCallQueue();
   const deleteMutation = useDeleteCallQueue();
   const updateMutation = useUpdateCallQueue();
   const [editingQueueId, setEditingQueueId] = useState<number | null>(null);
   const [editingSettingsId, setEditingSettingsId] = useState<number | null>(null);
-  const queueDetailQuery = useCallQueue(editingQueueId ?? editingSettingsId ?? 0);
-  const extensionsQuery = useExtensions(1, 100, (editingQueueId !== null || editingSettingsId !== null) && tenantId > 0);
-  const ivrMenusQuery = useIvrMenus(tenantId);
+  const queueDetailQuery = useCallQueue(
+    editingQueueId ?? editingSettingsId ?? 0,
+    queuesAvailable,
+  );
+  const extensionsQuery = useExtensions(
+    1,
+    100,
+    queuesAvailable &&
+      (editingQueueId !== null || editingSettingsId !== null) &&
+      tenantId > 0,
+  );
+  const ivrMenusQuery = useIvrMenus(
+    tenantId,
+    queuesAvailable && capabilitiesQuery.data?.ivr === true,
+  );
   const agentsMutation = useSetQueueAgents();
 
   const [showCreate, setShowCreate] = useState(false);
@@ -343,6 +359,25 @@ export default function AdminQueues() {
       </View>
     </View>
   );
+
+  if (capabilitiesQuery.isLoading) {
+    return (
+      <UnavailableAdminScreen
+        checking
+        title="Call queues"
+        description="Phone11 is checking whether call-queue management is available for this workspace."
+      />
+    );
+  }
+
+  if (!queuesAvailable) {
+    return (
+      <UnavailableAdminScreen
+        title="Call queues"
+        description="This feature is not available for your workspace yet. Phone11 will not load or change queues."
+      />
+    );
+  }
 
   return (
     <ScreenContainer>
