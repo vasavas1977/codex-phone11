@@ -1,5 +1,7 @@
 # Phone11 web management and profile photos — 21 September 2026
 
+> Historical source-readiness snapshot. The subsequent deployment and remaining production gates are recorded in [WEB-MANAGEMENT-LIVE-20260921.md](WEB-MANAGEMENT-LIVE-20260921.md). Statements below about no deployment describe the earlier checkpoint.
+
 ## Delivered source and ownership
 
 - `78c814c9940857f69c922fee5d458e96c1d609a3`: personal portal uses assigned extensions/numbers and participant-scoped call records; administrator overview requires workspace owner/admin access. Signed-out, denied and failure states are explicit. Billing, support and forwarding do not simulate successful operations.
