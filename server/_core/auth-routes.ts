@@ -1,15 +1,23 @@
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response, RequestHandler } from "express";
 import { toNodeHandler } from "better-auth/node";
-import { getPhone11Auth, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "./phone11-auth";
+import { getPhone11Auth, getPhone11PasswordResetAvailability, handlePhone11CredentialSignIn, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "./phone11-auth";
 import type { Pool } from "pg";
 import { getPool } from "../pbx/db";
 import { HttpError } from "../../shared/_core/errors";
 import { isPhone11AuthReady } from "./phone11-auth-readiness";
 
-const authPaths = new Map([
+const authPaths = new Map<string, string>([
   ["/api/auth/sign-in/email", "POST"], ["/api/auth/sign-out", "POST"],
+  ["/api/auth/request-password-reset", "POST"], ["/api/auth/reset-password", "POST"],
 ]);
+
+function authAuditRoute(path: string): string {
+  if (path === "/api/auth/request-password-reset" || path === "/api/auth/reset-password") {
+    return "/api/auth/password-recovery";
+  }
+  return authPaths.has(path) ? path : "session";
+}
 
 export const phone11Cors: RequestHandler = (req, res, next) => {
   const origin = req.headers.origin;
@@ -40,11 +48,20 @@ export function registerAuthRoutes(
 
   app.get("/api/mobile/config", async (_req, res) => {
     let ready = false;
+    let passwordResetAvailability: "disabled" | "general" = "disabled";
     try {
-      ready = await isReady();
+      const auth = getAuth();
+      ready = await isPhone11AuthReady(auth, getDatabase());
+      passwordResetAvailability = getPhone11PasswordResetAvailability(auth);
     } catch { /* Never publish secret/config values. */ }
     res.setHeader("Cache-Control", "no-store");
-    res.json({ authProvider: "phone11", emailPasswordEnabled: ready, registrationEnabled: false });
+    res.json({
+      authProvider: "phone11",
+      emailPasswordEnabled: ready,
+      passwordResetEnabled: ready && passwordResetAvailability !== "disabled",
+      passwordResetAvailability,
+      registrationEnabled: false,
+    });
   });
   app.get("/api/ready/auth", async (_req, res) => {
     let ready = false;
@@ -64,7 +81,7 @@ export function registerAuthRoutes(
     res.on("finish", () => {
       console.info(JSON.stringify({
         event: "phone11.auth.request", requestId, method: req.method,
-        route: authPaths.has(req.originalUrl.split("?")[0]) ? req.originalUrl.split("?")[0] : "session",
+        route: authAuditRoute(req.originalUrl.split("?")[0]),
         status: res.statusCode, durationMs: Date.now() - startedAt,
       }));
     });
@@ -94,15 +111,26 @@ export function registerAuthRoutes(
 
   // Must precede express.json(): Better Auth owns parsing, CSRF checks and session cookies.
   app.all("/api/auth/*", async (req, res) => {
+    if (req.path === "/api/auth/sign-in/email") {
+      res.setHeader("X-Phone11-Credential-Serialization", "pg-advisory-v1");
+    }
     if (authPaths.get(req.path) !== req.method) {
       res.status(404).json({ error: "Not found" });
       return;
     }
     try {
+      const auth = getAuth();
+      if (req.path === "/api/auth/request-password-reset"
+        && getPhone11PasswordResetAvailability(auth) === "disabled") {
+        res.status(503).json({ error: "Password recovery is temporarily unavailable" });
+        return;
+      }
       await toNodeHandler(async (request) => {
         const response = req.path === "/api/auth/sign-out"
           ? await revokePhone11Session(req.headers, getAuth(), getDatabase())
-          : await getAuth().handler(request);
+          : req.path === "/api/auth/sign-in/email"
+            ? await handlePhone11CredentialSignIn(request, auth, getDatabase())
+            : await auth.handler(request);
         const nativeSignIn = req.path === "/api/auth/sign-in/email" &&
           req.headers["x-phone11-client"] === "native" &&
           !req.headers.origin && !req.headers.referer && !req.headers["sec-fetch-site"] &&

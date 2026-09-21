@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
 import { Pool } from "pg";
 import { SignJWT } from "jose";
-import { createPhone11Auth, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "../server/_core/phone11-auth";
+import { createPhone11Auth, handlePhone11CredentialSignIn, phone11AuthOptions, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "../server/_core/phone11-auth";
 import { registerAuthRoutes, phone11Cors } from "../server/_core/auth-routes";
 import { applyAuthMigration, createExistingUserIdentity, restoreEmptyCanonicalUser } from "../server/_core/phone11-auth-admin";
 
@@ -73,11 +73,13 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
   const secret = randomBytes(48).toString("base64url");
   const email = "owner@example.test";
   const audit = vi.spyOn(console, "info").mockImplementation(() => {});
+  const passwordResetMailer = vi.fn(async (_message: { recipient: string; resetURL: string }) => undefined);
+  const passwordResetDeliveryFailure = vi.fn();
 
-  function request(path: string, init: RequestInit = {}) {
+  function requestAt(origin: string, path: string, init: RequestInit = {}) {
     // Native HTTP does not add browser Sec-Fetch metadata (Node fetch does).
     return new Promise<Response>((resolve, reject) => {
-      const request = httpRequest(baseURL + path, {
+      const request = httpRequest(origin + path, {
         method: init.method || "GET", headers: Object.fromEntries(new Headers(init.headers)),
       }, response => {
         const parts: Buffer[] = [];
@@ -94,6 +96,9 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
       request.end(init.body || undefined);
     });
   }
+  function request(path: string, init: RequestInit = {}) {
+    return requestAt(baseURL, path, init);
+  }
   function signIn(body = { email, password }, headers: Record<string, string> = {}) {
     return request("/api/auth/sign-in/email", {
       method: "POST", headers: { "Content-Type": "application/json", "X-Phone11-Client": "native", ...headers },
@@ -107,6 +112,65 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
     expect(Boolean(token)).toBe(true);
     const cookies = response.headers.getSetCookie().map(value => value.split(";")[0]).join("; ");
     return { token: token!, cookies };
+  }
+  async function issueResetToken(returnTo = "/portal") {
+    const response = await request("/api/auth/request-password-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:8081" },
+      body: JSON.stringify({
+        email,
+        redirectTo: `http://localhost:8081/auth/reset-password?returnTo=${encodeURIComponent(returnTo)}`,
+      }),
+    });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(passwordResetMailer).toHaveBeenCalled());
+    const call = passwordResetMailer.mock.calls.at(-1)?.[0];
+    expect(call?.recipient).toBe(email);
+    const link = new URL(call!.resetURL);
+    const fragment = new URLSearchParams(link.hash.slice(1));
+    return { fragment, link, token: fragment.get("token")! };
+  }
+  function resetPassword(token: string, newPassword: string) {
+    return request("/api/auth/reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:8081" },
+      body: JSON.stringify({ newPassword, token }),
+    });
+  }
+  async function peerAuthServer() {
+    const peerDatabase = new Pool({ host: socket, database: "phone11_auth_test", user: "phone11_test" });
+    const peerAuth = createPhone11Auth(peerDatabase, readAuthConfig(), {
+      passwordResetMailer: { sendPasswordReset: passwordResetMailer },
+    });
+    const app = express();
+    app.use(phone11Cors);
+    registerAuthRoutes(app, { getAuth: () => peerAuth, getDatabase: () => peerDatabase });
+    const peerServer = createServer(app);
+    await new Promise<void>(resolve => peerServer.listen(0, "127.0.0.1", resolve));
+    const address = peerServer.address();
+    if (!address || typeof address === "string") throw new Error("Missing peer auth listener");
+    return {
+      database: peerDatabase,
+      request: (path: string, init: RequestInit = {}) => requestAt(`http://127.0.0.1:${address.port}`, path, init),
+      async close() {
+        await new Promise<void>((resolve, reject) => peerServer.close(error => error ? reject(error) : resolve()));
+        await peerDatabase.end();
+      },
+    };
+  }
+  async function waitForDatabaseWait(queryFragment: string) {
+    await vi.waitFor(async () => {
+      const result = await database.query<{ count: number }>(
+        `SELECT count(*)::int AS count
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'
+            AND position($1 in query) > 0`,
+        [queryFragment],
+      );
+      expect(result.rows[0].count).toBeGreaterThan(0);
+    }, { timeout: 3_000, interval: 20 });
   }
 
   beforeAll(async () => {
@@ -137,10 +201,16 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
     await applyAuthMigration(database, config);
     await applyAuthMigration(database, config);
     await createExistingUserIdentity(database, { userId: 17, email, password });
-    auth = createPhone11Auth(database, config);
+    auth = createPhone11Auth(database, config, {
+      passwordResetMailer: { sendPasswordReset: passwordResetMailer },
+      reportPasswordResetDeliveryFailure: passwordResetDeliveryFailure,
+    });
   }, 30000);
   beforeEach(async () => {
     await database.query("DELETE FROM phone11_auth_rate_limit");
+    passwordResetMailer.mockReset();
+    passwordResetMailer.mockResolvedValue(undefined);
+    passwordResetDeliveryFailure.mockReset();
   });
   afterAll(async () => {
     if (server) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -151,7 +221,16 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
 
   it("publishes Phone11 auth capability without an OAuth app ID", async () => {
     const res = await request("/api/mobile/config");
-    expect(await res.json()).toEqual({ authProvider: "phone11", emailPasswordEnabled: true, registrationEnabled: false });
+    expect(await res.json()).toEqual({
+      authProvider: "phone11",
+      emailPasswordEnabled: true,
+      passwordResetEnabled: true,
+      passwordResetAvailability: "general",
+      registrationEnabled: false,
+    });
+  });
+  it("keeps password recovery disabled unless a mailer is explicitly configured", () => {
+    expect(phone11AuthOptions(database, readAuthConfig()).emailAndPassword?.sendResetPassword).toBeUndefined();
   });
   it("preserves canonical user ID and role after password login", async () => {
     const { token } = await login();
@@ -188,6 +267,305 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
     expect(wrong.status).toBe(401);
     expect(unknown.status).toBe(401);
     expect((await wrong.json()).code).toBe((await unknown.json()).code);
+  });
+  it("rejects form-encoded credential sign-in before the auth handler and creates no session", async () => {
+    const handler = vi.fn();
+    const direct = await handlePhone11CredentialSignIn(new Request(
+      "http://localhost/api/auth/sign-in/email",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ email, password }),
+      },
+    ), { handler } as unknown as Phone11Auth, {} as Pool);
+    expect(direct.status).toBe(415);
+    expect(handler).not.toHaveBeenCalled();
+
+    const sessionsBefore = Number((await database.query<{ count: string }>(
+      'SELECT count(*) AS count FROM phone11_auth_session WHERE "userId" = (SELECT id FROM phone11_auth_user WHERE email = $1)',
+      [email],
+    )).rows[0].count);
+    const response = await request("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ email, password }).toString(),
+    });
+    expect(response.status).toBe(415);
+    expect(response.headers.get("x-phone11-credential-serialization")).toBe("pg-advisory-v1");
+    const sessionsAfter = Number((await database.query<{ count: string }>(
+      'SELECT count(*) AS count FROM phone11_auth_session WHERE "userId" = (SELECT id FROM phone11_auth_user WHERE email = $1)',
+      [email],
+    )).rows[0].count);
+    expect(sessionsAfter).toBe(sessionsBefore);
+  });
+  it("keeps password-reset requests uniform when an account is absent or configured delivery fails", async () => {
+    const redirectTo = "http://localhost:8081/auth/reset-password?returnTo=%2Fportal";
+    const resetRequest = (address: string) => request("/api/auth/request-password-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:8081" },
+      body: JSON.stringify({ email: address, redirectTo }),
+    });
+    passwordResetMailer.mockRejectedValueOnce(new Error("injected provider failure"));
+    const existing = await resetRequest(email);
+    const unknown = await resetRequest("absent@example.test");
+    expect(existing.status).toBe(200);
+    expect(unknown.status).toBe(200);
+    expect(await existing.json()).toEqual(await unknown.json());
+    await vi.waitFor(() => expect(passwordResetDeliveryFailure).toHaveBeenCalledOnce());
+  });
+  it("uses an exact fragment-only callback, consumes one token and revokes every existing session", async () => {
+    const active = await login();
+    const issued = await issueResetToken();
+    expect(issued.link.origin + issued.link.pathname).toBe("http://localhost:8081/auth/reset-password");
+    expect(issued.link.searchParams.get("returnTo")).toBe("/portal");
+    expect([...issued.link.searchParams.keys()]).toEqual(["returnTo"]);
+    expect([...issued.fragment.keys()]).toEqual(["token"]);
+    const token = issued.token;
+    const newPassword = randomBytes(24).toString("base64url");
+    const reset = await resetPassword(token, newPassword);
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toEqual({ status: true });
+    expect((await request("/api/auth/me", { headers: { Authorization: "Bearer " + active.token } })).status).toBe(401);
+    const reuse = await resetPassword(token, password);
+    expect(reuse.status).toBe(400);
+    expect((await reuse.json()).code).toBe("INVALID_TOKEN");
+    expect((await signIn({ email, password: newPassword })).status).toBe(200);
+
+    const restoreToken = (await issueResetToken()).token;
+    expect((await resetPassword(restoreToken, password)).status).toBe(200);
+  });
+  it("rolls back the password and token when durable session revocation fails", async () => {
+    const active = await login();
+    const token = (await issueResetToken()).token;
+    const newPassword = randomBytes(24).toString("base64url");
+    await database.query(`
+      CREATE OR REPLACE FUNCTION phone11_test_fail_reset_session_delete()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'injected session revocation failure'; END;
+      $$;
+      CREATE TRIGGER phone11_test_fail_reset_session_delete
+      BEFORE DELETE ON phone11_auth_session
+      FOR EACH STATEMENT EXECUTE FUNCTION phone11_test_fail_reset_session_delete();
+    `);
+    try {
+      const failedReset = await resetPassword(token, newPassword);
+      expect(failedReset.status).toBe(503);
+      expect(await failedReset.json()).toMatchObject({
+        code: "PASSWORD_RESET_FAILED",
+        message: "Password recovery is temporarily unavailable",
+      });
+      expect((await request("/api/auth/me", {
+        headers: { Authorization: "Bearer " + active.token },
+      })).status).toBe(200);
+      expect((await signIn({ email, password })).status).toBe(200);
+      expect((await signIn({ email, password: newPassword })).status).toBe(401);
+    } finally {
+      await database.query(`
+        DROP TRIGGER IF EXISTS phone11_test_fail_reset_session_delete ON phone11_auth_session;
+        DROP FUNCTION IF EXISTS phone11_test_fail_reset_session_delete();
+      `);
+    }
+
+    // The same token still works after the injected failure, proving its
+    // consumption and password change were rolled back with session deletion.
+    expect((await resetPassword(token, newPassword)).status).toBe(200);
+    expect((await signIn({ email, password: newPassword })).status).toBe(200);
+    const restoreToken = (await issueResetToken()).token;
+    expect((await resetPassword(restoreToken, password)).status).toBe(200);
+  });
+  it("allows exactly one concurrent reset for a token and revokes prior sessions", async () => {
+    const active = await login();
+    const token = (await issueResetToken()).token;
+    const firstPassword = randomBytes(24).toString("base64url");
+    const secondPassword = randomBytes(24).toString("base64url");
+    const responses = await Promise.all([
+      resetPassword(token, firstPassword),
+      resetPassword(token, secondPassword),
+    ]);
+    expect(responses.map(response => response.status).sort()).toEqual([200, 400]);
+    const rejected = responses.find(response => response.status === 400)!;
+    expect((await rejected.json()).code).toBe("INVALID_TOKEN");
+
+    const winningPassword = responses[0].status === 200 ? firstPassword : secondPassword;
+    const losingPassword = responses[0].status === 200 ? secondPassword : firstPassword;
+    expect((await request("/api/auth/me", {
+      headers: { Authorization: "Bearer " + active.token },
+    })).status).toBe(401);
+    expect((await signIn({ email, password: winningPassword })).status).toBe(200);
+    expect((await signIn({ email, password: losingPassword })).status).toBe(401);
+
+    const restoreToken = (await issueResetToken()).token;
+    expect((await resetPassword(restoreToken, password)).status).toBe(200);
+  });
+  it("serializes an old-password sign-in before reset and revokes its late session", async () => {
+    const peer = await peerAuthServer();
+    const blocker = await database.connect();
+    const barrierKey = 1_000_000_000 + randomBytes(4).readUInt32BE() % 1_000_000_000;
+    let barrierHeld = false;
+    try {
+      await blocker.query("SELECT pg_advisory_lock($1::bigint)", [barrierKey]);
+      barrierHeld = true;
+      await database.query(`
+        CREATE OR REPLACE FUNCTION phone11_test_pause_session_insert()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          PERFORM pg_advisory_lock(${barrierKey}::bigint);
+          PERFORM pg_advisory_unlock(${barrierKey}::bigint);
+          RETURN NEW;
+        END;
+        $$;
+        CREATE TRIGGER phone11_test_pause_session_insert
+        BEFORE INSERT ON phone11_auth_session
+        FOR EACH ROW EXECUTE FUNCTION phone11_test_pause_session_insert();
+      `);
+      const token = (await issueResetToken()).token;
+      const newPassword = randomBytes(24).toString("base64url");
+      const signInPromise = signIn();
+      await waitForDatabaseWait("phone11_auth_session");
+      const resetPromise = peer.request("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: "http://localhost:8081" },
+        body: JSON.stringify({ newPassword, token }),
+      });
+      await waitForDatabaseWait("hashtextextended");
+      await blocker.query("SELECT pg_advisory_unlock($1::bigint)", [barrierKey]);
+      barrierHeld = false;
+
+      const lateSignIn = await signInPromise;
+      expect(lateSignIn.status).toBe(200);
+      const lateToken = lateSignIn.headers.get("set-auth-token");
+      expect(lateToken).toBeTruthy();
+      expect((await resetPromise).status).toBe(200);
+      expect((await request("/api/auth/me", {
+        headers: { Authorization: "Bearer " + lateToken },
+      })).status).toBe(401);
+      expect((await signIn({ email, password: newPassword })).status).toBe(200);
+
+      const restoreToken = (await issueResetToken()).token;
+      expect((await resetPassword(restoreToken, password)).status).toBe(200);
+    } finally {
+      if (barrierHeld) await blocker.query("SELECT pg_advisory_unlock($1::bigint)", [barrierKey]);
+      blocker.release();
+      await database.query(`
+        DROP TRIGGER IF EXISTS phone11_test_pause_session_insert ON phone11_auth_session;
+        DROP FUNCTION IF EXISTS phone11_test_pause_session_insert();
+      `);
+      await peer.close();
+    }
+  }, 15_000);
+  it("makes a sign-in waiting behind reset verify only the committed new password", async () => {
+    const active = await login();
+    const peer = await peerAuthServer();
+    const blocker = await database.connect();
+    const barrierKey = 1_000_000_000 + randomBytes(4).readUInt32BE() % 1_000_000_000;
+    let barrierHeld = false;
+    try {
+      await blocker.query("SELECT pg_advisory_lock($1::bigint)", [barrierKey]);
+      barrierHeld = true;
+      await database.query(`
+        CREATE OR REPLACE FUNCTION phone11_test_pause_password_update()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          PERFORM pg_advisory_lock(${barrierKey}::bigint);
+          PERFORM pg_advisory_unlock(${barrierKey}::bigint);
+          RETURN NEW;
+        END;
+        $$;
+        CREATE TRIGGER phone11_test_pause_password_update
+        BEFORE UPDATE OF password ON phone11_auth_account
+        FOR EACH ROW EXECUTE FUNCTION phone11_test_pause_password_update();
+      `);
+      const token = (await issueResetToken()).token;
+      const newPassword = randomBytes(24).toString("base64url");
+      const resetPromise = peer.request("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: "http://localhost:8081" },
+        body: JSON.stringify({ newPassword, token }),
+      });
+      await waitForDatabaseWait("phone11_auth_account");
+      const oldPasswordSignIn = signIn();
+      await waitForDatabaseWait("hashtextextended");
+      await blocker.query("SELECT pg_advisory_unlock($1::bigint)", [barrierKey]);
+      barrierHeld = false;
+
+      expect((await resetPromise).status).toBe(200);
+      expect((await oldPasswordSignIn).status).toBe(401);
+      expect((await request("/api/auth/me", {
+        headers: { Authorization: "Bearer " + active.token },
+      })).status).toBe(401);
+      expect((await signIn({ email, password: newPassword })).status).toBe(200);
+
+      const restoreToken = (await issueResetToken()).token;
+      expect((await resetPassword(restoreToken, password)).status).toBe(200);
+    } finally {
+      if (barrierHeld) await blocker.query("SELECT pg_advisory_unlock($1::bigint)", [barrierKey]);
+      blocker.release();
+      await database.query(`
+        DROP TRIGGER IF EXISTS phone11_test_pause_password_update ON phone11_auth_account;
+        DROP FUNCTION IF EXISTS phone11_test_pause_password_update();
+      `);
+      await peer.close();
+    }
+  }, 15_000);
+  it("fails a saturated credential-serialization queue closed within its bounded wait", async () => {
+    const blocker = await database.connect();
+    const authUserId = (await database.query<{ id: string }>(
+      "SELECT id FROM phone11_auth_user WHERE email = $1",
+      [email],
+    )).rows[0].id;
+    const sessionsBefore = Number((await database.query<{ count: string }>(
+      'SELECT count(*) AS count FROM phone11_auth_session WHERE "userId" = $1',
+      [authUserId],
+    )).rows[0].count);
+    let locked = false;
+    try {
+      await blocker.query(
+        "SELECT pg_advisory_lock(hashtextextended($1::text, 11011::bigint))",
+        [`phone11:credential:${authUserId}`],
+      );
+      locked = true;
+      const startedAt = Date.now();
+      const attempts = Array.from({ length: 18 }, () => signIn());
+      await waitForDatabaseWait("hashtextextended");
+      const responses = await Promise.all(attempts);
+      expect(responses.every(response => response.status === 503)).toBe(true);
+      expect(await responses[0].json()).toEqual({ error: "Phone11 sign-in is temporarily unavailable" });
+      expect(Date.now() - startedAt).toBeLessThan(8_000);
+      const sessionsAfter = Number((await database.query<{ count: string }>(
+        'SELECT count(*) AS count FROM phone11_auth_session WHERE "userId" = $1',
+        [authUserId],
+      )).rows[0].count);
+      expect(sessionsAfter).toBe(sessionsBefore);
+    } finally {
+      if (locked) {
+        await blocker.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1::text, 11011::bigint))",
+          [`phone11:credential:${authUserId}`],
+        );
+      }
+      blocker.release();
+    }
+  }, 12_000);
+  it("rejects callback drift and query-string reset tokens without sending mail", async () => {
+    for (const redirectTo of [
+      "https://attacker.example/auth/reset-password",
+      "http://localhost:8081/other",
+      "http://localhost:8081/auth/reset-password?returnTo=https%3A%2F%2Fattacker.example",
+    ]) {
+      const response = await request("/api/auth/request-password-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: "http://localhost:8081" },
+        body: JSON.stringify({ email, redirectTo }),
+      });
+      expect(response.status).toBe(403);
+    }
+    expect(passwordResetMailer).not.toHaveBeenCalled();
+    expect((await request("/api/auth/reset-password?token=url-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "http://localhost:8081" },
+      body: JSON.stringify({ newPassword: password }),
+    })).status).toBe(400);
+    expect((await request("/api/auth/reset-password/path-token?callbackURL=" + encodeURIComponent("http://localhost:8081/auth/reset-password"))).status).toBe(404);
   });
   it("does not accept legacy signed JWTs, URL tokens, public signup or session injection", async () => {
     const token = await new SignJWT({ openId: "original-owner-id", appId: "" })
@@ -247,6 +625,24 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
       const response = await request("/api/auth/" + path, {
         method: path.includes("password") || path.startsWith("revoke") ? "POST" : "GET",
         headers: { Cookie: cookies },
+      });
+      expect(response.status).toBe(404);
+      expect(response.headers.has("set-auth-token")).toBe(false);
+    }
+  });
+  it("exposes only the exact serialized credential sign-in route", async () => {
+    const readOnlyProbe = await request("/api/auth/sign-in/email");
+    expect(readOnlyProbe.status).toBe(404);
+    expect(readOnlyProbe.headers.get("x-phone11-credential-serialization")).toBe("pg-advisory-v1");
+    for (const path of [
+      "/api/auth/sign-in/email/",
+      "/api/auth/sign-in/username",
+      "/api/auth/sign-in/phone-number",
+      "/api/auth/sign-in/email-otp",
+      "/api/auth/sign-in/social",
+    ]) {
+      const response = await request(path, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
       });
       expect(response.status).toBe(404);
       expect(response.headers.has("set-auth-token")).toBe(false);
@@ -331,10 +727,14 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
       }
     } finally { await browser.close(); }
   }, 120000);
-  it("immediately denies a disabled mapping and refuses new sessions", async () => {
+  it("immediately denies a disabled mapping, including password reset, and refuses new sessions", async () => {
     const { token } = await login();
+    const resetToken = (await issueResetToken()).token;
     await database.query("UPDATE phone11_auth_identity SET disabled_at = NOW() WHERE legacy_user_id = 17");
     expect((await request("/api/auth/me", { headers: { Authorization: "Bearer " + token } })).status).toBe(401);
+    const disabledReset = await resetPassword(resetToken, randomBytes(24).toString("base64url"));
+    expect(disabledReset.status).toBe(400);
+    expect((await disabledReset.json()).code).toBe("INVALID_TOKEN");
     expect((await signIn()).status).toBe(401);
   });
 });

@@ -216,7 +216,9 @@ describe.skipIf(!process.env.PHONE11_AUTH_TEST_SOCKET)("Phone11 readiness agains
     expect(await invoke("/api/ready/auth")).toEqual({ status: 503,
       body: { ready: false, authProvider: "phone11" }, headers: { "Cache-Control": "no-store" } });
     expect((await invoke("/api/mobile/config")).body).toEqual({
-      authProvider: "phone11", emailPasswordEnabled: false, registrationEnabled: false,
+      authProvider: "phone11", emailPasswordEnabled: false,
+      passwordResetEnabled: false, passwordResetAvailability: "disabled",
+      registrationEnabled: false,
     });
   });
 });
