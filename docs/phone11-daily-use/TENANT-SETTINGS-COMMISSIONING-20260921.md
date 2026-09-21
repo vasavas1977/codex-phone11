@@ -1,7 +1,8 @@
 # Phone11 workspace time-zone commissioning
 
-**Status:** source candidate only. No production preflight, backup, migration,
-deployment, service restart, role change, or customer-data write was performed.
+**Status:** source-approved candidate with a production **read-only** catalog
+check. No production backup, migration, deployment, service restart, role
+change, or customer-data write was performed.
 
 ## Bounded capability
 
@@ -54,19 +55,36 @@ checks persistence and tenant separation, and verifies database constraints.
 ### Executed source evidence — 22 September 2026
 
 - A temporary loopback-only PostgreSQL 17 cluster on port `55448`, using the
-  dedicated `phone11_pbx_test` database, ran the two focused suites: **70
+  dedicated `phone11_pbx_test` database, ran the two focused suites: **72
   passing tests**. This included the three database cases that are otherwise
   skipped when no explicit fixture URL is supplied.
 - The database cases created and dropped random schemas. They proved an absent
   table can be migrated twice, workspace rows persist separately, non-admin and
   cross-workspace actors cannot write, blank values are rejected, a tenant
-  delete cascades, and a composite tenant key is rejected by both the migration
-  and read-only preflight.
+  delete cascades, and composite tenant keys are rejected by both the migration
+  and read-only preflight. They also reject a same-name `CHECK (true)` and an
+  otherwise-correct but `NOT VALID` time-zone check.
 - `node node_modules/typescript/bin/tsc --noEmit` completed successfully.
 
-This is local source evidence only. It does not establish the selected
-production database state, an applied migration, a deployed API, audit storage,
-or browser/device behavior.
+The exact six-file candidate was independently source-reviewed and committed as
+`9804c2f09f99453747e0bb54e23d3b6149f5b5cb`. The review bound the migration to
+its SHA-256, its preflight to the reviewed/validated check expression, and the
+router to the one supported time-zone field. It was source approval only.
+
+### Canonical production readback — 22 September 2026
+
+The public Nginx `/api/trpc` routes were read without modification and resolve
+to the healthy `cp11-api-candidate-next` on loopback port 3003. Its application
+database contract selected `phone11ai`, schema `public`, PostgreSQL `160013`.
+The read-only transaction found `tenant_settings` **absent** and `tenants.id`
+as the single primary key, with one primary key, zero outbound foreign keys and
+17 inbound foreign keys. No customer rows were queried.
+
+An earlier edge-host catalog is not this public API target and must not be used
+for this migration decision. The routed candidate’s absent relation is the
+only catalog state recorded here. This readback does not establish a backup,
+restore rehearsal, migration application, API deployment, audit storage, or
+browser/device behavior.
 
 ## Production commissioning gate
 
@@ -74,31 +92,46 @@ or browser/device behavior.
    application bundle, dependency lock, and rollback plan.
 2. Obtain an approved database backup and prove its restore procedure. Capture
    the current `tenant_settings` catalog state without row values.
-3. Run the read-only preflight against the exact Phone11 database selected by
-   `server/pbx/db.ts`:
+3. Install the independently reviewed guarded operator, reviewed SQL and proof
+   files exactly as specified in
+   `TENANT-SETTINGS-MIGRATION-OPERATOR-20260922.md`. Run its read-only prepare
+   mode through the pinned routed candidate:
 
-   ```sh
-   node_modules/.bin/tsx scripts/phone11-tenant-settings-preflight.ts
+   ```text
+   sudo /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
+     --prepare \
+     --sql /opt/phone11ai/tenant-settings/tenant-settings-migration.sql \
+     --backup-proof /root/phone11-tenant-settings/backup-proof.json \
+     --restore-proof /root/phone11-tenant-settings/restore-proof.json
    ```
 
-   Continue only when it reports `status: "absent"`. If it reports
-   `incompatible`, stop for schema review. If it already reports `compatible`,
-   do not apply an unneeded change; verify the exact migration history instead.
+   Continue only when it prints
+   `tenant_settings=PREPARE_READY apply=NOT_RUN`. Any other result stops the
+   operation for review.
 
-4. Apply the reviewed migration through the approved database migration
-   channel with stop-on-error behavior:
+4. Apply only through that guarded operator and a new root-only journal path:
 
-   ```sh
-   psql "$APPROVED_PHONE11_DATABASE_URL" \
-     --set ON_ERROR_STOP=1 \
-     --file server/pbx/tenant-settings-migration.sql
+   ```text
+   sudo /opt/phone11ai/tenant-settings/phone11-tenant-settings-migrate.py \
+     --apply \
+     --sql /opt/phone11ai/tenant-settings/tenant-settings-migration.sql \
+     --backup-proof /root/phone11-tenant-settings/backup-proof.json \
+     --restore-proof /root/phone11-tenant-settings/restore-proof.json \
+     --receipt /var/lib/phone11-tenant-settings/receipt.json
    ```
 
-   Keep the connection value in the protected operator environment. Do not put
-   it in a command transcript, source file, manifest, or evidence artifact.
+   The operator creates and fsyncs the exclusive intent before database access.
+   Do not use direct `psql`, the TypeScript preflight as an alternate production
+   path, or any database URL outside the pinned candidate environment.
 
-5. Rerun the read-only preflight and require `status: "compatible"` with an
-   empty `issues` array. Verify that the migration created zero rows.
+5. If apply is interrupted, exits nonzero, or lacks its exact success message,
+   do not retry it. Run the documented `--recover` mode with the same artifact,
+   proofs and journal. Recovery must prove and record either `APPLIED` or
+   `NOT_APPLIED`; every other state stops for review. After a reported success,
+   run the same recovery command and require
+   `tenant_settings=RECOVERY_VALID status=APPLIED`. Verify through the later
+   authorized application test that the migration created zero rows; the
+   operator itself reads catalogs only and does not inspect customer rows.
 6. Build and deploy the exact reviewed workerless API candidate through its
    existing blue/green process. Do not restart or replace the calling baseline.
 7. With an isolated test owner/admin and test workspace, save `Asia/Bangkok`,
