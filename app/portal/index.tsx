@@ -7,7 +7,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { PortalShell, PortalState } from "@/components/portal/portal-shell";
-import { SIGN_IN_ROUTE } from "@/constants/oauth";
+import { portalSignInRoute } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useAuth } from "@/hooks/use-auth";
@@ -62,7 +62,7 @@ export default function PortalDashboard() {
           title="Sign in to view your phone"
           detail="Your assigned extensions and call activity are available after you sign in."
           actionLabel="Sign in"
-          onAction={() => router.replace(SIGN_IN_ROUTE)}
+          onAction={() => router.replace(portalSignInRoute("/portal"))}
         />
       ) : overviewQuery.isLoading ? (
         <View style={styles.loading}>

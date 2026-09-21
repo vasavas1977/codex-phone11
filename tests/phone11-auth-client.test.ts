@@ -42,6 +42,8 @@ const canonicalUser = {
 const config = {
   authProvider: "phone11",
   emailPasswordEnabled: true,
+  passwordResetEnabled: false,
+  passwordResetAvailability: "disabled" as const,
   registrationEnabled: false,
 };
 const signedToken = "signed-native-test-session";
@@ -238,6 +240,16 @@ describe("Phone11 email/password client", () => {
     { ...config, emailPasswordEnabled: false },
     { authProvider: "legacy", appId: "legacy-app" },
     { ...config, registrationEnabled: true },
+    {
+      ...config,
+      passwordResetEnabled: true,
+      passwordResetAvailability: "disabled",
+    },
+    {
+      ...config,
+      passwordResetEnabled: false,
+      passwordResetAvailability: "pilot",
+    },
   ])(
     "rejects unavailable or incompatible configuration without starting another login flow",
     async (data) => {
@@ -259,6 +271,52 @@ describe("Phone11 email/password client", () => {
     );
     await expect(api.getMobileAuthConfig()).resolves.toEqual(config);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the trusted public recovery callback from native and a generic reset request", async () => {
+    fetchMock.mockResolvedValueOnce(json({ status: true }));
+    await api.requestPasswordReset("  test@example.com  ", "/portal");
+    expect(fetchMock.mock.calls.map(([url]) => new URL(url).pathname)).toEqual([
+      "/api/auth/request-password-reset",
+    ]);
+    const [, options] = fetchMock.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({
+      email: "test@example.com",
+      redirectTo:
+        "https://1toall.phone11.ai/auth/reset-password?returnTo=%2Fportal",
+    });
+    expect(options.headers.has("authorization")).toBe(false);
+    expect(options.headers.has("X-Phone11-Client")).toBe(false);
+  });
+
+  it("keeps password recovery on the current trusted origin in a browser", () => {
+    expect(keys.passwordResetRedirectUrl("/admin")).toBe(
+      "https://1toall.phone11.ai/auth/reset-password?returnTo=%2Fadmin",
+    );
+    mocks.platform.OS = "web";
+    vi.stubGlobal("window", { location: { origin: "http://localhost:8081" } });
+    expect(keys.passwordResetRedirectUrl("/portal/dids")).toBe(
+      "http://localhost:8081/auth/reset-password?returnTo=%2Fportal%2Fdids",
+    );
+  });
+
+  it("posts reset tokens only in the JSON body and maps invalid links safely", async () => {
+    fetchMock.mockResolvedValueOnce(json({ code: "INVALID_TOKEN" }, 400));
+    await expect(
+      api.resetPassword("opaque-reset-token", "new-password-123"),
+    ).rejects.toThrow("invalid or has expired");
+    const [, options] = fetchMock.mock.calls[0];
+    expect(JSON.parse(options.body)).toEqual({
+      token: "opaque-reset-token",
+      newPassword: "new-password-123",
+    });
+    expect(fetchMock.mock.calls[0][0]).not.toContain("opaque-reset-token");
+    await expect(api.resetPassword("", "new-password-123")).rejects.toThrow(
+      "invalid or has expired",
+    );
+    await expect(api.resetPassword("opaque", "too-short")).rejects.toThrow(
+      "at least 12",
+    );
   });
 
   it.each([

@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
-  ScrollView,
-  StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
+import { AuthBrand, AuthScreen, authStyles } from "@/components/auth/auth-screen";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
+import {
+  getSafePortalReturnTarget,
+  passwordResetRequestRoute,
+} from "@/constants/oauth";
 import {
   authErrorMessage,
   getMobileAuthConfig,
@@ -23,6 +23,10 @@ import {
 
 export default function SignInScreen() {
   const { user, logout } = useAuth();
+  const { returnTo: requestedReturnTo } = useLocalSearchParams<{
+    returnTo?: string | string[];
+  }>();
+  const returnTo = getSafePortalReturnTarget(requestedReturnTo);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -62,6 +66,14 @@ export default function SignInScreen() {
   }, [loadConfig]);
 
   const close = () => {
+    if (returnTo) {
+      router.replace(returnTo);
+      return;
+    }
+    if (requestedReturnTo !== undefined) {
+      router.replace("/(tabs)/settings");
+      return;
+    }
     if (router.canGoBack()) router.back();
     else router.replace("/(tabs)/settings");
   };
@@ -107,34 +119,15 @@ export default function SignInScreen() {
 
   const disabled = pending || configLoading || !config?.emailPasswordEnabled;
   return (
-    <SafeAreaView style={styles.screen}>
-      <KeyboardAvoidingView
-        style={styles.screen}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
-        <View style={styles.toolbar}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close sign-in"
-            disabled={pending}
-            onPress={close}
-            style={styles.iconButton}
-          >
-            <IconSymbol name="xmark" size={24} color="#B8BDC8" />
-          </Pressable>
-        </View>
-        <ScrollView
-          contentContainerStyle={styles.content}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="on-drag"
-        >
-          <View style={styles.form}>
-            <IconSymbol name="phone.fill" size={36} color="#00E5A8" />
-            <Text style={styles.brand}>Phone11</Text>
-            <Text style={styles.heading}>{user ? "Signed In" : "Sign In"}</Text>
+    <AuthScreen
+      closeLabel="Close sign-in"
+      closeDisabled={pending}
+      onClose={close}
+    >
+      <AuthBrand title={user ? "Signed in" : "Sign in"} />
             {user ? (
               <>
-                <Text style={styles.identity}>
+                <Text style={authStyles.identity}>
                   {user.email || user.name || "Phone11 account"}
                 </Text>
                 <Pressable
@@ -142,21 +135,25 @@ export default function SignInScreen() {
                   accessibilityState={{ disabled: pending, busy: pending }}
                   disabled={pending}
                   onPress={signOut}
-                  style={[styles.button, pending && styles.disabled]}
+                  style={[
+                    authStyles.primaryButton,
+                    authStyles.primaryButtonWithMargin,
+                    pending && authStyles.disabled,
+                  ]}
                 >
                   {pending ? (
-                    <ActivityIndicator color="#07140F" />
+                    <ActivityIndicator color="#FFFFFF" />
                   ) : (
-                    <Text style={styles.buttonText}>Sign Out</Text>
+                    <Text style={authStyles.primaryButtonText}>Sign out</Text>
                   )}
                 </Pressable>
               </>
             ) : (
               <>
-                <Text style={styles.label}>Email</Text>
+                <Text style={authStyles.label}>Email</Text>
                 <TextInput
                   accessibilityLabel="Email"
-                  style={styles.input}
+                  style={[authStyles.input, authStyles.inputWithMargin]}
                   value={email}
                   onChangeText={setEmail}
                   editable={!disabled}
@@ -168,15 +165,15 @@ export default function SignInScreen() {
                   returnKeyType="next"
                   onSubmitEditing={() => passwordInput.current?.focus()}
                   placeholder="you@company.com"
-                  placeholderTextColor="#8A929F"
-                  selectionColor="#00E5A8"
+                  placeholderTextColor="#94A3B8"
+                  selectionColor="#007AFF"
                 />
-                <Text style={styles.label}>Password</Text>
-                <View style={styles.passwordField}>
+                <Text style={authStyles.label}>Password</Text>
+                <View style={authStyles.passwordField}>
                   <TextInput
                     ref={passwordInput}
                     accessibilityLabel="Password"
-                    style={styles.passwordInput}
+                    style={authStyles.passwordInput}
                     value={password}
                     onChangeText={setPassword}
                     editable={!disabled}
@@ -189,7 +186,7 @@ export default function SignInScreen() {
                     onSubmitEditing={() => {
                       void submit();
                     }}
-                    selectionColor="#00E5A8"
+                    selectionColor="#007AFF"
                   />
                   <Pressable
                     accessibilityRole="button"
@@ -198,15 +195,30 @@ export default function SignInScreen() {
                     }
                     disabled={disabled}
                     onPress={() => setShowPassword((visible) => !visible)}
-                    style={styles.iconButton}
+                    style={authStyles.iconButton}
                   >
                     <IconSymbol
                       name={showPassword ? "eye.slash" : "eye"}
                       size={22}
-                      color="#B8BDC8"
+                      color="#64748B"
                     />
                   </Pressable>
                 </View>
+                {config?.passwordResetEnabled ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Forgot password"
+                    disabled={pending}
+                    onPress={() =>
+                      router.push(passwordResetRequestRoute(returnTo) as any)
+                    }
+                    style={authStyles.textLink}
+                  >
+                    <Text style={authStyles.textLinkLabel}>
+                      Forgot password?
+                    </Text>
+                  </Pressable>
+                ) : null}
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel="Sign In"
@@ -216,21 +228,31 @@ export default function SignInScreen() {
                   }}
                   disabled={disabled}
                   onPress={submit}
-                  style={[styles.button, disabled && styles.disabled]}
+                  style={[
+                    authStyles.primaryButton,
+                    authStyles.primaryButtonWithMargin,
+                    disabled && authStyles.disabled,
+                  ]}
                 >
                   {pending || configLoading ? (
-                    <ActivityIndicator color="#07140F" />
+                    <ActivityIndicator color="#FFFFFF" />
                   ) : (
-                    <Text style={styles.buttonText}>Sign In</Text>
+                    <Text style={authStyles.primaryButtonText}>Sign in</Text>
                   )}
                 </Pressable>
                 {configLoading && (
-                  <Text accessibilityLiveRegion="polite" style={styles.status}>
+                  <Text
+                    accessibilityLiveRegion="polite"
+                    style={authStyles.status}
+                  >
                     Checking sign-in availability...
                   </Text>
                 )}
                 {pending && (
-                  <Text accessibilityLiveRegion="polite" style={styles.status}>
+                  <Text
+                    accessibilityLiveRegion="polite"
+                    style={authStyles.status}
+                  >
                     Signing in...
                   </Text>
                 )}
@@ -238,7 +260,7 @@ export default function SignInScreen() {
                   (!config || !config.emailPasswordEnabled) && (
                     <>
                       {config && (
-                        <Text style={styles.status}>
+                        <Text style={authStyles.status}>
                           Email sign-in is currently unavailable. Contact your
                           Phone11 administrator.
                         </Text>
@@ -248,14 +270,14 @@ export default function SignInScreen() {
                         onPress={() => {
                           void loadConfig();
                         }}
-                        style={styles.retry}
+                        style={authStyles.retry}
                       >
                         <IconSymbol
                           name="arrow.clockwise"
                           size={18}
-                          color="#00E5A8"
+                          color="#0066CC"
                         />
-                        <Text style={styles.retryText}>Retry</Text>
+                        <Text style={authStyles.retryText}>Retry</Text>
                       </Pressable>
                     </>
                   )}
@@ -265,111 +287,11 @@ export default function SignInScreen() {
               <Text
                 accessibilityRole="alert"
                 accessibilityLiveRegion="polite"
-                style={styles.error}
+                style={authStyles.error}
               >
                 {error}
               </Text>
             )}
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+    </AuthScreen>
   );
 }
-
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#0D0F14" },
-  toolbar: { minHeight: 56, paddingHorizontal: 12, alignItems: "flex-end" },
-  content: {
-    flexGrow: 1,
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 40,
-  },
-  form: { width: "100%", maxWidth: 420, alignSelf: "center" },
-  brand: {
-    fontSize: 32,
-    fontWeight: "700",
-    color: "#F5F7FA",
-    marginTop: 16,
-    letterSpacing: 0,
-  },
-  heading: {
-    fontSize: 22,
-    fontWeight: "600",
-    color: "#F5F7FA",
-    marginTop: 8,
-    marginBottom: 32,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#D4D8E0",
-    marginBottom: 10,
-  },
-  input: {
-    minHeight: 54,
-    borderWidth: 1,
-    borderColor: "#454C59",
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    color: "#F5F7FA",
-    fontSize: 16,
-    marginBottom: 22,
-    backgroundColor: "#171B23",
-  },
-  passwordField: {
-    minHeight: 54,
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#454C59",
-    borderRadius: 8,
-    backgroundColor: "#171B23",
-  },
-  passwordInput: {
-    flex: 1,
-    minWidth: 0,
-    minHeight: 54,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    color: "#F5F7FA",
-    fontSize: 16,
-  },
-  iconButton: {
-    width: 48,
-    minHeight: 48,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  button: {
-    minHeight: 54,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    marginTop: 28,
-    borderRadius: 8,
-    backgroundColor: "#00E5A8",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  buttonText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#07140F",
-    textAlign: "center",
-  },
-  disabled: { opacity: 0.55 },
-  identity: { color: "#D4D8E0", fontSize: 16 },
-  status: { color: "#B8BDC8", fontSize: 14, lineHeight: 21, marginTop: 18 },
-  error: { color: "#FF9790", fontSize: 14, lineHeight: 21, marginTop: 18 },
-  retry: {
-    minHeight: 48,
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center",
-    alignSelf: "flex-start",
-    marginTop: 8,
-  },
-  retryText: { color: "#00E5A8", fontSize: 15, fontWeight: "600" },
-});

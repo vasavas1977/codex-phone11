@@ -1,7 +1,7 @@
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { router } from "expo-router";
 import { PortalShell, PortalState } from "@/components/portal/portal-shell";
-import { SIGN_IN_ROUTE } from "@/constants/oauth";
+import { portalSignInRoute } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
@@ -45,7 +45,7 @@ export default function PortalDidsScreen() {
           title="Sign in to view your numbers"
           detail="Assigned Phone11 numbers are available after you sign in."
           actionLabel="Sign in"
-          onAction={() => router.replace(SIGN_IN_ROUTE)}
+          onAction={() => router.replace(portalSignInRoute("/portal/dids"))}
         />
       ) : overviewQuery.isLoading ? (
         <View style={styles.loading}>

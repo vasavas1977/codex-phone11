@@ -177,6 +177,6 @@ describe("enterprise PBX admin screens", () => {
     expect(dashboard).toContain(
       "Only workspace owners and administrators can open this area.",
     );
-    expect(dashboard).toContain("router.replace(SIGN_IN_ROUTE)");
+    expect(dashboard).toContain('router.replace(portalSignInRoute("/admin"))');
   });
 });

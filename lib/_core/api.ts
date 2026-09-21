@@ -1,11 +1,17 @@
 import { Platform } from "react-native";
-import { getApiBaseUrl } from "@/constants/oauth";
+import {
+  getApiBaseUrl,
+  passwordResetRedirectUrl,
+  type PortalReturnTarget,
+} from "@/constants/oauth";
 import * as Auth from "./auth";
 
 export const API_TIMEOUT_MS = 15000;
 export type MobileAuthConfig = {
   authProvider: "phone11";
   emailPasswordEnabled: boolean;
+  passwordResetEnabled: boolean;
+  passwordResetAvailability: "disabled" | "pilot" | "general";
   registrationEnabled: false;
 };
 
@@ -31,6 +37,12 @@ export function authErrorMessage(error: unknown): string {
   return error instanceof ApiError
     ? error.message
     : "Phone11 could not complete sign-in. Please try again.";
+}
+
+export function passwordResetErrorMessage(error: unknown): string {
+  return error instanceof ApiError
+    ? error.message
+    : "Phone11 could not complete password recovery. Please try again.";
 }
 
 async function withTimeout<T>(
@@ -129,6 +141,14 @@ export async function getMobileAuthConfig(): Promise<MobileAuthConfig> {
     !data ||
     data.authProvider !== "phone11" ||
     typeof data.emailPasswordEnabled !== "boolean" ||
+    typeof data.passwordResetEnabled !== "boolean" ||
+    !["disabled", "pilot", "general"].includes(
+      data.passwordResetAvailability,
+    ) ||
+    (data.passwordResetEnabled &&
+      data.passwordResetAvailability === "disabled") ||
+    (!data.passwordResetEnabled &&
+      data.passwordResetAvailability !== "disabled") ||
     data.registrationEnabled !== false
   ) {
     throw new ApiError(
@@ -138,6 +158,8 @@ export async function getMobileAuthConfig(): Promise<MobileAuthConfig> {
   return {
     authProvider: "phone11",
     emailPasswordEnabled: data.emailPasswordEnabled,
+    passwordResetEnabled: data.passwordResetEnabled,
+    passwordResetAvailability: data.passwordResetAvailability,
     registrationEnabled: false,
   };
 }
@@ -287,6 +309,59 @@ export async function signInWithEmail(
   } finally {
     authMutationPending = false;
     Auth.updateAuthState({ loading: false });
+  }
+}
+
+export async function requestPasswordReset(
+  email: string,
+  returnTo: PortalReturnTarget | null,
+): Promise<void> {
+  if (!email.trim()) throw new ApiError("Enter your email address.");
+  await requestJson<unknown>(
+    "/api/auth/request-password-reset",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        email: email.trim(),
+        redirectTo: passwordResetRedirectUrl(returnTo),
+      }),
+    },
+    false,
+  );
+}
+
+export async function resetPassword(
+  token: string,
+  newPassword: string,
+): Promise<void> {
+  if (!token) {
+    throw new ApiError(
+      "This password reset link is invalid or has expired. Request a new link and try again.",
+    );
+  }
+  if (newPassword.length < 12) {
+    throw new ApiError("Use a password with at least 12 characters.");
+  }
+  try {
+    await requestJson<unknown>(
+      "/api/auth/reset-password",
+      {
+        method: "POST",
+        body: JSON.stringify({ token, newPassword }),
+      },
+      false,
+    );
+  } catch (error) {
+    if (
+      error instanceof ApiError &&
+      (error.status === 400 || error.status === 401 || error.status === 403)
+    ) {
+      throw new ApiError(
+        "This password reset link is invalid or has expired. Request a new link and try again.",
+        error.status,
+      );
+    }
+    throw error;
   }
 }
 

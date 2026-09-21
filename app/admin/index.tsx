@@ -20,7 +20,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
-import { SIGN_IN_ROUTE } from "@/constants/oauth";
+import { portalSignInRoute } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
@@ -169,7 +169,7 @@ export default function AdminDashboard() {
         title="Sign in to use workspace administration"
         detail="Workspace administration is available after you sign in with an owner or administrator account."
         actionLabel="Sign in"
-        onAction={() => router.replace(SIGN_IN_ROUTE)}
+        onAction={() => router.replace(portalSignInRoute("/admin"))}
       />
     );
   }

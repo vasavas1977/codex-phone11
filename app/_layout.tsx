@@ -108,6 +108,8 @@ function RootNavigator() {
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="auth/sign-in" />
+              <Stack.Screen name="auth/forgot-password" />
+              <Stack.Screen name="auth/reset-password" />
               <Stack.Screen name="oauth/callback" />
             </Stack>
             <CurrentCallBanner />

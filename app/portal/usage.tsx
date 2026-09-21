@@ -8,7 +8,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import { PortalShell, PortalState } from "@/components/portal/portal-shell";
-import { SIGN_IN_ROUTE } from "@/constants/oauth";
+import { portalSignInRoute } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
@@ -49,7 +49,7 @@ export default function UsageScreen() {
           title="Sign in to view call activity"
           detail="Your call activity is available after you sign in."
           actionLabel="Sign in"
-          onAction={() => router.replace(SIGN_IN_ROUTE)}
+          onAction={() => router.replace(portalSignInRoute("/portal/usage"))}
         />
       ) : (
         <>

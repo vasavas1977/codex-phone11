@@ -4,6 +4,13 @@ import { URL } from "node:url";
 import { createElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import ts from "typescript";
+import {
+  getSafePortalReturnTarget,
+  passwordResetPathWithoutToken,
+  passwordResetRequestRoute,
+  portalSignInRoute,
+  resetTokenFromFragment,
+} from "../constants/oauth";
 
 const require = createRequire(import.meta.url);
 const { renderToStaticMarkup } = require("react-dom/server") as {
@@ -61,6 +68,7 @@ vi.mock("react-native-safe-area-context", async () => ({
 vi.mock("@/components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
 vi.mock("expo-router", () => ({
   router: { canGoBack: vi.fn(() => false), back: vi.fn(), replace: vi.fn() },
+  useLocalSearchParams: vi.fn(() => ({})),
   Redirect: ({ href }: { href: string }) =>
     createElement("a", { href }, "Sign In"),
 }));
@@ -69,7 +77,10 @@ vi.mock("@/hooks/use-auth", () => ({
 }));
 vi.mock("@/lib/_core/api", () => ({
   authErrorMessage: () => "Try again",
+  passwordResetErrorMessage: () => "Try again",
   getMobileAuthConfig: vi.fn(),
+  requestPasswordReset: vi.fn(),
+  resetPassword: vi.fn(),
   signInWithEmail: vi.fn(),
 }));
 
@@ -86,7 +97,7 @@ describe("Phone11 sign-in surface", () => {
     expect(html).toContain('aria-label="Show password"');
     expect(html).toContain('role="progressbar"');
     expect(html).toContain("Checking sign-in availability");
-    expect(html).not.toMatch(/sign up|reset password|forgot password|manus/i);
+    expect(html).not.toMatch(/sign up|manus/i);
   });
 
   it("renders legacy callback links only as navigation to Phone11 sign-in", async () => {
@@ -100,6 +111,104 @@ describe("Phone11 sign-in surface", () => {
     );
   });
 
+  it("preserves only supported portal destinations through sign-in", () => {
+    expect(portalSignInRoute("/portal")).toEqual({
+      pathname: "/auth/sign-in",
+      params: { returnTo: "/portal" },
+    });
+    expect(portalSignInRoute("/admin")).toEqual({
+      pathname: "/auth/sign-in",
+      params: { returnTo: "/admin" },
+    });
+    expect(getSafePortalReturnTarget("/portal")).toBe("/portal");
+    expect(getSafePortalReturnTarget("/portal/dids")).toBe("/portal/dids");
+    expect(getSafePortalReturnTarget("/portal/usage")).toBe("/portal/usage");
+    expect(getSafePortalReturnTarget("/admin")).toBe("/admin");
+  });
+
+  it("carries only an allowlisted destination through password recovery", () => {
+    expect(passwordResetRequestRoute("/admin")).toEqual({
+      pathname: "/auth/forgot-password",
+      params: { returnTo: "/admin" },
+    });
+    expect(passwordResetPathWithoutToken("/portal/usage")).toBe(
+      "/auth/reset-password?returnTo=%2Fportal%2Fusage",
+    );
+    expect(resetTokenFromFragment("#token=opaque-reset-token")).toBe(
+      "opaque-reset-token",
+    );
+    expect(resetTokenFromFragment("?token=never-read-from-query")).toBeNull();
+    expect(resetTokenFromFragment("#returnTo=%2Fportal")).toBeNull();
+  });
+
+  it("rejects URL-controlled return targets outside the portal allowlist", () => {
+    for (const target of [
+      "/(tabs)/settings",
+      "/admin/users",
+      "/portal/../admin",
+      "//evil.example/portal",
+      "https://evil.example/portal",
+      "javascript:alert(1)",
+      ["/portal", "/admin"],
+      undefined,
+    ]) {
+      expect(getSafePortalReturnTarget(target)).toBeNull();
+    }
+  });
+
+  it("uses a validated portal return target for successful sign-in and cancellation", () => {
+    const source = read("app/auth/sign-in.tsx");
+    expect(source).toContain("useLocalSearchParams");
+    expect(source).toContain("getSafePortalReturnTarget(requestedReturnTo)");
+    expect(source).toContain("router.replace(returnTo)");
+    expect(source).toContain("if (requestedReturnTo !== undefined)");
+    expect(source).toContain('router.replace("/(tabs)/settings")');
+  });
+
+  it("keeps recovery generic and removes reset tokens from browser history", async () => {
+    const { default: ForgotPassword } = await import(
+      "../app/auth/forgot-password"
+    );
+    expect(renderToStaticMarkup(createElement(ForgotPassword))).toContain(
+      "Reset your password",
+    );
+    const forgotSource = read("app/auth/forgot-password.tsx");
+    expect(forgotSource).toContain("requestPasswordReset(email, returnTo)");
+    expect(forgotSource).toContain(
+      "If an account uses that email, a reset link will arrive shortly.",
+    );
+
+    const resetSource = read("app/auth/reset-password.tsx");
+    expect(resetSource).toContain("resetTokenFromFragment(window.location.hash)");
+    expect(resetSource).toContain("window.history.replaceState");
+    expect(resetSource).toContain("passwordResetPathWithoutToken(returnTo)");
+    expect(resetSource).toContain("Confirm new password");
+    expect(resetSource).not.toContain("window.location.searchParams.get(\"token\")");
+  });
+
+  it("shows the recovery link only when the server advertises it", () => {
+    const signIn = read("app/auth/sign-in.tsx");
+    const forgot = read("app/auth/forgot-password.tsx");
+    expect(signIn).toContain("config?.passwordResetEnabled");
+    expect(forgot).toContain("!config?.passwordResetEnabled");
+    expect(forgot).toContain("Checking password recovery availability...");
+  });
+
+  it("passes each signed-out portal entry to the sign-in allowlist", () => {
+    expect(read("app/portal/index.tsx")).toContain(
+      'portalSignInRoute("/portal")',
+    );
+    expect(read("app/portal/dids.tsx")).toContain(
+      'portalSignInRoute("/portal/dids")',
+    );
+    expect(read("app/portal/usage.tsx")).toContain(
+      'portalSignInRoute("/portal/usage")',
+    );
+    expect(read("app/admin/index.tsx")).toContain(
+      'portalSignInRoute("/admin")',
+    );
+  });
+
   it("contains no external OAuth redirects, browser bearer persistence, or auth logging in the client", () => {
     for (const path of [
       "constants/oauth.ts",
@@ -107,6 +216,8 @@ describe("Phone11 sign-in surface", () => {
       "lib/_core/auth.ts",
       "hooks/use-auth.ts",
       "app/auth/sign-in.tsx",
+      "app/auth/forgot-password.tsx",
+      "app/auth/reset-password.tsx",
       "app/oauth/callback.tsx",
       "app/_layout.tsx",
     ]) {
@@ -140,6 +251,12 @@ describe("Phone11 sign-in surface", () => {
       "app/_layout.tsx",
       "app/(tabs)/settings.tsx",
       "app/settings/sip.tsx",
+      "app/portal/index.tsx",
+      "app/portal/dids.tsx",
+      "app/portal/usage.tsx",
+      "app/admin/index.tsx",
+      "constants/oauth.ts",
+      "components/auth/auth-screen.tsx",
       "hooks/use-auth.ts",
     ]) {
       const result = ts.transpileModule(read(path), {
