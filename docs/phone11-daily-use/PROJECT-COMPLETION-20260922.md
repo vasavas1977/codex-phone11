@@ -7,8 +7,8 @@ item is not physical-handset, provider, or customer acceptance.
 
 | Area | Current evidence | Still required |
 | --- | --- | --- |
-| Password recovery | Minimal compatible frontend `076ddac` and serialized recovery backend `bbd14cf` are live. One owner email was provider-confirmed Delivered with a direct fragment-token link; unknown-address and invalid-token checks passed. | Owner completes new password and confirms sign-in; real-account reuse/session revocation acceptance remains separate. |
-| Web portal and management API | Static portal and workerless API candidate are live; unavailable capabilities are shown truthfully. | Authenticated browser tests for an ordinary user and a second tenant; commission only the approved optional management schemas. |
+| Password recovery | Static portal `1de803b` and serialized recovery backend `bbd14cf` are live. The post-activation browser showed enabled sign-in and Forgot password controls; no credential or reset submission occurred. Historical provider-delivery evidence remains recorded separately. | Owner completes a new password and confirms sign-in; real-account reuse/session-revocation acceptance remains separate. |
+| Web portal and management API | Static portal `1de803b` and the tenant-settings candidate at port 3005 are live. The only newly commissioned workspace setting is `businessHoursTimezone`; photos and the other optional management domains remain unavailable. | Authenticated owner/admin save and readback for timezone, ordinary-user and second-tenant browser checks, and deliberately approved future schema slices. |
 | Profile photos and Chat Meet affordance | Tenant-bound avatar/UI and the Meet entry point are implemented and source-reviewed. Meet opens the admitted meeting flow and does not invite a recipient automatically. | Deploy photo metadata/deletion schema, HTTP routes, and retention worker; test upload, read, removal, and membership revocation. |
 | Connect11 plain video | Admission schema, pilot records, and protected provider-join probes are recorded. The LiveKit `WeakRef` Room-constructor cause is fixed in Build 80, which passed package verification. | Install Build 80 in place and pass the two-iPhone media/lifecycle matrix. |
 | Presence and read receipts | The presence/read-receipt delta and parallel API candidate activation are recorded. | Real two-phone acceptance for read timestamps/details, typing cleanup, and foreground/away/on-call presence. |
@@ -30,7 +30,7 @@ item is not physical-handset, provider, or customer acceptance.
 
 6. [ ] **Commission private profile photos.** Deploy the matching API plus photo metadata/deletion schema and retention worker after gate 2. Prove two-workspace isolation, revocation on the next read, bounded upload validation, removal, and cleanup recovery.
 
-7. [ ] **Complete management capabilities deliberately.** The live database lacks tenant settings, numbers, sites, ring groups, queues, IVR, and business-hours tables. Prioritize each approved schema/API slice; do not replace truthful unavailable states with simulated success. Test administrator, ordinary-user, denied cross-tenant, and extension-reassignment privacy behavior.
+7. [ ] **Complete management capabilities deliberately.** The live tenant-settings slice exposes only `businessHoursTimezone`; numbers, sites, ring groups, queues, IVR, and the remaining business-hours management surfaces are still unavailable. Prioritize each approved schema/API slice; do not replace truthful unavailable states with simulated success. Test administrator, ordinary-user, denied cross-tenant, and extension-reassignment privacy behavior.
 
 ## Maintenance-fence implementation contract
 
@@ -105,10 +105,10 @@ boundary, so source guard work alone cannot establish production readiness.
 
 ## Active-scope protection
 
-Password recovery is deployed and recorded in commit `a459926`; tenant-settings
-work remains a separate reviewed slice. Keep the fence, meeting, photo, and
-management releases distinct, with source, deployment, and acceptance evidence
-for each. Do not include the unrelated local `pnpm-workspace.yaml`.
+Password recovery is deployed and recorded in commit `a459926`; the tenant-settings
+candidate is a separate reviewed and activated slice. Keep the fence, meeting,
+photo, and management releases distinct, with source, deployment, and acceptance
+evidence for each. Do not include the unrelated local `pnpm-workspace.yaml`.
 
 ## Completion definition
 
@@ -124,6 +124,7 @@ acceptance as their own evidence streams throughout.
 - `READ-RECEIPTS-LIVE-ACCEPTANCE-20260920.md`
 - `READ-RECEIPTS-PARALLEL-API-ACTIVATION-20260920.md`
 - `WEB-MANAGEMENT-LIVE-20260921.md`
+- `TENANT-SETTINGS-CANDIDATE-3005-20260922.md`
 - `WEB-MANAGEMENT-PHOTO-READINESS-20260921.md`
 - `PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md`
 - `PROFILE-DND-ROLLOUT-OPERATOR-20260920.md`
@@ -142,7 +143,7 @@ The exact SIP configuration in `9341268` passed an isolated `kamailio -c` parser
 
 ## Management database target
 
-A read-only catalog and Nginx route check established that public `/api/trpc` and `/api/trpc/` use VoIP port 3003 (`cp11-api-candidate-next`, image prefix `2e7225e80ec7`). Its `phone11ai/public` database has no `tenant_settings` table and has the required single-column `tenants(id)` primary key. The older edge-host application has a different, incompatible 22-column table despite the same database/schema names; do not apply the new migration there. No production schema or customer rows were changed by discovery. The minimal settings migration and API slice passed independent source review and were committed as `9804c2f`; 72 focused tests against isolated PostgreSQL and TypeScript passed. Production still requires the target-bound backup, restore rehearsal, migration receipt, candidate release and authenticated browser acceptance.
+A read-only catalog and Nginx route check established the target VoIP `phone11ai/public` database and its required single-column `tenants(id)` primary key; the older edge-host application has a different, incompatible 22-column table despite the same database/schema names. The minimal settings migration and API slice passed independent source review and were committed as `9804c2f`; 72 focused tests against isolated PostgreSQL and TypeScript passed. The separately controlled target backup, restore rehearsal, migration, and candidate activation have now completed. Public tRPC routes use the healthy `cp11-api-candidate-settings` candidate on port 3005; the 3000 baseline, 3002 retained candidate, 3003 predecessor, and 3004 recovery candidate remain healthy. This does not establish an authenticated timezone save, cross-tenant browser acceptance, or delivery of numbers, sites, ring groups, queues, IVR, photos, or other optional management schemas.
 
 ## Connect11 maintenance coordination
 
@@ -174,9 +175,35 @@ The settings candidate rollout's corrected fixed 3003-to-3005 topology passed
 independent source review and is committed as `15d90f9` (21 focused tests reported).
 The tenant-settings migration operator's Sol High correction passed 13 isolated
 PostgreSQL 16.13 checks, passed independent source re-review, and is committed as
-`fe32ad3`. Its production backup,
-restore, mutation receipt, image deployment and authenticated acceptance remain
-separate steps.
+`fe32ad3`. Its production backup, restore rehearsal, mutation receipt, and image
+deployment are recorded separately; authenticated timezone write/readback remains
+an owner acceptance step.
+
+## Live settings candidate and static portal — 22 September 2026
+
+The settings candidate activation passed with public tRPC routed to port 3005 and
+the baseline unchanged. Its protected manifest SHA-256 is
+`73b1d0e9a3aabf7b4dc38aa177294fa399a67da35fa3dbab5f266b108a078bd2`;
+the separate v2 receipt is `2119c72773f4086882afcb4f72b1a08afa5fa0f5ad42258e656b31fba245fe35`.
+The candidate image is `sha256:2669c5032ebda82381c2e1c947cbd804132457355bb05931f1e921d064f1c8a9`,
+source `9804c2f09f99453747e0bb54e23d3b6149f5b5cb`, bundle
+`20e717154637803d1205498c994ebcb22028fdc4ec71095fcc21737507501121`, and
+lock `24a72aa60f0b43fe3afdad41f2e0f0f348f75ac065172627913fe72d43f2c801`.
+All five pinned services were read back healthy with their loopback bindings.
+
+The edge static activation passed for source
+`1de803b476f35659a45af77ba4b02a7a7d525f66`; its protected manifest is
+`6a38dbd3b28e30af229d2721812ef44b2036d8e0c7299cb4a8432c65a6dfef79` and its
+managed receipt is `6fa547cfca71abeab64b34eb070903c65ec2242bf8e77c1ae8ce48d33450675e`.
+The sealed export manifest, release marker, and entry bundle read back as
+`a7e918e791abdea2a008b5ac9b5e6a766a0cddd25937219d852dd142f21d3aa5`,
+`e35b46d49ba675dc33e6e4563b6e3599d6bd4c0b58768d1aa048fbdde6c798e3`, and
+`c8fc050f716e8fd3f4de5a665c1e9b7ec32bbe3466c69ad7174cac0ed740c6c8`.
+The non-mutating static rollback dry run passed and binds the prior sealed
+`076ddac` release. Browser checks after activation reached enabled Sign in and
+Forgot password controls, the enabled Forgot-password email form, and the
+signed-out workspace-settings owner/admin gate. No credentials, reset-email
+submission, authenticated setting change, or browser write/readback occurred.
 
 The uncommitted edge/aggregate maintenance proposal is **REQUEST_CHANGES**, not
 ready to deploy: edge release publication/recovery must remain durable through

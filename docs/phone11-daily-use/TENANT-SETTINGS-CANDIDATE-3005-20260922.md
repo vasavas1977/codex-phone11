@@ -1,6 +1,9 @@
 # Phone11 tenant-settings candidate at 3005
 
-This is a source-only operator extension. It does not authorize an image build, database migration, Nginx change, container start, restart, routing change, credential use, or release of the tenant-settings feature.
+The reviewed tenant-settings candidate is live at port 3005. This record binds
+that bounded release; it does not establish an authenticated timezone write,
+cross-tenant acceptance, provider delivery, handset behavior, or delivery of
+other optional management domains.
 
 ## Fixed topology
 
@@ -18,26 +21,37 @@ The v2 target service is `candidate_settings` under Compose project `phone11-api
 
 Rollback evidence is intentionally separate from v1: v2 writes only under `/var/lib/phone11-candidate-bluegreen-settings`. Its receipt pins the v2 schema and `settings-3003-to-3005` topology, so a legacy v1 receipt cannot be reused.
 
-## Later operator sequence
+## Applied release evidence — 22 September 2026
 
-After an independently reviewed exact source head and a locally verified candidate image are available, an authorized host operator may create a new protected manifest with placeholders replaced by the reviewed values:
+The protected v2 manifest SHA-256 is
+`73b1d0e9a3aabf7b4dc38aa177294fa399a67da35fa3dbab5f266b108a078bd2`.
+Activation passed with tRPC routed to the new settings candidate at port 3005;
+the baseline remained unchanged and photos remained unavailable. Its isolated
+rollback receipt at `/var/lib/phone11-candidate-bluegreen-settings/receipt.json`
+has SHA-256 `2119c72773f4086882afcb4f72b1a08afa5fa0f5ad42258e656b31fba245fe35`
+and binds topology `settings-3003-to-3005`, target container
+`cp11-api-candidate-settings`, target build `settings-9804c2f`, and separate
+pre-route/active Nginx bytes.
 
-```sh
-python3 phone11-candidate-bluegreen.py --inventory --settings-topology \
-  --output /root/phone11-candidate-settings-9804c2f.json \
-  --current-compose-file /root/ACTIVE_3003_COMPOSE.json \
-  --probes-file /root/EXISTING_PROBES.json \
-  --nginx-site /etc/nginx/sites-enabled/phone11ai \
-  --release-image sha256:REVIEWED_IMAGE_DIGEST \
-  --release-build settings-9804c2f \
-  --release-source-sha 9804c2f09f99453747e0bb54e23d3b6149f5b5cb \
-  --tenant-id 1 --denied-tenant-id 2147483647
-```
+The live settings image is
+`sha256:2669c5032ebda82381c2e1c947cbd804132457355bb05931f1e921d064f1c8a9`,
+with source `9804c2f09f99453747e0bb54e23d3b6149f5b5cb`, bundle SHA-256
+`20e717154637803d1205498c994ebcb22028fdc4ec71095fcc21737507501121`, and
+lock SHA-256 `24a72aa60f0b43fe3afdad41f2e0f0f348f75ac065172627913fe72d43f2c801`.
+Fresh readback found the 3000 baseline, retained 3002 candidate, prior 3003
+candidate, recovery 3004 candidate, and settings 3005 candidate healthy on their
+expected loopback bindings. The active Nginx-site SHA-256 is
+`5ca6f02888887cc4d0f0719bffba0a74187d55abc008d6b65c272fe2ab3cd8db`; the
+Nginx stdout dump SHA-256 is
+`2c85756c25c5fb97b788d81c91a6c98c462db2a2a76c6650ad7f237ab9603c71`.
 
-`ACTIVE_3003_COMPOSE.json` must be a protected Compose document that renders exactly one service whose `container_name` is `cp11-api-candidate-next` on 3003 with the currently pinned runtime image and environment. The old 3002 Compose input cannot stand in for it. Inventory is read-only. `--prepare` uses the v2 manifest and must return ready before any target is created. Before it can change Nginx, `--activate` starts only the fixed 3005 target and requires its read-only `pbx.tenant.get` response to report `settingsAvailable: true`, `supportedSettings: ["businessHoursTimezone"]`, and a user role. It does not require a saved `business_hours_timezone` value. The legacy v1 probe retains `settingsAvailable: false`. The v2 operator then may splice only the exact and prefix `/api/trpc` location bytes from 3003 to 3005. It reconstructs the complete target layout and proves the generated recovery routes and shared marker remain byte-identical. It rechecks the 3000, 3002, 3003, and 3004 runtime pins before target creation, after target readiness, and after routing.
-
-The migration remains an operator-controlled next step. The application never applies `tenant-settings-migration.sql`; a source package, image, v2 inventory, and prepare result are not migration, deployment, provider, or handset acceptance evidence.
+The activation's read-only capability probe required
+`settingsAvailable: true`, `supportedSettings` containing
+`businessHoursTimezone`, and a role. It did not require or create a saved
+timezone. The post-activation browser check covered only the signed-out
+workspace-settings owner/admin gate; no authenticated setting write or readback
+was performed.
 
 ## Source validation
 
-The focused Python suite preserves the eleven v1 checks and includes fifteen v2 checks for fixed topology admission, 3003-to-3005 cloning, preservation of all four existing runtime slots, 3005 absence, v2 inventory selection/sealing, recovery-operator-generated route order, competing prefix/nested/regex and fifth-recovery-route rejection, comment/lookalike handling, exact recovery-byte preservation during activation, receipt separation, and the migrated schema-capability probe before any route change. An independent security review of the exact final source head is required before any production operation.
+The focused Python suite preserves the eleven v1 checks and includes fifteen v2 checks for fixed topology admission, 3003-to-3005 cloning, preservation of all four existing runtime slots, 3005 absence, v2 inventory selection/sealing, recovery-operator-generated route order, competing prefix/nested/regex and fifth-recovery-route rejection, comment/lookalike handling, exact recovery-byte preservation during activation, receipt separation, and the migrated schema-capability probe before any route change. The exact final operator delta received independent source-only approval before this production operation.
