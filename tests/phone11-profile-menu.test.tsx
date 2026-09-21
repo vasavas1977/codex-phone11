@@ -18,6 +18,17 @@ vi.mock("react-native", () => ({
   View: ({ children, style: _style, accessibilityLabel: _label, ...props }: any) => createElement("div", props, children),
 }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: ({ name }: { name: string }) => createElement("i", null, name) }));
+vi.mock("expo-image", () => {
+  const Image = (props: any) => createElement("img", props);
+  Object.assign(Image, { clearMemoryCache: vi.fn(async () => true), clearDiskCache: vi.fn(async () => true) });
+  return { Image };
+});
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: null, loading: false }),
+  getSessionToken: vi.fn(async () => null),
+  addAuthChangeListener: () => () => {},
+}));
+vi.mock("../constants/oauth", () => ({ getApiBaseUrl: () => "" }));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({ background: "#fff", surface: "#fafafa", border: "#ddd", foreground: "#111", muted: "#666", primary: "#07c", success: "#080" }),
 }));

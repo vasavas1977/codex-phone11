@@ -44,6 +44,13 @@ import { usePresencePolling } from "@/lib/chat/presence-store";
 import { useChatTyping } from "@/lib/chat/typing";
 import { TypingIndicator } from "@/components/chat/typing-indicator";
 import { ChatPeerCall } from "@/components/chat/peer-call";
+import { ChatMeetingAction } from "@/components/chat/meeting-action";
+import {
+  ProfileAvatar,
+  useProfilePhotoCacheScope,
+} from "@/components/profile/profile-avatar";
+import { useDirectory } from "@/hooks/use-directory";
+import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
 import {
   ChatAssistantSheet,
   type ChatAssistantMode,
@@ -75,15 +82,6 @@ function sameReceiptScope(left: ReceiptScope | null, right: ReceiptScope | null)
     left.roomId === right.roomId && left.threadRootId === right.threadRootId;
 }
 
-function initials(name?: string) {
-  return (name || "?")
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part[0])
-    .join("")
-    .toUpperCase();
-}
 function dayLabel(timestamp: number) {
   const date = new Date(timestamp);
   return date.toDateString() === new Date().toDateString()
@@ -246,6 +244,25 @@ export default function ChatRoomScreen() {
     channel?.kind === "direct"
       ? channel.memberIds.find((memberId) => memberId !== user?.id)
       : undefined;
+  const directory = useDirectory(
+    chat.workspace?.id,
+    Boolean(ownsWorkspace && channel?.kind === "direct" && !threadOpen),
+  );
+  const directPeer = directPeerId
+    ? directory.people.find((person) => person.id === directPeerId)
+    : undefined;
+  const directPeerPhotoUrl =
+    directPeer?.photoUrl ??
+    messages.find((message) => message.senderId === directPeerId)
+      ?.senderPhotoUrl ??
+    null;
+  const ownProfile = useWorkspaceProfile(
+    user,
+    ownsWorkspace ? chat.workspace?.id : undefined,
+  ).profile;
+  useProfilePhotoCacheScope(
+    ownsWorkspace ? chat.workspace?.id : undefined,
+  );
   const memberContext = threadOpen
     ? "Original message and replies"
     : channel
@@ -1325,22 +1342,15 @@ export default function ChatRoomScreen() {
                 />
               </Pressable>
               {!threadOpen && (
-                <View
-                  style={[
-                    styles.avatar,
-                    { backgroundColor: colors.primary + "18" },
-                  ]}
-                >
-                  <Text
-                    style={{
-                      color: colors.primary,
-                      fontWeight: "700",
-                      fontSize: 12,
-                    }}
-                  >
-                    {initials(channel?.name)}
-                  </Text>
-                </View>
+                <ProfileAvatar
+                  name={directPeer?.name ?? channel?.name}
+                  photoUrl={directPeerPhotoUrl}
+                  tenantId={chat.workspace?.id}
+                  userId={directPeerId}
+                  size={34}
+                  rounded
+                  accessibilityLabel={`${directPeer?.name ?? channel?.name ?? "Conversation"} profile photo`}
+                />
               )}
               <Pressable accessibilityRole="button" accessibilityLabel="Open conversation details" disabled={threadOpen || !canInteract} onPress={() => void openDetails()} style={styles.headerTitleBlock}>
                 <Text
@@ -1355,9 +1365,15 @@ export default function ChatRoomScreen() {
                 >{memberContext}</Text>}
               </Pressable>
               {!threadOpen && directPeerId && chat.workspace && (
+                <ChatMeetingAction />
+              )}
+              {!threadOpen && directPeerId && chat.workspace && (
                 <ChatPeerCall
                   peerId={directPeerId}
                   tenantId={chat.workspace.id}
+                  person={directPeer}
+                  directoryOwner={directory.owner}
+                  sharedDirectory
                 />
               )}
               {aiAvailable && (
@@ -1599,6 +1615,10 @@ export default function ChatRoomScreen() {
                           onRetry={() => void retryThreadMessage(item)}
                           receiptLabel={receiptCounts[item.id] > 0 ? (channel?.kind === "direct" ? "Read" : `Read by ${receiptCounts[item.id]}`) : undefined}
                           onReadReceipts={() => void openReadReceipts(item)}
+                          ownName={user.name}
+                          ownPhotoUrl={ownProfile?.photoUrl}
+                          ownPhotoVersion={ownProfile?.photoVersion}
+                          tenantId={chat.workspace?.id}
                         />
                       </View>
                     );
@@ -2849,14 +2869,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingLeft: 8,
   },
-  avatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  avatarText: { color: "white", fontSize: 12, fontWeight: "800" },
   headerTitleBlock: { flex: 1, minWidth: 0, justifyContent: "center", gap: 1 },
   title: {
     minWidth: 0,

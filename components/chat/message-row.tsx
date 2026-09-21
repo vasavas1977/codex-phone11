@@ -4,6 +4,7 @@ import { ChatLinkPreview } from "./link-preview";
 import { useColors } from "@/hooks/use-colors";
 import { ChatAttachmentCard, LinkedChatText } from "./message-content";
 import type { ChatMessage } from "@/lib/chat/types";
+import { ProfileAvatar } from "@/components/profile/profile-avatar";
 export function ChatMessageRow({
   message,
   own,
@@ -15,6 +16,10 @@ export function ChatMessageRow({
   onRetry,
   receiptLabel,
   onReadReceipts,
+  ownName,
+  ownPhotoUrl,
+  ownPhotoVersion,
+  tenantId,
 }: {
   message: ChatMessage;
   own: boolean;
@@ -26,8 +31,14 @@ export function ChatMessageRow({
   onRetry: () => void;
   receiptLabel?: string;
   onReadReceipts?: () => void;
+  /** Never reduce the owner's avatar to a generic “Y” when profile identity is known. */
+  ownName?: string | null;
+  ownPhotoUrl?: string | null;
+  ownPhotoVersion?: string | null;
+  tenantId?: number | null;
 }) {
   const c = useColors();
+  const senderName = own ? ownName?.trim() || message.senderName : message.senderName;
   const time = new Date(message.timestamp).toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
@@ -42,30 +53,17 @@ export function ChatMessageRow({
         marginBottom: 3,
       }}
     >
-      <View style={{ width: 34, paddingTop: 22 }}>
-        {!grouped && (
-          <View
-            style={{
-              height: 34,
-              width: 34,
-              borderRadius: 12,
-              backgroundColor: c.border,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Text
-              style={{ color: c.foreground, fontSize: 12, fontWeight: "600" }}
-            >
-              {(own ? "You" : message.senderName)
-                .split(/\s+/)
-                .slice(0, 2)
-                .map((s) => s[0])
-                .join("")
-                .toUpperCase()}
-            </Text>
-          </View>
-        )}
+      <View style={{ width: 34, paddingTop: grouped ? 2 : 22 }}>
+        <ProfileAvatar
+          name={senderName}
+          photoUrl={own ? ownPhotoUrl : message.senderPhotoUrl}
+          photoVersion={own ? ownPhotoVersion : undefined}
+          tenantId={tenantId}
+          userId={message.senderId}
+          size={34}
+          rounded
+          accessibilityLabel={`${senderName} profile photo`}
+        />
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         {!grouped && (
@@ -77,7 +75,7 @@ export function ChatMessageRow({
               marginBottom: 4,
             }}
           >
-            {own ? "You" : message.senderName} · {time}
+            {own ? "You" : senderName} · {time}
             {message.editedAt ? " · Edited" : ""}
           </Text>
         )}
@@ -88,7 +86,7 @@ export function ChatMessageRow({
         )}
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`Message from ${message.senderName}`}
+          accessibilityLabel={`Message from ${senderName}`}
           accessibilityHint="Long press for message actions"
           accessibilityActions={[
             { name: "activate", label: "Open message actions" },

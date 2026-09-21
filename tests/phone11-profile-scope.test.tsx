@@ -15,7 +15,7 @@ const m = vi.hoisted(() => ({
   frame: { values: [] as any[], index: 0 },
 }));
 vi.mock("react", async () => {
-  const actual = await vi.importActual<typeof import("react")>("react");
+  const actual: any = await vi.importActual("react");
   return { ...actual,
     useState: (initial: any) => { const frame = m.frame, index = frame.index++; if (index >= frame.values.length) frame.values[index] = initial; return [frame.values[index], (value: any) => { frame.values[index] = typeof value === "function" ? value(frame.values[index]) : value; }]; },
     useRef: (initial: any) => { const frame = m.frame, index = frame.index++; if (index >= frame.values.length) frame.values[index] = { current: initial }; return frame.values[index]; },
@@ -23,14 +23,17 @@ vi.mock("react", async () => {
   };
 });
 vi.mock("../lib/trpc", () => ({ trpc: { profile: {
+  photoCapability: { useQuery: (_input: any, _options: any) => ({ data: { available: false } }) },
   self: { useQuery: (input: any, options: any) => { m.queryInputs.push(input); m.queryOptions.push(options); return m.query; } },
   update: { useMutation: () => m.mutation },
 } } }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.owner, loading: false }) }));
+vi.mock("react-native", () => ({ Platform: { OS: "web" } }));
 vi.mock("../lib/chat/store", () => ({ useChatStore: Object.assign(() => m.chat, { getState: () => m.chat }) }));
 vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: m.owner }) }));
 vi.mock("../lib/sip/account-store", () => ({ useSipAccountStore: (select: any) => select({ account: m.sip }) }));
 vi.mock("../components/profile/account-hub", () => ({ AccountHub: (props: any) => { m.hub = props; return createElement("div", null, props.workspaceName); } }));
+vi.mock("../components/profile/profile-avatar", () => ({ useProfilePhotoCacheScope: vi.fn() }));
 vi.mock("../components/screen-container", () => ({ ScreenContainer: ({ children }: any) => createElement("div", null, children) }));
 vi.mock("expo-router", () => ({ router: { back: vi.fn(), push: vi.fn() } }));
 

@@ -7,26 +7,37 @@ import { useSipAccountStore } from "@/lib/sip/account-store";
 import { canCallDirectoryContact } from "@/lib/phone/directory";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useColors } from "@/hooks/use-colors";
+import type { ChatPerson } from "@/lib/chat/types";
 export function ChatPeerCall({
   peerId,
   tenantId,
+  person: suppliedPerson,
+  directoryOwner,
+  sharedDirectory = false,
 }: {
   peerId: number;
   tenantId: number;
+  /** A parent can share its protected directory lookup with the compact header. */
+  person?: ChatPerson | null;
+  directoryOwner?: number | null;
+  sharedDirectory?: boolean;
 }) {
-  const directory = useDirectory(tenantId),
+  const directory = useDirectory(tenantId, !sharedDirectory),
     account = useSipAccountStore((s) => s.account),
     { placeCall } = usePhoneCall(),
     c = useColors();
   const [busy, setBusy] = useState(false);
-  const person = directory.people.find((p) => p.id === peerId);
+  const person = sharedDirectory
+    ? suppliedPerson
+    : directory.people.find((p) => p.id === peerId);
+  const owner = sharedDirectory ? directoryOwner : directory.owner;
   if (
     !person ||
     !canCallDirectoryContact(
       person,
       tenantId,
       account,
-      directory.owner ?? undefined,
+      owner ?? undefined,
     )
   )
     return null;

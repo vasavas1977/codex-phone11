@@ -7,6 +7,10 @@ vi.mock("../components/chat/voice-note", () => ({
 vi.mock("../components/chat/received-media", () => ({ ReceivedMedia: () => null }));
 vi.mock("../components/chat/conversation-rail", () => ({ ConversationRail: () => null }));
 vi.mock("../components/chat/peer-call", () => ({ ChatPeerCall: () => null }));
+vi.mock("../components/chat/meeting-action", () => ({ ChatMeetingAction: () => null }));
+vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: () => null, useProfilePhotoCacheScope: () => {} }));
+vi.mock("../hooks/use-directory", () => ({ useDirectory: () => ({ people: [], owner: null }) }));
+vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ profile: undefined }) }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";

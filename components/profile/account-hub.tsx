@@ -1,6 +1,7 @@
 import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type TextStyle, type ViewStyle } from "react-native";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import { ProfileAvatar } from "@/components/profile/profile-avatar";
 import { useColors } from "@/hooks/use-colors";
 import {
   dndExpiryOptions,
@@ -66,6 +67,12 @@ type AccountHubProps = {
   onUpdateWorkspaceProfile?: (update: WorkspaceProfileUpdate) => Promise<unknown>;
   workspaceName?: string | null;
   isPreview?: boolean;
+  workspaceId?: number;
+  profilePhotoAvailable?: boolean;
+  profilePhotoSaving?: boolean;
+  profilePhotoError?: string | null;
+  onChangeProfilePhoto?: (source: "camera" | "library") => Promise<boolean>;
+  onRemoveProfilePhoto?: () => Promise<unknown>;
 };
 
 function MenuRow({ icon, title, detail, onPress, last = false }: { icon: IconName; title: string; detail: string; onPress: () => void; last?: boolean }) {
@@ -167,13 +174,14 @@ function AccountDetails({ identity, phone, visible, onClose }: { identity: Accou
 }
 
 /** Shows auth-owned identity and server-persisted workspace preferences. */
-export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false }: AccountHubProps) {
+export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto }: AccountHubProps) {
   const colors = useColors();
-  const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "details" | null>(null);
+  const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "photo" | "details" | null>(null);
   const [dndDuration, setDndDuration] = useState<DndDurationMinutes>(60);
   const name = identity?.name?.trim() || "Your work account";
   const email = identity?.email?.trim() || "Sign in to view your account";
   const profile = profileAvailable && workspaceProfile && onUpdateWorkspaceProfile ? workspaceProfile : undefined;
+  const canChangePhoto = !!profile && profilePhotoAvailable && !!onChangeProfilePhoto && !!onRemoveProfilePhoto;
   const save = (update: WorkspaceProfileUpdate) => {
     if (!onUpdateWorkspaceProfile) return;
     void onUpdateWorkspaceProfile(update);
@@ -183,6 +191,23 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
     if (value === "dnd") { setDndDuration(60); setSheet("availabilityDuration"); return; }
     save({ availability: { value } });
   };
+  const changePhoto = async (source: "camera" | "library") => {
+    if (!onChangeProfilePhoto) return;
+    try {
+      if (await onChangeProfilePhoto(source)) setSheet(null);
+    } catch {
+      // The caller exposes a scoped error below; do not imply an upload succeeded.
+    }
+  };
+  const removePhoto = async () => {
+    if (!onRemoveProfilePhoto) return;
+    try {
+      await onRemoveProfilePhoto();
+      setSheet(null);
+    } catch {
+      // The caller exposes a scoped error below; do not imply removal succeeded.
+    }
+  };
   return <View style={[styles.screen, { backgroundColor: colors.background }]}>
     <View style={[styles.header, { borderBottomColor: colors.border }]}>
       <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} style={styles.back}><IconSymbol name="chevron.left" size={23} color={colors.primary} /></Pressable>
@@ -191,7 +216,9 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       {isPreview && <Text style={[styles.preview, { color: colors.muted }]}>Preview only — changes stay in this browser</Text>}
       <View style={styles.identityBlock}>
-        <View style={[styles.avatar, { backgroundColor: colors.primary }]}><Text accessibilityLabel="Profile initials" style={styles.avatarText}>{accountInitials(identity?.name ?? null)}</Text></View>
+        {canChangePhoto ? <Pressable accessibilityRole="button" accessibilityLabel="Change profile photo" disabled={profilePhotoSaving} onPress={() => setSheet("photo")} style={styles.avatarButton}>
+          <ProfileAvatar name={identity?.name} photoUrl={profile?.photoUrl} photoVersion={profile?.photoVersion} tenantId={workspaceId} userId={profile?.userId} size={88} accessibilityLabel="Profile photo" />
+        </Pressable> : <ProfileAvatar name={identity?.name} photoUrl={profile?.photoUrl} photoVersion={profile?.photoVersion} tenantId={workspaceId} userId={profile?.userId} size={88} accessibilityLabel="Profile photo" />}
         <Text style={[styles.name, { color: colors.foreground }]}>{name}</Text>
         <Text numberOfLines={1} style={[styles.email, { color: colors.muted }]}>{email}</Text>
         {phone && <Text style={[styles.extension, { color: colors.muted }]}>Extension {phone.extension}</Text>}
@@ -205,6 +232,7 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
         </> : <Text style={[styles.unavailable, { color: colors.muted }]}>Workspace status will be available after your company updates this app.</Text>}
       </View>
       {profileError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profileError}</Text>}
+      {profilePhotoError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profilePhotoError}</Text>}
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>ACCOUNT</Text>
       <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <MenuRow icon="person.fill" title="My profile" detail="Account and assigned extension" onPress={() => setSheet("details")} />
@@ -231,15 +259,24 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
           <SheetChoice label="Turn off" detail="Do not share a work location" selected={profile.workLocation === null} disabled={profileSaving} onPress={() => save({ workLocation: null })} />
         </View>
       </Sheet>
+      <Sheet visible={sheet === "photo" && canChangePhoto} title="Profile photo" onClose={() => setSheet(null)}>
+        <View style={styles.sheetList}>
+          <Text style={[styles.sheetDescription, { color: colors.muted }]}>Your photo is visible to active people in {workspaceName || "this workspace"}.</Text>
+          <SheetChoice label="Take photo" detail="Use your camera" disabled={profilePhotoSaving} onPress={() => void changePhoto("camera")} />
+          <SheetChoice label="Choose photo" detail="Open your photo library" disabled={profilePhotoSaving} onPress={() => void changePhoto("library")} />
+          {profile.photoUrl && <SheetChoice label="Remove photo" detail="Show your initials instead" disabled={profilePhotoSaving} onPress={() => void removePhoto()} />}
+          {profilePhotoError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profilePhotoError}</Text>}
+        </View>
+      </Sheet>
     </>}
     <AccountDetails identity={identity} phone={phone} visible={sheet === "details"} onClose={() => setSheet(null)} />
   </View>;
 }
 
 type AccountHubStyles = {
-  screen: ViewStyle; header: ViewStyle; back: ViewStyle; title: TextStyle; content: ViewStyle; preview: TextStyle; identityBlock: ViewStyle; avatar: ViewStyle; avatarText: TextStyle; name: TextStyle; email: TextStyle; extension: TextStyle; workspaceName: TextStyle; card: ViewStyle; unavailable: TextStyle; sectionTitle: TextStyle; error: TextStyle; row: ViewStyle; lastRow: ViewStyle; rowIcon: ViewStyle; rowContent: ViewStyle; rowTitle: TextStyle; rowDetail: TextStyle; keyboardSheet: ViewStyle; sheetBackdrop: ViewStyle; sheet: ViewStyle; sheetHeader: ViewStyle; sheetTitle: TextStyle; closeButton: ViewStyle; sheetList: ViewStyle; sheetChoice: ViewStyle; sheetDescription: TextStyle; sheetLabel: TextStyle; editorContent: ViewStyle; statusInput: TextStyle; presetGrid: ViewStyle; presetButton: ViewStyle; presetLabel: TextStyle; presetDetail: TextStyle; clearStatus: ViewStyle; clearStatusText: TextStyle; sheetActions: ViewStyle; secondaryButton: ViewStyle; primaryButton: ViewStyle; buttonText: TextStyle; primaryButtonText: TextStyle; detailsContent: ViewStyle; detailsLabel: TextStyle; detailsValue: TextStyle; detailsNote: TextStyle;
+  screen: ViewStyle; header: ViewStyle; back: ViewStyle; title: TextStyle; content: ViewStyle; preview: TextStyle; identityBlock: ViewStyle; avatarButton: ViewStyle; name: TextStyle; email: TextStyle; extension: TextStyle; workspaceName: TextStyle; card: ViewStyle; unavailable: TextStyle; sectionTitle: TextStyle; error: TextStyle; row: ViewStyle; lastRow: ViewStyle; rowIcon: ViewStyle; rowContent: ViewStyle; rowTitle: TextStyle; rowDetail: TextStyle; keyboardSheet: ViewStyle; sheetBackdrop: ViewStyle; sheet: ViewStyle; sheetHeader: ViewStyle; sheetTitle: TextStyle; closeButton: ViewStyle; sheetList: ViewStyle; sheetChoice: ViewStyle; sheetDescription: TextStyle; sheetLabel: TextStyle; editorContent: ViewStyle; statusInput: TextStyle; presetGrid: ViewStyle; presetButton: ViewStyle; presetLabel: TextStyle; presetDetail: TextStyle; clearStatus: ViewStyle; clearStatusText: TextStyle; sheetActions: ViewStyle; secondaryButton: ViewStyle; primaryButton: ViewStyle; buttonText: TextStyle; primaryButtonText: TextStyle; detailsContent: ViewStyle; detailsLabel: TextStyle; detailsValue: TextStyle; detailsNote: TextStyle;
 };
 
 const styles = StyleSheet.create<AccountHubStyles>({
-  screen: { flex: 1 }, header: { minHeight: 58, paddingHorizontal: 12, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, back: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, title: { fontSize: 17, fontWeight: "700" }, content: { padding: 20, paddingBottom: 36, gap: 12 }, preview: { alignSelf: "center", fontSize: 12, fontWeight: "600" }, identityBlock: { alignItems: "center", paddingTop: 8, paddingBottom: 12 }, avatar: { width: 88, height: 88, borderRadius: 44, alignItems: "center", justifyContent: "center" }, avatarText: { color: "#fff", fontSize: 30, fontWeight: "700" }, name: { fontSize: 22, fontWeight: "700", marginTop: 13 }, email: { fontSize: 14, marginTop: 4, maxWidth: "100%" }, extension: { fontSize: 13, marginTop: 7, fontWeight: "600" }, workspaceName: { fontSize: 12, lineHeight: 18, marginTop: 8, textAlign: "center", maxWidth: 300 }, card: { borderWidth: 1, borderRadius: 15, overflow: "hidden" }, unavailable: { fontSize: 14, lineHeight: 20, padding: 16, textAlign: "center" }, sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.8, marginTop: 14, marginLeft: 4 }, error: { fontSize: 13, lineHeight: 19, paddingHorizontal: 4 }, row: { minHeight: 76, paddingHorizontal: 16, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, lastRow: { borderBottomWidth: 0 }, rowIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" }, rowContent: { flex: 1, minWidth: 0 }, rowTitle: { fontSize: 16, fontWeight: "600" }, rowDetail: { fontSize: 13, lineHeight: 18, marginTop: 3 }, keyboardSheet: { flex: 1 }, sheetBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "#00000066" }, sheet: { maxHeight: "82%", borderTopLeftRadius: 22, borderTopRightRadius: 22, overflow: "hidden" }, sheetHeader: { minHeight: 60, paddingLeft: 20, paddingRight: 10, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, sheetTitle: { fontSize: 17, fontWeight: "700" }, closeButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, sheetList: { paddingBottom: 16 }, sheetChoice: { minHeight: 62, paddingHorizontal: 20, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, sheetDescription: { fontSize: 14, lineHeight: 20, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }, sheetLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 14, marginBottom: 8 }, editorContent: { padding: 20, paddingTop: 8, paddingBottom: 24 }, statusInput: { minHeight: 94, maxHeight: 140, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderRadius: 11, fontSize: 16, textAlignVertical: "top" }, presetGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 }, presetButton: { width: "48%", minHeight: 58, borderWidth: 1, borderRadius: 11, paddingHorizontal: 12, paddingVertical: 9, justifyContent: "center" }, presetLabel: { fontSize: 14, lineHeight: 18, fontWeight: "600" }, presetDetail: { fontSize: 12, lineHeight: 17, marginTop: 2 }, clearStatus: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4, marginTop: 2 }, clearStatusText: { fontSize: 14, fontWeight: "600" }, sheetActions: { flexDirection: "row", gap: 10, marginTop: 14 }, secondaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, borderWidth: 1 }, primaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10 }, buttonText: { fontSize: 15, fontWeight: "700" }, primaryButtonText: { color: "#fff", fontSize: 15, fontWeight: "700" }, detailsContent: { padding: 20, gap: 4 }, detailsLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 12 }, detailsValue: { fontSize: 16, lineHeight: 22 }, detailsNote: { fontSize: 13, lineHeight: 19, marginTop: 18 },
+  screen: { flex: 1 }, header: { minHeight: 58, paddingHorizontal: 12, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, back: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, title: { fontSize: 17, fontWeight: "700" }, content: { padding: 20, paddingBottom: 36, gap: 12 }, preview: { alignSelf: "center", fontSize: 12, fontWeight: "600" }, identityBlock: { alignItems: "center", paddingTop: 8, paddingBottom: 12 }, avatarButton: { width: 88, height: 88, borderRadius: 44 }, name: { fontSize: 22, fontWeight: "700", marginTop: 13 }, email: { fontSize: 14, marginTop: 4, maxWidth: "100%" }, extension: { fontSize: 13, marginTop: 7, fontWeight: "600" }, workspaceName: { fontSize: 12, lineHeight: 18, marginTop: 8, textAlign: "center", maxWidth: 300 }, card: { borderWidth: 1, borderRadius: 15, overflow: "hidden" }, unavailable: { fontSize: 14, lineHeight: 20, padding: 16, textAlign: "center" }, sectionTitle: { fontSize: 11, fontWeight: "700", letterSpacing: 0.8, marginTop: 14, marginLeft: 4 }, error: { fontSize: 13, lineHeight: 19, paddingHorizontal: 4 }, row: { minHeight: 76, paddingHorizontal: 16, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, lastRow: { borderBottomWidth: 0 }, rowIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" }, rowContent: { flex: 1, minWidth: 0 }, rowTitle: { fontSize: 16, fontWeight: "600" }, rowDetail: { fontSize: 13, lineHeight: 18, marginTop: 3 }, keyboardSheet: { flex: 1 }, sheetBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "#00000066" }, sheet: { maxHeight: "82%", borderTopLeftRadius: 22, borderTopRightRadius: 22, overflow: "hidden" }, sheetHeader: { minHeight: 60, paddingLeft: 20, paddingRight: 10, alignItems: "center", flexDirection: "row", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth }, sheetTitle: { fontSize: 17, fontWeight: "700" }, closeButton: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, sheetList: { paddingBottom: 16 }, sheetChoice: { minHeight: 62, paddingHorizontal: 20, alignItems: "center", flexDirection: "row", gap: 12, borderBottomWidth: StyleSheet.hairlineWidth }, sheetDescription: { fontSize: 14, lineHeight: 20, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8 }, sheetLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 14, marginBottom: 8 }, editorContent: { padding: 20, paddingTop: 8, paddingBottom: 24 }, statusInput: { minHeight: 94, maxHeight: 140, paddingHorizontal: 12, paddingVertical: 10, borderWidth: 1, borderRadius: 11, fontSize: 16, textAlignVertical: "top" }, presetGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 }, presetButton: { width: "48%", minHeight: 58, borderWidth: 1, borderRadius: 11, paddingHorizontal: 12, paddingVertical: 9, justifyContent: "center" }, presetLabel: { fontSize: 14, lineHeight: 18, fontWeight: "600" }, presetDetail: { fontSize: 12, lineHeight: 17, marginTop: 2 }, clearStatus: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 4, marginTop: 2 }, clearStatusText: { fontSize: 14, fontWeight: "600" }, sheetActions: { flexDirection: "row", gap: 10, marginTop: 14 }, secondaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10, borderWidth: 1 }, primaryButton: { flex: 1, minHeight: 46, alignItems: "center", justifyContent: "center", borderRadius: 10 }, buttonText: { fontSize: 15, fontWeight: "700" }, primaryButtonText: { color: "#fff", fontSize: 15, fontWeight: "700" }, detailsContent: { padding: 20, gap: 4 }, detailsLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.7, marginTop: 12 }, detailsValue: { fontSize: 16, lineHeight: 22 }, detailsNote: { fontSize: 13, lineHeight: 19, marginTop: 18 },
 });

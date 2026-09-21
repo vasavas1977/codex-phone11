@@ -11,11 +11,23 @@ function element({ children }: any) {
 vi.mock("react-native", () => ({
   View: element,
   Text: element,
+  Platform: { OS: "web" },
   Pressable: (props: any) => {
     m.buttons.set(props.accessibilityLabel, props);
     return element(props);
   },
 }));
+vi.mock("expo-image", () => {
+  const Image = (props: any) => createElement("img", props);
+  Object.assign(Image, { clearMemoryCache: vi.fn(async () => true), clearDiskCache: vi.fn(async () => true) });
+  return { Image };
+});
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: null, loading: false }),
+  getSessionToken: vi.fn(async () => null),
+  addAuthChangeListener: () => () => {},
+}));
+vi.mock("../constants/oauth", () => ({ getApiBaseUrl: () => "" }));
 vi.mock("@expo/vector-icons/MaterialIcons", () => ({ default: () => null }));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
@@ -123,4 +135,11 @@ it("failed messages offer retry without exposing sent-message mutations", () => 
   expect(m.buttons.has("Add reaction")).toBe(false);
   m.buttons.get("Retry sending message").onPress();
   expect(onRetry).toHaveBeenCalledOnce();
+});
+it("uses the authenticated owner's identity beside grouped messages instead of generic Y initials", () => {
+  const html = renderToStaticMarkup(createElement(ChatMessageRow, {
+    message: base, own: true, ownName: "Nathasa W.", grouped: true, root: false,
+    onActions: vi.fn(), onReplies: vi.fn(), onReaction: vi.fn(), onRetry: vi.fn(),
+  }));
+  expect(html).toContain("NW");
 });
