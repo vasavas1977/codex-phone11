@@ -17,7 +17,6 @@ import { query } from "./db";
 import { cacheGetOrSet } from "./redis";
 
 export interface TenantMembership {
-  id: number;
   userId: number;
   tenantId: number;
   tenantName: string;
@@ -45,7 +44,7 @@ export async function resolveTenantMemberships(userId: number): Promise<TenantMe
     300, // 5 min cache
     async () => {
       const result = await query(
-        `SELECT tm.id, tm.user_id, tm.tenant_id, tm.role, tm.is_default,
+        `SELECT tm.user_id, tm.tenant_id, tm.role, tm.is_default,
                 t.name as tenant_name, t.slug as tenant_slug, t.status as tenant_status
          FROM tenant_memberships tm
          JOIN tenants t ON tm.tenant_id = t.id
@@ -54,7 +53,6 @@ export async function resolveTenantMemberships(userId: number): Promise<TenantMe
         [userId]
       );
       return result.rows.map((r: any) => ({
-        id: r.id,
         userId: r.user_id,
         tenantId: r.tenant_id,
         tenantName: r.tenant_name,

@@ -46,7 +46,6 @@ const membership = (
   role: "owner" | "admin" | "manager" | "user",
   tenantId = 7,
 ) => ({
-  id: 1,
   user_id: 9,
   tenant_id: tenantId,
   role,
@@ -522,6 +521,8 @@ describe("PBX member self-service isolation", () => {
     expect(db.query.mock.calls[1][0]).toContain("e.tenant_id = tm.tenant_id");
     expect(db.query.mock.calls[1][0]).not.toContain("dnd_enabled");
     expect(db.query.mock.calls[1][0]).not.toContain("cfu_destination");
+    expect(db.query.mock.calls[0][0]).not.toContain("tm.id");
+    expect(db.query.mock.calls[0][0]).toContain("tm.user_id, tm.tenant_id");
   });
 
   it("scopes call activity to immutable call-time member identities", async () => {
