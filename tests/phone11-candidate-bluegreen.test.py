@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib.util
 import json
 from pathlib import Path
@@ -428,6 +429,7 @@ class BlueGreenTests(unittest.TestCase):
             ("/api/trpc/pbx.tenant.get", 200),
         )
         self.assertIn('"settingsAvailable":false', tenant["required"])
+        self.assertNotIn('"settingsAvailable":true', tenant["required"])
         self.assertEqual((denied["status"], denied["required"]), (403, ["FORBIDDEN"]))
         changed = probe_document()
         phone = next(item for item in changed["probes"] if item["label"] == "existing_phone")
@@ -435,6 +437,53 @@ class BlueGreenTests(unittest.TestCase):
         bad = json.dumps(changed, separators=(",", ":")).encode()
         with self.assertRaises(blue.GuardError):
             blue.load_probes(bad, pins(probes__sha256=blue.sha256_bytes(bad)))
+
+    def test_settings_v2_management_probe_requires_schema_capability_without_a_saved_timezone(self):
+        raw = json.dumps(probe_document(), separators=(",", ":")).encode()
+        current = replace(settings_pins(), probes_sha256=blue.sha256_bytes(raw))
+        tenant = next(item for item in blue.load_probes(raw, current) if item["label"] == "management_tenant")
+        self.assertEqual(
+            tenant["required"],
+            ['"settingsAvailable":true', '"supportedSettings":["businessHoursTimezone"]', '"userRole"'],
+        )
+        self.assertFalse(any("business_hours_timezone" in item for item in tenant["required"]))
+        system = Mock()
+        system.request.return_value = (
+            200,
+            b'{"result":{"data":{"json":{"settingsAvailable":true,"supportedSettings":["businessHoursTimezone"],"userRole":"admin","business_hours_timezone":null}}}}',
+        )
+        blue.run_probes(system, "http://127.0.0.1:3005", [tenant])
+        for body in (
+            b'{"settingsAvailable":false,"supportedSettings":[],"userRole":"admin"}',
+            b'{"settingsAvailable":true,"supportedSettings":[],"userRole":"admin"}',
+            b'{"settingsAvailable":true,"supportedSettings":["businessHoursTimezone"]}',
+        ):
+            system.request.return_value = (200, body)
+            with self.assertRaises(blue.GuardError) as error:
+                blue.run_probes(system, "http://127.0.0.1:3005", [tenant])
+            self.assertEqual(error.exception.stage, "probes")
+
+    def test_settings_v2_schema_probe_failure_stops_before_any_nginx_route_change(self):
+        raw = json.dumps(probe_document(), separators=(",", ":")).encode()
+        current = replace(settings_pins(), probes_sha256=blue.sha256_bytes(raw))
+        operator = blue.Operator(current, Mock())
+        operator.prepare = Mock()
+        operator.target_config = settings_rendered()
+        operator.wait_target = Mock()
+        operator.probes = blue.load_probes(raw, current)
+        operator.nginx = Mock()
+        operator.system.request.return_value = (200, b'{"settingsAvailable":false,"supportedSettings":[],"userRole":"admin"}')
+        context = Mock()
+        context.__enter__ = Mock(return_value=Path("/root/frozen-3005.json"))
+        context.__exit__ = Mock(return_value=False)
+        with patch.object(blue, "frozen_candidate_config", return_value=context), \
+             patch.object(blue, "atomic_write") as write, \
+             self.assertRaises(blue.GuardError) as error:
+            operator.activate()
+        self.assertEqual(error.exception.stage, "probes")
+        operator.nginx.assert_not_called()
+        write.assert_not_called()
+        self.assertFalse(any(command[:2] == ["nginx", "-s"] for command in operator.system.command.call_args_list))
 
     def test_inventory_mode_requires_all_inputs_and_exact_source_sha(self):
         with self.assertRaises(SystemExit):

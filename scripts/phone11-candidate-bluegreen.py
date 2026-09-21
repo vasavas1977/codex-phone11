@@ -575,6 +575,11 @@ def load_probes(raw: bytes, pins: Pins) -> list[Mapping[str, Any]]:
     denied = quote(json.dumps({"json": {"tenantId": pins.denied_tenant_id}}, separators=(",", ":")), safe="")
     empty = quote(json.dumps({"json": None}, separators=(",", ":")), safe="")
     batch = quote(json.dumps({"0": {"json": None}, "1": {"json": {"tenantId": pins.tenant_id}}}, separators=(",", ":")), safe="")
+    management_tenant_required = (
+        ['"settingsAvailable":true', '"supportedSettings":["businessHoursTimezone"]', '"userRole"']
+        if pins.schema == SETTINGS_SCHEMA
+        else ['"settingsAvailable":false', '"userRole"']
+    )
     probes: list[Mapping[str, Any]] = [
         source,
         {
@@ -596,7 +601,7 @@ def load_probes(raw: bytes, pins: Pins) -> list[Mapping[str, Any]]:
             "label": "management_tenant", "method": "GET",
             "path": f"/api/trpc/pbx.tenant.get?input={empty}", "headers": headers,
             "body": "", "status": 200,
-            "required": ['"settingsAvailable":false', '"userRole"'],
+            "required": management_tenant_required,
             "forbidden": forbidden,
         },
         {
