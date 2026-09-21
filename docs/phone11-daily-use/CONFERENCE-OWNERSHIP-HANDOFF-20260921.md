@@ -200,12 +200,42 @@ the original behavior.
 Validation passed 60 focused constructor/native/browser meeting tests,
 TypeScript, formatting and diff checks. A fresh frozen pnpm install applied the
 patch, then the real installed `Room` constructed with `WeakRef` deleted and did
-not add the global. The independent Sol High review of `2b92d3d` remains a
-release prerequisite; incorporate any required review fix before packaging.
-No build, installation or deployment has been started from this fix.
+not add the global. Independent Sol High approved the exact root-cause fix for
+source release.
 
-The remaining acceptance gate is a newly signed and verified package after
-review, followed by an in-place handset install and a real two-party meeting
-join proving room connection, local and remote video, and two-way audio. Keep
-the existing SIP/manual-audio regression checks in that package gate. Source
-and clean-install tests do not constitute physical-device conference acceptance.
+## Verified root-cause Build 80
+
+Build 80 is the first signed daily-pilot package containing the reviewed
+Machina weak-client guard. It is package verification only; it has not been
+installed on a handset.
+
+- Exact release source: `8c6f2f49c7183ba3946657b41eac410682d0f55b`, comprising
+  the root-cause patch `2b92d3d9bd838cad7a08d332769f2326330235a2` and its
+  handoff record.
+- [Successful CI run 35564510132](https://github.com/vasavas1977/codex-phone11/actions/runs/35564510132)
+  completed every daily-use check, native check, and signed build job for that
+  exact SHA.
+- [Install Build 80](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/fc240e92-33b0-4ee2-adcb-ec252b0544af)
+  is the EAS build-details page. EAS build `fc240e92-33b0-4ee2-adcb-ec252b0544af`
+  finished as internal `preview-ios-siprix-daily-pilot`, version `1.0.0`, build
+  `80`, from the exact release source.
+- IPA SHA-256: `89492a21dde5b99a4d4b52a0004e473f8aee2289b225bf6ca276ae2e572926ef`.
+  The combined Build 49 package gate passed Siprix linkage, native bridge,
+  legacy-bridge absence, strict signature, embedded JavaScript, and all 22
+  signed configuration/provisioning checks. It retains the expected identity,
+  production APNs, commissioned wake/chat settings, and over-the-air updates
+  disabled.
+- The packaged Hermes bytecode preserves all three guarded Machina registry
+  insertions: each checks `typeof WeakRef` and jumps past `new WeakRef` when it
+  is unavailable. The complete bytecode disassembly has no assignment to the
+  `WeakRef` global. Signed `RCTNewArchEnabled` remains `false`; the archive has
+  no `ExpoDevLauncher` framework payload entries.
+- The IPA, package-verification JSON, and metadata are retained under
+  `~/Library/Application Support/Phone11/verified-builds/80/`. The install QR
+  targets the EAS build-details page above, not the raw IPA.
+
+The remaining acceptance gate is an in-place Build 80 handset install followed
+by the formerly failing admitted meeting join, then real room connection, local
+and remote video, and two-way audio. Run the existing SIP/manual-audio
+interruption, route, and lock-state checks separately. This package does not
+prove device runtime behavior, provider admission, or conference media.
