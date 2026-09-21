@@ -30,6 +30,7 @@ import { trustedCdrRecordingRoute } from "../cloud-recordings/correlation";
  */
 import { query, withTransaction } from "./db";
 import { normalizeToE164 } from "./e164";
+import { ownershipFromTrustedRoute } from "./cdr-ownership";
 
 /**
  * Disposition mapping from FreeSWITCH hangup causes
@@ -158,6 +159,7 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
   if (!Number.isSafeInteger(parsed.tenantId) || parsed.tenantId <= 0) throw new Error("Explicit CDR tenant required");
   const recordingRoute = await trustedCdrRecordingRoute(parsed.callUuid,parsed.sipCallId);
   if (recordingRoute && recordingRoute.tenantId !== parsed.tenantId) throw new Error("Trusted call tenant mismatch");
+  const ownership = ownershipFromTrustedRoute(recordingRoute);
 
   const result = await withTransaction(async (client) => {
     // 1. Upsert call_record (parent)
@@ -170,10 +172,10 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
     const recordResult = await client.query(
       `INSERT INTO call_records 
         (tenant_id, call_uuid, direction, from_number, to_number,
-         disposition, started_at, answered_at, ended_at, 
+         caller_user_id, callee_user_id, disposition, started_at, answered_at, ended_at,
          total_duration_seconds, total_billable_seconds,
          recording_url, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (call_uuid) DO UPDATE SET
          disposition = EXCLUDED.disposition,
          answered_at = COALESCE(EXCLUDED.answered_at, call_records.answered_at),
@@ -181,9 +183,13 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
          ended_at = EXCLUDED.ended_at,
          total_duration_seconds = EXCLUDED.total_duration_seconds,
          total_billable_seconds = EXCLUDED.total_billable_seconds,
-         recording_url = COALESCE(EXCLUDED.recording_url, call_records.recording_url)
+         recording_url = COALESCE(EXCLUDED.recording_url, call_records.recording_url),
+         caller_user_id = COALESCE(call_records.caller_user_id, EXCLUDED.caller_user_id),
+         callee_user_id = COALESCE(call_records.callee_user_id, EXCLUDED.callee_user_id)
        WHERE call_records.tenant_id = EXCLUDED.tenant_id
          AND (call_records.ended_at IS NULL OR EXCLUDED.ended_at IS NOT NULL)
+         AND (EXCLUDED.caller_user_id IS NULL OR (call_records.caller_user_id IS NULL OR call_records.caller_user_id = EXCLUDED.caller_user_id) AND call_records.callee_user_id IS NULL)
+         AND (EXCLUDED.callee_user_id IS NULL OR (call_records.callee_user_id IS NULL OR call_records.callee_user_id = EXCLUDED.callee_user_id) AND call_records.caller_user_id IS NULL)
        RETURNING id`,
       [
         parsed.tenantId,           // $1
@@ -191,14 +197,16 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.direction,          // $3
         parsed.callerNumber,       // $4 → from_number
         parsed.calleeNumber,       // $5 → to_number
-        parsed.disposition,        // $6
-        startedAt,                 // $7 → started_at
-        answeredAt,                // $8 → answered_at
-        endedAt,                   // $9 → ended_at
-        parsed.duration,           // $10 → total_duration_seconds
-        parsed.billSeconds,        // $11 → total_billable_seconds
+        ownership.callerUserId,    // $6 → immutable call-time caller
+        ownership.calleeUserId,    // $7 → immutable call-time callee
+        parsed.disposition,        // $8
+        startedAt,                 // $9 → started_at
+        answeredAt,                // $10 → answered_at
+        endedAt,                   // $11 → ended_at
+        parsed.duration,           // $12 → total_duration_seconds
+        parsed.billSeconds,        // $13 → total_billable_seconds
         process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" ? null : parsed.recordingPath, // Cloud media only comes from authenticated storage.
-        JSON.stringify({           // $13 → metadata
+        JSON.stringify({           // $15 → metadata
           completion: endedAt ? "complete" : "unknown",
           source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,
@@ -213,13 +221,17 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
     // The parent upsert holds its row lock until commit, serializing CDR retries
     // with each other and with authenticated ESL snapshots for this channel.
     const existingLegs = await client.query(
-      "SELECT id, call_record_id, tenant_id, extension_id, sip_call_id, ended_at FROM call_legs WHERE leg_uuid=$1 FOR UPDATE",
+      "SELECT id, call_record_id, tenant_id, extension_id, sip_call_id, caller_user_id, callee_user_id, ended_at FROM call_legs WHERE leg_uuid=$1 FOR UPDATE",
       [parsed.callUuid]
     );
     if (existingLegs.rows.length > 1) throw new Error("Ambiguous existing call legs");
     const existingLeg = existingLegs.rows[0];
     if (existingLeg && (Number(existingLeg.tenant_id) !== parsed.tenantId || Number(existingLeg.call_record_id) !== Number(callRecordId)
       || (existingLeg.sip_call_id && existingLeg.sip_call_id !== parsed.sipCallId)
+      || (existingLeg.caller_user_id != null && ownership.callerUserId != null && Number(existingLeg.caller_user_id) !== ownership.callerUserId)
+      || (existingLeg.callee_user_id != null && ownership.calleeUserId != null && Number(existingLeg.callee_user_id) !== ownership.calleeUserId)
+      || (ownership.callerUserId != null && existingLeg.callee_user_id != null)
+      || (ownership.calleeUserId != null && existingLeg.caller_user_id != null)
       || (recordingRoute && existingLeg.extension_id != null && Number(existingLeg.extension_id) !== recordingRoute.extensionId))) {
       throw new Error("Call leg ownership mismatch");
     }
@@ -232,21 +244,22 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
 
     const legResult = await client.query(
       existingLeg ? `UPDATE call_legs SET
-        from_uri=$4, to_uri=$5, started_at=$6, ringing_at=$7,
-        answered_at=COALESCE($8,answered_at), ended_at=$9,
-        duration_seconds=$10, billable_seconds=$11, pdd_ms=$12,
-        codec=$13, codec_read=$14, codec_write=$15,
-        hangup_cause=$16, hangup_disposition=$17, sip_response_code=$18,
-        sip_call_id=$19, metadata=metadata || $20::jsonb
-       WHERE call_record_id=$1 AND leg_uuid=$2 AND tenant_id=$3 AND id=$21 RETURNING id`
+        from_uri=$4, to_uri=$5,
+        caller_user_id=COALESCE(caller_user_id,$6), callee_user_id=COALESCE(callee_user_id,$7),
+        started_at=$8, ringing_at=$9, answered_at=COALESCE($10,answered_at), ended_at=$11,
+        duration_seconds=$12, billable_seconds=$13, pdd_ms=$14,
+        codec=$15, codec_read=$16, codec_write=$17,
+        hangup_cause=$18, hangup_disposition=$19, sip_response_code=$20,
+        sip_call_id=$21, metadata=metadata || $22::jsonb
+       WHERE call_record_id=$1 AND leg_uuid=$2 AND tenant_id=$3 AND id=$23 RETURNING id`
       : `INSERT INTO call_legs
-        (call_record_id, leg_uuid, tenant_id, from_uri, to_uri,
+        (call_record_id, leg_uuid, tenant_id, from_uri, to_uri, caller_user_id, callee_user_id,
          started_at, ringing_at, answered_at, ended_at, 
          duration_seconds, billable_seconds, pdd_ms,
          codec, codec_read, codec_write,
          hangup_cause, hangup_disposition, sip_response_code,
          sip_call_id, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        RETURNING id`,
       [
         callRecordId,              // $1
@@ -254,21 +267,23 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.tenantId,           // $3
         `sip:${parsed.callerNumber}@phone11.ai`,  // $4 → from_uri
         `sip:${parsed.calleeNumber}@phone11.ai`,  // $5 → to_uri
-        startedAt,                 // $6 → started_at (Date object)
-        ringingAt,                 // $7 → ringing_at (Date or null)
-        answeredAt,                // $8 → answered_at (Date or null)
-        endedAt,                   // $9 → ended_at (Date or null)
-        parsed.duration,           // $10 → duration_seconds
-        parsed.billSeconds,        // $11 → billable_seconds
-        pddMs,                     // $12 → pdd_ms
-        parsed.readCodec || parsed.writeCodec,  // $13 → codec (primary)
-        parsed.readCodec,          // $14 → codec_read
-        parsed.writeCodec,         // $15 → codec_write
-        parsed.hangupCause,        // $16 → hangup_cause
-        parsed.disposition,        // $17 → hangup_disposition
-        parsed.sipResponseCode,    // $18 → sip_response_code
-        parsed.sipCallId,          // $19 → sip_call_id
-        JSON.stringify({           // $20 → metadata
+        ownership.callerUserId,    // $6
+        ownership.calleeUserId,    // $7
+        startedAt,                 // $8 → started_at (Date object)
+        ringingAt,                 // $9 → ringing_at (Date or null)
+        answeredAt,                // $10 → answered_at (Date or null)
+        endedAt,                   // $11 → ended_at (Date or null)
+        parsed.duration,           // $12 → duration_seconds
+        parsed.billSeconds,        // $13 → billable_seconds
+        pddMs,                     // $14 → pdd_ms
+        parsed.readCodec || parsed.writeCodec,  // $15 → codec (primary)
+        parsed.readCodec,          // $16 → codec_read
+        parsed.writeCodec,         // $17 → codec_write
+        parsed.hangupCause,        // $18 → hangup_cause
+        parsed.disposition,        // $19 → hangup_disposition
+        parsed.sipResponseCode,    // $20 → sip_response_code
+        parsed.sipCallId,          // $21 → sip_call_id
+        JSON.stringify({           // $22 → metadata
           completion: endedAt ? "complete" : "unknown",
           source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,

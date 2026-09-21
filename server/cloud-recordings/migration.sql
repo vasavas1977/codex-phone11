@@ -52,11 +52,13 @@ CREATE TABLE IF NOT EXISTS phone11_recording_routes (
  channel_uuid UUID PRIMARY KEY,
  tenant_id INTEGER NOT NULL REFERENCES tenants(id),
  extension_id INTEGER NOT NULL REFERENCES extensions(id),
+ owner_user_id INTEGER REFERENCES users(id),
  sip_call_id TEXT,
  direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),
  number TEXT NOT NULL,
  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
+ALTER TABLE phone11_recording_routes ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id);
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS purge_token UUID;
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS purge_until TIMESTAMPTZ;
 ALTER TABLE phone11_cloud_recordings ADD COLUMN IF NOT EXISTS capture_stop_requested_at TIMESTAMPTZ;
@@ -124,6 +126,22 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
   ELSIF TG_TABLE_NAME = 'phone11_recording_routes' THEN
+    IF NEW.owner_user_id IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM user_extensions ue
+      JOIN tenant_memberships tm
+        ON tm.user_id = ue.user_id
+       AND tm.tenant_id = NEW.tenant_id
+       AND tm.status = 'active'
+      JOIN extensions e
+        ON e.id = ue.extension_id
+       AND e.tenant_id = NEW.tenant_id
+       AND e.user_id = ue.user_id
+      WHERE ue.extension_id = NEW.extension_id
+        AND ue.user_id = NEW.owner_user_id
+    ) THEN
+      RAISE EXCEPTION 'recording route owner must be actively assigned at capture time'
+        USING ERRCODE = '23514';
+    END IF;
     IF EXISTS (
       SELECT 1 FROM phone11_cloud_recordings r
       WHERE r.call_uuid = NEW.channel_uuid::text
@@ -142,6 +160,18 @@ BEGIN
       RAISE EXCEPTION 'recording wake link must match its wake binding tenant and extension'
         USING ERRCODE = '23514';
     END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION phone11_recording_route_owner_immutable()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.tenant_id, NEW.extension_id, NEW.owner_user_id, NEW.direction, NEW.sip_call_id)
+    IS DISTINCT FROM (OLD.tenant_id, OLD.extension_id, OLD.owner_user_id, OLD.direction, OLD.sip_call_id) THEN
+    RAISE EXCEPTION 'recording route identity is immutable'
+      USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
 END;
@@ -189,7 +219,7 @@ CREATE TRIGGER phone11_cloud_recording_tenant_pair_guard
 DROP TRIGGER IF EXISTS phone11_recording_route_tenant_pair_guard
   ON phone11_recording_routes;
 CREATE TRIGGER phone11_recording_route_tenant_pair_guard
-  BEFORE INSERT OR UPDATE OF tenant_id, extension_id ON phone11_recording_routes
+  BEFORE INSERT OR UPDATE OF tenant_id, extension_id, owner_user_id ON phone11_recording_routes
   FOR EACH ROW EXECUTE FUNCTION phone11_recording_tenant_pair_guard();
 
 DROP TRIGGER IF EXISTS phone11_recording_wake_link_tenant_pair_guard
@@ -197,6 +227,12 @@ DROP TRIGGER IF EXISTS phone11_recording_wake_link_tenant_pair_guard
 CREATE TRIGGER phone11_recording_wake_link_tenant_pair_guard
   BEFORE INSERT OR UPDATE OF binding_id, tenant_id, extension_id ON phone11_recording_wake_links
   FOR EACH ROW EXECUTE FUNCTION phone11_recording_tenant_pair_guard();
+
+DROP TRIGGER IF EXISTS phone11_recording_route_owner_immutable
+  ON phone11_recording_routes;
+CREATE TRIGGER phone11_recording_route_owner_immutable
+  BEFORE UPDATE OF tenant_id, extension_id, owner_user_id, direction, sip_call_id ON phone11_recording_routes
+  FOR EACH ROW EXECUTE FUNCTION phone11_recording_route_owner_immutable();
 
 DROP TRIGGER IF EXISTS phone11_recording_extension_tenant_immutable ON extensions;
 CREATE TRIGGER phone11_recording_extension_tenant_immutable

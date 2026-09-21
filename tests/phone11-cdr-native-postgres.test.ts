@@ -26,8 +26,13 @@ describe.skipIf(!socket)('native CDR isolated PostgreSQL',()=>{
   vi.stubEnv('PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED','true');
  });
  beforeEach(async()=>{
-  await db.pool.query("TRUNCATE users,tenants,extensions,call_records,call_events CASCADE; INSERT INTO tenants(id,name,status) VALUES(10,'A','active'),(20,'B','active'); INSERT INTO extensions(id,tenant_id,extension_number,status) VALUES(11,10,'3001','active')");
-  await db.pool.query("INSERT INTO phone11_recording_routes(channel_uuid,tenant_id,extension_id,sip_call_id,direction,number) VALUES($1,10,11,'exact@sip','inbound','+66800000000')",[uuid]);
+  await db.pool.query(`TRUNCATE users,tenants,extensions,call_records,call_events CASCADE;
+   INSERT INTO users(id,"openId") VALUES(2,'call-owner'),(3,'foreign-user');
+   INSERT INTO tenants(id,name,status) VALUES(10,'A','active'),(20,'B','active');
+   INSERT INTO tenant_memberships(user_id,tenant_id,role,status) VALUES(2,10,'user','active'),(3,10,'user','active');
+   INSERT INTO extensions(id,tenant_id,user_id,extension_number,status) VALUES(11,10,2,'3001','active');
+   INSERT INTO user_extensions(user_id,extension_id,is_primary) VALUES(2,11,true)`);
+  await db.pool.query("INSERT INTO phone11_recording_routes(channel_uuid,tenant_id,extension_id,owner_user_id,sip_call_id,direction,number) VALUES($1,10,11,2,'exact@sip','inbound','+66800000000')",[uuid]);
  });
  afterAll(async()=>{if(db.pool){await db.pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);await db.pool.end();}vi.unstubAllEnvs();});
  it('completes the existing snapshot without replacing cloud storage',async()=>{
@@ -51,6 +56,13 @@ describe.skipIf(!socket)('native CDR isolated PostgreSQL',()=>{
   const before=(await db.pool.query('SELECT * FROM call_records')).rows;
   await expect(processCdr({variables:vars})).rejects.toThrow();
   expect((await db.pool.query('SELECT * FROM call_records')).rows).toEqual(before);expect((await db.pool.query('SELECT * FROM call_legs')).rows).toHaveLength(0);
+ });
+ it('rejects a same-tenant parent with a conflicting participant role',async()=>{
+  await db.pool.query("INSERT INTO call_records(call_uuid,tenant_id,direction,from_number,to_number,caller_user_id,started_at,metadata) VALUES($1,10,'inbound','','',3,now(),'{\"owner\":\"conflict\"}')",[uuid]);
+  const before=(await db.pool.query('SELECT * FROM call_records')).rows;
+  await expect(processCdr({variables:vars})).rejects.toThrow('Call tenant collision');
+  expect((await db.pool.query('SELECT * FROM call_records')).rows).toEqual(before);
+  expect((await db.pool.query('SELECT * FROM call_legs')).rows).toHaveLength(0);
  });
  it('rejects a known own channel with conflicting SIP ID',async()=>{
   const cdr=parseCdrBody({variables:{...vars,sip_call_id:'different@sip'}});

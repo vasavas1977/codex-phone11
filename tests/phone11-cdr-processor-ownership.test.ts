@@ -29,10 +29,30 @@ it("does not insert a leg when a parent upsert reports an ownership collision", 
 it("supplies complete answer/end facts and completion metadata for a native final CDR", async () => {
   await processCdr({ variables: { uuid, tenant_id: 12, start_epoch: "1700000000", answer_epoch: "1700000010", end_epoch: "1700000020", billsec: "10" } });
   const args = db.client.query.mock.calls[0][1];
-  expect(args[7]).toEqual(new Date(1700000010000)); expect(args[8]).toEqual(new Date(1700000020000));
-  expect(JSON.parse(args[12])).toMatchObject({ completion: "complete", source: "authenticated_freeswitch_cdr" });
+  expect(args[9]).toEqual(new Date(1700000010000)); expect(args[10]).toEqual(new Date(1700000020000));
+  expect(JSON.parse(args[14])).toMatchObject({ completion: "complete", source: "authenticated_freeswitch_cdr" });
 });
 it("does not describe a partial JSON callback as completed", async () => {
   await processCdr({ variables: { uuid, tenant_id: 12 } });
-  expect(JSON.parse(db.client.query.mock.calls[0][1][12]).completion).toBe("unknown");
+  expect(JSON.parse(db.client.query.mock.calls[0][1][14]).completion).toBe("unknown");
+});
+it("persists only the trusted route owner and ignores caller-supplied user IDs", async () => {
+  db.route.mockResolvedValue({ tenantId: 12, extensionId: 23, userId: 44, direction: "outbound" });
+  await processCdr({ variables: { uuid, tenant_id: 12, caller_user_id: "999", callee_user_id: "998" } });
+  const parent = db.client.query.mock.calls[0][1];
+  const leg = db.client.query.mock.calls[2][1];
+  expect(parent.slice(5, 7)).toEqual([44, null]);
+  expect(leg.slice(5, 7)).toEqual([44, null]);
+});
+it("leaves identity empty when trusted call-time ownership is absent or ambiguous", async () => {
+  db.route.mockResolvedValue({ tenantId: 12, extensionId: 23 });
+  await processCdr({ variables: { uuid, tenant_id: 12, caller_user_id: "999" } });
+  expect(db.client.query.mock.calls[0][1].slice(5, 7)).toEqual([null, null]);
+});
+it("rejects an existing leg whose opposite participant conflicts with the trusted role", async () => {
+  db.route.mockResolvedValue({ tenantId: 12, extensionId: 23, userId: 44, direction: "outbound" });
+  db.client.query
+    .mockResolvedValueOnce({ rows: [{ id: 1 }] })
+    .mockResolvedValueOnce({ rows: [{ id: 2, call_record_id: 1, tenant_id: 12, extension_id: 23, sip_call_id: null, caller_user_id: null, callee_user_id: 45 }] });
+  await expect(processCdr({ variables: { uuid, tenant_id: 12 } })).rejects.toThrow("Call leg ownership mismatch");
 });
