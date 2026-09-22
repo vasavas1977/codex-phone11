@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createPhone11Shutdown,
+  PHONE11_SHUTDOWN_TIMEOUT_MS,
   Phone11ShutdownTimeoutError,
   type Phone11BackgroundLifecycle,
 } from "../server/_core/runtime-role";
@@ -39,6 +40,28 @@ afterEach(() => {
 });
 
 describe("Phone11 graceful shutdown", () => {
+  it("keeps the default drain open for the bounded 26-second Connect11 admission path", async () => {
+    vi.useFakeTimers();
+    const server = {
+      close: vi.fn((callback: (error?: Error) => void) => {
+        setTimeout(callback, 26_000);
+      }),
+      closeAllConnections: vi.fn(),
+    };
+    const background: Phone11BackgroundLifecycle = {
+      start: vi.fn(),
+      stop: vi.fn(async () => undefined),
+    };
+    const shutdown = createPhone11Shutdown(server, background);
+    const result = shutdown();
+
+    await vi.advanceTimersByTimeAsync(26_000);
+    await expect(result).resolves.toBeUndefined();
+    expect(PHONE11_SHUTDOWN_TIMEOUT_MS).toBe(30_000);
+    expect(background.stop).toHaveBeenCalledOnce();
+    expect(server.closeAllConnections).not.toHaveBeenCalled();
+  });
+
   it("lets an admitted producer finish before stopping and draining its background worker", async () => {
     const requestStarted = deferred();
     const releaseRequest = deferred();

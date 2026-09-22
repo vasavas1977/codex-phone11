@@ -38,6 +38,7 @@ from urllib.parse import urlsplit
 SCHEMA = "phone11-profile-dnd-rollout/v1"
 RECEIPT_SCHEMA = "phone11-migration-receipt/v1"
 INTENT_SCHEMA = "phone11-runtime-mutation-intent/v1"
+SHUTDOWN_RECEIPT_SCHEMA = "phone11-runtime-shutdown-receipt/v1"
 GUARD_SCHEMA = "phone11-profile-dnd-guard/v1"
 PROBE_SCHEMA = "phone11-profile-dnd-probes/v1"
 BASELINE_CONTAINER = "cp11-backend"
@@ -52,10 +53,12 @@ ROUTE_SITE = STATE_ROOT / "nginx-site.before"
 ROUTE_RECEIPT = STATE_ROOT / "route-receipt.json"
 BASELINE_RECEIPT = STATE_ROOT / "baseline-receipt.json"
 BASELINE_INTENT = STATE_ROOT / "baseline-intent.json"
+BASELINE_SHUTDOWN_RECEIPT = STATE_ROOT / "baseline-shutdown-receipt.json"
 CANDIDATE_RECEIPT = STATE_ROOT / "candidate-receipt.json"
 DISABLED_ROLLBACK_RECEIPT = STATE_ROOT / "disabled-rollback-receipt.json"
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+DOCKER_STOP_SECONDS = 35
 EXPECTED_PROBES = {
     "existing_phone", "existing_chat", "mixed_batch", "profile_self",
     "colleague_presence", "notification_readiness", "denied_tenant",
@@ -1171,16 +1174,69 @@ class Operator:
         ensure_private_directory(self.pins.migration_receipt.parent, create=False)
         atomic_write(self.pins.migration_receipt, receipt)
 
-    def stop_gracefully(self, name: str, container_id: str) -> None:
-        self.system.command(["docker", "stop", "--time", "20", name], timeout=30)
+    def stop_gracefully(self, name: str, container_id: str) -> Mapping[str, Any]:
+        self.system.command(
+            ["docker", "stop", "--time", str(DOCKER_STOP_SECONDS), name],
+            timeout=DOCKER_STOP_SECONDS + 10,
+        )
         stopped = one_inspect(self.system, container_id, "graceful_stop")
         state = stopped.get("State")
         guarded(
             stopped.get("Id") == container_id and isinstance(state, Mapping)
             and state.get("Running") is False and state.get("OOMKilled") is not True
-            and state.get("ExitCode") != 137,
+            and state.get("ExitCode") == 0,
             "graceful_stop",
         )
+        return stopped
+
+    def save_shutdown_receipt(
+        self,
+        path: Path,
+        *,
+        action: str,
+        before: RuntimePin,
+        stopped: Mapping[str, Any],
+        stopped_guard: Mapping[str, Any],
+    ) -> None:
+        state = stopped.get("State")
+        finished_at = state.get("FinishedAt") if isinstance(state, Mapping) else None
+        guarded(
+            path == BASELINE_SHUTDOWN_RECEIPT
+            and action == "replace_baseline"
+            and before == self.pins.baseline
+            and stopped.get("Id") == before.container_id
+            and isinstance(state, Mapping)
+            and state.get("Running") is False
+            and state.get("OOMKilled") is False
+            and state.get("ExitCode") == 0
+            and isinstance(finished_at, str)
+            and bool(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\r\n]{1,64}Z", finished_at)),
+            "shutdown_receipt",
+        )
+        guarded(
+            stopped_guard.get("admission_fence_id") == self.pins.guard_fence_id
+            and type(stopped_guard.get("sampled_at_epoch_ms")) is int,
+            "shutdown_receipt",
+        )
+        ensure_private_directory(STATE_ROOT, create=True)
+        guarded(not os.path.lexists(path), "shutdown_receipt")
+        atomic_write_exclusive(path, canonical_bytes({
+            "schema": SHUTDOWN_RECEIPT_SCHEMA,
+            "operation_id": self.pins.baseline_operation_id,
+            "action": action,
+            "baseline_intent_sha256": self.pins.baseline_intent_sha256,
+            "container_name": BASELINE_CONTAINER,
+            "container_id": before.container_id,
+            "image": before.image,
+            "build": before.build,
+            "runtime_sha256": before.runtime_sha256,
+            "exit_code": 0,
+            "oom_killed": False,
+            "finished_at": finished_at,
+            "stopped_guard_sha256": canonical_hash(stopped_guard),
+            "stopped_sampled_at_epoch_ms": stopped_guard["sampled_at_epoch_ms"],
+            "admission_fence_id": self.pins.guard_fence_id,
+        }))
 
     def named_container_id(self, name: str) -> str | None:
         raw = self.system.command(["docker", "ps", "-aq", "--no-trunc", "--filter", f"name=^/{name}$"])
@@ -1200,8 +1256,18 @@ class Operator:
         fence_id: str | None = None,
         since_ms: int | None = None,
         stopped_phase: str = "runtime-stopped",
+        shutdown_receipt: tuple[Path, str, RuntimePin] | None = None,
     ) -> Mapping[str, Any] | None:
         stopped_guard: Mapping[str, Any] | None = None
+        if shutdown_receipt is not None:
+            receipt_path, receipt_action, before = shutdown_receipt
+            guarded(
+                receipt_path == BASELINE_SHUTDOWN_RECEIPT
+                and receipt_action == "replace_baseline"
+                and before == self.pins.baseline
+                and not os.path.lexists(receipt_path),
+                "shutdown_receipt",
+            )
         with frozen_compose(document) as frozen:
             if fence_id is not None:
                 self.guard(
@@ -1213,7 +1279,7 @@ class Operator:
                     min_fence_remaining_ms=150_000,
                 )
             if stop is not None:
-                self.stop_gracefully(*stop)
+                stopped_runtime = self.stop_gracefully(*stop)
             if fence_id is not None:
                 stopped_guard = self.guard(
                     stopped_phase,
@@ -1222,6 +1288,15 @@ class Operator:
                     require_fence=True,
                     expected_fence_id=fence_id,
                     min_fence_remaining_ms=100_000,
+                )
+            if shutdown_receipt is not None:
+                guarded(stop is not None and stopped_guard is not None, "shutdown_receipt")
+                self.save_shutdown_receipt(
+                    receipt_path,
+                    action=receipt_action,
+                    before=before,
+                    stopped=stopped_runtime,
+                    stopped_guard=stopped_guard,
                 )
             self.system.command(["docker", "compose", "--project-name", document["name"], "--project-directory", str(pin.path.parent), "-f", str(frozen), "up", "-d", "--no-deps", pin.service], timeout=90)
         return stopped_guard
@@ -1444,6 +1519,7 @@ class Operator:
                 fence_id=before["admission_fence_id"],
                 since_ms=before["sampled_at_epoch_ms"],
                 stopped_phase="replace-baseline-stopped",
+                shutdown_receipt=(BASELINE_SHUTDOWN_RECEIPT, "replace_baseline", self.pins.baseline),
             )
             guarded(stopped is not None, "admission_fence")
             replacement = one_inspect(self.system, BASELINE_CONTAINER, "baseline_replacement")

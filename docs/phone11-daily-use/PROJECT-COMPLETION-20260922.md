@@ -273,3 +273,27 @@ paired pilot iPhones. The iPhone 15 Pro Max was updated in place from Build 75
 after exact IPA, signature, production entitlements, and provisioning checks.
 No uninstall or development launcher was used. The owner test request is pending;
 matching packages do not prove conference connection or two-way media.
+
+## Lifecycle hardening source checkpoint
+
+The bounded shutdown correction raises the app drain budget to 30 seconds and
+Docker stop grace to 35 seconds, rejects every nonzero predecessor exit, and
+persists an exclusive shutdown receipt before starting a baseline replacement.
+The independent review found that a stale receipt could otherwise be discovered
+only after stopping the predecessor. The correction now rejects a preexisting
+receipt before any guard, stop, or start; its regression verifies no such calls.
+The lead inspected that exact correction and matched the frozen file hashes.
+The independent follow-up could not start because the agent tool reached its
+task limit; do not label the corrected delta independently approved.
+
+Worker validation: 35 operator tests, 10 graceful/runtime-role tests, TypeScript,
+Python compilation, and diff checks passed. The 26-second test simulates the
+close callback; it is not a real Connect11 mint/confirm integration test. Pool
+acquisition can exceed statement timeout and will still fail the overall drain
+honestly. A post-stop guard failure retains the existing manual recovery path.
+No lifecycle change was deployed. Provider-fence commissioning and current
+route-topology compatibility remain blocking release requirements.
+
+The lead also updated only the stale admin source-contract expectations and
+ran all 13 tests successfully. These are source contracts, not authenticated
+browser acceptance.

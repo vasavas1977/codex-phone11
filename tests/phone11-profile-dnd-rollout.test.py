@@ -289,7 +289,13 @@ class ProfileDndRolloutTests(unittest.TestCase):
             operator._up = Mock(side_effect=lambda *_args, **_kwargs: events.append("stop-up") or guard_snapshot(attempted=3))
             operator.replace_baseline()
         self.assertLess(events.index("replace-baseline-before"), events.index("stop-up"))
-        operator._up.assert_called_once_with(document, current.baseline_compose, stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id), fence_id=current.guard_fence_id, since_ms=ANY, stopped_phase="replace-baseline-stopped")
+        operator._up.assert_called_once_with(
+            document, current.baseline_compose,
+            stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id),
+            fence_id=current.guard_fence_id, since_ms=ANY,
+            stopped_phase="replace-baseline-stopped",
+            shutdown_receipt=(rollout.BASELINE_SHUTDOWN_RECEIPT, "replace_baseline", current.baseline),
+        )
         self.assertLess(events.index("intent"), events.index("stop-up"))
         self.assertFalse(any("kill" in command for command in system.commands))
 
@@ -330,7 +336,13 @@ class ProfileDndRolloutTests(unittest.TestCase):
              self.assertRaises(rollout.GuardError):
             operator.replace_baseline()
         self.assertEqual(operator._up.call_args_list, [
-            call(new_document, current.baseline_compose, stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id), fence_id=current.guard_fence_id, since_ms=ANY, stopped_phase="replace-baseline-stopped"),
+            call(
+                new_document, current.baseline_compose,
+                stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id),
+                fence_id=current.guard_fence_id, since_ms=ANY,
+                stopped_phase="replace-baseline-stopped",
+                shutdown_receipt=(rollout.BASELINE_SHUTDOWN_RECEIPT, "replace_baseline", current.baseline),
+            ),
             call(rollback_document, current.rollback_compose, stop=None, fence_id=current.guard_fence_id, since_ms=ANY, stopped_phase="baseline-auto-rollback-stopped"),
         ])
         self.assertTrue(any(item.args == ("baseline-auto-rollback",) for item in operator.guard.call_args_list))
@@ -586,19 +598,24 @@ class ProfileDndRolloutTests(unittest.TestCase):
             operator.require_worker_topology({"name": "phone11-profile-dnd"}, {"name": "phone11-profile-dnd"})
         self.assertEqual(error.exception.stage, "unknown_worker")
 
-    def test_graceful_stop_rejects_forced_kill_and_never_invokes_docker_kill(self) -> None:
+    def test_graceful_stop_rejects_every_nonzero_exit_and_never_invokes_docker_kill(self) -> None:
         current = pins()
-        system = FakeSystem()
-        system.json_responses = [[{
-            "Id": current.baseline.container_id,
-            "State": {"Running": False, "OOMKilled": False, "ExitCode": 137},
-        }]]
-        operator = rollout.Operator(current, system)
-        with self.assertRaises(rollout.GuardError) as error:
-            operator.stop_gracefully(rollout.BASELINE_CONTAINER, current.baseline.container_id)
-        self.assertEqual(error.exception.stage, "graceful_stop")
-        self.assertIn(["docker", "stop", "--time", "20", rollout.BASELINE_CONTAINER], system.commands)
-        self.assertFalse(any("kill" in command for command in system.commands))
+        for exit_code in (1, 137):
+            with self.subTest(exit_code=exit_code):
+                system = FakeSystem()
+                system.json_responses = [[{
+                    "Id": current.baseline.container_id,
+                    "State": {"Running": False, "OOMKilled": False, "ExitCode": exit_code},
+                }]]
+                operator = rollout.Operator(current, system)
+                with self.assertRaises(rollout.GuardError) as error:
+                    operator.stop_gracefully(rollout.BASELINE_CONTAINER, current.baseline.container_id)
+                self.assertEqual(error.exception.stage, "graceful_stop")
+                self.assertIn([
+                    "docker", "stop", "--time", str(rollout.DOCKER_STOP_SECONDS),
+                    rollout.BASELINE_CONTAINER,
+                ], system.commands)
+                self.assertFalse(any("kill" in command for command in system.commands))
 
     def test_fresh_guard_rejects_any_new_attempted_notification(self) -> None:
         system = FakeSystem()
@@ -666,7 +683,15 @@ class ProfileDndRolloutTests(unittest.TestCase):
         operator = rollout.Operator(current, FakeSystem())
         events: list[str] = []
         operator.guard = Mock(side_effect=lambda phase, **_kwargs: events.append(phase) or guard_snapshot())
-        operator.stop_gracefully = Mock(side_effect=lambda *_args: events.append("stop"))
+        stopped_runtime = {
+            "Id": current.baseline.container_id,
+            "State": {
+                "Running": False, "OOMKilled": False, "ExitCode": 0,
+                "FinishedAt": "2026-09-22T08:00:00.000000000Z",
+            },
+        }
+        operator.stop_gracefully = Mock(side_effect=lambda *_args: events.append("stop") or stopped_runtime)
+        operator.save_shutdown_receipt = Mock(side_effect=lambda *_args, **_kwargs: events.append("receipt"))
         operator.system.command = Mock(side_effect=lambda *_args, **_kwargs: events.append("up") or b"")
         with patch.object(rollout, "frozen_compose", return_value=nullcontext(Path("/root/frozen-compose.json"))):
             stopped = operator._up(
@@ -674,12 +699,84 @@ class ProfileDndRolloutTests(unittest.TestCase):
                 stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id),
                 fence_id=current.guard_fence_id, since_ms=1,
                 stopped_phase="replace-baseline-stopped",
+                shutdown_receipt=(rollout.BASELINE_SHUTDOWN_RECEIPT, "replace_baseline", current.baseline),
             )
         self.assertEqual(events, [
             "replace-baseline-stopped-before-stop", "stop",
-            "replace-baseline-stopped", "up",
+            "replace-baseline-stopped", "receipt", "up",
         ])
         self.assertEqual(stopped["admission_fence_evidence_sha256"], current.guard_fence_evidence_sha256)
+
+    def test_shutdown_receipt_is_durable_before_failed_replacement_start(self) -> None:
+        current = pins()
+        events: list[str] = []
+        system = FakeSystem()
+        operator = rollout.Operator(current, system)
+        stopped_guard = guard_snapshot()
+        stopped_runtime = {
+            "Id": current.baseline.container_id,
+            "State": {
+                "Running": False, "OOMKilled": False, "ExitCode": 0,
+                "FinishedAt": "2026-09-22T08:00:00.000000000Z",
+            },
+        }
+        operator.guard = Mock(side_effect=lambda phase, **_kwargs: events.append(phase) or stopped_guard)
+        operator.stop_gracefully = Mock(side_effect=lambda *_args: events.append("stop") or stopped_runtime)
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_root = Path(directory)
+            receipt_path = state_root / "baseline-shutdown-receipt.json"
+
+            def command(args, **_kwargs):
+                events.append("up")
+                self.assertTrue(receipt_path.exists())
+                raise rollout.GuardError("compose_start")
+
+            system.command = command
+            with patch.object(rollout, "STATE_ROOT", state_root), \
+                 patch.object(rollout, "BASELINE_SHUTDOWN_RECEIPT", receipt_path), \
+                 patch.object(rollout, "ensure_private_directory"), \
+                 patch.object(rollout.os, "fchown"), \
+                 patch.object(rollout, "frozen_compose", return_value=nullcontext(Path("/root/frozen-compose.json"))), \
+                 self.assertRaises(rollout.GuardError) as error:
+                operator._up(
+                    {"name": "phone11-profile-dnd"}, current.baseline_compose,
+                    stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id),
+                    fence_id=current.guard_fence_id, since_ms=1,
+                    stopped_phase="replace-baseline-stopped",
+                    shutdown_receipt=(receipt_path, "replace_baseline", current.baseline),
+                )
+            self.assertEqual(error.exception.stage, "compose_start")
+            receipt = json.loads(receipt_path.read_bytes())
+            self.assertEqual(receipt["schema"], rollout.SHUTDOWN_RECEIPT_SCHEMA)
+            self.assertEqual(receipt["container_id"], current.baseline.container_id)
+            self.assertEqual(receipt["exit_code"], 0)
+            self.assertEqual(receipt["baseline_intent_sha256"], current.baseline_intent_sha256)
+            self.assertEqual(receipt["stopped_guard_sha256"], rollout.canonical_hash(stopped_guard))
+            self.assertEqual(events[-1], "up")
+
+    def test_preexisting_shutdown_receipt_prevents_stop_and_replacement_start(self) -> None:
+        current = pins()
+        operator = rollout.Operator(current, FakeSystem())
+        operator.guard = Mock()
+        operator.stop_gracefully = Mock()
+        operator.system.command = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            receipt_path = Path(directory) / "baseline-shutdown-receipt.json"
+            receipt_path.write_bytes(b"stale")
+            with patch.object(rollout, "BASELINE_SHUTDOWN_RECEIPT", receipt_path), \
+                 self.assertRaises(rollout.GuardError) as error:
+                operator._up(
+                    {"name": "phone11-profile-dnd"}, current.baseline_compose,
+                    stop=(rollout.BASELINE_CONTAINER, current.baseline.container_id),
+                    fence_id=current.guard_fence_id, since_ms=1,
+                    stopped_phase="replace-baseline-stopped",
+                    shutdown_receipt=(receipt_path, "replace_baseline", current.baseline),
+                )
+        self.assertEqual(error.exception.stage, "shutdown_receipt")
+        operator.guard.assert_not_called()
+        operator.stop_gracefully.assert_not_called()
+        operator.system.command.assert_not_called()
 
     def test_route_refuses_receipt_that_does_not_prove_actual_release_runtime(self) -> None:
         document = manifest()

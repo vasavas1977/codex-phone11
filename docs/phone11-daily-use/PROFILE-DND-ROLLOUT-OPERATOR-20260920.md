@@ -250,15 +250,18 @@ the actual profile, `@all` base, and `@all` live-delta SQL files are exercised b
 the hermetic tests. It never drops the additive schema.
 
 Baseline and candidate replacement use only the frozen rendered Compose model,
-`docker stop --time 20`, and one `docker compose ... up -d --no-deps <service>`.
-The operator rejects OOM or exit 137, never calls `docker kill`, reruns the live
+`docker stop --time 35`, and one `docker compose ... up -d --no-deps <service>`.
+The application admits up to 30 seconds for shutdown, covering the bounded
+plain-video join path of two 10-second Connect11 requests and two 3-second
+admission transactions. The operator requires predecessor exit code zero,
+rejects OOM, never calls `docker kill`, reruns the live
 idle and admission-fence guard immediately before the baseline stop, repeats it
 after stop, and requires the identical fence evidence plus zero active calls,
 meetings, ESL/media/recording/background jobs and zero new `attempted`
 notification rows after restart. The minimal-interruption design is one bounded
 port-3000 stop/start while public tRPC remains on port 3002. Its safety depends
 on the independently enforced fence and fresh zero-active evidence throughout;
-the 20-second stop timeout alone is never sufficient.
+the stop timeout alone is never sufficient.
 
 Before changing the baseline, the operator reconstructs the canonical intent
 from the live-validated manifest and Compose model and requires its digest to
@@ -271,11 +274,21 @@ publication does the operator enter the final fence check and stop/Compose-up
 sequence. A Compose error, timeout, or operator-process death therefore cannot
 leave an unattested replacement merely because no post-success receipt exists.
 
+After the old baseline exits cleanly and the post-stop fence is revalidated,
+the operator exclusively and durably writes
+`/var/lib/phone11-profile-dnd-rollout/baseline-shutdown-receipt.json` before
+starting the replacement. The receipt binds the operation and immutable intent
+to the predecessor container, image, build, runtime hash, exact zero exit,
+finish time, and post-stop guard hash. A failed Compose start therefore leaves
+both the pre-mutation intent and the shutdown checkpoint available for bounded
+recovery; an existing shutdown receipt cannot be overwritten by another run.
+
 The intent is immutable and one-shot. Never create, edit, or repin it after the
-mutation begins. Preserve the original manifest and intent through recovery.
-After a completed operation is independently recorded and the manifest is
-repinned to the new runtime, archive the old intent before preparing a new UUID
-and intent; an existing intent blocks another baseline replacement.
+mutation begins. Preserve the original manifest, intent, and shutdown receipt
+through recovery. After a completed operation is independently recorded and the
+manifest is repinned to the new runtime, archive the old intent and its matching
+shutdown receipt together before preparing a new UUID and intent; either
+existing operation file blocks another baseline replacement before any stop.
 
 ## Rollback
 

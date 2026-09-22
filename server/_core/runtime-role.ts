@@ -152,7 +152,10 @@ export function createPhone11BackgroundLifecycle(
   };
 }
 
-export const PHONE11_SHUTDOWN_TIMEOUT_MS = 15_000;
+// A plain-video join can already be admitted when shutdown starts. Its bounded
+// path includes two 10s Connect11 requests and two 3s admission transactions.
+// Keep enough room for that 26s path to confirm before the process exits.
+export const PHONE11_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 export class Phone11ShutdownTimeoutError extends Error {
   constructor(timeoutMs: number) {
