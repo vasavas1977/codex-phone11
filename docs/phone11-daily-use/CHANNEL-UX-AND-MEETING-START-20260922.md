@@ -23,7 +23,7 @@ Official references:
 
 Focused tests, TypeScript and diff checking were run. Browser preview verified at 393x852: blue mention/red alerts, default all-selected picker, deselect one, select all, search, disabled Start and cancel returning to the preview. This is browser component evidence, not signed iPhone acceptance.
 
-Build 81 remains installed. No new signed build, API deployment, migration, push delivery or meeting initiation occurred in this change.
+Build 82 is installed in place on the paired iPhone 17 Pro Max; device inventory confirmed version 82. Launch was blocked by the locked device, so runtime acceptance is pending. Signed iOS CI run 35692980986 succeeded for client source 224081af468f7ad530a85d7a6f1d72399a9f34a9; Build 82 artifact verification passed all 22 signed-package gates. EAS build `a942497d-839b-465a-82ea-70478de5ddca`; IPA SHA-256 `794af30bf7b1f0cecc94089567d79fbb144fcc595f3da172bdfea3880c614d9b`. Build 81 rollback is retained. No API deployment, migration, push delivery or meeting initiation is established by this change.
 
 ## Implemented meeting contract; rollout pending
 
@@ -42,6 +42,16 @@ The authenticated `startChannelMeeting(channelId, selectedMemberIds, requestId)`
 
 The independent Connect11 review found and the worker corrected volatile timestamp defaults, non-conflicting permission locks, and LIMIT-before-origin-filter behavior. A fresh isolated PostgreSQL cluster passed 49 integration checks, including meeting defaults and concurrent permission revocation. The independent Connect11 rereview approved the corrected backend source with no remaining concrete P0–P2 findings in its scope. Full Vitest: 399 suites, 1,919 passed, 285 environment-dependent skips, zero failures; TypeScript passes. Client controls cover safe retries, duplicate taps and account-change results; signed handset behavior remains unverified.
 
-A separate fixed 3005-to-3006 API rollout operator is prepared. Fresh read-only host inspection confirmed all existing API slots healthy, but the live 3005 container's temporary Compose source no longer exists. Protected configuration recovery, reviewed migration, pilot grants, API activation, and signed iPhone release remain required. Build 81 remains the installed release until those steps complete.
+A separate fixed 3005-to-3006 API rollout operator is prepared. Fresh read-only host inspection confirmed all existing API slots healthy, but the live 3005 container's temporary Compose source no longer exists. Protected configuration recovery, reviewed migration, pilot grants, API activation, and signed iPhone release remain required. Build 82 is now installed on the iPhone 17 Pro Max, with runtime acceptance pending unlock. The iPhone 15 Pro Max was unavailable.
 
 Thread-specific persisted unread counts still need an authoritative thread cursor; local red new-reply arrivals do not claim such a count.
+
+## Release checkpoint
+
+- Backend follow-up `9aab162` restricts channel hosting to the intersection of explicitly enabled and configured video tenants. Independent source review approved this delta; eight router tests passed.
+- `c69fced` freezes protected Compose recovery and the migration operator. Recovery classification takes the same database advisory lock as apply; twelve operator tests include real overlapping PostgreSQL commit/rollback cases. Independent review found a pending-before-lock recovery race; correction is in progress.
+- `b453958` freezes API activation safeguards, inactive-port containment, and exact migration-receipt/tenant flag binding. Forty-two focused operator tests passed; independent review found leading-zero port containment and stale migration provenance issues; corrections are in progress.
+- Neither these checks nor signed build success establishes live activation or physical-device media acceptance.
+
+- Reviewed Compose recovery ran successfully without restart: protected config SHA-256 `881ba5bd8219f11285d80ca4383885e0ab7a75db09a0ab0c6b9d037c3c54389d`.
+- Owner approved meeting-host permission for both 3001 and 1020 in their shared test channel; no grant or live migration has run yet.
