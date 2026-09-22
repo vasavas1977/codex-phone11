@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { createChatService } from "../server/chat/service";
 import { chatRouter } from "../server/chat/router";
+import { createChannelMeetingRepository } from "../server/meetings/channel-meeting-repository";
 const connectionString = process.env.PHONE11_CHAT_TEST_DATABASE_URL;
 const socket = process.env.PHONE11_CHAT_TEST_SOCKET;
 if (socket && !socket.startsWith('/')) throw new Error('Private absolute test socket required');
@@ -37,8 +38,11 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
       CREATE TABLE IF NOT EXISTS tenants (id INTEGER PRIMARY KEY, name TEXT, status TEXT);
       CREATE TABLE IF NOT EXISTS extensions (id INTEGER PRIMARY KEY, tenant_id INTEGER REFERENCES tenants(id), extension_number TEXT, status TEXT, deleted_at TIMESTAMPTZ);
       CREATE TABLE IF NOT EXISTS user_extensions (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), extension_id INTEGER REFERENCES extensions(id), is_primary BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS tenant_memberships (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), tenant_id INTEGER REFERENCES tenants(id), role TEXT, status TEXT, is_default BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id, tenant_id));`);
+      CREATE TABLE IF NOT EXISTS tenant_memberships (id SERIAL PRIMARY KEY, user_id INTEGER REFERENCES users(id), tenant_id INTEGER REFERENCES tenants(id), role TEXT, status TEXT, is_default BOOLEAN, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id, tenant_id));
+      CREATE TABLE IF NOT EXISTS phone11_auth_identity (legacy_user_id INTEGER REFERENCES users(id), disabled_at TIMESTAMPTZ);`);
     await pool.query(await readFile(new URL("../server/chat/migration.sql", import.meta.url), "utf8"));
+    await pool.query(await readFile(new URL("../server/meetings/plain-video-admission-migration.sql", import.meta.url), "utf8"));
+    await pool.query(await readFile(new URL("../server/meetings/channel-meeting-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/collaboration-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/all-mentions-migration.sql", import.meta.url), "utf8"));
     await pool.query(await readFile(new URL("../server/chat/read-receipts-migration.sql", import.meta.url), "utf8"));
@@ -51,7 +55,8 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
       INSERT INTO tenants VALUES (10,'Alpha','active'),(20,'Beta','active');
       INSERT INTO tenant_memberships(user_id,tenant_id,role,status,is_default) VALUES (1,10,'owner','active',true),(2,10,'user','active',false),(3,20,'owner','active',true),(5,10,'user','active',false),(6,20,'user','active',false);
       INSERT INTO extensions VALUES (1,10,'1001','active',NULL),(2,10,'1002','active',NULL),(3,20,'2001','active',NULL),(5,10,'1005','active',NULL),(6,20,'2002','active',NULL);
-      INSERT INTO user_extensions(user_id,extension_id,is_primary) VALUES (1,1,true),(2,2,true),(3,3,true),(5,5,true),(6,6,true);`);
+      INSERT INTO user_extensions(user_id,extension_id,is_primary) VALUES (1,1,true),(2,2,true),(3,3,true),(5,5,true),(6,6,true);
+      INSERT INTO phone11_auth_identity(legacy_user_id) VALUES (1),(2),(3),(5),(6);`);
   });
   afterAll(() => pool.end());
   const room = () => service.create(1, 10, "direct", "Direct", [2]);
@@ -211,11 +216,80 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
   });
   it("tracks unread messages per member and never marks future messages read", async () => {
     const { id } = await room(); const first = await service.send(1, 10, id, randomUUID(), "One");
+    expect((await service.history(2, 10, id)).memberLastReadSequence).toBe(0);
     expect((await service.list(2, 10)).channels[0].unreadCount).toBe(1);
     expect((await service.list(1, 10)).channels[0].unreadCount).toBe(0);
     await service.read(2, 10, id, Number.MAX_SAFE_INTEGER); await service.send(1, 10, id, randomUUID(), "Two");
     expect((await service.list(2, 10)).channels[0].unreadCount).toBe(1);
     await service.read(2, 10, id, first.sequence); expect((await service.list(2, 10)).channels[0].unreadCount).toBe(1);
+    expect((await service.history(2, 10, id)).memberLastReadSequence).toBe(first.sequence);
+  });
+  it("uses one statement timestamp for the default two-hour channel lifetime", async () => {
+    const { id } = await room();
+    const meetingId = randomUUID();
+    await pool.query(`INSERT INTO phone11_plain_video_admission_rooms(id,tenant_id,state,revision)
+      VALUES($1,10,'open',$2)`, [meetingId, randomUUID()]);
+    const saved = await pool.query(`INSERT INTO phone11_channel_meetings
+      (meeting_id,tenant_id,channel_id,created_by,request_id,selection_fingerprint)
+      VALUES($1,10,$2,1,$3,repeat('a',64)) RETURNING created_at,expires_at`,
+      [meetingId, id, randomUUID()]);
+    expect(saved.rows[0].expires_at.getTime() - saved.rows[0].created_at.getTime()).toBe(2 * 60 * 60 * 1000);
+  });
+  it("serializes permission revocation with the final meeting-start authorization", async () => {
+    const { id } = await service.create(1, 10, "group", "Meeting channel", [2]);
+    await pool.query(`UPDATE phone11_chat_members SET can_start_meeting=TRUE
+      WHERE tenant_id=10 AND conversation_id=$1 AND user_id=1`, [id]);
+    expect((await pool.query(`SELECT member.user_id FROM phone11_chat_members member
+      JOIN tenant_memberships membership ON membership.tenant_id=member.tenant_id
+        AND membership.user_id=member.user_id AND membership.status='active'
+      JOIN phone11_auth_identity identity ON identity.legacy_user_id=member.user_id AND identity.disabled_at IS NULL
+      JOIN user_extensions assignment ON assignment.user_id=member.user_id
+      JOIN extensions extension ON extension.id=assignment.extension_id AND extension.tenant_id=member.tenant_id
+        AND extension.status='active' AND extension.deleted_at IS NULL
+      WHERE member.tenant_id=10 AND member.conversation_id=$1 AND member.user_id=ANY($2::integer[])
+      ORDER BY member.user_id`, [id, [1, 2]])).rows.map(row => Number(row.user_id))).toEqual([1, 2]);
+    let signalLocked!: () => void;
+    const locked = new Promise<void>(resolve => { signalLocked = resolve; });
+    let releaseAuthorization!: () => void;
+    const holdAuthorization = new Promise<void>(resolve => { releaseAuthorization = resolve; });
+    let lockedRows: unknown[] = [];
+    const transactionWithHold = async <T>(fn: (db: PoolClient) => Promise<T>) => transaction(async client => {
+      const db = new Proxy(client, {
+        get(target, property, receiver) {
+          if (property !== "query") return Reflect.get(target, property, receiver);
+          return async (sql: string, values?: unknown[]) => {
+            if (sql.includes("FOR UPDATE OF assignment,extension")) {
+              const result = await client.query(sql, values);
+              lockedRows = result.rows;
+              signalLocked();
+              return result;
+            }
+            if (sql.includes("member.can_start_meeting=TRUE")) {
+              await holdAuthorization;
+            }
+            return client.query(sql, values);
+          };
+        },
+      });
+      return fn(db);
+    });
+    const repository = createChannelMeetingRepository(transactionWithHold as never);
+    const meetingId = randomUUID();
+    const start = repository.start({ actorId: 1, tenantId: 10, channelId: id, selectedMemberIds: [2],
+      requestId: randomUUID(), fingerprint: "b".repeat(64), meetingId });
+    const observedStart = start.then(value => ({ value }), error => ({ error }));
+    await locked;
+    expect(lockedRows).toEqual([{ user_id: 1 }, { user_id: 2 }]);
+    let revoked = false;
+    const revocation = pool.query(`UPDATE phone11_chat_members SET can_start_meeting=FALSE
+      WHERE tenant_id=10 AND conversation_id=$1 AND user_id=1`, [id]).then(() => { revoked = true; });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(revoked).toBe(false);
+    releaseAuthorization();
+    expect(await observedStart).toMatchObject({ value: { invitedMemberIds: [2] } });
+    await revocation;
+    expect((await pool.query(`SELECT can_start_meeting FROM phone11_chat_members
+      WHERE tenant_id=10 AND conversation_id=$1 AND user_id=1`, [id])).rows[0].can_start_meeting).toBe(false);
   });
   it("pages persisted history without duplicates or missing messages", async () => {
     const { id } = await room();

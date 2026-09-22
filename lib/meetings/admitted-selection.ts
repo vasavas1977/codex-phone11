@@ -9,6 +9,8 @@ export function initialMeetingSelection(
   return {
     manualEntry: false,
     meetingCode:
-      admittedMeetings.length === 1 ? admittedMeetings[0].meetingId : "",
+      admittedMeetings.some(meeting => meeting.meetingId === initialMeetingCode)
+        ? initialMeetingCode
+        : initialMeetingCode ? "" : admittedMeetings.length === 1 ? admittedMeetings[0].meetingId : "",
   };
 }

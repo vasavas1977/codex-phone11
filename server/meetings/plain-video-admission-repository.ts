@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 
 import type { MeetingGrant, MeetingRepository } from "./service";
+import { channelMeetingOriginAllows } from "./channel-meeting-origin";
 
 const opaqueIdentifier = z.string().regex(/^[A-Za-z0-9_-]{1,96}$/);
 
@@ -70,6 +71,25 @@ export const plainVideoAdmissionAdmitted = `r.state = 'open' AND r.ended_at IS N
  * consent ledger, and it treats a disabled Phone11 identity as inactive.
  */
 export function createPlainVideoAdmissionRepository() {
+  const candidatePage = (
+    db: PlainVideoAdmissionQuery,
+    userId: number,
+    configuredTenantIds: readonly number[],
+    afterMeetingId: string | null,
+  ) => db.query(
+    `WITH candidates AS (
+       ${plainVideoAdmissionSelection}
+        WHERE m.user_id = $1 AND r.tenant_id = ANY($2::integer[])
+          AND ${plainVideoAdmissionAdmitted}
+     )
+     SELECT meeting_id, tenant_id, user_id FROM candidates
+      WHERE ($3::uuid IS NULL OR meeting_id > $3)
+      GROUP BY meeting_id, tenant_id, user_id
+     HAVING count(*) = 1
+      ORDER BY meeting_id
+      LIMIT 10`,
+    [userId, configuredTenantIds, afterMeetingId],
+  );
   return {
     async authorize(
       db: PlainVideoAdmissionQuery,
@@ -86,6 +106,9 @@ export function createPlainVideoAdmissionRepository() {
         meetingId,
         userId,
       });
+      if (record && !await channelMeetingOriginAllows(db, {
+        meetingId: record.meeting_id, tenantId: record.tenant_id, userId: record.user_id,
+      })) return null;
       return record
         ? {
             meetingId: record.meeting_id,
@@ -105,7 +128,8 @@ export function createPlainVideoAdmissionRepository() {
         [grant.meetingId, grant.tenantId, grant.userId],
       );
       if (result.rows.length !== 1) return null;
-      return parseExactPlainVideoAdmissionRecord(result.rows[0], grant);
+      const record = parseExactPlainVideoAdmissionRecord(result.rows[0], grant);
+      return record && await channelMeetingOriginAllows(db, grant) ? record : null;
     },
 
     async hasAvailablePlainVideoAdmission(
@@ -119,19 +143,20 @@ export function createPlainVideoAdmissionRepository() {
         !configuredTenantIds.length
       )
         return false;
-      const result = await db.query(
-        `WITH candidates AS (
-           ${plainVideoAdmissionSelection}
-            WHERE m.user_id = $1 AND r.tenant_id = ANY($2::integer[])
-              AND ${plainVideoAdmissionAdmitted}
-         )
-         SELECT 1 FROM candidates
-          GROUP BY meeting_id, tenant_id, user_id
-         HAVING count(*) = 1
-         LIMIT 1`,
-        [userId, configuredTenantIds],
-      );
-      return result.rows.length === 1;
+      let afterMeetingId: string | null = null;
+      while (true) {
+        const result = await candidatePage(db, userId, configuredTenantIds, afterMeetingId);
+        for (const row of result.rows) {
+          const parsed = availableMeetingGrantSchema.safeParse(row);
+          if (parsed.success && await channelMeetingOriginAllows(db, {
+            meetingId: parsed.data.meeting_id, tenantId: parsed.data.tenant_id, userId: parsed.data.user_id,
+          })) return true;
+        }
+        if (result.rows.length < 10) return false;
+        const cursor = availableMeetingGrantSchema.safeParse(result.rows.at(-1));
+        if (!cursor.success || cursor.data.meeting_id === afterMeetingId) return false;
+        afterMeetingId = cursor.data.meeting_id;
+      }
     },
 
     async listAvailablePlainVideoMeetings(
@@ -145,33 +170,26 @@ export function createPlainVideoAdmissionRepository() {
         !configuredTenantIds.length
       )
         return [];
-      const result = await db.query(
-        `WITH candidates AS (
-           ${plainVideoAdmissionSelection}
-            WHERE m.user_id = $1 AND r.tenant_id = ANY($2::integer[])
-              AND ${plainVideoAdmissionAdmitted}
-         )
-         SELECT meeting_id, tenant_id, user_id FROM candidates
-          GROUP BY meeting_id, tenant_id, user_id
-         HAVING count(*) = 1
-          ORDER BY meeting_id
-         LIMIT 10`,
-        [userId, configuredTenantIds],
-      );
-      return result.rows.flatMap((row) => {
-        const parsed = availableMeetingGrantSchema.safeParse(row);
-        return parsed.success &&
-          parsed.data.user_id === userId &&
-          configuredTenantIds.includes(parsed.data.tenant_id)
-          ? [
-              {
-                meetingId: parsed.data.meeting_id,
-                tenantId: parsed.data.tenant_id,
-                userId: parsed.data.user_id,
-              },
-            ]
-          : [];
-      });
+      const available: MeetingGrant[] = [];
+      let afterMeetingId: string | null = null;
+      while (available.length < 10) {
+        const result = await candidatePage(db, userId, configuredTenantIds, afterMeetingId);
+        for (const row of result.rows) {
+          const parsed = availableMeetingGrantSchema.safeParse(row);
+          if (parsed.success && parsed.data.user_id === userId &&
+            configuredTenantIds.includes(parsed.data.tenant_id) &&
+            await channelMeetingOriginAllows(db, {
+              meetingId: parsed.data.meeting_id, tenantId: parsed.data.tenant_id, userId: parsed.data.user_id,
+            })) available.push({ meetingId: parsed.data.meeting_id,
+              tenantId: parsed.data.tenant_id, userId: parsed.data.user_id });
+          if (available.length === 10) break;
+        }
+        if (result.rows.length < 10 || available.length === 10) break;
+        const cursor = availableMeetingGrantSchema.safeParse(result.rows.at(-1));
+        if (!cursor.success || cursor.data.meeting_id === afterMeetingId) break;
+        afterMeetingId = cursor.data.meeting_id;
+      }
+      return available;
     },
   };
 }

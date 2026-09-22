@@ -1,5 +1,16 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { getPool } from "../pbx/db";
+import { readChannelMeetingConfiguration } from "./channel-meeting-config";
+import {
+  createChannelMeetingRepository,
+  type ChannelMeetingRepository,
+} from "./channel-meeting-repository";
+import {
+  channelCapabilitiesSchema,
+  channelInvitationsSchema,
+  createChannelMeetingService,
+  startChannelMeetingSchema,
+} from "./channel-meeting-service";
 import { createConnect11PlainVideoFacade } from "./connect11-plain-video-facade";
 import { readServerConnect11PlainVideoTenantConfiguration } from "./connect11-plain-video-config";
 import {
@@ -40,6 +51,7 @@ export type MeetingsRouterDependencies = {
   repository?: MeetingRepository;
   resolver?: Connect11PlainVideoAdmissionResolver;
   clientFactory?: PlainVideoClientFactory;
+  channelRepository?: ChannelMeetingRepository;
 };
 
 function defaultClientFactory(): PlainVideoClientFactory {
@@ -111,6 +123,11 @@ export function createMeetingsRouter(
   dependencies: MeetingsRouterDependencies = {},
 ) {
   const configured = createConfiguredMeetingService(env, dependencies);
+  const channelConfiguration = readChannelMeetingConfiguration(env);
+  const channelService = createChannelMeetingService(
+    dependencies.channelRepository ?? createChannelMeetingRepository(),
+    channelConfiguration.enabled ? channelConfiguration.tenantIds : [],
+  );
   return router({
     capabilities: protectedProcedure.query(({ ctx }) =>
       configured.service.capabilitiesFor(
@@ -129,6 +146,15 @@ export function createMeetingsRouter(
       .mutation(({ ctx, input }) =>
         configured.service.join(ctx.user.id, input),
       ),
+    channelCapabilities: protectedProcedure
+      .input(channelCapabilitiesSchema)
+      .query(({ ctx, input }) => channelService.capabilities(ctx.user.id, input)),
+    startChannelMeeting: protectedProcedure
+      .input(startChannelMeetingSchema)
+      .mutation(({ ctx, input }) => channelService.start(ctx.user.id, input)),
+    invitations: protectedProcedure
+      .input(channelInvitationsSchema)
+      .query(({ ctx, input }) => channelService.invitations(ctx.user.id, input)),
   });
 }
 

@@ -6,7 +6,7 @@ export interface ChatTransport {
   list(tenantId?: number): Promise<{ workspace: ChatWorkspace; workspaces: ChatWorkspace[]; channels: ChatChannel[] }>;
   directory(tenantId: number): Promise<ChatPerson[]>;
   create(tenantId: number, kind: ChatKind, name: string, memberIds: number[]): Promise<{ id: string }>;
-  history(tenantId: number, id: string, before?: number): Promise<{ messages: ChatMessage[]; hasMore: boolean; latestSequence?: number }>;
+  history(tenantId: number, id: string, before?: number): Promise<{ messages: ChatMessage[]; hasMore: boolean; latestSequence?: number; memberLastReadSequence?: number }>;
   search(tenantId: number, id: string, text: string): Promise<{ messages: ChatMessage[]; hasMore: boolean }>;
   thread(tenantId: number, id: string, parentMessageId: string, before?: number): Promise<ChatThread>;
   send(tenantId: number, id: string, clientId: string, content: string, parentMessageId?: string, attachmentIds?: string[], mentions?: Pick<ChatMention, "userId" | "start" | "length">[], allMention?: ChatAllMention): Promise<ChatMessage>;
@@ -48,12 +48,14 @@ interface ChatState {
   setDraft: (id: string, text: string) => void;
   loading: boolean; error: string | null; roomErrors: Record<string, string | null>;
   roomLoading: Record<string, boolean>; hasMore: Record<string, boolean>; latestSequences: Record<string, number>;
+  initialReadSequences: Record<string, number>;
   setUser: (id: number | null) => void;
   loadChannels: (tenantId?: number) => Promise<void>;
   cancelChannelRefresh: () => void;
   loadDirectory: () => Promise<void>;
   createConversation: (kind: ChatKind, name: string, memberIds: number[]) => Promise<string>;
   loadMessages: (id: string, older?: boolean) => Promise<void>;
+  beginChannelVisit: (id: string) => void;
   loadThread: (id: string, parentMessageId: string, before?: number) => Promise<ChatThread>;
   reportMessage: (id: string, category: "harassment" | "spam" | "safety" | "other", comment?: string, messageId?: string) => Promise<void>;
   blockMember: (userId: number) => Promise<void>;
@@ -78,7 +80,7 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
   // chat never produces duplicate read receipts.
   const readRequests = new Map<string, Promise<void>>();
   const readCursors = new Map<string, number>();
-  const empty = () => ({ workspace: null, workspaces: [], channels: [], messages: {}, people: [], drafts: {}, storageError: null, loading: false, error: null, roomErrors: {}, roomLoading: {}, hasMore: {}, latestSequences: {} });
+  const empty = () => ({ workspace: null, workspaces: [], channels: [], messages: {}, people: [], drafts: {}, storageError: null, loading: false, error: null, roomErrors: {}, roomLoading: {}, hasMore: {}, latestSequences: {}, initialReadSequences: {} });
   return create<ChatState>((set, get) => {
     const persist = async () => {
       const current = generation;
@@ -247,6 +249,15 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
         if (current !== generation) throw new Error("Account changed. Open Team Chat again.");
         return result.id;
       },
+      beginChannelVisit: id => {
+        if (!get().userId || !get().workspace) return;
+        set(s => {
+          if (s.initialReadSequences[id] === undefined) return s;
+          const initialReadSequences = { ...s.initialReadSequences };
+          delete initialReadSequences[id];
+          return { initialReadSequences };
+        });
+      },
       loadMessages: async (id, older = false) => {
         const state = get(), current = generation;
         if (!state.userId || !state.workspace || state.roomLoading[id]) return;
@@ -266,7 +277,11 @@ export function createChatStore(api: ChatTransport, persistence?: ChatPersistenc
             return { messages: { ...s.messages, [id]: mergeMessages(gap ? currentMessages.filter(m => m.status !== "sent") : currentMessages, data.messages) },
               roomErrors: { ...s.roomErrors, [id]: null }, roomLoading: { ...s.roomLoading, [id]: false },
               hasMore: { ...s.hasMore, [id]: older || gap || s.hasMore[id] === undefined ? data.hasMore : s.hasMore[id] },
-              latestSequences: { ...s.latestSequences, [id]: Math.max(s.latestSequences[id] || 0, data.latestSequence || 0) } };
+              latestSequences: { ...s.latestSequences, [id]: Math.max(s.latestSequences[id] || 0, data.latestSequence || 0) },
+              initialReadSequences: !older && s.initialReadSequences[id] === undefined &&
+                Number.isSafeInteger(data.memberLastReadSequence) && (data.memberLastReadSequence ?? -1) >= 0
+                ? { ...s.initialReadSequences, [id]: data.memberLastReadSequence! }
+                : s.initialReadSequences };
           });
           await persist();
         } catch (error) {

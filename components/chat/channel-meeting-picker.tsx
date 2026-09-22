@@ -17,6 +17,7 @@ export type ChannelMeetingPickerProps = {
   error?: string | null;
   /** Only the channel-creation capability may enable Start; join capability is insufficient. */
   startAvailable: boolean;
+  maxSelectedMembers?: number;
   unavailableReason?: string;
   onCancel: () => void;
   onStart: (memberIds: number[]) => void;
@@ -45,7 +46,7 @@ function Picker(props: ChannelMeetingPickerProps) {
   const [selected, setSelected] = useState(() => new Set(invitees.map(person => person.id)));
   const [query, setQuery] = useState("");
   const selectedIds = invitees.filter(person => selected.has(person.id)).map(person => person.id);
-  const canStart = props.startAvailable && !props.loading && !props.busy && selectedIds.length > 0 && props.members.some(person => person.id === props.hostId);
+  const canStart = props.startAvailable && !props.loading && !props.busy && selectedIds.length > 0 && selectedIds.length <= (props.maxSelectedMembers ?? 50) && props.members.some(person => person.id === props.hostId);
   const matches = invitees.filter(person => `${person.name} ${person.extension ?? ""}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const toggle = (id: number) => setSelected(previous => {
     const next = new Set(previous);
@@ -79,6 +80,7 @@ function Picker(props: ChannelMeetingPickerProps) {
           {!props.loading && !matches.length && <Text style={{ paddingVertical: 20, color: colors.muted }}>No matching members</Text>}
         </ScrollView>
         {!props.startAvailable && <Text accessibilityRole="alert" style={{ color: colors.muted, marginTop: 12 }}>{props.unavailableReason ?? "Starting a channel meeting is not available yet. No invitations have been sent."}</Text>}
+        {selectedIds.length > (props.maxSelectedMembers ?? 50) && <Text accessibilityRole="alert" style={{ color: colors.error }}>Select up to {props.maxSelectedMembers ?? 50} members.</Text>}
         {!!props.error && <Text accessibilityRole="alert" style={{ color: colors.error, marginTop: 12 }}>{props.error}</Text>}
         <Pressable accessibilityRole="button" accessibilityLabel="Start meeting" accessibilityState={{ disabled: !canStart, busy: !!props.busy }} disabled={!canStart} onPress={() => { if (canStart) props.onStart(selectedIds); }} style={{ marginTop: 16, minHeight: 48, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: canStart ? colors.primary : colors.surface }}>
           <Text style={{ color: canStart ? "#ffffff" : colors.muted, fontSize: 17, fontWeight: "600" }}>{props.busy ? "Starting…" : "Start meeting"}</Text>

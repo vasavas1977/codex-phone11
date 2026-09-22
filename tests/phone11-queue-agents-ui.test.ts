@@ -51,7 +51,7 @@ describe("queue agent editor", () => {
     expect(source).toContain("useCallQueue");
     expect(source).toContain("useUpdateCallQueue");
     expect(source).toContain("useSetQueueAgents");
-    expect(source).toContain("useExtensions(1, 100");
+    expect(source).toMatch(/useExtensions\(\s*1,\s*100,\s*queuesAvailable\s*&&\s*\(editingQueueId !== null \|\| editingSettingsId !== null\)\s*&&\s*tenantId > 0,\s*\)/);
     expect(source).toContain('accessibilityLabel={`Edit agents for ${item.name}`}');
     expect(source).toContain('accessibilityLabel={"Add extension " + String(extension.extension_number)}');
     expect(source).toContain("agentsMutation.isPending");

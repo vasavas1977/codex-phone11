@@ -150,6 +150,9 @@ export default function ChatRoomScreen() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [details, setDetails] = useState<ChatConversationDetails | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [channelMeetingCapability, setChannelMeetingCapability] = useState<{ available: boolean; canStart: boolean; maxSelectedMembers: number } | null>(null);
+  const [channelMeetingBusy, setChannelMeetingBusy] = useState(false);
+  const [meetingInvitations, setMeetingInvitations] = useState<Awaited<ReturnType<typeof messageApi.channelMeetingInvitations>>>([]);
   const [channelMeetingOpen, setChannelMeetingOpen] = useState(false);
   const [channelMeetingScope, setChannelMeetingScope] = useState<SendAction | null>(null);
   const [channelMeetingMembers, setChannelMeetingMembers] = useState<ChatConversationDetails["members"]>([]);
@@ -219,6 +222,8 @@ export default function ChatRoomScreen() {
   const composerSelection = useRef<ComposerSelection>({ start: draft.length, end: draft.length });
   const mentionDetailsRequest = useRef<SendAction | null>(null);
   const detailsScope = useRef<SendAction | null>(null);
+  const meetingInvitationScope = useRef<SendAction | null>(null);
+  const meetingStartRef = useRef<{ key: string; requestId: string; busy: boolean } | null>(null);
   const channelMeetingRequestRef = useRef<SendAction | null>(null);
   const activeDraftMentions = draftMentionState.key === draftKey ? draftMentionState.items : [];
   const activeAllMention = draftAllMentionState.key === draftKey ? draftAllMentionState.item : undefined;
@@ -250,6 +255,7 @@ export default function ChatRoomScreen() {
   const canCompose = Boolean(canInteract && !channel?.blocked);
   const mentionOpen = !!mentionTrigger;
   const actionIsCurrent = (action: SendAction | null) => !!action &&
+    getAuthSnapshot().user === action.owner &&
     !!liveScopeRef.current && action.owner === liveScopeRef.current.owner &&
     action.workspaceId === liveScopeRef.current.workspaceId && action.roomId === liveScopeRef.current.roomId;
   const sending = actionIsCurrent(sendingAction);
@@ -335,6 +341,10 @@ export default function ChatRoomScreen() {
     setDetailsError(null);
     setDetailsLoading(false);
     channelMeetingRequestRef.current = null;
+    setChannelMeetingCapability(null);
+    setChannelMeetingBusy(false);
+    setMeetingInvitations([]);
+    meetingStartRef.current = null;
     setChannelMeetingOpen(false);
     setChannelMeetingScope(null);
     setChannelMeetingMembers([]);
@@ -416,6 +426,7 @@ export default function ChatRoomScreen() {
       )
         return;
       let mounted = true;
+      let beganVisit = false;
       const refresh = async () => {
         if (
           !mounted ||
@@ -447,6 +458,10 @@ export default function ChatRoomScreen() {
           useChatStore.getState().workspace?.id !== tenantId
         )
           return;
+        if (!beganVisit) {
+          useChatStore.getState().beginChannelVisit(id);
+          beganVisit = true;
+        }
         await useChatStore.getState().loadMessages(id);
         if (
           mounted &&
@@ -575,11 +590,13 @@ export default function ChatRoomScreen() {
     setChannelMeetingMembers([]);
     setChannelMeetingError(null);
     setChannelMeetingLoading(true);
+    setChannelMeetingCapability(null);
     setChannelMeetingOpen(true);
     try {
-      const value = await state.loadDetails(id);
+      const [value, capability] = await Promise.all([state.loadDetails(id), messageApi.channelMeetingCapabilities(action.workspaceId, id)]);
       if (!actionIsCurrent(action) || channelMeetingRequestRef.current !== action) return;
       setChannelMeetingMembers(value.members);
+      setChannelMeetingCapability(capability);
     } catch (error) {
       if (actionIsCurrent(action) && channelMeetingRequestRef.current === action)
         setChannelMeetingError(chatError(error));
@@ -596,6 +613,53 @@ export default function ChatRoomScreen() {
     setChannelMeetingLoading(false);
     setChannelMeetingError(null);
   };
+  const startChannelMeeting = async (memberIds: number[]) => {
+    const action = channelMeetingScope;
+    if (!action || !actionIsCurrent(action) || !channelMeetingCapability?.canStart || meetingStartRef.current?.busy) return;
+    const selected = [...new Set(memberIds)].sort((a, b) => a - b);
+    const key = `${user?.id}:${action.workspaceId}:${action.roomId}:${selected.join(",")}`;
+    // Retain the same request after an uncertain network result; it is not an authorization token.
+    const attempt = meetingStartRef.current?.key === key ? meetingStartRef.current : {
+      key, busy: false, requestId: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => {
+        const n = Math.floor(Math.random() * 16); return (c === "x" ? n : (n & 3) | 8).toString(16);
+      }),
+    };
+    attempt.busy = true;
+    meetingStartRef.current = attempt;
+    setChannelMeetingBusy(true);
+    setChannelMeetingError(null);
+    try {
+      const result = await messageApi.startChannelMeeting(action.workspaceId, action.roomId, selected, attempt.requestId);
+      if (!actionIsCurrent(action) || channelMeetingRequestRef.current !== action) return;
+      closeChannelMeetingPicker();
+      meetingStartRef.current = null;
+      router.push({ pathname: "/conference", params: { meetingId: result.meetingId } });
+    } catch {
+      if (actionIsCurrent(action) && channelMeetingRequestRef.current === action)
+        setChannelMeetingError("Could not confirm the meeting. Try again with the same selection to recover it safely.");
+    } finally {
+      attempt.busy = false;
+      if (actionIsCurrent(action)) setChannelMeetingBusy(false);
+    }
+  };
+  useFocusEffect(useCallback(() => {
+    if (!user || !chat.workspace || !channel || !["channel", "group"].includes(channel.kind)) return;
+    const action = { owner: user, workspaceId: chat.workspace.id, roomId: id };
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      try {
+        const items = await messageApi.channelMeetingInvitations(action.workspaceId, id);
+        if (!stopped && actionIsCurrent(action)) { meetingInvitationScope.current = action; setMeetingInvitations(items.filter(item => item.expiresAt > Date.now())); }
+      } catch {
+        if (!stopped && actionIsCurrent(action)) setMeetingInvitations([]);
+      } finally {
+        if (!stopped) timer = setTimeout(refresh, 15000);
+      }
+    };
+    void refresh();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [user, chat.workspace?.id, id, channel?.kind]));
   const ensureMentionMembers = async () => {
     const state = currentScope();
     if (!state) return;
@@ -959,6 +1023,10 @@ export default function ChatRoomScreen() {
     : threadMessages
       ? threadMessages
       : messages.filter((item) => !item.parent);
+  const initialReadSequence = chat.initialReadSequences?.[id];
+  const firstUnread = !threadOpen && !searching && initialReadSequence !== undefined
+    ? displayedMessages.find(message => message.sequence > initialReadSequence && message.senderId !== user?.id && message.status === "sent")
+    : undefined;
   const activeReceiptThreadRootId = threadIsCurrent ? thread?.root.id : undefined;
   const receiptScopeRef = useRef<ReceiptScope | null>(null);
   receiptScopeRef.current = ownsWorkspace && user && chat.workspace ? {
@@ -1457,7 +1525,7 @@ export default function ChatRoomScreen() {
                   <Pressable
                     accessibilityRole="button"
                     accessibilityLabel="Start channel meeting"
-                    accessibilityHint="Select channel members. No invitations are sent until meeting creation is available."
+                    accessibilityHint="Choose members to invite to a video meeting."
                     disabled={!canInteract || channelMeetingLoading}
                     onPress={() => void openChannelMeetingPicker()}
                     style={styles.overflow}
@@ -1587,6 +1655,14 @@ export default function ChatRoomScreen() {
                     {actionError}
                   </Text>
                 )}
+                {!threadOpen && canInteract && actionIsCurrent(meetingInvitationScope.current) && meetingInvitations.filter(item => item.expiresAt > Date.now()).map(invitation => (
+                  <Pressable key={invitation.invitationId} accessibilityRole="button" accessibilityLabel="Join channel meeting"
+                    onPress={() => router.push({ pathname: "/conference", params: { meetingId: invitation.meetingId } })}
+                    style={[styles.notice, { flexDirection: "row", alignItems: "center", gap: 10 }]}>
+                    <MaterialIcons name="videocam" size={24} color={colors.primary} />
+                    <Text style={{ color: colors.primary }}>Meeting invitation · Join</Text>
+                  </Pressable>
+                ))}
                 <FlatList
                   ref={list}
                   data={displayedMessages}
@@ -1669,6 +1745,7 @@ export default function ChatRoomScreen() {
                   }
                   renderItem={({ item, index }) => {
                     const previous = displayedMessages[index - 1];
+                    const isPersistedUnreadBoundary = firstUnread?.id === item.id;
                     const isLocalArrivalBoundary =
                       localArrivalBoundary?.scopeKey === localArrivalScopeKey &&
                       localArrivalBoundary.boundary.messageKey === chatMessageKey(item);
@@ -1678,9 +1755,9 @@ export default function ChatRoomScreen() {
                         new Date(item.timestamp).toDateString();
                     return (
                       <View>
-                        {isLocalArrivalBoundary && (
+                        {(isPersistedUnreadBoundary || (!firstUnread && isLocalArrivalBoundary)) && (
                           <UnreadMessageDivider
-                            kind={localArrivalBoundary.boundary.kind}
+                            kind={isPersistedUnreadBoundary ? "messages" : localArrivalBoundary?.boundary.kind}
                           />
                         )}
                         {newDay && (
@@ -2956,10 +3033,12 @@ export default function ChatRoomScreen() {
               members={channelMeetingMembers}
               loading={channelMeetingLoading}
               error={channelMeetingError}
-              startAvailable={false}
-              unavailableReason="Starting a channel meeting is not available yet. No invitations have been sent."
+              busy={channelMeetingBusy}
+              startAvailable={channelMeetingCapability?.available === true && channelMeetingCapability.canStart}
+              maxSelectedMembers={channelMeetingCapability?.maxSelectedMembers}
+              unavailableReason="Starting meetings is not enabled for your account in this channel."
               onCancel={closeChannelMeetingPicker}
-              onStart={() => {}}
+              onStart={memberIds => void startChannelMeeting(memberIds)}
             />
           </View>
         </View>

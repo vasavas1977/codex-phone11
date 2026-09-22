@@ -68,3 +68,13 @@ it("unmounts hidden selection and changes the reset key for account, channel or 
   expect(ChannelMeetingPicker({ ...p, channelId: "channel-b" })!.key).not.toBe(key);
   expect(ChannelMeetingPicker({ ...p, members: p.members.slice(0, 1) })!.key).not.toBe(key);
 });
+it("requires reducing an oversized default selection before start", () => {
+  const p = base();
+  p.maxSelectedMembers = 1;
+  p.members.push({ id: 3, name: "Third", extension: null });
+  const html = renderToStaticMarkup(createElement(ChannelMeetingPicker, p));
+  expect(html).toContain("Select up to 1 members");
+  expect(start().disabled).toBe(true);
+  start().onPress();
+  expect(p.onStart).not.toHaveBeenCalled();
+});

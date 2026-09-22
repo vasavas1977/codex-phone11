@@ -34,7 +34,7 @@ vi.mock("../components/meetings/meeting-prejoin", () => ({
 vi.mock("../components/meetings/meeting-room-state", () => ({
   MeetingRoomState: ({ unavailableReason }: any) => createElement("main", null, unavailableReason),
 }));
-vi.mock("expo-router", () => ({ router: {} }));
+vi.mock("expo-router", () => ({ router: {}, useLocalSearchParams: () => ({}) }));
 vi.mock("react-native", () => ({ StyleSheet: { create: (x: unknown) => x } }));
 import Notifications from "../app/notifications";
 import Preferences from "../app/notifications/preferences";

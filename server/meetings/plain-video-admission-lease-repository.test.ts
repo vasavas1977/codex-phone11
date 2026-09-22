@@ -25,14 +25,15 @@ const row = {
 describe("plain-video admission issuance lease", () => {
   it("persists a pending snapshot only from active server-owned admission state", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [row] });
-    const repository = createPlainVideoAdmissionLeaseRepository(async (fn) => fn({ query }));
+    const repository = createPlainVideoAdmissionLeaseRepository(async (fn) => fn({ query } as never));
 
     await expect(repository.begin(grant)).resolves.toMatchObject({
       leaseId: row.lease_id,
       room_revision: row.room_revision,
       member_revision: row.member_revision,
     });
-    const [sql, values] = query.mock.calls[0];
+    const [sql, values] = query.mock.calls.find(([statement]) =>
+      statement.includes("INSERT INTO phone11_plain_video_admission_leases"))!;
     expect(sql).toContain("INSERT INTO phone11_plain_video_admission_leases");
     expect(sql).toContain("'pending'");
     expect(sql).toContain("clock_timestamp() + INTERVAL '5 minutes'");
@@ -42,16 +43,21 @@ describe("plain-video admission issuance lease", () => {
   });
 
   it("does not complete a token issuance after membership or room revision changed", async () => {
-    const query = vi.fn()
-      .mockResolvedValueOnce({ rows: [row] })
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("to_regclass")) return { rows: [{ available: false }] };
+      if (sql.includes("INSERT INTO phone11_plain_video_admission_leases")) return { rows: [row] };
       // The confirm statement sees no current row when revocation, lobby,
       // identity, membership, room state, or either durable revision changed.
-      .mockResolvedValueOnce({ rows: [] });
-    const repository = createPlainVideoAdmissionLeaseRepository(async (fn) => fn({ query }));
+      return { rows: [] };
+    });
+    const repository = createPlainVideoAdmissionLeaseRepository(async (fn) => fn({ query } as never));
     const lease = await repository.begin(grant);
     expect(lease).not.toBeNull();
     await expect(repository.confirm(lease!)).resolves.toBeNull();
-    const [sql, values] = query.mock.calls[1];
+    const call = query.mock.calls.find(([statement]) =>
+      statement.includes("WITH current_admission"))!;
+    const sql = call[0];
+    const values = (call as unknown as [string, unknown[]])[1];
     expect(sql).toContain("l.state = 'pending'");
     expect(sql).toContain("l.room_revision = $6 AND l.member_revision = $7");
     expect(sql).toContain("r.revision = $6 AND m.revision = $7");

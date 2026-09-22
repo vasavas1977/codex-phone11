@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 
 import type { MeetingGrant } from "./service";
+import { channelMeetingOriginAllows } from "./channel-meeting-origin";
 import {
   parseExactPlainVideoAdmissionRecord,
   plainVideoAdmissionAdmitted,
@@ -63,6 +64,7 @@ export function createPlainVideoAdmissionLeaseRepository(
       const grant = trustedGrantSchema.safeParse(rawGrant);
       if (!grant.success) return null;
       return transaction(async (db) => {
+        if (!await channelMeetingOriginAllows(db, grant.data, true)) return null;
         const result = await db.query(
           `WITH admitted AS (
              ${plainVideoAdmissionSelection}
@@ -108,6 +110,9 @@ export function createPlainVideoAdmissionLeaseRepository(
       if (!lease) return null;
 
       return transaction(async (db) => {
+        if (!await channelMeetingOriginAllows(db, {
+          meetingId: lease.meeting_id, tenantId: lease.tenant_id, userId: lease.user_id,
+        }, true)) return null;
         const result = await db.query(
           `WITH current_admission AS (
              SELECT r.id AS meeting_id, r.tenant_id, m.user_id,

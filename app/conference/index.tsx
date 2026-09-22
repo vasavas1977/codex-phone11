@@ -1,6 +1,6 @@
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
 import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
@@ -13,10 +13,12 @@ import {
 function EnabledMeetingPrejoin({
   user,
   admittedMeetings,
+  initialMeetingCode,
   onBack,
 }: {
   user: { id: number; name?: string | null };
   admittedMeetings: readonly AdmittedMeeting[];
+  initialMeetingCode?: string;
   onBack: () => void;
 }) {
   const join = trpc.meetings.join.useMutation();
@@ -24,6 +26,7 @@ function EnabledMeetingPrejoin({
     <MeetingPrejoin
       initialDisplayName={user.name ?? ""}
       admittedMeetings={admittedMeetings}
+      initialMeetingCode={initialMeetingCode}
       onJoin={async (preferences) => {
         let stage: MeetingJoinStage = "bindings";
         try {
@@ -66,6 +69,8 @@ function EnabledMeetingPrejoin({
 }
 
 export default function ConferenceScreen() {
+  const params = useLocalSearchParams<{ meetingId?: string }>();
+  const requestedMeeting = typeof params.meetingId === "string" ? params.meetingId : "";
   const { user } = useAuth({ autoFetch: false });
   const capabilities = trpc.meetings.capabilities.useQuery(undefined, {
     enabled: !!user,
@@ -93,9 +98,10 @@ export default function ConferenceScreen() {
                 : undefined;
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
-      {user && capabilities.data?.available && admittedMeetings.data?.length ? (
+      {user && !capabilities.error && !admittedMeetings.error && capabilities.data?.available && admittedMeetings.data?.length ? (
         <EnabledMeetingPrejoin
-          key={user.id}
+          key={`${user.id}:${requestedMeeting}:${admittedMeetings.data.map(item => item.meetingId).join(",")}`}
+          initialMeetingCode={requestedMeeting}
           user={user}
           admittedMeetings={admittedMeetings.data}
           onBack={() =>

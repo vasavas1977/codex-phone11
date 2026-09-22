@@ -114,6 +114,12 @@ export function createChatTransport() {
   };
   return {
     ...base,
+    channelMeetingCapabilities: (tenantId: number, channelId: string) =>
+      withClient(c => c.meetings.channelCapabilities.query({ tenantId, channelId })),
+    startChannelMeeting: (tenantId: number, channelId: string, selectedMemberIds: number[], requestId: string) =>
+      withClient(c => c.meetings.startChannelMeeting.mutate({ tenantId, channelId, selectedMemberIds, requestId })),
+    channelMeetingInvitations: (tenantId: number, channelId: string) =>
+      withClient(c => c.meetings.invitations.query({ tenantId, channelId })),
     details: (tenantId: number, id: string) =>
       withClient((c) => c.chat.details.query({ tenantId, id })),
     typingPublish: (tenantId: number, id: string, input: { threadRootId?: string; sessionId: string; generation: string; sequence: number; active: boolean }) =>

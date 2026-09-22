@@ -190,6 +190,38 @@ describe("Team Chat network state", () => {
     await store.getState().loadChannels(); await store.getState().loadMessages("room"); await store.getState().markAsRead("room");
     expect(api.read).toHaveBeenCalledWith(10, "room", 9);
   });
+  it("preserves the first authorized read cursor for one channel visit", async () => {
+    const history = vi.fn()
+      .mockResolvedValueOnce({ messages: [saved({ sequence: 6 })], hasMore: false, memberLastReadSequence: 5 })
+      .mockResolvedValueOnce({ messages: [saved({ sequence: 7 })], hasMore: false, memberLastReadSequence: 6 })
+      .mockResolvedValueOnce({ messages: [saved({ sequence: 2 })], hasMore: false, memberLastReadSequence: 1 });
+    const { store } = setup({ history });
+    await store.getState().loadChannels();
+    await store.getState().loadMessages("room");
+    expect(store.getState().initialReadSequences.room).toBe(5);
+    await store.getState().loadMessages("room");
+    await store.getState().loadMessages("room", true);
+    expect(store.getState().initialReadSequences.room).toBe(5);
+  });
+  it("starts a fresh baseline on revisit and clears all baselines on scope changes", async () => {
+    const history = vi.fn()
+      .mockResolvedValueOnce({ messages: [], hasMore: false, memberLastReadSequence: 5 })
+      .mockResolvedValueOnce({ messages: [], hasMore: false, memberLastReadSequence: 9 })
+      .mockResolvedValueOnce({ messages: [], hasMore: false, memberLastReadSequence: 12 });
+    const { store, api } = setup({ history });
+    await store.getState().loadChannels(); await store.getState().loadMessages("room");
+    store.getState().beginChannelVisit("room");
+    expect(store.getState().initialReadSequences.room).toBeUndefined();
+    await store.getState().loadMessages("room");
+    expect(store.getState().initialReadSequences.room).toBe(9);
+    vi.mocked(api.list).mockResolvedValueOnce({ workspace: { id: 20, name: "Beta" }, workspaces: [], channels: [channel] });
+    await store.getState().loadChannels(20);
+    expect(store.getState().initialReadSequences).toEqual({});
+    await store.getState().loadMessages("room");
+    expect(store.getState().initialReadSequences.room).toBe(12);
+    store.getState().setUser(2);
+    expect(store.getState().initialReadSequences).toEqual({});
+  });
   it("clears the root-thread draft when replying to a nested reply", async () => {
     const root = saved({ id: "root", clientId: "root-client", senderId: 2 });
     const reply = saved({ id: "reply", clientId: "reply-client", senderId: 2, parent: { id: "root", senderName: "Two", content: "root" } });

@@ -29,12 +29,16 @@ export async function authorizeWorkspace(db: Pick<PoolClient, "query">, userId: 
 
 export async function authorizeConversation(db: Pick<PoolClient, "query">, userId: number, tenantId: number, id: string) {
   const result = await db.query(
-    `SELECT c.id FROM phone11_chat_conversations c JOIN phone11_chat_members m
+    `SELECT c.id, m.last_read_sequence FROM phone11_chat_conversations c JOIN phone11_chat_members m
        ON m.tenant_id = c.tenant_id AND m.conversation_id = c.id
      JOIN tenant_memberships tm ON tm.user_id = m.user_id AND tm.tenant_id = c.tenant_id AND tm.status = 'active'
      JOIN tenants t ON t.id = c.tenant_id AND t.status = 'active'
      WHERE c.tenant_id = $1 AND c.id = $2 AND m.user_id = $3 FOR UPDATE OF c`, [tenantId, id, userId]);
   if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "Conversation is unavailable or you no longer have access." });
+  const lastReadSequence = Number(result.rows[0].last_read_sequence);
+  if (!Number.isSafeInteger(lastReadSequence) || lastReadSequence < 0)
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Conversation read state is unavailable." });
+  return { lastReadSequence };
 }
 
 async function lockSafetyPair(db: Pick<PoolClient, "query">, tenantId: number, first: number, second: number) {
@@ -281,7 +285,7 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
     },
     history(userId: number, tenantId: number, id: string, before?: number) {
       return scoped(userId, tenantId, async (db, workspace) => {
-        await authorizeConversation(db, userId, workspace.id, id);
+        const membership = await authorizeConversation(db, userId, workspace.id, id);
         const rows = await db.query(`${messageSelect}
           WHERE msg.tenant_id = $1 AND msg.conversation_id = $2 AND msg.parent_message_id IS NULL
             AND ($3::bigint IS NULL OR msg.sequence < $3)
@@ -291,7 +295,8 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
           FROM phone11_chat_messages WHERE tenant_id = $1 AND conversation_id = $2`, [workspace.id, id]);
         const hasMore = rows.rows.length > 100;
         return { messages: await hydrateMessages(db, userId, workspace.id, id, rows.rows.slice(0, 100).reverse()), hasMore,
-          latestSequence: Number(ceiling.rows[0]?.latest_sequence || 0), rootLatestSequence: Number(ceiling.rows[0]?.root_latest_sequence || 0) };
+          latestSequence: Number(ceiling.rows[0]?.latest_sequence || 0), rootLatestSequence: Number(ceiling.rows[0]?.root_latest_sequence || 0),
+          memberLastReadSequence: membership.lastReadSequence };
       });
     },
     search(userId: number, tenantId: number, id: string, text: string) {

@@ -29,6 +29,9 @@ const mocks = vi.hoisted(() => ({
   user: { id: 1 },
   tenantId: "10",
   press: new Map<string, { press: () => unknown; longPress?: () => unknown; accessibilityAction?: (event: any) => unknown; disabled: boolean }>(),
+  meetingCapability: vi.fn(),
+  meetingStart: vi.fn(),
+  navigate: vi.fn(),
   send: vi.fn(),
   retry: vi.fn(),
   thread: vi.fn(),
@@ -112,8 +115,12 @@ vi.mock("react-native", () => ({
 vi.mock("expo-router", () => ({
   useLocalSearchParams: () => ({ id: "room", tenantId: mocks.tenantId }),
   useFocusEffect: vi.fn(),
-  router: {},
+  router: { push: (...args: any[]) => mocks.navigate(...args) },
 }));
+vi.mock("../lib/chat/transport", async () => {
+  const actual = await vi.importActual<typeof import("../lib/chat/transport")>("../lib/chat/transport");
+  return { createChatTransport: () => ({ ...actual.createChatTransport(), channelMeetingCapabilities: (...args: any[]) => mocks.meetingCapability(...args), startChannelMeeting: (...args: any[]) => mocks.meetingStart(...args) }) };
+});
 vi.mock("../components/screen-container", () => ({ ScreenContainer: element }));
 vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: mocks.user }) }));
 vi.mock("../lib/_core/auth", () => ({
@@ -142,6 +149,8 @@ vi.mock("@expo/vector-icons/MaterialIcons", () => ({ default: () => null }));
 import ChatRoom from "../app/chat/[id]";
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.meetingCapability.mockReset().mockResolvedValue({ available: false, canStart: false, maxSelectedMembers: 50 });
+  mocks.meetingStart.mockReset();
   mocks.send.mockReset();
   mocks.retry.mockReset();
   mocks.thread.mockReset();
@@ -269,7 +278,7 @@ it("loads an authorized channel roster for a disabled creation picker without se
     loading: false,
     startAvailable: false,
   });
-  expect(mocks.channelMeeting.unavailableReason).toContain("No invitations have been sent");
+  expect(mocks.meetingStart).not.toHaveBeenCalled();
 });
 it("offers and sends @all only with the server capability", async () => {
   mocks.state.channels[0].kind = "channel";
@@ -647,4 +656,38 @@ it("does not reopen a Replies view when a closed request resolves late", async (
   await opening;
   expect(render()).not.toContain("Original message");
   expect(render()).not.toContain(">Replies<");
+});
+
+it("starts only on explicit selection and reuses the request ID after an uncertain failure", async () => {
+  mocks.state.channels[0].kind = "channel";
+  mocks.meetingCapability.mockResolvedValue({ available: true, canStart: true, maxSelectedMembers: 50 });
+  mocks.meetingStart.mockRejectedValueOnce(new Error("network")).mockResolvedValueOnce({ meetingId: "admitted-room" });
+  render();
+  mocks.press.get("Start channel meeting")!.press();
+  await vi.waitFor(() => { render(); expect(mocks.channelMeeting.loading).toBe(false); });
+  expect(mocks.meetingStart).not.toHaveBeenCalled();
+  expect(mocks.channelMeeting.startAvailable).toBe(true);
+  mocks.channelMeeting.onStart([2]);
+  await Promise.resolve(); await Promise.resolve(); render();
+  expect(mocks.channelMeeting.error).toContain("Try again");
+  mocks.channelMeeting.onStart([2]);
+  await Promise.resolve(); await Promise.resolve(); render();
+  expect(mocks.meetingStart).toHaveBeenCalledTimes(2);
+  expect(mocks.meetingStart.mock.calls[0]).toEqual(mocks.meetingStart.mock.calls[1]);
+  expect(mocks.meetingStart.mock.calls[0].slice(0, 3)).toEqual([10, "room", [2]]);
+  expect(mocks.navigate).toHaveBeenCalledWith({ pathname: "/conference", params: { meetingId: "admitted-room" } });
+});
+it("ignores meeting start results after an account change", async () => {
+  mocks.state.channels[0].kind = "channel";
+  mocks.meetingCapability.mockResolvedValue({ available: true, canStart: true, maxSelectedMembers: 50 });
+  let resolve!: (value: unknown) => void;
+  mocks.meetingStart.mockReturnValue(new Promise(r => { resolve = r; }));
+  render(); mocks.press.get("Start channel meeting")!.press();
+  await vi.waitFor(() => { render(); expect(mocks.channelMeeting.loading).toBe(false); });
+  mocks.channelMeeting.onStart([2]); mocks.channelMeeting.onStart([2]);
+  expect(mocks.meetingStart).toHaveBeenCalledTimes(1);
+  mocks.user = { id: 9 };
+  resolve({ meetingId: "old-owner-room" });
+  await Promise.resolve(); await Promise.resolve(); render();
+  expect(mocks.navigate).not.toHaveBeenCalled();
 });

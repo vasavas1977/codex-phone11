@@ -53,7 +53,7 @@ describe("ring-group member editor", () => {
   it("wires a retryable, locked, tenant-extension member sheet", () => {
     expect(source).toContain("useRingGroup");
     expect(source).toContain("useSetRingGroupMembers");
-    expect(source).toContain("useExtensions(1, 100");
+    expect(source).toMatch(/useExtensions\(\s*1,\s*100,\s*ringGroupsAvailable && editingGroupId !== null && tenantId > 0,\s*\)/);
     expect(source).toContain('accessibilityLabel={`Edit members for ${item.name}`}');
     expect(source).toContain('accessibilityLabel={"Add extension " + String(extension.extension_number)}');
     expect(source).toContain("membersMutation.isPending");
