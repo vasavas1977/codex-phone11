@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -253,7 +254,7 @@ class ChannelMeetingMigrationOperatorTests(unittest.TestCase):
             "identity_fingerprint": manifest["database_identity_sha256"],
             "catalog_fingerprint": manifest["before_catalog_sha256"],
         }}
-        self.assertEqual(operator.assess_recovery(before, manifest), ("not_applied", None))
+        self.assertEqual(operator.assess_recovery(before, manifest), ("pending", None))
         after = {"before": {
             "identity_fingerprint": manifest["database_identity_sha256"],
             "catalog_fingerprint": manifest["after_catalog_sha256"],
@@ -289,6 +290,35 @@ class ChannelMeetingMigrationOperatorTests(unittest.TestCase):
         ):
             self.assertEqual(operator.run(arguments), 1)
         database.assert_called_once_with(manifest, "recover")
+        write.assert_not_called()
+
+    def test_recovery_pre_catalog_snapshot_keeps_intent_nonterminal(self) -> None:
+        sql = b"reviewed sql"
+        manifest = manifest_document(operator.sha256_bytes(sql))
+        base = operator.receipt_base(manifest, "6" * 64, "7" * 64, "8" * 64)
+        intent = operator.receipt_document(base, "intent")
+        arguments = argparse.Namespace(
+            prepare=False, apply=False, recover=True, inventory=False,
+            manifest=Path("/manifest"), sql=Path("/sql"),
+            backup_proof=Path("/backup"), restore_proof=Path("/restore"),
+            receipt=operator.RECEIPT_PATH,
+            container_id=None, container_name=None, container_port=None, host_port=None,
+        )
+        before = {"before": {
+            "identity_fingerprint": manifest["database_identity_sha256"],
+            "catalog_fingerprint": manifest["before_catalog_sha256"],
+        }}
+        with (
+            patch.object(operator.os, "geteuid", return_value=0),
+            patch.object(operator, "read_manifest", return_value=(manifest, "6" * 64)),
+            patch.object(operator, "secure_read", return_value=sql),
+            patch.object(operator, "read_proofs", return_value=("7" * 64, "8" * 64)),
+            patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
+            patch.object(operator, "read_receipt", return_value=intent),
+            patch.object(operator, "run_database", return_value=before),
+            patch.object(operator, "write_receipt") as write,
+        ):
+            self.assertEqual(operator.run(arguments), 1)
         write.assert_not_called()
 
 
@@ -440,6 +470,61 @@ class PostgreSQLAdvisoryRecoveryOverlapTests(unittest.TestCase):
         recovered = self.node_action("recover", contract(rollback_sql))
         self.assertEqual(recovered.returncode, 0, recovered.stderr)
         self.assertEqual(json.loads(recovered.stdout)["before"]["catalog_fingerprint"], before["catalog_fingerprint"])
+
+    def test_prelock_delayed_apply_keeps_recovery_nonterminal_then_can_commit(self) -> None:
+        self.psql_command("DROP TABLE IF EXISTS channel_delayed;")
+        before = self.snapshot()
+        self.psql_command("CREATE TABLE channel_delayed(id integer PRIMARY KEY);")
+        after_catalog = self.snapshot()["catalog_fingerprint"]
+        self.psql_command("DROP TABLE channel_delayed;")
+        sql = "BEGIN;\nCREATE TABLE channel_delayed(id integer PRIMARY KEY);\nCOMMIT;\n"
+        contract = {
+            "database_identity_sha256": before["identity_fingerprint"],
+            "before_catalog_sha256": before["catalog_fingerprint"],
+            "after_catalog_sha256": after_catalog,
+            "sql_sha256": operator.sha256_bytes(sql.encode()),
+        }
+        wrapper = (
+            "import os,signal,sys;"
+            "os.kill(os.getpid(),signal.SIGSTOP);"
+            "os.execv(sys.argv[1],sys.argv[1:])"
+        )
+        delayed = subprocess.Popen(
+            [sys.executable, "-c", wrapper, self.node, "-e", operator.NODE_PROGRAM,
+             "apply", json.dumps(contract, separators=(",", ":"))],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, cwd=ROOT, env=self.environment(),
+        )
+        assert delayed.stdin is not None
+        delayed.stdin.write(sql)
+        delayed.stdin.close()
+        stopped_pid, stopped_status = os.waitpid(delayed.pid, os.WUNTRACED)
+        self.assertEqual(stopped_pid, delayed.pid)
+        self.assertTrue(os.WIFSTOPPED(stopped_status))
+
+        while_apply_has_not_locked = self.node_action("recover", contract)
+        self.assertEqual(while_apply_has_not_locked.returncode, 0, while_apply_has_not_locked.stderr)
+        snapshot = json.loads(while_apply_has_not_locked.stdout)
+        self.assertEqual(operator.assess_recovery(snapshot, {
+            **manifest_document(contract["sql_sha256"]),
+            "database_identity_sha256": contract["database_identity_sha256"],
+            "before_catalog_sha256": contract["before_catalog_sha256"],
+            "after_catalog_sha256": contract["after_catalog_sha256"],
+        }), ("pending", None))
+
+        os.kill(delayed.pid, signal.SIGCONT)
+        delayed.wait(timeout=10)
+        delayed_stdout = delayed.stdout.read() if delayed.stdout else ""
+        delayed_stderr = delayed.stderr.read() if delayed.stderr else ""
+        if delayed.stdout:
+            delayed.stdout.close()
+        if delayed.stderr:
+            delayed.stderr.close()
+        self.assertEqual(delayed.returncode, 0, delayed_stderr + delayed_stdout)
+        settled = self.node_action("recover", contract)
+        self.assertEqual(settled.returncode, 0, settled.stderr)
+        self.assertEqual(json.loads(settled.stdout)["before"]["catalog_fingerprint"], after_catalog)
+        self.psql_command("DROP TABLE channel_delayed;")
 
 
 if __name__ == "__main__":

@@ -523,7 +523,7 @@ def receipt_base(
 
 
 def receipt_document(base: Mapping[str, Any], status: str, verification_sha256: str | None = None) -> dict[str, Any]:
-    guarded(status in {"intent", "applied", "not_applied"}, "receipt")
+    guarded(status in {"intent", "applied"}, "receipt")
     value = dict(base)
     value["status"] = status
     if status == "applied":
@@ -610,7 +610,7 @@ def read_receipt(path: Path, base: Mapping[str, Any], *, uid: int = 0, gid: int 
     value = strict_json(secure_read(path, uid=uid, gid=gid), "receipt")
     guarded(all(value.get(key) == item for key, item in base.items()), "receipt")
     status = value.get("status")
-    guarded(status in {"intent", "applied", "not_applied"}, "receipt")
+    guarded(status in {"intent", "applied"}, "receipt")
     keys = set(base) | {"status"}
     if status == "applied":
         keys.add("verification_sha256")
@@ -628,7 +628,10 @@ def assess_recovery(document: Mapping[str, Any], manifest: Mapping[str, Any]) ->
     )
     catalog = current.get("catalog_fingerprint")
     if catalog == manifest["before_catalog_sha256"]:
-        return "not_applied", None
+        # The caller may have timed out while docker exec remains alive but has
+        # not yet reached BEGIN or the advisory lock.  A pre-catalog snapshot
+        # therefore cannot prove rollback and must never make retry eligible.
+        return "pending", None
     guarded(catalog == manifest["after_catalog_sha256"], "recovery")
     return "applied", assert_applied({
         "before": {
@@ -741,9 +744,10 @@ def run(arguments: argparse.Namespace) -> int:
                 existing = read_receipt(arguments.receipt, base)
                 status, verification_sha256 = assess_recovery(run_database(manifest, "recover"), manifest)
                 if existing.get("status") == "intent":
-                    replacement = receipt_document(base, status, verification_sha256)
+                    guarded(status == "applied", "settlement_pending")
+                    replacement = receipt_document(base, "applied", verification_sha256)
                     write_receipt(arguments.receipt, replacement, expected=existing)
-                    print("channel_meetings=RECOVERED status=" + status.upper())
+                    print("channel_meetings=RECOVERED status=APPLIED")
                     return 0
                 guarded(existing.get("status") == status, "recovery")
                 if status == "applied":
