@@ -14,13 +14,34 @@ import { useColors } from "@/hooks/use-colors";
 import { getChatMediaSource, shareChatFile } from "@/lib/chat/media-client";
 import type { ChatAllMention, ChatAttachment, ChatMention } from "@/lib/chat/types";
 import { ReceivedMedia } from "@/components/chat/received-media";
-function mentionSegments(text: string, mentions: (ChatMention | ChatAllMention)[]) {
-  const items: { text: string; mention?: boolean }[] = [];
+export type ChatTextSegment = { text: string; mention?: true };
+
+/**
+ * Only server-validated UTF-16 ranges get mention treatment. In particular,
+ * plain @words and malformed stale payloads remain ordinary message text.
+ */
+export function mentionSegments(
+  text: string,
+  mentions: (ChatMention | ChatAllMention)[],
+): ChatTextSegment[] {
+  const items: ChatTextSegment[] = [];
   let offset = 0;
-  for (const mention of [...mentions].filter(item => item.start >= 0 && item.length > 0 && item.start + item.length <= text.length).sort((a, b) => a.start - b.start)) {
+  for (const mention of [...mentions]
+    .filter(
+      (item) =>
+        Number.isSafeInteger(item.start) &&
+        Number.isSafeInteger(item.length) &&
+        item.start >= 0 &&
+        item.length > 0 &&
+        item.start + item.length <= text.length,
+    )
+    .sort((a, b) => a.start - b.start || a.length - b.length)) {
     if (mention.start < offset) continue;
     if (mention.start > offset) items.push({ text: text.slice(offset, mention.start) });
-    items.push({ text: text.slice(mention.start, mention.start + mention.length), mention: true });
+    items.push({
+      text: text.slice(mention.start, mention.start + mention.length),
+      mention: true,
+    });
     offset = mention.start + mention.length;
   }
   if (offset < text.length) items.push({ text: text.slice(offset) });
@@ -60,7 +81,18 @@ export function LinkedChatText({
           >
             {part}
           </Text>
-        ) : segment.mention ? <Text key={`${outer}:${index}`} style={{ color: colors.primary, fontWeight: "700", backgroundColor: colors.primary + "18" }}>{part}</Text> : part,
+        ) : segment.mention ? (
+          <Text
+            key={`${outer}:${index}`}
+            style={{
+              color: colors.primary,
+              fontWeight: "700",
+              backgroundColor: colors.primary + "18",
+            }}
+          >
+            {part}
+          </Text>
+        ) : part,
       ))}
     </Text>
   );

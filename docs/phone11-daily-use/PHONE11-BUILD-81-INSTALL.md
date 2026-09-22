@@ -28,3 +28,7 @@ Build 80 predates the chat header change in `84bf0e8`; it must not be described 
 Open Team Chat and a direct conversation: inspect avatar, presence, camera beside phone, name truncation and composer with the keyboard shown. Tap the enabled camera to open the admitted meeting flow; it does not automatically invite/call that conversation's peer. Continue two-phone meeting media and calling regression checks separately.
 
 Profile-photo service commissioning remains pending; initials are the expected fallback. No backend deployment was performed for this release. Installation/launch and package checks do not establish on-phone visual acceptance, provider joining, two-way media, push delivery or background calling acceptance.
+
+## Second-phone installation follow-up
+
+On 22 September 2026, after the owner reconnected the iPhone 17 Pro Max, the same verified Build 81 artifact was installed in place. Bundle/build identity and deep strict code signature were rechecked before installation. Fresh installed-app inventory confirmed Phone11 1.0.0 (81), and launch succeeded. Both pilot phones have now received Build 81; visual and two-phone runtime acceptance remain separate.

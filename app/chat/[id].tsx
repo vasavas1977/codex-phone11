@@ -45,6 +45,7 @@ import { useChatTyping } from "@/lib/chat/typing";
 import { TypingIndicator } from "@/components/chat/typing-indicator";
 import { ChatPeerCall } from "@/components/chat/peer-call";
 import { ChatMeetingAction } from "@/components/chat/meeting-action";
+import { ChannelMeetingPicker } from "@/components/chat/channel-meeting-picker";
 import {
   ProfileAvatar,
   useProfilePhotoCacheScope,
@@ -57,6 +58,7 @@ import {
 } from "@/components/chat/assistant-sheet";
 import { VoiceNote } from "@/components/chat/voice-note";
 import { ChatMessageRow } from "@/components/chat/message-row";
+import { NewMessagesJump, UnreadMessageDivider } from "@/components/chat/unread-message-indicator";
 import { ReadReceiptSheet } from "@/components/chat/read-receipt-sheet";
 import { MentionPicker } from "@/components/chat/mention-picker";
 import { ConversationDetails } from "@/components/chat/conversation-details";
@@ -66,6 +68,12 @@ import {
   newUploadId,
   type ChatUpload,
 } from "@/lib/chat/media-client";
+import {
+  chatMessageKey,
+  emptyLocalArrivalState,
+  observeLocalArrivals,
+  type LocalArrivalBoundary,
+} from "@/lib/chat/local-arrivals";
 const messageApi = createChatTransport();
 const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "🙏", "✅"];
 
@@ -142,6 +150,11 @@ export default function ChatRoomScreen() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [details, setDetails] = useState<ChatConversationDetails | null>(null);
   const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [channelMeetingOpen, setChannelMeetingOpen] = useState(false);
+  const [channelMeetingScope, setChannelMeetingScope] = useState<SendAction | null>(null);
+  const [channelMeetingMembers, setChannelMeetingMembers] = useState<ChatConversationDetails["members"]>([]);
+  const [channelMeetingLoading, setChannelMeetingLoading] = useState(false);
+  const [channelMeetingError, setChannelMeetingError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [editing, setEditing] = useState<ChatMessage | null>(null);
   const [editText, setEditText] = useState("");
@@ -149,6 +162,10 @@ export default function ChatRoomScreen() {
   const [savedOpen, setSavedOpen] = useState(false);
   const [savedMessages, setSavedMessages] = useState<ChatMessage[]>([]);
   const [newMessages, setNewMessages] = useState(false);
+  const [localArrivalBoundary, setLocalArrivalBoundary] = useState<{
+    scopeKey: string;
+    boundary: LocalArrivalBoundary;
+  } | null>(null);
   const [collectionTitle, setCollectionTitle] = useState("Saved messages");
   const [forwardTarget, setForwardTarget] = useState<ChatMessage | null>(null);
   const [aiAvailable, setAiAvailable] = useState(false);
@@ -202,6 +219,7 @@ export default function ChatRoomScreen() {
   const composerSelection = useRef<ComposerSelection>({ start: draft.length, end: draft.length });
   const mentionDetailsRequest = useRef<SendAction | null>(null);
   const detailsScope = useRef<SendAction | null>(null);
+  const channelMeetingRequestRef = useRef<SendAction | null>(null);
   const activeDraftMentions = draftMentionState.key === draftKey ? draftMentionState.items : [];
   const activeAllMention = draftAllMentionState.key === draftKey ? draftAllMentionState.item : undefined;
   const composerDraft = useRef(draft);
@@ -226,7 +244,7 @@ export default function ChatRoomScreen() {
   const messages = ownsWorkspace ? chat.messages[id] || [] : [];
   const atBottom = useRef(true);
   const initialScroll = useRef(true);
-  const lastMessageCount = useRef(0);
+  const localArrivalStateRef = useRef(emptyLocalArrivalState());
   const forwardId = useRef(newUploadId());
   const canInteract = Boolean(ownsWorkspace && channel);
   const canCompose = Boolean(canInteract && !channel?.blocked);
@@ -303,6 +321,9 @@ export default function ChatRoomScreen() {
     setSavedOpen(false);
     setSavedMessages([]);
     setEmojiOpen(false);
+    setNewMessages(false);
+    setLocalArrivalBoundary(null);
+    localArrivalStateRef.current = emptyLocalArrivalState();
     setMentionTrigger(null);
     setMentionLoading(false);
     setDraftMentionState({ key: "", items: [] });
@@ -313,6 +334,12 @@ export default function ChatRoomScreen() {
     setDetails(null);
     setDetailsError(null);
     setDetailsLoading(false);
+    channelMeetingRequestRef.current = null;
+    setChannelMeetingOpen(false);
+    setChannelMeetingScope(null);
+    setChannelMeetingMembers([]);
+    setChannelMeetingLoading(false);
+    setChannelMeetingError(null);
     setAttachmentOpen(false);
     atBottom.current = true;
     initialScroll.current = true;
@@ -538,6 +565,36 @@ export default function ChatRoomScreen() {
     try { const value = await state.loadDetails(id); if (actionIsCurrent(action)) { detailsScope.current = action; setDetails(value); } }
     catch (error) { if (actionIsCurrent(action)) setDetailsError(chatError(error)); }
     finally { if (actionIsCurrent(action)) setDetailsLoading(false); }
+  };
+  const openChannelMeetingPicker = async () => {
+    const state = currentScope();
+    if (!state?.workspace || !channel || (channel.kind !== "channel" && channel.kind !== "group")) return;
+    const action = { owner: user, workspaceId: state.workspace.id, roomId: id };
+    channelMeetingRequestRef.current = action;
+    setChannelMeetingScope(action);
+    setChannelMeetingMembers([]);
+    setChannelMeetingError(null);
+    setChannelMeetingLoading(true);
+    setChannelMeetingOpen(true);
+    try {
+      const value = await state.loadDetails(id);
+      if (!actionIsCurrent(action) || channelMeetingRequestRef.current !== action) return;
+      setChannelMeetingMembers(value.members);
+    } catch (error) {
+      if (actionIsCurrent(action) && channelMeetingRequestRef.current === action)
+        setChannelMeetingError(chatError(error));
+    } finally {
+      if (actionIsCurrent(action) && channelMeetingRequestRef.current === action)
+        setChannelMeetingLoading(false);
+    }
+  };
+  const closeChannelMeetingPicker = () => {
+    channelMeetingRequestRef.current = null;
+    setChannelMeetingOpen(false);
+    setChannelMeetingScope(null);
+    setChannelMeetingMembers([]);
+    setChannelMeetingLoading(false);
+    setChannelMeetingError(null);
   };
   const ensureMentionMembers = async () => {
     const state = currentScope();
@@ -1079,14 +1136,41 @@ export default function ChatRoomScreen() {
       return () => clearInterval(timer);
     }, [threadScope, threadIsCurrent, user, id]),
   );
+  const localArrivalScopeKey =
+    !searching && canInteract && chat.workspace
+      ? threadIsCurrent && thread
+        ? `${chat.workspace.id}:${id}:thread:${thread.root.id}`
+        : `${chat.workspace.id}:${id}:messages`
+      : null;
+  const localArrivalKind = threadIsCurrent && thread ? "replies" : "messages";
+  const displayedMessageKey = displayedMessages
+    .map((message) => `${chatMessageKey(message)}:${message.sequence}:${message.status}`)
+    .join("|");
   useEffect(() => {
-    if (
-      displayedMessages.length > lastMessageCount.current &&
-      !atBottom.current
-    )
+    if (!localArrivalScopeKey || !user) return;
+    const previousScope = localArrivalStateRef.current.scopeKey;
+    const observed = observeLocalArrivals(
+      localArrivalStateRef.current,
+      localArrivalScopeKey,
+      localArrivalKind,
+      displayedMessages,
+      user.id,
+    );
+    localArrivalStateRef.current = observed.state;
+    if (previousScope !== localArrivalScopeKey) {
+      setNewMessages(false);
+      setLocalArrivalBoundary(null);
+      return;
+    }
+    if (!atBottom.current && observed.boundary) {
       setNewMessages(true);
-    lastMessageCount.current = displayedMessages.length;
-  }, [displayedMessages.length]);
+      setLocalArrivalBoundary((current) =>
+        current?.scopeKey === localArrivalScopeKey
+          ? current
+          : { scopeKey: localArrivalScopeKey, boundary: observed.boundary! },
+      );
+    }
+  }, [displayedMessageKey, localArrivalKind, localArrivalScopeKey, user?.id]);
 
   useEffect(() => {
     let active = true;
@@ -1367,6 +1451,24 @@ export default function ChatRoomScreen() {
               {!threadOpen && directPeerId && chat.workspace && (
                 <ChatMeetingAction />
               )}
+              {!threadOpen &&
+                (channel?.kind === "channel" || channel?.kind === "group") &&
+                chat.workspace && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Start channel meeting"
+                    accessibilityHint="Select channel members. No invitations are sent until meeting creation is available."
+                    disabled={!canInteract || channelMeetingLoading}
+                    onPress={() => void openChannelMeetingPicker()}
+                    style={styles.overflow}
+                  >
+                    <MaterialIcons
+                      name="videocam"
+                      size={23}
+                      color={channelMeetingLoading ? colors.muted : colors.primary}
+                    />
+                  </Pressable>
+                )}
               {!threadOpen && directPeerId && chat.workspace && (
                 <ChatPeerCall
                   peerId={directPeerId}
@@ -1512,7 +1614,10 @@ export default function ChatRoomScreen() {
                     atBottom.current =
                       contentOffset.y + layoutMeasurement.height >=
                       contentSize.height - 60;
-                    if (atBottom.current) setNewMessages(false);
+                    if (atBottom.current) {
+                      setNewMessages(false);
+                      setLocalArrivalBoundary(null);
+                    }
                     if (!searching && !wasAtBottom && atBottom.current)
                       void currentScope()?.markAsRead(id);
                   }}
@@ -1564,12 +1669,20 @@ export default function ChatRoomScreen() {
                   }
                   renderItem={({ item, index }) => {
                     const previous = displayedMessages[index - 1];
+                    const isLocalArrivalBoundary =
+                      localArrivalBoundary?.scopeKey === localArrivalScopeKey &&
+                      localArrivalBoundary.boundary.messageKey === chatMessageKey(item);
                     const newDay =
                       !previous ||
                       new Date(previous.timestamp).toDateString() !==
                         new Date(item.timestamp).toDateString();
                     return (
                       <View>
+                        {isLocalArrivalBoundary && (
+                          <UnreadMessageDivider
+                            kind={localArrivalBoundary.boundary.kind}
+                          />
+                        )}
                         {newDay && (
                           <View style={styles.daySeparator}>
                             <View
@@ -1673,26 +1786,20 @@ export default function ChatRoomScreen() {
                   }
                 />
                 {newMessages && !searching && (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Jump to new messages"
+                  <NewMessagesJump
+                    kind={
+                      localArrivalBoundary?.scopeKey === localArrivalScopeKey
+                        ? localArrivalBoundary.boundary.kind
+                        : localArrivalKind
+                    }
                     onPress={() => {
                       atBottom.current = true;
                       setNewMessages(false);
+                      setLocalArrivalBoundary(null);
                       list.current?.scrollToEnd({ animated: true });
                       void currentScope()?.markAsRead(id);
                     }}
-                    style={{
-                      alignSelf: "center",
-                      paddingHorizontal: 18,
-                      paddingVertical: 10,
-                      minHeight: 44,
-                      borderRadius: 22,
-                      backgroundColor: colors.primary,
-                    }}
-                  >
-                    <Text style={{ color: "white" }}>New messages ↓</Text>
-                  </Pressable>
+                  />
                 )}
                 {!searching && (
                   <View
@@ -2840,6 +2947,20 @@ export default function ChatRoomScreen() {
               </KeyboardAvoidingView>
             </Modal>
             <ConversationDetails visible={detailsOpen && ownsWorkspace} loading={detailsLoading} details={details} error={detailsError} onRetry={() => void openDetails()} onClose={() => setDetailsOpen(false)} />
+            <ChannelMeetingPicker
+              visible={channelMeetingOpen && actionIsCurrent(channelMeetingScope)}
+              tenantId={chat.workspace?.id || 0}
+              channelId={id}
+              channelName={channel?.name || "Channel"}
+              hostId={user?.id || 0}
+              members={channelMeetingMembers}
+              loading={channelMeetingLoading}
+              error={channelMeetingError}
+              startAvailable={false}
+              unavailableReason="Starting a channel meeting is not available yet. No invitations have been sent."
+              onCancel={closeChannelMeetingPicker}
+              onStart={() => {}}
+            />
           </View>
         </View>
       </ScreenContainer>

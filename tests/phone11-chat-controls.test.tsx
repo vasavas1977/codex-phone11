@@ -8,6 +8,12 @@ vi.mock("../components/chat/received-media", () => ({ ReceivedMedia: () => null 
 vi.mock("../components/chat/conversation-rail", () => ({ ConversationRail: () => null }));
 vi.mock("../components/chat/peer-call", () => ({ ChatPeerCall: () => null }));
 vi.mock("../components/chat/meeting-action", () => ({ ChatMeetingAction: () => null }));
+vi.mock("../components/chat/channel-meeting-picker", () => ({
+  ChannelMeetingPicker: (props: any) => {
+    mocks.channelMeeting = props;
+    return null;
+  },
+}));
 vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: () => null, useProfilePhotoCacheScope: () => {} }));
 vi.mock("../hooks/use-directory", () => ({ useDirectory: () => ({ people: [], owner: null }) }));
 vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ profile: undefined }) }));
@@ -33,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   keyboards: new Map<string | undefined, any>(),
   list: null as any,
   voice: null as any,
+  channelMeeting: null as any,
   upload: vi.fn(),
   details: vi.fn(),
   refs: [] as any[],
@@ -144,6 +151,7 @@ beforeEach(() => {
   mocks.keyboards.clear();
   mocks.list = null;
   mocks.voice = null;
+  mocks.channelMeeting = null;
   mocks.upload.mockReset();
   mocks.details.mockReset();
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
@@ -237,6 +245,31 @@ it("opens on a typed @, inserts at the caret, and sends a structured member ment
   expect(mocks.send).toHaveBeenCalledWith("room", "@Nathasa", undefined, [], [
     { userId: 2, start: 0, length: 8 },
   ]);
+});
+it("loads an authorized channel roster for a disabled creation picker without sending invitations", async () => {
+  mocks.state.channels[0].kind = "channel";
+  render();
+  expect(mocks.press.has("Start channel meeting")).toBe(true);
+
+  mocks.press.get("Start channel meeting")!.press();
+  await Promise.resolve();
+  await Promise.resolve();
+  render();
+
+  expect(mocks.details).toHaveBeenCalledWith("room");
+  expect(mocks.channelMeeting).toMatchObject({
+    visible: true,
+    tenantId: 10,
+    channelId: "room",
+    hostId: 1,
+    members: [
+      { id: 1, name: "You", extension: "1001" },
+      { id: 2, name: "Nathasa", extension: "1002" },
+    ],
+    loading: false,
+    startAvailable: false,
+  });
+  expect(mocks.channelMeeting.unavailableReason).toContain("No invitations have been sent");
 });
 it("offers and sends @all only with the server capability", async () => {
   mocks.state.channels[0].kind = "channel";
