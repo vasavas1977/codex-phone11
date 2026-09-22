@@ -206,8 +206,8 @@ source release.
 ## Verified root-cause Build 80
 
 Build 80 is the first signed daily-pilot package containing the reviewed
-Machina weak-client guard. It is package verification only; it has not been
-installed on a handset.
+Machina weak-client guard. The package verification recorded below was followed
+by the 22 September in-place installation evidence at the end of this record.
 
 - Exact release source: `8c6f2f49c7183ba3946657b41eac410682d0f55b`, comprising
   the root-cause patch `2b92d3d9bd838cad7a08d332769f2326330235a2` and its
@@ -239,3 +239,18 @@ by the formerly failing admitted meeting join, then real room connection, local
 and remote video, and two-way audio. Run the existing SIP/manual-audio
 interruption, route, and lock-state checks separately. This package does not
 prove device runtime behavior, provider admission, or conference media.
+
+## Paired Build 80 installation — 22 September 2026
+
+The iPhone 15 Pro Max was updated in place from Build 75 to Build 80 using
+`devicectl device install app`, without uninstalling Phone11. Immediately before
+installation, the retained IPA SHA-256 matched the Build 80 pin above, extracted
+app deep/strict signature verification passed, and application identity,
+`get-task-allow=false`, and production APNs entitlements matched. The embedded
+Ad Hoc profile includes the paired target device and expires 28 April 2027.
+
+Installation succeeded. Fresh installed-app reads then showed Phone11 version
+1.0.0 / Build 80 on both the iPhone 15 Pro Max and iPhone 17 Pro Max. No application
+launch, credential entry, message send, meeting join, or call was performed by
+this installation check. The owner was asked to test the same admitted Team Chat
+meeting on both phones; video/audio/lifecycle acceptance remains pending.

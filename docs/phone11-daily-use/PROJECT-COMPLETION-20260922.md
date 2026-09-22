@@ -10,7 +10,7 @@ item is not physical-handset, provider, or customer acceptance.
 | Password recovery | Static portal `1de803b` and serialized recovery backend `bbd14cf` are live. The post-activation browser showed enabled sign-in and Forgot password controls; no credential or reset submission occurred. Historical provider-delivery evidence remains recorded separately. | Owner completes a new password and confirms sign-in; real-account reuse/session-revocation acceptance remains separate. |
 | Web portal and management API | Static portal `1de803b` and the tenant-settings candidate at port 3005 are live. The only newly commissioned workspace setting is `businessHoursTimezone`; photos and the other optional management domains remain unavailable. | Authenticated owner/admin save and readback for timezone, ordinary-user and second-tenant browser checks, and deliberately approved future schema slices. |
 | Profile photos and Chat Meet affordance | Tenant-bound avatar/UI and the Meet entry point are implemented and source-reviewed. Meet opens the admitted meeting flow and does not invite a recipient automatically. | Deploy photo metadata/deletion schema, HTTP routes, and retention worker; test upload, read, removal, and membership revocation. |
-| Connect11 plain video | Admission schema, pilot records, and protected provider-join probes are recorded. The LiveKit `WeakRef` Room-constructor cause is fixed in Build 80, which passed package verification. | Install Build 80 in place and pass the two-iPhone media/lifecycle matrix. |
+| Connect11 plain video | Admission schema, pilot records, and protected provider-join probes are recorded. The LiveKit `WeakRef` Room-constructor cause is fixed in Build 80, which passed package verification. | Both paired phones now report Build 80 after an in-place second-phone update; pass the two-iPhone media/lifecycle matrix. |
 | Presence and read receipts | The presence/read-receipt delta and parallel API candidate activation are recorded. | Real two-phone acceptance for read timestamps/details, typing cleanup, and foreground/away/on-call presence. |
 | Person mentions and `@all` | Person mentions and the server-authoritative `@all` contract are implemented. | Apply the guarded `@all` live delta with the profile release; prove admin-only `@all` and ordinary-member refusal. |
 | Ordinary Team Chat alerts | Enrollment and an eligible device were observed; API/worker configuration checks passed. | Prove a real locked/background alert, authorized open, revocation/logout, denial, and network-loss behavior. |
@@ -265,3 +265,11 @@ the existing recovery operator inserts its four locations between tRPC and the
 shared marker. A bounded source correction is underway; routes remain unchanged.
 The minimal workspace settings screen is committed as `1de803b` with seven
 interaction checks and TypeScript passing; its static export is being prepared.
+
+## Paired handset build alignment
+
+Fresh 22 September installed-app reads confirm version 1.0.0 / Build 80 on both
+paired pilot iPhones. The iPhone 15 Pro Max was updated in place from Build 75
+after exact IPA, signature, production entitlements, and provisioning checks.
+No uninstall or development launcher was used. The owner test request is pending;
+matching packages do not prove conference connection or two-way media.
