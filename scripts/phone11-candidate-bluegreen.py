@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Fail-closed blue/green replacement for Phone11's workerless API candidate.
 
-This operator never stops or recreates ``cp11-backend`` or the current
-``cp11-api-candidate``.  It clones the current candidate's rendered service and
-effective environment in memory, starts one reviewed image on loopback 3003,
-and atomically moves only the two tRPC locations from 3002 to 3003.  Protected
-values are written only to a root-only temporary Compose file and are never
-printed.  Profile-photo HTTP routes and migrations are deliberately out of
-scope; the protected probe set must prove that photo capability is unavailable.
+This operator never stops or recreates ``cp11-backend``. Each explicitly
+selected fixed topology clones its current candidate's rendered service and
+effective environment in memory, starts one reviewed loopback target, and
+atomically moves only the two tRPC locations. Protected values are written only
+to a root-only temporary Compose file and are never printed. Profile-photo HTTP
+routes and migrations are deliberately out of scope; the protected probe set
+must prove that photo capability is unavailable.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ SPEC.loader.exec_module(pilot)
 
 SCHEMA = "phone11-candidate-bluegreen/v1"
 SETTINGS_SCHEMA = "phone11-candidate-bluegreen/v2"
+CHANNEL_SCHEMA = "phone11-candidate-bluegreen/v3"
 BASELINE_CONTAINER = "cp11-backend"
 CURRENT_CONTAINER = "cp11-api-candidate"
 TARGET_CONTAINER = "cp11-api-candidate-next"
@@ -56,6 +57,18 @@ SETTINGS_RETAINED_PORT = 3002
 SETTINGS_RECOVERY_CONTAINER = "cp11-password-recovery"
 SETTINGS_RECOVERY_PORT = 3004
 SETTINGS_TARGET_PROJECT = "phone11-api-settings-candidate"
+CHANNEL_CURRENT_CONTAINER = SETTINGS_TARGET_CONTAINER
+CHANNEL_CURRENT_PORT = SETTINGS_TARGET_PORT
+CHANNEL_TARGET_CONTAINER = "cp11-api-candidate-channel"
+CHANNEL_TARGET_SERVICE = "candidate_channel"
+CHANNEL_TARGET_PORT = 3006
+CHANNEL_PREDECESSOR_CONTAINER = SETTINGS_CURRENT_CONTAINER
+CHANNEL_PREDECESSOR_PORT = SETTINGS_CURRENT_PORT
+CHANNEL_TARGET_PROJECT = "phone11-api-channel-candidate"
+CHANNEL_MEETINGS_ENABLED = "PHONE11_CHANNEL_MEETINGS_ENABLED"
+CHANNEL_MEETING_TENANT_IDS = "PHONE11_CHANNEL_MEETING_TENANT_IDS"
+CHANNEL_MIGRATION_RECEIPT_PATH = Path("/var/lib/phone11-channel-meetings/receipt.json")
+CHANNEL_MIGRATION_RECEIPT_SCHEMA = "phone11.channel-meetings-migration-journal/v1"
 PUBLIC_ORIGIN = "https://api.phone11.ai"
 SOURCE_PROBES = {"existing_phone", "existing_chat", "conference", "mixed_batch", "denied_tenant"}
 EXPECTED_PROBES = {
@@ -66,6 +79,7 @@ STATE_ROOT = Path("/var/lib/phone11-candidate-bluegreen")
 ROLLBACK_SITE = STATE_ROOT / "nginx.before"
 ROLLBACK_RECEIPT = STATE_ROOT / "receipt.json"
 SETTINGS_STATE_ROOT = Path("/var/lib/phone11-candidate-bluegreen-settings")
+CHANNEL_STATE_ROOT = Path("/var/lib/phone11-candidate-bluegreen-channel")
 LOCK_FILE = pilot.LOCK_FILE
 RECOVERY_ROUTE_PATHS = (
     "/api/auth/sign-in/email",
@@ -120,6 +134,8 @@ class Topology:
     recovery_container: str | None
     recovery_port: int | None
     state_root: Path
+    predecessor_container: str | None = None
+    predecessor_port: int | None = None
 
 
 LEGACY_TOPOLOGY = Topology(
@@ -134,6 +150,14 @@ SETTINGS_TOPOLOGY = Topology(
     SETTINGS_RETAINED_CONTAINER, SETTINGS_RETAINED_PORT,
     SETTINGS_RECOVERY_CONTAINER, SETTINGS_RECOVERY_PORT, SETTINGS_STATE_ROOT,
 )
+CHANNEL_TOPOLOGY = Topology(
+    "channel-3005-to-3006", BASELINE_CONTAINER, 3000,
+    CHANNEL_CURRENT_CONTAINER, CHANNEL_CURRENT_PORT,
+    CHANNEL_TARGET_CONTAINER, CHANNEL_TARGET_SERVICE, CHANNEL_TARGET_PORT,
+    SETTINGS_RETAINED_CONTAINER, SETTINGS_RETAINED_PORT,
+    SETTINGS_RECOVERY_CONTAINER, SETTINGS_RECOVERY_PORT, CHANNEL_STATE_ROOT,
+    CHANNEL_PREDECESSOR_CONTAINER, CHANNEL_PREDECESSOR_PORT,
+)
 
 
 @dataclass(frozen=True)
@@ -144,6 +168,7 @@ class Pins:
     current: RuntimePin
     retained: RuntimePin | None
     recovery: RuntimePin | None
+    predecessor: RuntimePin | None
     current_compose_file: Path
     current_compose_sha256: str
     current_rendered_sha256: str
@@ -165,6 +190,14 @@ class Pins:
     kamailio_config_path: str
     kamailio_config_sha256: str
     kamailio_wake_occurrences: int
+    channel_meetings: "ChannelMeetingsPin | None" = None
+
+
+@dataclass(frozen=True)
+class ChannelMeetingsPin:
+    tenant_id: int
+    migration_receipt: Path
+    migration_receipt_sha256: str
 
 
 def _runtime(value: Any) -> RuntimePin:
@@ -192,6 +225,25 @@ def _validate_topology_v2(value: Any) -> Topology:
     slot("recovery_candidate", {"container": SETTINGS_RECOVERY_CONTAINER, "port": SETTINGS_RECOVERY_PORT, "role": ROLE})
     slot("target_candidate", {"container": SETTINGS_TARGET_CONTAINER, "service": SETTINGS_TARGET_SERVICE, "port": SETTINGS_TARGET_PORT, "role": ROLE})
     return SETTINGS_TOPOLOGY
+
+
+def _validate_topology_v3(value: Any) -> Topology:
+    guarded(isinstance(value, Mapping), "manifest")
+    exact_keys(value, {"baseline", "retained_candidate", "predecessor_candidate", "recovery_candidate", "active_candidate", "target_candidate"}, "manifest")
+
+    def slot(name: str, expected: Mapping[str, Any]) -> None:
+        actual = value.get(name)
+        guarded(isinstance(actual, Mapping), "manifest")
+        exact_keys(actual, set(expected), "manifest")
+        guarded(dict(actual) == dict(expected), "manifest")
+
+    slot("baseline", {"container": BASELINE_CONTAINER, "port": 3000, "role": "default"})
+    slot("retained_candidate", {"container": SETTINGS_RETAINED_CONTAINER, "port": SETTINGS_RETAINED_PORT, "role": ROLE})
+    slot("predecessor_candidate", {"container": CHANNEL_PREDECESSOR_CONTAINER, "port": CHANNEL_PREDECESSOR_PORT, "role": ROLE})
+    slot("recovery_candidate", {"container": SETTINGS_RECOVERY_CONTAINER, "port": SETTINGS_RECOVERY_PORT, "role": ROLE})
+    slot("active_candidate", {"container": CHANNEL_CURRENT_CONTAINER, "port": CHANNEL_CURRENT_PORT, "role": ROLE})
+    slot("target_candidate", {"container": CHANNEL_TARGET_CONTAINER, "service": CHANNEL_TARGET_SERVICE, "port": CHANNEL_TARGET_PORT, "role": ROLE})
+    return CHANNEL_TOPOLOGY
 
 
 def _validate_common(
@@ -222,6 +274,21 @@ def _validate_common(
     guarded(topology.current_port != topology.target_port, "manifest")
 
 
+def _channel_meetings(value: Any, target: Mapping[str, Any]) -> ChannelMeetingsPin:
+    guarded(isinstance(value, Mapping), "manifest")
+    exact_keys(value, {"enabled", "tenant_id", "migration_receipt"}, "manifest")
+    guarded(value.get("enabled") is True and value.get("tenant_id") == target.get("tenant_id"), "manifest")
+    receipt = value.get("migration_receipt")
+    guarded(isinstance(receipt, Mapping), "manifest")
+    exact_keys(receipt, {"file", "sha256"}, "manifest")
+    guarded(
+        receipt.get("file") == str(CHANNEL_MIGRATION_RECEIPT_PATH)
+        and is_sha256(receipt.get("sha256")),
+        "manifest",
+    )
+    return ChannelMeetingsPin(value["tenant_id"], CHANNEL_MIGRATION_RECEIPT_PATH, receipt["sha256"])
+
+
 def _pins(
     schema: str,
     topology: Topology,
@@ -229,6 +296,7 @@ def _pins(
     current: RuntimePin,
     retained: RuntimePin | None,
     recovery: RuntimePin | None,
+    predecessor: RuntimePin | None,
     current_raw: Mapping[str, Any],
     release: Mapping[str, Any],
     target: Mapping[str, Any],
@@ -236,13 +304,14 @@ def _pins(
     nginx: Mapping[str, Any],
     kamailio: Mapping[str, Any],
     public_origin: str,
+    channel_meetings: ChannelMeetingsPin | None = None,
 ) -> Pins:
     return Pins(
-        schema, topology, baseline, current, retained, recovery,
+        schema, topology, baseline, current, retained, recovery, predecessor,
         Path(current_raw["compose_file"]), current_raw["compose_sha256"], current_raw["rendered_sha256"],
         release["image"], release["build"], release["source_sha"], release["bundle_sha256"], release["lock_sha256"],
         target["project"], target["tenant_id"], target["denied_tenant_id"], Path(probes["file"]), probes["sha256"], Path(nginx["site"]), nginx["site_sha256"],
-        nginx["dump_sha256"], nginx["marker"], public_origin, kamailio["config_path"], kamailio["config_sha256"], kamailio["wake_occurrences"],
+        nginx["dump_sha256"], nginx["marker"], public_origin, kamailio["config_path"], kamailio["config_sha256"], kamailio["wake_occurrences"], channel_meetings,
     )
 
 
@@ -264,7 +333,7 @@ def _parse_manifest_v1(document: Mapping[str, Any]) -> Pins:
     exact_keys(kamailio, {"config_path", "config_sha256", "wake_occurrences"}, "manifest")
     guarded(document.get("public_origin") == PUBLIC_ORIGIN, "manifest")
     _validate_common(baseline, current, release, target, probes, nginx, kamailio, current_raw, LEGACY_TOPOLOGY)
-    return _pins(SCHEMA, LEGACY_TOPOLOGY, baseline, current, None, None, current_raw, release, target, probes, nginx, kamailio, document["public_origin"])
+    return _pins(SCHEMA, LEGACY_TOPOLOGY, baseline, current, None, None, None, current_raw, release, target, probes, nginx, kamailio, document["public_origin"])
 
 
 def _parse_manifest_v2(document: Mapping[str, Any]) -> Pins:
@@ -289,7 +358,33 @@ def _parse_manifest_v2(document: Mapping[str, Any]) -> Pins:
     exact_keys(kamailio, {"config_path", "config_sha256", "wake_occurrences"}, "manifest")
     guarded(target.get("project") == SETTINGS_TARGET_PROJECT and release.get("image") not in {baseline.image, retained.image, current.image, recovery.image}, "manifest")
     _validate_common(baseline, current, release, target, probes, nginx, kamailio, current_raw, topology)
-    return _pins(SETTINGS_SCHEMA, topology, baseline, current, retained, recovery, current_raw, release, target, probes, nginx, kamailio, document["public_origin"])
+    return _pins(SETTINGS_SCHEMA, topology, baseline, current, retained, recovery, None, current_raw, release, target, probes, nginx, kamailio, document["public_origin"])
+
+
+def _parse_manifest_v3(document: Mapping[str, Any]) -> Pins:
+    exact_keys(document, {"schema", "topology", "baseline", "retained_candidate", "predecessor_candidate", "recovery_candidate", "active_candidate", "release", "target", "channel_meetings", "probes", "nginx", "kamailio", "public_origin"}, "manifest")
+    guarded(document.get("schema") == CHANNEL_SCHEMA and document.get("public_origin") == PUBLIC_ORIGIN, "manifest")
+    topology = _validate_topology_v3(document.get("topology"))
+    baseline = _runtime(document.get("baseline"))
+    retained = _runtime(document.get("retained_candidate"))
+    predecessor = _runtime(document.get("predecessor_candidate"))
+    recovery = _runtime(document.get("recovery_candidate"))
+    current_raw = document.get("active_candidate")
+    release, target = document.get("release"), document.get("target")
+    probes, nginx, kamailio = document.get("probes"), document.get("nginx"), document.get("kamailio")
+    for value in (current_raw, release, target, probes, nginx, kamailio):
+        guarded(isinstance(value, Mapping), "manifest")
+    exact_keys(current_raw, {"container_id", "image", "runtime_sha256", "build", "compose_file", "compose_sha256", "rendered_sha256"}, "manifest")
+    current = _runtime({key: current_raw.get(key) for key in ("container_id", "image", "runtime_sha256", "build")})
+    exact_keys(release, {"image", "build", "source_sha", "bundle_sha256", "lock_sha256"}, "manifest")
+    exact_keys(target, {"project", "tenant_id", "denied_tenant_id"}, "manifest")
+    exact_keys(probes, {"file", "sha256"}, "manifest")
+    exact_keys(nginx, {"site", "site_sha256", "dump_sha256", "marker"}, "manifest")
+    exact_keys(kamailio, {"config_path", "config_sha256", "wake_occurrences"}, "manifest")
+    guarded(target.get("project") == CHANNEL_TARGET_PROJECT and release.get("image") not in {baseline.image, retained.image, predecessor.image, current.image, recovery.image}, "manifest")
+    _validate_common(baseline, current, release, target, probes, nginx, kamailio, current_raw, topology)
+    channel_meetings = _channel_meetings(document.get("channel_meetings"), target)
+    return _pins(CHANNEL_SCHEMA, topology, baseline, current, retained, recovery, predecessor, current_raw, release, target, probes, nginx, kamailio, document["public_origin"], channel_meetings)
 
 
 def parse_manifest(document: Mapping[str, Any]) -> Pins:
@@ -298,12 +393,51 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
         return _parse_manifest_v1(document)
     if document.get("schema") == SETTINGS_SCHEMA:
         return _parse_manifest_v2(document)
+    if document.get("schema") == CHANNEL_SCHEMA:
+        return _parse_manifest_v3(document)
     raise GuardError("manifest")
 
 
 def load_pins(path: Path) -> Pins:
     guarded(os.geteuid() == 0, "root")
     return parse_manifest(strict_json(secure_read(path, mode=0o600), "manifest"))
+
+
+def validate_channel_migration_receipt(raw: bytes, pins: Pins, stage: str) -> None:
+    """Bind v3 enablement to the exact completed channel-schema receipt."""
+
+    guarded(pins.schema == CHANNEL_SCHEMA and pins.channel_meetings is not None, stage)
+    require_sha256(raw, pins.channel_meetings.migration_receipt_sha256, stage)
+    receipt = strict_json(raw, stage)
+    exact_keys(receipt, {
+        "schema", "manifest_sha256", "sql_sha256", "database_identity_sha256",
+        "before_catalog_sha256", "after_catalog_sha256", "container_id", "image",
+        "source_sha", "bundle_sha256", "lock_sha256", "backup_proof_sha256",
+        "restore_proof_sha256", "status", "verification_sha256",
+    }, stage)
+    guarded(
+        receipt.get("schema") == CHANNEL_MIGRATION_RECEIPT_SCHEMA
+        and receipt.get("status") == "applied"
+        and isinstance(receipt.get("container_id"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{64}", receipt["container_id"]))
+        and is_image_digest(receipt.get("image"))
+        and isinstance(receipt.get("source_sha"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{40}", receipt["source_sha"]))
+        and all(is_sha256(receipt.get(key)) for key in {
+            "manifest_sha256", "sql_sha256", "database_identity_sha256",
+            "before_catalog_sha256", "after_catalog_sha256", "bundle_sha256",
+            "lock_sha256", "backup_proof_sha256", "restore_proof_sha256",
+            "verification_sha256",
+        }),
+        stage,
+    )
+    verification = sha256_bytes(json.dumps({
+        "database_identity_sha256": receipt["database_identity_sha256"],
+        "before_catalog_sha256": receipt["before_catalog_sha256"],
+        "after_catalog_sha256": receipt["after_catalog_sha256"],
+        "sql_sha256": receipt["sql_sha256"],
+    }, sort_keys=True, separators=(",", ":")).encode())
+    guarded(receipt["verification_sha256"] == verification, stage)
 
 
 def settings_topology_document() -> dict[str, Mapping[str, Any]]:
@@ -313,6 +447,17 @@ def settings_topology_document() -> dict[str, Mapping[str, Any]]:
         "active_candidate": {"container": SETTINGS_CURRENT_CONTAINER, "port": SETTINGS_CURRENT_PORT, "role": ROLE},
         "recovery_candidate": {"container": SETTINGS_RECOVERY_CONTAINER, "port": SETTINGS_RECOVERY_PORT, "role": ROLE},
         "target_candidate": {"container": SETTINGS_TARGET_CONTAINER, "service": SETTINGS_TARGET_SERVICE, "port": SETTINGS_TARGET_PORT, "role": ROLE},
+    }
+
+
+def channel_topology_document() -> dict[str, Mapping[str, Any]]:
+    return {
+        "baseline": {"container": BASELINE_CONTAINER, "port": 3000, "role": "default"},
+        "retained_candidate": {"container": SETTINGS_RETAINED_CONTAINER, "port": SETTINGS_RETAINED_PORT, "role": ROLE},
+        "predecessor_candidate": {"container": CHANNEL_PREDECESSOR_CONTAINER, "port": CHANNEL_PREDECESSOR_PORT, "role": ROLE},
+        "recovery_candidate": {"container": SETTINGS_RECOVERY_CONTAINER, "port": SETTINGS_RECOVERY_PORT, "role": ROLE},
+        "active_candidate": {"container": CHANNEL_CURRENT_CONTAINER, "port": CHANNEL_CURRENT_PORT, "role": ROLE},
+        "target_candidate": {"container": CHANNEL_TARGET_CONTAINER, "service": CHANNEL_TARGET_SERVICE, "port": CHANNEL_TARGET_PORT, "role": ROLE},
     }
 
 
@@ -355,13 +500,24 @@ def trpc_route_fragment(marker: str, build: str, port: int, allowed_ports: set[i
     return complete[:-len(marker_line)]
 
 
-def settings_route_fragment(marker: str, trpc_build: str, recovery_build: str, port: int) -> bytes:
+def settings_route_fragment(
+    marker: str,
+    trpc_build: str,
+    recovery_build: str,
+    port: int,
+    allowed_ports: set[int] | None = None,
+) -> bytes:
     """Reproduce the deployed tRPC-then-recovery marker replacement sequence."""
 
     original = f"    {marker}\n".encode()
     with_trpc = original.replace(
         marker.encode(),
-        proxy_fragment(marker, trpc_build, port, {SETTINGS_CURRENT_PORT, SETTINGS_TARGET_PORT}).rstrip(b"\n"),
+        proxy_fragment(
+            marker,
+            trpc_build,
+            port,
+            {SETTINGS_CURRENT_PORT, SETTINGS_TARGET_PORT} if allowed_ports is None else allowed_ports,
+        ).rstrip(b"\n"),
     )
     return with_trpc.replace(
         marker.encode(), recovery_route_fragment(marker, recovery_build).rstrip(b"\n")
@@ -415,10 +571,17 @@ def nginx_tokens(raw: bytes, stage: str) -> list[str]:
     return tokens
 
 
-def validate_settings_site_routes(raw: bytes, expected: bytes, stage: str) -> None:
+def validate_layered_site_routes(
+    raw: bytes,
+    expected: bytes,
+    stage: str,
+    *,
+    target_port: int,
+    prohibited_ports: set[int],
+) -> None:
     """Require the six known routes and reject competing candidate routes."""
 
-    guarded(raw.count(expected) == 1 and b"127.0.0.1:3005" not in raw, stage)
+    guarded(raw.count(expected) == 1 and f"127.0.0.1:{target_port}".encode() not in raw, stage)
     remainder = raw.replace(expected, b"", 1)
     tokens = nginx_tokens(remainder, stage)
     for index, token in enumerate(tokens):
@@ -433,7 +596,58 @@ def validate_settings_site_routes(raw: bytes, expected: bytes, stage: str) -> No
         if lowered == "proxy_pass":
             guarded(index + 1 < len(tokens), stage)
             destination = tokens[index + 1].replace("\\", "").lower()
-            guarded(not re.search(r":(?:3003|3004)(?![0-9])", destination), stage)
+            guarded(not re.search(r":(?:" + "|".join(str(port) for port in sorted(prohibited_ports)) + r")(?![0-9])", destination), stage)
+
+
+def validate_settings_site_routes(raw: bytes, expected: bytes, stage: str) -> None:
+    validate_layered_site_routes(
+        raw,
+        expected,
+        stage,
+        target_port=SETTINGS_TARGET_PORT,
+        prohibited_ports={SETTINGS_CURRENT_PORT, SETTINGS_RECOVERY_PORT},
+    )
+
+
+def _contains_candidate_port(destination: str, ports: set[int]) -> bool:
+    normalized = destination.replace("\\", "").lower()
+    return bool(re.search(
+        r":(?:" + "|".join(str(port) for port in sorted(ports)) + r")(?![0-9])",
+        normalized,
+    ))
+
+
+def validate_channel_site_routes(raw: bytes, expected: bytes, stage: str) -> None:
+    """Reject every inactive 3003--3006 route, including upstream aliases.
+
+    ``nginx -T`` expands included files and keeps upstream declarations, so the
+    same token validation is applied to both the protected site source and the
+    sealed effective configuration.  Variables in an inactive upstream are
+    deliberately refused because they cannot be proven not to resolve to 3006.
+    """
+
+    inactive_ports = {
+        CHANNEL_PREDECESSOR_PORT, SETTINGS_RECOVERY_PORT,
+        CHANNEL_CURRENT_PORT, CHANNEL_TARGET_PORT,
+    }
+    validate_layered_site_routes(
+        raw,
+        expected,
+        stage,
+        target_port=CHANNEL_TARGET_PORT,
+        prohibited_ports=inactive_ports - {CHANNEL_TARGET_PORT},
+    )
+    remainder = raw.replace(expected, b"", 1)
+    tokens = nginx_tokens(remainder, stage)
+    for index, token in enumerate(tokens):
+        lowered = token.lower()
+        if lowered in {"proxy_pass", "grpc_pass", "fastcgi_pass", "uwsgi_pass", "scgi_pass", "server"}:
+            guarded(index + 1 < len(tokens), stage)
+            destination = tokens[index + 1]
+            if lowered == "server" and destination == "{":
+                continue
+            normalized = destination.replace("\\", "").lower()
+            guarded("$" not in normalized and not _contains_candidate_port(normalized, inactive_ports), stage)
 
 
 def inventory_runtime(system: System, name: str, role: str, port: int) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
@@ -514,6 +728,83 @@ def emit_settings_inventory(arguments: argparse.Namespace, system: System) -> No
     print(f"inventory=READY topology=settings-3003-to-3005 manifest_sha256={sha256_bytes(raw)}")
 
 
+def emit_channel_inventory(arguments: argparse.Namespace, system: System) -> None:
+    """Pin the fixed 3000/3002/3003/3004/3005/3006 topology without changing it."""
+
+    guarded(os.geteuid() == 0, "root")
+    guarded(arguments.output is not None and arguments.output.is_absolute(), "inventory")
+    guarded(arguments.current_compose_file is not None and arguments.current_compose_file.is_absolute(), "inventory")
+    guarded(arguments.probes_file is not None and arguments.probes_file.is_absolute(), "inventory")
+    guarded(arguments.nginx_site is not None and arguments.nginx_site.is_absolute(), "inventory")
+    guarded(arguments.release_image is not None and is_image_digest(arguments.release_image), "inventory")
+    guarded(isinstance(arguments.release_build, str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", arguments.release_build)), "inventory")
+    guarded(isinstance(arguments.release_source_sha, str) and bool(re.fullmatch(r"[0-9a-f]{40}", arguments.release_source_sha)), "inventory")
+    guarded(type(arguments.tenant_id) is int and type(arguments.denied_tenant_id) is int, "inventory")
+    guarded(arguments.channel_migration_receipt == CHANNEL_MIGRATION_RECEIPT_PATH, "inventory")
+    guarded(arguments.target_project == CHANNEL_TARGET_PROJECT and not os.path.lexists(arguments.output), "inventory")
+    ensure_target_absent(system, CHANNEL_TOPOLOGY)
+
+    baseline, baseline_pin = inventory_runtime(system, BASELINE_CONTAINER, "default", 3000)
+    retained, retained_pin = inventory_runtime(system, SETTINGS_RETAINED_CONTAINER, ROLE, SETTINGS_RETAINED_PORT)
+    predecessor, predecessor_pin = inventory_runtime(system, CHANNEL_PREDECESSOR_CONTAINER, ROLE, CHANNEL_PREDECESSOR_PORT)
+    active, active_pin = inventory_runtime(system, CHANNEL_CURRENT_CONTAINER, ROLE, CHANNEL_CURRENT_PORT)
+    recovery, recovery_pin = inventory_runtime(system, SETTINGS_RECOVERY_CONTAINER, ROLE, SETTINGS_RECOVERY_PORT)
+    guarded(len({baseline.get("Id"), retained.get("Id"), predecessor.get("Id"), active.get("Id"), recovery.get("Id")}) == 5, "inventory")
+
+    compose_raw = secure_read(arguments.current_compose_file)
+    rendered = system.json_command(["docker", "compose", "-f", str(arguments.current_compose_file), "config", "--format", "json"], "inventory")
+    guarded(isinstance(rendered, Mapping), "inventory")
+    probe_raw, site_raw = secure_read(arguments.probes_file, mode=0o600), secure_read(arguments.nginx_site)
+    receipt_raw = secure_read(arguments.channel_migration_receipt, mode=0o600)
+    markers = re.findall(rb"(?m)^\s*(# PHONE11_PARALLEL_API_INSERT [^\r\n]+)\s*$", site_raw)
+    guarded(len(markers) == 1, "inventory")
+    try:
+        marker = markers[0].decode("ascii")
+    except UnicodeDecodeError as error:
+        raise GuardError("inventory") from error
+
+    release = system.json_command(["docker", "image", "inspect", arguments.release_image], "inventory")
+    guarded(isinstance(release, list) and len(release) == 1 and release[0].get("Id") == arguments.release_image, "inventory")
+    labels = release[0].get("Config", {}).get("Labels")
+    guarded(isinstance(labels, Mapping) and labels.get("com.phone11.source-sha") == arguments.release_source_sha, "inventory")
+    bundle_sha, lock_sha = labels.get("com.phone11.bundle-sha256"), labels.get("com.phone11.lock-sha256")
+    guarded(is_sha256(bundle_sha) and is_sha256(lock_sha), "inventory")
+
+    kam_raw = system.command(["docker", "exec", "p11-kamailio", "cat", arguments.kamailio_config_path])
+    nginx_dump_raw = system.command(["nginx", "-T"])
+    document = {
+        "schema": CHANNEL_SCHEMA, "topology": channel_topology_document(),
+        "baseline": baseline_pin, "retained_candidate": retained_pin,
+        "predecessor_candidate": predecessor_pin,
+        "active_candidate": {**active_pin, "compose_file": str(arguments.current_compose_file), "compose_sha256": sha256_bytes(compose_raw), "rendered_sha256": canonical_hash(rendered)},
+        "recovery_candidate": recovery_pin,
+        "release": {"image": arguments.release_image, "build": arguments.release_build, "source_sha": arguments.release_source_sha, "bundle_sha256": bundle_sha, "lock_sha256": lock_sha},
+        "target": {"project": arguments.target_project, "tenant_id": arguments.tenant_id, "denied_tenant_id": arguments.denied_tenant_id},
+        "channel_meetings": {"enabled": True, "tenant_id": arguments.tenant_id, "migration_receipt": {"file": str(arguments.channel_migration_receipt), "sha256": sha256_bytes(receipt_raw)}},
+        "probes": {"file": str(arguments.probes_file), "sha256": sha256_bytes(probe_raw)},
+        "nginx": {"site": str(arguments.nginx_site), "site_sha256": sha256_bytes(site_raw), "dump_sha256": sha256_bytes(nginx_dump_raw), "marker": marker},
+        "kamailio": {"config_path": arguments.kamailio_config_path, "config_sha256": sha256_bytes(kam_raw), "wake_occurrences": kam_raw.count(pilot.WAKE_URL.encode())},
+        "public_origin": PUBLIC_ORIGIN,
+    }
+    parsed = parse_manifest(document)
+    validate_channel_migration_receipt(receipt_raw, parsed, "inventory")
+    load_probes(probe_raw, parsed)
+    cloned_config(rendered, active, parsed)
+    guarded(parsed.recovery is not None, "inventory")
+    current_fragment = settings_route_fragment(
+        marker,
+        parsed.current.build,
+        parsed.recovery.build,
+        parsed.topology.current_port,
+        {CHANNEL_CURRENT_PORT, CHANNEL_TARGET_PORT},
+    ).rstrip(b"\n")
+    validate_channel_site_routes(site_raw, current_fragment, "inventory")
+    validate_channel_site_routes(nginx_dump_raw, current_fragment, "inventory")
+    raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    atomic_write(arguments.output, raw, mode=0o600, uid=0, gid=0)
+    print(f"inventory=READY topology=channel-3005-to-3006 manifest_sha256={sha256_bytes(raw)}")
+
+
 def emit_inventory(arguments: argparse.Namespace, system: System) -> None:
     """Write a complete nonsecret manifest from fresh live pins.
 
@@ -523,6 +814,9 @@ def emit_inventory(arguments: argparse.Namespace, system: System) -> None:
 
     if getattr(arguments, "settings_topology", False):
         emit_settings_inventory(arguments, system)
+        return
+    if getattr(arguments, "channel_topology", False):
+        emit_channel_inventory(arguments, system)
         return
 
     guarded(os.geteuid() == 0, "root")
@@ -670,7 +964,7 @@ def load_probes(raw: bytes, pins: Pins) -> list[Mapping[str, Any]]:
     batch = quote(json.dumps({"0": {"json": None}, "1": {"json": {"tenantId": pins.tenant_id}}}, separators=(",", ":")), safe="")
     management_tenant_required = (
         ['"settingsAvailable":true', '"supportedSettings":["businessHoursTimezone"]', '"userRole"']
-        if pins.schema == SETTINGS_SCHEMA
+        if pins.schema in {SETTINGS_SCHEMA, CHANNEL_SCHEMA}
         else ['"settingsAvailable":false', '"userRole"']
     )
     probes: list[Mapping[str, Any]] = [
@@ -760,6 +1054,34 @@ def _rewrite_healthcheck(value: Any, current_port: int, target_port: int, curren
     return value
 
 
+def target_environment(inspect: Mapping[str, Any], pins: Pins, stage: str) -> dict[str, str]:
+    """Produce the only environment delta permitted for the selected topology."""
+
+    topology = pins.topology
+    value = dict(environment(inspect, stage))
+    guarded(
+        value.get("PHONE11_RUNTIME_ROLE") == ROLE
+        and value.get("PORT") == str(topology.current_port)
+        and value.get("PHONE11_BUILD_SHA") == pins.current.build,
+        stage,
+    )
+    if pins.schema == CHANNEL_SCHEMA:
+        guarded(pins.channel_meetings is not None, stage)
+        guarded(
+            value.get(CHANNEL_MEETINGS_ENABLED) in {None, "0"}
+            and value.get(CHANNEL_MEETING_TENANT_IDS) in {None, ""},
+            stage,
+        )
+        value[CHANNEL_MEETINGS_ENABLED] = "1"
+        value[CHANNEL_MEETING_TENANT_IDS] = str(pins.channel_meetings.tenant_id)
+    value.update({
+        "PHONE11_RUNTIME_ROLE": ROLE,
+        "PORT": str(topology.target_port),
+        "PHONE11_BUILD_SHA": pins.release_build,
+    })
+    return value
+
+
 def cloned_config(rendered: Mapping[str, Any], inspect: Mapping[str, Any], pins: Pins) -> Mapping[str, Any]:
     topology = pins.topology
     services = rendered.get("services")
@@ -769,9 +1091,7 @@ def cloned_config(rendered: Mapping[str, Any], inspect: Mapping[str, Any], pins:
     config = inspect.get("Config")
     guarded(isinstance(config, Mapping), "candidate_config")
     guarded(service.get("container_name") == topology.current_container and service.get("image") == config.get("Image"), "candidate_config")
-    current_env = dict(environment(inspect, "candidate_runtime"))
-    guarded(current_env.get("PHONE11_RUNTIME_ROLE") == ROLE and current_env.get("PORT") == str(topology.current_port) and current_env.get("PHONE11_BUILD_SHA") == pins.current.build, "candidate_runtime")
-    current_env.update({"PHONE11_RUNTIME_ROLE": ROLE, "PORT": str(topology.target_port), "PHONE11_BUILD_SHA": pins.release_build})
+    current_env = target_environment(inspect, pins, "candidate_runtime")
     service["container_name"] = topology.target_container
     service["image"] = pins.release_image
     # Compose interpolates dollar signs even in JSON input. The effective
@@ -824,9 +1144,7 @@ class Operator:
         rendered = self.system.json_command(["docker", "compose", "-f", str(self.pins.current_compose_file), "config", "--format", "json"], "candidate_config")
         guarded(isinstance(rendered, Mapping) and canonical_hash(rendered) == self.pins.current_rendered_sha256, "candidate_config")
         target = cloned_config(rendered, inspect, self.pins)
-        expected = dict(environment(inspect, "candidate_config"))
-        expected.update({"PHONE11_RUNTIME_ROLE": ROLE, "PORT": str(topology.target_port), "PHONE11_BUILD_SHA": self.pins.release_build})
-        self.expected_target_env = expected
+        self.expected_target_env = target_environment(inspect, self.pins, "candidate_config")
         with frozen_candidate_config(target) as frozen:
             roundtrip = self.system.json_command([
                 "docker", "compose", "--project-name", self.pins.target_project,
@@ -851,13 +1169,27 @@ class Operator:
         topology = self.pins.topology
         raw = secure_read(self.pins.nginx_site)
         require_sha256(raw, self.pins.nginx_site_sha256, "nginx")
-        if self.pins.schema == SETTINGS_SCHEMA:
+        if self.pins.schema in {SETTINGS_SCHEMA, CHANNEL_SCHEMA}:
             guarded(self.pins.recovery is not None, "nginx")
             current = settings_route_fragment(
                 self.pins.nginx_marker, self.pins.current.build,
                 self.pins.recovery.build, topology.current_port,
+                {topology.current_port, topology.target_port},
             ).rstrip(b"\n")
-            validate_settings_site_routes(raw, current, "nginx")
+            if self.pins.schema == CHANNEL_SCHEMA:
+                validate_channel_site_routes(raw, current, "nginx")
+            else:
+                validate_layered_site_routes(
+                    raw,
+                    current,
+                    "nginx",
+                    target_port=topology.target_port,
+                    prohibited_ports={
+                        SETTINGS_CURRENT_PORT,
+                        SETTINGS_RECOVERY_PORT,
+                        topology.current_port,
+                    },
+                )
         else:
             current = proxy_fragment(
                 self.pins.nginx_marker, self.pins.current.build,
@@ -865,7 +1197,10 @@ class Operator:
             ).rstrip(b"\n")
         target_origin = f"127.0.0.1:{topology.target_port}".encode()
         guarded(raw.count(current) == 1 and target_origin not in raw and b"location = /api/profile" not in current, "nginx")
-        require_sha256(self.system.command(["nginx", "-T"]), self.pins.nginx_dump_sha256, "nginx")
+        nginx_dump_raw = self.system.command(["nginx", "-T"])
+        require_sha256(nginx_dump_raw, self.pins.nginx_dump_sha256, "nginx")
+        if self.pins.schema == CHANNEL_SCHEMA:
+            validate_channel_site_routes(nginx_dump_raw, current, "nginx")
         return raw
 
     def wake(self) -> None:
@@ -889,25 +1224,40 @@ class Operator:
         if self.pins.recovery is not None:
             guarded(topology.recovery_container is not None and topology.recovery_port is not None, "topology")
             self.runtime(topology.recovery_container, self.pins.recovery, ROLE, topology.recovery_port)
+        if self.pins.predecessor is not None:
+            guarded(topology.predecessor_container is not None and topology.predecessor_port is not None, "topology")
+            self.runtime(topology.predecessor_container, self.pins.predecessor, ROLE, topology.predecessor_port)
         return baseline, current
 
     def prepare(self) -> None:
         topology = self.pins.topology
         baseline, current = self.preserved_runtimes()
+        if self.pins.schema == CHANNEL_SCHEMA:
+            guarded(self.pins.channel_meetings is not None, "migration_receipt")
+            validate_channel_migration_receipt(
+                secure_read(self.pins.channel_meetings.migration_receipt, mode=0o600),
+                self.pins,
+                "migration_receipt",
+            )
         self.target_absent()
         self.image()
         self.rendered_current(current)
         self.probes = load_probes(secure_read(self.pins.probes_file, mode=0o600), self.pins)
-        # Reuse only the authenticated read probe during prepare. Expired or
+        # Reuse only authenticated read probes during prepare. Expired or
         # revoked protected credentials block before a new container is made.
-        existing_phone = [probe for probe in self.probes if probe["label"] == "existing_phone"]
-        guarded(len(existing_phone) == 1, "probes")
-        run_probes(self.system, f"http://127.0.0.1:{topology.current_port}", existing_phone)
+        # The channel topology also proves the live 3005 settings capability
+        # before it clones that candidate.
+        prepare_labels = {"existing_phone"}
+        if self.pins.schema == CHANNEL_SCHEMA:
+            prepare_labels.add("management_tenant")
+        prepare_probes = [probe for probe in self.probes if probe["label"] in prepare_labels]
+        guarded({probe["label"] for probe in prepare_probes} == prepare_labels, "probes")
+        run_probes(self.system, f"http://127.0.0.1:{topology.current_port}", prepare_probes)
         self.photos_absent()
         self.nginx()
         self.system.command(["nginx", "-t"])
         self.wake()
-        if self.pins.schema == SETTINGS_SCHEMA:
+        if self.pins.schema in {SETTINGS_SCHEMA, CHANNEL_SCHEMA}:
             guarded(baseline.get("Id") == self.pins.baseline.container_id and current.get("Id") == self.pins.current.container_id, "candidate_changed")
         else:
             guarded(baseline.get("Id") == self.pins.baseline.container_id, "baseline_changed")
@@ -950,7 +1300,7 @@ class Operator:
             "target_container": self.pins.topology.target_container,
             "target_build": self.pins.release_build,
         }
-        if self.pins.schema == SETTINGS_SCHEMA:
+        if self.pins.schema in {SETTINGS_SCHEMA, CHANNEL_SCHEMA}:
             value["topology"] = self.pins.topology.name
         return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
@@ -974,13 +1324,13 @@ class Operator:
         topology = self.pins.topology
         receipt = strict_json(secure_read(self.rollback_receipt, mode=0o600), "rollback")
         receipt_keys = {"schema", "site", "before", "active", "target_container", "target_build"}
-        if self.pins.schema == SETTINGS_SCHEMA:
+        if self.pins.schema in {SETTINGS_SCHEMA, CHANNEL_SCHEMA}:
             receipt_keys.add("topology")
         exact_keys(receipt, receipt_keys, "rollback")
         original = secure_read(self.rollback_site, mode=0o600)
         current = secure_read(self.pins.nginx_site)
         guarded(receipt.get("schema") == self.pins.schema and receipt.get("site") == str(self.pins.nginx_site) and receipt.get("target_container") == topology.target_container and receipt.get("target_build") == self.pins.release_build, "rollback")
-        if self.pins.schema == SETTINGS_SCHEMA:
+        if self.pins.schema in {SETTINGS_SCHEMA, CHANNEL_SCHEMA}:
             guarded(receipt.get("topology") == topology.name, "rollback")
         guarded(sha256_bytes(original) == receipt.get("before") == self.pins.nginx_site_sha256, "rollback")
         guarded(current == expected if expected is not None else sha256_bytes(current) == receipt.get("active"), "rollback")
@@ -1028,11 +1378,12 @@ class Operator:
             topology.target_port, {topology.current_port, topology.target_port},
         ).rstrip(b"\n")
         routed = original.replace(current_fragment, target_fragment, 1)
-        if self.pins.schema == SETTINGS_SCHEMA:
+        if self.pins.schema in {SETTINGS_SCHEMA, CHANNEL_SCHEMA}:
             guarded(self.pins.recovery is not None, "nginx_route")
             target_routes = settings_route_fragment(
                 self.pins.nginx_marker, self.pins.release_build,
                 self.pins.recovery.build, topology.target_port,
+                {topology.current_port, topology.target_port},
             ).rstrip(b"\n")
             guarded(
                 original.count(current_fragment) == 1
@@ -1077,6 +1428,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     modes.add_argument("--rollback", action="store_true")
     modes.add_argument("--inventory", action="store_true")
     parser.add_argument("--settings-topology", action="store_true")
+    parser.add_argument("--channel-topology", action="store_true")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--current-compose-file", type=Path)
@@ -1088,8 +1440,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--target-project")
     parser.add_argument("--tenant-id", type=int)
     parser.add_argument("--denied-tenant-id", type=int)
+    parser.add_argument("--channel-migration-receipt", type=Path)
     parser.add_argument("--kamailio-config-path", default="/etc/kamailio/kamailio.cfg")
     arguments = parser.parse_args(argv)
+    if arguments.settings_topology and arguments.channel_topology:
+        parser.error("choose at most one candidate topology")
     if arguments.inventory:
         required = (
             arguments.output, arguments.current_compose_file, arguments.probes_file, arguments.nginx_site,
@@ -1098,11 +1453,19 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         )
         if any(value is None for value in required):
             parser.error("--inventory requires its inventory inputs")
+        if arguments.channel_topology and arguments.channel_migration_receipt is None:
+            parser.error("--channel-topology requires --channel-migration-receipt")
+        if not arguments.channel_topology and arguments.channel_migration_receipt is not None:
+            parser.error("--channel-migration-receipt is valid only with --channel-topology")
         if arguments.manifest is not None:
             parser.error("--manifest is not valid with --inventory")
-        arguments.target_project = arguments.target_project or (SETTINGS_TARGET_PROJECT if arguments.settings_topology else "phone11-api-candidate-next")
-    elif arguments.settings_topology:
-        parser.error("--settings-topology is valid only with --inventory")
+        arguments.target_project = arguments.target_project or (
+            CHANNEL_TARGET_PROJECT if arguments.channel_topology
+            else SETTINGS_TARGET_PROJECT if arguments.settings_topology
+            else "phone11-api-candidate-next"
+        )
+    elif arguments.settings_topology or arguments.channel_topology or arguments.channel_migration_receipt is not None:
+        parser.error("candidate topology selectors are valid only with --inventory")
     elif arguments.manifest is None:
         parser.error("--manifest is required")
     return arguments
