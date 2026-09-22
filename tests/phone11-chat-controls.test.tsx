@@ -261,9 +261,10 @@ it("loads an authorized channel roster for a disabled creation picker without se
   expect(mocks.press.has("Start channel meeting")).toBe(true);
 
   mocks.press.get("Start channel meeting")!.press();
-  await Promise.resolve();
-  await Promise.resolve();
-  render();
+  await vi.waitFor(() => {
+    render();
+    expect(mocks.channelMeeting.loading).toBe(false);
+  });
 
   expect(mocks.details).toHaveBeenCalledWith("room");
   expect(mocks.channelMeeting).toMatchObject({
@@ -676,6 +677,82 @@ it("starts only on explicit selection and reuses the request ID after an uncerta
   expect(mocks.meetingStart.mock.calls[0]).toEqual(mocks.meetingStart.mock.calls[1]);
   expect(mocks.meetingStart.mock.calls[0].slice(0, 3)).toEqual([10, "room", [2]]);
   expect(mocks.navigate).toHaveBeenCalledWith({ pathname: "/conference", params: { meetingId: "admitted-room" } });
+});
+it("keeps the authorized roster when the meeting capability request fails", async () => {
+  mocks.state.channels[0].kind = "channel";
+  mocks.meetingCapability.mockRejectedValue(new Error("capability unavailable"));
+  render();
+  mocks.press.get("Start channel meeting")!.press();
+  await vi.waitFor(() => {
+    render();
+    expect(mocks.channelMeeting.loading).toBe(false);
+  });
+  expect(mocks.channelMeeting.members.map((member: any) => member.id)).toEqual([1, 2]);
+  expect(mocks.channelMeeting.rosterError).toBeNull();
+  expect(mocks.channelMeeting.startAvailable).toBe(false);
+  expect(mocks.channelMeeting.unavailableReason).toContain("permissions could not be checked");
+});
+it("does not report an authorized empty roster when loading members fails", async () => {
+  mocks.state.channels[0].kind = "group";
+  mocks.details.mockRejectedValue(new Error("roster unavailable"));
+  mocks.meetingCapability.mockResolvedValue({ available: true, canStart: true, maxSelectedMembers: 50 });
+  render();
+  mocks.press.get("Start channel meeting")!.press();
+  await vi.waitFor(() => {
+    render();
+    expect(mocks.channelMeeting.loading).toBe(false);
+  });
+  expect(mocks.channelMeeting.members).toEqual([]);
+  expect(mocks.channelMeeting.rosterError).toContain("Could not connect to Team Chat");
+  expect(mocks.channelMeeting.error).toBeNull();
+});
+it("does not let a closed picker request overwrite a reopened picker", async () => {
+  mocks.state.channels[0].kind = "channel";
+  let resolveOldRoster!: (value: any) => void;
+  let resolveOldCapability!: (value: any) => void;
+  mocks.details
+    .mockReturnValueOnce(new Promise(resolve => { resolveOldRoster = resolve; }))
+    .mockResolvedValueOnce({ members: [{ id: 1, name: "You" }, { id: 3, name: "Current member" }], media: [], links: [] });
+  mocks.meetingCapability
+    .mockReturnValueOnce(new Promise(resolve => { resolveOldCapability = resolve; }))
+    .mockResolvedValueOnce({ available: true, canStart: true, maxSelectedMembers: 10 });
+  render();
+  mocks.press.get("Start channel meeting")!.press();
+  render();
+  mocks.channelMeeting.onCancel();
+  render();
+  mocks.press.get("Start channel meeting")!.press();
+  await vi.waitFor(() => {
+    render();
+    expect(mocks.channelMeeting.loading).toBe(false);
+  });
+  expect(mocks.channelMeeting.members.map((member: any) => member.id)).toEqual([1, 3]);
+  expect(mocks.channelMeeting.startAvailable).toBe(true);
+
+  resolveOldRoster({ members: [{ id: 1, name: "Old host" }, { id: 2, name: "Old member" }], media: [], links: [] });
+  resolveOldCapability({ available: false, canStart: false, maxSelectedMembers: 1 });
+  await Promise.resolve(); await Promise.resolve();
+  render();
+  expect(mocks.channelMeeting.members.map((member: any) => member.id)).toEqual([1, 3]);
+  expect(mocks.channelMeeting.startAvailable).toBe(true);
+});
+it("ignores roster and capability results from an account that is no longer current", async () => {
+  mocks.state.channels[0].kind = "channel";
+  let resolveRoster!: (value: any) => void;
+  let resolveCapability!: (value: any) => void;
+  mocks.details.mockReturnValue(new Promise(resolve => { resolveRoster = resolve; }));
+  mocks.meetingCapability.mockReturnValue(new Promise(resolve => { resolveCapability = resolve; }));
+  render();
+  mocks.press.get("Start channel meeting")!.press();
+  mocks.user = { id: 9 };
+  resolveRoster({ members: [{ id: 1, name: "Old host" }, { id: 2, name: "Old member" }], media: [], links: [] });
+  resolveCapability({ available: true, canStart: true, maxSelectedMembers: 50 });
+  await Promise.resolve(); await Promise.resolve();
+  render();
+  expect(mocks.channelMeeting.visible).toBe(false);
+  expect(mocks.channelMeeting.members).toEqual([]);
+  expect(mocks.channelMeeting.startAvailable).toBe(false);
+  expect(mocks.meetingStart).not.toHaveBeenCalled();
 });
 it("ignores meeting start results after an account change", async () => {
   mocks.state.channels[0].kind = "channel";

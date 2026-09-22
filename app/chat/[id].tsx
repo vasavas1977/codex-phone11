@@ -157,6 +157,9 @@ export default function ChatRoomScreen() {
   const [channelMeetingScope, setChannelMeetingScope] = useState<SendAction | null>(null);
   const [channelMeetingMembers, setChannelMeetingMembers] = useState<ChatConversationDetails["members"]>([]);
   const [channelMeetingLoading, setChannelMeetingLoading] = useState(false);
+  const [channelMeetingRosterError, setChannelMeetingRosterError] = useState<string | null>(null);
+  const [channelMeetingCapabilityLoading, setChannelMeetingCapabilityLoading] = useState(false);
+  const [channelMeetingCapabilityError, setChannelMeetingCapabilityError] = useState<string | null>(null);
   const [channelMeetingError, setChannelMeetingError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [editing, setEditing] = useState<ChatMessage | null>(null);
@@ -349,6 +352,9 @@ export default function ChatRoomScreen() {
     setChannelMeetingScope(null);
     setChannelMeetingMembers([]);
     setChannelMeetingLoading(false);
+    setChannelMeetingRosterError(null);
+    setChannelMeetingCapabilityLoading(false);
+    setChannelMeetingCapabilityError(null);
     setChannelMeetingError(null);
     setAttachmentOpen(false);
     atBottom.current = true;
@@ -588,22 +594,29 @@ export default function ChatRoomScreen() {
     channelMeetingRequestRef.current = action;
     setChannelMeetingScope(action);
     setChannelMeetingMembers([]);
+    setChannelMeetingRosterError(null);
     setChannelMeetingError(null);
     setChannelMeetingLoading(true);
     setChannelMeetingCapability(null);
+    setChannelMeetingCapabilityLoading(true);
+    setChannelMeetingCapabilityError(null);
     setChannelMeetingOpen(true);
-    try {
-      const [value, capability] = await Promise.all([state.loadDetails(id), messageApi.channelMeetingCapabilities(action.workspaceId, id)]);
-      if (!actionIsCurrent(action) || channelMeetingRequestRef.current !== action) return;
-      setChannelMeetingMembers(value.members);
-      setChannelMeetingCapability(capability);
-    } catch (error) {
-      if (actionIsCurrent(action) && channelMeetingRequestRef.current === action)
-        setChannelMeetingError(chatError(error));
-    } finally {
-      if (actionIsCurrent(action) && channelMeetingRequestRef.current === action)
-        setChannelMeetingLoading(false);
-    }
+    const requestIsCurrent = () => actionIsCurrent(action) && channelMeetingRequestRef.current === action;
+    const rosterRequest = state.loadDetails(id).then(value => {
+      if (requestIsCurrent()) setChannelMeetingMembers(value.members);
+    }).catch(error => {
+      if (requestIsCurrent()) setChannelMeetingRosterError(chatError(error));
+    }).finally(() => {
+      if (requestIsCurrent()) setChannelMeetingLoading(false);
+    });
+    const capabilityRequest = messageApi.channelMeetingCapabilities(action.workspaceId, id).then(capability => {
+      if (requestIsCurrent()) setChannelMeetingCapability(capability);
+    }).catch(error => {
+      if (requestIsCurrent()) setChannelMeetingCapabilityError(chatError(error));
+    }).finally(() => {
+      if (requestIsCurrent()) setChannelMeetingCapabilityLoading(false);
+    });
+    await Promise.allSettled([rosterRequest, capabilityRequest]);
   };
   const closeChannelMeetingPicker = () => {
     channelMeetingRequestRef.current = null;
@@ -611,6 +624,9 @@ export default function ChatRoomScreen() {
     setChannelMeetingScope(null);
     setChannelMeetingMembers([]);
     setChannelMeetingLoading(false);
+    setChannelMeetingRosterError(null);
+    setChannelMeetingCapabilityLoading(false);
+    setChannelMeetingCapabilityError(null);
     setChannelMeetingError(null);
   };
   const startChannelMeeting = async (memberIds: number[]) => {
@@ -3032,11 +3048,16 @@ export default function ChatRoomScreen() {
               hostId={user?.id || 0}
               members={channelMeetingMembers}
               loading={channelMeetingLoading}
+              rosterError={channelMeetingRosterError}
               error={channelMeetingError}
               busy={channelMeetingBusy}
               startAvailable={channelMeetingCapability?.available === true && channelMeetingCapability.canStart}
               maxSelectedMembers={channelMeetingCapability?.maxSelectedMembers}
-              unavailableReason="Starting meetings is not enabled for your account in this channel."
+              unavailableReason={channelMeetingCapabilityLoading
+                ? "Checking meeting permissions…"
+                : channelMeetingCapabilityError
+                  ? "Meeting permissions could not be checked. Close and reopen the picker to try again."
+                  : "Starting meetings is not enabled for your account in this channel."}
               onCancel={closeChannelMeetingPicker}
               onStart={memberIds => void startChannelMeeting(memberIds)}
             />
