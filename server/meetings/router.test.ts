@@ -59,7 +59,7 @@ describe("mounted plain-video meetings router", () => {
       start: vi.fn(),
       invitations: vi.fn(),
     };
-    const api = createMeetingsRouter({}, { channelRepository }).createCaller(
+    const api = createMeetingsRouter({}, { channelRepository, repository: { authorize: vi.fn() }, resolver: { prepare: vi.fn(), confirm: vi.fn() } }).createCaller(
       { user, req: {}, res: {} } as never,
     );
     await expect(api.channelCapabilities({ tenantId: 41, channelId: meetingId }))
@@ -82,7 +82,8 @@ describe("mounted plain-video meetings router", () => {
     const api = createMeetingsRouter({
       PHONE11_CHANNEL_MEETINGS_ENABLED: "1",
       PHONE11_CHANNEL_MEETING_TENANT_IDS: "41",
-    }, { channelRepository }).createCaller({ user, req: {}, res: {} } as never);
+      [connect11PlainVideoTenantConfigEnvironment]: JSON.stringify(configuration),
+    }, { channelRepository, repository: { authorize: vi.fn() }, resolver: { prepare: vi.fn(), confirm: vi.fn() } }).createCaller({ user, req: {}, res: {} } as never);
     await expect(api.channelCapabilities({ tenantId: 41, channelId: meetingId }))
       .resolves.toMatchObject({ available: true, canStart: true });
     await expect(api.startChannelMeeting({ tenantId: 41, channelId: meetingId,
@@ -92,6 +93,16 @@ describe("mounted plain-video meetings router", () => {
       .resolves.toHaveLength(1);
     expect(channelRepository.start).toHaveBeenCalledWith(expect.objectContaining({ actorId: user.id }));
     expect(channelRepository.invitations).toHaveBeenCalledWith(user.id, 41, meetingId);
+  });
+
+  it("cannot create channel meetings without a matching configured video tenant", async () => {
+    const channelRepository = { canStart: vi.fn(), start: vi.fn(), invitations: vi.fn() };
+    const api = createMeetingsRouter({ PHONE11_CHANNEL_MEETINGS_ENABLED: "1", PHONE11_CHANNEL_MEETING_TENANT_IDS: "42",
+      [connect11PlainVideoTenantConfigEnvironment]: JSON.stringify(configuration),
+    }, { channelRepository, repository: { authorize: vi.fn() }, resolver: { prepare: vi.fn(), confirm: vi.fn() } }).createCaller({ user, req: {}, res: {} } as never);
+    await expect(api.channelCapabilities({ tenantId: 42, channelId: meetingId })).resolves.toMatchObject({ available: false });
+    await expect(api.startChannelMeeting({ tenantId: 42, channelId: meetingId, selectedMemberIds: [8], requestId: "52345678-1234-4234-8234-123456789012" })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(channelRepository.start).not.toHaveBeenCalled();
   });
 
   it("is unavailable by default and performs no admission or provider work", async () => {

@@ -126,7 +126,9 @@ export function createMeetingsRouter(
   const channelConfiguration = readChannelMeetingConfiguration(env);
   const channelService = createChannelMeetingService(
     dependencies.channelRepository ?? createChannelMeetingRepository(),
-    channelConfiguration.enabled ? channelConfiguration.tenantIds : [],
+    channelConfiguration.enabled
+      ? channelConfiguration.tenantIds.filter(id => configured.configuredTenantIds.includes(id))
+      : [],
   );
   return router({
     capabilities: protectedProcedure.query(({ ctx }) =>
