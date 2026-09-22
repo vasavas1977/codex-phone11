@@ -60,7 +60,8 @@ describe("enterprise PBX admin schedules", () => {
   });
 });
 
-describe("enterprise PBX admin screens", () => {
+// These are source-contract checks; rendered UI acceptance is separate.
+describe("enterprise PBX admin screen source contracts", () => {
   const ivr = readFileSync(resolve(process.cwd(), "app/admin/ivr.tsx"), "utf8");
   const schedules = readFileSync(
     resolve(process.cwd(), "app/admin/schedules.tsx"),
@@ -80,7 +81,9 @@ describe("enterprise PBX admin screens", () => {
   );
 
   it("loads and mutates IVR menus through tenant-scoped hooks", () => {
-    expect(ivr).toContain("useIvrMenus(tenantId)");
+    expect(ivr).toContain("useIvrMenus(tenantId, ivrAvailable)");
+    expect(ivr).toContain("capabilitiesQuery.data?.ivr === true");
+    expect(ivr).toContain("if (!ivrAvailable)");
     expect(ivr).toContain("useCreateIvrMenu()");
     expect(ivr).toContain("useDeleteIvrMenu()");
     expect(ivr).not.toContain("MOCK_FLOWS");
@@ -88,8 +91,10 @@ describe("enterprise PBX admin screens", () => {
   });
 
   it("creates and edits business hours through tenant-scoped PBX APIs", () => {
-    expect(schedules).toContain("useTimeConditions(tenantId)");
-    expect(schedules).toContain("useTimeCondition(editingId ?? 0)");
+    expect(schedules).toContain("useTimeConditions(tenantId, businessHoursAvailable)");
+    expect(schedules).toContain("capabilitiesQuery.data?.businessHours === true");
+    expect(schedules).toContain("if (!businessHoursAvailable)");
+    expect(schedules).toContain("useTimeCondition(editingId ?? 0, businessHoursAvailable)");
     expect(schedules).toContain("useCreateTimeCondition()");
     expect(schedules).toContain("useUpdateTimeCondition()");
     expect(schedules).toContain("useSetTimeConditionRules()");
@@ -157,8 +162,8 @@ describe("enterprise PBX admin screens", () => {
       /MOCK_USERS|Math\.random|All systems operational/,
     );
 
-    expect(unavailable).toContain("Not available yet");
-    expect(unavailable).toContain("live service");
+    expect(unavailable).toContain("Not available for this workspace");
+    expect(unavailable).toContain("live workspace capability");
     expect(unavailable).toContain("router.back()");
   });
 
