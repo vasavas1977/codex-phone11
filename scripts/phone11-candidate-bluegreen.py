@@ -67,7 +67,9 @@ CHANNEL_PREDECESSOR_PORT = SETTINGS_CURRENT_PORT
 CHANNEL_TARGET_PROJECT = "phone11-api-channel-candidate"
 CHANNEL_MEETINGS_ENABLED = "PHONE11_CHANNEL_MEETINGS_ENABLED"
 CHANNEL_MEETING_TENANT_IDS = "PHONE11_CHANNEL_MEETING_TENANT_IDS"
+CHANNEL_MIGRATION_INVENTORY_PATH = Path("/root/phone11-channel-meetings-migration-inventory.json")
 CHANNEL_MIGRATION_RECEIPT_PATH = Path("/var/lib/phone11-channel-meetings/receipt.json")
+CHANNEL_MIGRATION_INVENTORY_SCHEMA = "phone11.channel-meetings-migration-inventory/v1"
 CHANNEL_MIGRATION_RECEIPT_SCHEMA = "phone11.channel-meetings-migration-journal/v1"
 PUBLIC_ORIGIN = "https://api.phone11.ai"
 SOURCE_PROBES = {"existing_phone", "existing_chat", "conference", "mixed_batch", "denied_tenant"}
@@ -196,6 +198,8 @@ class Pins:
 @dataclass(frozen=True)
 class ChannelMeetingsPin:
     tenant_id: int
+    migration_inventory: Path
+    migration_inventory_sha256: str
     migration_receipt: Path
     migration_receipt_sha256: str
 
@@ -276,17 +280,23 @@ def _validate_common(
 
 def _channel_meetings(value: Any, target: Mapping[str, Any]) -> ChannelMeetingsPin:
     guarded(isinstance(value, Mapping), "manifest")
-    exact_keys(value, {"enabled", "tenant_id", "migration_receipt"}, "manifest")
+    exact_keys(value, {"enabled", "tenant_id", "migration_inventory", "migration_receipt"}, "manifest")
     guarded(value.get("enabled") is True and value.get("tenant_id") == target.get("tenant_id"), "manifest")
-    receipt = value.get("migration_receipt")
-    guarded(isinstance(receipt, Mapping), "manifest")
+    inventory, receipt = value.get("migration_inventory"), value.get("migration_receipt")
+    guarded(isinstance(inventory, Mapping) and isinstance(receipt, Mapping), "manifest")
+    exact_keys(inventory, {"file", "sha256"}, "manifest")
     exact_keys(receipt, {"file", "sha256"}, "manifest")
     guarded(
-        receipt.get("file") == str(CHANNEL_MIGRATION_RECEIPT_PATH)
+        inventory.get("file") == str(CHANNEL_MIGRATION_INVENTORY_PATH)
+        and is_sha256(inventory.get("sha256"))
+        and receipt.get("file") == str(CHANNEL_MIGRATION_RECEIPT_PATH)
         and is_sha256(receipt.get("sha256")),
         "manifest",
     )
-    return ChannelMeetingsPin(value["tenant_id"], CHANNEL_MIGRATION_RECEIPT_PATH, receipt["sha256"])
+    return ChannelMeetingsPin(
+        value["tenant_id"], CHANNEL_MIGRATION_INVENTORY_PATH, inventory["sha256"],
+        CHANNEL_MIGRATION_RECEIPT_PATH, receipt["sha256"],
+    )
 
 
 def _pins(
@@ -403,8 +413,58 @@ def load_pins(path: Path) -> Pins:
     return parse_manifest(strict_json(secure_read(path, mode=0o600), "manifest"))
 
 
-def validate_channel_migration_receipt(raw: bytes, pins: Pins, stage: str) -> None:
-    """Bind v3 enablement to the exact completed channel-schema receipt."""
+def validate_channel_migration_inventory(raw: bytes, pins: Pins, stage: str) -> Mapping[str, Any]:
+    """Validate independent, read-only source-runtime migration evidence.
+
+    The inventory records the 3005 runtime and database identity that performed
+    the migration.  It is deliberately separate from the 3006 target release
+    pins, which are validated by the normal candidate image path.
+    """
+
+    guarded(pins.schema == CHANNEL_SCHEMA and pins.channel_meetings is not None, stage)
+    require_sha256(raw, pins.channel_meetings.migration_inventory_sha256, stage)
+    inventory = strict_json(raw, stage)
+    exact_keys(inventory, {
+        "schema", "created_at_unix", "target", "release",
+        "database_identity_sha256", "before_catalog_sha256", "sql_sha256",
+    }, stage)
+    target, release = inventory.get("target"), inventory.get("release")
+    guarded(
+        inventory.get("schema") == CHANNEL_MIGRATION_INVENTORY_SCHEMA
+        and type(inventory.get("created_at_unix")) is int
+        and inventory["created_at_unix"] > 0
+        and isinstance(target, Mapping)
+        and isinstance(release, Mapping),
+        stage,
+    )
+    exact_keys(target, {"container_id", "container_name", "image", "container_port", "host_port"}, stage)
+    exact_keys(release, {"source_sha", "bundle_sha256", "lock_sha256"}, stage)
+    topology = pins.topology
+    guarded(
+        target.get("container_id") == pins.current.container_id
+        and target.get("container_name") == topology.current_container
+        and target.get("image") == pins.current.image
+        and target.get("container_port") == topology.current_port
+        and target.get("host_port") == topology.current_port
+        and isinstance(release.get("source_sha"), str)
+        and bool(re.fullmatch(r"[0-9a-f]{40}", release["source_sha"]))
+        and is_sha256(release.get("bundle_sha256"))
+        and is_sha256(release.get("lock_sha256"))
+        and all(is_sha256(inventory.get(key)) for key in {
+            "database_identity_sha256", "before_catalog_sha256", "sql_sha256",
+        }),
+        stage,
+    )
+    return inventory
+
+
+def validate_channel_migration_receipt(
+    raw: bytes,
+    pins: Pins,
+    migration_inventory: Mapping[str, Any],
+    stage: str,
+) -> None:
+    """Bind v3 enablement to the exact completed migration on current 3005."""
 
     guarded(pins.schema == CHANNEL_SCHEMA and pins.channel_meetings is not None, stage)
     require_sha256(raw, pins.channel_meetings.migration_receipt_sha256, stage)
@@ -437,7 +497,18 @@ def validate_channel_migration_receipt(raw: bytes, pins: Pins, stage: str) -> No
         "after_catalog_sha256": receipt["after_catalog_sha256"],
         "sql_sha256": receipt["sql_sha256"],
     }, sort_keys=True, separators=(",", ":")).encode())
-    guarded(receipt["verification_sha256"] == verification, stage)
+    guarded(
+        receipt["verification_sha256"] == verification
+        and receipt["container_id"] == pins.current.container_id
+        and receipt["image"] == pins.current.image
+        and receipt["database_identity_sha256"] == migration_inventory["database_identity_sha256"]
+        and receipt["before_catalog_sha256"] == migration_inventory["before_catalog_sha256"]
+        and receipt["sql_sha256"] == migration_inventory["sql_sha256"]
+        and receipt["source_sha"] == migration_inventory["release"]["source_sha"]
+        and receipt["bundle_sha256"] == migration_inventory["release"]["bundle_sha256"]
+        and receipt["lock_sha256"] == migration_inventory["release"]["lock_sha256"],
+        stage,
+    )
 
 
 def settings_topology_document() -> dict[str, Mapping[str, Any]]:
@@ -610,11 +681,10 @@ def validate_settings_site_routes(raw: bytes, expected: bytes, stage: str) -> No
 
 
 def _contains_candidate_port(destination: str, ports: set[int]) -> bool:
+    """Match numeric Nginx ports by value, including noncanonical spellings."""
+
     normalized = destination.replace("\\", "").lower()
-    return bool(re.search(
-        r":(?:" + "|".join(str(port) for port in sorted(ports)) + r")(?![0-9])",
-        normalized,
-    ))
+    return any(int(port, 10) in ports for port in re.findall(r":([0-9]+)(?![0-9])", normalized))
 
 
 def validate_channel_site_routes(raw: bytes, expected: bytes, stage: str) -> None:
@@ -740,6 +810,7 @@ def emit_channel_inventory(arguments: argparse.Namespace, system: System) -> Non
     guarded(isinstance(arguments.release_build, str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", arguments.release_build)), "inventory")
     guarded(isinstance(arguments.release_source_sha, str) and bool(re.fullmatch(r"[0-9a-f]{40}", arguments.release_source_sha)), "inventory")
     guarded(type(arguments.tenant_id) is int and type(arguments.denied_tenant_id) is int, "inventory")
+    guarded(arguments.channel_migration_inventory == CHANNEL_MIGRATION_INVENTORY_PATH, "inventory")
     guarded(arguments.channel_migration_receipt == CHANNEL_MIGRATION_RECEIPT_PATH, "inventory")
     guarded(arguments.target_project == CHANNEL_TARGET_PROJECT and not os.path.lexists(arguments.output), "inventory")
     ensure_target_absent(system, CHANNEL_TOPOLOGY)
@@ -755,6 +826,7 @@ def emit_channel_inventory(arguments: argparse.Namespace, system: System) -> Non
     rendered = system.json_command(["docker", "compose", "-f", str(arguments.current_compose_file), "config", "--format", "json"], "inventory")
     guarded(isinstance(rendered, Mapping), "inventory")
     probe_raw, site_raw = secure_read(arguments.probes_file, mode=0o600), secure_read(arguments.nginx_site)
+    migration_inventory_raw = secure_read(arguments.channel_migration_inventory, mode=0o600)
     receipt_raw = secure_read(arguments.channel_migration_receipt, mode=0o600)
     markers = re.findall(rb"(?m)^\s*(# PHONE11_PARALLEL_API_INSERT [^\r\n]+)\s*$", site_raw)
     guarded(len(markers) == 1, "inventory")
@@ -780,14 +852,19 @@ def emit_channel_inventory(arguments: argparse.Namespace, system: System) -> Non
         "recovery_candidate": recovery_pin,
         "release": {"image": arguments.release_image, "build": arguments.release_build, "source_sha": arguments.release_source_sha, "bundle_sha256": bundle_sha, "lock_sha256": lock_sha},
         "target": {"project": arguments.target_project, "tenant_id": arguments.tenant_id, "denied_tenant_id": arguments.denied_tenant_id},
-        "channel_meetings": {"enabled": True, "tenant_id": arguments.tenant_id, "migration_receipt": {"file": str(arguments.channel_migration_receipt), "sha256": sha256_bytes(receipt_raw)}},
+        "channel_meetings": {
+            "enabled": True, "tenant_id": arguments.tenant_id,
+            "migration_inventory": {"file": str(arguments.channel_migration_inventory), "sha256": sha256_bytes(migration_inventory_raw)},
+            "migration_receipt": {"file": str(arguments.channel_migration_receipt), "sha256": sha256_bytes(receipt_raw)},
+        },
         "probes": {"file": str(arguments.probes_file), "sha256": sha256_bytes(probe_raw)},
         "nginx": {"site": str(arguments.nginx_site), "site_sha256": sha256_bytes(site_raw), "dump_sha256": sha256_bytes(nginx_dump_raw), "marker": marker},
         "kamailio": {"config_path": arguments.kamailio_config_path, "config_sha256": sha256_bytes(kam_raw), "wake_occurrences": kam_raw.count(pilot.WAKE_URL.encode())},
         "public_origin": PUBLIC_ORIGIN,
     }
     parsed = parse_manifest(document)
-    validate_channel_migration_receipt(receipt_raw, parsed, "inventory")
+    migration_inventory = validate_channel_migration_inventory(migration_inventory_raw, parsed, "inventory")
+    validate_channel_migration_receipt(receipt_raw, parsed, migration_inventory, "inventory")
     load_probes(probe_raw, parsed)
     cloned_config(rendered, active, parsed)
     guarded(parsed.recovery is not None, "inventory")
@@ -1234,9 +1311,15 @@ class Operator:
         baseline, current = self.preserved_runtimes()
         if self.pins.schema == CHANNEL_SCHEMA:
             guarded(self.pins.channel_meetings is not None, "migration_receipt")
+            migration_inventory = validate_channel_migration_inventory(
+                secure_read(self.pins.channel_meetings.migration_inventory, mode=0o600),
+                self.pins,
+                "migration_inventory",
+            )
             validate_channel_migration_receipt(
                 secure_read(self.pins.channel_meetings.migration_receipt, mode=0o600),
                 self.pins,
+                migration_inventory,
                 "migration_receipt",
             )
         self.target_absent()
@@ -1440,6 +1523,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--target-project")
     parser.add_argument("--tenant-id", type=int)
     parser.add_argument("--denied-tenant-id", type=int)
+    parser.add_argument("--channel-migration-inventory", type=Path)
     parser.add_argument("--channel-migration-receipt", type=Path)
     parser.add_argument("--kamailio-config-path", default="/etc/kamailio/kamailio.cfg")
     arguments = parser.parse_args(argv)
@@ -1453,10 +1537,16 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         )
         if any(value is None for value in required):
             parser.error("--inventory requires its inventory inputs")
-        if arguments.channel_topology and arguments.channel_migration_receipt is None:
-            parser.error("--channel-topology requires --channel-migration-receipt")
-        if not arguments.channel_topology and arguments.channel_migration_receipt is not None:
-            parser.error("--channel-migration-receipt is valid only with --channel-topology")
+        if arguments.channel_topology and (
+            arguments.channel_migration_inventory is None
+            or arguments.channel_migration_receipt is None
+        ):
+            parser.error("--channel-topology requires migration inventory and receipt")
+        if not arguments.channel_topology and (
+            arguments.channel_migration_inventory is not None
+            or arguments.channel_migration_receipt is not None
+        ):
+            parser.error("channel migration inputs are valid only with --channel-topology")
         if arguments.manifest is not None:
             parser.error("--manifest is not valid with --inventory")
         arguments.target_project = arguments.target_project or (
@@ -1464,7 +1554,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             else SETTINGS_TARGET_PROJECT if arguments.settings_topology
             else "phone11-api-candidate-next"
         )
-    elif arguments.settings_topology or arguments.channel_topology or arguments.channel_migration_receipt is not None:
+    elif (
+        arguments.settings_topology or arguments.channel_topology
+        or arguments.channel_migration_inventory is not None
+        or arguments.channel_migration_receipt is not None
+    ):
         parser.error("candidate topology selectors are valid only with --inventory")
     elif arguments.manifest is None:
         parser.error("--manifest is required")

@@ -110,6 +110,10 @@ def channel_manifest():
     value["channel_meetings"] = {
         "enabled": True,
         "tenant_id": value["target"]["tenant_id"],
+        "migration_inventory": {
+            "file": str(blue.CHANNEL_MIGRATION_INVENTORY_PATH),
+            "sha256": blue.sha256_bytes(channel_migration_inventory()),
+        },
         "migration_receipt": {
             "file": str(blue.CHANNEL_MIGRATION_RECEIPT_PATH),
             "sha256": blue.sha256_bytes(channel_migration_receipt()),
@@ -120,6 +124,28 @@ def channel_manifest():
 
 def channel_pins():
     return blue.parse_manifest(channel_manifest())
+
+
+def channel_migration_inventory():
+    return json.dumps({
+        "schema": blue.CHANNEL_MIGRATION_INVENTORY_SCHEMA,
+        "created_at_unix": 1,
+        "target": {
+            "container_id": "e" * 64,
+            "container_name": blue.CHANNEL_CURRENT_CONTAINER,
+            "image": "sha256:" + "7" * 64,
+            "container_port": 3005,
+            "host_port": 3005,
+        },
+        "release": {
+            "source_sha": "8" * 40,
+            "bundle_sha256": "3" * 64,
+            "lock_sha256": "4" * 64,
+        },
+        "database_identity_sha256": SHA,
+        "before_catalog_sha256": "1" * 64,
+        "sql_sha256": SHA,
+    }, sort_keys=True, separators=(",", ":")).encode()
 
 
 def channel_migration_receipt():
@@ -207,6 +233,7 @@ def channel_inventory_arguments():
         "--nginx-site", "/etc/nginx/sites-enabled/phone11ai", "--release-image", RELEASE_IMAGE,
         "--release-build", "channel-0d3b701", "--release-source-sha", "8" * 40,
         "--tenant-id", "1", "--denied-tenant-id", "2147483647",
+        "--channel-migration-inventory", str(blue.CHANNEL_MIGRATION_INVENTORY_PATH),
         "--channel-migration-receipt", str(blue.CHANNEL_MIGRATION_RECEIPT_PATH),
     ])
 
@@ -282,6 +309,8 @@ def settings_inventory_reader(arguments, site):
             return raw_probes
         if path == arguments.nginx_site:
             return site
+        if path == arguments.channel_migration_inventory:
+            return channel_migration_inventory()
         if path == arguments.channel_migration_receipt:
             return channel_migration_receipt()
         raise AssertionError(path)
@@ -510,6 +539,7 @@ class BlueGreenTests(unittest.TestCase):
         self.assertEqual(current.topology.state_root, blue.CHANNEL_STATE_ROOT)
         self.assertIsNotNone(current.channel_meetings)
         self.assertEqual(current.channel_meetings.tenant_id, current.tenant_id)
+        self.assertEqual(current.channel_meetings.migration_inventory, blue.CHANNEL_MIGRATION_INVENTORY_PATH)
         self.assertEqual(current.channel_meetings.migration_receipt, blue.CHANNEL_MIGRATION_RECEIPT_PATH)
         changed = channel_manifest()
         changed["topology"]["target_candidate"]["port"] = 3007
@@ -519,7 +549,11 @@ class BlueGreenTests(unittest.TestCase):
         changed["topology"]["predecessor_candidate"]["container"] = "cp11-api-candidate-old"
         with self.assertRaises(blue.GuardError):
             blue.parse_manifest(changed)
-        for key, value in (("enabled", False), ("tenant_id", 2), ("migration_receipt", {"file": "/root/receipt.json", "sha256": SHA})):
+        for key, value in (
+            ("enabled", False), ("tenant_id", 2),
+            ("migration_inventory", {"file": "/root/inventory.json", "sha256": SHA}),
+            ("migration_receipt", {"file": "/root/receipt.json", "sha256": SHA}),
+        ):
             changed = channel_manifest()
             changed["channel_meetings"][key] = value
             with self.subTest(channel_meetings_key=key), self.assertRaises(blue.GuardError):
@@ -594,6 +628,10 @@ class BlueGreenTests(unittest.TestCase):
         self.assertEqual(sealed["topology"], blue.channel_topology_document())
         self.assertEqual(sealed["target"]["project"], blue.CHANNEL_TARGET_PROJECT)
         self.assertEqual(sealed["channel_meetings"]["tenant_id"], sealed["target"]["tenant_id"])
+        self.assertEqual(sealed["channel_meetings"]["migration_inventory"], {
+            "file": str(blue.CHANNEL_MIGRATION_INVENTORY_PATH),
+            "sha256": blue.sha256_bytes(channel_migration_inventory()),
+        })
         self.assertEqual(sealed["channel_meetings"]["migration_receipt"], {
             "file": str(blue.CHANNEL_MIGRATION_RECEIPT_PATH),
             "sha256": blue.sha256_bytes(channel_migration_receipt()),
@@ -646,7 +684,9 @@ class BlueGreenTests(unittest.TestCase):
             "conflicting_trpc": valid[:-2] + b"    location ^~ /api/trpc/debug { proxy_pass http://127.0.0.1:3005; }\n}\n",
             "competing_target": valid[:-2] + b"    location = /unrelated { proxy_pass http://127.0.0.1:3006; }\n}\n",
             "localhost_target": valid[:-2] + b"    location = /unrelated { proxy_pass http://localhost:3006; }\n}\n",
+            "zero_padded_localhost_target": valid[:-2] + b"    location = /unrelated { proxy_pass http://localhost:03006; }\n}\n",
             "upstream_target": valid + b"upstream blocked_target { server localhost:3006; }\n",
+            "zero_padded_upstream_target": valid + b"upstream blocked_target { server localhost:03006; }\n",
         }
         for name, site in candidates.items():
             with self.subTest(name=name):
@@ -669,7 +709,7 @@ class BlueGreenTests(unittest.TestCase):
         system.command.side_effect = [
             b"cp11-backend\ncp11-api-candidate\ncp11-api-candidate-next\ncp11-password-recovery\ncp11-api-candidate-settings\n",
             blue.pilot.WAKE_URL.encode(),
-            valid + b"upstream hidden_target { server [::1]:3006; }\n",
+            valid + b"upstream hidden_target { server [::1]:03006; }\n",
         ]
         fake_socket = Mock()
         with patch.object(blue, "inventory_runtime", side_effect=channel_inventory_runtimes(document)), \
@@ -687,7 +727,7 @@ class BlueGreenTests(unittest.TestCase):
             site = Path(directory) / "phone11ai"
             document = channel_manifest()
             source = channel_inventory_site(document)
-            effective = source + b"upstream hidden_target { server localhost:3006; }\n"
+            effective = source + b"upstream hidden_target { server localhost:03006; }\n"
             site.write_bytes(source)
             site.chmod(0o600)
             current = replace(
@@ -705,7 +745,12 @@ class BlueGreenTests(unittest.TestCase):
 
     def test_channel_migration_receipt_requires_the_pinned_applied_journal(self):
         current = channel_pins()
-        blue.validate_channel_migration_receipt(channel_migration_receipt(), current, "test")
+        migration_inventory = blue.validate_channel_migration_inventory(
+            channel_migration_inventory(), current, "test",
+        )
+        blue.validate_channel_migration_receipt(
+            channel_migration_receipt(), current, migration_inventory, "test",
+        )
         for change in (
             {"status": "intent"},
             {"verification_sha256": SHA},
@@ -719,7 +764,64 @@ class BlueGreenTests(unittest.TestCase):
                 migration_receipt_sha256=blue.sha256_bytes(raw),
             ))
             with self.subTest(change=change), self.assertRaises(blue.GuardError):
-                blue.validate_channel_migration_receipt(raw, mutated, "test")
+                blue.validate_channel_migration_receipt(raw, mutated, migration_inventory, "test")
+
+    def test_channel_receipt_binds_the_independent_3005_runtime_and_database_identity(self):
+        current = channel_pins()
+        migration_inventory = blue.validate_channel_migration_inventory(
+            channel_migration_inventory(), current, "test",
+        )
+        self.assertNotEqual(current.release_source_sha, migration_inventory["release"]["source_sha"])
+
+        def receipt_with(change):
+            receipt = json.loads(channel_migration_receipt())
+            receipt.update(change)
+            if {"database_identity_sha256", "before_catalog_sha256", "after_catalog_sha256", "sql_sha256"} & set(change):
+                receipt["verification_sha256"] = blue.sha256_bytes(json.dumps({
+                    key: receipt[key] for key in (
+                        "database_identity_sha256", "before_catalog_sha256",
+                        "after_catalog_sha256", "sql_sha256",
+                    )
+                }, sort_keys=True, separators=(",", ":")).encode())
+            return json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+
+        for name, change in (
+            ("different_source_container", {"container_id": "f" * 64}),
+            ("different_source_image", {"image": "sha256:" + "f" * 64}),
+            ("different_database", {"database_identity_sha256": "a" * 64}),
+        ):
+            raw = receipt_with(change)
+            mutated = replace(current, channel_meetings=replace(
+                current.channel_meetings,
+                migration_receipt_sha256=blue.sha256_bytes(raw),
+            ))
+            with self.subTest(receipt=name), self.assertRaises(blue.GuardError):
+                blue.validate_channel_migration_receipt(raw, mutated, migration_inventory, "test")
+
+        stale_inventory = json.loads(channel_migration_inventory())
+        stale_inventory["target"]["container_id"] = "f" * 64
+        stale_raw = json.dumps(stale_inventory, sort_keys=True, separators=(",", ":")).encode()
+        stale_pins = replace(current, channel_meetings=replace(
+            current.channel_meetings,
+            migration_inventory_sha256=blue.sha256_bytes(stale_raw),
+        ))
+        with self.assertRaises(blue.GuardError):
+            blue.validate_channel_migration_inventory(stale_raw, stale_pins, "test")
+
+        different_database = json.loads(channel_migration_inventory())
+        different_database["database_identity_sha256"] = "a" * 64
+        different_database_raw = json.dumps(different_database, sort_keys=True, separators=(",", ":")).encode()
+        database_pins = replace(current, channel_meetings=replace(
+            current.channel_meetings,
+            migration_inventory_sha256=blue.sha256_bytes(different_database_raw),
+        ))
+        validated_stale_database = blue.validate_channel_migration_inventory(
+            different_database_raw, database_pins, "test",
+        )
+        with self.assertRaises(blue.GuardError):
+            blue.validate_channel_migration_receipt(
+                channel_migration_receipt(), database_pins, validated_stale_database, "test",
+            )
 
     def test_channel_prepare_refuses_missing_or_invalid_migration_receipt_before_image_or_target(self):
         current = channel_pins()
@@ -730,7 +832,14 @@ class BlueGreenTests(unittest.TestCase):
         operator.target_absent = Mock()
         operator.image = Mock()
         operator.rendered_current = Mock()
-        with patch.object(blue, "secure_read", return_value=b"{}"):
+        def protected_read(path, **_kwargs):
+            if path == current.channel_meetings.migration_inventory:
+                return channel_migration_inventory()
+            if path == current.channel_meetings.migration_receipt:
+                return b"{}"
+            raise AssertionError(path)
+
+        with patch.object(blue, "secure_read", side_effect=protected_read):
             with self.assertRaises(blue.GuardError) as error:
                 operator.prepare()
         self.assertEqual(error.exception.stage, "migration_receipt")
@@ -829,6 +938,8 @@ class BlueGreenTests(unittest.TestCase):
             (200, b'{"result":{"data":{"json":{"settingsAvailable":false,"supportedSettings":[],"userRole":"admin"}}}}'),
         ]
         def protected_read(path, **_kwargs):
+            if path == current.channel_meetings.migration_inventory:
+                return channel_migration_inventory()
             if path == current.channel_meetings.migration_receipt:
                 return channel_migration_receipt()
             if path == current.probes_file:
