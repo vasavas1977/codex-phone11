@@ -8,6 +8,9 @@ vi.mock("../components/chat/received-media", () => ({ ReceivedMedia: () => null 
 vi.mock("../components/chat/conversation-rail", () => ({ ConversationRail: () => null }));
 vi.mock("../components/chat/peer-call", () => ({ ChatPeerCall: () => null }));
 vi.mock("../components/chat/meeting-action", () => ({ ChatMeetingAction: () => null }));
+vi.mock("../components/profile/profile-card-provider", () => ({
+  ProfileCardProvider: ({ children }: any) => createElement("div", null, children),
+}));
 vi.mock("../components/chat/channel-meeting-picker", () => ({
   ChannelMeetingPicker: (props: any) => {
     mocks.channelMeeting = props;
