@@ -420,13 +420,19 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
   });
   it("returns receipt identities only to the sender and removes revoked or blocked readers", async () => {
     const group = await service.create(1, 10, "group", "Readers", [2, 5]);
+    const bobVersion = "22222222-2222-4222-8222-222222222222";
+    await pool.query(`INSERT INTO phone11_workspace_profile_photos
+      (tenant_id,user_id,version,storage_key,mime_type,size_bytes,content_sha256)
+      VALUES (10,2,$1,'10/profile/2/bob.png','image/png',10,repeat('b',64))`, [bobVersion]);
     const sent = await service.send(1, 10, group.id, randomUUID(), "Group update");
     await service.publishReadReceipts(2, 10, group.id, [sent.id]);
     await service.publishReadReceipts(5, 10, group.id, [sent.id]);
     expect(await service.readReceiptSummaries(1, 10, group.id, [sent.id])).toEqual([{ messageId: sent.id, count: 2 }]);
     await expect(service.readReceiptDetails(2, 10, group.id, sent.id)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await pool.query("UPDATE tenant_memberships SET status='inactive' WHERE tenant_id=10 AND user_id=5");
-    expect((await service.readReceiptDetails(1, 10, group.id, sent.id)).map(row => row.userId)).toEqual([2]);
+    expect(await service.readReceiptDetails(1, 10, group.id, sent.id)).toEqual([{
+      userId: 2, name: "Bob", readAt: expect.any(Number), photoUrl: `/api/profile/photo/10/2?v=${bobVersion}`,
+    }]);
     await service.block(1, 10, 2);
     expect(await service.readReceiptDetails(1, 10, group.id, sent.id)).toEqual([]);
     expect(await service.readReceiptSummaries(1, 10, group.id, [sent.id])).toEqual([{ messageId: sent.id, count: 0 }]);

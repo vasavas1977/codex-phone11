@@ -16,12 +16,12 @@ import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { usePhoneCall } from "@/hooks/use-phone-call";
 import { filterDeviceContacts } from "@/lib/phone/device-contacts";
 
-export function DeviceContactAvatar({ name, imageUri }: { name: string; imageUri?: string }) {
+export function DeviceContactAvatar({ name, imageUri, size = 44 }: { name: string; imageUri?: string; size?: number }) {
   const colors = useColors();
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [imageUri]);
   return (
-    <View style={[styles.avatar, { backgroundColor: colors.primary + "18", overflow: "hidden" }]}>
+    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2, backgroundColor: colors.primary + "18", overflow: "hidden" }]}>
       {imageUri && !failed ? (
         <Image
           source={{ uri: imageUri }}
@@ -29,7 +29,7 @@ export function DeviceContactAvatar({ name, imageUri }: { name: string; imageUri
           recyclingKey={imageUri}
           contentFit="cover"
           onError={() => setFailed(true)}
-          style={styles.avatar}
+          style={{ width: size, height: size, borderRadius: size / 2 }}
         />
       ) : (
         <Text style={[styles.initial, { color: colors.primary }]}>

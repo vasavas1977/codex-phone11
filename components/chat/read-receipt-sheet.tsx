@@ -1,15 +1,13 @@
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useColors } from "@/hooks/use-colors";
 import { formatChatTime, type ChatReadReceipt } from "@/lib/chat/types";
+import { ProfileAvatar } from "@/components/profile/profile-avatar";
 
-function initials(name: string) {
-  return name.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join("").toUpperCase() || "?";
-}
-
-export function ReadReceiptSheet({ visible, loading, rows, error, onClose }: {
+export function ReadReceiptSheet({ visible, loading, rows, tenantId, error, onClose }: {
   visible: boolean;
   loading: boolean;
   rows: ChatReadReceipt[];
+  tenantId?: number;
   error: string | null;
   onClose: () => void;
 }) {
@@ -28,9 +26,7 @@ export function ReadReceiptSheet({ visible, loading, rows, error, onClose }: {
         ) : rows.length ? (
           <ScrollView contentContainerStyle={{ paddingBottom: 12 }}>
             {rows.map(receipt => <View key={receipt.userId} style={{ minHeight: 54, flexDirection: "row", alignItems: "center", gap: 12 }}>
-              <View style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: colors.border, alignItems: "center", justifyContent: "center" }}>
-                <Text style={{ color: colors.foreground, fontSize: 12, fontWeight: "600" }}>{initials(receipt.name)}</Text>
-              </View>
+              <ProfileAvatar name={receipt.name} photoUrl={receipt.photoUrl} tenantId={tenantId} userId={receipt.userId} size={34} />
               <View style={{ flex: 1 }}>
                 <Text style={{ color: colors.foreground, fontWeight: "600" }}>{receipt.name}</Text>
                 <Text style={{ color: colors.muted, fontSize: 12 }}>Read {formatChatTime(receipt.readAt)}</Text>

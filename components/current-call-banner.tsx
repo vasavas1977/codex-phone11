@@ -6,6 +6,7 @@ import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore, type SipCall } from "@/lib/sip/call-store";
 import { resolveCurrentCall } from "@/lib/sip/current-call";
 import { getAuthSnapshot } from "@/lib/_core/auth";
+import { CallPersonAvatar } from "@/components/phone/call-person-avatar";
 
 type EndAction = { owner: ReturnType<typeof getAuthSnapshot>["user"]; call: SipCall };
 function sameCall(first: SipCall, second: SipCall) {
@@ -52,6 +53,7 @@ export function CurrentCallBanner() {
   };
   return (
     <View style={[styles.container, { top: insets.top + 8 }]}>
+      <CallPersonAvatar number={call.remoteNumber} name={call.remoteName || call.remoteNumber} size={40} />
       <Pressable style={styles.details} accessibilityRole="button" accessibilityLabel="Return to current call"
         onPress={() => {
           const live = current();

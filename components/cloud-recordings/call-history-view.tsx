@@ -42,6 +42,7 @@ export function CallHistoryRow({
   onMore,
   starred = false,
   calling = false,
+  avatar,
   children,
   colors = lightRecordingColors,
 }: {
@@ -52,6 +53,7 @@ export function CallHistoryRow({
   onMore?(): void;
   starred?: boolean;
   calling?: boolean;
+  avatar?: ReactNode;
   children?: ReactNode;
   colors?: RecordingColors;
 }) {
@@ -84,7 +86,7 @@ export function CallHistoryRow({
             gap: 12,
           }}
         >
-          <View
+          {avatar ?? <View
             style={{
               width: 38,
               height: 38,
@@ -105,7 +107,7 @@ export function CallHistoryRow({
               size={20}
               color={call.direction === "missed" ? colors.error : colors.muted}
             />
-          </View>
+          </View>}
           <View style={{ flex: 1, gap: 4 }}>
             <View
               style={{ flexDirection: "row", alignItems: "center", gap: 5 }}

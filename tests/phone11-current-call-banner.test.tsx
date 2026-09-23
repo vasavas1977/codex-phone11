@@ -42,6 +42,7 @@ vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ t
 vi.mock("../lib/sip/sip-provider", () => ({ useSip: () => ({ hangupCall: mocks.hangup }) }));
 vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: Object.assign((select: any) => select(mocks.state), { getState: () => mocks.state }) }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: mocks.user }) }));
+vi.mock("../components/phone/call-person-avatar", () => ({ CallPersonAvatar: () => null }));
 import { CurrentCallBanner } from "../components/current-call-banner";
 beforeEach(() => {
   vi.clearAllMocks(); mocks.press.clear(); mocks.path = "/settings/sip-diagnostics";

@@ -1,6 +1,9 @@
 vi.mock("../hooks/use-device-contacts", () => ({
   useDeviceContacts: () => ({ people: [] }),
 }));
+vi.mock("../components/phone/call-person-avatar", () => ({
+  CallPersonAvatar: () => null,
+}));
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";

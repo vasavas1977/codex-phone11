@@ -2864,7 +2864,7 @@ export default function ChatRoomScreen() {
                 </Pressable>
               </Pressable>
             </Modal>
-            <ReadReceiptSheet visible={receiptTargetIsCurrent} loading={receiptLoading} rows={receiptRows} error={receiptError} onClose={closeReadReceipts} />
+            <ReadReceiptSheet visible={receiptTargetIsCurrent} loading={receiptLoading} rows={receiptRows} tenantId={chat.workspace?.id} error={receiptError} onClose={closeReadReceipts} />
             <Modal
               visible={safetyOpen && !searching}
               transparent
@@ -3042,7 +3042,7 @@ export default function ChatRoomScreen() {
                 </ScrollView>
               </KeyboardAvoidingView>
             </Modal>
-            <ConversationDetails visible={detailsOpen && ownsWorkspace} loading={detailsLoading} details={details} error={detailsError} onRetry={() => void openDetails()} onClose={() => setDetailsOpen(false)} />
+            <ConversationDetails visible={detailsOpen && ownsWorkspace} loading={detailsLoading} details={details} tenantId={chat.workspace?.id} error={detailsError} onRetry={() => void openDetails()} onClose={() => setDetailsOpen(false)} />
             <ChannelMeetingPicker
               visible={channelMeetingOpen && actionIsCurrent(channelMeetingScope)}
               tenantId={chat.workspace?.id || 0}

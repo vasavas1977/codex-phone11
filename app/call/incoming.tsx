@@ -13,6 +13,7 @@ import * as Haptics from "expo-haptics";
 import { router, useLocalSearchParams } from "expo-router";
 
 import { useVideoCapability } from "@/hooks/use-video-capability";
+import { CallPersonAvatar } from "@/components/phone/call-person-avatar";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
@@ -248,12 +249,8 @@ export default function IncomingCallScreen() {
                 ? "Connecting call"
                 : "Call ended"}
           </Text>
-          <View
-            style={[styles.avatar, { backgroundColor: colors.primary + "30" }]}
-          >
-            <Text style={styles.avatarText}>
-              {callerName.charAt(0).toUpperCase()}
-            </Text>
+          <View style={styles.avatar}>
+            <CallPersonAvatar number={callerNumber} name={callerName} size={110} />
           </View>
           <Text
             accessibilityRole="header"

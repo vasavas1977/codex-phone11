@@ -17,10 +17,14 @@ import {
 import { LiveRecordingPanel } from "@/components/cloud-recordings/live-recording-panel";
 import { useCloudRecordings } from "@/hooks/use-cloud-recordings";
 import { useDeviceContacts } from "@/hooks/use-device-contacts";
+import { useDirectory, useDirectoryFocusRefresh } from "@/hooks/use-directory";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { usePhoneCall } from "@/hooks/use-phone-call";
 import { deviceContactName } from "@/lib/phone/device-contacts";
+import { resolveRecentCallAvatar, type RecentCallAvatar } from "@/lib/phone/recent-call-avatar";
+import { DeviceContactAvatar } from "@/components/device-contacts-list";
+import { ProfileAvatar, useProfilePhotoCacheScope } from "@/components/profile/profile-avatar";
 import {
   contactPhoneKey,
   internationalHistoryNumber,
@@ -41,9 +45,11 @@ import {
 } from "@/lib/phone/call-actions";
 import { useChatStore } from "@/lib/chat/store";
 import { getAuthSnapshot } from "@/lib/_core/auth";
+import { useSipAccountStore } from "@/lib/sip/account-store";
 type Row = HistoryRowCall & {
   startedAt: number;
   recording?: CloudRecording;
+  avatar?: RecentCallAvatar;
 };
 type RecentsFilter = "all" | "missed" | "recorded" | "hidden";
 const filters: readonly {
@@ -108,6 +114,13 @@ function group(ms: number) {
           year: "numeric",
         });
 }
+function recentAvatar(row: Row, size: number) {
+  if (row.avatar?.kind === "team")
+    return <ProfileAvatar name={row.avatar.person.name} photoUrl={row.avatar.person.photoUrl} tenantId={row.avatar.tenantId} userId={row.avatar.person.id} size={size} accessibilityLabel={`${row.avatar.person.name} profile photo`} />;
+  if (row.avatar?.kind === "device")
+    return <DeviceContactAvatar name={row.name} imageUri={row.avatar.imageUri} size={size} />;
+  return <ProfileAvatar name={row.name} size={size} accessibilityLabel={`${row.name} initials`} />;
+}
 export default function RecentsScreen() {
   const colors = useColors(),
     cloud = useCloudRecordings(),
@@ -115,6 +128,16 @@ export default function RecentsScreen() {
   const { user } = useAuth({ autoFetch: false });
   const history = useCallHistoryStore();
   const contacts = useDeviceContacts();
+  const account = useSipAccountStore((state) => state.account);
+  const phoneTenantId = account?.enabled && account.ownerUserId === user?.id &&
+    Number.isSafeInteger(account.tenantId) && (account.tenantId ?? 0) > 0
+    ? account.tenantId : undefined;
+  const directory = useDirectory(phoneTenantId, Boolean(phoneTenantId));
+  const activeTenantId = directory.owner === user?.id && directory.workspace?.id === phoneTenantId
+    ? phoneTenantId : undefined;
+  useDirectoryFocusRefresh(directory.owner, activeTenantId, Boolean(activeTenantId), directory.reload);
+  useProfilePhotoCacheScope(activeTenantId);
+  const teamPeople = activeTenantId ? directory.people : [];
   const favorites = useCallFavorites(user?.id);
   const blocks = useCallBlocks(user?.id);
   const hidden = useHiddenCalls(user?.id);
@@ -167,6 +190,7 @@ export default function RecentsScreen() {
               ? "Missed"
               : "Not answered",
       recording,
+      avatar: resolveRecentCallAvatar(call.number, contacts.people, teamPeople, activeTenantId),
       recordingReady: recording?.recordingStatus === "ready",
       summaryReady: recording?.summaryStatus === "ready",
     };
@@ -186,6 +210,7 @@ export default function RecentsScreen() {
         time: time(recording.startedAt),
         duration: recording.endedAt ? "" : "In progress",
         recording,
+        avatar: resolveRecentCallAvatar(number, contacts.people, teamPeople, activeTenantId),
         recordingReady: recording.recordingStatus === "ready",
         summaryReady: recording.summaryStatus === "ready",
       });
@@ -397,6 +422,7 @@ export default function RecentsScreen() {
             )}
             <CallHistoryRow
               call={item}
+              avatar={recentAvatar(item, 38)}
               starred={favorites.starred(item.number)}
               colors={colors}
               expanded={expanded === item.id}
@@ -431,6 +457,7 @@ export default function RecentsScreen() {
       {actionCall && user && (
         <CallActionsSheet
           visible
+          avatar={recentAvatar(actionCall, 48)}
           call={{
             ...actionCall,
             ownerUserId: user.id,

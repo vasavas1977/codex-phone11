@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { useRef, useState } from "react";
 import {
   Alert,
@@ -49,6 +49,7 @@ export interface CallActionsSheetProps {
   starred: boolean;
   calling?: boolean;
   chatLabel?: string;
+  avatar?: ReactNode;
   onCall(): void | Promise<void>;
   onChat?(): void | Promise<void>;
   onToggleStar(): void | Promise<void>;
@@ -172,6 +173,7 @@ export function CallActionsSheet({
   starred,
   calling = false,
   chatLabel = "Chat",
+  avatar,
   onCall,
   onChat,
   onToggleStar,
@@ -305,11 +307,11 @@ export function CallActionsSheet({
         >
           <View style={styles.handle} />
           <View style={[styles.header, { borderBottomColor: colors.border }]}>
-            <View style={[styles.avatar, { backgroundColor: colors.primary + "20" }]}>
+            {avatar ?? <View style={[styles.avatar, { backgroundColor: colors.primary + "20" }]}>
               <Text style={[styles.avatarText, { color: colors.primary }]}>
                 {Array.from(call.name || call.number)[0]?.toUpperCase()}
               </Text>
-            </View>
+            </View>}
             <View style={styles.headerText}>
               <Text numberOfLines={1} style={[styles.name, { color: colors.foreground }]}>
                 {call.name}

@@ -10,6 +10,11 @@ import {
 
 import { useColors } from "@/hooks/use-colors";
 import { NativeVideoStage } from "@/components/meetings/native-video-stage";
+import { ProfileAvatar, useProfilePhotoCacheScope } from "@/components/profile/profile-avatar";
+import { useAuth } from "@/hooks/use-auth";
+import { useDirectory, useDirectoryFocusRefresh } from "@/hooks/use-directory";
+import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
+import { meetingAvatarPerson, meetingAvatarTenant } from "@/lib/meetings/participant-avatar";
 import {
   type BrowserMeetingSession,
   type BrowserRoom,
@@ -110,6 +115,7 @@ export function MeetingRoomState({
   onLeave,
 }: MeetingRoomStateProps) {
   const colors = useColors("dark");
+  const { user } = useAuth({ autoFetch: false });
   const snapshot = useSyncExternalStore(
     session ? session.subscribe : subscribeToNothing,
     session ? session.getSnapshot : getUnavailableSnapshot,
@@ -121,6 +127,14 @@ export function MeetingRoomState({
   const sipInterrupted = isSipInterrupted?.() ?? false;
   const status = statusCopy(snapshot, Boolean(session), unavailableReason, sipInterrupted);
   const localParticipant = snapshot.participants.find((participant) => participant.local);
+  const meetingTenantId = meetingAvatarTenant(localParticipant?.identity, user?.id);
+  const directory = useDirectory(meetingTenantId, Boolean(meetingTenantId));
+  const photoTenantId = directory.owner === user?.id && directory.workspace?.id === meetingTenantId
+    ? meetingTenantId : undefined;
+  useDirectoryFocusRefresh(directory.owner, photoTenantId, Boolean(photoTenantId), directory.reload);
+  useProfilePhotoCacheScope(meetingTenantId);
+  const ownPhoto = useWorkspaceProfile(user, meetingTenantId).photoDescriptor;
+  const photoPeople = photoTenantId ? directory.people : [];
   const mediaReady = snapshot.status === "connected" && !!session && !!localParticipant && !leaving && !receiveOnly;
   const participantsByIdentity = useMemo(
     () => new Map(snapshot.participants.map((participant) => [participant.identity, participant.name])),
@@ -210,9 +224,17 @@ export function MeetingRoomState({
           ) : (
             snapshot.participants.map((participant) => (
               <View key={participant.identity} style={[styles.participant, { borderColor: "#FFFFFF1F" }]}>
-                <View style={[styles.avatar, { backgroundColor: colors.primary + "2E" }]}>
-                  <Text style={[styles.avatarText, { color: colors.primary }]}>{participant.name.slice(0, 1).toLocaleUpperCase()}</Text>
-                </View>
+                <ProfileAvatar
+                  name={participant.name}
+                  photoUrl={participant.local && ownPhoto && ownPhoto.userId === user?.id && meetingTenantId
+                    ? ownPhoto.photoUrl
+                    : meetingAvatarPerson(participant.identity, photoTenantId, photoPeople)?.photoUrl}
+                  photoVersion={participant.local && ownPhoto && ownPhoto.userId === user?.id ? ownPhoto.photoVersion : undefined}
+                  tenantId={participant.local ? meetingTenantId : photoTenantId}
+                  userId={participant.local ? user?.id : meetingAvatarPerson(participant.identity, photoTenantId, photoPeople)?.id}
+                  size={40}
+                  accessibilityLabel={`${participant.name} profile photo`}
+                />
                 <View style={styles.participantCopy}>
                   <Text numberOfLines={1} style={styles.participantName}>{participant.name}{participant.local ? " (You)" : ""}</Text>
                   <Text style={styles.participantMeta}>{participantState(participant)}</Text>
@@ -311,8 +333,6 @@ const styles = StyleSheet.create({
   sectionCount: { color: "#B4BAC6", fontSize: 15, fontWeight: "600" },
   emptyText: { color: "#B4BAC6", fontSize: 15, lineHeight: 22 },
   participant: { minHeight: 64, borderWidth: StyleSheet.hairlineWidth, borderRadius: 16, flexDirection: "row", alignItems: "center", padding: 12, gap: 12 },
-  avatar: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
-  avatarText: { fontSize: 16, fontWeight: "800" },
   participantCopy: { flex: 1, gap: 2 },
   participantName: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
   participantMeta: { color: "#B4BAC6", fontSize: 14 },

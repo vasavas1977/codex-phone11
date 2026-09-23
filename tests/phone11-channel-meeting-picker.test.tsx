@@ -14,7 +14,11 @@ vi.mock("react-native", () => ({
   Pressable: (props: any) => { m.buttons.push(props); return createElement("button", { disabled: props.disabled, "aria-label": props.accessibilityLabel }, props.children); },
 }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "#0055ff", foreground: "#111", muted: "#666", background: "#fff", surface: "#eee", border: "#ddd", error: "#c00" }) }));
-vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: () => null }));
+vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: (props: any) => createElement("i", {
+  "data-avatar-user": props.userId,
+  "data-avatar-tenant": props.tenantId,
+  "data-avatar-photo": props.photoUrl ?? "",
+}, props.name) }));
 import { ChannelMeetingPicker, channelInvitees, type ChannelMeetingPickerProps } from "../components/chat/channel-meeting-picker";
 const base = (): ChannelMeetingPickerProps => ({ visible: true, tenantId: 1, channelId: "channel-a", channelName: "Project", hostId: 1, members: [{ id: 1, name: "Host", extension: null }, { id: 2, name: "Member", extension: "1020" }], startAvailable: true, onCancel: vi.fn(), onStart: vi.fn() });
 beforeEach(() => { m.buttons = []; m.inputs = []; m.keyboardAvoiders = []; m.rosterScrollViews = []; m.platformOS = "ios"; });
@@ -36,6 +40,18 @@ it("selects all current invitees but never starts a room from rendering the pick
   expect(member.onPress).toBeTypeOf("function");
   start().onPress();
   expect(p.onStart).toHaveBeenCalledWith([2]);
+});
+it("binds each invitee avatar to the authorized tenant, member id, and photo descriptor", () => {
+  const p = base();
+  p.members[1].photoUrl = "/api/profile/photo/1/2?v=8e1a30ce-3d1e-4d82-a011-24d21e326cf9";
+  p.members.push({ id: 3, name: "Second member", extension: null, photoUrl: null });
+
+  const html = renderToStaticMarkup(createElement(ChannelMeetingPicker, p));
+
+  expect(html).toContain('data-avatar-user="2" data-avatar-tenant="1" data-avatar-photo="/api/profile/photo/1/2?v=8e1a30ce-3d1e-4d82-a011-24d21e326cf9"');
+  expect(html).toContain('data-avatar-user="3" data-avatar-tenant="1" data-avatar-photo=""');
+  // The host is not an invitee and must not be rendered as a selectable row.
+  expect(html).not.toContain('data-avatar-user="1"');
 });
 it.each(["unavailable", "busy", "no invitees", "host removed"])("cannot start when %s", condition => {
   const p = base();

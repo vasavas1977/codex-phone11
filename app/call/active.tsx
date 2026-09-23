@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 
 import { ActiveCallRecordingControls } from "@/components/cloud-recordings/active-call-recording-controls";
+import { CallPersonAvatar } from "@/components/phone/call-person-avatar";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { callDisplayIdentity } from "@/lib/phone/call-display";
@@ -215,6 +216,12 @@ export default function ActiveCallScreen() {
       >
         {/* Caller Info */}
         <View style={styles.callerSection}>
+          <CallPersonAvatar
+            number={call?.remoteNumber ?? number ?? ""}
+            name={identity.title}
+            size={88}
+            deviceContacts={contacts.people}
+          />
           <Text
             accessibilityRole="header"
             accessibilityLabel={`Call with ${identity.title}`}

@@ -80,6 +80,9 @@ vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
 vi.mock("../hooks/use-video-capability", () => ({
   useVideoCapability: () => m.videoAvailable,
 }));
+vi.mock("../components/phone/call-person-avatar", () => ({
+  CallPersonAvatar: () => null,
+}));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
     primary: "#008877",

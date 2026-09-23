@@ -23,6 +23,8 @@ import {
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
+import { CallPersonAvatar } from "@/components/phone/call-person-avatar";
+import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useRecordingStore } from "@/lib/recording/store";
@@ -78,6 +80,7 @@ export default function RecordingDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const colors = useColors();
+  const deviceContacts = useDeviceContacts();
   const waveform = useRef(generateWaveform()).current;
   const [showNotes, setShowNotes] = useState(false);
   const [notes, setNotes] = useState("");
@@ -279,11 +282,12 @@ export default function RecordingDetailScreen() {
       <ScrollView contentContainerStyle={styles.content}>
         {/* Call Info Card */}
         <View style={[styles.infoCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <View style={[styles.avatarLarge, { backgroundColor: colors.primary + "20" }]}>
-            <Text style={[styles.avatarText, { color: colors.primary }]}>
-              {(recording.direction === "inbound" ? recording.callerName : recording.calleeName).charAt(0)}
-            </Text>
-          </View>
+          <CallPersonAvatar
+            name={recording.direction === "inbound" ? recording.callerName : recording.calleeName}
+            number={recording.direction === "inbound" ? recording.callerNumber : recording.calleeNumber}
+            size={72}
+            deviceContacts={deviceContacts.people}
+          />
           <Text style={[styles.contactName, { color: colors.foreground }]}>
             {recording.direction === "inbound" ? recording.callerName : recording.calleeName}
           </Text>

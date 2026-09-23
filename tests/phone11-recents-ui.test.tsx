@@ -29,11 +29,27 @@ const mocks = vi.hoisted(() => ({
   history: {} as any,
   cloud: { items: [] as any[], reload: vi.fn(), loading: false },
   contacts: [] as any[],
+  account: { ownerUserId: 1, tenantId: 7, enabled: true } as any,
+  directory: { owner: 1, workspace: { id: 7 }, people: [] as any[], reload: vi.fn() } as any,
   calling: false,
   call: vi.fn(async () => {}),
   refresh: undefined as (() => void) | undefined,
   refreshing: false,
   press: new Map<string, { run: () => unknown; disabled: boolean }>(),
+}));
+vi.mock("../lib/sip/account-store", () => ({
+  useSipAccountStore: (selector: (state: any) => unknown) => selector({ account: mocks.account }),
+}));
+vi.mock("../hooks/use-directory", () => ({
+  useDirectory: () => mocks.directory,
+  useDirectoryFocusRefresh: vi.fn(),
+}));
+vi.mock("../components/profile/profile-avatar", () => ({
+  ProfileAvatar: ({ name, photoUrl }: any) => createElement("span", { "data-photo": photoUrl ?? "", "data-avatar": name }),
+  useProfilePhotoCacheScope: vi.fn(),
+}));
+vi.mock("../components/device-contacts-list", () => ({
+  DeviceContactAvatar: ({ name, imageUri }: any) => createElement("span", { "data-device-photo": imageUri ?? "", "data-avatar": name }),
 }));
 vi.mock("../hooks/use-device-contacts", () => ({
   useDeviceContacts: () => ({ people: mocks.contacts }),
@@ -139,6 +155,8 @@ beforeEach(() => {
   mocks.press.clear();
   mocks.user = { id: 1 };
   mocks.contacts = [];
+  mocks.account = { ownerUserId: 1, tenantId: 7, enabled: true };
+  mocks.directory = { owner: 1, workspace: { id: 7 }, people: [], reload: vi.fn() };
   mocks.cloud.items = [];
   mocks.cloud.loading = false;
   mocks.calling = false;
@@ -221,6 +239,26 @@ it("resolves a local contact name without changing saved history or its call tar
   mocks.contacts = [];
   mocks.cloud.items = [];
   expect(renderToStaticMarkup(<RecentsScreen />)).toContain("สมชาย");
+});
+
+it("shows the tenant-scoped team photo for a recent extension call", () => {
+  const photoUrl = "/api/profile/photo/7/42?v=11111111-1111-4111-8111-111111111111";
+  mocks.directory.people = [{ id: 42, name: "Teammate", extension: "3002", photoUrl }];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain(`data-photo="${photoUrl}"`);
+  mocks.account = { ownerUserId: 2, tenantId: 7, enabled: true };
+  expect(renderToStaticMarkup(<RecentsScreen />)).not.toContain(`data-photo="${photoUrl}"`);
+});
+
+it("shows a unique local phone photo and falls back on ambiguous matches", () => {
+  mocks.history.entries[0].number = "+66825826667";
+  const local = {
+    id: "local1", name: "Local friend", imageUri: "file:///private/contact.jpg",
+    phones: [{ number: "0825826667", label: "Mobile", key: "+66825826667" }],
+  };
+  mocks.contacts = [local];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain('data-device-photo="file:///private/contact.jpg"');
+  mocks.contacts = [local, { ...local, id: "local2" }];
+  expect(renderToStaticMarkup(<RecentsScreen />)).not.toContain('data-device-photo="file:///private/contact.jpg"');
 });
 
 it("joins cloud recording controls only by exact server-provided history ID", () => {

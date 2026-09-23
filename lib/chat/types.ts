@@ -41,7 +41,13 @@ export interface ChatPresence {
   workLocation?: "office" | "remote" | null;
 }
 export interface ChatReadReceiptSummary { messageId: string; count: number }
-export interface ChatReadReceipt { userId: number; name: string; readAt: number }
+export interface ChatReadReceipt {
+  userId: number;
+  name: string;
+  readAt: number;
+  /** Authenticated server-relative path, omitted by older servers. */
+  photoUrl?: string | null;
+}
 /** Safe server descriptor. It intentionally contains no storage key or URL. */
 export interface ChatAttachment {
   id: string; conversationId: string; filename: string; mimeType: string; sizeBytes: number;

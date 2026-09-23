@@ -934,7 +934,11 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
             AND NOT EXISTS (SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id=receipt.tenant_id
               AND ((b.blocker_id=$4 AND b.blocked_id=receipt.reader_id) OR (b.blocked_id=$4 AND b.blocker_id=receipt.reader_id)))
           ORDER BY receipt.read_at, receipt.reader_id LIMIT 100`, [workspace.id, id, messageId, userId]);
-        return receipts.rows.map((receipt: any) => ({ userId: Number(receipt.reader_id), name: receipt.name, readAt: new Date(receipt.read_at).getTime() }));
+        const readerIds = receipts.rows.map((receipt: any) => Number(receipt.reader_id));
+        const { profilePhotoDescriptors } = await import("../profile/photo");
+        const photos = await profilePhotoDescriptors(db, workspace.id, readerIds);
+        return receipts.rows.map((receipt: any) => ({ userId: Number(receipt.reader_id), name: receipt.name,
+          readAt: new Date(receipt.read_at).getTime(), photoUrl: photos.get(Number(receipt.reader_id))?.photoUrl ?? null }));
       });
     },
     read(userId: number, tenantId: number, id: string, through: number) {
