@@ -9,12 +9,12 @@ Official references:
 - https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0063548 — channel membership and instant meetings.
 - https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0059918 — meetings from chat invite members.
 
-## Implemented source, not a released phone update
+## Implemented feature and release
 
 - Blue structured mention spans preserve tenant/member verification. Plain unstructured @text is not treated as a verified mention.
 - Red new-message/reply boundary and jump control for incoming server messages observed while the reader is away from the bottom. Loading older history cannot fabricate a new boundary. Channel/thread/account changes clear local arrivals.
 - Group/channel header camera opens a member picker using authorized conversation details. All current invitees start selected; host is implicit. Search, individual toggle, select/deselect all and cancel are supported. Removed members/account changes reset selection. Cancelled or stale roster requests are ignored.
-- Start now checks its separate server capability and explicit channel permission. On explicit confirmation it creates an idempotent meeting for host and selected members, then opens the exact server-admitted meeting in prejoin. Until the migration, backend release, and pilot permission are commissioned, the production capability remains unavailable.
+- Start now checks its separate server capability and explicit channel permission. On explicit confirmation it creates an idempotent meeting for host and selected members, then opens the exact server-admitted meeting in prejoin. The production capability was enabled on 23 September for the approved tenant and test channel.
 - Private channel invitation cards poll the authenticated recipient inbox; invitations expire after two hours and contain no access token. This does not claim push notification delivery.
 - Reopening a channel captures the current member’s authoritative read sequence before auto-read and marks the first incoming unread root message in red. Refresh and older-history pagination preserve that visit’s boundary.
 - `/dev/channel-preview` is development-only, uses synthetic members and production presentation components, and redirects in release mode. No messages or invitations are sent.
@@ -23,9 +23,9 @@ Official references:
 
 Focused tests, TypeScript and diff checking were run. Browser preview verified at 393x852: blue mention/red alerts, default all-selected picker, deselect one, select all, search, disabled Start and cancel returning to the preview. This is browser component evidence, not signed iPhone acceptance.
 
-Build 82 is installed in place on the paired iPhone 17 Pro Max; device inventory confirmed version 82. Launch was blocked by the locked device, so runtime acceptance is pending. Signed iOS CI run 35692980986 succeeded for client source 224081af468f7ad530a85d7a6f1d72399a9f34a9; Build 82 artifact verification passed all 22 signed-package gates. EAS build `a942497d-839b-465a-82ea-70478de5ddca`; IPA SHA-256 `794af30bf7b1f0cecc94089567d79fbb144fcc595f3da172bdfea3880c614d9b`. Build 81 rollback is retained. No API deployment, migration, push delivery or meeting initiation is established by this change.
+Build 83 is installed and launched on the paired iPhone 17 Pro Max. Signed iOS CI run 35765230017 succeeded for source 46ba51beb1f9918b31527139ef199577508e3971. The signed IPA passed 22 gates; SHA-256 `9b835fc450806b3d0d301e9c67626eb925b4a545f9da63b478d2f2045de1f968`. Build 82 remains available for rollback. Two-phone media behavior still requires physical acceptance.
 
-## Implemented meeting contract; rollout pending
+## Meeting contract
 
 The `Complete Connect11 project` task confirmed the existing plain-video contract. Connect11 has no room/member provisioning API, and none is needed: Phone11 owns admission; the media room is created on the first authorized join. Continue using protected `phone11-plain-video.v1` token issuance with server-owned opaque meeting and participant IDs, fresh tokens, and the existing admission revision/lease checks. Do not add a generic arbitrary-room token route or send a channel roster to a fabricated provider endpoint.
 
@@ -42,16 +42,24 @@ The authenticated `startChannelMeeting(channelId, selectedMemberIds, requestId)`
 
 The independent Connect11 review found and the worker corrected volatile timestamp defaults, non-conflicting permission locks, and LIMIT-before-origin-filter behavior. A fresh isolated PostgreSQL cluster passed 49 integration checks, including meeting defaults and concurrent permission revocation. The independent Connect11 rereview approved the corrected backend source with no remaining concrete P0–P2 findings in its scope. Full Vitest: 399 suites, 1,919 passed, 285 environment-dependent skips, zero failures; TypeScript passes. Client controls cover safe retries, duplicate taps and account-change results; signed handset behavior remains unverified.
 
-A separate fixed 3005-to-3006 API rollout operator is prepared. Fresh read-only host inspection confirmed all existing API slots healthy, but the live 3005 container's temporary Compose source no longer exists. Protected configuration recovery, reviewed migration, pilot grants, API activation, and signed iPhone release remain required. Build 82 is now installed on the iPhone 17 Pro Max, with runtime acceptance pending unlock. The iPhone 15 Pro Max was unavailable.
+The guarded migration was applied after a fresh backup and isolated restore rehearsal. The 3006 candidate activated successfully, routing moved from 3005 to 3006, and the baseline calling service remained healthy. The explicit hosting grant was applied and verified for users 1/3001 and 2/1020 in shared test channel `24ee4d70-8f57-4192-982c-badb88b8930a`. Other channel members remain unable to start meetings. Backend response and physical two-phone media acceptance are separate checks.
 
 Thread-specific persisted unread counts still need an authoritative thread cursor; local red new-reply arrivals do not claim such a count.
 
 ## Release checkpoint
 
 - Backend follow-up `9aab162` restricts channel hosting to the intersection of explicitly enabled and configured video tenants. Independent source review approved this delta; eight router tests passed.
-- `c69fced` freezes protected Compose recovery and the migration operator. Recovery classification takes the same database advisory lock as apply; twelve operator tests include real overlapping PostgreSQL commit/rollback cases. Independent review found a pending-before-lock recovery race; correction is in progress.
-- `b453958` freezes API activation safeguards, inactive-port containment, and exact migration-receipt/tenant flag binding. Forty-two focused operator tests passed; independent review found leading-zero port containment and stale migration provenance issues; corrections are in progress.
+- `c69fced` freezes protected Compose recovery and the migration operator. Recovery classification takes the same database advisory lock as apply; twelve operator tests include real overlapping PostgreSQL commit/rollback cases. The pending-before-lock recovery race was corrected and independently approved in `55b42ed`.
+- `b453958` freezes API activation safeguards, inactive-port containment, and exact migration-receipt/tenant flag binding. The final activation correction passed 43 focused tests and independent source review in `bc67841`.
 - Neither these checks nor signed build success establishes live activation or physical-device media acceptance.
 
 - Reviewed Compose recovery ran successfully without restart: protected config SHA-256 `881ba5bd8219f11285d80ca4383885e0ab7a75db09a0ab0c6b9d037c3c54389d`.
-- Owner approved meeting-host permission for both 3001 and 1020 in their shared test channel; no grant or live migration has run yet.
+- Owner approved meeting-host permission for both 3001 and 1020 in their shared test channel; the grant was applied and verified on 23 September.
+
+## Reviewed release artifacts
+
+- Migration recovery correction `55b42ed` independently approved source-only; 14 author-run tests cover delayed-before-lock execution and overlapping commit/rollback.
+- Activation correction `bc67841` independently approved source-only; 43 focused tests pass.
+- Backend source `9aab1625655c981e16fee8fab0a2e2af9f0fe2e1`, image `sha256:62d8dd798e8bc08b939b75aa57761e1f14341fdbbdcdac7d3a04ae63a6e79dbd`, bundle `a846c1c73ae3eeb55f4f4a60b3266981fad980ded33dc331c5ccd2dbb79f56c4`. Disposable network-disabled read-only image validation passed. No service activation is implied.
+
+- Build 83 picker loads authorized members independently of hosting capability, selects all other members by default, permits individual deselection, and keeps Start disabled when authorization cannot be checked. Thirty-seven focused tests and TypeScript passed.
