@@ -108,3 +108,30 @@ applied.
 Membership deactivation currently revokes reads but does not immediately
 delete the former member's stored photo. Define and implement the retention
 policy before claiming complete offboarding deletion.
+
+## Build 88 chat and Contacts photo rendering
+
+Source `dcbd72e19c233daa799464f1458044be06607d13` shows the confirmed
+owner photo in Team Chat and the owner's message rows without relying on the
+uncommissioned workspace-status endpoint. Photo changes update mounted views
+within the same owner and tenant scope. Team Contacts and contact details use
+the directory's authorized photo descriptor and refresh on return; wide
+embedded details share the parent's refreshed snapshot. Local phone contacts
+use the address book's on-device thumbnail with an initials fallback. Native
+thumbnail reads and targeted Expo Contacts cache cleanup are serialized when
+address-book access ends. No phone-contact photo is uploaded by this change.
+
+Ninety focused tests, TypeScript, and `git diff --check` passed locally.
+Independent source review found and prompted correction of iOS thumbnail
+cleanup and mounted Contacts refresh edge cases; the final Contacts review
+reported no actionable P0-P2 findings. [Signed workflow 35878231710](https://github.com/vasavas1977/codex-phone11/actions/runs/35878231710)
+passed native, app/service, PostgreSQL, and iOS build jobs at the exact source.
+EAS build `9417d910-0aab-4308-b959-f1e8b817dc60` used
+`preview-ios-siprix-daily-pilot` and produced Build 88. IPA SHA-256 is
+`67f5d6febacf9470b8911f3073a443bdacc4e20825928c5d745a3547a104c697`.
+The combined native/signature checker passed all 22 signed release checks
+against retained Build 49, including disabled OTA updates, production APNs,
+Siprix frameworks, and the same signing identity. Build 87 is retained for
+rollback. At the time of this entry, installation is pending an unlocked paired
+iPhone; source and signed-build checks do not establish handset photo rendering
+or native thumbnail cleanup behavior.
