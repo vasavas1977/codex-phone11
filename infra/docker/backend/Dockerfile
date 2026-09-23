@@ -63,6 +63,7 @@ COPY tsconfig.json ./
 RUN pnpm exec esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs
 RUN pnpm exec esbuild scripts/phone11-auth-admin.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/auth-admin.mjs
 RUN pnpm exec esbuild scripts/phone11-conference-readiness.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/conference-readiness.mjs
+RUN pnpm exec esbuild scripts/phone11-profile-photo-worker.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/profile-photo-worker.mjs
 
 # --- Stage 3: Production ---
 FROM node:22-alpine AS production

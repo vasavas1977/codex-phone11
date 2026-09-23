@@ -326,4 +326,19 @@ describe("workspace profile photo HTTP routes", () => {
     expect(purgeChat).toHaveBeenCalledOnce();
     expect(maintainProfile).toHaveBeenCalledOnce();
   });
+
+  it("leaves photo cleanup to the dedicated worker when explicitly configured", async () => {
+    const original = process.env.PHONE11_PROFILE_PHOTO_CLEANUP_EXTERNAL;
+    vi.stubEnv("PHONE11_PROFILE_PHOTO_CLEANUP_EXTERNAL", "1");
+    const maintainProfile = vi.fn(async () => 1);
+    const purgeChat = vi.fn(async () => 2);
+    try {
+      await expect(runMediaRetentionCycle({ purgeChat, maintainProfile })).resolves.toBe(2);
+      expect(purgeChat).toHaveBeenCalledOnce();
+      expect(maintainProfile).not.toHaveBeenCalled();
+    } finally {
+      if (original === undefined) vi.stubEnv("PHONE11_PROFILE_PHOTO_CLEANUP_EXTERNAL", undefined as unknown as string);
+      else vi.stubEnv("PHONE11_PROFILE_PHOTO_CLEANUP_EXTERNAL", original);
+    }
+  });
 });

@@ -10,6 +10,8 @@
     "build": "esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "build:backend": "esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/index.mjs",
     "build:auth-admin": "esbuild scripts/phone11-auth-admin.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/auth-admin.mjs",
+    "build:profile-photo-worker": "esbuild scripts/phone11-profile-photo-worker.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/profile-photo-worker.mjs",
+    "start:profile-photo-worker": "node dist/profile-photo-worker.mjs",
     "auth:admin": "tsx scripts/phone11-auth-admin.ts",
     "pbx:schema:preflight": "tsx scripts/phone11-pbx-schema-preflight.ts",
     "meetings:plain-video:preflight": "tsx scripts/phone11-plain-video-admission-preflight.ts",

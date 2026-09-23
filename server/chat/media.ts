@@ -365,11 +365,12 @@ export async function runMediaRetentionCycle(dependencies: {
     const { maintainProfilePhotoStorage } = await import("../profile/photo");
     return maintainProfilePhotoStorage();
   });
+  const profileCleanupIsExternal = process.env.PHONE11_PROFILE_PHOTO_CLEANUP_EXTERNAL === "1";
   // Each private-media lifecycle runs even if the other one fails. The caller
   // still receives an error so the retention tick remains observable.
   const [chat, profile] = await Promise.allSettled([
     Promise.resolve().then(() => purgeChat()),
-    Promise.resolve().then(() => maintainProfile()),
+    profileCleanupIsExternal ? Promise.resolve(0) : Promise.resolve().then(() => maintainProfile()),
   ]);
   const failures: unknown[] = [];
   if (chat.status === "rejected") failures.push(chat.reason);
