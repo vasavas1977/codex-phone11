@@ -2,11 +2,13 @@ import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 import { beforeEach, expect, it, vi } from "vitest";
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as { renderToStaticMarkup(node: ReactNode): string };
-const m = vi.hoisted(() => ({ buttons: [] as any[], inputs: [] as any[] }));
+const m = vi.hoisted(() => ({ buttons: [] as any[], inputs: [] as any[], keyboardAvoiders: [] as any[], rosterScrollViews: [] as any[], platformOS: "ios" }));
 vi.mock("react-native", () => ({
   Modal: ({ children }: any) => createElement("div", {}, children),
   View: ({ children }: any) => createElement("div", {}, children),
-  ScrollView: ({ children }: any) => createElement("div", {}, children),
+  KeyboardAvoidingView: (props: any) => { m.keyboardAvoiders.push(props); return createElement("div", {}, props.children); },
+  Platform: { get OS() { return m.platformOS; } },
+  ScrollView: (props: any) => { m.rosterScrollViews.push(props); return createElement("div", {}, props.children); },
   Text: ({ children }: any) => createElement("span", {}, children),
   TextInput: (props: any) => { m.inputs.push(props); return createElement("input", { disabled: props.editable === false }); },
   Pressable: (props: any) => { m.buttons.push(props); return createElement("button", { disabled: props.disabled, "aria-label": props.accessibilityLabel }, props.children); },
@@ -15,7 +17,7 @@ vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "#0055ff", 
 vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: () => null }));
 import { ChannelMeetingPicker, channelInvitees, type ChannelMeetingPickerProps } from "../components/chat/channel-meeting-picker";
 const base = (): ChannelMeetingPickerProps => ({ visible: true, tenantId: 1, channelId: "channel-a", channelName: "Project", hostId: 1, members: [{ id: 1, name: "Host", extension: null }, { id: 2, name: "Member", extension: "1020" }], startAvailable: true, onCancel: vi.fn(), onStart: vi.fn() });
-beforeEach(() => { m.buttons = []; m.inputs = []; });
+beforeEach(() => { m.buttons = []; m.inputs = []; m.keyboardAvoiders = []; m.rosterScrollViews = []; m.platformOS = "ios"; });
 const start = () => m.buttons.find(button => button.accessibilityLabel === "Start meeting");
 
 it("deduplicates current members and excludes the host and invalid identities", () => {
@@ -101,6 +103,27 @@ it("keeps the native modal stable while an async roster remounts selected conten
   const html = renderToStaticMarkup(second);
   expect(html).toContain("1 selected");
   expect(m.buttons.find(button => button.accessibilityRole === "checkbox").accessibilityState.checked).toBe(true);
+});
+it("uses iOS keyboard padding and a shrinkable roster without adding a second offset", () => {
+  const p = base();
+  renderToStaticMarkup(createElement(ChannelMeetingPicker, p));
+
+  expect(m.keyboardAvoiders).toHaveLength(1);
+  expect(m.keyboardAvoiders[0]).toMatchObject({ behavior: "padding", style: { flex: 1 } });
+  expect(m.keyboardAvoiders[0]).not.toHaveProperty("keyboardVerticalOffset");
+  expect(m.rosterScrollViews[0]).toMatchObject({
+    keyboardShouldPersistTaps: "handled",
+    style: { flexShrink: 1, minHeight: 0 },
+  });
+
+  const android = { ...p };
+  m.platformOS = "android";
+  renderToStaticMarkup(createElement(ChannelMeetingPicker, android));
+  expect(m.keyboardAvoiders[1].behavior).toBeUndefined();
+
+  m.platformOS = "web";
+  renderToStaticMarkup(createElement(ChannelMeetingPicker, p));
+  expect(m.keyboardAvoiders[2].behavior).toBeUndefined();
 });
 it("requires reducing an oversized default selection before start", () => {
   const p = base();

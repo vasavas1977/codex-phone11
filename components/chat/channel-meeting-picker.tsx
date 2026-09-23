@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useColors } from "@/hooks/use-colors";
 import { ProfileAvatar } from "@/components/profile/profile-avatar";
 import type { ChatPerson } from "@/lib/chat/types";
@@ -60,9 +60,9 @@ function Picker(props: ChannelMeetingPickerProps) {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  return <>
+  return <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
     <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "#00000055" }}>
-      <View accessibilityViewIsModal style={{ maxHeight: "85%", backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 34 }}>
+      <View accessibilityViewIsModal style={{ maxHeight: "85%", minHeight: 0, backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 34 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 22, fontWeight: "700" }}>Start a meeting</Text>
           <Pressable accessibilityRole="button" accessibilityLabel="Cancel meeting selection" disabled={props.busy} onPress={props.onCancel} style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 8 }}>
@@ -77,7 +77,7 @@ function Picker(props: ChannelMeetingPickerProps) {
             <Text style={{ color: colors.primary }}>{selectedIds.length === invitees.length ? "Deselect all" : "Select all"}</Text>
           </Pressable>
         </View>}
-        <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }}>
+        <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0, flexShrink: 1, minHeight: 0 }}>
           {props.loading && <Text accessibilityLiveRegion="polite" style={{ paddingVertical: 20, color: colors.muted }}>Loading channel members…</Text>}
           {!props.loading && !!props.rosterError && <Text accessibilityRole="alert" style={{ paddingVertical: 20, color: colors.error }}>{props.rosterError}</Text>}
           {rosterReady && matches.map(person => <Pressable key={person.id} accessibilityRole="checkbox" accessibilityLabel={person.name} accessibilityState={{ checked: selected.has(person.id), disabled: !!props.busy }} disabled={props.busy} onPress={() => toggle(person.id)} style={{ minHeight: 60, flexDirection: "row", alignItems: "center", gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
@@ -95,5 +95,5 @@ function Picker(props: ChannelMeetingPickerProps) {
         </Pressable>
       </View>
     </View>
-  </>;
+  </KeyboardAvoidingView>;
 }
