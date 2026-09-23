@@ -1,12 +1,14 @@
 import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useColors } from "@/hooks/use-colors";
-import { formatChatTime, type ChatReadReceipt } from "@/lib/chat/types";
+import { formatChatTime, type ChatPerson, type ChatReadReceipt } from "@/lib/chat/types";
 import { ProfileAvatar } from "@/components/profile/profile-avatar";
 
-export function ReadReceiptSheet({ visible, loading, rows, tenantId, error, onClose }: {
+export function ReadReceiptSheet({ visible, loading, rows, people = [], tenantId, error, onClose }: {
   visible: boolean;
   loading: boolean;
   rows: ChatReadReceipt[];
+  /** Current authenticated workspace roster; never resolve by display name. */
+  people?: readonly ChatPerson[];
   tenantId?: number;
   error: string | null;
   onClose: () => void;
@@ -26,7 +28,7 @@ export function ReadReceiptSheet({ visible, loading, rows, tenantId, error, onCl
         ) : rows.length ? (
           <ScrollView contentContainerStyle={{ paddingBottom: 12 }}>
             {rows.map(receipt => <View key={receipt.userId} style={{ minHeight: 54, flexDirection: "row", alignItems: "center", gap: 12 }}>
-              <ProfileAvatar name={receipt.name} photoUrl={receipt.photoUrl} tenantId={tenantId} userId={receipt.userId} size={34} />
+              <ProfileAvatar name={receipt.name} photoUrl={receipt.photoUrl ?? people.find(person => person.id === receipt.userId)?.photoUrl} tenantId={tenantId} userId={receipt.userId} size={34} />
               <View style={{ flex: 1 }}>
                 <Text style={{ color: colors.foreground, fontWeight: "600" }}>{receipt.name}</Text>
                 <Text style={{ color: colors.muted, fontSize: 12 }}>Read {formatChatTime(receipt.readAt)}</Text>

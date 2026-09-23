@@ -14,6 +14,10 @@ const router = readFileSync(
   resolve(process.cwd(), "server/pbx/pbx-router.ts"),
   "utf8",
 );
+const extensions = readFileSync(
+  resolve(process.cwd(), "app/admin/extensions.tsx"),
+  "utf8",
+);
 
 describe("workspace member administration", () => {
   it("uses the tenant-scoped member directory and mutation hooks", () => {
@@ -48,5 +52,27 @@ describe("workspace member administration", () => {
     expect(members).toContain("assigned_extension_numbers");
     expect(members).toContain("Workspace role");
     expect(members).toContain("Membership status");
+  });
+
+  it("renders tenant-scoped member photos with initials fallback in member and extension pickers", () => {
+    expect(members).toContain("<ProfileAvatar");
+    expect(members).toContain('photoUrl={item.status === "active" ? item.photoUrl || fallbackPhotoUrl : null}');
+    expect(members).toContain("photoVersion={item.status === \"active\" ? item.photoVersion : null}");
+    expect(members).toContain("const directory = useDirectory(tenantId, tenantQuery.isSuccess && canManage)");
+    expect(members).toContain("directory.owner !== user.id");
+    expect(members).toContain("directory.requestedTenant !== tenantId");
+    expect(members).toContain("directory.workspace?.id !== tenantId");
+    expect(members).toContain("directoryPhotos.get(item.id)");
+    expect(members).not.toMatch(/directory\.people[\s\S]{0,500}\.find\([^)]*name/);
+    expect(extensions).toContain("<ProfileAvatar");
+    expect(extensions).toContain("photoUrl={photoUrl}");
+    expect(extensions).toContain("const photoUrl = person.photoUrl || directoryPhotos.get(person.id) || null");
+    expect(extensions).toContain("directory.owner !== user.id");
+    expect(extensions).toContain("directory.requestedTenant !== tenantId");
+    expect(extensions).toContain("directory.workspace?.id !== tenantId");
+    expect(extensions).toContain("directoryPhotos.get(person.id)");
+    expect(router).toContain("profilePhotoDescriptors(");
+    expect(router).toContain("row.status === \"active\" && row.profile_photo_authorized === true");
+    expect(router).toContain("FROM user_extensions photo_ue");
   });
 });

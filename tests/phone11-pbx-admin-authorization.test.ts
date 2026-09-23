@@ -28,12 +28,17 @@ vi.mock("../server/pbx/cdr-processor", () => ({
   getCallStats: vi.fn(),
   getVoicemails: vi.fn(),
 }));
+vi.mock("../server/profile/photo", () => ({
+  profilePhotoDescriptors: vi.fn(async () => new Map()),
+}));
 
 // The router must load after its database and service modules are mocked.
 // eslint-disable-next-line import/first
 import { pbxRouter } from "../server/pbx/pbx-router";
 // eslint-disable-next-line import/first
 import { getCallStats } from "../server/pbx/cdr-processor";
+// eslint-disable-next-line import/first
+import { profilePhotoDescriptors } from "../server/profile/photo";
 
 const context = (globalRole = "user") =>
   ({
@@ -217,6 +222,37 @@ describe("PBX workspace administrator authorization", () => {
     },
   );
 
+  it("adds an authorized tenant photo descriptor to active extension-assignment people", async () => {
+    const photo = {
+      userId: 88,
+      photoUrl: "/api/profile/photo/7/88?v=11111111-1111-4111-8111-111111111111",
+      photoVersion: "11111111-1111-4111-8111-111111111111",
+      mimeType: "image/png",
+    };
+    vi.mocked(profilePhotoDescriptors).mockResolvedValueOnce(new Map([[88, photo]]));
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({
+        rows: [{ id: 88, name: "Nok", email: "nok@example.com", assigned_extension_numbers: ["3101"], profile_photo_authorized: true }],
+      });
+
+    await expect(pbxRouter.createCaller(context()).tenant.people()).resolves.toEqual([
+      {
+        id: 88,
+        name: "Nok",
+        email: "nok@example.com",
+        assigned_extension_numbers: ["3101"],
+        photoUrl: photo.photoUrl,
+        photoVersion: photo.photoVersion,
+      },
+    ]);
+    expect(profilePhotoDescriptors).toHaveBeenCalledWith(
+      expect.objectContaining({ query: db.query }),
+      7,
+      [88],
+    );
+  });
+
   it.each(["manager", "user"] as const)(
     "denies a workspace %s before any PBX mutation",
     async (role) => {
@@ -294,6 +330,8 @@ describe("PBX workspace administrator authorization", () => {
       ]);
       expect(db.query.mock.calls[1][0]).toContain("tm.status = 'active'");
       expect(db.query.mock.calls[1][0]).toContain("e.tenant_id = tm.tenant_id");
+      expect(db.query.mock.calls[1][0]).toContain("photo_e.tenant_id = $1");
+      expect(db.query.mock.calls[1][0]).not.toContain("photo_e.tenant_id = tm.tenant_id");
       expect(db.query.mock.calls[1][0]).not.toContain("secret_ciphertext");
     },
   );
@@ -829,6 +867,44 @@ describe("PBX dashboard compatibility", () => {
 });
 
 describe("PBX workspace member lifecycle", () => {
+  it("adds tenant-bound photos only for active members authorized by the photo route", async () => {
+    const members = [
+      { id: 88, name: "Nok", email: "nok@example.com", role: "user", status: "active", assigned_extension_numbers: ["1001"], profile_photo_authorized: true },
+      { id: 89, name: "Mai", email: "mai@example.com", role: "user", status: "inactive", assigned_extension_numbers: ["1002"], profile_photo_authorized: true },
+      { id: 90, name: "No extension", email: "open@example.com", role: "user", status: "active", assigned_extension_numbers: [], profile_photo_authorized: false },
+    ];
+    const photo = {
+      userId: 88,
+      photoUrl: "/api/profile/photo/7/88?v=11111111-1111-4111-8111-111111111111",
+      photoVersion: "11111111-1111-4111-8111-111111111111",
+      mimeType: "image/png",
+    };
+    vi.mocked(profilePhotoDescriptors).mockResolvedValueOnce(new Map([[88, photo]]));
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: members });
+
+    await expect(pbxRouter.createCaller(context()).tenant.members()).resolves.toEqual([
+      {
+        id: 88,
+        name: "Nok",
+        email: "nok@example.com",
+        role: "user",
+        status: "active",
+        assigned_extension_numbers: ["1001"],
+        photoUrl: photo.photoUrl,
+        photoVersion: photo.photoVersion,
+      },
+      { id: 89, name: "Mai", email: "mai@example.com", role: "user", status: "inactive", assigned_extension_numbers: ["1002"] },
+      { id: 90, name: "No extension", email: "open@example.com", role: "user", status: "active", assigned_extension_numbers: [] },
+    ]);
+    expect(profilePhotoDescriptors).toHaveBeenCalledWith(
+      expect.objectContaining({ query: db.query }),
+      7,
+      [88],
+    );
+  });
+
   it.each(["owner", "admin"] as const)(
     "lists active and inactive members only in the current workspace for a %s",
     async (role) => {
@@ -863,6 +939,8 @@ describe("PBX workspace member lifecycle", () => {
       expect(db.query.mock.calls[1][0]).not.toContain(
         "WHERE tm.tenant_id = $1 AND tm.status = 'active'",
       );
+      expect(db.query.mock.calls[1][0]).toContain("photo_e.tenant_id = $1");
+      expect(db.query.mock.calls[1][0]).not.toContain("photo_e.tenant_id = tm.tenant_id");
       expect(db.query.mock.calls[1][0]).not.toContain("secret_ciphertext");
     },
   );

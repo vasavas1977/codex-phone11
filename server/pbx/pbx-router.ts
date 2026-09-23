@@ -6,6 +6,7 @@
  */
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import type { PoolClient } from "pg";
 import { router, protectedProcedure } from "../_core/trpc";
 import { query, withTransaction } from "./db";
 import { writeAuditLog, queryAuditLogs } from "./audit";
@@ -29,6 +30,7 @@ import {
   VoicemailStorageUnavailableError,
 } from "./cdr-processor";
 import { SELF_SERVICE_CALL_OWNERSHIP_SQL } from "../../lib/pbx/self-service-usage";
+import { profilePhotoDescriptors } from "../profile/photo";
 
 // ============================================================================
 // Zod Schemas
@@ -55,6 +57,26 @@ async function getTenantAdminCtx(ctx: any, requestedTenantId?: number) {
     throw new TRPCError({ code: "FORBIDDEN" });
   }
   return tenant;
+}
+
+async function attachMemberPhotoDescriptors<T extends { id: number }>(
+  tenantId: number,
+  rows: T[],
+  eligibleUserIds: number[],
+): Promise<T[]> {
+  // The shared query wrapper has a narrower signature than pg's overloaded
+  // client query method, but supports the text-and-parameters call used here.
+  const photos = await profilePhotoDescriptors(
+    { query: query as unknown as PoolClient["query"] },
+    tenantId,
+    eligibleUserIds,
+  );
+  return rows.map((row) => {
+    const photo = photos.get(Number(row.id));
+    return photo
+      ? { ...row, photoUrl: photo.photoUrl, photoVersion: photo.photoVersion }
+      : row;
+  });
 }
 
 async function getTenantAdminMutationCtx(ctx: any, requestedTenantId?: number) {
@@ -368,6 +390,15 @@ export const pbxRouter = router({
       const tc = await getTenantAdminCtx(ctx);
       const result = await query(
         `SELECT tm.user_id AS id, u.name, u.email,
+                EXISTS (
+                  SELECT 1 FROM user_extensions photo_ue
+                  JOIN extensions photo_e
+                    ON photo_e.id = photo_ue.extension_id
+                   AND photo_e.tenant_id = $1
+                   AND photo_e.status = 'active'
+                   AND photo_e.deleted_at IS NULL
+                  WHERE photo_ue.user_id = tm.user_id
+                ) AS profile_photo_authorized,
                 COALESCE(
                   array_agg(e.extension_number ORDER BY e.extension_number)
                     FILTER (WHERE e.id IS NOT NULL),
@@ -385,7 +416,13 @@ export const pbxRouter = router({
          ORDER BY lower(COALESCE(u.name, '')), lower(COALESCE(u.email, '')), tm.user_id`,
         [tc.tenantId],
       );
-      return result.rows;
+      // The photo route independently requires an active membership and an
+      // active assigned extension. Only issue descriptors for those people.
+      const photoEligibleIds = result.rows
+        .filter((row) => row.profile_photo_authorized === true)
+        .map((row) => Number(row.id));
+      const publicRows = result.rows.map(({ profile_photo_authorized, ...row }) => row);
+      return attachMemberPhotoDescriptors(tc.tenantId, publicRows, photoEligibleIds);
     }),
 
     /**
@@ -399,6 +436,15 @@ export const pbxRouter = router({
       const result = await query(
         `SELECT tm.user_id AS id, u.name, u.email, tm.role, tm.status,
                 tm.created_at,
+                EXISTS (
+                  SELECT 1 FROM user_extensions photo_ue
+                  JOIN extensions photo_e
+                    ON photo_e.id = photo_ue.extension_id
+                   AND photo_e.tenant_id = $1
+                   AND photo_e.status = 'active'
+                   AND photo_e.deleted_at IS NULL
+                  WHERE photo_ue.user_id = tm.user_id
+                ) AS profile_photo_authorized,
                 COALESCE(
                   array_agg(e.extension_number ORDER BY e.extension_number)
                     FILTER (WHERE e.id IS NOT NULL),
@@ -421,7 +467,13 @@ export const pbxRouter = router({
            tm.user_id`,
         [tc.tenantId],
       );
-      return result.rows;
+      // Inactive memberships and active members without an assigned active
+      // extension are not authorized by the photo route and remain initials-only.
+      const photoEligibleIds = result.rows
+        .filter((row) => row.status === "active" && row.profile_photo_authorized === true)
+        .map((row) => Number(row.id));
+      const publicRows = result.rows.map(({ profile_photo_authorized, ...row }) => row);
+      return attachMemberPhotoDescriptors(tc.tenantId, publicRows, photoEligibleIds);
     }),
 
     /**

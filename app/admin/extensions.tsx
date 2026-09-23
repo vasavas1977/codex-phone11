@@ -21,8 +21,11 @@ import {
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
+import { ProfileAvatar } from "@/components/profile/profile-avatar";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useAuth } from "@/hooks/use-auth";
+import { useDirectory } from "@/hooks/use-directory";
 import {
   useCreateExtension,
   useExtensions,
@@ -49,6 +52,8 @@ type TenantPerson = {
   name?: string | null;
   email?: string | null;
   assigned_extension_numbers?: string[] | null;
+  photoUrl?: string | null;
+  photoVersion?: string | null;
 };
 
 function extensionNumber(row: ExtensionRow) {
@@ -61,7 +66,9 @@ function errorMessage(error: unknown) {
 
 export default function AdminExtensions() {
   const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
   const tenantQuery = useTenant();
+  const tenantId = tenantQuery.data?.id;
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
   );
@@ -73,6 +80,7 @@ export default function AdminExtensions() {
   const createExtension = useCreateExtension();
   const updateExtension = useUpdateExtension();
   const peopleQuery = useTenantPeople(tenantQuery.isSuccess && canManage);
+  const directory = useDirectory(tenantId, tenantQuery.isSuccess && canManage);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ExtensionFilter>("all");
@@ -114,6 +122,22 @@ export default function AdminExtensions() {
     () => (peopleQuery.data || []) as TenantPerson[],
     [peopleQuery.data],
   );
+  const directoryPhotos = useMemo(() => {
+    if (
+      !user?.id ||
+      !tenantId ||
+      directory.owner !== user.id ||
+      directory.requestedTenant !== tenantId ||
+      directory.workspace?.id !== tenantId
+    ) return new Map<number, string>();
+    // The Team directory supplies only active members with active extensions.
+    // Resolve by exact user ID; ProfileAvatar verifies tenant and ID in the photo URL.
+    return new Map(
+      directory.people
+        .filter((person) => Boolean(person.extension?.trim() && person.photoUrl))
+        .map((person) => [person.id, person.photoUrl!] as const),
+    );
+  }, [directory.owner, directory.people, directory.requestedTenant, directory.workspace?.id, tenantId, user?.id]);
 
   const resetCreate = () => {
     setExtension("");
@@ -513,6 +537,7 @@ export default function AdminExtensions() {
                 {people.map((person) => {
                   const selected = person.id === selectedPersonId;
                   const existingAssignments = person.assigned_extension_numbers || [];
+                  const photoUrl = person.photoUrl || directoryPhotos.get(person.id) || null;
                   return (
                     <TouchableOpacity
                       key={person.id}
@@ -531,6 +556,14 @@ export default function AdminExtensions() {
                         },
                       ]}
                     >
+                      <ProfileAvatar
+                        name={person.name?.trim() || person.email?.trim() || `Member ${person.id}`}
+                        photoUrl={photoUrl}
+                        photoVersion={person.photoVersion}
+                        tenantId={tenantId}
+                        userId={person.id}
+                        size={36}
+                      />
                       <View style={styles.personCopy}>
                         <Text style={[styles.personName, { color: colors.foreground }]}>
                           {person.name || person.email || `Member ${person.id}`}

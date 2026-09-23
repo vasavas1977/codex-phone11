@@ -2864,7 +2864,7 @@ export default function ChatRoomScreen() {
                 </Pressable>
               </Pressable>
             </Modal>
-            <ReadReceiptSheet visible={receiptTargetIsCurrent} loading={receiptLoading} rows={receiptRows} tenantId={chat.workspace?.id} error={receiptError} onClose={closeReadReceipts} />
+            <ReadReceiptSheet visible={receiptTargetIsCurrent} loading={receiptLoading} rows={receiptRows} people={ownsWorkspace ? chat.people : []} tenantId={ownsWorkspace ? chat.workspace?.id : undefined} error={receiptError} onClose={closeReadReceipts} />
             <Modal
               visible={safetyOpen && !searching}
               transparent

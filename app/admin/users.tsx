@@ -20,8 +20,11 @@ import {
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
+import { ProfileAvatar } from "@/components/profile/profile-avatar";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useAuth } from "@/hooks/use-auth";
+import { useDirectory } from "@/hooks/use-directory";
 import {
   useTenant,
   useTenantMembers,
@@ -38,6 +41,8 @@ type TenantMember = {
   role: MembershipRole;
   status: MembershipStatus;
   assigned_extension_numbers?: string[] | null;
+  photoUrl?: string | null;
+  photoVersion?: string | null;
 };
 
 function displayName(member: TenantMember) {
@@ -56,11 +61,14 @@ function roleLabel(role: MembershipRole) {
 
 export default function AdminUsers() {
   const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
   const tenantQuery = useTenant();
+  const tenantId = tenantQuery.data?.id;
   const actorRole = String(tenantQuery.data?.userRole || "");
   const canManage = ["owner", "admin"].includes(actorRole);
   const canManageAdministrators = actorRole === "owner";
   const membersQuery = useTenantMembers(tenantQuery.isSuccess && canManage);
+  const directory = useDirectory(tenantId, tenantQuery.isSuccess && canManage);
   const updateMember = useUpdateTenantMember();
 
   const [search, setSearch] = useState("");
@@ -74,6 +82,22 @@ export default function AdminUsers() {
     () => (membersQuery.data || []) as TenantMember[],
     [membersQuery.data],
   );
+  const directoryPhotos = useMemo(() => {
+    if (
+      !user?.id ||
+      !tenantId ||
+      directory.owner !== user.id ||
+      directory.requestedTenant !== tenantId ||
+      directory.workspace?.id !== tenantId
+    ) return new Map<number, string>();
+    // The Team directory contains only active members with active extensions.
+    // Index strictly by user ID; ProfileAvatar checks tenant and user IDs in the descriptor path.
+    return new Map(
+      directory.people
+        .filter((person) => Boolean(person.extension?.trim() && person.photoUrl))
+        .map((person) => [person.id, person.photoUrl!] as const),
+    );
+  }, [directory.owner, directory.people, directory.requestedTenant, directory.workspace?.id, tenantId, user?.id]);
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return members;
@@ -159,6 +183,7 @@ export default function AdminUsers() {
 
   const renderMember = ({ item }: { item: TenantMember }) => {
     const extensions = item.assigned_extension_numbers || [];
+    const fallbackPhotoUrl = item.status === "active" ? directoryPhotos.get(item.id) : undefined;
     const editable =
       item.role !== "owner" &&
       (canManageAdministrators || item.role === "user");
@@ -169,11 +194,14 @@ export default function AdminUsers() {
           { backgroundColor: colors.surface, borderColor: colors.border },
         ]}
       >
-        <View style={[styles.avatar, { backgroundColor: colors.primary + "16" }]}>
-          <Text style={[styles.avatarText, { color: colors.primary }]}>
-            {displayName(item).slice(0, 1).toUpperCase()}
-          </Text>
-        </View>
+        <ProfileAvatar
+          name={displayName(item)}
+          photoUrl={item.status === "active" ? item.photoUrl || fallbackPhotoUrl : null}
+          photoVersion={item.status === "active" ? item.photoVersion : null}
+          tenantId={tenantId}
+          userId={item.id}
+          size={40}
+        />
         <View style={styles.memberCopy}>
           <Text
             numberOfLines={1}
@@ -579,8 +607,6 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 15 },
   list: { padding: 16, gap: 10, paddingBottom: 36 },
   card: { flexDirection: "row", alignItems: "flex-start", gap: 10, padding: 14, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth },
-  avatar: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
-  avatarText: { fontSize: 16, fontWeight: "700" },
   memberCopy: { flex: 1, minWidth: 0 },
   memberName: { fontSize: 16, fontWeight: "700" },
   memberEmail: { marginTop: 2, fontSize: 13 },

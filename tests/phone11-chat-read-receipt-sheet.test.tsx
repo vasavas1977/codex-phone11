@@ -28,3 +28,15 @@ it("uses a non-authoritative empty message instead of claiming members are unrea
   const html = renderToStaticMarkup(createElement(ReadReceiptSheet, { visible: true, loading: false, error: null, rows: [], onClose: vi.fn() }));
   expect(html).toContain("No read receipts yet"); expect(html).not.toContain("Unread");
 });
+
+it("uses an exact workspace roster ID when the older receipt API omits photos", () => {
+  const photoUrl = "/api/profile/photo/10/2?v=11111111-1111-4111-8111-111111111111";
+  const html = renderToStaticMarkup(createElement(ReadReceiptSheet, { visible: true, loading: false, error: null,
+    tenantId: 10, rows: [{ userId: 2, name: "Nathasa", readAt: Date.now() }],
+    people: [
+      { id: 2, name: "Different label", extension: "1020", photoUrl },
+      { id: 3, name: "Nathasa", extension: "3001", photoUrl: "/api/profile/photo/10/3?v=22222222-2222-4222-8222-222222222222" },
+    ], onClose: vi.fn() }));
+  expect(html).toContain(`data-photo-url="${photoUrl}"`);
+  expect(html).not.toContain("/api/profile/photo/10/3");
+});
