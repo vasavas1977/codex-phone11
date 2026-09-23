@@ -43,6 +43,28 @@ rendered on a second handset, removed, and physically cleaned up. Complete
 that device acceptance with real accounts before treating the feature as fully
 validated across devices.
 
+## Build 86 profile entry correction
+
+Opening Settings → My profile before Team Chat had loaded the selected workspace
+could leave the avatar as a static image, with no explanation. Source
+`ea05e1903a2a9c09369263db09a37cce3d6b5c3e` loads the selected workspace
+on profile entry and keeps the authenticated avatar actionable. The photo sheet
+shows a retryable loading or unavailable state until the owner-bound profile
+and server capability permit Take photo and Choose photo. Eleven focused tests,
+TypeScript, and independent source review passed.
+
+[Signed workflow 35864716395](https://github.com/vasavas1977/codex-phone11/actions/runs/35864716395)
+passed its native, daily-use, PostgreSQL, and build jobs for that exact source.
+EAS build `05522a41-5879-4297-8f0a-e2527572b64d` used
+`preview-ios-siprix-daily-pilot`; its IPA SHA-256 is
+`9b5d54c3c49f9c14c178c6554ed586cbec1719e995e6dc25833315f04a8d7ae7`.
+The combined native/signature checker passed all 22 signed release checks
+against retained Build 49. Build 85 remains retained at its recorded SHA-256.
+Build 86 was installed in place on the paired iPhone 17 Pro Max and independent
+device inventory confirmed bundle version 86. A remote launch was rejected
+because the device was locked; avatar tap, real photo upload, second-device
+render, and removal remain handset acceptance checks.
+
 If the photo route must be rolled back, use the reviewed
 `scripts/phone11-profile-photo-route.py rollback` with operation
 `5103d68c-947a-471e-aa13-456db0fd089d` and the pinned pre-activation site
