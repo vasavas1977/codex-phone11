@@ -61,9 +61,39 @@ EAS build `05522a41-5879-4297-8f0a-e2527572b64d` used
 The combined native/signature checker passed all 22 signed release checks
 against retained Build 49. Build 85 remains retained at its recorded SHA-256.
 Build 86 was installed in place on the paired iPhone 17 Pro Max and independent
-device inventory confirmed bundle version 86. A remote launch was rejected
-because the device was locked; avatar tap, real photo upload, second-device
-render, and removal remain handset acceptance checks.
+device inventory confirmed bundle version 86. On the handset, tapping the avatar
+opened the sheet but showed “Could not check profile photo settings.” The same
+screen showed that workspace status was unavailable. The client had incorrectly
+required `profile.self` (the uncommissioned workspace-status query) before
+allowing photo actions, despite the separately commissioned photo capability.
+
+## Build 87 photo-only client correction
+
+Source `89ffeec32df1a162c18202e849a432acc3e4193f` gates photo actions on
+the authenticated workspace and `photoCapability`, independent of
+`profile.self`. Availability, custom status, and work location remain gated
+until their backend is commissioned. The REST upload/delete result updates the
+avatar immediately, with a validated owner-and-tenant scoped descriptor saved
+locally for app reopen. Picker permission and format errors appear in the photo
+sheet. Regression coverage includes stale profile data and a workspace switch
+while a photo operation is pending. Thirty-four focused profile tests,
+TypeScript, and `git diff --check` passed; independent source review found and
+prompted correction of three P2 edge cases before signing.
+
+[Signed workflow 35870250918](https://github.com/vasavas1977/codex-phone11/actions/runs/35870250918)
+passed all native, daily-use, PostgreSQL, and iOS build jobs at this exact
+source. EAS build `b2f1c260-4981-4bb0-929e-29d7638630bb` used the same
+`preview-ios-siprix-daily-pilot` profile and produced Build 87. Its IPA SHA-256
+is `113d63efffe426b74e10673dcf2d177f2119e9c2f3f58b8cf00a3dc0af5fab0a`.
+The combined native/signature checker passed all 22 signed release checks
+against retained Build 49, including disabled OTA updates, production APNs,
+Siprix frameworks, and the same signing identity. Build 86 is retained at its
+recorded SHA-256. Build 87 was installed in place on the paired iPhone 17 Pro
+Max; `devicectl` inventory confirmed bundle version 87. Real photo selection,
+upload, second-device rendering, and removal still require handset acceptance.
+When `profile.self` is unavailable, this device cannot discover a photo changed
+on another device until a separate owner-scoped photo metadata read endpoint is
+commissioned; the image fetch itself remains authenticated.
 
 If the photo route must be rolled back, use the reviewed
 `scripts/phone11-profile-photo-route.py rollback` with operation
