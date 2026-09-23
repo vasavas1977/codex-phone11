@@ -60,6 +60,7 @@ class FakeSystem:
         self.master_pid = 9
         self.master_start_ticks = 12
         self.served_active = False
+        self.legacy_baseline_health = False
 
     def container(self, name):
         assert name == "cp11-api-candidate-channel"
@@ -107,6 +108,8 @@ class FakeSystem:
             self.fail_baseline_502_once = False
             return 502, {}, b"bad gateway"
         if path == "/api/health":
+            if self.legacy_baseline_health:
+                return 200, {}, b'{"ok":true,"build":"team-chat-media-d41fc504","service":"phone11-backend"}'
             return 200, {}, b'{"ok":true,"runtimeRole":"default"}'
         if selected:
             return 401, {route.MARKER: BUILD}, b'{"error":"Sign in to access profile photos"}'
@@ -239,6 +242,11 @@ class PhotoRouteControllerTests(unittest.TestCase):
         self.assertFalse(result["active"])
         self.assertEqual(self.site.read_bytes(), SITE)
         self.assertEqual(self.system.reloads, 2)
+
+    def test_exact_legacy_baseline_health_allows_activation(self):
+        self.system.legacy_baseline_health = True
+        self.assertTrue(self.controller.activate(OPERATION)["active"])
+        self.assertFalse(self.controller.rollback(OPERATION)["active"])
 
     def test_activation_probe_failure_restores_previous_site(self):
         self.system.fail_probe_once = True

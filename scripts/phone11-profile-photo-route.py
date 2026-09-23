@@ -39,6 +39,7 @@ PREFLIGHT_SCHEMA = "phone11-profile-photo-preflight/v1"
 BEGIN = "# PHONE11_PROFILE_PHOTO_ROUTE_BEGIN"
 END = "# PHONE11_PROFILE_PHOTO_ROUTE_END"
 MARKER = "x-phone11-photo-candidate"
+LEGACY_BASELINE_BUILD = "team-chat-media-d41fc504"
 LOCK = Path("/run/phone11-parallel-api.lock")
 SUPPORTED_PORTS = {3002, 3003, 3005, 3006}
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -334,7 +335,11 @@ class Controller:
                     raise edge.ControlError("baseline_health") from error
                 require(status == 200 and isinstance(health, dict)
                         and health.get("ok") is True
-                        and health.get("runtimeRole") == "default", "baseline_health")
+                        and (health.get("runtimeRole") == "default"
+                             or (health.get("runtimeRole") is None
+                                 and health.get("service") == "phone11-backend"
+                                 and health.get("build") == LEGACY_BASELINE_BUILD)),
+                        "baseline_health")
 
     def _install(self, raw: bytes, info: os.stat_result) -> None:
         edge.atomic_write(self.site, raw, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
