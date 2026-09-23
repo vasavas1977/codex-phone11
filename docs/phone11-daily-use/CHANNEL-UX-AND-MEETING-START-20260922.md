@@ -63,3 +63,7 @@ Thread-specific persisted unread counts still need an authoritative thread curso
 - Backend source `9aab1625655c981e16fee8fab0a2e2af9f0fe2e1`, image `sha256:62d8dd798e8bc08b939b75aa57761e1f14341fdbbdcdac7d3a04ae63a6e79dbd`, bundle `a846c1c73ae3eeb55f4f4a60b3266981fad980ded33dc331c5ccd2dbb79f56c4`. Disposable network-disabled read-only image validation passed. No service activation is implied.
 
 - Build 83 picker loads authorized members independently of hosting capability, selects all other members by default, permits individual deselection, and keeps Start disabled when authorization cannot be checked. Thirty-seven focused tests and TypeScript passed.
+
+## Build 84 picker freeze correction
+
+Build 83 could replace its native iOS meeting sheet while the channel roster arrived, freezing the UI. `0d902921d5de477214b9d570db55cb1383b5ba36` keeps the outer modal stable and resets only the inner selection content as the roster changes. Thirty-eight focused tests and TypeScript passed. Signed Build 84 (`f3e7160d-b468-45df-b6db-d4a5528df055`) passed 22 package gates, was installed in place on the iPhone 17 Pro Max, and was confirmed by device inventory. Its handset picker behavior awaits owner retest because the phone was locked at remote launch.
