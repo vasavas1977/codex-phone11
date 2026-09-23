@@ -19,6 +19,7 @@ vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: (props: 
   "data-avatar-tenant": props.tenantId,
   "data-avatar-photo": props.photoUrl ?? "",
 }, props.name) }));
+vi.mock("../components/profile/profile-card-provider", () => ({ ProfileCardProvider: ({ children }: any) => children }));
 import { ChannelMeetingPicker, channelInvitees, type ChannelMeetingPickerProps } from "../components/chat/channel-meeting-picker";
 const base = (): ChannelMeetingPickerProps => ({ visible: true, tenantId: 1, channelId: "channel-a", channelName: "Project", hostId: 1, members: [{ id: 1, name: "Host", extension: null }, { id: 2, name: "Member", extension: "1020" }], startAvailable: true, onCancel: vi.fn(), onStart: vi.fn() });
 beforeEach(() => { m.buttons = []; m.inputs = []; m.keyboardAvoiders = []; m.rosterScrollViews = []; m.platformOS = "ios"; });
@@ -98,7 +99,7 @@ it("shows a roster failure without stale members, selection controls, or a start
 it("unmounts hidden selection and changes the reset key for account, channel or roster changes", () => {
   const p = base();
   expect(ChannelMeetingPicker({ ...p, visible: false })).toBeNull();
-  const contentKey = (props: ChannelMeetingPickerProps) => ChannelMeetingPicker(props)!.props.children.key;
+  const contentKey = (props: ChannelMeetingPickerProps) => ChannelMeetingPicker(props)!.props.children.props.children.key;
   const key = contentKey(p);
   expect(contentKey({ ...p, hostId: 2 })).not.toBe(key);
   expect(contentKey({ ...p, tenantId: 2 })).not.toBe(key);
@@ -114,7 +115,8 @@ it("keeps the native modal stable while an async roster remounts selected conten
 
   expect(first.type).toBe(second.type);
   expect(first.key).toBe(second.key);
-  expect(first.props.children.key).not.toBe(second.props.children.key);
+  expect(first.props.children.type).toBe(second.props.children.type);
+  expect(first.props.children.props.children.key).not.toBe(second.props.children.props.children.key);
 
   const html = renderToStaticMarkup(second);
   expect(html).toContain("1 selected");

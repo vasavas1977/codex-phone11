@@ -41,6 +41,7 @@ vi.mock("../components/profile/profile-avatar", () => ({
   }),
   useProfilePhotoCacheScope: vi.fn(),
 }));
+vi.mock("../components/profile/profile-card-provider", () => ({ ProfileCardProvider: ({ children }: any) => children }));
 vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ photoDescriptor: m.ownPhotoDescriptor }) }));
 
 import TeamChat from "../app/(tabs)/teamchat";

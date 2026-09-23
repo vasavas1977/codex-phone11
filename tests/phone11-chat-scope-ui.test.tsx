@@ -9,6 +9,7 @@ vi.mock("../components/profile/profile-avatar", () => ({
   ProfileAvatar: () => null,
   useProfilePhotoCacheScope: () => {},
 }));
+vi.mock("../components/profile/profile-card-provider", () => ({ ProfileCardProvider: ({ children }: any) => children }));
 vi.mock("../hooks/use-directory", () => ({ useDirectory: () => ({ people: [], owner: null }) }));
 vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ profile: undefined }) }));
 vi.mock("../components/meet-action", () => ({ MeetAction: () => null }));

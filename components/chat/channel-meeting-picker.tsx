@@ -2,6 +2,7 @@ import { useState } from "react";
 import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useColors } from "@/hooks/use-colors";
 import { ProfileAvatar } from "@/components/profile/profile-avatar";
+import { ProfileCardProvider } from "@/components/profile/profile-card-provider";
 import type { ChatPerson } from "@/lib/chat/types";
 
 export type ChannelMeetingPickerProps = {
@@ -42,7 +43,9 @@ export function ChannelMeetingPicker(props: ChannelMeetingPickerProps) {
   // modal view controller while its presentation animation is still running.
   const roster = [...new Set(props.members.map(person => person.id))].sort((a, b) => a - b).join(",");
   return <Modal visible transparent animationType="slide" onRequestClose={props.busy ? undefined : props.onCancel}>
-    <Picker key={`${props.tenantId}:${props.channelId}:${props.hostId}:${roster}`} {...props} />
+    <ProfileCardProvider selectionOnly>
+      <Picker key={`${props.tenantId}:${props.channelId}:${props.hostId}:${roster}`} {...props} />
+    </ProfileCardProvider>
   </Modal>;
 }
 

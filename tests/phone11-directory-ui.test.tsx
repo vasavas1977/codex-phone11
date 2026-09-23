@@ -162,6 +162,18 @@ beforeEach(() => {
     reload: vi.fn(),
   };
 });
+it("profile cards reject a directory response for another workspace or owner", () => {
+  mocks.directory.workspace.id = 2;
+  expect(renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded />)).not.toContain("สมชาย");
+  mocks.directory.workspace.id = 1;
+  mocks.directory.owner = 9;
+  expect(renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded />)).not.toContain("สมชาย");
+});
+it("selection and in-call profile cards show information without call or message actions", () => {
+  renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded actionsEnabled={false} />);
+  expect(mocks.press.has("Call สมชาย")).toBe(false);
+  expect(mocks.press.has("Message สมชาย")).toBe(false);
+});
 it("embedded details follow the parent directory photo without a second directory fetch", () => {
   mocks.directory.people[0].photoUrl = "/api/profile/photo/1/5?v=old";
   renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded directorySnapshot={mocks.directory} />);

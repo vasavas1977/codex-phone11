@@ -2,6 +2,7 @@ import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from "rea
 import { useColors } from "@/hooks/use-colors";
 import { formatChatTime, type ChatPerson, type ChatReadReceipt } from "@/lib/chat/types";
 import { ProfileAvatar } from "@/components/profile/profile-avatar";
+import { ProfileCardProvider } from "@/components/profile/profile-card-provider";
 
 export function ReadReceiptSheet({ visible, loading, rows, people = [], tenantId, error, onClose }: {
   visible: boolean;
@@ -14,7 +15,7 @@ export function ReadReceiptSheet({ visible, loading, rows, people = [], tenantId
   onClose: () => void;
 }) {
   const colors = useColors();
-  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+  return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}><ProfileCardProvider key={visible ? "visible" : "hidden"} selectionOnly>
     <Pressable style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.35)" }} accessibilityRole="button" accessibilityLabel="Close read receipts" onPress={onClose}>
       <Pressable style={{ width: "100%", maxWidth: 620, maxHeight: "70%", alignSelf: "center", borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 18, backgroundColor: colors.background }} accessibilityViewIsModal onPress={() => undefined}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 44 }}>
@@ -38,5 +39,5 @@ export function ReadReceiptSheet({ visible, loading, rows, people = [], tenantId
         ) : <Text style={{ color: colors.muted, paddingVertical: 18 }}>No read receipts yet</Text>}
       </Pressable>
     </Pressable>
-  </Modal>;
+  </ProfileCardProvider></Modal>;
 }

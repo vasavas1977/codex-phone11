@@ -1,6 +1,7 @@
 import "@/global.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
+import { ProfileCardProvider } from "@/components/profile/profile-card-provider";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useMemo, useState } from "react";
@@ -105,6 +106,7 @@ function RootNavigator() {
             <Phone11PresencePublisher />
             {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
             {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
+            <ProfileCardProvider>
             <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="auth/sign-in" />
@@ -113,6 +115,7 @@ function RootNavigator() {
               <Stack.Screen name="oauth/callback" />
             </Stack>
             <CurrentCallBanner />
+            </ProfileCardProvider>
             <StatusBar style={colorScheme === "dark" ? "light" : "dark"} backgroundColor={colors.background} />
           </QueryClientProvider>
         </trpc.Provider>

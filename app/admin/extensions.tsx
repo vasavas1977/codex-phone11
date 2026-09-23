@@ -22,6 +22,7 @@ import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { ProfileAvatar } from "@/components/profile/profile-avatar";
+import { ProfileCardProvider } from "@/components/profile/profile-card-provider";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useAuth } from "@/hooks/use-auth";
@@ -491,7 +492,7 @@ export default function AdminExtensions() {
         transparent
         onRequestClose={closeAssignmentEditor}
       >
-        <View style={styles.modalOverlay}>
+        <ProfileCardProvider key={editingAssignment ? "visible" : "hidden"} selectionOnly><View style={styles.modalOverlay}>
           <View
             style={[
               styles.modal,
@@ -606,7 +607,7 @@ export default function AdminExtensions() {
             </View>
             <Text style={[styles.note, { color: colors.muted }]}>Assignment updates workspace source state only. It does not confirm a handset or SIP registration.</Text>
           </View>
-        </View>
+        </View></ProfileCardProvider>
       </Modal>
     </ScreenContainer>
   );

@@ -14,6 +14,7 @@ import { PresenceIndicator } from "@/components/chat/presence-indicator";
 import { usePresencePolling } from "@/lib/chat/presence-store";
 import { NotificationEnrollmentPrompt } from "@/components/chat/notification-enrollment-prompt";
 import { ProfileAvatar, useProfilePhotoCacheScope } from "@/components/profile/profile-avatar";
+import { ProfileCardProvider } from "@/components/profile/profile-card-provider";
 import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
 
 type Filter = "all" | "unread" | "chats" | "group" | "channel" | "drafts";
@@ -181,7 +182,7 @@ export default function TeamChatScreen() {
       </>}
     </View>
     <Modal visible={composerVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => !creating && setComposing(false)}>
-      <ScreenContainer edges={["top", "left", "right", "bottom"]}><KeyboardAvoidingView behavior="padding" style={styles.keyboardSheet}><View style={styles.sheet}>
+      <ProfileCardProvider key={composerVisible ? "visible" : "hidden"} selectionOnly><ScreenContainer edges={["top", "left", "right", "bottom"]}><KeyboardAvoidingView behavior="padding" style={styles.keyboardSheet}><View style={styles.sheet}>
         <View style={styles.sheetHeader}><Pressable accessibilityRole="button" accessibilityLabel="Cancel new message" disabled={creating} onPress={() => setComposing(false)} style={styles.sheetCancel}><Text style={{ color: colors.primary }}>Cancel</Text></Pressable><Text style={[styles.sheetTitle, fg]}>New message</Text><View style={styles.headerSpacer} /></View>
         <View style={styles.composerOptions}>
           <Pressable accessibilityRole="button" accessibilityLabel="New message" accessibilityState={{ selected: kind === "direct" }} disabled={creating} onPress={() => { setKind("direct"); setSelected([]); }} style={[styles.modeButton, { borderColor: colors.border, backgroundColor: kind === "direct" ? colors.primary : colors.surface }]}><Text style={{ color: kind === "direct" ? "white" : colors.foreground }}>Message</Text></Pressable>
@@ -197,7 +198,7 @@ export default function TeamChatScreen() {
           <ProfileAvatar name={item.name} photoUrl={item.id === user?.id ? ownPhoto?.photoUrl : item.photoUrl} photoVersion={item.id === user?.id ? ownPhoto?.photoVersion : undefined} tenantId={chat.workspace?.id} userId={item.id} size={40} accessibilityLabel={`${item.name} profile photo`} /><View style={styles.personText}><Text numberOfLines={1} style={fg}>{item.name}</Text><PresenceIndicator tenantId={chat.workspace?.id} userId={item.id} />{item.extension ? <Text style={{ color: colors.muted, fontSize: 13 }}>Ext. {item.extension}</Text> : null}</View>{kind !== "direct" && <Text style={{ color: colors.primary }}>{selected.includes(item.id) ? "Selected ✓" : "Select"}</Text>}
         </Pressable>} ListEmptyComponent={!directoryLoading ? <Text style={{ color: colors.muted, padding: 20 }}>{peopleSearch.trim() ? "No teammates match your search." : "No other teammates are available. Your administrator must add another active workspace member."}</Text> : null} />
         {kind !== "direct" && <Pressable accessibilityRole="button" accessibilityLabel="Create" disabled={creating || directoryLoading || selected.length === 0 || !name.trim()} onPress={() => void create(kind, name, selected)} style={[styles.createButton, { backgroundColor: colors.primary, opacity: selected.length && name.trim() && !creating ? 1 : 0.4 }]}><Text style={styles.buttonText}>{creating ? "Creating…" : "Create"}</Text></Pressable>}
-      </View></KeyboardAvoidingView></ScreenContainer>
+      </View></KeyboardAvoidingView></ScreenContainer></ProfileCardProvider>
     </Modal>
   </ScreenContainer>;
 }

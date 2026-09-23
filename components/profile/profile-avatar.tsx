@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Platform, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { Image, type ImageSource } from "expo-image";
 import { getApiBaseUrl } from "@/constants/oauth";
 import { addAuthChangeListener, getAuthSnapshot, getSessionToken } from "@/lib/_core/auth";
 import { useColors } from "@/hooks/use-colors";
+import { useOpenProfileCard, validProfileCardTarget } from "./profile-card-context";
 
 const photoPath = /^\/api\/profile\/photo\/(\d+)\/(\d+)$/;
 const version = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -118,11 +119,14 @@ export type ProfileAvatarProps = {
   rounded?: boolean;
   accessibilityLabel?: string;
   testID?: string;
+  /** Opt out when the image is already inside its own profile/photo editor. */
+  interactive?: boolean;
 };
 
 /** Tenant-scoped avatar with a privacy-safe authenticated image source and initials fallback. */
 export function ProfileAvatar(props: ProfileAvatarProps) {
   const colors = useColors();
+  const openProfile = useOpenProfileCard();
   const source = useProfilePhotoSource(props);
   const [failed, setFailed] = useState(false);
   const displayName = props.name?.trim() || "Profile";
@@ -130,7 +134,7 @@ export function ProfileAvatar(props: ProfileAvatarProps) {
   useEffect(() => setFailed(false), [source?.cacheKey]);
   const hasPhoto = !!source && !failed;
 
-  return (
+  const avatar = (
     <View
       testID={props.testID}
       accessibilityLabel={props.accessibilityLabel ?? (hasPhoto ? `${displayName} profile photo` : `${displayName} initials`)}
@@ -160,6 +164,15 @@ export function ProfileAvatar(props: ProfileAvatarProps) {
       )}
     </View>
   );
+  if (props.interactive === false || !openProfile || !validProfileCardTarget(props.tenantId, props.userId)) return avatar;
+  return <Pressable accessibilityRole="button" accessibilityLabel={`View ${displayName} profile`}
+    accessibilityHint="Opens contact information" hitSlop={Math.max(0, (44 - props.size) / 2)}
+    onPress={(event) => {
+      event.stopPropagation();
+      openProfile({ tenantId: props.tenantId!, userId: props.userId! });
+    }}>
+    {avatar}
+  </Pressable>;
 }
 
 /** Remove all cached protected photos when the account changes. */

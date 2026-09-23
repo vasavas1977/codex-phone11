@@ -15,6 +15,7 @@ vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "blue", for
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0 }) }));
 vi.mock("../components/chat/message-content", () => ({ ChatAttachmentCard: () => null }));
 vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: (props: any) => createElement("span", { "data-user-id": props.userId, "data-tenant-id": props.tenantId, "data-photo-url": props.photoUrl ?? "" }) }));
+vi.mock("../components/profile/profile-card-provider", () => ({ ProfileCardProvider: ({ children }: any) => children }));
 import { ConversationDetails } from "../components/chat/conversation-details";
 
 it("shows conversation member photos from scoped server descriptors", () => {

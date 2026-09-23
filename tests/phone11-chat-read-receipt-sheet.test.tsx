@@ -10,6 +10,7 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "blue", foreground: "black", muted: "gray", border: "silver", background: "white", error: "red" }) }));
 vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: (props: any) => createElement("span", { "data-user-id": props.userId, "data-tenant-id": props.tenantId, "data-photo-url": props.photoUrl ?? "" }) }));
+vi.mock("../components/profile/profile-card-provider", () => ({ ProfileCardProvider: ({ children }: any) => children }));
 import { ReadReceiptSheet } from "../components/chat/read-receipt-sheet";
 
 it("renders named readers with times and an accessible close action", () => {

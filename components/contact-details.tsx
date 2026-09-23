@@ -26,12 +26,13 @@ import { ProfileAvatar, useProfilePhotoCacheScope } from "@/components/profile/p
 import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
 import type { DirectoryContact } from "@/lib/phone/directory";
 
-export function ContactAvatar({ person, ownPhoto, ownerId, tenantId, size }: {
+export function ContactAvatar({ person, ownPhoto, ownerId, tenantId, size, interactive }: {
   person: DirectoryContact;
   ownPhoto: { userId: number; photoUrl: string | null; photoVersion: string | null } | null;
   ownerId: number | undefined;
   tenantId: number | undefined;
   size: number;
+  interactive?: boolean;
 }) {
   const currentPhoto = person.id === ownerId && ownPhoto?.userId === ownerId ? ownPhoto : null;
   return <ProfileAvatar
@@ -41,6 +42,7 @@ export function ContactAvatar({ person, ownPhoto, ownerId, tenantId, size }: {
     tenantId={tenantId}
     userId={person.id}
     size={size}
+    interactive={interactive}
     accessibilityLabel={`${person.name} profile photo`}
   />;
 }
@@ -50,17 +52,21 @@ export function ContactDetails({
   tenantId: workspaceId,
   embedded = false,
   directorySnapshot,
+  actionsEnabled = true,
+  onBeforeAction,
 }: {
   id?: string;
   tenantId?: string;
   embedded?: boolean;
+  actionsEnabled?: boolean;
+  onBeforeAction?: () => void;
   directorySnapshot?: Pick<ReturnType<typeof useDirectory>, "owner" | "workspace" | "people" | "loading" | "error" | "reload">;
 }) {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
   const id = positiveRouteId(contactId);
   const tenantId = positiveRouteId(workspaceId);
-  const localDirectory = useDirectory(tenantId, !directorySnapshot);
+  const localDirectory = useDirectory(tenantId, !directorySnapshot && !!id && !!tenantId);
   const directory = directorySnapshot && directorySnapshot.owner === user?.id &&
     directorySnapshot.workspace?.id === tenantId
     ? directorySnapshot : localDirectory;
@@ -70,7 +76,7 @@ export function ContactDetails({
   const ownPhoto = ownPhotoDescriptor?.userId === user?.id ? ownPhotoDescriptor : null;
   useProfilePhotoCacheScope(activeTenant);
   const person =
-    id && tenantId
+    id && tenantId && activeTenant === tenantId && directory.owner === user?.id
       ? directory.people.find((item) => item.id === id)
       : undefined;
   usePresencePolling(tenantId, id ? [id] : [], Boolean(person));
@@ -87,7 +93,7 @@ export function ContactDetails({
   const pending = useRef(false);
   const [busy, setBusy] = useState<"call" | "message" | null>(null);
   const act = async (kind: "call" | "message") => {
-    if (!person || !tenantId || pending.current) return;
+    if (!person || !tenantId || !actionsEnabled || pending.current || getAuthSnapshot().user?.id !== directory.owner) return;
     pending.current = true;
     setBusy(kind);
     const owner = getAuthSnapshot().user?.id;
@@ -107,14 +113,17 @@ export function ContactDetails({
           );
           return;
         }
+        onBeforeAction?.();
         await placeCall(person.extension!);
       } else {
         const channelId = await openDirectConversation(tenantId, person.id);
-        if (getAuthSnapshot().user?.id === owner)
+        if (getAuthSnapshot().user?.id === owner) {
+          onBeforeAction?.();
           router.push({
             pathname: "/chat/[id]",
             params: { id: channelId, tenantId },
           });
+        }
       }
     } catch {
       Alert.alert(
@@ -174,7 +183,7 @@ export function ContactDetails({
       ) : (
         <>
           <View style={styles.profile}>
-            <ContactAvatar person={person} ownPhoto={ownPhoto} ownerId={user?.id} tenantId={activeTenant} size={88} />
+            <ContactAvatar person={person} ownPhoto={ownPhoto} ownerId={user?.id} tenantId={activeTenant} size={88} interactive={false} />
             <Text
               accessibilityRole="header"
               style={[styles.name, { color: colors.foreground }]}
@@ -191,7 +200,7 @@ export function ContactDetails({
                 : "No phone extension assigned"}
             </Text>
           </View>
-          <View style={styles.actions}>
+          {actionsEnabled && <View style={styles.actions}>
             {canCall && (
               <Pressable
                 accessibilityRole="button"
@@ -239,8 +248,8 @@ export function ContactDetails({
                 {busy === "message" ? "Opening…" : "Message"}
               </Text>
             </Pressable>
-          </View>
-          {person.extension && !canCall && (
+          </View>}
+          {actionsEnabled && person.extension && !canCall && (
             <Text
               style={[styles.description, { color: colors.muted, padding: 24 }]}
             >
