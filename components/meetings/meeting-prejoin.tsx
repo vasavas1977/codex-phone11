@@ -18,7 +18,6 @@ import { meetingJoinFailureReference } from "@/lib/meetings/join-failure";
 
 export interface MeetingJoinPreferences {
   meetingCode: string;
-  displayName: string;
   microphoneEnabled: boolean;
   cameraEnabled: boolean;
 }
@@ -27,7 +26,8 @@ export interface MeetingPrejoinProps {
   initialMeetingCode?: string;
   /** Server-filtered opaque IDs; their presence disables manual UUID entry. */
   admittedMeetings?: readonly AdmittedMeeting[];
-  initialDisplayName?: string;
+  /** Authenticated Phone11 profile name, shown read-only because admission owns provider identity. */
+  authenticatedDisplayName?: string;
   /** Omit until an authenticated meeting admission and media path are available. */
   onJoin?: (preferences: MeetingJoinPreferences) => Promise<void>;
   unavailableReason?: string;
@@ -41,7 +41,7 @@ export interface MeetingPrejoinProps {
 export function MeetingPrejoin({
   initialMeetingCode = "",
   admittedMeetings,
-  initialDisplayName = "",
+  authenticatedDisplayName = "",
   onJoin,
   unavailableReason,
   onRetryAvailability,
@@ -55,7 +55,6 @@ export function MeetingPrejoin({
     initialMeetingCode,
   );
   const [meetingCode, setMeetingCode] = useState(selection.meetingCode);
-  const [displayName, setDisplayName] = useState(initialDisplayName);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -67,8 +66,7 @@ export function MeetingPrejoin({
     (!onJoin
       ? "Video meetings are not connected for this account yet. Ask your administrator to enable meetings."
       : null);
-  const disabled =
-    !!unavailable || joining || !meetingCode.trim() || !displayName.trim();
+  const disabled = !!unavailable || joining || !meetingCode.trim();
   async function join() {
     if (disabled || !onJoin || joinInFlight.current) return;
     joinInFlight.current = true;
@@ -78,7 +76,6 @@ export function MeetingPrejoin({
     try {
       await onJoin({
         meetingCode: meetingCode.trim(),
-        displayName: displayName.trim(),
         microphoneEnabled,
         cameraEnabled,
       });
@@ -232,29 +229,17 @@ export function MeetingPrejoin({
                   )}
                 </View>
               )}
-              <Text
-                nativeID="meeting-name-label"
-                style={[styles.label, { color: colors.foreground }]}
+              <View
+                accessible
+                accessibilityLabel={`Signed in as ${authenticatedDisplayName || "Phone11 account"}`}
               >
-                Your name
-              </Text>
-              <TextInput
-                accessibilityLabel="Your name"
-                accessibilityLabelledBy="meeting-name-label"
-                value={displayName}
-                onChangeText={setDisplayName}
-                placeholder="Name shown in the meeting"
-                placeholderTextColor={colors.muted}
-                autoComplete="name"
-                maxLength={80}
-                editable={!joining}
-                returnKeyType="done"
-                onSubmitEditing={() => void join()}
-                style={[
-                  styles.input,
-                  { color: colors.foreground, borderColor: colors.border },
-                ]}
-              />
+                <Text style={[styles.label, { color: colors.foreground }]}>
+                  Signed in as
+                </Text>
+                <Text style={{ color: colors.muted }}>
+                  {authenticatedDisplayName.trim() || "Phone11 account"}
+                </Text>
+              </View>
               <View style={styles.mediaRow}>
                 <View style={styles.mediaText}>
                   <Text style={[styles.label, { color: colors.foreground }]}>

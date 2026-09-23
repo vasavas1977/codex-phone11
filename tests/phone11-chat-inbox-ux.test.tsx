@@ -32,6 +32,14 @@ vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: m.user }) }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.user }) }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "green", foreground: "black", muted: "gray", surface: "white", border: "silver", error: "red" }) }));
 vi.mock("../lib/chat/store", () => ({ useChatStore: Object.assign(() => m.state, { getState: () => m.state }) }));
+vi.mock("../components/profile/profile-avatar", () => ({
+  ProfileAvatar: (props: any) => createElement("span", {
+    "data-photo-url": props.photoUrl ?? "",
+    "data-tenant-id": props.tenantId,
+    "data-user-id": props.userId,
+  }),
+  useProfilePhotoCacheScope: vi.fn(),
+}));
 
 import TeamChat from "../app/(tabs)/teamchat";
 
@@ -52,7 +60,7 @@ beforeEach(() => {
       { id: "direct", name: "Alice Adams", kind: "direct", memberIds: [1, 2], lastMessage: "Hi", lastMessageAt: 1, unreadCount: 0, blocked: false },
       { id: "group", name: "Launch team", kind: "group", memberIds: [1, 2, 3], lastMessage: "Ready", lastMessageAt: 1, unreadCount: 2, blocked: false },
       { id: "channel", name: "Announcements", kind: "channel", memberIds: [1, 2, 3], lastMessage: "Update", lastMessageAt: 1, unreadCount: 0, blocked: false },
-    ], people: [{ id: 2, name: "Bob Baker", extension: "3002" }, { id: 3, name: "Cara Chen", extension: "3003" }], drafts: { direct: "Draft reply" },
+    ], people: [{ id: 2, name: "Alice Adams", extension: "3002", photoUrl: "/api/profile/photo/10/2?v=11111111-1111-4111-8111-111111111111" }, { id: 3, name: "Cara Chen", extension: "3003" }], drafts: { direct: "Draft reply" },
     loading: false, error: null, storageError: null, loadChannels: vi.fn(), loadDirectory: m.directory, createConversation: m.create, setUser: vi.fn() };
 });
 
@@ -63,6 +71,16 @@ it("keeps Chats inclusive of direct and group rooms while More owns Groups and D
   expect(html).toContain("Alice Adams"); expect(html).toContain("Launch team"); expect(html).not.toContain("Announcements");
   m.buttons.get("More filters").onPress(); render(); m.buttons.get("Drafts conversations").onPress(); html = render();
   expect(html).toContain(">Drafts<"); expect(html).toContain("Draft: Draft reply"); expect(html).not.toContain("Launch team");
+});
+
+it("uses the authorized teammate photo for direct rows and directory entries", async () => {
+  let html = render();
+  expect(html).toContain('data-photo-url="/api/profile/photo/10/2?v=11111111-1111-4111-8111-111111111111"');
+  expect(html).toContain('data-tenant-id="10"');
+  expect(html).toContain('data-user-id="2"');
+  await openComposer(); html = render();
+  expect(html).toContain('data-photo-url="/api/profile/photo/10/2?v=11111111-1111-4111-8111-111111111111"');
+  expect(html).toContain('data-user-id="3"');
 });
 
 it("clears the inbox query when the search control closes", () => {
@@ -76,8 +94,8 @@ it("opens a direct message on one teammate selection and ignores a double submit
   const request = deferred(); m.create.mockReturnValueOnce(request.promise);
   await openComposer();
   expect(m.inputs.get("Search teammates")).toBeDefined();
-  expect(m.buttons.has("Select teammate Bob Baker")).toBe(true);
-  const select = m.buttons.get("Select teammate Bob Baker").onPress;
+  expect(m.buttons.has("Select teammate Alice Adams")).toBe(true);
+  const select = m.buttons.get("Select teammate Alice Adams").onPress;
   select(); expect(render()).toContain("Opening private message"); select();
   expect(m.create).toHaveBeenCalledTimes(1); expect(m.create).toHaveBeenCalledWith("direct", "Direct message", [2]);
   request.resolve("direct-room"); await Promise.resolve(); await Promise.resolve();
@@ -86,7 +104,7 @@ it("opens a direct message on one teammate selection and ignores a double submit
 
 it("shows a bounded error after a direct message create failure", async () => {
   m.create.mockRejectedValueOnce(new Error("offline")); await openComposer();
-  await m.buttons.get("Select teammate Bob Baker").onPress(); await Promise.resolve(); await Promise.resolve();
+  await m.buttons.get("Select teammate Alice Adams").onPress(); await Promise.resolve(); await Promise.resolve();
   expect(render()).toContain("Could not connect to Team Chat");
-  expect(m.buttons.get("Select teammate Bob Baker").disabled).toBe(false);
+  expect(m.buttons.get("Select teammate Alice Adams").disabled).toBe(false);
 });

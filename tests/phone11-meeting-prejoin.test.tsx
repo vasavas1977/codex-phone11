@@ -95,13 +95,31 @@ function render(onJoin: () => Promise<void>) {
   mocks.joinButton = undefined;
   return renderToStaticMarkup(
     createElement(MeetingPrejoin, {
-      initialDisplayName: "Pilot",
+      authenticatedDisplayName: "Pilot",
       admittedMeetings: [{ meetingId: "12345678-1234-4234-8234-123456789012" }],
       onJoin,
       onBack: () => undefined,
     }),
   );
 }
+
+it("shows the authenticated name read-only and joins an admitted meeting without sending a client name", async () => {
+  const onJoin = vi.fn().mockResolvedValue(undefined);
+  const html = render(onJoin);
+
+  expect(html).toContain("Signed in as");
+  expect(html).toContain("Pilot");
+  expect(html).not.toContain("Your name");
+  expect(mocks.joinButton?.disabled).toBe(false);
+
+  await mocks.joinButton?.onPress();
+
+  expect(onJoin).toHaveBeenCalledWith({
+    meetingCode: "12345678-1234-4234-8234-123456789012",
+    microphoneEnabled: false,
+    cameraEnabled: false,
+  });
+});
 
 it("keeps the friendly retry text while exposing only the safe join-stage reference", async () => {
   const onJoin = vi

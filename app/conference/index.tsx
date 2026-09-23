@@ -24,7 +24,7 @@ function EnabledMeetingPrejoin({
   const join = trpc.meetings.join.useMutation();
   return (
     <MeetingPrejoin
-      initialDisplayName={user.name ?? ""}
+      authenticatedDisplayName={user.name ?? ""}
       admittedMeetings={admittedMeetings}
       initialMeetingCode={initialMeetingCode}
       onJoin={async (preferences) => {
@@ -111,7 +111,7 @@ export default function ConferenceScreen() {
       ) : (
         <MeetingPrejoin
           key={user?.id ?? "signed-out"}
-          initialDisplayName={user?.name ?? ""}
+          authenticatedDisplayName={user?.name ?? ""}
           unavailableReason={reason}
           onRetryAvailability={
             user && !capabilities.isLoading
