@@ -56,6 +56,7 @@ class FakeEdgeSystem:
         self.foreign_on_test = False
         self.linger_workers = False
         self.newest_worker = self.workers[0]
+        self.requests = []
 
     def command(self, args, timeout=20):
         if args[-1] == "-T":
@@ -74,12 +75,17 @@ class FakeEdgeSystem:
 
     def request(self, method, path):
         raw = self.site.read_text()
+        self.requests.append((method, path))
         if self.fail_probe and edge.BEGIN in raw:
             raise edge.ControlError("https_probe")
         if edge.BEGIN not in raw and self.fail_release_probe_once:
             self.fail_release_probe_once = False
             return 503, {edge.FENCE_HEADER: "stale"}
-        if method == "GET" or edge.BEGIN not in raw:
+        trpc_post = method == "POST" and (path == "/api/trpc" or path.startswith("/api/trpc/"))
+        upload_post = method == "POST" and path == "/api/chat/media/upload"
+        photo_upload_post = method == "POST" and re.fullmatch(r"/api/profile/photo/?", path, re.IGNORECASE)
+        photo_delete = method == "DELETE" and re.fullmatch(r"/api/profile/photo/[^/]+/?", path, re.IGNORECASE)
+        if not (trpc_post or upload_post or photo_upload_post or photo_delete) or edge.BEGIN not in raw:
             return 404, {}
         begin = re.search(r"PHONE11_PROFILE_DND_EDGE_GATE_BEGIN ([^ ]+) ([0-9]+) ([^\n]+)", raw)
         contract = re.search(r"X-Phone11-Maintenance-Config \"([0-9a-f]{64})\"", raw)
@@ -125,18 +131,41 @@ class TestEdgeController(unittest.TestCase):
 
     def tearDown(self): self.temp.cleanup()
 
-    def test_renderer_covers_only_three_post_surfaces_and_preserves_proxy(self):
+    def test_renderer_covers_mutation_routes_and_preserves_photo_reads(self):
         active = edge.render_active_site(ORIGINAL, operation_id=OPERATION,
             expires_at_epoch_ms=1_700_000_600_000, generation_id=GENERATION, contract_sha256=SHA)
         text = active.decode()
-        self.assertEqual(text.count("if ($request_method = POST)"), 3)
-        self.assertEqual(text.count("return 503;"), 3)
+        self.assertEqual(text.count("if ($request_method = POST)"), 4)
+        self.assertEqual(text.count("if ($request_method = DELETE)"), 1)
+        self.assertEqual(text.count("return 503;"), 5)
         self.assertEqual(text.count("location = /api/trpc {"), 1)
         self.assertEqual(text.count("location ^~ /api/trpc/ {"), 1)
         self.assertEqual(text.count("location = /api/chat/media/upload {"), 1)
+        self.assertEqual(text.count("location ~* ^/api/profile/photo/?$ {"), 1)
+        self.assertEqual(text.count("location ~* ^/api/profile/photo/[^/]+/?$ {"), 1)
         self.assertEqual(text.count("location / {"), 1)
-        self.assertEqual(text.count("proxy_pass http://43.210.122.111;"), 4)
+        self.assertEqual(text.count("proxy_pass http://43.210.122.111;"), 6)
         self.assertNotIn("/api/phone11/wake", text)
+
+    def test_active_probe_covers_photo_mutations_batch_path_and_method_bypasses(self):
+        self.controller.activate(OPERATION, GENERATION, 600)
+        expected = {
+            ("POST", "/api/trpc/a,b"),
+            ("POST", "/api/profile/photo"),
+            ("POST", "/api/profile/photo/"),
+            ("POST", "/API/PROFILE/PHOTO"),
+            ("POST", "/API/PROFILE/PHOTO/"),
+            ("DELETE", "/api/profile/photo/10"),
+            ("DELETE", "/API/PROFILE/PHOTO/10/"),
+            ("DELETE", "/api/profile/photo/+10"),
+            ("DELETE", "/api/profile/photo/10/"),
+            ("GET", "/api/profile/photo/10/20?v=11111111-1111-4111-8111-111111111111"),
+            ("GET", "/API/PROFILE/PHOTO/10/20?v=11111111-1111-4111-8111-111111111111"),
+            ("POST", "/api/profile/photo/10"),
+            ("POST", "/api/profile/photo/10/"),
+            ("DELETE", "/api/profile/photo"),
+        }
+        self.assertTrue(expected.issubset(set(self.system.requests)))
 
     def test_process_start_parser_handles_parenthesized_names_with_spaces(self):
         tail = ["S"] + [str(field) for field in range(4, 23)]

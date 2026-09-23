@@ -104,6 +104,7 @@ describe("workspace profile photo HTTP routes", () => {
   beforeEach(() => {
     photo = null;
     deletions.clear(); schemaAvailable = true;
+    vi.stubEnv("PHONE11_PROFILE_PHOTO_COMMISSIONED", "1");
     vi.clearAllMocks();
     mocks.authenticate.mockImplementation(async req => {
       if (req.headers["x-test-auth"] === "none") throw new Error("unauthenticated");
@@ -115,6 +116,25 @@ describe("workspace profile photo HTTP routes", () => {
     await rm(directory, { recursive: true, force: true });
     vi.unstubAllEnvs();
   });
+
+  it.each([undefined, "", "0", "true", " 1 "])(
+    "blocks all public photo operations with commissioning value %s",
+    async value => {
+      const created = await upload();
+      expect(created.status).toBe(201);
+      const saved = photo;
+      const descriptor = await created.json() as { photoVersion: string };
+      if (value === undefined) delete process.env.PHONE11_PROFILE_PHOTO_COMMISSIONED;
+      else process.env.PHONE11_PROFILE_PHOTO_COMMISSIONED = value;
+      query.mockClear();
+      expect((await upload()).status).toBe(503);
+      expect((await fetch(`${base}/profile/photo/10/1?v=${descriptor.photoVersion}`, { headers: headers() })).status).toBe(503);
+      expect((await fetch(`${base}/profile/photo/10`, { method: "DELETE", headers: headers() })).status).toBe(503);
+      expect((await upload(1, png, { "X-Test-Auth": "none" })).status).toBe(401);
+      expect(query).not.toHaveBeenCalled();
+      expect(photo).toEqual(saved);
+    },
+  );
 
   it("authenticates and authorizes before accepting the raw upload body", async () => {
     const unauthenticated = await upload(1, Buffer.alloc(MAX_PROFILE_PHOTO_BYTES + 1), { "X-Test-Auth": "none" });

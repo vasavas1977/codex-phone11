@@ -15,6 +15,9 @@ import { withTransaction } from "../pbx/db";
 import { authorizeWorkspace } from "../chat/service";
 
 export const MAX_PROFILE_PHOTO_BYTES = 2 * 1024 * 1024;
+export function profilePhotoCommissioned(): boolean {
+  return process.env.PHONE11_PROFILE_PHOTO_COMMISSIONED === "1";
+}
 const MAX_PROFILE_PHOTO_EDGE = 2048;
 const MAX_PROFILE_PHOTO_PIXELS = 4_194_304;
 const PROFILE_ORPHAN_GRACE_MS = 60 * 60_000;
@@ -606,9 +609,17 @@ async function authenticate(req: Request, res: Response, next: NextFunction) {
   } catch { res.status(401).json({ error: "Sign in to access profile photos" }); }
 }
 
+function requireCommissioned(_req: Request, res: Response, next: NextFunction): void {
+  if (!profilePhotoCommissioned()) {
+    res.status(503).json({ error: "Profile photos are unavailable." });
+    return;
+  }
+  next();
+}
+
 export function createProfilePhotoRouter(transaction: Transaction = withTransaction) {
   const router = Router();
-  router.post("/photo", authenticate, (req, res, next) => {
+  router.post("/photo", authenticate, requireCommissioned, (req, res, next) => {
     if (declaredBodyTooLarge(req)) { res.status(413).json({ error: "Profile photos are limited to 2 MiB." }); return; }
     if (!cookieMutationOriginAllowed(req)) { res.status(403).json({ error: "Origin not allowed" }); return; }
     const tenantId = Number(firstHeader(req.headers["x-phone11-profile-tenant"]));
@@ -672,7 +683,7 @@ export function createProfilePhotoRouter(transaction: Transaction = withTransact
     }
   });
 
-  router.get("/photo/:tenantId/:userId", authenticate, async (req, res) => {
+  router.get("/photo/:tenantId/:userId", authenticate, requireCommissioned, async (req, res) => {
     const tenantId = Number(req.params.tenantId), targetUserId = Number(req.params.userId);
     const viewerUserId = Number(res.locals.phone11ProfileUserId);
     const version = typeof req.query.v === "string" && UUID.test(req.query.v) ? req.query.v : null;
@@ -701,7 +712,7 @@ export function createProfilePhotoRouter(transaction: Transaction = withTransact
     }
   });
 
-  router.delete("/photo/:tenantId", authenticate, async (req, res) => {
+  router.delete("/photo/:tenantId", authenticate, requireCommissioned, async (req, res) => {
     if (!cookieMutationOriginAllowed(req)) { res.status(403).json({ error: "Origin not allowed" }); return; }
     const tenantId = Number(req.params.tenantId), userId = Number(res.locals.phone11ProfileUserId);
     if (!Number.isSafeInteger(tenantId) || tenantId <= 0) { res.status(400).json({ error: "Choose an active workspace." }); return; }

@@ -5,7 +5,7 @@ import { getPool } from "../pbx/db";
 import { createProfileService, dndDurationMinutes, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, statusExpiryPresets } from "./service";
 import { manualAvailabilityValues, workLocationValues } from "./status";
 import { authorizeWorkspace } from "../chat/service";
-import { MAX_PROFILE_PHOTO_BYTES, profilePhotosAvailable, profilePhotoStorageReady } from "./photo";
+import { MAX_PROFILE_PHOTO_BYTES, profilePhotoCommissioned, profilePhotosAvailable, profilePhotoStorageReady } from "./photo";
 
 const tenantId = z.number().int().positive();
 const manualAvailability = z.enum(manualAvailabilityValues);
@@ -58,7 +58,10 @@ export function createProfileRouter(service?: ReturnType<typeof createProfileSer
       try {
         const db = getPool();
         await authorizeWorkspace(db, ctx.user.id, input.tenantId);
-        return { available: await profilePhotosAvailable(db) && await profilePhotoStorageReady(),
+        // Schema and local storage alone do not prove the public photo routes
+        // and retention owner have been commissioned on the deployed service.
+        return { available: profilePhotoCommissioned()
+          && await profilePhotosAvailable(db) && await profilePhotoStorageReady(),
           maxBytes: MAX_PROFILE_PHOTO_BYTES, mimeTypes: ["image/jpeg", "image/png", "image/webp"] as const };
       } catch (error) {
         if (error instanceof TRPCError) throw error;

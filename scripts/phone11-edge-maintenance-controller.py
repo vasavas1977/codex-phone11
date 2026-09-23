@@ -185,7 +185,10 @@ def render_active_site(
     server_start, _server_end, server = _api_server(text)
     location_matches = list(re.finditer(r"(?m)^([ \t]*)location\s+/\s*\{", server))
     guarded(len(location_matches) == 1, "config_contract")
-    guarded(not re.search(r"(?m)^\s*location\s+(?:=\s+)?/api/(?:trpc|chat/media/upload)", server), "config_contract")
+    guarded(not re.search(
+        r"(?m)^\s*location\s+(?:=\s+|\^~\s+|~\*?\s+)(?:\^)?/api/(?:trpc|chat/media/upload|profile/photo)",
+        server,
+    ), "config_contract")
     location = location_matches[0]
     opening = server.index("{", location.start())
     closing = _matching_brace(server, opening)
@@ -196,9 +199,15 @@ def render_active_site(
     blocks: list[str] = [
         f"{indent}{BEGIN} {operation_id} {expires_at_epoch_ms} {generation_id}\n"
     ]
-    for selector in ("= /api/trpc", "^~ /api/trpc/", "= /api/chat/media/upload"):
+    for selector, method in (
+        ("= /api/trpc", "POST"),
+        ("^~ /api/trpc/", "POST"),
+        ("= /api/chat/media/upload", "POST"),
+        ("~* ^/api/profile/photo/?$", "POST"),
+        ("~* ^/api/profile/photo/[^/]+/?$", "DELETE"),
+    ):
         blocks.append(f"{indent}location {selector} {{\n")
-        blocks.append(f"{indent}    if ($request_method = POST) {{\n")
+        blocks.append(f"{indent}    if ($request_method = {method}) {{\n")
         blocks.append(f'{indent}        add_header X-Phone11-Maintenance-Fence "{attestation}" always;\n')
         blocks.append(f'{indent}        add_header X-Phone11-Maintenance-Config "{contract_sha256}" always;\n')
         blocks.append(f'{indent}        add_header X-Phone11-Maintenance-Worker "$pid" always;\n')
@@ -444,15 +453,41 @@ class Controller:
         fence = f"{operation_id}:{expires_ms}:{generation_id}"
         expected_workers = {str(item) for item in workers}
         guarded(bool(expected_workers), "https_probe")
-        for path in ("/api/trpc", "/api/trpc/example", "/api/chat/media/upload"):
+        for method, path in (
+            ("POST", "/api/trpc"),
+            ("POST", "/api/trpc/example"),
+            ("POST", "/api/trpc/a,b"),
+            ("POST", "/api/chat/media/upload"),
+            ("POST", "/api/profile/photo"),
+            ("POST", "/api/profile/photo/"),
+            ("POST", "/API/PROFILE/PHOTO"),
+            ("POST", "/API/PROFILE/PHOTO/"),
+            ("DELETE", "/api/profile/photo/10"),
+            ("DELETE", "/API/PROFILE/PHOTO/10/"),
+            # The handler coerces the route parameter with Number(), so spellings
+            # such as +10 also reach a valid positive tenant id.
+            ("DELETE", "/api/profile/photo/+10"),
+            ("DELETE", "/api/profile/photo/10/"),
+        ):
             for _ in range(3):
-                status, headers = self.system.request("POST", path)
+                status, headers = self.system.request(method, path)
                 guarded(status == 503 and headers.get(FENCE_HEADER) == fence
                         and headers.get(CONFIG_HEADER) == contract_sha
                         and headers.get(WORKER_HEADER) in expected_workers, "https_probe")
-        status, headers = self.system.request("GET", "/api/trpc")
-        guarded(headers.get(FENCE_HEADER) is None and headers.get(CONFIG_HEADER) is None
-                and headers.get(WORKER_HEADER) is None, "https_probe")
+        for method, path in (
+            ("GET", "/api/trpc"),
+            ("GET", "/api/profile/photo"),
+            ("GET", "/api/profile/photo/"),
+            ("GET", "/API/PROFILE/PHOTO/"),
+            ("DELETE", "/api/profile/photo"),
+            ("POST", "/api/profile/photo/10"),
+            ("POST", "/api/profile/photo/10/"),
+            ("GET", "/api/profile/photo/10/20?v=11111111-1111-4111-8111-111111111111"),
+            ("GET", "/API/PROFILE/PHOTO/10/20?v=11111111-1111-4111-8111-111111111111"),
+        ):
+            _status, headers = self.system.request(method, path)
+            guarded(headers.get(FENCE_HEADER) is None and headers.get(CONFIG_HEADER) is None
+                    and headers.get(WORKER_HEADER) is None, "https_probe")
 
     def _probe_released(self) -> None:
         _status, headers = self.system.request("POST", "/api/trpc")
