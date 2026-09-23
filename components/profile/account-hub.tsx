@@ -69,10 +69,13 @@ type AccountHubProps = {
   isPreview?: boolean;
   workspaceId?: number;
   profilePhotoAvailable?: boolean;
+  profilePhotoChecking?: boolean;
+  profilePhotoCheckError?: boolean;
   profilePhotoSaving?: boolean;
   profilePhotoError?: string | null;
   onChangeProfilePhoto?: (source: "camera" | "library") => Promise<boolean>;
   onRemoveProfilePhoto?: () => Promise<unknown>;
+  onRetryProfilePhoto?: () => Promise<unknown>;
 };
 
 function MenuRow({ icon, title, detail, onPress, last = false }: { icon: IconName; title: string; detail: string; onPress: () => void; last?: boolean }) {
@@ -174,14 +177,14 @@ function AccountDetails({ identity, phone, visible, onClose }: { identity: Accou
 }
 
 /** Shows auth-owned identity and server-persisted workspace preferences. */
-export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto }: AccountHubProps) {
+export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
   const colors = useColors();
   const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "photo" | "details" | null>(null);
   const [dndDuration, setDndDuration] = useState<DndDurationMinutes>(60);
   const name = identity?.name?.trim() || "Your work account";
   const email = identity?.email?.trim() || "Sign in to view your account";
   const profile = profileAvailable && workspaceProfile && onUpdateWorkspaceProfile ? workspaceProfile : undefined;
-  const canChangePhoto = !!profile && profilePhotoAvailable && !!onChangeProfilePhoto && !!onRemoveProfilePhoto;
+  const canChangePhoto = !!identity && !!profile && profilePhotoAvailable && !!onChangeProfilePhoto && !!onRemoveProfilePhoto;
   const save = (update: WorkspaceProfileUpdate) => {
     if (!onUpdateWorkspaceProfile) return;
     void onUpdateWorkspaceProfile(update);
@@ -216,9 +219,9 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       {isPreview && <Text style={[styles.preview, { color: colors.muted }]}>Preview only — changes stay in this browser</Text>}
       <View style={styles.identityBlock}>
-        {canChangePhoto ? <Pressable accessibilityRole="button" accessibilityLabel="Change profile photo" disabled={profilePhotoSaving} onPress={() => setSheet("photo")} style={styles.avatarButton}>
+        {identity && <Pressable accessibilityRole="button" accessibilityLabel="Change profile photo" accessibilityHint="Opens profile photo options" disabled={profilePhotoSaving} onPress={() => setSheet("photo")} style={styles.avatarButton}>
           <ProfileAvatar name={identity?.name} photoUrl={profile?.photoUrl} photoVersion={profile?.photoVersion} tenantId={workspaceId} userId={profile?.userId} size={88} accessibilityLabel="Profile photo" />
-        </Pressable> : <ProfileAvatar name={identity?.name} photoUrl={profile?.photoUrl} photoVersion={profile?.photoVersion} tenantId={workspaceId} userId={profile?.userId} size={88} accessibilityLabel="Profile photo" />}
+        </Pressable>}
         <Text style={[styles.name, { color: colors.foreground }]}>{name}</Text>
         <Text numberOfLines={1} style={[styles.email, { color: colors.muted }]}>{email}</Text>
         {phone && <Text style={[styles.extension, { color: colors.muted }]}>Extension {phone.extension}</Text>}
@@ -259,16 +262,21 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
           <SheetChoice label="Turn off" detail="Do not share a work location" selected={profile.workLocation === null} disabled={profileSaving} onPress={() => save({ workLocation: null })} />
         </View>
       </Sheet>
-      <Sheet visible={sheet === "photo" && canChangePhoto} title="Profile photo" onClose={() => setSheet(null)}>
-        <View style={styles.sheetList}>
-          <Text style={[styles.sheetDescription, { color: colors.muted }]}>Your photo is visible to active people in {workspaceName || "this workspace"}.</Text>
-          <SheetChoice label="Take photo" detail="Use your camera" disabled={profilePhotoSaving} onPress={() => void changePhoto("camera")} />
-          <SheetChoice label="Choose photo" detail="Open your photo library" disabled={profilePhotoSaving} onPress={() => void changePhoto("library")} />
-          {profile.photoUrl && <SheetChoice label="Remove photo" detail="Show your initials instead" disabled={profilePhotoSaving} onPress={() => void removePhoto()} />}
-          {profilePhotoError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profilePhotoError}</Text>}
-        </View>
-      </Sheet>
     </>}
+    <Sheet visible={sheet === "photo"} title="Profile photo" onClose={() => setSheet(null)}>
+      {canChangePhoto && profile ? <View style={styles.sheetList}>
+        <Text style={[styles.sheetDescription, { color: colors.muted }]}>Your photo is visible to active people in {workspaceName || "this workspace"}.</Text>
+        <SheetChoice label="Take photo" detail="Use your camera" disabled={profilePhotoSaving} onPress={() => void changePhoto("camera")} />
+        <SheetChoice label="Choose photo" detail="Open your photo library" disabled={profilePhotoSaving} onPress={() => void changePhoto("library")} />
+        {profile.photoUrl && <SheetChoice label="Remove photo" detail="Show your initials instead" disabled={profilePhotoSaving} onPress={() => void removePhoto()} />}
+        {profilePhotoError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profilePhotoError}</Text>}
+      </View> : <View style={styles.sheetList}>
+        <Text accessibilityRole={profilePhotoCheckError ? "alert" : undefined} style={[styles.sheetDescription, { color: profilePhotoCheckError ? colors.error : colors.muted }]}>
+          {profilePhotoChecking ? "Checking profile photo settings…" : profilePhotoCheckError ? "Could not check profile photo settings." : !workspaceId ? "Load your work workspace to manage your profile photo." : "Profile photo changes are unavailable for this workspace."}
+        </Text>
+        {onRetryProfilePhoto && <SheetChoice label="Retry" detail="Check again" onPress={() => { void onRetryProfilePhoto().catch(() => { /* The scoped state below explains the retry failure. */ }); }} />}
+      </View>}
+    </Sheet>
     <AccountDetails identity={identity} phone={phone} visible={sheet === "details"} onClose={() => setSheet(null)} />
   </View>;
 }

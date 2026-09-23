@@ -11,6 +11,8 @@ const m = vi.hoisted(() => ({
   mutation: null as any,
   queryInputs: [] as any[],
   queryOptions: [] as any[],
+  photoQuery: null as any,
+  loadChannels: vi.fn(),
   hub: null as any,
   frame: { values: [] as any[], index: 0 },
 }));
@@ -23,7 +25,7 @@ vi.mock("react", async () => {
   };
 });
 vi.mock("../lib/trpc", () => ({ trpc: { profile: {
-  photoCapability: { useQuery: (_input: any, _options: any) => ({ data: { available: false } }) },
+  photoCapability: { useQuery: (_input: any, _options: any) => m.photoQuery },
   self: { useQuery: (input: any, options: any) => { m.queryInputs.push(input); m.queryOptions.push(options); return m.query; } },
   update: { useMutation: () => m.mutation },
 } } }));
@@ -46,9 +48,11 @@ const useRenderedWorkspaceProfile = (user = m.owner, tenantId = m.chat?.workspac
 
 beforeEach(() => {
   vi.clearAllMocks();
-  m.owner = owner(1); m.chat = { userId: 1, workspace: { id: 20, name: "Selected work" } };
+  m.owner = owner(1); m.chat = { userId: 1, workspace: { id: 20, name: "Selected work" }, loading: false, error: null, loadChannels: m.loadChannels };
   m.sip = { ownerUserId: 1, tenantId: 10, username: "3001" };
   m.queryInputs = []; m.queryOptions = []; m.hub = null; m.frame = { values: [], index: 0 };
+  m.loadChannels.mockResolvedValue(undefined);
+  m.photoQuery = { data: { available: false }, isLoading: false, error: null, refetch: vi.fn().mockResolvedValue({ data: { available: false } }) };
   m.query = { data: { userId: 1 }, isSuccess: true, isLoading: false, error: null, refetch: vi.fn().mockResolvedValue({ data: { userId: 1 } }) };
   m.mutation = { mutateAsync: vi.fn().mockResolvedValue({ userId: 1 }) };
 });
@@ -60,12 +64,22 @@ it("uses the authenticated selected Team Chat workspace instead of the SIP tenan
   renderToStaticMarkup(createElement(ProfileScreen));
   expect(m.queryInputs.at(-1)).toEqual({ tenantId: 20 });
   expect(m.hub).toMatchObject({ workspaceName: "Selected work", phone: { extension: "3001" } });
-  m.chat = { userId: 2, workspace: { id: 30, name: "Another owner" } }; m.frame = { values: [], index: 0 };
+  m.chat = { userId: 2, workspace: { id: 30, name: "Another owner" }, loading: false, error: null, loadChannels: m.loadChannels }; m.frame = { values: [], index: 0 };
   renderToStaticMarkup(createElement(ProfileScreen));
   expect(m.queryInputs.at(-1)).toEqual({ tenantId: 0 });
   expect(m.queryOptions.at(-1).enabled).toBe(false);
   expect(m.hub.workspaceName).toBeUndefined();
   expect(m.hub.profileAvailable).toBe(false);
+});
+
+it("hydrates the selected Team Chat workspace when My Profile opens first, with explicit retry", async () => {
+  m.chat = { userId: 1, workspace: null, loading: false, error: null, loadChannels: m.loadChannels };
+  renderToStaticMarkup(createElement(ProfileScreen));
+  expect(m.loadChannels).toHaveBeenCalledOnce();
+  expect(m.queryOptions.at(-1).enabled).toBe(false);
+  expect(m.hub).toMatchObject({ profilePhotoChecking: false, profilePhotoCheckError: false });
+  await m.hub.onRetryProfilePhoto();
+  expect(m.loadChannels).toHaveBeenCalledTimes(2);
 });
 
 it("suppresses stale save, refetch, error, and rendered data after owner and workspace changes", async () => {

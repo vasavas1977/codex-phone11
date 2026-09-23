@@ -55,9 +55,15 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
     profile: ownedProfile,
     profileAvailable: !!ownedProfile && profile.isSuccess,
     loading: enabled && profile.isLoading,
+    loadError: !!(profile.error || photoCapability.error),
+    photoCapabilityLoading: enabled && photoCapability.isLoading,
     saving: currentSave && saveState.pending,
     error: currentSave ? saveState.error : null,
     photoAvailable: !!ownedProfile && photoCapability.data?.available === true,
+    async refetchPhotoSettings() {
+      if (!enabled || !owner || !tenantId) return;
+      await Promise.all([profile.refetch(), photoCapability.refetch()]);
+    },
     photoSaving: currentPhotoSave && photoSaveState.pending,
     photoError: currentPhotoSave ? photoSaveState.error : null,
     async save(patch: WorkspaceProfileUpdate) {

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { AccountHub } from "@/components/profile/account-hub";
@@ -33,6 +34,18 @@ export default function ProfileScreen() {
   const workspace = user && chat.userId === user.id ? chat.workspace : null;
   const workspaceProfile = useWorkspaceProfile(user, workspace?.id);
   useProfilePhotoCacheScope(workspace?.id);
+  const hydratedOwner = useRef<number | null>(null);
+  useEffect(() => {
+    if (!user) {
+      hydratedOwner.current = null;
+      return;
+    }
+    if (chat.userId !== user.id || chat.workspace || hydratedOwner.current === user.id) return;
+    // Settings → My profile can open before Team Chat has loaded the user's
+    // selected workspace. Resolve it once per owner; Retry remains explicit.
+    hydratedOwner.current = user.id;
+    void chat.loadChannels().catch(() => { /* The profile sheet exposes a retry action. */ });
+  }, [chat.loadChannels, chat.userId, chat.workspace, user?.id]);
   const changePhoto = async (source: PhotoSource): Promise<boolean> => {
     if (!workspaceProfile.photoAvailable) return false;
     const picker = await import("expo-image-picker");
@@ -81,6 +94,15 @@ export default function ProfileScreen() {
     await workspaceProfile.uploadPhoto(upload);
     return true;
   };
+  const retryPhotoSetup = async () => {
+    if (!user) return;
+    const state = useChatStore.getState();
+    if (state.userId !== user.id || !state.workspace) {
+      await state.loadChannels();
+      return;
+    }
+    await workspaceProfile.refetchPhotoSettings();
+  };
 
   return (
     <ScreenContainer edges={["top", "left", "right", "bottom"]}>
@@ -98,6 +120,10 @@ export default function ProfileScreen() {
         onUpdateWorkspaceProfile={workspaceProfile.save}
         workspaceId={workspace?.id}
         profilePhotoAvailable={workspaceProfile.photoAvailable}
+        profilePhotoChecking={workspace
+          ? workspaceProfile.loading || workspaceProfile.photoCapabilityLoading
+          : !!user && chat.userId === user.id && chat.loading}
+        profilePhotoCheckError={workspaceProfile.loadError || (!workspace && !!chat.error)}
         profilePhotoSaving={workspaceProfile.photoSaving}
         profilePhotoError={
           workspaceProfile.photoError instanceof Error
@@ -108,6 +134,7 @@ export default function ProfileScreen() {
         }
         onChangeProfilePhoto={changePhoto}
         onRemoveProfilePhoto={workspaceProfile.removePhoto}
+        onRetryProfilePhoto={retryPhotoSetup}
       />
     </ScreenContainer>
   );

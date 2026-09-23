@@ -9,7 +9,7 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/serve
 vi.mock("react-native", () => ({
   KeyboardAvoidingView: ({ children, behavior: _behavior, style: _style, ...props }: any) => createElement("div", props, children),
   Platform: { OS: "web" },
-  Pressable: ({ children, accessibilityLabel, style: _style, accessibilityRole: _role, accessibilityState: _state, ...props }: any) => createElement("button", { "aria-label": accessibilityLabel, ...props }, children),
+  Pressable: ({ children, accessibilityLabel, accessibilityHint: _hint, style: _style, accessibilityRole: _role, accessibilityState: _state, testID: _testID, ...props }: any) => createElement("button", { "aria-label": accessibilityLabel, ...props }, children),
   Modal: ({ children, visible }: any) => visible ? createElement("section", null, children) : null,
   ScrollView: ({ children, contentContainerStyle: _contentStyle, style: _style, keyboardShouldPersistTaps: _keyboard, ...props }: any) => createElement("main", props, children),
   StyleSheet: { create: (styles: unknown) => styles, hairlineWidth: 1 },
@@ -47,9 +47,20 @@ it("renders only authenticated account and provisioned extension data", () => {
   expect(html).toContain("Nathasa W.");
   expect(html).toContain("nathasa@phone11.ai");
   expect(html).toContain("Extension 3001");
+  expect(html).toContain('aria-label="Change profile photo"');
   expect(html).toContain("Workspace status will be available after your company updates this app.");
   expect(html).toContain("Settings");
   expect(html).not.toMatch(/Personal meeting|QR code/i);
+});
+
+it("keeps the authenticated avatar tappable while profile photo capability is unavailable", () => {
+  const html = renderToStaticMarkup(createElement(AccountHub, {
+    identity: { name: "Nathasa W.", email: "nathasa@phone11.ai" }, phone: null,
+    onBack: vi.fn(), onOpenSettings: vi.fn(), profilePhotoAvailable: false,
+  }));
+  expect(html).toContain('<button aria-label="Change profile photo"');
+  expect(html).not.toContain("Take photo");
+  expect(html).not.toContain("Choose photo");
 });
 
 it("renders persisted status summaries as a compact account menu", () => {
