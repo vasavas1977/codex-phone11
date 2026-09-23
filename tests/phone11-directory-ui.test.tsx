@@ -7,6 +7,9 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
 const mocks = vi.hoisted(() => ({
   width: 390,
   source: "device" as "device" | "team",
+  selectedId: undefined as number | undefined,
+  wideHarness: false,
+  undefinedStateIndex: 0,
   device: {} as any,
   settings: vi.fn(async () => {}),
   account: { ownerUserId: 1, tenantId: 1, enabled: true } as any,
@@ -18,20 +21,27 @@ const mocks = vi.hoisted(() => ({
   push: vi.fn(),
   alert: vi.fn(),
   directoryCalls: [] as unknown[][],
+  avatars: [] as any[],
 }));
 vi.mock("react", async (original) => {
   const actual = await original<typeof import("react")>();
   return {
     ...actual,
-    useState: (initial: unknown) =>
-      initial === "device"
+    useState: (initial: unknown) => {
+      if (mocks.wideHarness && initial === undefined) {
+        const index = mocks.undefinedStateIndex++;
+        if (index === 0) return [mocks.selectedId, (next: number) => { mocks.selectedId = next; }];
+        if (index === 1) return [undefined, vi.fn()];
+      }
+      return initial === "device"
         ? [
             mocks.source,
             (next: "device" | "team") => {
               mocks.source = next;
             },
           ]
-        : actual.useState(initial),
+        : actual.useState(initial);
+    },
   };
 });
 vi.mock("../hooks/use-device-contacts", () => ({
@@ -80,6 +90,16 @@ vi.mock("../components/screen-container", () => ({
   ScreenContainer: ({ children }: any) => createElement("main", null, children),
 }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("expo-image", () => ({ Image: () => null }));
+vi.mock("../components/profile/profile-avatar", () => ({
+  ProfileAvatar: (props: any) => {
+    mocks.avatars.push(props);
+    return createElement("span", null, "Avatar");
+  },
+  useProfilePhotoCacheScope: () => {},
+}));
+vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ photoDescriptor: null }) }));
+vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: { id: 1 } }) }));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
     primary: "#008877",
@@ -89,6 +109,7 @@ vi.mock("../hooks/use-colors", () => ({
   }),
 }));
 vi.mock("../hooks/use-directory", () => ({
+  useDirectoryFocusRefresh: vi.fn(),
   useDirectory: (...args: unknown[]) => {
     mocks.directoryCalls.push(args);
     return mocks.directory;
@@ -109,11 +130,17 @@ vi.mock("../lib/_core/auth", () => ({
 }));
 import ContactsScreen from "../app/(tabs)/contacts";
 import ContactDetailScreen from "../app/contacts/[id]";
+import { ContactDetails } from "../components/contact-details";
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.press.clear();
   mocks.directoryCalls = [];
+  mocks.avatars = [];
+  mocks.width = 390;
   mocks.source = "device";
+  mocks.selectedId = undefined;
+  mocks.wideHarness = false;
+  mocks.undefinedStateIndex = 0;
   mocks.device = {
     permission: "unknown",
     people: [],
@@ -134,6 +161,36 @@ beforeEach(() => {
     error: null,
     reload: vi.fn(),
   };
+});
+it("embedded details follow the parent directory photo without a second directory fetch", () => {
+  mocks.directory.people[0].photoUrl = "/api/profile/photo/1/5?v=old";
+  renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded directorySnapshot={mocks.directory} />);
+  expect(mocks.directoryCalls.at(-1)).toEqual([1, false]);
+  expect(mocks.avatars.at(-1).photoUrl).toBe("/api/profile/photo/1/5?v=old");
+
+  mocks.directory.people = [{ ...mocks.directory.people[0], photoUrl: "/api/profile/photo/1/5?v=new" }];
+  renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded directorySnapshot={mocks.directory} />);
+  expect(mocks.directoryCalls.at(-1)).toEqual([1, false]);
+  expect(mocks.avatars.at(-1).photoUrl).toBe("/api/profile/photo/1/5?v=new");
+});
+it("wide Contacts passes its refreshed directory to the embedded detail", () => {
+  mocks.width = 1000;
+  mocks.wideHarness = true;
+  mocks.source = "team";
+  mocks.directory.people[0].photoUrl = "/api/profile/photo/1/5?v=old";
+  mocks.undefinedStateIndex = 0;
+  renderToStaticMarkup(<ContactsScreen />);
+  mocks.press.get("Open contact สมชาย")!();
+  mocks.undefinedStateIndex = 0;
+  renderToStaticMarkup(<ContactsScreen />);
+  expect(mocks.directoryCalls.at(-1)).toEqual([1, false]);
+  expect(mocks.avatars.at(-1).photoUrl).toBe("/api/profile/photo/1/5?v=old");
+
+  mocks.directory.people = [{ ...mocks.directory.people[0], photoUrl: "/api/profile/photo/1/5?v=new" }];
+  mocks.undefinedStateIndex = 0;
+  renderToStaticMarkup(<ContactsScreen />);
+  expect(mocks.directoryCalls.at(-1)).toEqual([1, false]);
+  expect(mocks.avatars.at(-1).photoUrl).toBe("/api/profile/photo/1/5?v=new");
 });
 function selectTeam() {
   renderToStaticMarkup(<ContactsScreen />);

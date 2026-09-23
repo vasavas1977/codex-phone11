@@ -9,12 +9,18 @@ import {
 } from "./photo-client";
 import type { ProfilePhotoUpload } from "./photo-client";
 import type { ProfilePhotoDescriptor } from "./photo-client";
-import { loadLocalPhotoDescriptor, saveLocalPhotoDescriptor, validLocalPhotoDescriptor } from "./local-photo-descriptor";
+import {
+  confirmPhotoDescriptor,
+  getConfirmedPhotoDescriptor,
+  loadLocalPhotoDescriptor,
+  saveLocalPhotoDescriptor,
+  subscribeConfirmedPhotoDescriptor,
+} from "./local-photo-descriptor";
 
 type ProfileScope = { owner: User; tenantId: number };
 type SaveState = ProfileScope & { pending: boolean; error: unknown | null };
 type PhotoSaveState = { scope: ProfileScope; requestId: number; pending: boolean; error: unknown | null };
-type ScopedPhoto = { ownerId: number; tenantId: number; descriptor: ProfilePhotoDescriptor; savedAt: number };
+type ScopedPhoto = { scope: ProfileScope; descriptor: ProfilePhotoDescriptor; savedAt: number };
 
 /** The owner is a local lifecycle guard only; the server still derives self from auth. */
 export function useWorkspaceProfile(owner: User | null | undefined, tenantId: number | undefined) {
@@ -43,6 +49,7 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
   const [localPhoto, setLocalPhoto] = useState<ScopedPhoto | null>(null);
   const localPhotoGeneration = useRef(0);
   const photoRequestId = useRef(0);
+  const activeScope = scope.current;
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; scope.current = null; };
@@ -50,14 +57,26 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
   useEffect(() => {
     let active = true;
     const generation = ++localPhotoGeneration.current;
-    if (enabled && owner && tenantId) {
-      void loadLocalPhotoDescriptor(owner.id, tenantId).then((stored) => {
+    const action = activeScope;
+    if (action) {
+      const { owner: scopedOwner, tenantId: scopedTenantId } = action;
+      const receive = (ownerId: number, changedTenantId: number, stored: { descriptor: ProfilePhotoDescriptor; savedAt: number }) => {
+        if (active && scope.current === action && scopedOwner.id === ownerId && scopedTenantId === changedTenantId) {
+          localPhotoGeneration.current += 1;
+          setLocalPhoto({ scope: action, ...stored });
+        }
+      };
+      const unsubscribe = subscribeConfirmedPhotoDescriptor(receive);
+      const confirmed = getConfirmedPhotoDescriptor(scopedOwner.id, scopedTenantId);
+      if (confirmed) receive(scopedOwner.id, scopedTenantId, confirmed);
+      void loadLocalPhotoDescriptor(scopedOwner.id, scopedTenantId).then((stored) => {
         if (active && generation === localPhotoGeneration.current && stored)
-          setLocalPhoto({ ownerId: owner.id, tenantId, ...stored });
+          setLocalPhoto({ scope: action, ...stored });
       });
+      return () => { active = false; unsubscribe(); };
     }
     return () => { active = false; };
-  }, [enabled, owner?.id, tenantId]);
+  }, [activeScope]);
   const isCurrent = (action: ProfileScope) => {
     const auth = getAuthSnapshot();
     const chat = useChatStore.getState();
@@ -68,7 +87,7 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
   const currentPhotoSave = !!photoSaveState && enabled && photoSaveState.scope === scope.current;
   const ownedProfile = enabled && profile.data?.userId === owner!.id
     ? profile.data as WorkspaceProfileStatus : undefined;
-  const scopedLocalPhoto = enabled && localPhoto?.ownerId === owner!.id && localPhoto.tenantId === tenantId
+  const scopedLocalPhoto = enabled && localPhoto?.scope === scope.current
     ? localPhoto : null;
   const statusPhoto: ProfilePhotoDescriptor | null = ownedProfile && ownedProfile.photoUrl !== undefined
     ? { userId: ownedProfile.userId, photoUrl: ownedProfile.photoUrl ?? null, photoVersion: ownedProfile.photoVersion ?? null }
@@ -124,11 +143,8 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
       try {
         const result = await uploadWorkspaceProfilePhoto(action.tenantId, input);
         if (!isCurrent(action)) { settlePhoto(requestId, null); return result; }
-        if (!validLocalPhotoDescriptor(result, action.owner.id, action.tenantId))
-          throw new Error("Phone11 returned an unexpected photo response.");
-        localPhotoGeneration.current += 1;
         const savedAt = Date.now();
-        setLocalPhoto({ ownerId: action.owner.id, tenantId: action.tenantId, descriptor: result, savedAt });
+        confirmPhotoDescriptor(action.owner.id, action.tenantId, result, savedAt);
         try { await saveLocalPhotoDescriptor(action.owner.id, action.tenantId, result, savedAt); }
         catch { /* The server accepted the photo; keep this session's descriptor. */ }
         settlePhoto(requestId, null);
@@ -146,11 +162,8 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
       try {
         const result = await removeWorkspaceProfilePhoto(action.tenantId);
         if (!isCurrent(action)) { settlePhoto(requestId, null); return result; }
-        if (!validLocalPhotoDescriptor(result, action.owner.id, action.tenantId))
-          throw new Error("Phone11 returned an unexpected photo response.");
-        localPhotoGeneration.current += 1;
         const savedAt = Date.now();
-        setLocalPhoto({ ownerId: action.owner.id, tenantId: action.tenantId, descriptor: result, savedAt });
+        confirmPhotoDescriptor(action.owner.id, action.tenantId, result, savedAt);
         try { await saveLocalPhotoDescriptor(action.owner.id, action.tenantId, result, savedAt); }
         catch { /* The server removed the photo; keep this session's result. */ }
         settlePhoto(requestId, null);

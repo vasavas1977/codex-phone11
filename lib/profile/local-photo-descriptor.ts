@@ -6,6 +6,9 @@ const prefix = "phone11.profile.photo.v1:user:";
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ownerOperations = new Map<number, Promise<void>>();
 export type StoredPhotoDescriptor = { descriptor: ProfilePhotoDescriptor; savedAt: number };
+type PhotoListener = (ownerId: number, tenantId: number, stored: StoredPhotoDescriptor) => void;
+const confirmedPhotos = new Map<string, StoredPhotoDescriptor>();
+const photoListeners = new Set<PhotoListener>();
 
 function enqueueOwnerOperation(ownerId: number, operation: () => Promise<void>): Promise<void> {
   const pending = (ownerOperations.get(ownerId) ?? Promise.resolve()).catch(() => undefined).then(operation);
@@ -16,6 +19,30 @@ function enqueueOwnerOperation(ownerId: number, operation: () => Promise<void>):
 
 function storageKey(ownerId: number, tenantId: number): string {
   return `${prefix}${ownerId}:tenant:${tenantId}`;
+}
+
+export function getConfirmedPhotoDescriptor(ownerId: number, tenantId: number): StoredPhotoDescriptor | null {
+  if (getAuthSnapshot().user?.id !== ownerId) return null;
+  return confirmedPhotos.get(storageKey(ownerId, tenantId)) ?? null;
+}
+
+export function subscribeConfirmedPhotoDescriptor(listener: PhotoListener): () => void {
+  photoListeners.add(listener);
+  return () => { photoListeners.delete(listener); };
+}
+
+/** Broadcast only a server-confirmed result; persistence is best effort. */
+export function confirmPhotoDescriptor(
+  ownerId: number, tenantId: number, descriptor: ProfilePhotoDescriptor, savedAt = Date.now(),
+): StoredPhotoDescriptor {
+  if (!validLocalPhotoDescriptor(descriptor, ownerId, tenantId))
+    throw new Error("Phone11 returned an unexpected photo response.");
+  if (!Number.isSafeInteger(savedAt) || savedAt <= 0) throw new Error("Invalid profile photo timestamp.");
+  if (getAuthSnapshot().user?.id !== ownerId) throw new Error("Select an active workspace first.");
+  const stored = { descriptor, savedAt };
+  confirmedPhotos.set(storageKey(ownerId, tenantId), stored);
+  photoListeners.forEach((listener) => listener(ownerId, tenantId, stored));
+  return stored;
 }
 
 /** The cached value is only a private, server-issued pointer; the image still requires auth. */
@@ -40,7 +67,13 @@ export async function loadLocalPhotoDescriptor(
   tenantId: number,
 ): Promise<StoredPhotoDescriptor | null> {
   try {
+    const confirmed = getConfirmedPhotoDescriptor(ownerId, tenantId);
+    if (confirmed) return confirmed;
+    // A new hook must not read storage while an earlier save or logout clear is pending.
+    await ownerOperations.get(ownerId)?.catch(() => undefined);
     const raw = await AsyncStorage.getItem(storageKey(ownerId, tenantId));
+    const latest = getConfirmedPhotoDescriptor(ownerId, tenantId);
+    if (latest) return latest;
     if (!raw) return null;
     const value: unknown = JSON.parse(raw);
     if (getAuthSnapshot().user?.id !== ownerId || !value || typeof value !== "object") return null;
@@ -83,7 +116,10 @@ function clearOwnerPhotoDescriptors(ownerId: number): Promise<void> {
 let previousOwnerId = getAuthSnapshot().user?.id ?? null;
 addAuthChangeListener(() => {
   const nextOwnerId = getAuthSnapshot().user?.id ?? null;
-  if (previousOwnerId !== null && nextOwnerId !== previousOwnerId)
+  if (previousOwnerId !== null && nextOwnerId !== previousOwnerId) {
+    const ownerPrefix = `${prefix}${previousOwnerId}:tenant:`;
+    for (const key of confirmedPhotos.keys()) if (key.startsWith(ownerPrefix)) confirmedPhotos.delete(key);
     void clearOwnerPhotoDescriptors(previousOwnerId);
+  }
   previousOwnerId = nextOwnerId;
 });

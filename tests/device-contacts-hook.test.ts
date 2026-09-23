@@ -7,6 +7,7 @@ const m = vi.hoisted(() => ({
   getPermission: vi.fn(),
   requestPermission: vi.fn(),
   read: vi.fn(),
+  clearNativeCache: vi.fn(),
 }));
 vi.mock("react", () => ({
   useEffect: (effect: () => void | (() => void)) => {
@@ -33,7 +34,11 @@ vi.mock("expo-contacts", () => ({
   getPermissionsAsync: m.getPermission,
   requestPermissionsAsync: m.requestPermission,
   getContactsAsync: m.read,
-  Fields: { PhoneNumbers: "phoneNumbers" },
+  Fields: { PhoneNumbers: "phoneNumbers", Image: "image" },
+}));
+vi.mock("expo-file-system/legacy", () => ({
+  cacheDirectory: "file:///private/app/Library/Caches/",
+  deleteAsync: m.clearNativeCache,
 }));
 import { useDeviceContacts } from "../hooks/use-device-contacts";
 const granted = { granted: true, status: "granted", accessPrivileges: "all" };
@@ -44,7 +49,7 @@ const unknown = {
 };
 const page = {
   data: [
-    { id: "1", name: "Local friend", phoneNumbers: [{ number: "0825826667" }] },
+    { id: "1", name: "Local friend", image: { uri: "content://contacts/photo/1" }, phoneNumbers: [{ number: "0825826667" }] },
   ],
   hasNextPage: false,
 };
@@ -68,6 +73,7 @@ beforeEach(() => {
   m.getPermission.mockResolvedValue(granted);
   m.requestPermission.mockResolvedValue(granted);
   m.read.mockResolvedValue(page);
+  m.clearNativeCache.mockResolvedValue(undefined);
 });
 afterEach(() => {
   cleanups.splice(0).forEach((off) => off());
@@ -84,9 +90,14 @@ it("does no contacts work on a PushKit background mount or background refresh; r
   await settle();
   expect(m.read).toHaveBeenCalledOnce();
   expect(m.snapshot!().people[0].name).toBe("Local friend");
+  expect(m.read.mock.calls[0][0].fields).toEqual(["phoneNumbers", "image"]);
+  expect(m.snapshot!().people[0].imageUri).toBe("content://contacts/photo/1");
   expect(m.requestPermission).not.toHaveBeenCalled();
   state("background");
   expect(m.snapshot!().people).toEqual([]);
+  await vi.waitFor(() => expect(m.clearNativeCache).toHaveBeenCalledWith(
+    "file:///private/app/Library/Caches/Contacts", { idempotent: true },
+  ));
 });
 it("a permission prompt may suspend the app; its late result cannot repopulate contacts until a fresh active read", async () => {
   m.active = "active";

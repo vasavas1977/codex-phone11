@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as { renderToStaticMarkup(node: ReactNode): string };
 const m = vi.hoisted(() => ({
   owner: null as any,
+  authListeners: [] as Array<() => void>,
   chat: null as any,
   sip: null as any,
   query: null as any,
@@ -45,7 +46,10 @@ vi.mock("../lib/trpc", () => ({ trpc: { profile: {
   self: { useQuery: (input: any, options: any) => { m.queryInputs.push(input); m.queryOptions.push(options); return m.query; } },
   update: { useMutation: () => m.mutation },
 } } }));
-vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.owner, loading: false }), addAuthChangeListener: () => () => {} }));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: m.owner, loading: false }),
+  addAuthChangeListener: (listener: () => void) => { m.authListeners.push(listener); return () => {}; },
+}));
 vi.mock("../lib/profile/photo-client", () => ({
   isSupportedMime: (mime: string) => mime === "image/jpeg" || mime === "image/png" || mime === "image/webp",
   uploadWorkspaceProfilePhoto: (...args: any[]) => m.uploadPhoto(...args),
@@ -76,6 +80,7 @@ vi.mock("expo-router", () => ({ router: { back: vi.fn(), push: vi.fn() } }));
 
 import ProfileScreen from "../app/profile/index";
 import { useWorkspaceProfile } from "../lib/profile/use-workspace-profile";
+import { getConfirmedPhotoDescriptor } from "../lib/profile/local-photo-descriptor";
 
 const owner = (id: number) => ({ id, openId: `owner-${id}`, name: `Owner ${id}`, email: `${id}@example.com`, loginMethod: "email", lastSignedIn: new Date(0) });
 const deferred = () => { let resolve!: (value: any) => void, reject!: (error: unknown) => void; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -90,7 +95,10 @@ const renderProfile = () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.owner = null;
+  m.authListeners.forEach((listener) => listener());
   m.owner = owner(1); m.chat = { userId: 1, workspace: { id: 20, name: "Selected work" }, loading: false, error: null, loadChannels: m.loadChannels };
+  m.authListeners.forEach((listener) => listener());
   m.sip = { ownerUserId: 1, tenantId: 10, username: "3001" };
   m.queryInputs = []; m.queryOptions = []; m.hub = null;
   m.frame = { values: [], index: 0, effectIndex: 0, effects: [] };
@@ -102,6 +110,73 @@ beforeEach(() => {
   m.photoQuery = { data: { available: false }, isLoading: false, error: null, refetch: vi.fn().mockResolvedValue({ data: { available: false } }) };
   m.query = { data: { userId: 1 }, isSuccess: true, isLoading: false, error: null, refetch: vi.fn().mockResolvedValue({ data: { userId: 1 } }) };
   m.mutation = { mutateAsync: vi.fn().mockResolvedValue({ userId: 1 }) };
+});
+
+it("broadcasts a confirmed upload and removal to a separately mounted chat hook when storage fails", async () => {
+  m.query = { ...m.query, data: undefined, isSuccess: false, error: new Error("status unavailable") };
+  m.photoStorageFails = true;
+  const profileFrame = m.frame;
+  const photo = {
+    userId: 1,
+    photoUrl: "/api/profile/photo/20/1?v=123e4567-e89b-42d3-a456-426614174000",
+    photoVersion: "123e4567-e89b-42d3-a456-426614174000",
+  };
+  m.uploadPhoto.mockResolvedValue(photo);
+  m.removePhoto.mockResolvedValue({ userId: 1, photoUrl: null, photoVersion: null });
+  const profile = useRenderedWorkspaceProfile();
+  const chatFrame = { values: [], index: 0, effectIndex: 0, effects: [] } as typeof m.frame;
+  m.frame = chatFrame;
+  useRenderedWorkspaceProfile();
+  m.frame = profileFrame;
+  await profile.uploadPhoto({ uri: "file://photo.jpg", mimeType: "image/jpeg" });
+  m.frame = chatFrame;
+  expect(useRenderedWorkspaceProfile().photoDescriptor).toEqual(photo);
+  m.frame = profileFrame;
+  await profile.removePhoto();
+  m.frame = chatFrame;
+  expect(useRenderedWorkspaceProfile().photoDescriptor).toEqual({ userId: 1, photoUrl: null, photoVersion: null });
+  expect(m.query.refetch).not.toHaveBeenCalled();
+});
+
+it("keeps confirmed photos inside their owner and workspace after switches", async () => {
+  m.query = { ...m.query, data: undefined, isSuccess: false };
+  const photo = {
+    userId: 1,
+    photoUrl: "/api/profile/photo/20/1?v=123e4567-e89b-42d3-a456-426614174002",
+    photoVersion: "123e4567-e89b-42d3-a456-426614174002",
+  };
+  m.uploadPhoto.mockResolvedValue(photo);
+  await useRenderedWorkspaceProfile().uploadPhoto({ uri: "file://photo.jpg", mimeType: "image/jpeg" });
+  m.chat = { ...m.chat, workspace: { id: 30, name: "Other work" } };
+  expect(useRenderedWorkspaceProfile(m.owner, 30).photoDescriptor).toBeNull();
+  m.owner = owner(2);
+  m.chat = { userId: 2, workspace: { id: 20, name: "Other owner" } };
+  m.authListeners.forEach((listener) => listener());
+  expect(useRenderedWorkspaceProfile(m.owner, 20).photoDescriptor).toBeNull();
+  expect(getConfirmedPhotoDescriptor(1, 20)).toBeNull();
+});
+
+it("gives a new chat hook the confirmed result while its local write is pending", async () => {
+  m.query = { ...m.query, data: undefined, isSuccess: false, error: new Error("status unavailable") };
+  const write = deferred();
+  const photo = {
+    userId: 1,
+    photoUrl: "/api/profile/photo/20/1?v=123e4567-e89b-42d3-a456-426614174001",
+    photoVersion: "123e4567-e89b-42d3-a456-426614174001",
+  };
+  const storage = await import("@react-native-async-storage/async-storage");
+  vi.mocked(storage.default.setItem).mockImplementationOnce(async () => { await write.promise; });
+  m.uploadPhoto.mockResolvedValue(photo);
+  const request = useRenderedWorkspaceProfile().uploadPhoto({ uri: "file://photo.jpg", mimeType: "image/jpeg" });
+  try {
+    await vi.waitFor(() => expect(getConfirmedPhotoDescriptor(1, 20)?.descriptor).toEqual(photo));
+    m.frame = { values: [], index: 0, effectIndex: 0, effects: [] };
+    useRenderedWorkspaceProfile();
+    expect(useRenderedWorkspaceProfile().photoDescriptor).toEqual(photo);
+  } finally {
+    write.resolve(undefined);
+  }
+  await request;
 });
 
 it("uses the authenticated selected Team Chat workspace instead of the SIP tenant", () => {

@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Image } from "expo-image";
 import {
   ActivityIndicator,
   FlatList,
@@ -14,6 +15,30 @@ import { useColors } from "@/hooks/use-colors";
 import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { usePhoneCall } from "@/hooks/use-phone-call";
 import { filterDeviceContacts } from "@/lib/phone/device-contacts";
+
+export function DeviceContactAvatar({ name, imageUri }: { name: string; imageUri?: string }) {
+  const colors = useColors();
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [imageUri]);
+  return (
+    <View style={[styles.avatar, { backgroundColor: colors.primary + "18", overflow: "hidden" }]}>
+      {imageUri && !failed ? (
+        <Image
+          source={{ uri: imageUri }}
+          cachePolicy="none"
+          recyclingKey={imageUri}
+          contentFit="cover"
+          onError={() => setFailed(true)}
+          style={styles.avatar}
+        />
+      ) : (
+        <Text style={[styles.initial, { color: colors.primary }]}>
+          {Array.from(name)[0]}
+        </Text>
+      )}
+    </View>
+  );
+}
 
 export function DeviceContactsList() {
   const colors = useColors();
@@ -78,16 +103,7 @@ export function DeviceContactsList() {
         keyboardShouldPersistTaps="handled"
         renderItem={({ item }) => (
           <View style={[styles.row, { borderBottomColor: colors.border }]}>
-            <View
-              style={[
-                styles.avatar,
-                { backgroundColor: colors.primary + "18" },
-              ]}
-            >
-              <Text style={[styles.initial, { color: colors.primary }]}>
-                {Array.from(item.name)[0]}
-              </Text>
-            </View>
+            <DeviceContactAvatar name={item.name} imageUri={item.imageUri} />
             <View style={styles.details}>
               <Text
                 style={[styles.name, { color: colors.foreground }]}

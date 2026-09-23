@@ -11,7 +11,7 @@ import {
 import { router } from "expo-router";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { useDirectory, openDirectConversation } from "@/hooks/use-directory";
+import { useDirectory, useDirectoryFocusRefresh, openDirectConversation } from "@/hooks/use-directory";
 import { usePhoneCall } from "@/hooks/use-phone-call";
 import {
   canCallDirectoryContact,
@@ -21,20 +21,54 @@ import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useSipAccountStore } from "@/lib/sip/account-store";
 import { PresenceIndicator } from "@/components/chat/presence-indicator";
 import { usePresencePolling } from "@/lib/chat/presence-store";
+import { useAuth } from "@/hooks/use-auth";
+import { ProfileAvatar, useProfilePhotoCacheScope } from "@/components/profile/profile-avatar";
+import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
+import type { DirectoryContact } from "@/lib/phone/directory";
+
+export function ContactAvatar({ person, ownPhoto, ownerId, tenantId, size }: {
+  person: DirectoryContact;
+  ownPhoto: { userId: number; photoUrl: string | null; photoVersion: string | null } | null;
+  ownerId: number | undefined;
+  tenantId: number | undefined;
+  size: number;
+}) {
+  const currentPhoto = person.id === ownerId && ownPhoto?.userId === ownerId ? ownPhoto : null;
+  return <ProfileAvatar
+    name={person.name}
+    photoUrl={currentPhoto ? currentPhoto.photoUrl : person.photoUrl}
+    photoVersion={currentPhoto ? currentPhoto.photoVersion : undefined}
+    tenantId={tenantId}
+    userId={person.id}
+    size={size}
+    accessibilityLabel={`${person.name} profile photo`}
+  />;
+}
 
 export function ContactDetails({
   id: contactId,
   tenantId: workspaceId,
   embedded = false,
+  directorySnapshot,
 }: {
   id?: string;
   tenantId?: string;
   embedded?: boolean;
+  directorySnapshot?: Pick<ReturnType<typeof useDirectory>, "owner" | "workspace" | "people" | "loading" | "error" | "reload">;
 }) {
   const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
   const id = positiveRouteId(contactId);
   const tenantId = positiveRouteId(workspaceId);
-  const directory = useDirectory(tenantId);
+  const localDirectory = useDirectory(tenantId, !directorySnapshot);
+  const directory = directorySnapshot && directorySnapshot.owner === user?.id &&
+    directorySnapshot.workspace?.id === tenantId
+    ? directorySnapshot : localDirectory;
+  const activeTenant = user?.id === directory.owner ? directory.workspace?.id : undefined;
+  useDirectoryFocusRefresh(directory.owner, activeTenant, !directorySnapshot, directory.reload);
+  const ownPhotoDescriptor = useWorkspaceProfile(user, activeTenant).photoDescriptor;
+  const ownPhoto = ownPhotoDescriptor?.userId === user?.id ? ownPhotoDescriptor : null;
+  useProfilePhotoCacheScope(activeTenant);
   const person =
     id && tenantId
       ? directory.people.find((item) => item.id === id)
@@ -140,16 +174,7 @@ export function ContactDetails({
       ) : (
         <>
           <View style={styles.profile}>
-            <View
-              style={[
-                styles.avatar,
-                { backgroundColor: colors.primary + "20" },
-              ]}
-            >
-              <Text style={[styles.initial, { color: colors.primary }]}>
-                {Array.from(person.name)[0]}
-              </Text>
-            </View>
+            <ContactAvatar person={person} ownPhoto={ownPhoto} ownerId={user?.id} tenantId={activeTenant} size={88} />
             <Text
               accessibilityRole="header"
               style={[styles.name, { color: colors.foreground }]}

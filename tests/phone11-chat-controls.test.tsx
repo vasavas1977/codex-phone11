@@ -14,9 +14,12 @@ vi.mock("../components/chat/channel-meeting-picker", () => ({
     return null;
   },
 }));
-vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: () => null, useProfilePhotoCacheScope: () => {} }));
+vi.mock("../components/profile/profile-avatar", () => ({
+  ProfileAvatar: (props: any) => createElement("span", { "data-photo-url": props.photoUrl ?? "", "data-photo-version": props.photoVersion ?? "", "data-user-id": props.userId }),
+  useProfilePhotoCacheScope: () => {},
+}));
 vi.mock("../hooks/use-directory", () => ({ useDirectory: () => ({ people: [], owner: null }) }));
-vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ profile: undefined }) }));
+vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ profile: undefined, photoDescriptor: mocks.ownPhotoDescriptor }) }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
@@ -27,6 +30,7 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
 const mocks = vi.hoisted(() => ({
   state: {} as any,
   user: { id: 1 },
+  ownPhotoDescriptor: { userId: 1, photoUrl: "/api/profile/photo/10/1?v=33333333-3333-4333-8333-333333333333", photoVersion: "33333333-3333-4333-8333-333333333333" },
   tenantId: "10",
   press: new Map<string, { press: () => unknown; longPress?: () => unknown; accessibilityAction?: (event: any) => unknown; disabled: boolean }>(),
   meetingCapability: vi.fn(),
@@ -217,6 +221,12 @@ function render() {
   mocks.input = null;
   return renderToStaticMarkup(<ChatRoom />);
 }
+it("uses the scoped local photo descriptor for the owner's message avatar", () => {
+  mocks.state.messages.room = [{ id: "own-message", clientId: "own-message", channelId: "room", senderId: 1, senderName: "Owner", content: "Photo check", timestamp: 1, sequence: 1, status: "sent", parent: null }];
+  const html = render();
+  expect(html).toContain('data-photo-url="/api/profile/photo/10/1?v=33333333-3333-4333-8333-333333333333"');
+  expect(html).toContain('data-photo-version="33333333-3333-4333-8333-333333333333"');
+});
 it("a double tap sends one message while the first request is in flight", async () => {
   let finish!: () => void;
   mocks.send.mockImplementation(

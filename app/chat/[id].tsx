@@ -283,10 +283,13 @@ export default function ChatRoomScreen() {
     messages.find((message) => message.senderId === directPeerId)
       ?.senderPhotoUrl ??
     null;
-  const ownProfile = useWorkspaceProfile(
+  const ownPhotoDescriptor = useWorkspaceProfile(
     user,
     ownsWorkspace ? chat.workspace?.id : undefined,
-  ).profile;
+  ).photoDescriptor;
+  const ownPhoto = ownsWorkspace && ownPhotoDescriptor?.userId === user?.id
+    ? ownPhotoDescriptor
+    : null;
   useProfilePhotoCacheScope(
     ownsWorkspace ? chat.workspace?.id : undefined,
   );
@@ -1822,8 +1825,8 @@ export default function ChatRoomScreen() {
                           receiptLabel={receiptCounts[item.id] > 0 ? (channel?.kind === "direct" ? "Read" : `Read by ${receiptCounts[item.id]}`) : undefined}
                           onReadReceipts={() => void openReadReceipts(item)}
                           ownName={user.name}
-                          ownPhotoUrl={ownProfile?.photoUrl}
-                          ownPhotoVersion={ownProfile?.photoVersion}
+                          ownPhotoUrl={ownPhoto?.photoUrl}
+                          ownPhotoVersion={ownPhoto?.photoVersion}
                           tenantId={chat.workspace?.id}
                         />
                       </View>

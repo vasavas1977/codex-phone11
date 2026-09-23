@@ -13,15 +13,19 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
-import { useDirectory } from "@/hooks/use-directory";
-import { ContactDetails } from "@/components/contact-details";
+import { useAuth } from "@/hooks/use-auth";
+import { useDirectory, useDirectoryFocusRefresh } from "@/hooks/use-directory";
+import { ContactAvatar, ContactDetails } from "@/components/contact-details";
 import { DeviceContactsList } from "@/components/device-contacts-list";
 import { filterDirectory } from "@/lib/phone/directory";
 import { PresenceIndicator } from "@/components/chat/presence-indicator";
 import { usePresencePolling } from "@/lib/chat/presence-store";
+import { useProfilePhotoCacheScope } from "@/components/profile/profile-avatar";
+import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
 
 export default function ContactsScreen() {
   const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
   const { width } = useWindowDimensions();
   const wide = width >= 900;
   const [selectedId, setSelectedId] = useState<number>();
@@ -31,6 +35,12 @@ export default function ContactsScreen() {
   // Local address-book access is separate from the tenant directory. Do not
   // request or retain team data until the user explicitly opens Team.
   const directory = useDirectory(tenantId, source === "team");
+  const activeTenant = source === "team" && user?.id === directory.owner
+    ? directory.workspace?.id : undefined;
+  useDirectoryFocusRefresh(directory.owner, activeTenant, source === "team", directory.reload);
+  const ownPhotoDescriptor = useWorkspaceProfile(user, activeTenant).photoDescriptor;
+  const ownPhoto = ownPhotoDescriptor?.userId === user?.id ? ownPhotoDescriptor : null;
+  useProfilePhotoCacheScope(activeTenant);
   const people = useMemo(
     () => filterDirectory(directory.people, query),
     [directory.people, query],
@@ -170,16 +180,7 @@ export default function ContactsScreen() {
                     },
                   ]}
                 >
-                  <View
-                    style={[
-                      styles.avatar,
-                      { backgroundColor: colors.primary + "18" },
-                    ]}
-                  >
-                    <Text style={[styles.initial, { color: colors.primary }]}>
-                      {Array.from(item.name)[0]}
-                    </Text>
-                  </View>
+                  <ContactAvatar person={item} ownPhoto={ownPhoto} ownerId={user?.id} tenantId={activeTenant} size={44} />
                   <View style={{ flex: 1, gap: 4 }}>
                     <Text style={[styles.name, { color: colors.foreground }]}>
                       {item.name}
@@ -274,6 +275,7 @@ export default function ContactsScreen() {
                     id={String(selectedId)}
                     tenantId={String(directory.workspace.id)}
                     embedded
+                    directorySnapshot={directory}
                   />
                 ) : (
                   <View style={styles.empty}>
@@ -330,14 +332,6 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     borderBottomWidth: 0.5,
   },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  initial: { fontSize: 21, fontWeight: "600" },
   name: { fontSize: 17, fontWeight: "600" },
   empty: {
     paddingHorizontal: 28,

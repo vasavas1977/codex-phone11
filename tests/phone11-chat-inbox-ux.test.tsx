@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as { renderToStaticMarkup(node: ReactNode): string };
 const m = vi.hoisted(() => ({
   user: { id: 1 }, state: {} as any, frame: { values: [] as any[], index: 0 }, buttons: new Map<string, any>(), inputs: new Map<string, any>(),
+  ownPhotoDescriptor: { userId: 1, photoUrl: "/api/profile/photo/10/1?v=22222222-2222-4222-8222-222222222222", photoVersion: "22222222-2222-4222-8222-222222222222" },
   create: vi.fn(), directory: vi.fn(), push: vi.fn(),
 }));
 
@@ -40,6 +41,7 @@ vi.mock("../components/profile/profile-avatar", () => ({
   }),
   useProfilePhotoCacheScope: vi.fn(),
 }));
+vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ photoDescriptor: m.ownPhotoDescriptor }) }));
 
 import TeamChat from "../app/(tabs)/teamchat";
 
@@ -60,7 +62,7 @@ beforeEach(() => {
       { id: "direct", name: "Alice Adams", kind: "direct", memberIds: [1, 2], lastMessage: "Hi", lastMessageAt: 1, unreadCount: 0, blocked: false },
       { id: "group", name: "Launch team", kind: "group", memberIds: [1, 2, 3], lastMessage: "Ready", lastMessageAt: 1, unreadCount: 2, blocked: false },
       { id: "channel", name: "Announcements", kind: "channel", memberIds: [1, 2, 3], lastMessage: "Update", lastMessageAt: 1, unreadCount: 0, blocked: false },
-    ], people: [{ id: 2, name: "Alice Adams", extension: "3002", photoUrl: "/api/profile/photo/10/2?v=11111111-1111-4111-8111-111111111111" }, { id: 3, name: "Cara Chen", extension: "3003" }], drafts: { direct: "Draft reply" },
+    ], people: [{ id: 1, name: "Owner", extension: "3001" }, { id: 2, name: "Alice Adams", extension: "3002", photoUrl: "/api/profile/photo/10/2?v=11111111-1111-4111-8111-111111111111" }, { id: 3, name: "Cara Chen", extension: "3003" }], drafts: { direct: "Draft reply" },
     loading: false, error: null, storageError: null, loadChannels: vi.fn(), loadDirectory: m.directory, createConversation: m.create, setUser: vi.fn() };
 });
 
@@ -81,6 +83,15 @@ it("uses the authorized teammate photo for direct rows and directory entries", a
   await openComposer(); html = render();
   expect(html).toContain('data-photo-url="/api/profile/photo/10/2?v=11111111-1111-4111-8111-111111111111"');
   expect(html).toContain('data-user-id="3"');
+});
+
+it("uses the current owner photo in the Team Chat header and self directory row", async () => {
+  let html = render();
+  expect(html).toContain('data-photo-url="/api/profile/photo/10/1?v=22222222-2222-4222-8222-222222222222"');
+  expect(html).toContain('data-user-id="1"');
+  await openComposer(); html = render();
+  expect(html).toContain('data-photo-url="/api/profile/photo/10/1?v=22222222-2222-4222-8222-222222222222"');
+  expect(html.match(/data-user-id="1"/g)).toHaveLength(2);
 });
 
 it("clears the inbox query when the search control closes", () => {

@@ -14,6 +14,7 @@ import { PresenceIndicator } from "@/components/chat/presence-indicator";
 import { usePresencePolling } from "@/lib/chat/presence-store";
 import { NotificationEnrollmentPrompt } from "@/components/chat/notification-enrollment-prompt";
 import { ProfileAvatar, useProfilePhotoCacheScope } from "@/components/profile/profile-avatar";
+import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
 
 type Filter = "all" | "unread" | "chats" | "group" | "channel" | "drafts";
 type ScopedAction = { owner: ReturnType<typeof useAuth>["user"]; workspaceId: number };
@@ -40,6 +41,13 @@ export default function TeamChatScreen() {
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const ownsWorkspace = Boolean(user && chat.userId === user.id && chat.workspace);
+  const ownPhotoDescriptor = useWorkspaceProfile(
+    user,
+    ownsWorkspace ? chat.workspace?.id : undefined,
+  ).photoDescriptor;
+  const ownPhoto = ownsWorkspace && ownPhotoDescriptor?.userId === user?.id
+    ? ownPhotoDescriptor
+    : null;
   const actionIsCurrent = (action: ScopedAction | null) => !!action && action.owner === user && action.workspaceId === chat.workspace?.id;
   const creating = actionIsCurrent(creatingAction);
   const currentScope = () => {
@@ -132,7 +140,16 @@ export default function TeamChatScreen() {
   return <ScreenContainer>
     <View style={styles.content}>
       <View style={styles.header}>
-        <View style={[styles.identity, { backgroundColor: colors.primary + "16" }]}><Text style={[styles.identityText, { color: colors.primary }]}>TC</Text></View>
+        <ProfileAvatar
+          name={user?.name}
+          photoUrl={ownPhoto?.photoUrl}
+          photoVersion={ownPhoto?.photoVersion}
+          tenantId={ownsWorkspace ? chat.workspace?.id : undefined}
+          userId={ownsWorkspace ? user?.id : undefined}
+          size={32}
+          rounded
+          accessibilityLabel={`${user?.name?.trim() || "Your"} profile photo`}
+        />
         <View style={styles.titleBlock}><Text numberOfLines={1} style={[styles.title, fg]}>Team Chat</Text><Text numberOfLines={1} style={[styles.workspaceName, { color: colors.muted }]}>{ownsWorkspace ? chat.workspace?.name : "Your work conversations"}</Text></View>
         <MeetAction />
         <Pressable accessibilityRole="button" accessibilityLabel="Search conversations" accessibilityState={{ expanded: searchOpen }} onPress={toggleSearch} style={styles.iconButton}>
@@ -177,7 +194,7 @@ export default function TeamChatScreen() {
         {directoryLoading && <ActivityIndicator color={colors.primary} />}
         <TextInput accessibilityLabel="Search teammates" value={peopleSearch} onChangeText={setPeopleSearch} placeholder="Search name or extension" placeholderTextColor={colors.muted} style={[styles.search, fg, { backgroundColor: colors.surface, borderColor: colors.border }]} />
         <FlatList style={styles.peopleList} data={visiblePeople} keyExtractor={person => String(person.id)} keyboardShouldPersistTaps="handled" renderItem={({ item }) => <Pressable accessibilityRole="button" accessibilityLabel={`Select teammate ${item.name}`} disabled={creating || directoryLoading} onPress={() => selectPerson(item.id)} style={[styles.personRow, { borderBottomColor: colors.border }]}>
-          <ProfileAvatar name={item.name} photoUrl={item.photoUrl} tenantId={chat.workspace?.id} userId={item.id} size={40} accessibilityLabel={`${item.name} profile photo`} /><View style={styles.personText}><Text numberOfLines={1} style={fg}>{item.name}</Text><PresenceIndicator tenantId={chat.workspace?.id} userId={item.id} />{item.extension ? <Text style={{ color: colors.muted, fontSize: 13 }}>Ext. {item.extension}</Text> : null}</View>{kind !== "direct" && <Text style={{ color: colors.primary }}>{selected.includes(item.id) ? "Selected ✓" : "Select"}</Text>}
+          <ProfileAvatar name={item.name} photoUrl={item.id === user?.id ? ownPhoto?.photoUrl : item.photoUrl} photoVersion={item.id === user?.id ? ownPhoto?.photoVersion : undefined} tenantId={chat.workspace?.id} userId={item.id} size={40} accessibilityLabel={`${item.name} profile photo`} /><View style={styles.personText}><Text numberOfLines={1} style={fg}>{item.name}</Text><PresenceIndicator tenantId={chat.workspace?.id} userId={item.id} />{item.extension ? <Text style={{ color: colors.muted, fontSize: 13 }}>Ext. {item.extension}</Text> : null}</View>{kind !== "direct" && <Text style={{ color: colors.primary }}>{selected.includes(item.id) ? "Selected ✓" : "Select"}</Text>}
         </Pressable>} ListEmptyComponent={!directoryLoading ? <Text style={{ color: colors.muted, padding: 20 }}>{peopleSearch.trim() ? "No teammates match your search." : "No other teammates are available. Your administrator must add another active workspace member."}</Text> : null} />
         {kind !== "direct" && <Pressable accessibilityRole="button" accessibilityLabel="Create" disabled={creating || directoryLoading || selected.length === 0 || !name.trim()} onPress={() => void create(kind, name, selected)} style={[styles.createButton, { backgroundColor: colors.primary, opacity: selected.length && name.trim() && !creating ? 1 : 0.4 }]}><Text style={styles.buttonText}>{creating ? "Creating…" : "Create"}</Text></Pressable>}
       </View></KeyboardAvoidingView></ScreenContainer>
@@ -188,7 +205,6 @@ export default function TeamChatScreen() {
 const styles = StyleSheet.create({
   content: { flex: 1, width: "100%", maxWidth: 720, alignSelf: "center" },
   header: { paddingHorizontal: 12, paddingTop: 10, paddingBottom: 8, flexDirection: "row", alignItems: "center", gap: 6 },
-  identity: { width: 32, height: 32, borderRadius: 11, alignItems: "center", justifyContent: "center" }, identityText: { fontSize: 11, fontWeight: "800", letterSpacing: 0.2 },
   titleBlock: { flex: 1, minWidth: 0 }, title: { fontSize: 19, lineHeight: 23, fontWeight: "700", letterSpacing: -0.25, marginBottom: 0 }, workspaceName: { fontSize: 12, lineHeight: 15 },
   iconButton: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }, headerSpacer: { width: 58 }, sheetCancel: { minWidth: 58, minHeight: 44, justifyContent: "center" },
   workspaceStrip: { maxHeight: 44 }, filterStrip: { maxHeight: 50 }, filters: { flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingVertical: 6, alignItems: "center" },

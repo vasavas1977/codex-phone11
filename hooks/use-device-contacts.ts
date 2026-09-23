@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { AppState, Platform } from "react-native";
 import * as Contacts from "expo-contacts";
+import * as FileSystem from "expo-file-system/legacy";
 import {
   createDeviceContactsStore,
   type ContactPermission,
@@ -8,6 +9,11 @@ import {
 } from "@/lib/phone/device-contacts";
 
 const store = createDeviceContactsStore({
+  async clearCache() {
+    if (Platform.OS !== "ios" || !FileSystem.cacheDirectory) return;
+    // expo-contacts/ios/ContactsModule.swift writes thumbnails here.
+    await FileSystem.deleteAsync(`${FileSystem.cacheDirectory}Contacts`, { idempotent: true });
+  },
   async permission(request): Promise<ContactPermission> {
     if (Platform.OS === "web") return "unsupported";
     const permission = request
@@ -22,7 +28,7 @@ const store = createDeviceContactsStore({
     let pageOffset = 0;
     for (;;) {
       const page = await Contacts.getContactsAsync({
-        fields: [Contacts.Fields.PhoneNumbers],
+        fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Image],
         pageSize: 500,
         pageOffset,
       });

@@ -3,12 +3,21 @@ import { contactPhoneKey } from "./phone-number";
 export interface DeviceContact {
   id: string;
   name: string;
+  imageUri?: string;
   phones: { number: string; label: string; key: string }[];
 }
 export interface RawDeviceContact {
   id?: string;
   name?: string;
+  image?: { uri?: string };
   phoneNumbers?: { number?: string; label?: string }[];
+}
+/** Native contact thumbnails stay on this device; reject network image sources. */
+export function deviceContactImageUri(uri: string | undefined): string | undefined {
+  if (!uri) return undefined;
+  if (uri.startsWith("/") && !uri.startsWith("//")) return `file://${uri}`;
+  if (/^file:\/\/\/[^\s/][^\s]*$/i.test(uri) || /^content:\/\/[^/\s]+\/[^\s]+$/i.test(uri)) return uri;
+  return undefined;
 }
 export function readDeviceContacts(rows: RawDeviceContact[]): DeviceContact[] {
   const ids = new Set<string>();
@@ -25,9 +34,13 @@ export function readDeviceContacts(rows: RawDeviceContact[]): DeviceContact[] {
         return [{ number, label: phone.label || "Phone", key }];
       });
       if (!phones.length) return [];
-      return [
-        { id: row.id, name: row.name?.trim() || phones[0].number, phones },
-      ];
+      const imageUri = deviceContactImageUri(row.image?.uri);
+      return [{
+        id: row.id,
+        name: row.name?.trim() || phones[0].number,
+        ...(imageUri ? { imageUri } : {}),
+        phones,
+      }];
     })
     .sort((a, b) => a.name.localeCompare(b.name, ["th", "en"]));
 }
@@ -74,8 +87,10 @@ export interface DeviceContactState {
 export interface DeviceContactsAdapter {
   permission(request: boolean): Promise<ContactPermission>;
   read(): Promise<RawDeviceContact[]>;
+  /** Remove only Expo Contacts' temporary thumbnail directory, when supported. */
+  clearCache?(): Promise<void>;
 }
-/** Memory only; no address-book data is persisted, logged, or sent to the server. */
+/** App state is memory only; native thumbnail reads and targeted cleanup are serialized. */
 export function createDeviceContactsStore(adapter: DeviceContactsAdapter) {
   let state: DeviceContactState = {
     permission: "unknown",
@@ -85,6 +100,16 @@ export function createDeviceContactsStore(adapter: DeviceContactsAdapter) {
     refreshedAt: null,
   };
   let generation = 0;
+  let nativeWork: Promise<void> = Promise.resolve();
+  const queueNative = <T,>(work: () => Promise<T>): Promise<T> => {
+    const result = nativeWork.then(work, work);
+    nativeWork = result.then(() => undefined, () => undefined);
+    return result;
+  };
+  const clearCache = () => {
+    if (adapter.clearCache)
+      void queueNative(adapter.clearCache).catch(() => { /* The OS owns this temporary cache. */ });
+  };
   const listeners = new Set<() => void>();
   const publish = (next: DeviceContactState) => {
     state = next;
@@ -101,6 +126,7 @@ export function createDeviceContactsStore(adapter: DeviceContactsAdapter) {
     clear() {
       generation++;
       publish({ ...state, people: [], loading: false, refreshedAt: null });
+      clearCache();
     },
     async refresh(request = false) {
       const current = ++generation;
@@ -109,6 +135,7 @@ export function createDeviceContactsStore(adapter: DeviceContactsAdapter) {
         const permission = await adapter.permission(request);
         if (current !== generation) return;
         if (permission !== "granted" && permission !== "limited") {
+          clearCache();
           publish({
             permission,
             people: [],
@@ -118,11 +145,16 @@ export function createDeviceContactsStore(adapter: DeviceContactsAdapter) {
           });
           return;
         }
-        const rows = await adapter.read();
+        const rows = await queueNative(async () => {
+          // Remove thumbnails for contacts deleted since the previous read.
+          await adapter.clearCache?.();
+          return adapter.read();
+        });
         // Permission may be revoked or the limited selection reduced during a read.
         const after = await adapter.permission(false);
         if (current !== generation) return;
         if (after !== permission) {
+          clearCache();
           publish({
             permission: after,
             people: [],
@@ -140,7 +172,8 @@ export function createDeviceContactsStore(adapter: DeviceContactsAdapter) {
           refreshedAt: Date.now(),
         });
       } catch {
-        if (current === generation)
+        if (current === generation) {
+          clearCache();
           publish({
             ...state,
             people: [],
@@ -148,6 +181,7 @@ export function createDeviceContactsStore(adapter: DeviceContactsAdapter) {
             error: "Could not refresh contacts. Please try again.",
             refreshedAt: null,
           });
+        }
       }
     },
   };

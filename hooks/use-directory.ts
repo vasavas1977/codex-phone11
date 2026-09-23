@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFocusEffect } from "expo-router";
 import { useAuth } from "./use-auth";
 import * as Auth from "@/lib/_core/auth";
 import { createTRPCClient } from "@/lib/trpc";
@@ -12,6 +13,23 @@ import {
 } from "@/lib/phone/directory-sync";
 
 export type { DirectoryState } from "@/lib/phone/directory-sync";
+
+/** Refresh a mounted Team view after returning from profile or another screen. */
+export function useDirectoryFocusRefresh(
+  ownerId: number | null | undefined,
+  tenantId: number | undefined,
+  enabled: boolean,
+  reload: () => Promise<void>,
+) {
+  const priorScope = useRef<string | null>(null);
+  const scope = enabled && ownerId && tenantId ? `${ownerId}:${tenantId}` : null;
+  useFocusEffect(useCallback(() => {
+    // useDirectory already fetches on mount and scope changes.
+    if (scope && priorScope.current === scope && Auth.getAuthSnapshot().user?.id === ownerId)
+      void reload();
+    priorScope.current = scope;
+  }, [ownerId, reload, scope]));
+}
 
 let client: ReturnType<typeof createTRPCClient> | null = null;
 const api = () => (client ??= createTRPCClient()).chat;
