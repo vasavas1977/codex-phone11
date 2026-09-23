@@ -401,7 +401,7 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await pool.query("SELECT pg_sleep(0.01)");
     await service.publishReadReceipts(2, 10, id, [sent.id]);
     expect(await service.readReceiptDetails(1, 10, id, sent.id)).toEqual(first);
-    expect(first).toEqual([{ userId: 2, name: "Bob", readAt: expect.any(Number) }]);
+    expect(first).toEqual([{ userId: 2, name: "Bob", readAt: expect.any(Number), photoUrl: null }]);
     expect(Number((await pool.query("SELECT COUNT(*) AS count FROM phone11_chat_read_receipts WHERE message_id=$1", [sent.id])).rows[0].count)).toBe(1);
   });
   it("requires exact conversation and thread context and excludes own or deleted messages", async () => {
