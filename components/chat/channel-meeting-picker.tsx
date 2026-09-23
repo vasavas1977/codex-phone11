@@ -37,9 +37,13 @@ export function channelInvitees(members: ChatPerson[], hostId: number): ChatPers
 export function ChannelMeetingPicker(props: ChannelMeetingPickerProps) {
   if (!props.visible) return null;
   // Reopening, changing account/channel, or changing the authoritative roster
-  // starts a new selection. A removed member can never survive in local state.
+  // starts a new selection. Keep that reset below the native Modal boundary so
+  // an async roster arrival cannot dismiss and immediately re-present iOS's
+  // modal view controller while its presentation animation is still running.
   const roster = [...new Set(props.members.map(person => person.id))].sort((a, b) => a - b).join(",");
-  return <Picker key={`${props.tenantId}:${props.channelId}:${props.hostId}:${roster}`} {...props} />;
+  return <Modal visible transparent animationType="slide" onRequestClose={props.busy ? undefined : props.onCancel}>
+    <Picker key={`${props.tenantId}:${props.channelId}:${props.hostId}:${roster}`} {...props} />
+  </Modal>;
 }
 
 function Picker(props: ChannelMeetingPickerProps) {
@@ -56,7 +60,7 @@ function Picker(props: ChannelMeetingPickerProps) {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  return <Modal visible transparent animationType="slide" onRequestClose={props.busy ? undefined : props.onCancel}>
+  return <>
     <View style={{ flex: 1, justifyContent: "flex-end", backgroundColor: "#00000055" }}>
       <View accessibilityViewIsModal style={{ maxHeight: "85%", backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, paddingBottom: 34 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -91,5 +95,5 @@ function Picker(props: ChannelMeetingPickerProps) {
         </Pressable>
       </View>
     </View>
-  </Modal>;
+  </>;
 }

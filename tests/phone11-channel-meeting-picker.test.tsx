@@ -80,11 +80,27 @@ it("shows a roster failure without stale members, selection controls, or a start
 it("unmounts hidden selection and changes the reset key for account, channel or roster changes", () => {
   const p = base();
   expect(ChannelMeetingPicker({ ...p, visible: false })).toBeNull();
-  const key = ChannelMeetingPicker(p)!.key;
-  expect(ChannelMeetingPicker({ ...p, hostId: 2 })!.key).not.toBe(key);
-  expect(ChannelMeetingPicker({ ...p, tenantId: 2 })!.key).not.toBe(key);
-  expect(ChannelMeetingPicker({ ...p, channelId: "channel-b" })!.key).not.toBe(key);
-  expect(ChannelMeetingPicker({ ...p, members: p.members.slice(0, 1) })!.key).not.toBe(key);
+  const contentKey = (props: ChannelMeetingPickerProps) => ChannelMeetingPicker(props)!.props.children.key;
+  const key = contentKey(p);
+  expect(contentKey({ ...p, hostId: 2 })).not.toBe(key);
+  expect(contentKey({ ...p, tenantId: 2 })).not.toBe(key);
+  expect(contentKey({ ...p, channelId: "channel-b" })).not.toBe(key);
+  expect(contentKey({ ...p, members: p.members.slice(0, 1) })).not.toBe(key);
+  expect(contentKey({ ...p, startAvailable: false, maxSelectedMembers: 1 })).toBe(key);
+});
+it("keeps the native modal stable while an async roster remounts selected content", () => {
+  const loading = { ...base(), members: [], loading: true };
+  const loaded = { ...loading, members: base().members, loading: false };
+  const first = ChannelMeetingPicker(loading)!;
+  const second = ChannelMeetingPicker(loaded)!;
+
+  expect(first.type).toBe(second.type);
+  expect(first.key).toBe(second.key);
+  expect(first.props.children.key).not.toBe(second.props.children.key);
+
+  const html = renderToStaticMarkup(second);
+  expect(html).toContain("1 selected");
+  expect(m.buttons.find(button => button.accessibilityRole === "checkbox").accessibilityState.checked).toBe(true);
 });
 it("requires reducing an oversized default selection before start", () => {
   const p = base();
