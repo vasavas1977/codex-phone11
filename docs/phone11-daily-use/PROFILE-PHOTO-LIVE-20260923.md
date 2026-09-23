@@ -132,6 +132,9 @@ EAS build `9417d910-0aab-4308-b959-f1e8b817dc60` used
 The combined native/signature checker passed all 22 signed release checks
 against retained Build 49, including disabled OTA updates, production APNs,
 Siprix frameworks, and the same signing identity. Build 87 is retained for
-rollback. At the time of this entry, installation is pending an unlocked paired
-iPhone; source and signed-build checks do not establish handset photo rendering
-or native thumbnail cleanup behavior.
+rollback. Build 88 was installed in place on the paired iPhone 17 Pro Max;
+`devicectl` inventory confirmed bundle version 88. Source, signed-build, and
+installation checks do not establish handset photo rendering or native
+thumbnail cleanup behavior. Confirm Team Chat, own channel messages, Team
+Contacts, contact details, and a local phone contact with an existing photo on
+the handset before closing device acceptance.
