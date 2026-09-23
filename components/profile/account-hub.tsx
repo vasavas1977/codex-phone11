@@ -3,6 +3,7 @@ import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleShee
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { ProfileAvatar } from "@/components/profile/profile-avatar";
 import { useColors } from "@/hooks/use-colors";
+import type { ProfilePhotoDescriptor } from "@/lib/profile/photo-client";
 import {
   dndExpiryOptions,
   manualAvailabilityOptions,
@@ -69,6 +70,7 @@ type AccountHubProps = {
   isPreview?: boolean;
   workspaceId?: number;
   profilePhotoAvailable?: boolean;
+  profilePhotoDescriptor?: ProfilePhotoDescriptor | null;
   profilePhotoChecking?: boolean;
   profilePhotoCheckError?: boolean;
   profilePhotoSaving?: boolean;
@@ -177,14 +179,15 @@ function AccountDetails({ identity, phone, visible, onClose }: { identity: Accou
 }
 
 /** Shows auth-owned identity and server-persisted workspace preferences. */
-export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
+export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoDescriptor, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
   const colors = useColors();
   const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "photo" | "details" | null>(null);
   const [dndDuration, setDndDuration] = useState<DndDurationMinutes>(60);
   const name = identity?.name?.trim() || "Your work account";
   const email = identity?.email?.trim() || "Sign in to view your account";
   const profile = profileAvailable && workspaceProfile && onUpdateWorkspaceProfile ? workspaceProfile : undefined;
-  const canChangePhoto = !!identity && !!profile && profilePhotoAvailable && !!onChangeProfilePhoto && !!onRemoveProfilePhoto;
+  const canChangePhoto = !!identity && profilePhotoAvailable && !!onChangeProfilePhoto && !!onRemoveProfilePhoto;
+  const photo = profilePhotoDescriptor ?? (profile && { userId: profile.userId, photoUrl: profile.photoUrl ?? null, photoVersion: profile.photoVersion ?? null });
   const save = (update: WorkspaceProfileUpdate) => {
     if (!onUpdateWorkspaceProfile) return;
     void onUpdateWorkspaceProfile(update);
@@ -220,7 +223,7 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
       {isPreview && <Text style={[styles.preview, { color: colors.muted }]}>Preview only — changes stay in this browser</Text>}
       <View style={styles.identityBlock}>
         {identity && <Pressable accessibilityRole="button" accessibilityLabel="Change profile photo" accessibilityHint="Opens profile photo options" disabled={profilePhotoSaving} onPress={() => setSheet("photo")} style={styles.avatarButton}>
-          <ProfileAvatar name={identity?.name} photoUrl={profile?.photoUrl} photoVersion={profile?.photoVersion} tenantId={workspaceId} userId={profile?.userId} size={88} accessibilityLabel="Profile photo" />
+          <ProfileAvatar name={identity?.name} photoUrl={photo?.photoUrl} photoVersion={photo?.photoVersion} tenantId={workspaceId} userId={photo?.userId} size={88} accessibilityLabel="Profile photo" />
         </Pressable>}
         <Text style={[styles.name, { color: colors.foreground }]}>{name}</Text>
         <Text numberOfLines={1} style={[styles.email, { color: colors.muted }]}>{email}</Text>
@@ -264,11 +267,11 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
       </Sheet>
     </>}
     <Sheet visible={sheet === "photo"} title="Profile photo" onClose={() => setSheet(null)}>
-      {canChangePhoto && profile ? <View style={styles.sheetList}>
+      {canChangePhoto ? <View style={styles.sheetList}>
         <Text style={[styles.sheetDescription, { color: colors.muted }]}>Your photo is visible to active people in {workspaceName || "this workspace"}.</Text>
         <SheetChoice label="Take photo" detail="Use your camera" disabled={profilePhotoSaving} onPress={() => void changePhoto("camera")} />
         <SheetChoice label="Choose photo" detail="Open your photo library" disabled={profilePhotoSaving} onPress={() => void changePhoto("library")} />
-        {profile.photoUrl && <SheetChoice label="Remove photo" detail="Show your initials instead" disabled={profilePhotoSaving} onPress={() => void removePhoto()} />}
+        {photo?.photoUrl && <SheetChoice label="Remove photo" detail="Show your initials instead" disabled={profilePhotoSaving} onPress={() => void removePhoto()} />}
         {profilePhotoError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profilePhotoError}</Text>}
       </View> : <View style={styles.sheetList}>
         <Text accessibilityRole={profilePhotoCheckError ? "alert" : undefined} style={[styles.sheetDescription, { color: profilePhotoCheckError ? colors.error : colors.muted }]}>

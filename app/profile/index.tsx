@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { AccountHub } from "@/components/profile/account-hub";
@@ -33,6 +33,8 @@ export default function ProfileScreen() {
   const account = savedAccount?.ownerUserId === user?.id ? savedAccount : null;
   const workspace = user && chat.userId === user.id ? chat.workspace : null;
   const workspaceProfile = useWorkspaceProfile(user, workspace?.id);
+  const [pickerError, setPickerError] = useState<{ ownerId: number; tenantId: number; message: string } | null>(null);
+  useEffect(() => { setPickerError(null); }, [user?.id, workspace?.id]);
   useProfilePhotoCacheScope(workspace?.id);
   const hydratedOwner = useRef<number | null>(null);
   useEffect(() => {
@@ -48,49 +50,36 @@ export default function ProfileScreen() {
   }, [chat.loadChannels, chat.userId, chat.workspace, user?.id]);
   const changePhoto = async (source: PhotoSource): Promise<boolean> => {
     if (!workspaceProfile.photoAvailable) return false;
-    const picker = await import("expo-image-picker");
-    if (
-      source === "camera" &&
-      !(await picker.requestCameraPermissionsAsync()).granted
-    )
-      throw new Error("Allow camera access to take a profile photo.");
-    if (
-      source === "library" &&
-      !(await picker.requestMediaLibraryPermissionsAsync()).granted
-    )
-      throw new Error("Allow photo library access to choose a profile photo.");
-    const result =
-      source === "camera"
+    setPickerError(null);
+    let upload: ProfilePhotoUpload;
+    try {
+      const picker = await import("expo-image-picker");
+      if (source === "camera" && !(await picker.requestCameraPermissionsAsync()).granted)
+        throw new Error("Allow camera access to take a profile photo.");
+      if (source === "library" && !(await picker.requestMediaLibraryPermissionsAsync()).granted)
+        throw new Error("Allow photo library access to choose a profile photo.");
+      const result = source === "camera"
         ? await picker.launchCameraAsync({
-            mediaTypes: ["images"],
-            cameraType: picker.CameraType.front,
-            allowsEditing: true,
-            aspect: [1, 1],
-            quality: 0.85,
+            mediaTypes: ["images"], cameraType: picker.CameraType.front,
+            allowsEditing: true, aspect: [1, 1], quality: 0.85,
           })
         : await picker.launchImageLibraryAsync({
-            mediaTypes: ["images"],
-            allowsEditing: true,
-            aspect: [1, 1],
-            quality: 0.85,
+            mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.85,
             // iOS supplies a compatible representation, including a JPEG when
             // a picked HEIC needs conversion for the server's safe formats.
-            preferredAssetRepresentationMode:
-              picker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+            preferredAssetRepresentationMode: picker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
           });
-    if (result.canceled) return false;
-    const asset = result.assets[0];
-    const mimeType = assetMime(asset);
-    if (!mimeType)
-      throw new Error("Choose a JPEG, PNG, or WebP photo.");
-    const upload: ProfilePhotoUpload = {
-      uri: asset.uri,
-      mimeType,
-      sizeBytes: asset.fileSize,
-      width: asset.width,
-      height: asset.height,
-      file: asset.file,
-    };
+      if (result.canceled) return false;
+      const asset = result.assets[0];
+      const mimeType = assetMime(asset);
+      if (!mimeType) throw new Error("Choose a JPEG, PNG, or WebP photo.");
+      upload = { uri: asset.uri, mimeType, sizeBytes: asset.fileSize,
+        width: asset.width, height: asset.height, file: asset.file };
+    } catch (error) {
+      if (user && workspace) setPickerError({ ownerId: user.id, tenantId: workspace.id,
+        message: error instanceof Error ? error.message : "Could not open photos. Try again." });
+      return false;
+    }
     await workspaceProfile.uploadPhoto(upload);
     return true;
   };
@@ -120,17 +109,19 @@ export default function ProfileScreen() {
         onUpdateWorkspaceProfile={workspaceProfile.save}
         workspaceId={workspace?.id}
         profilePhotoAvailable={workspaceProfile.photoAvailable}
+        profilePhotoDescriptor={workspaceProfile.photoDescriptor}
         profilePhotoChecking={workspace
-          ? workspaceProfile.loading || workspaceProfile.photoCapabilityLoading
+          ? workspaceProfile.photoCapabilityLoading
           : !!user && chat.userId === user.id && chat.loading}
-        profilePhotoCheckError={workspaceProfile.loadError || (!workspace && !!chat.error)}
+        profilePhotoCheckError={workspaceProfile.photoCapabilityError || (!workspace && !!chat.error)}
         profilePhotoSaving={workspaceProfile.photoSaving}
         profilePhotoError={
-          workspaceProfile.photoError instanceof Error
+          (pickerError && pickerError.ownerId === user?.id && pickerError.tenantId === workspace?.id ? pickerError.message : null)
+          ?? (workspaceProfile.photoError instanceof Error
             ? workspaceProfile.photoError.message
             : workspaceProfile.photoError
               ? "Could not update profile photo. Try again."
-              : null
+              : null)
         }
         onChangeProfilePhoto={changePhoto}
         onRemoveProfilePhoto={workspaceProfile.removePhoto}
