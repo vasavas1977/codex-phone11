@@ -11,6 +11,16 @@ export async function channelMeetingOriginAllows(
   grant: MeetingGrant,
   lockMembership = false,
 ): Promise<boolean> {
+  if (lockMembership) {
+    // Issuance must acquire this tenant row before any channel-member row.
+    // Meeting start and host-permission edits also lock tenant first. A member
+    // KEY SHARE before the lease's later tenant lock would reverse that order
+    // and can deadlock with a concurrent start or edit. SHARE protects active
+    // status while allowing other invitees in this tenant to join concurrently.
+    const tenant = await db.query(`SELECT id FROM tenants
+      WHERE id=$1 AND status='active' FOR SHARE`, [grant.tenantId]);
+    if (tenant.rows.length !== 1) return false;
+  }
   const support = await db.query(
     "SELECT to_regclass('public.phone11_channel_meetings') IS NOT NULL AS available",
   );
