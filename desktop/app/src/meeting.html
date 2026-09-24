@@ -11,8 +11,25 @@
       <label class="switch"><input id="start-camera" type="checkbox"> Join with camera on</label>
       <button id="join" type="button" disabled>Join meeting</button><p id="prejoin-error" role="alert"></p></div>
   </section>
-  <section id="room" hidden><div id="stage" aria-label="Meeting video"><div id="empty-stage">Waiting for another participant…</div></div><div id="remote-audio" hidden></div>
+  <section id="room" hidden>
+    <div class="meeting-layout-tools" role="group" aria-label="Video layout">
+      <button id="layout-gallery" type="button" aria-pressed="true">Gallery</button>
+      <button id="layout-speaker" type="button" aria-pressed="false">Speaker</button>
+    </div>
+    <div class="meeting-content">
+      <div id="stage" aria-label="Meeting video">
+        <div id="gallery-grid"></div>
+        <div id="speaker-view" hidden><div id="speaker-main"></div><div id="speaker-strip"></div></div>
+        <div id="empty-stage" hidden>Waiting for another participant…</div>
+      </div>
+      <aside id="participant-roster" aria-label="Participants">
+        <h2>Participants <span id="roster-count">1</span></h2>
+        <ul id="participant-list" aria-live="polite"></ul>
+      </aside>
+    </div>
+    <div id="remote-audio" hidden></div>
     <div class="meeting-bottom"><div><strong id="participant-count">You</strong><span id="media-note">Connecting audio…</span></div><nav aria-label="Meeting controls">
       <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="leave" class="danger" type="button">Leave</button>
-    </nav></div></section>
+    </nav></div>
+  </section>
 </main></body></html>

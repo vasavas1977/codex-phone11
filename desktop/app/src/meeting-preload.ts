@@ -1,5 +1,5 @@
 import { ipcRenderer } from 'electron';
-import { Room, RoomEvent, Track } from 'livekit-client';
+import { Participant, Room, RoomEvent, Track } from 'livekit-client';
 import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
 import { MeetingMediaLifecycle } from './meeting-media-lifecycle';
 import type { DesktopMeetingGrant } from '../../src/authenticated-provider';
@@ -12,14 +12,191 @@ let busy = false;
 let canPublish = false;
 const mediaLifecycle = new MeetingMediaLifecycle();
 let leaving: Promise<void> | null = null;
+type ParticipantTile = {
+  participant: Participant;
+  tile: HTMLElement;
+  media: HTMLElement;
+  placeholder: HTMLElement;
+  name: HTMLElement;
+  audioState: HTMLElement;
+  rosterEntry: HTMLLIElement;
+  rosterName: HTMLElement;
+  rosterState: HTMLElement;
+};
+const participantTiles = new Map<string, ParticipantTile>();
+let layoutMode: 'gallery' | 'speaker' = 'gallery';
+let activeSpeakerSid: string | null = null;
 const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const status = (message: string) => { el('status').textContent = message; };
 const error = (message: string) => { el('prejoin-error').textContent = message; };
 
+function participantKey(participant: Participant): string {
+  return participant.sid || participant.identity;
+}
+
+function participantName(participant: Participant): string {
+  return participant.isLocal ? 'You' : participant.name?.trim() || participant.identity || 'Participant';
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts.length > 1 ? `${parts[0][0]}${parts[parts.length - 1][0]}` : name.slice(0, 2)).toUpperCase();
+}
+
+function detachTrack(track?: { detach: () => HTMLElement[] }): void {
+  try { track?.detach().forEach(element => element.remove()); }
+  catch { /* Renderer cleanup continues even if LiveKit already disposed the track. */ }
+}
+
+function createParticipantTile(participant: Participant): ParticipantTile {
+  const tile = document.createElement('article');
+  tile.className = 'participant-tile';
+  tile.setAttribute('aria-label', participantName(participant));
+  const media = document.createElement('div');
+  media.className = 'tile-media';
+  const placeholder = document.createElement('span');
+  placeholder.className = 'tile-placeholder';
+  placeholder.setAttribute('aria-hidden', 'true');
+  media.appendChild(placeholder);
+  const caption = document.createElement('div');
+  caption.className = 'tile-caption';
+  const name = document.createElement('span');
+  name.className = 'tile-name';
+  const audioState = document.createElement('span');
+  audioState.className = 'tile-audio-state';
+  caption.append(name, audioState);
+  tile.append(media, caption);
+
+  const rosterEntry = document.createElement('li');
+  rosterEntry.className = 'roster-entry';
+  const rosterName = document.createElement('span');
+  rosterName.className = 'roster-name';
+  const rosterState = document.createElement('span');
+  rosterState.className = 'roster-media';
+  rosterEntry.append(rosterName, rosterState);
+  return { participant, tile, media, placeholder, name, audioState, rosterEntry, rosterName, rosterState };
+}
+
+function renderLayout(): void {
+  const gallery = el('gallery-grid');
+  const speakerView = el('speaker-view');
+  const tiles = [...participantTiles.entries()];
+  const selected = tiles.find(([key]) => key === activeSpeakerSid) ?? tiles[0];
+  const galleryButton = el<HTMLButtonElement>('layout-gallery');
+  const speakerButton = el<HTMLButtonElement>('layout-speaker');
+  galleryButton.setAttribute('aria-pressed', String(layoutMode === 'gallery'));
+  speakerButton.setAttribute('aria-pressed', String(layoutMode === 'speaker'));
+  gallery.hidden = layoutMode !== 'gallery';
+  speakerView.hidden = layoutMode !== 'speaker';
+  if (layoutMode === 'gallery') {
+    gallery.replaceChildren(...tiles.map(([, item]) => item.tile));
+    el('stage').setAttribute('aria-label', 'Meeting video, gallery view');
+  } else {
+    const main = el('speaker-main');
+    const strip = el('speaker-strip');
+    main.replaceChildren();
+    strip.replaceChildren();
+    if (selected) main.appendChild(selected[1].tile);
+    for (const [key, item] of tiles) if (!selected || key !== selected[0]) strip.appendChild(item.tile);
+    el('stage').setAttribute('aria-label', 'Meeting video, speaker view');
+  }
+  el('empty-stage').hidden = tiles.length > 0;
+}
+
+function attachCamera(participant: Participant, item: ParticipantTile): void {
+  const publication = participant.getTrackPublication(Track.Source.Camera);
+  const track = participant.isCameraEnabled ? publication?.track : undefined;
+  const existing = item.media.querySelector('video');
+  if (!track) {
+    if (existing) {
+      detachTrack(publication?.track);
+      existing.remove();
+    }
+    item.media.classList.remove('has-video');
+    item.placeholder.textContent = initials(participantName(participant));
+    return;
+  }
+  if (existing?.dataset.trackSid === publication?.trackSid) {
+    item.media.classList.add('has-video');
+    return;
+  }
+  existing?.remove();
+  const video = track.attach() as HTMLVideoElement;
+  video.className = 'participant-video';
+  video.dataset.trackSid = publication?.trackSid ?? '';
+  video.setAttribute('playsinline', '');
+  video.setAttribute('aria-label', `${participantName(participant)} video`);
+  if (participant.isLocal) {
+    video.id = 'self-preview';
+    video.muted = true;
+  }
+  item.media.appendChild(video);
+  item.media.classList.add('has-video');
+}
+
+function syncParticipants(): void {
+  if (!room) return;
+  const participants = [room.localParticipant, ...room.remoteParticipants.values()];
+  const liveKeys = new Set(participants.map(participantKey));
+  for (const [key, item] of participantTiles) {
+    if (liveKeys.has(key)) continue;
+    for (const publication of item.participant.trackPublications.values()) {
+      detachTrack(publication.track);
+    }
+    item.tile.remove();
+    item.rosterEntry.remove();
+    participantTiles.delete(key);
+  }
+  const list = el('participant-list');
+  for (const participant of participants) {
+    const key = participantKey(participant);
+    const item = participantTiles.get(key) ?? createParticipantTile(participant);
+    item.participant = participant;
+    const name = participantName(participant);
+    item.tile.setAttribute('aria-label', `${name}${participant.isSpeaking ? ', speaking' : ''}`);
+    item.name.textContent = name;
+    item.rosterName.textContent = name;
+    const micState = participant.isMicrophoneEnabled ? 'Mic on' : 'Mic off';
+    const cameraState = participant.isCameraEnabled ? 'Camera on' : 'Camera off';
+    item.audioState.textContent = `${micState} · ${cameraState}`;
+    item.rosterState.textContent = `${micState} · ${cameraState}`;
+    item.rosterState.setAttribute('aria-label', `${name}: ${micState}, ${cameraState}`);
+    item.tile.classList.toggle('is-speaking', participant.isSpeaking);
+    item.rosterEntry.classList.toggle('is-speaking', participant.isSpeaking);
+    attachCamera(participant, item);
+    if (!participantTiles.has(key)) {
+      participantTiles.set(key, item);
+      list.appendChild(item.rosterEntry);
+    }
+  }
+  if (!participantTiles.has(activeSpeakerSid ?? '')) {
+    activeSpeakerSid = participants.find(participant => !participant.isLocal)?.sid ?? participantKey(room.localParticipant);
+  }
+  el('roster-count').textContent = String(participants.length);
+  el('participant-count').textContent = `${participants.length} participant${participants.length === 1 ? '' : 's'}`;
+  renderLayout();
+}
+
+function clearParticipantUi(): void {
+  for (const item of participantTiles.values()) {
+    for (const publication of item.participant.trackPublications.values()) {
+      detachTrack(publication.track);
+    }
+  }
+  participantTiles.clear();
+  el('gallery-grid').replaceChildren();
+  el('speaker-main').replaceChildren();
+  el('speaker-strip').replaceChildren();
+  el('participant-list').replaceChildren();
+  el('roster-count').textContent = '0';
+  el('participant-count').textContent = 'You';
+  el('empty-stage').hidden = false;
+}
+
 function updateRoomUi(): void {
   if (!room) return;
   const local = room.localParticipant;
-  el('participant-count').textContent = `${room.remoteParticipants.size + 1} participant${room.remoteParticipants.size ? 's' : ''}`;
+  syncParticipants();
   const mic = el<HTMLButtonElement>('mic');
   const camera = el<HTMLButtonElement>('camera');
   el<HTMLButtonElement>('enable-audio').hidden = room.canPlaybackAudio;
@@ -30,26 +207,26 @@ function updateRoomUi(): void {
   el('media-note').textContent = canPublish
     ? `Microphone ${local.isMicrophoneEnabled ? 'on' : 'off'} · Camera ${local.isCameraEnabled ? 'on' : 'off'}`
     : 'Listening only';
-  const self = document.getElementById('self-preview');
-  if (!local.isCameraEnabled) self?.remove();
-  else if (!self) {
-    const track = local.getTrackPublication(Track.Source.Camera)?.track;
-    if (track) {
-      const video = track.attach();
-      video.id = 'self-preview';
-      el('empty-stage').hidden = true;
-      el('stage').appendChild(video);
-    }
-  }
-  el('empty-stage').hidden = !!el('stage').querySelector('video');
 }
 
-function attachRemote(track: { kind: Track.Kind; attach: () => HTMLElement }): void {
+function attachRemote(track: { kind: Track.Kind; attach: () => HTMLElement }, participant: Participant): void {
   const element = track.attach();
   if (track.kind === Track.Kind.Audio) el('remote-audio').appendChild(element);
   else if (track.kind === Track.Kind.Video) {
-    el('empty-stage').hidden = true;
-    el('stage').appendChild(element);
+    const item = participantTiles.get(participantKey(participant)) ?? createParticipantTile(participant);
+    if (!participantTiles.has(participantKey(participant))) {
+      participantTiles.set(participantKey(participant), item);
+      el('participant-list').appendChild(item.rosterEntry);
+    }
+    const video = element as HTMLVideoElement;
+    video.className = 'participant-video';
+    video.dataset.trackSid = participant.getTrackPublication(Track.Source.Camera)?.trackSid ?? '';
+    video.setAttribute('playsinline', '');
+    video.setAttribute('aria-label', `${participantName(participant)} video`);
+    item.media.querySelector('video')?.remove();
+    item.media.appendChild(video);
+    item.media.classList.add('has-video');
+    syncParticipants();
   }
 }
 
@@ -64,10 +241,9 @@ function leave(): Promise<void> {
     if (active) {
       try { await active.disconnect(true); } catch { /* Window teardown remains authoritative. */ }
     }
+    clearParticipantUi();
     busy = false;
     el('remote-audio').replaceChildren();
-    el('stage').querySelectorAll('video').forEach(node => node.remove());
-    el('empty-stage').hidden = false;
     el('room').hidden = true;
     el('prejoin').hidden = false;
   })();
@@ -93,10 +269,50 @@ async function join(): Promise<void> {
         grant.expiresAt <= Math.floor(Date.now() / 1000)) throw new Error('Invalid admission');
     next = new Room({ adaptiveStream: true, dynacast: true });
     room = next;
-    next.on(RoomEvent.TrackSubscribed, track => { if (room === next && current()) attachRemote(track); });
-    next.on(RoomEvent.TrackUnsubscribed, track => { track.detach().forEach(element => element.remove()); });
-    next.on(RoomEvent.ParticipantConnected, updateRoomUi);
-    next.on(RoomEvent.ParticipantDisconnected, updateRoomUi);
+    next.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
+      if (room === next && current()) attachRemote(track, participant);
+    });
+    next.on(RoomEvent.TrackUnsubscribed, (track, _publication, participant) => {
+      detachTrack(track);
+      if (room === next && current()) syncParticipants();
+      void participant;
+    });
+    next.on(RoomEvent.TrackPublished, (_publication, participant) => {
+      if (room === next && current()) syncParticipants();
+      void participant;
+    });
+    next.on(RoomEvent.TrackUnpublished, (publication, participant) => {
+      detachTrack(publication.track);
+      if (room === next && current()) syncParticipants();
+      void participant;
+    });
+    next.on(RoomEvent.TrackMuted, (_publication, participant) => {
+      if (room === next && current()) syncParticipants();
+      void participant;
+    });
+    next.on(RoomEvent.TrackUnmuted, (_publication, participant) => {
+      if (room === next && current()) syncParticipants();
+      void participant;
+    });
+    next.on(RoomEvent.ParticipantConnected, () => { if (room === next && current()) syncParticipants(); });
+    next.on(RoomEvent.ParticipantDisconnected, participant => {
+      const item = participantTiles.get(participantKey(participant));
+      for (const publication of participant.trackPublications.values()) {
+        detachTrack(publication.track);
+      }
+      item?.tile.remove();
+      item?.rosterEntry.remove();
+      participantTiles.delete(participantKey(participant));
+      if (room === next && current()) syncParticipants();
+    });
+    next.on(RoomEvent.ActiveSpeakersChanged, speakers => {
+      if (room !== next || !current()) return;
+      activeSpeakerSid = speakers[0] ? participantKey(speakers[0]) : activeSpeakerSid;
+      syncParticipants();
+    });
+    next.on(RoomEvent.ParticipantNameChanged, () => {
+      if (room === next && current()) syncParticipants();
+    });
     next.on(RoomEvent.Disconnected, () => {
       if (room === next) {
         status('Meeting disconnected');
@@ -123,6 +339,7 @@ async function join(): Promise<void> {
     el('prejoin').hidden = true;
     el('room').hidden = false;
     el('title').textContent = 'In meeting';
+    activeSpeakerSid = participantKey(next.localParticipant);
     if (el('status').textContent === 'Joining…') status('Connected');
     updateRoomUi();
   } catch {
@@ -169,6 +386,14 @@ async function toggle(kind: 'mic' | 'camera'): Promise<void> {
 
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
+  el<HTMLButtonElement>('layout-gallery').addEventListener('click', () => {
+    layoutMode = 'gallery';
+    if (room) renderLayout();
+  });
+  el<HTMLButtonElement>('layout-speaker').addEventListener('click', () => {
+    layoutMode = 'speaker';
+    if (room) renderLayout();
+  });
   el<HTMLButtonElement>('mic').addEventListener('click', () => { void toggle('mic'); });
   el<HTMLButtonElement>('camera').addEventListener('click', () => { void toggle('camera'); });
   el<HTMLButtonElement>('leave').addEventListener('click', () => {
