@@ -116,6 +116,13 @@ checks do not constitute a signed iPhone or distributable desktop build, a
 Windows runtime build, a live PBX route, an actual phone call, or production
 deployment.
 
+A separate local Windows x64 package workflow now checks the pinned official
+Siprix SDK revision and DLL hashes, requires an externally compiled x64
+Phone11 helper, and verifies the packaged helper and manifest pin. Its source
+and failure paths passed local checks and independent review. No Windows
+helper executable is available on this Mac, so the Windows package was not
+created and no Windows sign-in, SIP, media, or trial cutoff was observed.
+
 A read-only reachability probe from this Mac on 24 September resolved
 `sip.phone11.ai` to `43.210.122.111`: TCP 5060 accepted a connection, while
 TCP/TLS 5061 refused it. This is a single vantage-point network observation,
