@@ -158,6 +158,18 @@ export function MeetingPrejoin({
               ]}
             >
               <View
+                accessible
+                accessibilityLabel={`Signed in as ${authenticatedDisplayName.trim() || "Phone11 account"}`}
+                style={styles.identity}
+              >
+                <Text style={[styles.label, { color: colors.foreground }]}>
+                  Signed in as
+                </Text>
+                <Text style={[styles.identityName, { color: colors.foreground }]}>
+                  {authenticatedDisplayName.trim() || "Phone11 account"}
+                </Text>
+              </View>
+              <View
                 style={[
                   styles.joinState,
                   {
@@ -176,10 +188,10 @@ export function MeetingPrejoin({
                   style={[styles.joinStateText, { color: colors.muted }]}
                 >
                   {microphoneEnabled
-                    ? "Microphone on"
-                    : "Microphone off · joining muted"}
+                    ? "Join with microphone on"
+                    : "Join muted"}
                   {"  ·  "}
-                  {cameraEnabled ? "Video on" : "Video off"}
+                  {cameraEnabled ? "Join with video on" : "Join with video off"}
                 </Text>
               </View>
               {selection.manualEntry ? (
@@ -254,24 +266,13 @@ export function MeetingPrejoin({
                   )}
                 </View>
               )}
-              <View
-                accessible
-                accessibilityLabel={`Signed in as ${authenticatedDisplayName || "Phone11 account"}`}
-              >
-                <Text style={[styles.label, { color: colors.foreground }]}>
-                  Signed in as
-                </Text>
-                <Text style={{ color: colors.muted }}>
-                  {authenticatedDisplayName.trim() || "Phone11 account"}
-                </Text>
-              </View>
               <View style={styles.mediaRow}>
                 <View style={styles.mediaText}>
                   <Text style={[styles.label, { color: colors.foreground }]}>
                     Microphone
                   </Text>
                   <Text style={{ color: colors.muted }}>
-                    {microphoneEnabled ? "On when you join" : "Join muted"}
+                    {microphoneEnabled ? "Request access when joining" : "Join muted"}
                   </Text>
                 </View>
                 <Switch
@@ -288,7 +289,7 @@ export function MeetingPrejoin({
                     Camera
                   </Text>
                   <Text style={{ color: colors.muted }}>
-                    {cameraEnabled ? "On when you join" : "Join with video off"}
+                    {cameraEnabled ? "Request access when joining" : "Join with video off"}
                   </Text>
                 </View>
                 <Switch
@@ -300,9 +301,7 @@ export function MeetingPrejoin({
                 />
               </View>
               <Text style={[styles.note, { color: colors.muted }]}>
-                Phone11 asks iOS for microphone or camera access only when you
-                join with that control on. If access is denied, the meeting
-                stays open and the unavailable device remains off.
+                Your camera and microphone stay off until you join.
               </Text>
             </View>
             {error && (
@@ -376,6 +375,8 @@ const styles = StyleSheet.create({
   failure: { gap: 4 },
   stageReference: { fontSize: 13, lineHeight: 18 },
   label: { fontSize: 16, fontWeight: "600" },
+  identity: { gap: 4 },
+  identityName: { fontSize: 19, fontWeight: "700" },
   input: {
     minHeight: 50,
     borderWidth: 1,

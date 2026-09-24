@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   joinButton: undefined as
     | undefined
     | { onPress: () => unknown; disabled: boolean },
+  switches: {} as Record<string, { value: boolean; onValueChange: (value: boolean) => void }>,
 }));
 
 vi.mock("react", async () => {
@@ -56,7 +57,10 @@ vi.mock("react-native", () => ({
   },
   ScrollView: element,
   StyleSheet: { create: (styles: unknown) => styles },
-  Switch: () => null,
+  Switch: ({ accessibilityLabel, value, onValueChange }: any) => {
+    mocks.switches[accessibilityLabel] = { value, onValueChange };
+    return null;
+  },
   Text: ({ children }: { children?: ReactNode }) =>
     createElement("span", null, children),
   TextInput: () => null,
@@ -87,12 +91,14 @@ beforeEach(() => {
   mocks.stateIndex = 0;
   mocks.refIndex = 0;
   mocks.joinButton = undefined;
+  mocks.switches = {};
 });
 
 function render(onJoin: () => Promise<void>) {
   mocks.stateIndex = 0;
   mocks.refIndex = 0;
   mocks.joinButton = undefined;
+  mocks.switches = {};
   return renderToStaticMarkup(
     createElement(MeetingPrejoin, {
       authenticatedDisplayName: "Pilot",
@@ -110,6 +116,9 @@ it("shows the authenticated name read-only and joins an admitted meeting without
   expect(html).toContain("Signed in as");
   expect(html).toContain("Pilot");
   expect(html).not.toContain("Your name");
+  expect(html).toContain("Your camera and microphone stay off until you join.");
+  expect(html).toContain("Join muted");
+  expect(html).toContain("Join with video off");
   expect(mocks.joinButton?.disabled).toBe(false);
 
   await mocks.joinButton?.onPress();
@@ -118,6 +127,29 @@ it("shows the authenticated name read-only and joins an admitted meeting without
     meetingCode: "12345678-1234-4234-8234-123456789012",
     microphoneEnabled: false,
     cameraEnabled: false,
+  });
+});
+
+it("keeps capture off during prejoin and passes explicit media choices to join", async () => {
+  const onJoin = vi.fn().mockResolvedValue(undefined);
+  render(onJoin);
+  expect(mocks.switches["Microphone on when joining"].value).toBe(false);
+  expect(mocks.switches["Camera on when joining"].value).toBe(false);
+  expect(onJoin).not.toHaveBeenCalled();
+
+  mocks.switches["Microphone on when joining"].onValueChange(true);
+  mocks.switches["Camera on when joining"].onValueChange(true);
+  const html = render(onJoin);
+  expect(html).toContain("Join with microphone on");
+  expect(html).toContain("Join with video on");
+  expect(html).toContain("Your camera and microphone stay off until you join.");
+  expect(onJoin).not.toHaveBeenCalled();
+
+  await mocks.joinButton?.onPress();
+  expect(onJoin).toHaveBeenCalledWith({
+    meetingCode: "12345678-1234-4234-8234-123456789012",
+    microphoneEnabled: true,
+    cameraEnabled: true,
   });
 });
 
