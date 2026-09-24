@@ -55,6 +55,21 @@ Signed daily-pilot Build 91 was produced by successful workflow run [35907511897
 
 Handset feedback on Build 91 found that tapping the signed-in user's own message avatar opened the coworker contact lookup and showed “Contact not found.” The self-avatar path now renders authenticated My profile details from the signed-in identity, reusing the tapped photo descriptor; teammate avatars continue to use tenant-scoped directory lookup. Focused profile/chat tests and TypeScript passed. Signed daily-pilot Build 92 came from source commit `a80d65e970dd886149c043322fdb39a59ffd9bd4` in successful workflow run [35951563986](https://github.com/vasavas1977/codex-phone11/actions/runs/35951563986), with EAS build [8c3c7767-061e-45f9-9edc-eb5108fd8951](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/8c3c7767-061e-45f9-9edc-eb5108fd8951). Its retained IPA is `/Users/vasavas16macbookpro/Library/Application Support/Phone11/verified-builds/92/Phone11-92.ipa` (SHA-256 `b3e1670dcfa75438a198165958e98bd1ac7db91df0a6d2fb7b424430d20bc397`). Native/signature and retained-Build-49 comparison checks passed. `devicectl` installed it on the paired iPhone 17 Pro Max and a subsequent device inventory reported Phone11 1.0.0/build 92. Build 91 remains available as rollback. The corrected avatar tap still needs on-screen handset acceptance.
 
+## Second pilot phone update — 25 September 2026
+
+At the owner's request to update the phone used for extension 1020, the paired
+iPhone 15 Pro Max (`82C9E274-EBFD-5674-903E-89B68AF87068`) was found with
+Phone11 Build 81; the iPhone 17 Pro Max already had Build 92. The retained
+Build 92 IPA hash matched the pin above, and the combined native/signature
+comparison against retained Build 49 passed. The same signed Build 92 was
+installed **in place** on the iPhone 15 Pro Max, without uninstalling Phone11.
+A fresh device inventory reported the expected bundle ID and Phone11
+1.0.0/build 92. The repository does not independently prove which signed-in
+account is on that handset. Remote launch was refused because iOS reported the
+phone locked; launch, retained sign-in, and runtime behavior await an unlocked
+handset check. The Mac desktop dialpad/SRTP commits change no iOS app code and
+did not require another iOS build.
+
 Native avatar taps, modal gestures, SIP continuity and photo display still require on-screen handset acceptance. No backend deployment or provider action was performed.
 
 Handset checklist: tap sender, direct-chat header, Team contact, Recent Call teammate, Read by reader and member-picker avatar; confirm the same identity. Deselect a meeting invitee, inspect another profile, Back, and confirm selection remains. Open My profile, change/cancel photo, confirm return. Test retry after capability failure, sign-out/tenant switch, and an unavailable teammate. During active meeting inspect a participant and confirm ongoing media; during ringing verify Answer/Decline remain accessible.
