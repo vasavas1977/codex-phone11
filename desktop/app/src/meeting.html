@@ -7,9 +7,9 @@
   <section id="prejoin" class="card">
     <div class="preview">
       <video id="prejoin-video" autoplay muted playsinline aria-label="Your camera preview" hidden></video>
-      <div id="preview-empty"><div class="preview-icon" aria-hidden="true">▣</div><p id="preview-message">Camera is off. Select the camera option to preview before joining.</p></div>
+      <div id="preview-empty"><svg class="preview-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="m15 10 6-3v10l-6-3"/></svg><p id="preview-message">Camera is off. Select the camera option to preview before joining.</p></div>
     </div>
-    <div class="prejoin-options"><label for="meeting-select">Your admitted meeting</label><select id="meeting-select" disabled><option>Loading…</option></select>
+    <div class="prejoin-options"><label for="meeting-select">Meeting</label><select id="meeting-select" disabled><option>Loading…</option></select>
       <label class="switch"><input id="start-mic" type="checkbox"> Join with microphone on</label>
       <label class="switch"><input id="start-camera" type="checkbox"> Join with camera on and preview now</label>
       <button id="join" type="button" disabled>Join meeting</button><p id="prejoin-error" role="alert"></p></div>

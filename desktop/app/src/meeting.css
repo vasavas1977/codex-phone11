@@ -25,7 +25,7 @@ h1 { font-size: 27px; letter-spacing: -.025em; margin: 3px 0; }
 .preview video { display: block; width: 100%; height: 100%; min-height: 440px; object-fit: cover; transform: scaleX(-1); }
 .preview video[hidden], #preview-empty[hidden] { display: none; }
 #preview-empty { padding: 24px; }
-.preview-icon { color: #78aaff; font-size: 62px; }
+.preview-icon { color: #78aaff; width: 62px; height: 62px; margin: 0 auto 12px; }
 .prejoin-options { display: flex; flex-direction: column; gap: 15px; padding: 28px; }
 .prejoin-options > label:first-child { font-weight: 700; }
 .switch { display: flex; align-items: center; gap: 12px; }
