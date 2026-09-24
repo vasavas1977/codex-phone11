@@ -171,20 +171,25 @@ The vendor build copies DLLs next to the helper output; distribution remains
 subject to the vendor license. A Windows CI workflow is present, but has not
 run on this head, and no Windows runtime/media behavior has been verified.
 
-Local macOS arm64 evidence on 24 September 2026: CMake 4.4.3 generated an
-Xcode 16.4 project and the Release helper compiled against the pinned SDK.
-The pipe smoke checks initialization, rejected call commands before
-registration, invalid provisioning, malformed-frame teardown, and empty
-stderr. No real account, call, or audio has been tested. The Xcode local
-ad-hoc signature is not a release signature.
+Local macOS arm64 evidence on 25 September 2026: the Release helper compiled
+against the Siprix trial SDK, and protocol tests passed with a fake SDK. The
+desktop trial signed in as extension 3001 and registered with the live PBX.
+An initial 3001-to-1020 call woke the iPhone but received SIP 488 before the
+PBX relayed the INVITE; the desktop account had not enabled secure media.
+The helper now requests SDES SRTP. A disposable loopback registrar confirmed
+that the rebuilt real SDK offers `RTP/SAVP` and
+`AES_CM_128_HMAC_SHA1_80` without exposing its SDP keys. The updated Mac app
+is installed locally and ad-hoc signed. Live answer and two-way audio still
+need verification after signing back in. The Xcode local ad-hoc signature is
+not a release signature.
 
 For a repeatable local smoke test, run
 `python3 desktop/native/test_bootstrap.py /path/to/phone11_siprix_helper`.
 It checks invalid and oversized input, response shape, shutdown, and that
 input text is not echoed.
 
-This is **not yet a released desktop softphone**: verified macOS and Windows
-packaging, signing, live PBX registration and two-way media remain required.
+This is **not yet a released desktop softphone**: distributable macOS and Windows
+packaging/signing, a successful live PBX call, and two-way media remain required.
 Optional persistent login would require secure OS credential storage; the
 current trial keeps the bearer in memory only. Siprix's free trial limits each call to 60 seconds; that
 limit is acceptable for current development and must be expected in call
