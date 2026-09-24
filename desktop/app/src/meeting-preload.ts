@@ -1,7 +1,7 @@
 import { ipcRenderer } from 'electron';
 import { Participant, Room, RoomEvent, Track } from 'livekit-client';
 import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
-import { MeetingMediaLifecycle } from './meeting-media-lifecycle';
+import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { MeetingVideoSlot } from './meeting-video-slot';
 import type { DesktopMeetingGrant } from '../../src/authenticated-provider';
 
@@ -12,6 +12,7 @@ let revision: string | null = null;
 let busy = false;
 let canPublish = false;
 const mediaLifecycle = new MeetingMediaLifecycle();
+const prejoinCamera = new PrejoinCameraPreview();
 let leaving: Promise<void> | null = null;
 type ParticipantTile = {
   participant: Participant;
@@ -32,6 +33,44 @@ let activeSpeakerSid: string | null = null;
 const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const status = (message: string) => { el('status').textContent = message; };
 const error = (message: string) => { el('prejoin-error').textContent = message; };
+
+function clearPreview(): void {
+  prejoinCamera.stop();
+  const video = el<HTMLVideoElement>('prejoin-video');
+  video.srcObject = null;
+  video.hidden = true;
+  el('preview-empty').hidden = false;
+}
+
+async function changePrejoinCamera(): Promise<void> {
+  const choice = el<HTMLInputElement>('start-camera');
+  clearPreview();
+  if (!choice.checked || busy || room) {
+    el('preview-message').textContent = 'Camera is off';
+    return;
+  }
+  error('');
+  el('preview-message').textContent = 'Requesting camera access…';
+  await mediaLifecycle.run(async current => {
+    if (!current() || !choice.checked || busy || room) return;
+    try {
+      const stream = await prejoinCamera.start(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }));
+      if (!stream || !current() || !choice.checked || busy || room) return;
+      const video = el<HTMLVideoElement>('prejoin-video');
+      video.srcObject = stream;
+      video.hidden = false;
+      el('preview-empty').hidden = true;
+    } catch (cause) {
+      if (!current() || !choice.checked || busy || room) return;
+      choice.checked = false;
+      const denied = cause instanceof DOMException && (cause.name === 'NotAllowedError' || cause.name === 'PermissionDeniedError');
+      error(denied
+        ? 'Camera permission denied. Allow camera access in system settings, or join with camera off.'
+        : 'Camera preview is unavailable. Check your camera, or join with camera off.');
+      el('preview-message').textContent = 'Camera is off';
+    }
+  }).catch(() => undefined);
+}
 
 function participantKey(participant: Participant): string {
   return participant.sid || participant.identity;
@@ -246,9 +285,11 @@ function leave(): Promise<void> {
   const active = room;
   room = null;
   canPublish = false;
+  clearPreview();
   leaving = (async () => {
     // In-flight getUserMedia/publish must settle before disconnect and the main-process ack.
     await mediaLifecycle.cancelAndDrain();
+    await prejoinCamera.stopAndDrain();
     if (active) {
       try { await active.disconnect(true); } catch { /* Window teardown remains authoritative. */ }
     }
@@ -266,13 +307,19 @@ async function join(): Promise<void> {
   const select = el<HTMLSelectElement>('meeting-select');
   const meetingId = select.value;
   if (!meetingId) return;
+  const wantsMic = el<HTMLInputElement>('start-mic').checked;
+  const wantsCamera = el<HTMLInputElement>('start-camera').checked;
   busy = true;
   el<HTMLButtonElement>('join').disabled = true;
+  el<HTMLInputElement>('start-mic').disabled = true;
+  el<HTMLInputElement>('start-camera').disabled = true;
   error('');
   status('Joining…');
   await mediaLifecycle.run(async current => {
   let next: Room | null = null;
   try {
+    clearPreview();
+    await prejoinCamera.stopAndDrain();
     if (!current()) return;
     const grant = await ipcRenderer.invoke(MEETING_CHANNELS.join, { meetingId, revision }) as DesktopMeetingGrant;
     if (!current()) return;
@@ -339,8 +386,6 @@ async function join(): Promise<void> {
     catch { if (current()) status('Connected. Tap Enable audio to hear participants.'); }
     if (!current() || room !== next) return;
     if (canPublish) {
-      const wantsMic = el<HTMLInputElement>('start-mic').checked;
-      const wantsCamera = el<HTMLInputElement>('start-camera').checked;
       try { if (wantsMic) await next.localParticipant.setMicrophoneEnabled(true); }
       catch { if (current()) status('Joined, but microphone access is unavailable.'); }
       if (!current() || room !== next) return;
@@ -369,12 +414,16 @@ async function join(): Promise<void> {
     if (!current()) return;
     try { await ipcRenderer.invoke(MEETING_CHANNELS.joinFailed); } catch { /* The window may be closing. */ }
     if (!current()) return;
+    el<HTMLInputElement>('start-camera').checked = false;
+    el('preview-message').textContent = 'Camera is off';
     error('Could not join this meeting. Check your connection and try again.');
     status('Could not join');
   } finally {
     busy = false;
     if (current()) {
       el<HTMLButtonElement>('join').disabled = false;
+      el<HTMLInputElement>('start-mic').disabled = false;
+      el<HTMLInputElement>('start-camera').disabled = false;
       updateRoomUi();
     }
   }
@@ -398,6 +447,7 @@ async function toggle(kind: 'mic' | 'camera'): Promise<void> {
 
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
+  el<HTMLInputElement>('start-camera').addEventListener('change', () => { void changePrejoinCamera(); });
   el<HTMLButtonElement>('layout-gallery').addEventListener('click', () => {
     layoutMode = 'gallery';
     if (room) renderLayout();

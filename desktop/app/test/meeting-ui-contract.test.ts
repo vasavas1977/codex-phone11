@@ -35,3 +35,13 @@ test('participant roster and video tiles refresh for media and membership change
   assert.match(preload, /clearParticipantUi\(\)/);
   assert.doesNotMatch(preload, /\.innerHTML\s*=|insertAdjacentHTML\s*\(/);
 });
+
+test('prejoin camera capture is opt-in and remains inside the isolated meeting preload', () => {
+  assert.match(html, /id="start-camera" type="checkbox"/);
+  assert.match(html, /id="prejoin-video" autoplay muted playsinline/);
+  assert.match(html, /script-src 'none'/);
+  assert.match(preload, /getUserMedia\(\{ video: true, audio: false \}\)/);
+  assert.match(preload, /await prejoinCamera\.stopAndDrain\(\)/);
+  assert.match(preload, /Camera preview is unavailable/);
+  assert.match(preload, /Camera permission denied/);
+});

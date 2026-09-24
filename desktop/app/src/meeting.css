@@ -21,6 +21,10 @@ h1 { font-size: 27px; letter-spacing: -.025em; margin: 3px 0; }
 #prejoin[hidden], #room[hidden], #gallery-grid[hidden], #speaker-view[hidden], #empty-stage[hidden] { display: none; }
 #prejoin { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(270px, .7fr); min-height: 440px; }
 .preview { display: grid; place-content: center; text-align: center; color: #b9c5da; background: #111b2c; }
+.preview { position: relative; min-width: 0; overflow: hidden; }
+.preview video { display: block; width: 100%; height: 100%; min-height: 440px; object-fit: cover; transform: scaleX(-1); }
+.preview video[hidden], #preview-empty[hidden] { display: none; }
+#preview-empty { padding: 24px; }
 .preview-icon { color: #78aaff; font-size: 62px; }
 .prejoin-options { display: flex; flex-direction: column; gap: 15px; padding: 28px; }
 .prejoin-options > label:first-child { font-weight: 700; }
