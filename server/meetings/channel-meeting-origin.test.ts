@@ -20,12 +20,18 @@ describe("channel-origin admission revalidation", () => {
       .mockResolvedValueOnce({ rows: [{ id: 41 }] })
       .mockResolvedValueOnce({ rows: [{ available: true }] })
       .mockResolvedValueOnce({ rows: [{ channel_id: "22345678-1234-4234-8234-123456789012" }] })
-      .mockResolvedValueOnce({ rows: [{ user_id: 7 }] });
+      .mockResolvedValueOnce({ rows: [{ user_id: 7 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 1, extension_id: 107 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 107 }] });
     await expect(channelMeetingOriginAllows({ query } as never, grant, true)).resolves.toBe(true);
     expect(query.mock.calls[0][0]).toContain("FROM tenants");
     expect(query.mock.calls[0][0]).toContain("FOR SHARE");
     expect(query.mock.calls[3][0]).toContain("member.conversation_id=$2");
     expect(query.mock.calls[3][0]).toContain("FOR KEY SHARE OF member");
+    expect(query.mock.calls[4][0]).toContain("FROM user_extensions");
+    expect(query.mock.calls[4][0]).toContain("FOR SHARE");
+    expect(query.mock.calls[5][0]).toContain("FROM extensions");
+    expect(query.mock.calls[5][0]).toContain("FOR SHARE");
   });
 
   it("denies an expired origin or a removed member", async () => {
@@ -64,6 +70,8 @@ describe("channel-origin admission revalidation", () => {
       if (sql.includes("to_regclass")) return { rows: [{ available: true }] };
       if (sql.includes("FROM phone11_channel_meetings")) return { rows: [{ channel_id: "22345678-1234-4234-8234-123456789012" }] };
       if (sql.includes("FOR KEY SHARE OF member")) return { rows: [{ user_id: userId }] };
+      if (sql.includes("FROM user_extensions")) return { rows: [{ id: userId, extension_id: userId + 100 }] };
+      if (sql.includes("FROM extensions")) return { rows: [{ id: userId + 100 }] };
       throw new Error(`Unexpected query: ${sql}`);
     });
     const first = makeQuery(7);
