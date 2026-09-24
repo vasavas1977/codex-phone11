@@ -166,10 +166,11 @@ export function ProfileAvatar(props: ProfileAvatarProps) {
   );
   if (props.interactive === false || !openProfile || !validProfileCardTarget(props.tenantId, props.userId)) return avatar;
   return <Pressable accessibilityRole="button" accessibilityLabel={`View ${displayName} profile`}
-    accessibilityHint="Opens contact information" hitSlop={Math.max(0, (44 - props.size) / 2)}
+    accessibilityHint="Opens profile information" hitSlop={Math.max(0, (44 - props.size) / 2)}
     onPress={(event) => {
       event.stopPropagation();
-      openProfile({ tenantId: props.tenantId!, userId: props.userId! });
+      openProfile({ tenantId: props.tenantId!, userId: props.userId!, name: props.name,
+        photoUrl: props.photoUrl, photoVersion: props.photoVersion });
     }}>
     {avatar}
   </Pressable>;

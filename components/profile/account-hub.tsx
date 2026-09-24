@@ -172,7 +172,7 @@ function DetailRow({ label, value, last = false }: { label: string; value: strin
   </View>;
 }
 
-export function AccountDetails({ identity, phone, workspaceName, photo, workspaceId, canEditPhoto, photoSaving, onClose, onEditPhoto }: {
+export function AccountDetails({ identity, phone, workspaceName, photo, workspaceId, canEditPhoto, photoSaving, photoOptionsEnabled = true, onClose, onEditPhoto }: {
   identity: AccountHubIdentity | null;
   phone: AccountHubPhone;
   workspaceName: string | null;
@@ -180,6 +180,7 @@ export function AccountDetails({ identity, phone, workspaceName, photo, workspac
   workspaceId?: number;
   canEditPhoto: boolean;
   photoSaving: boolean;
+  photoOptionsEnabled?: boolean;
   onClose: () => void;
   onEditPhoto: () => void;
 }) {
@@ -201,9 +202,9 @@ export function AccountDetails({ identity, phone, workspaceName, photo, workspac
     <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.detailsScroll}>
       <View style={styles.detailsIdentity}>
         <Pressable accessibilityRole="button" accessibilityLabel={canEditPhoto ? "Change profile photo" : "Profile photo options"}
-          accessibilityHint={identity ? "Opens profile photo options, including capability status and retry" : undefined}
-          accessibilityState={{ disabled: !identity || photoSaving }} disabled={!identity || photoSaving} onPress={onEditPhoto}
-          style={({ pressed }) => [styles.detailsAvatarButton, { opacity: !identity || photoSaving ? 1 : pressed ? 0.76 : 1 }]}>
+          accessibilityHint={identity && photoOptionsEnabled ? "Opens profile photo options, including capability status and retry" : undefined}
+          accessibilityState={{ disabled: !identity || photoSaving || !photoOptionsEnabled }} disabled={!identity || photoSaving || !photoOptionsEnabled} onPress={onEditPhoto}
+          style={({ pressed }) => [styles.detailsAvatarButton, { opacity: !identity || photoSaving || !photoOptionsEnabled ? 1 : pressed ? 0.76 : 1 }]}>
           <ProfileAvatar name={identity?.name} photoUrl={photo?.photoUrl} photoVersion={photo?.photoVersion} tenantId={workspaceId} userId={photo?.userId} size={112} accessibilityLabel="Profile photo" interactive={false} />
           {canEditPhoto && <View pointerEvents="none" style={[styles.cameraBadge, { backgroundColor: colors.primary, borderColor: colors.background }]}>
             <IconSymbol name="camera.fill" size={17} color="#fff" />

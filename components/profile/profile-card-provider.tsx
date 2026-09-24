@@ -3,6 +3,7 @@ import { BackHandler, Keyboard, Pressable, StyleSheet, Text, View } from "react-
 import { router, usePathname } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ContactDetails } from "@/components/contact-details";
+import { AccountDetails } from "@/components/profile/account-hub";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
@@ -38,13 +39,20 @@ export function ProfileCardProvider({ children, selectionOnly = false }: { child
     <View style={styles.surface}>
       <View style={styles.surface} pointerEvents={visible ? "none" : "auto"} accessibilityElementsHidden={!!visible} importantForAccessibility={visible ? "no-hide-descendants" : "auto"}>{children}</View>
       {visible && <View accessibilityViewIsModal style={[StyleSheet.absoluteFill, styles.card, { backgroundColor: colors.background, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+        {visible.userId === user?.id ? <AccountDetails
+          identity={{ name: user.name ?? visible.name ?? null, email: user.email ?? null }}
+          phone={null} workspaceName={null} workspaceId={visible.tenantId}
+          photo={{ userId: visible.userId, photoUrl: visible.photoUrl ?? null, photoVersion: visible.photoVersion ?? null }}
+          canEditPhoto={false} photoSaving={false} photoOptionsEnabled={actionsEnabled} onClose={close}
+          onEditPhoto={() => { if (!actionsEnabled) return; close(); router.push("/profile"); }}
+        /> : <>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back from profile" onPress={close} style={styles.back}><IconSymbol name="chevron.left" size={23} color={colors.primary} /></Pressable>
           <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "700", fontSize: 17 }}>Contact profile</Text>
           <View style={styles.back} />
         </View>
-        {visible.userId === user?.id && actionsEnabled && <Pressable accessibilityRole="button" onPress={() => { close(); router.push("/profile"); }} style={styles.selfLink}><Text style={{ color: colors.primary }}>My profile · Edit photo and preferences</Text></Pressable>}
         <ContactDetails key={`${visible.ownerId}:${visible.tenantId}:${visible.userId}`} id={String(visible.userId)} tenantId={String(visible.tenantId)} embedded actionsEnabled={actionsEnabled} onBeforeAction={close} />
+        </>}
       </View>}
     </View>
   </ProfileCardContext.Provider>;
@@ -55,5 +63,4 @@ const styles = StyleSheet.create({
   card: { zIndex: 100, elevation: 20 },
   header: { minHeight: 56, flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8 },
   back: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
-  selfLink: { paddingHorizontal: 24, minHeight: 48, justifyContent: "center" },
 });

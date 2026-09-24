@@ -1,6 +1,12 @@
 import { createContext, useContext } from "react";
 
-export type ProfileCardTarget = { tenantId: number; userId: number };
+export type ProfileCardTarget = {
+  tenantId: number;
+  userId: number;
+  name?: string | null;
+  photoUrl?: string | null;
+  photoVersion?: string | null;
+};
 export const ProfileCardContext = createContext<((target: ProfileCardTarget) => void) | null>(null);
 export const useOpenProfileCard = () => useContext(ProfileCardContext);
 
