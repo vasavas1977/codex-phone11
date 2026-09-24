@@ -23,6 +23,8 @@ export interface BrowserParticipant {
   attributes?: Readonly<Record<string, string>>;
 }
 export interface BrowserLocalParticipant extends BrowserParticipant {
+  /** LiveKit's local publications are the fallback stop path if signalling teardown fails. */
+  trackPublications?: ReadonlyMap<string, { track?: { stop(): void | Promise<void> } }>;
   setMicrophoneEnabled(enabled: boolean): Promise<unknown>;
   setCameraEnabled(enabled: boolean): Promise<unknown>;
   setAttributes?(attributes: Record<string, string>): Promise<unknown>;
@@ -58,6 +60,9 @@ export class BrowserMeetingSession {
   private listeners = new Set<() => void>();
   private snapshot: BrowserSessionSnapshot = { status: 'idle', participants: [], error: null };
   private mediaQueue: Promise<unknown> = Promise.resolve();
+  private pendingMediaOperations = 0;
+  private connectionTasks = new Set<Promise<void>>();
+  private disconnectTask?: Promise<void>;
   private receiveOnly = false;
   constructor(private readonly createRoom: () => BrowserRoom,
     private readonly capabilities: BrowserSessionCapabilities = {}) {}
@@ -86,7 +91,13 @@ export class BrowserMeetingSession {
     this.update({ error: 'Meeting operation failed. Check permissions and connection, then retry.' });
     return error instanceof Error ? error : new Error('Meeting operation failed');
   }
-  async connect(options: { url: string; token: string; microphone?: boolean; camera?: boolean; receiveOnly?: boolean }): Promise<void> {
+  connect(options: { url: string; token: string; microphone?: boolean; camera?: boolean; receiveOnly?: boolean }): Promise<void> {
+    const task = this.connectInternal(options);
+    this.connectionTasks.add(task);
+    void task.finally(() => this.connectionTasks.delete(task)).catch(() => undefined);
+    return task;
+  }
+  private async connectInternal(options: { url: string; token: string; microphone?: boolean; camera?: boolean; receiveOnly?: boolean }): Promise<void> {
     const generation = ++this.generation;
     const previous = this.room;
     this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
@@ -95,7 +106,7 @@ export class BrowserMeetingSession {
     let room: BrowserRoom | undefined;
     let stage: BrowserMeetingConnectStage = 'room_cleanup';
     try {
-      if (previous) await previous.disconnect(true);
+      if (previous) await this.stopRoom(previous);
       if (generation !== this.generation) throw new Error('Meeting connection cancelled');
       stage = 'room_create';
       room = this.createRoom();
@@ -112,8 +123,11 @@ export class BrowserMeetingSession {
       bind('reconnecting', () => this.update({ status: 'reconnecting' }));
       bind('reconnected', () => { this.refresh(room!); this.update({ status: 'connected' }); });
       bind('disconnected', () => {
-        ++this.generation; this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
         this.update({ status: 'disconnected', participants: [], error: 'Meeting disconnected.' });
+        // The SDK can signal disconnection while a native capture operation
+        // is still pending. Keep the room available to the same stop barrier
+        // used for SIP handoff, and retire it before the media lease releases.
+        void this.disconnect().catch(() => undefined);
       });
       stage = 'signal_connect';
       await room.connect(options.url, options.token);
@@ -143,19 +157,72 @@ export class BrowserMeetingSession {
         this.update({ status: 'error', participants: [] }); this.fail(error);
       }
       // A delayed connect/capture can complete after disconnect. Stop it again.
-      if (room) await Promise.resolve(room.disconnect(true)).catch(() => undefined);
+      if (room) {
+        try { await this.stopRoom(room); }
+        catch (cleanupError) {
+          // Keep the room reachable by leave() so a failed SDK teardown can
+          // never release the native media lease with live capture behind it.
+          this.room = room;
+          throw cleanupError;
+        }
+      }
       throw error instanceof BrowserMeetingConnectionFailure
         ? error
         : new BrowserMeetingConnectionFailure(stage, error);
     }
   }
-  async disconnect(): Promise<void> {
+  disconnect(): Promise<void> {
+    if (this.disconnectTask) return this.disconnectTask;
+    // Assign before cleanup emits a snapshot: the native owner may call leave
+    // reentrantly from its subscription to an external disconnect event.
+    const task = Promise.resolve().then(() => this.disconnectInternal());
+    this.disconnectTask = task;
+    void task.finally(() => {
+      if (this.disconnectTask === task) this.disconnectTask = undefined;
+    }).catch(() => undefined);
+    return task;
+  }
+  private async disconnectInternal(): Promise<void> {
     const generation = ++this.generation, room = this.room;
-    this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
+    const pendingMedia = this.mediaQueue;
+    const hadPendingWork = this.pendingMediaOperations > 0 || this.connectionTasks.size > 0;
+    const pendingConnections = [...this.connectionTasks];
+    this.cleanup?.(); this.cleanup = undefined;
     this.receiveOnly = false;
-    this.update({ status: 'disconnected', participants: [], error: null });
-    try { if (room) await room.disconnect(true); }
+    this.update({ status: 'disconnected', participants: [],
+      error: this.snapshot.status === 'disconnected' ? this.snapshot.error : null });
+    try {
+      // Stop capture promptly, then wait for every operation that could still
+      // publish a native track. A final stop closes the late-publish window
+      // before NativeMeetingLifecycle hands the audio device to SIP.
+      const firstStop = room ? this.stopRoom(room) : Promise.resolve();
+      const [stopResult] = await Promise.allSettled([
+        firstStop, pendingMedia, ...pendingConnections,
+      ]);
+      if (room && hadPendingWork) await this.stopRoom(room);
+      // A failing connect may restore its room for retry only after the
+      // disconnect barrier captured this.room. Re-read it after all join work
+      // settles; otherwise SIP could acquire the lease with that room live.
+      const lateRoom = this.room;
+      if (lateRoom && lateRoom !== room) await this.stopRoom(lateRoom);
+      if (stopResult.status === 'rejected') throw stopResult.reason;
+      if (generation === this.generation) this.room = undefined;
+    }
     catch (error) { if (generation === this.generation) this.fail(error); throw error; }
+  }
+  private async stopRoom(room: BrowserRoom): Promise<void> {
+    try { await room.disconnect(true); }
+    catch (error) {
+      // LiveKit may reject sendLeave()/engine.close() before handleDisconnect
+      // stops tracks. Stop published capture ourselves, but still reject so
+      // the native owner retains the SIP/media lease until teardown retries.
+      const publications = room.localParticipant.trackPublications;
+      if (publications) {
+        await Promise.allSettled(Array.from(publications.values(), publication =>
+          Promise.resolve().then(() => publication.track?.stop())));
+      }
+      throw error;
+    }
   }
   private operation(action: (participant: BrowserLocalParticipant) => Promise<unknown>): Promise<void> {
     const generation = this.generation, room = this.room;
@@ -173,9 +240,11 @@ export class BrowserMeetingSession {
         this.refresh(room); this.update({ error: null });
       } catch (error) { if (generation === this.generation) this.fail(error); throw error; }
     };
+    this.pendingMediaOperations += 1;
     const result = this.mediaQueue.then(run, run);
-    this.mediaQueue = result.catch(() => undefined);
-    return result;
+    const settled = result.finally(() => { this.pendingMediaOperations -= 1; });
+    this.mediaQueue = settled.catch(() => undefined);
+    return settled;
   }
   private denyPublish(): Promise<void> {
     const error = new Error('This meeting is listen-only');

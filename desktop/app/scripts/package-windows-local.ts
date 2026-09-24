@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { packager } from '@electron/packager';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
+import { assertCommittedDesktopSource } from './committed-source';
 
 const sdkRevision = '38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f';
 const sdkDllHashes: Record<string, string> = {
@@ -76,12 +77,12 @@ async function main(): Promise<void> {
     const pin = sha(manifest);
     if (!(await verifyPackagedHelper(helperExecutable(stage, 'win32'), stage, pin, 'win32')))
       throw new Error('Staged Windows helper integrity verification failed');
+    assertCommittedDesktopSource(repoRoot);
     execFileSync(process.execPath, [join(appRoot, 'scripts/build.mjs')], {
       cwd: appRoot, env: { ...process.env, PHONE11_RESOURCE_STAGE: stage, PHONE11_BUILD_PLATFORM: 'win32' },
       stdio: 'inherit',
     });
-    execFileSync('git', ['diff', '--quiet', 'HEAD', '--', 'desktop/app/src', 'desktop/app/scripts/build.mjs'],
-      { cwd: repoRoot });
+    assertCommittedDesktopSource(repoRoot);
     const archive = execFileSync('git', ['archive', 'HEAD', 'desktop/app'], { cwd: repoRoot, maxBuffer: 20_000_000 });
     execFileSync('/usr/bin/tar', ['-xf', '-', '-C', exportRoot], { input: archive });
     const exportedApp = join(exportRoot, 'desktop', 'app');

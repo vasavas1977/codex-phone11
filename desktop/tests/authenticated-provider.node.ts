@@ -10,7 +10,8 @@ const trpc = (value: unknown): Response => json({ result: { data: { json: value 
 
 function harness(overrides: { authStatus?: number; authCode?: string; tenantId?: number; extension?: string;
   extensionId?: number; userId?: number; malformed?: boolean; rotatedPassword?: string;
-  secondTenantId?: number; secondExtensionId?: number; secondUsername?: string } = {}) {
+  secondTenantId?: number; secondExtensionId?: number; secondUsername?: string;
+  availableMeetings?: unknown; meetingGrant?: unknown } = {}) {
   const paths: string[] = [];
   let configCalls = 0;
   const fetcher: typeof fetch = async (input, init) => {
@@ -38,6 +39,17 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
         password: subsequent && overrides.rotatedPassword
         ? overrides.rotatedPassword : password, domain: "sip.example.test", transport: "TLS" },
     });
+    }
+    if (url.pathname === "/api/trpc/meetings.availableForTenant") {
+      assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""), { json: { tenantId: overrides.tenantId ?? 9 } });
+      return trpc(overrides.availableMeetings ?? [{ meetingId: "11111111-1111-4111-8111-111111111111", tenantId: overrides.tenantId ?? 9 }]);
+    }
+    if (url.pathname === "/api/trpc/meetings.join") {
+      assert.equal(init?.method, "POST");
+      assert.equal(new Headers(init?.headers).get("content-type"), "application/json");
+      assert.deepEqual(JSON.parse(String(init?.body)), { json: { meetingId: "11111111-1111-4111-8111-111111111111", tenantId: overrides.tenantId ?? 9 } });
+      return trpc(overrides.meetingGrant ?? { url: "wss://room.example.test", token: "private-room-token",
+        grant_profile: "interactive", expires_at: Math.floor(Date.now() / 1000) + 300 });
     }
     if (url.pathname === "/api/auth/sign-out") {
       assert.equal(new Headers(init?.headers).get("Origin"), "http://127.0.0.1:3000");
@@ -151,4 +163,69 @@ test("non-HTTPS remote origins and URL credentials are rejected", () => {
   for (const origin of ["http://phone11.example", "https://user:secret@phone11.example", "https://phone11.example/path"]) {
     assert.throws(() => new AuthenticatedDesktopProvider({ origin }));
   }
+});
+
+test("desktop meetings use admitted IDs and keep media grants outside public session state", async () => {
+  const { provider, paths } = harness();
+  const session = await provider.signIn("user@example.test", "login-secret");
+  await assert.rejects(provider.availableMeetings("stale-revision"));
+  const ids = await provider.availableMeetings(session.revision);
+  assert.deepEqual(ids, ["11111111-1111-4111-8111-111111111111"]);
+  const grant = await provider.joinMeeting(session.revision, ids[0]);
+  assert.deepEqual(grant, { url: "wss://room.example.test", token: "private-room-token",
+    grantProfile: "interactive", expiresAt: grant.expiresAt });
+  assert.equal(JSON.stringify(provider.currentSession()).includes(grant.token), false);
+  assert.equal(paths.filter(path => path.endsWith("meetings.join")).length, 1);
+  await provider.signOut();
+  await assert.rejects(provider.joinMeeting(session.revision, ids[0]));
+});
+
+test("desktop meeting admission rejects malformed, expired, and credential-bearing grants", async () => {
+  for (const meetingGrant of [
+    { url: "wss://user:secret@room.example.test", token: "private-room-token", grant_profile: "interactive", expires_at: Math.floor(Date.now() / 1000) + 300 },
+    { url: "wss://room.example.test?token=private", token: "private-room-token", grant_profile: "interactive", expires_at: Math.floor(Date.now() / 1000) + 300 },
+    { url: "wss://room.example.test", token: "private-room-token", grant_profile: "interactive", expires_at: Math.floor(Date.now() / 1000) - 1 },
+    { url: "wss://room.example.test", token: "private-room-token", grant_profile: "host", expires_at: Math.floor(Date.now() / 1000) + 300 },
+  ]) {
+    const { provider } = harness({ meetingGrant });
+    const session = await provider.signIn("user@example.test", "login-secret");
+    await assert.rejects(provider.joinMeeting(session.revision, "11111111-1111-4111-8111-111111111111"));
+  }
+});
+
+test("desktop meeting list rejects unexpected IDs, mismatched tenants, and oversized responses", async () => {
+  for (const availableMeetings of [[{ meetingId: "other-tenant-title", tenantId: 9 }],
+    [{ meetingId: "11111111-1111-4111-8111-111111111111", tenantId: 10 }],
+    Array.from({ length: 101 }, () => ({ meetingId: "11111111-1111-4111-8111-111111111111", tenantId: 9 }))]) {
+    const { provider } = harness({ availableMeetings });
+    const session = await provider.signIn("user@example.test", "login-secret");
+    await assert.rejects(provider.availableMeetings(session.revision));
+  }
+});
+
+test("sign-out invalidates an in-flight desktop meeting grant before delivery", async () => {
+  let entered!: () => void;
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { release = resolve; });
+  const requestEntered = new Promise<void>(resolve => { entered = resolve; });
+  const provider = new AuthenticatedDesktopProvider({ origin: "http://127.0.0.1:3000",
+    allowHttpLoopbackForTests: true, fetch: async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/api/auth/sign-in/email") return json({ success: true }, 200, { "set-auth-token": bearer });
+      if (path === "/api/auth/me") return json({ user: { id: 7 } });
+      if (path === "/api/trpc/phone.getConfig") return trpc({ configured: true, tenantId: 9,
+        extension: { id: 41, number: "1020" }, sip: { username: "sip1020", password,
+          domain: "sip.example.test", transport: "TLS" } });
+      if (path === "/api/trpc/meetings.join") { entered(); return pending; }
+      if (path === "/api/auth/sign-out") return json({ success: true });
+      throw new Error(`Unexpected ${path}`);
+    } });
+  const session = await provider.signIn("user@example.test", "login-secret");
+  const joining = provider.joinMeeting(session.revision, "11111111-1111-4111-8111-111111111111");
+  await requestEntered;
+  await provider.signOut();
+  release(trpc({ url: "wss://room.example.test", token: "private-room-token",
+    grant_profile: "interactive", expires_at: Math.floor(Date.now() / 1000) + 300 }));
+  await assert.rejects(joining);
+  assert.equal(provider.currentSession(), null);
 });

@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { packager } from '@electron/packager';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
+import { assertCommittedDesktopSource } from './committed-source';
 
 const appRoot = resolve(__dirname, '..');
 const repoRoot = resolve(appRoot, '..', '..');
@@ -35,12 +36,12 @@ async function main(): Promise<void> {
   const pin = createHash('sha256').update(manifest).digest('hex');
   if (!(await verifyPackagedHelper(helperExecutable(stageReal, 'darwin'), stageReal, pin, 'darwin')))
     throw new Error('Staged helper integrity verification failed');
+  assertCommittedDesktopSource(repoRoot);
   execFileSync(process.execPath, [join(appRoot, 'scripts/build.mjs')], {
     cwd: appRoot, env: { ...process.env, PHONE11_RESOURCE_STAGE: stageReal }, stdio: 'inherit',
   });
   // Package committed app metadata/source, adding only the newly built dist.
-  execFileSync('git', ['diff', '--quiet', 'HEAD', '--', 'desktop/app/src', 'desktop/app/scripts/build.mjs'],
-    { cwd: repoRoot });
+  assertCommittedDesktopSource(repoRoot);
   const exportRoot = await mkdtemp(join(tmpdir(), 'phone11-committed-app-'));
   let appPath: string;
   try {
@@ -51,6 +52,10 @@ async function main(): Promise<void> {
     [appPath] = await packager({ dir: exportedApp, name: 'Phone11-Desktop-Trial', platform: 'darwin',
       arch: 'arm64', electronVersion: '44.4.5', out: outputReal, asar: true,
       asarIntegrityDigest: false, overwrite: false, appBundleId: 'ai.phone11.desktop.trial',
+      extendInfo: { NSMicrophoneUsageDescription: 'Use your microphone in Phone11 meetings.',
+        NSCameraUsageDescription: 'Use your camera in Phone11 meetings.' },
+      extendHelperInfo: { NSMicrophoneUsageDescription: 'Use your microphone in Phone11 meetings.',
+        NSCameraUsageDescription: 'Use your camera in Phone11 meetings.' },
       ignore: [/^\/src(\/|$)/, /^\/test(\/|$)/, /^\/scripts(\/|$)/, /^\/resources(\/|$)/],
     });
   } finally { await rm(exportRoot, { recursive: true, force: true }); }

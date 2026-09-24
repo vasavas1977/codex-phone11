@@ -36,6 +36,7 @@ export type NativeMeetingPreferences = Readonly<{
 
 type NativeBindings = {
   Room: new () => BrowserRoom;
+  configureMeetingAudio: () => Promise<void>;
   startAudioSession: () => Promise<void>;
   stopAudioSession: () => Promise<void>;
   classifyJoinFailure: (
@@ -80,6 +81,21 @@ async function loadNativeBindings(): Promise<NativeBindings> {
         native.registerGlobals({ autoConfigureAudioSession: false });
         return {
           Room: client.Room as unknown as NativeBindings["Room"],
+          // expo-audio can leave the shared iOS session in playback mode. The
+          // manually managed LiveKit session must restore duplex meeting audio
+          // after acquiring the media lease and before activating it.
+          configureMeetingAudio: Platform.OS === "ios"
+            ? () => native.AudioSession.setAppleAudioConfiguration({
+                audioCategory: "playAndRecord",
+                audioCategoryOptions: [
+                  "allowBluetooth",
+                  "allowBluetoothA2DP",
+                  "allowAirPlay",
+                  "defaultToSpeaker",
+                ],
+                audioMode: "videoChat",
+              })
+            : async () => undefined,
           startAudioSession: native.AudioSession.startAudioSession,
           stopAudioSession: native.AudioSession.stopAudioSession,
           classifyJoinFailure: (error: unknown, stage: MeetingJoinStage) => {
@@ -136,7 +152,9 @@ export class NativeMeetingLifecycle {
   private releaseTask?: Promise<void>;
   private mediaReleased = false;
   private audioStartAttempted = false;
+  private audioSetupTask?: Promise<void>;
   private audioStopped = false;
+  private roomStopped = false;
   private unsubscribe?: () => void;
   private unsubscribeOwner?: () => void;
   private bindings?: NativeBindings;
@@ -203,7 +221,20 @@ export class NativeMeetingLifecycle {
     const hooks = {
       pauseForSip: () => {
         lifecycle.interruptedBySip = true;
-        return lifecycle.leave();
+        // A stuck SDK publish/permission promise must not strand CallKit's
+        // SIP preparation indefinitely. Timeout rejects the SIP handoff;
+        // the meeting cleanup continues and the shared audio lease is never
+        // released until its native media actually stops.
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<void>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("Meeting media did not stop before the Phone call.")),
+            8000,
+          );
+        });
+        return Promise.race([lifecycle.leave(), deadline]).finally(() => {
+          if (timeout) clearTimeout(timeout);
+        });
       },
     };
     // A user-initiated rejoin after SIP releases its lease is the coordinator's
@@ -215,11 +246,11 @@ export class NativeMeetingLifecycle {
     lifecycle.lease = request.lease;
     lifecycle.unsubscribe = lifecycle.session.subscribe(() => {
       const status = lifecycle.session.getSnapshot().status;
-      // BrowserMeetingSession emits its local "disconnected" state before it
-      // awaits Room.disconnect(true). The lifecycle owns that local path so it
-      // can stop tracks before audio; only an external disconnect releases here.
+      // An external SDK disconnect can arrive while a capture operation is
+      // still publishing. Use the same tracked disconnect barrier as a user
+      // leave before stopping audio or releasing the media lease.
       if (status === "disconnected" && !lifecycle.leaving)
-        void lifecycle.releaseAfterMediaStops();
+        void lifecycle.leave().catch(() => undefined);
     });
     let stage: MeetingJoinStage = "audio_start";
     try {
@@ -233,20 +264,28 @@ export class NativeMeetingLifecycle {
           "A Phone call started before the meeting could connect.",
         );
       }
-      // The native SDK requires its manually managed audio session before a
-      // room starts connecting. Starting it afterwards makes an otherwise
-      // valid server-issued admission fail at the native media boundary.
-      // Treat an attempted activation as cleanup-owned. The native call can
-      // reject after partially changing AVAudioSession state, so a best-effort
-      // stop is still required on that failure path.
+      // Configuration and activation are one cleanup-owned operation. A SIP
+      // arrival during either native call must wait for it to settle before
+      // Phone media can take the shared iOS audio session.
       lifecycle.audioStartAttempted = true;
-      await bindings.startAudioSession();
+      const audioSetupTask = (async () => {
+        await bindings.configureMeetingAudio();
+        if (
+          lifecycle.leaving ||
+          !lifecycle.ownerIsCurrent() ||
+          hasLiveSipCall() ||
+          !phone11MediaOwnership.isCurrent(request.lease)
+        ) throw new Error("Meeting audio setup was cancelled.");
+        await bindings.startAudioSession();
+      })();
+      lifecycle.audioSetupTask = audioSetupTask;
+      await audioSetupTask;
       if (
         !lifecycle.ownerIsCurrent() ||
         hasLiveSipCall() ||
         !phone11MediaOwnership.isCurrent(request.lease)
       ) {
-        await lifecycle.releaseAfterMediaStops().catch(() => undefined);
+        await lifecycle.leave().catch(() => undefined);
         throw new Error(
           "A Phone call started before the meeting audio could start.",
         );
@@ -273,7 +312,7 @@ export class NativeMeetingLifecycle {
         hasLiveSipCall() ||
         !phone11MediaOwnership.isCurrent(request.lease)
       ) {
-        await lifecycle.releaseAfterMediaStops().catch(() => undefined);
+        await lifecycle.leave().catch(() => undefined);
         throw new Error(
           "A Phone call started before the meeting audio could start.",
         );
@@ -281,7 +320,12 @@ export class NativeMeetingLifecycle {
       setActiveNativeMeeting(lifecycle);
       return lifecycle;
     } catch (error) {
-      await lifecycle.leave().catch(() => undefined);
+      try { await lifecycle.leave(); }
+      catch {
+        // Keep failed cleanup addressable by the next join/auth teardown.
+        // The held media lease prevents SIP from racing a live local track.
+        setActiveNativeMeeting(lifecycle);
+      }
       const failureStage =
         error instanceof BrowserMeetingConnectionFailure ? error.stage : stage;
       throw new MeetingJoinFailure(
@@ -297,18 +341,28 @@ export class NativeMeetingLifecycle {
     this.leaving = true;
     try {
       await this.session.disconnect();
-    } finally {
+      this.roomStopped = true;
       await this.releaseAfterMediaStops();
+    } catch (error) {
+      // Failed LiveKit or native-audio teardown must retain the shared lease.
+      // A later leave can retry instead of handing possibly live media to SIP.
+      this.leaving = false;
+      throw error;
     }
   }
 
   async releaseAfterMediaStops(): Promise<void> {
+    if (!this.roomStopped)
+      throw new Error("Meeting tracks have not stopped.");
     if (this.releaseTask) return this.releaseTask;
     const cleanup = (async () => {
       let audioError: unknown;
       // BrowserMeetingSession.disconnect(true) stops all local tracks first.
-      // A failed native audio stop is surfaced, but cannot retain a room,
-      // media lease, or old-account registry entry. A later leave retries it.
+      // A failed native audio stop retains the media lease. A later leave
+      // retries it before SIP can acquire the shared iOS audio session.
+      // Native configuration/activation can outlive a SIP interruption. Wait
+      // for that attempt before stopping and releasing the shared media lease.
+      await this.audioSetupTask?.catch(() => undefined);
       if (this.bindings && this.audioStartAttempted && !this.audioStopped) {
         try {
           await this.bindings.stopAudioSession();
@@ -317,6 +371,7 @@ export class NativeMeetingLifecycle {
           audioError = error;
         }
       }
+      if (audioError) throw audioError;
       if (!this.mediaReleased) {
         if (this.lease) phone11MediaOwnership.release(this.lease);
         this.mediaReleased = true;
@@ -326,7 +381,6 @@ export class NativeMeetingLifecycle {
         this.unsubscribeOwner = undefined;
         clearActiveNativeMeeting(this);
       }
-      if (audioError) throw audioError;
     })();
     this.releaseTask = cleanup;
     try {

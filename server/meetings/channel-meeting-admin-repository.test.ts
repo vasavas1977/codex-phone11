@@ -1,0 +1,125 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { createChannelMeetingAdminRepository } from "./channel-meeting-admin-repository";
+
+const channelId = "12345678-1234-4234-8234-123456789012";
+
+function repository(options: { admin?: boolean; tenant?: boolean; installed?: boolean; channel?: boolean; member?: boolean } = {}) {
+  const query = vi.fn(async (sql: string, values?: unknown[]) => {
+    if (sql.startsWith("SET LOCAL")) return { rows: [] };
+    if (sql.includes("pg_advisory_xact_lock")) return { rows: [] };
+    if (sql.includes("SELECT id FROM tenants"))
+      return { rows: options.tenant === false ? [] : [{ id: 41 }] };
+    if (sql.includes("SELECT user_id FROM tenant_memberships"))
+      return { rows: options.admin === false ? [] : [{ user_id: 7 }] };
+    if (sql.includes("SELECT legacy_user_id FROM phone11_auth_identity"))
+      return { rows: [{ legacy_user_id: 7 }] };
+    if (sql.includes("to_regclass('public.phone11_channel_meetings')"))
+      return { rows: [{ available: options.installed !== false }] };
+    if (sql.includes("SELECT id,name,kind FROM phone11_chat_conversations"))
+      return { rows: [{ id: channelId, name: "Team", kind: "channel" }] };
+    if (sql.includes("COALESCE(NULLIF(users.name"))
+      return { rows: [{ conversation_id: channelId, user_id: 8, name: "Colleague", can_start_meeting: true }] };
+    if (sql.includes("SELECT conversation.id FROM phone11_chat_conversations"))
+      return { rows: options.channel === false ? [] : [{ id: channelId }] };
+    if (sql.includes("SELECT member.user_id") && sql.includes("FROM phone11_chat_members member"))
+      return { rows: options.member === false ? [] : [{ user_id: 8 }] };
+    if (sql.includes("UPDATE phone11_chat_members SET can_start_meeting"))
+      return { rows: [{ user_id: values?.[2], can_start_meeting: values?.[3] }] };
+    throw new Error(`Unexpected query: ${sql}`);
+  });
+  const transaction = vi.fn(async (fn: (db: { query: typeof query }) => Promise<unknown>) => fn({ query }));
+  return { api: createChannelMeetingAdminRepository(transaction as never), query };
+}
+
+describe("channel meeting administration", () => {
+  it("denies non-admin callers before reading channels or writing flags", async () => {
+    const { api, query } = repository({ admin: false });
+    await expect(api.overview(7, 41, true)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(query.mock.calls.some(([sql]) => sql.includes("UPDATE phone11_chat_members"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("SELECT id,name,kind"))).toBe(false);
+  });
+
+  it("reports disabled configuration and missing migration without writing", async () => {
+    const disabled = repository();
+    await expect(disabled.api.overview(7, 41, false)).resolves.toMatchObject({ available: false, channels: [] });
+    await expect(disabled.api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, false))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    const missing = repository({ installed: false });
+    await expect(missing.api.overview(7, 41, true)).resolves.toMatchObject({ available: false, channels: [] });
+    await expect(missing.api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(missing.query.mock.calls.some(([sql]) => sql.includes("UPDATE phone11_chat_members"))).toBe(false);
+  });
+
+  it("lists only the requested tenant and changes only an eligible channel member", async () => {
+    const { api, query } = repository();
+    await expect(api.overview(7, 41, true)).resolves.toEqual({ available: true, channels: [{
+      id: channelId, name: "Team", kind: "channel", members: [{ userId: 8, name: "Colleague", canStartMeeting: true }],
+    }] });
+    await expect(api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: false }, true))
+      .resolves.toEqual({ channelId, userId: 8, canStartMeeting: false });
+    const update = query.mock.calls.find(([sql]) => sql.includes("UPDATE phone11_chat_members"));
+    expect(update?.[1]).toEqual([41, channelId, 8, false]);
+    expect(query.mock.calls.some(([sql]) => sql.includes("member.tenant_id=$1 AND member.conversation_id=$2"))).toBe(true);
+  });
+
+  it("prechecks admin access without a row lock, then takes the channel lock before locking authorization rows", async () => {
+    const { api, query } = repository();
+    await api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true);
+    const statements = query.mock.calls.map(([sql]) => sql);
+    const tenantChecks = statements.map((sql, index) => sql.includes("SELECT id FROM tenants") ? index : -1).filter((index) => index >= 0);
+    const membershipChecks = statements.map((sql, index) => sql.includes("SELECT user_id FROM tenant_memberships") ? index : -1).filter((index) => index >= 0);
+    const identityChecks = statements.map((sql, index) => sql.includes("SELECT legacy_user_id FROM phone11_auth_identity") ? index : -1).filter((index) => index >= 0);
+    const advisory = statements.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
+    const channel = statements.findIndex((sql) => sql.includes("SELECT conversation.id FROM phone11_chat_conversations"));
+    const member = statements.findIndex((sql) => sql.includes("SELECT member.user_id"));
+    expect(tenantChecks).toHaveLength(2);
+    expect(membershipChecks).toHaveLength(2);
+    expect(identityChecks).toHaveLength(2);
+    expect(statements[tenantChecks[0]]).not.toContain("FOR SHARE");
+    expect(statements[membershipChecks[0]]).not.toContain("FOR SHARE");
+    expect(statements[identityChecks[0]]).not.toContain("FOR SHARE");
+    expect(identityChecks[0]).toBeLessThan(advisory);
+    expect(advisory).toBeLessThan(tenantChecks[1]);
+    expect(tenantChecks[1]).toBeLessThan(membershipChecks[1]);
+    expect(membershipChecks[1]).toBeLessThan(identityChecks[1]);
+    expect(advisory).toBeLessThan(channel);
+    expect(advisory).toBeLessThan(member);
+    expect(statements[tenantChecks[1]]).toContain("FOR SHARE");
+    expect(statements[membershipChecks[1]]).toContain("FOR SHARE");
+    expect(statements[identityChecks[1]]).toContain("FOR SHARE");
+    expect(query.mock.calls[advisory][1]).toEqual([`phone11-channel-meeting:41:${channelId}`]);
+  });
+
+  it("locks the shared tenant before actor rows even when editing two different channels", async () => {
+    const first = "12345678-1234-4234-8234-123456789012";
+    const second = "22345678-1234-4234-8234-123456789012";
+    for (const id of [first, second]) {
+      const { api, query } = repository();
+      await api.setHostPermission(7, { tenantId: 41, channelId: id, userId: 8, canStartMeeting: true }, true);
+      const statements = query.mock.calls.map(([sql]) => sql);
+      const advisory = statements.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
+      const tenantLock = statements.findIndex((sql) => sql.includes("SELECT id FROM tenants") && sql.includes("FOR SHARE"));
+      const membershipLock = statements.findIndex((sql) => sql.includes("SELECT user_id FROM tenant_memberships") && sql.includes("FOR SHARE"));
+      const identityLock = statements.findIndex((sql) => sql.includes("SELECT legacy_user_id FROM phone11_auth_identity") && sql.includes("FOR SHARE"));
+      const channelLock = statements.findIndex((sql) => sql.includes("SELECT conversation.id FROM phone11_chat_conversations"));
+      expect([advisory, tenantLock, membershipLock, identityLock, channelLock])
+        .toEqual([...new Set([advisory, tenantLock, membershipLock, identityLock, channelLock])].sort((a, b) => a - b));
+      expect(query.mock.calls[advisory][1]).toEqual([`phone11-channel-meeting:41:${id}`]);
+      expect(query.mock.calls[tenantLock][1]).toEqual([41]);
+    }
+  });
+
+  it("rejects cross-tenant channels and inactive or removed members", async () => {
+    const crossTenant = repository({ channel: false });
+    await expect(crossTenant.api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    const inactive = repository({ member: false });
+    await expect(inactive.api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(inactive.query.mock.calls.some(([sql]) => sql.includes("UPDATE phone11_chat_members"))).toBe(false);
+  });
+});

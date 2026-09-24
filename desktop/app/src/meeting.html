@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'self'; img-src 'self' data:; media-src blob:; connect-src wss: https:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<title>Phone11 meeting</title><link rel="stylesheet" href="meeting.css"></head>
+<body><main>
+  <header><div><span class="eyebrow">PHONE11 MEETING</span><h1 id="title">Ready to meet</h1></div><span id="status" role="status">Checking your meetings…</span></header>
+  <section id="prejoin" class="card">
+    <div class="preview"><div class="preview-icon" aria-hidden="true">▣</div><p>Camera preview starts after you join.</p></div>
+    <div class="prejoin-options"><label for="meeting-select">Your admitted meeting</label><select id="meeting-select" disabled><option>Loading…</option></select>
+      <label class="switch"><input id="start-mic" type="checkbox"> Join with microphone on</label>
+      <label class="switch"><input id="start-camera" type="checkbox"> Join with camera on</label>
+      <button id="join" type="button" disabled>Join meeting</button><p id="prejoin-error" role="alert"></p></div>
+  </section>
+  <section id="room" hidden><div id="stage" aria-label="Meeting video"><div id="empty-stage">Waiting for another participant…</div></div><div id="remote-audio" hidden></div>
+    <div class="meeting-bottom"><div><strong id="participant-count">You</strong><span id="media-note">Connecting audio…</span></div><nav aria-label="Meeting controls">
+      <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="leave" class="danger" type="button">Leave</button>
+    </nav></div></section>
+</main></body></html>

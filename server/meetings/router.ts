@@ -1,6 +1,13 @@
 import { protectedProcedure, router } from "../_core/trpc";
+import { z } from "zod";
 import { getPool } from "../pbx/db";
 import { readChannelMeetingConfiguration } from "./channel-meeting-config";
+import {
+  adminOverviewSchema,
+  adminSetHostPermissionSchema,
+  createChannelMeetingAdminRepository,
+  type ChannelMeetingAdminRepository,
+} from "./channel-meeting-admin-repository";
 import {
   createChannelMeetingRepository,
   type ChannelMeetingRepository,
@@ -52,6 +59,7 @@ export type MeetingsRouterDependencies = {
   resolver?: Connect11PlainVideoAdmissionResolver;
   clientFactory?: PlainVideoClientFactory;
   channelRepository?: ChannelMeetingRepository;
+  channelAdminRepository?: ChannelMeetingAdminRepository;
 };
 
 function defaultClientFactory(): PlainVideoClientFactory {
@@ -130,7 +138,18 @@ export function createMeetingsRouter(
       ? channelConfiguration.tenantIds.filter(id => configured.configuredTenantIds.includes(id))
       : [],
   );
+  const channelAdminRepository = dependencies.channelAdminRepository ?? createChannelMeetingAdminRepository();
+  const selectedTenantSchema = z.object({ tenantId: z.number().int().positive().refine(Number.isSafeInteger) }).strict();
+  const channelEnabled = (tenantId: number) => channelConfiguration.enabled
+    && channelConfiguration.tenantIds.includes(tenantId)
+    && configured.configuredTenantIds.includes(tenantId);
   return router({
+    adminOverview: protectedProcedure
+      .input(adminOverviewSchema)
+      .query(({ ctx, input }) => channelAdminRepository.overview(ctx.user.id, input.tenantId, channelEnabled(input.tenantId))),
+    adminSetHostPermission: protectedProcedure
+      .input(adminSetHostPermissionSchema)
+      .mutation(({ ctx, input }) => channelAdminRepository.setHostPermission(ctx.user.id, input, channelEnabled(input.tenantId))),
     capabilities: protectedProcedure.query(({ ctx }) =>
       configured.service.capabilitiesFor(
         ctx.user.id,
@@ -143,6 +162,14 @@ export function createMeetingsRouter(
         configured.configuredTenantIds,
       ),
     ),
+    availableForTenant: protectedProcedure
+      .input(selectedTenantSchema)
+      .query(async ({ ctx, input }) =>
+        (await configured.service.availableMeetingsFor(
+          ctx.user.id,
+          configured.configuredTenantIds.filter((tenantId) => tenantId === input.tenantId),
+        )).map((meeting) => ({ ...meeting, tenantId: input.tenantId })),
+      ),
     join: protectedProcedure
       .input(joinMeetingSchema)
       .mutation(({ ctx, input }) =>

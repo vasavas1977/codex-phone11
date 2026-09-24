@@ -27,6 +27,13 @@ for (const name of ['main', 'preload']) {
     sourcemap: false, minify: false,
     define: name === 'main' ? { __PHONE11_MANIFEST_SHA256__: JSON.stringify(pinnedHash) } : {} });
 }
+// A separate, sandboxed preload owns LiveKit. The static meeting page contains
+// no page-world JavaScript, and the normal calling renderer stays network-free.
+await build({ entryPoints: [resolve(root, 'src/meeting-preload.ts')],
+  outfile: resolve(root, 'dist/meeting-preload.cjs'), bundle: true,
+  platform: 'browser', target: 'chrome128', format: 'cjs', external: ['electron'],
+  sourcemap: false, minify: false });
 await build({ entryPoints: [resolve(root, 'src/renderer.ts')], outfile: resolve(root, 'dist/renderer.js'),
   bundle: true, platform: 'browser', target: 'chrome128', format: 'iife' });
-for (const name of ['index.html', 'style.css']) await copyFile(resolve(root, `src/${name}`), resolve(root, `dist/${name}`));
+for (const name of ['index.html', 'style.css', 'meeting.html', 'meeting.css'])
+  await copyFile(resolve(root, `src/${name}`), resolve(root, `dist/${name}`));

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MediaOwnershipCoordinator } from "./media-ownership";
 
 describe("voice-note media ownership", () => {
@@ -85,6 +85,24 @@ describe("voice-note media ownership", () => {
     expect(active).toBe(false);
     done();
     await sip.ready;
+    expect(media.isCurrent(sip.lease)).toBe(true);
+  });
+  it("keeps a failed prior-account meeting stop as a SIP barrier after auth clear", async () => {
+    const media = new MediaOwnershipCoordinator();
+    let attempts = 0;
+    const meeting = media.requestMeeting("old-meeting", {
+      pauseForSip: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("capture is still live");
+      },
+    });
+    await meeting.ready;
+    media.clearForAuth();
+    await vi.waitFor(() => expect(media.getSnapshot().meetingPause).toBe("failed"));
+    expect(media.getSnapshot().owner).toBeNull();
+    const sip = media.requestSip("new-account-call");
+    await sip.ready;
+    expect(attempts).toBe(2);
     expect(media.isCurrent(sip.lease)).toBe(true);
   });
 });

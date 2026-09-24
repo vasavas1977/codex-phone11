@@ -39,13 +39,15 @@ describe('browser meeting session', () => {
  it('stops a delayed connection after leave and never resurrects state', async () => {
   const r = room(), pending = deferred(); vi.mocked(r.result.connect).mockReturnValue(pending.promise);
   const session = new BrowserMeetingSession(() => r.result), join = session.connect(credentials);
-  await session.disconnect(); pending.resolve();
+  const leave = session.disconnect();
+  pending.resolve();
+  await leave;
   await expect(join).rejects.toMatchObject({
    name: 'BrowserMeetingConnectionFailure', stage: 'post_connect_guard',
    cause: expect.objectContaining({ message: 'Meeting connection cancelled' }),
   });
   expect(session.getSnapshot().status).toBe('disconnected');
-  expect(r.result.disconnect).toHaveBeenCalledTimes(2);
+  expect(r.result.disconnect).toHaveBeenCalledTimes(3);
  });
  it('does not let an old join overwrite a newer room', async () => {
   const old = room(), next = room(), pending = deferred(); vi.mocked(old.result.connect).mockReturnValue(pending.promise);
@@ -75,8 +77,15 @@ describe('browser meeting session', () => {
  it('stops capture completed after leave', async () => {
   const r = room(), pending = deferred(), session = new BrowserMeetingSession(() => r.result);
   await session.connect(credentials); vi.mocked(r.result.localParticipant.setCameraEnabled).mockReturnValue(pending.promise);
-  const capture = session.setCamera(true); await Promise.resolve(); await session.disconnect(); pending.resolve();
-  await expect(capture).rejects.toThrow('cancelled'); expect(r.result.disconnect).toHaveBeenCalledTimes(2);
+  const capture = session.setCamera(true); await Promise.resolve();
+  let released = false;
+  const leave = session.disconnect().then(() => { released = true; });
+  await Promise.resolve();
+  expect(released).toBe(false);
+  pending.resolve();
+  await leave;
+  await expect(capture).rejects.toThrow('cancelled');
+  expect(r.result.disconnect).toHaveBeenCalledTimes(3);
  });
  it('gates language writes on adapter capabilities and validates language', async () => {
   const r = room(), session = new BrowserMeetingSession(() => r.result);
@@ -91,8 +100,73 @@ describe('browser meeting session', () => {
   const r = room(), session = new BrowserMeetingSession(() => r.result);
   await session.connect(credentials); r.emit('reconnecting'); expect(session.getSnapshot().status).toBe('reconnecting');
   r.emit('reconnected'); expect(session.getSnapshot().status).toBe('connected');
-  r.emit('disconnected'); expect(session.getSnapshot()).toMatchObject({ status: 'disconnected', participants: [] });
+  r.emit('disconnected');
+  await session.disconnect();
+  expect(session.getSnapshot()).toMatchObject({ status: 'disconnected', participants: [] });
   expect(session.getSnapshot().error).toBeTruthy(); expect([...r.events.values()].every(set => set.size === 0)).toBe(true);
+ });
+
+ it('waits for a late camera publish after external disconnection before cleanup completes', async () => {
+  const r = room(), pending = deferred(), session = new BrowserMeetingSession(() => r.result);
+  await session.connect(credentials);
+  vi.mocked(r.result.localParticipant.setCameraEnabled).mockReturnValue(pending.promise);
+  const capture = session.setCamera(true);
+  await Promise.resolve();
+  r.emit('disconnected');
+  let stopped = false;
+  const cleanup = session.disconnect().then(() => { stopped = true; });
+  await Promise.resolve();
+  expect(stopped).toBe(false);
+  pending.resolve();
+  await cleanup;
+  await expect(capture).rejects.toThrow('cancelled');
+  expect(r.result.disconnect).toHaveBeenCalledTimes(3);
+ });
+
+ it('stops local capture and retains a failed room for a later disconnect retry', async () => {
+  const r = room(), stop = vi.fn(), session = new BrowserMeetingSession(() => r.result);
+  r.result.localParticipant.trackPublications = new Map([['audio', { track: { stop } }]]);
+  await session.connect(credentials);
+  vi.mocked(r.result.disconnect).mockRejectedValueOnce(new Error('sendLeave failed'));
+  await expect(session.disconnect()).rejects.toThrow('sendLeave failed');
+  expect(stop).toHaveBeenCalledTimes(1);
+  expect(session.getRoom()).toBe(r.result);
+  await expect(session.disconnect()).resolves.toBeUndefined();
+  expect(session.getRoom()).toBeUndefined();
+ });
+ it('rechecks a room restored by failed connect cleanup before leave completes', async () => {
+  const r = room(), stop = vi.fn(), session = new BrowserMeetingSession(() => r.result);
+  let rejectStop!: (error: Error) => void;
+  const pendingStop = new Promise<void>((_resolve, reject) => { rejectStop = reject; });
+  r.result.localParticipant.trackPublications = new Map([['audio', { track: { stop } }]]);
+  vi.mocked(r.result.connect).mockRejectedValue(new Error('connect failed'));
+  vi.mocked(r.result.disconnect).mockReturnValueOnce(pendingStop);
+  const join = session.connect(credentials).catch(error => error);
+  await vi.waitFor(() => expect(r.result.disconnect).toHaveBeenCalledTimes(1));
+  const leave = session.disconnect();
+  rejectStop(new Error('first stop failed'));
+  expect(await join).toMatchObject({ message: 'first stop failed' });
+  await expect(leave).resolves.toBeUndefined();
+  expect(stop).toHaveBeenCalledTimes(1);
+  expect(r.result.disconnect).toHaveBeenCalledTimes(2);
+  expect(session.getRoom()).toBeUndefined();
+ });
+ it('rejects leave when late-room teardown also fails, allowing another retry', async () => {
+  const r = room(), session = new BrowserMeetingSession(() => r.result);
+  let rejectStop!: (error: Error) => void;
+  const pendingStop = new Promise<void>((_resolve, reject) => { rejectStop = reject; });
+  r.result.localParticipant.trackPublications = new Map();
+  vi.mocked(r.result.connect).mockRejectedValue(new Error('connect failed'));
+  vi.mocked(r.result.disconnect).mockReturnValueOnce(pendingStop)
+    .mockRejectedValueOnce(new Error('late stop failed'));
+  const join = session.connect(credentials).catch(error => error);
+  await vi.waitFor(() => expect(r.result.disconnect).toHaveBeenCalledTimes(1));
+  const leave = session.disconnect();
+  rejectStop(new Error('first stop failed'));
+  await join;
+  await expect(leave).rejects.toThrow('late stop failed');
+  expect(session.getRoom()).toBe(r.result);
+  await expect(session.disconnect()).resolves.toBeUndefined();
  });
 
  it.each([

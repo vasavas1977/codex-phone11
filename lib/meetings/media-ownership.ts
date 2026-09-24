@@ -115,7 +115,7 @@ export class MediaOwnershipCoordinator {
       this.activateAfterBarrier(entry, this.retryVoiceStop());
       return entry.request;
     }
-    if (!this.owner && this.pauseTask) {
+    if (!this.owner && this.pauseTask && !this.interrupted) {
       const entry = this.createEntry("sip", id); this.owner = entry;
       this.activateAfterBarrier(entry, this.pauseTask); return entry.request;
     }
@@ -161,14 +161,31 @@ export class MediaOwnershipCoordinator {
     entry.reject(new MediaOwnershipError("stale"));
   }
 
-  /**
-   * Auth teardown permanently retires all local ownership records. A paused
-   * hook may finish later, but its stale completion cannot grant either SDK.
-   */
+  /** Auth teardown retires identity-bound leases while preserving media-stop barriers. */
   clearForAuth(): void {
     const owner = this.owner;
     this.owner = undefined;
-    this.interrupted = undefined;
+    // Sign-out must not erase a failed meeting stop. Retain its exact cleanup
+    // hook as a barrier so a new account cannot activate SIP while old capture
+    // may still be live. A future SIP request retries that same stop.
+    if (owner?.request.lease.kind === "meeting") {
+      this.interrupted = {
+        id: owner.request.lease.id,
+        hooks: owner.hooks as MeetingMediaHooks,
+        pause: "pending",
+      };
+      const interrupted = this.interrupted;
+      void this.ensureMeetingStopped().then(() => {
+        if (this.interrupted === interrupted) this.interrupted = undefined;
+      }, () => undefined);
+    } else if (this.interrupted && this.interrupted.pause !== "stopped") {
+      const interrupted = this.interrupted;
+      void this.ensureMeetingStopped().then(() => {
+        if (this.interrupted === interrupted) this.interrupted = undefined;
+      }, () => undefined);
+    } else if (this.interrupted?.pause === "stopped" && !this.pauseTask) {
+      this.interrupted = undefined;
+    }
     // Retiring an account must not let a new account acquire audio while its
     // predecessor is still recording. Keep shutdown barriers across auth.
     if (owner?.request.lease.kind === "voice-note") {

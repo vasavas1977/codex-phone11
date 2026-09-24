@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => {
     listeners,
     rooms,
     lifecycleEvents,
+    platformOS: "ios" as "ios" | "android",
+    configureMeetingAudio: vi.fn(async () => {
+      lifecycleEvents.push("audio-config");
+    }),
     startAudioSession: vi.fn(async () => {
       lifecycleEvents.push("audio-start");
     }),
@@ -31,7 +35,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("react-native", () => ({ Platform: { OS: "ios" } }));
+vi.mock("react-native", () => ({ Platform: { get OS() { return mocks.platformOS; } } }));
 vi.mock("@/lib/_core/auth", () => ({
   getAuthSnapshot: () => ({
     user: mocks.authUser,
@@ -49,6 +53,7 @@ vi.mock("@/lib/sip/call-store", () => ({
 vi.mock("@livekit/react-native", () => ({
   registerGlobals: mocks.registerGlobals,
   AudioSession: {
+    setAppleAudioConfiguration: mocks.configureMeetingAudio,
     startAudioSession: mocks.startAudioSession,
     stopAudioSession: mocks.stopAudioSession,
   },
@@ -78,6 +83,7 @@ vi.mock("livekit-client", () => {
       ServiceNotFound: 7,
     },
     Room: class FakeRoom {
+      private listeners = new Map<string, Set<(...args: unknown[]) => void>>();
       localParticipant = {
         identity: "local",
         name: "Local",
@@ -93,8 +99,16 @@ vi.mock("livekit-client", () => {
       remoteParticipants = new Map();
       connect = vi.fn(async () => mocks.roomConnect());
       disconnect = vi.fn(async () => {});
-      on() {}
-      off() {}
+      on(event: string, listener: (...args: unknown[]) => void) {
+        if (!this.listeners.has(event)) this.listeners.set(event, new Set());
+        this.listeners.get(event)!.add(listener);
+      }
+      off(event: string, listener: (...args: unknown[]) => void) {
+        this.listeners.get(event)?.delete(listener);
+      }
+      emit(event: string) {
+        this.listeners.get(event)?.forEach((listener) => listener());
+      }
       setMaxListeners() {
         return this;
       }
@@ -123,10 +137,14 @@ beforeEach(async () => {
   mocks.listeners.clear();
   mocks.rooms.length = 0;
   mocks.lifecycleEvents.length = 0;
+  mocks.platformOS = "ios";
   mocks.roomConstructorError = undefined;
   mocks.sipState = { incomingCall: null, activeCalls: {} };
   mocks.startAudioSession.mockImplementation(async () => {
     mocks.lifecycleEvents.push("audio-start");
+  });
+  mocks.configureMeetingAudio.mockImplementation(async () => {
+    mocks.lifecycleEvents.push("audio-config");
   });
   mocks.stopAudioSession.mockResolvedValue(undefined);
   mocks.roomConnect.mockImplementation(async () => {
@@ -139,15 +157,188 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("native meeting lifecycle", () => {
-  it("starts the manually managed native audio session before connecting the server-issued room", async () => {
+  it("configures duplex speaker audio before starting the native session and connecting the room", async () => {
     const lifecycle = await native.NativeMeetingLifecycle.join(
       "meeting-audio-order",
       admission,
       preferences,
     );
 
+    expect(mocks.configureMeetingAudio).toHaveBeenCalledWith({
+      audioCategory: "playAndRecord",
+      audioCategoryOptions: [
+        "allowBluetooth",
+        "allowBluetoothA2DP",
+        "allowAirPlay",
+        "defaultToSpeaker",
+      ],
+      audioMode: "videoChat",
+    });
+    expect(mocks.lifecycleEvents).toEqual(["audio-config", "audio-start", "room-connect"]);
+    await lifecycle.leave();
+  });
+
+  it("does not configure Apple audio on Android", async () => {
+    mocks.platformOS = "android";
+    const lifecycle = await native.NativeMeetingLifecycle.join(
+      "meeting-android-audio",
+      admission,
+      preferences,
+    );
+
+    expect(mocks.configureMeetingAudio).not.toHaveBeenCalled();
     expect(mocks.lifecycleEvents).toEqual(["audio-start", "room-connect"]);
     await lifecycle.leave();
+  });
+
+  it("stops a partially configured session and releases media when Apple configuration fails", async () => {
+    mocks.configureMeetingAudio.mockRejectedValueOnce(
+      new Error("private native audio configuration detail"),
+    );
+
+    const failure = await native.NativeMeetingLifecycle.join(
+      "meeting-audio-config-reject",
+      admission,
+      preferences,
+    ).catch((error) => error);
+
+    expect(failure).toMatchObject({ name: "MeetingJoinFailure", stage: "audio_start" });
+    expect(failure.message).not.toContain("private");
+    expect(mocks.startAudioSession).not.toHaveBeenCalled();
+    expect(mocks.rooms).toHaveLength(0);
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+  });
+
+  it("keeps SIP waiting for native configuration before retiring meeting audio", async () => {
+    let finishConfiguration!: () => void;
+    mocks.configureMeetingAudio.mockImplementationOnce(async () => {
+      mocks.lifecycleEvents.push("audio-config");
+      await new Promise<void>((resolve) => { finishConfiguration = resolve; });
+    });
+    const join = native.NativeMeetingLifecycle.join(
+      "meeting-config-sip-race",
+      admission,
+      preferences,
+    );
+    await vi.waitFor(() => expect(mocks.configureMeetingAudio).toHaveBeenCalledTimes(1));
+
+    const sip = native.phone11MediaOwnership.requestSip("sip:during-config");
+    let sipReady = false;
+    void sip.ready.then(() => { sipReady = true; });
+    await Promise.resolve();
+    expect(sipReady).toBe(false);
+
+    finishConfiguration();
+    await expect(join).rejects.toMatchObject({ stage: "audio_start" });
+    await sip.ready;
+    expect(mocks.startAudioSession).not.toHaveBeenCalled();
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({ kind: "sip", id: "sip:during-config" });
+    native.releaseSipMediaOwnership(sip.lease);
+  });
+
+  it("keeps SIP waiting for an in-flight microphone publication to stop", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join(
+      "meeting-publish-sip-race",
+      admission,
+      { microphone: false, camera: false },
+    );
+    const room = mocks.rooms[0];
+    let finishPublish!: () => void;
+    room.localParticipant.setMicrophoneEnabled.mockImplementationOnce(async (enabled: boolean) => {
+      await new Promise<void>((resolve) => { finishPublish = resolve; });
+      room.localParticipant.isMicrophoneEnabled = enabled;
+      mocks.lifecycleEvents.push("late-microphone-publish");
+    });
+    mocks.stopAudioSession.mockImplementationOnce(async () => {
+      mocks.lifecycleEvents.push("audio-stop");
+    });
+    const publish = lifecycle.session.setMicrophone(true);
+    await vi.waitFor(() => expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(1));
+
+    const sip = native.phone11MediaOwnership.requestSip("sip:during-publish");
+    let sipReady = false;
+    void sip.ready.then(() => { sipReady = true; });
+    await Promise.resolve();
+    expect(sipReady).toBe(false);
+    expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+
+    finishPublish();
+    await expect(publish).rejects.toThrow("cancelled");
+    await sip.ready;
+    expect(mocks.lifecycleEvents.indexOf("audio-stop")).toBeGreaterThan(
+      mocks.lifecycleEvents.indexOf("late-microphone-publish"),
+    );
+    expect(room.disconnect).toHaveBeenCalled();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({
+      kind: "sip",
+      id: "sip:during-publish",
+    });
+    native.releaseSipMediaOwnership(sip.lease);
+  });
+
+  it("does not release meeting audio before an external disconnect finishes a late publish", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join(
+      "meeting-external-publish-race",
+      admission,
+      { microphone: false, camera: false },
+    );
+    const room = mocks.rooms[0];
+    let finishPublish!: () => void;
+    room.localParticipant.setCameraEnabled.mockImplementationOnce(async (enabled: boolean) => {
+      await new Promise<void>((resolve) => { finishPublish = resolve; });
+      room.localParticipant.isCameraEnabled = enabled;
+    });
+    const publish = lifecycle.session.setCamera(true);
+    await vi.waitFor(() => expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledTimes(1));
+
+    room.emit("disconnected");
+    await Promise.resolve();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({
+      kind: "meeting",
+      id: "meeting-external-publish-race",
+    });
+    expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+
+    finishPublish();
+    await expect(publish).rejects.toThrow("cancelled");
+    await vi.waitFor(() => expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1));
+    expect(room.disconnect).toHaveBeenCalled();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+  });
+
+  it("rejects a timed-out SIP handoff without releasing still-publishing media", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join(
+      "meeting-stuck-publish",
+      admission,
+      { microphone: false, camera: false },
+    );
+    const room = mocks.rooms[0];
+    let finishPublish!: () => void;
+    room.localParticipant.setMicrophoneEnabled.mockImplementationOnce(async (enabled: boolean) => {
+      await new Promise<void>((resolve) => { finishPublish = resolve; });
+      room.localParticipant.isMicrophoneEnabled = enabled;
+    });
+    const publish = lifecycle.session.setMicrophone(true);
+    await vi.waitFor(() => expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledTimes(1));
+
+    vi.useFakeTimers();
+    try {
+      const sip = native.phone11MediaOwnership.requestSip("sip:stuck-publish");
+      const rejectedHandoff = expect(sip.ready).rejects.toMatchObject({ code: "pause-failed" });
+      await vi.advanceTimersByTimeAsync(8001);
+      await rejectedHandoff;
+      expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+      expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      finishPublish();
+      await expect(publish).rejects.toThrow("cancelled");
+      await lifecycle.leave();
+    }
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
   });
 
   it("best-effort stops native audio when activation rejects before room creation", async () => {
@@ -372,9 +563,10 @@ describe("native meeting lifecycle", () => {
   });
 
   it("rechecks ownership after native audio start and never registers a meeting raced by SIP", async () => {
+    let sipReady: Promise<void> | undefined;
     mocks.startAudioSession.mockImplementation(async () => {
       const sip = native.phone11MediaOwnership.requestSip("sip:race");
-      await sip.ready;
+      sipReady = sip.ready;
     });
 
     await expect(
@@ -387,6 +579,7 @@ describe("native meeting lifecycle", () => {
       name: "MeetingJoinFailure",
       stage: "audio_start",
     });
+    await sipReady;
 
     expect(registry.getActiveNativeMeeting()).toBeUndefined();
     expect(mocks.rooms).toHaveLength(0);
@@ -421,7 +614,7 @@ describe("native meeting lifecycle", () => {
     await resumed.leave();
   });
 
-  it("releases the lease and registry when audio stop fails, then retries only audio cleanup", async () => {
+  it("holds the lease when audio stop fails, then retries cleanup", async () => {
     const lifecycle = await native.NativeMeetingLifecycle.join(
       "meeting-stop",
       admission,
@@ -432,12 +625,29 @@ describe("native meeting lifecycle", () => {
     );
 
     await expect(lifecycle.leave()).rejects.toThrow("audio stop failed");
-    expect(registry.getActiveNativeMeeting()).toBeUndefined();
-    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+    expect(registry.getActiveNativeMeeting()).toBe(lifecycle);
+    expect(native.phone11MediaOwnership.getSnapshot().owner).not.toBeNull();
     expect(mocks.rooms[0].disconnect).toHaveBeenCalledWith(true);
 
-    await expect(lifecycle.releaseAfterMediaStops()).resolves.toBeUndefined();
+    await expect(lifecycle.leave()).resolves.toBeUndefined();
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
     expect(mocks.stopAudioSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds the SIP lease when LiveKit disconnect rejects before local tracks stop", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-stop-error", admission, preferences);
+    const room = mocks.rooms[0];
+    const stop = vi.fn();
+    room.localParticipant.trackPublications = new Map([["audio", { track: { stop } }]]);
+    room.disconnect.mockRejectedValueOnce(new Error("sendLeave failed"));
+    await expect(lifecycle.leave()).rejects.toThrow("sendLeave failed");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(native.phone11MediaOwnership.getSnapshot().owner).not.toBeNull();
+    expect(registry.getActiveNativeMeeting()).toBe(lifecycle);
+    expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+    await expect(lifecycle.leave()).resolves.toBeUndefined();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
   });
 
   it("disconnects an authenticated owner immediately when a different account replaces it", async () => {

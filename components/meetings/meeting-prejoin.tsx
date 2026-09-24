@@ -157,6 +157,31 @@ export function MeetingPrejoin({
                 { borderColor: colors.border, backgroundColor: colors.surface },
               ]}
             >
+              <View
+                style={[
+                  styles.joinState,
+                  {
+                    borderColor: colors.border,
+                    backgroundColor: colors.background,
+                  },
+                ]}
+              >
+                <Text
+                  style={[styles.joinStateTitle, { color: colors.foreground }]}
+                >
+                  Before you join
+                </Text>
+                <Text
+                  accessibilityLiveRegion="polite"
+                  style={[styles.joinStateText, { color: colors.muted }]}
+                >
+                  {microphoneEnabled
+                    ? "Microphone on"
+                    : "Microphone off · joining muted"}
+                  {"  ·  "}
+                  {cameraEnabled ? "Video on" : "Video off"}
+                </Text>
+              </View>
               {selection.manualEntry ? (
                 <>
                   <Text
@@ -275,8 +300,9 @@ export function MeetingPrejoin({
                 />
               </View>
               <Text style={[styles.note, { color: colors.muted }]}>
-                Your microphone and camera are off on this screen. Permission
-                may be requested when you join.
+                Phone11 asks iOS for microphone or camera access only when you
+                join with that control on. If access is denied, the meeting
+                stays open and the unavailable device remains off.
               </Text>
             </View>
             {error && (
@@ -343,6 +369,9 @@ const styles = StyleSheet.create({
   title: { fontSize: 30, fontWeight: "700" },
   description: { fontSize: 16, lineHeight: 24 },
   card: { borderWidth: 1, borderRadius: 20, padding: 20, gap: 14 },
+  joinState: { borderWidth: 1, borderRadius: 14, padding: 14, gap: 4 },
+  joinStateTitle: { fontSize: 15, fontWeight: "700" },
+  joinStateText: { fontSize: 14, lineHeight: 20 },
   unavailableCard: { borderWidth: 1, borderRadius: 20, padding: 20, gap: 16 },
   failure: { gap: 4 },
   stageReference: { fontSize: 13, lineHeight: 18 },

@@ -13,6 +13,17 @@ const positiveId = (value: unknown): value is number =>
 const clean = (value: unknown, limit: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= limit &&
   !/[\r\n\0]/.test(value) && value.trim() === value;
+const meetingId = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+const safeMeetingUrl = (value: unknown): value is string => {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "wss:" && !url.username && !url.password && !url.search && !url.hash;
+  } catch { return false; }
+};
+export type DesktopMeetingGrant = Readonly<{ url: string; token: string;
+  grantProfile: "interactive" | "listener"; expiresAt: number }>;
 const same = (a: DesktopSession, b: DesktopSession): boolean =>
   a.revision === b.revision && a.userId === b.userId && a.tenantId === b.tenantId &&
   a.extensionId === b.extensionId && a.accountId === b.accountId;
@@ -66,6 +77,54 @@ export class AuthenticatedDesktopProvider {
   currentSession(): DesktopSession | null { return this.session; }
   /** Public display number from the current authenticated phone grant. */
   currentExtensionNumber(): string | null { return this.session ? this.extensionNumber : null; }
+
+  /** Admitted rooms only. No media credential crosses this privileged boundary. */
+  async availableMeetings(expectedRevision: string): Promise<readonly string[]> {
+    const { token, epoch } = this.meetingAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const value = await this.query("meetings.availableForTenant", token, epoch, { tenantId });
+    this.assertMeetingAuthority(expectedRevision, epoch);
+    if (!Array.isArray(value) || value.length > 100 ||
+        !value.every(item => isRecord(item) && meetingId(item.meetingId) && item.tenantId === tenantId))
+      throw new DesktopAuthenticationError();
+    return [...new Set(value.map(item => item.meetingId as string))];
+  }
+
+  /** A short-lived server admission. Never expose this result to the calling renderer. */
+  async joinMeeting(expectedRevision: string, selectedMeetingId: string): Promise<DesktopMeetingGrant> {
+    if (!meetingId(selectedMeetingId)) throw new DesktopAuthenticationError();
+    const { token, epoch } = this.meetingAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const response = await this.send("/api/trpc/meetings.join", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ json: { meetingId: selectedMeetingId, tenantId } }),
+    }, epoch);
+    const raw = await this.json(response);
+    this.assertMeetingAuthority(expectedRevision, epoch);
+    const value = this.unwrapTrpc(raw);
+    if (!isRecord(value) || !safeMeetingUrl(value.url) || !clean(value.token, 16384) ||
+        !["interactive", "listener"].includes(value.grant_profile as string) ||
+        !Number.isSafeInteger(value.expires_at) || typeof value.expires_at !== "number" ||
+        value.expires_at <= Math.floor(Date.now() / 1000) ||
+        value.expires_at > Math.floor(Date.now() / 1000) + 330)
+      throw new DesktopAuthenticationError();
+    return { url: value.url, token: value.token,
+      grantProfile: value.grant_profile as DesktopMeetingGrant["grantProfile"],
+      expiresAt: value.expires_at };
+  }
+
+  private meetingAuthority(expectedRevision: string): { token: string; epoch: number } {
+    if (!this.session || this.session.revision !== expectedRevision || !this.token)
+      throw new DesktopAuthenticationError();
+    return { token: this.token, epoch: this.epoch };
+  }
+
+  private assertMeetingAuthority(expectedRevision: string, epoch: number): void {
+    this.assertEpoch(epoch);
+    if (!this.session || this.session.revision !== expectedRevision || !this.token)
+      throw new DesktopAuthenticationError();
+  }
 
   /** Sign-in never persists the bearer, password, or derived SIP secret. */
   async signIn(email: string, password: string): Promise<DesktopSession> {
@@ -191,10 +250,14 @@ export class AuthenticatedDesktopProvider {
     catch { throw new DesktopAuthenticationError(); }
   }
 
-  private async query(path: string, token: string, epoch: number): Promise<unknown> {
+  private async query(path: string, token: string, epoch: number, input: unknown = null): Promise<unknown> {
     const headers: Record<string, string> = { authorization: `Bearer ${token}` };
-    const response = await this.send(`/api/trpc/${path}?input=${encodeURIComponent('{"json":null}')}`, { headers }, epoch);
+    const response = await this.send(`/api/trpc/${path}?input=${encodeURIComponent(JSON.stringify({ json: input }))}`, { headers }, epoch);
     const payload = await this.json(response);
+    return this.unwrapTrpc(payload);
+  }
+
+  private unwrapTrpc(payload: unknown): unknown {
     if (!isRecord(payload) || !isRecord(payload.result) || !isRecord(payload.result.data) ||
         !("json" in payload.result.data)) throw new DesktopAuthenticationError();
     return payload.result.data.json;

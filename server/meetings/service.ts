@@ -1,7 +1,11 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 export const joinMeetingSchema = z
-  .object({ meetingId: z.string().uuid() })
+  .object({
+    meetingId: z.string().uuid(),
+    /** Optional workspace binding for clients with a selected tenant. */
+    tenantId: z.number().int().positive().refine(Number.isSafeInteger).optional(),
+  })
   .strict();
 export type MeetingGrant = {
   meetingId: string;
@@ -174,6 +178,7 @@ export function createMeetingService(
         !grant ||
         grant.userId !== userId ||
         grant.meetingId !== input.meetingId ||
+        (input.tenantId !== undefined && grant.tenantId !== input.tenantId) ||
         !Number.isSafeInteger(grant.tenantId) ||
         grant.tenantId < 1
       )

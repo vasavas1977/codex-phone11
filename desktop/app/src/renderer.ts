@@ -4,18 +4,33 @@ import type { PublicSnapshot } from '../../src/call-boundary';
 declare global { interface Window { phone11: {
   state(): Promise<PublicState>; signIn(email: string, password: string): Promise<PublicState>;
   action(input: unknown): Promise<TaggedSnapshot>; signOut(): Promise<PublicState>;
+  openMeetings(): Promise<void>;
   onUpdate(listener: (snapshot: TaggedSnapshot) => void): () => void;
 } } }
 const byId = (id: string): HTMLElement => document.getElementById(id)!;
 let state: PublicState | null = null;
 let busy = false;
 let accountEpoch = 0;
+let currentTab: 'phone' | 'meetings' = 'phone';
+let meetingOpening = false;
+let meetingMessage = '';
 function render(): void {
   const signed = !!state?.signedIn;
   byId('login').hidden = signed;
-  byId('phone').hidden = !signed;
+  byId('workspace').hidden = !signed;
+  byId('phone').hidden = !signed || currentTab !== 'phone';
+  byId('meetings').hidden = !signed || currentTab !== 'meetings';
+  for (const tab of ['phone', 'meetings'] as const) {
+    const button = byId(`${tab}-tab`);
+    if (tab === currentTab) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  }
   if (!signed || !state) return;
   const call = state.calling.call;
+  const phoneBusy = !!call || state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle';
+  (byId('open-meetings') as HTMLButtonElement).disabled = meetingOpening || phoneBusy;
+  byId('meeting-open-message').textContent = phoneBusy
+    ? 'Finish your Phone call or pending action before opening a meeting.' : meetingMessage;
   byId('identity').textContent = `Tenant ${state.tenantId} · Extension ${state.extensionNumber ?? 'unavailable'}`;
   byId('status').textContent = call ? `${call.state[0].toUpperCase()}${call.state.slice(1)} call` :
     state.calling.registered ? 'Ready to call' : 'Connecting to calling service';
@@ -64,12 +79,37 @@ byId('login-form').addEventListener('submit', async event => {
   message('Signing in…');
   try {
     const signedIn = await window.phone11.signIn(email, password);
-    if (accountEpoch === epoch) { state = signedIn; busy = false; message(''); render(); }
+    if (accountEpoch === epoch) { state = signedIn; busy = false; meetingOpening = false; meetingMessage = ''; message(''); render(); }
   } catch (error) { if (accountEpoch === epoch) message(signInFailureMessage(error)); }
+});
+for (const tab of ['phone', 'meetings'] as const) {
+  byId(`${tab}-tab`).addEventListener('click', () => { currentTab = tab; render(); });
+}
+byId('open-meetings').addEventListener('click', async () => {
+  if (!state?.signedIn || !state.sessionRevision || state.calling.call ||
+      state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle' || meetingOpening) return;
+  const sessionRevision = state.sessionRevision;
+  const epoch = accountEpoch;
+  meetingOpening = true;
+  meetingMessage = 'Opening meeting setup…';
+  render();
+  try {
+    await window.phone11.openMeetings();
+    if (epoch === accountEpoch && state?.sessionRevision === sessionRevision)
+      meetingMessage = 'Meeting window opened.';
+  } catch {
+    if (epoch === accountEpoch && state?.sessionRevision === sessionRevision)
+      meetingMessage = 'Meetings could not open. Try again.';
+  } finally {
+    if (epoch === accountEpoch && state?.sessionRevision === sessionRevision) {
+      meetingOpening = false;
+      render();
+    }
+  }
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;
-  state = null; busy = false; render();
+  state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; render();
   try {
     const signedOut = await window.phone11.signOut();
     if (accountEpoch === epoch) { state = signedOut; message('Signed out.'); render(); }

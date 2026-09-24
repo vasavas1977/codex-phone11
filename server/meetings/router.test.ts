@@ -53,6 +53,21 @@ function caller(
 }
 
 describe("mounted plain-video meetings router", () => {
+  it("passes the server tenant gate to meeting administration without letting the client override it", async () => {
+    const channelAdminRepository = { overview: vi.fn().mockResolvedValue({ available: false, channels: [] }),
+      setHostPermission: vi.fn().mockResolvedValue({ channelId: meetingId, userId: 8, canStartMeeting: true }) };
+    const api = createMeetingsRouter({ PHONE11_CHANNEL_MEETINGS_ENABLED: "1", PHONE11_CHANNEL_MEETING_TENANT_IDS: "41",
+      [connect11PlainVideoTenantConfigEnvironment]: JSON.stringify(configuration),
+    }, { channelAdminRepository, repository: { authorize: vi.fn() }, resolver: { prepare: vi.fn(), confirm: vi.fn() } })
+      .createCaller({ user, req: {}, res: {} } as never);
+    await api.adminOverview({ tenantId: 41 });
+    await api.adminOverview({ tenantId: 42 });
+    await api.adminSetHostPermission({ tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true });
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(1, 7, 41, true);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(2, 7, 42, false);
+    expect(channelAdminRepository.setHostPermission).toHaveBeenCalledWith(7,
+      { tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true }, true);
+  });
   it("keeps channel meeting APIs off by default without touching storage", async () => {
     const channelRepository = {
       canStart: vi.fn(),
@@ -157,7 +172,11 @@ describe("mounted plain-video meetings router", () => {
     expect(hasAvailablePlainVideoAdmission).toHaveBeenCalledWith(user.id, [41]);
     await expect(api.available()).resolves.toEqual([{ meetingId }]);
     expect(listAvailablePlainVideoMeetings).toHaveBeenCalledWith(user.id, [41]);
-    await expect(api.join({ meetingId })).resolves.toMatchObject({
+    await expect(api.availableForTenant({ tenantId: 41 })).resolves.toEqual([{ meetingId, tenantId: 41 }]);
+    await expect(api.availableForTenant({ tenantId: 42 })).resolves.toEqual([]);
+    await expect(api.join({ meetingId, tenantId: 42 })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(prepare).not.toHaveBeenCalled();
+    await expect(api.join({ meetingId, tenantId: 41 })).resolves.toMatchObject({
       url: "wss://media-41.connect11.example/join",
     });
     expect(prepare).toHaveBeenCalledWith(grant);

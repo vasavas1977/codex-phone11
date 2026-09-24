@@ -49,9 +49,8 @@ export function clearActiveNativeMeeting(meeting: ActiveNativeMeeting): void {
 }
 
 /**
- * Logout makes the room unreachable before awaiting native teardown. The leave
- * implementation still releases tracks, audio, and its coordinator lease when
- * one cleanup step rejects.
+ * Logout makes the room unreachable before awaiting native teardown. A failed
+ * media stop retains the coordinator lease so another engine cannot take over.
  */
 export async function clearNativeMeetingForAuth(): Promise<void> {
   const meeting = activeMeeting;
