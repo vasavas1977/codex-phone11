@@ -1,7 +1,7 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseRendererAction } from '../../src/call-boundary';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
-import { DesktopAuthenticationError, type AuthenticatedDesktopProvider } from '../../src/authenticated-provider';
+import type { AuthenticatedDesktopProvider, DesktopAuthenticationError } from '../../src/authenticated-provider';
 
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
   action: 'phone11:action', signOut: 'phone11:sign-out', update: 'phone11:update' });
@@ -53,9 +53,11 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
         await provider.signIn(email, password);
       } catch (error) {
         try { await signOut(); } catch { /* Never restore an unverified calling helper. */ }
-        if (error instanceof DesktopAuthenticationError && error.code === 'credentials_rejected')
+        const authCode = error instanceof Error && error.name === 'DesktopAuthenticationError' &&
+          'code' in error ? (error as DesktopAuthenticationError).code : null;
+        if (authCode === 'credentials_rejected')
           throw new Error('PHONE11_CREDENTIALS_REJECTED');
-        if (error instanceof DesktopAuthenticationError && error.code === 'phone_access_unavailable')
+        if (authCode === 'phone_access_unavailable')
           throw new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE');
         throw new Error('PHONE11_AUTH_UNAVAILABLE');
       }
