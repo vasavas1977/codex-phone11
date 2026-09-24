@@ -17,15 +17,19 @@
  */
 import crypto from "crypto";
 
-/** 
- * Data Encryption Key — in production, this should come from AWS KMS / GCP KMS.
- * For now, derive from environment variable with a fallback.
- */
-const DEK_SECRET = process.env.SIP_DEK_SECRET || "phone11-sip-dek-v1-change-in-production";
+/** Keep the historical development key so existing local ciphertext still opens. */
+const DEVELOPMENT_DEK_SECRET = "phone11-sip-dek-v1-change-in-production";
 const DEK_ID = "dek-v1";
 
 function getDEK(): Buffer {
-  return crypto.createHash("sha256").update(DEK_SECRET).digest();
+  const configuredSecret = process.env.SIP_DEK_SECRET;
+  if (process.env.NODE_ENV === "production" && !configuredSecret?.trim()) {
+    throw new Error("SIP_DEK_SECRET is required for production SIP credentials");
+  }
+  // Preserve the existing SHA-256 derivation and ciphertext format. A key
+  // change requires an explicit migration of previously encrypted accounts.
+  const secret = configuredSecret?.trim() ? configuredSecret : DEVELOPMENT_DEK_SECRET;
+  return crypto.createHash("sha256").update(secret).digest();
 }
 
 export interface SipCredentials {

@@ -109,11 +109,12 @@ async function getTenantAdminMutationCtx(ctx: any, requestedTenantId?: number) {
   return { ...tenant, role: liveRole };
 }
 
-/** Hold the actor's admin role through a DID write's transaction commit. */
-async function lockLiveDidAdmin(
+/** Hold the actor's admin role through a PBX write's transaction commit. */
+async function lockLivePbxAdmin(
   client: PoolClient,
   actorUserId: number,
   tenantId: number,
+  resource = "phone number",
 ): Promise<void> {
   const actor = await client.query(
     `SELECT tm.role::text AS role
@@ -129,7 +130,42 @@ async function lockLiveDidAdmin(
   if (!actor.rows[0]) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: "Workspace administrator access changed before the phone number was saved",
+      message: `Workspace administrator access changed before the ${resource} was saved`,
+    });
+  }
+}
+
+/** Subscriber usernames are global in the legacy Kamailio schema. */
+async function lockSipSubscriberName(
+  client: PoolClient,
+  username: string,
+  domain: string,
+  currentExtensionId: number | null,
+): Promise<void> {
+  // Share the same advisory key as legacy phone provisioning, then reject
+  // another live extension/account using this exact Kamailio identity.
+  await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [username, domain]);
+  const conflicting = await client.query(
+    `SELECT (
+       EXISTS (
+         SELECT 1 FROM extensions e
+         WHERE e.deleted_at IS NULL
+           AND ($3::integer IS NULL OR e.id <> $3)
+           AND COALESCE(NULLIF(e.sip_username, ''), e.extension_number) = $1
+           AND COALESCE(NULLIF(e.sip_domain, ''), $2) = $2
+       ) OR EXISTS (
+         SELECT 1 FROM sip_accounts sa
+         WHERE sa.deleted_at IS NULL
+           AND ($3::integer IS NULL OR sa.extension_id IS DISTINCT FROM $3)
+           AND sa.sip_username = $1 AND sa.sip_domain = $2
+       )
+     ) AS has_conflict`,
+    [username, domain, currentExtensionId],
+  );
+  if (conflicting.rows.length !== 1 || conflicting.rows[0].has_conflict !== false) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "This SIP username is already in use by another phone account",
     });
   }
 }
@@ -237,7 +273,7 @@ async function requireAssignableTenantMember(
   const result = await execute(
     `SELECT 1 FROM tenant_memberships
      WHERE user_id = $1 AND tenant_id = $2 AND status = 'active'
-     LIMIT 1`,
+     LIMIT 1 FOR UPDATE`,
     [userId, tenantId],
   );
 
@@ -887,7 +923,8 @@ export const pbxRouter = router({
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
-        return withTransaction(async (client) => {
+        const created = await withTransaction(async (client) => {
+          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "SIP account");
           if (input.userId !== undefined) {
             await requireAssignableTenantMember(
               (sql, parameters) => client.query(sql, parameters),
@@ -895,6 +932,9 @@ export const pbxRouter = router({
               tc.tenantId,
             );
           }
+
+          const sipDomain = "sip.phone11.ai";
+          await lockSipSubscriberName(client, input.extensionNumber, sipDomain, null);
 
           // Check uniqueness
           const existing = await client.query(
@@ -908,11 +948,29 @@ export const pbxRouter = router({
             });
           }
 
+          // Kamailio authenticates against subscriber, so it must receive the
+          // same credential as sip_accounts in this transaction. Never replace
+          // an orphaned or foreign subscriber while creating a new extension.
+          const creds = createSipCredentials(input.extensionNumber, sipDomain, sipDomain);
+          const subscriber = await client.query(
+            `INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (username, domain) DO NOTHING
+             RETURNING username`,
+            [creds.sipUsername, creds.sipDomain, creds.plaintextPassword, creds.ha1, creds.ha1b],
+          );
+          if (subscriber.rows.length !== 1) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "This SIP username already has a subscriber account",
+            });
+          }
+
           // Create extension
           const extResult = await client.query(
             `INSERT INTO extensions (tenant_id, user_id, extension_number, display_name, type, 
                                      sip_username, sip_domain, sip_password, caller_id_name, caller_id_number, transport, status)
-             VALUES ($1, $2, $3, $4, $5, $6, 'sip.phone11.ai', '', $7, $8, $9, 'active')
+             VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8, $9, $10, 'active')
              RETURNING *`,
             [
               tc.tenantId,
@@ -921,15 +979,14 @@ export const pbxRouter = router({
               input.displayName || `Extension ${input.extensionNumber}`,
               input.type,
               input.extensionNumber,
+              sipDomain,
               input.callerIdName || null,
               input.callerIdNumber || null,
               input.transport,
             ],
           );
           const ext = extResult.rows[0];
-
-          // Create SIP account with proper encryption
-          const creds = createSipCredentials(input.extensionNumber);
+          if (!ext?.id) throw new TRPCError({ code: "CONFLICT", message: "Extension could not be created" });
 
           await client.query(
             `INSERT INTO sip_accounts 
@@ -952,19 +1009,24 @@ export const pbxRouter = router({
             ],
           );
 
-          // Audit log
-          await writeAuditLog({
-            tenantId: tc.tenantId,
-            actorUserId: ctx.user!.id,
-            action: "create",
-            resourceType: "extension",
-            resourceId: String(ext.id),
-            newValue: {
-              extensionNumber: input.extensionNumber,
-              type: input.type,
-            },
-            ipAddress: ctx.req.ip,
-          });
+          if (input.userId !== undefined) {
+            const primaryResult = await client.query(
+              `SELECT EXISTS(
+                 SELECT 1 FROM user_extensions
+                 WHERE user_id = $1 AND is_primary = true
+               ) AS has_primary`,
+              [input.userId],
+            );
+            if (primaryResult.rows.length !== 1 || typeof primaryResult.rows[0].has_primary !== "boolean") {
+              throw new TRPCError({ code: "CONFLICT", message: "Could not determine the user's primary extension" });
+            }
+            const hasPrimary = primaryResult.rows[0].has_primary;
+            await client.query(
+              `INSERT INTO user_extensions (user_id, extension_id, is_primary)
+               VALUES ($1, $2, $3)`,
+              [input.userId, ext.id, !hasPrimary],
+            );
+          }
 
           // Return extension + one-time password display
           return {
@@ -977,6 +1039,16 @@ export const pbxRouter = router({
             },
           };
         });
+        await writeAuditLog({
+          tenantId: tc.tenantId,
+          actorUserId: ctx.user!.id,
+          action: "create",
+          resourceType: "extension",
+          resourceId: String(created.id),
+          newValue: { extensionNumber: input.extensionNumber, type: input.type },
+          ipAddress: ctx.req.ip,
+        });
+        return created;
       }),
 
     /** Update an extension */
@@ -1198,63 +1270,105 @@ export const pbxRouter = router({
       .input(z.object({ extensionId: z.number(), tenantId: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
-        if (
-          !(await validateTenantOwnership(
-            "extensions",
-            input.extensionId,
-            tc.tenantId,
-          ))
-        ) {
-          throw new TRPCError({ code: "NOT_FOUND" });
-        }
+        const reset = await withTransaction(async (client) => {
+          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "SIP password");
+          const saResult = await client.query(
+            `SELECT sa.*, e.sip_username AS extension_sip_username,
+                    e.sip_domain AS extension_sip_domain, e.extension_number
+             FROM sip_accounts sa
+             JOIN extensions e ON e.id = sa.extension_id AND e.tenant_id = sa.tenant_id
+             WHERE e.id = $1 AND e.tenant_id = $2
+               AND e.status = 'active' AND e.deleted_at IS NULL
+               AND sa.status = 'active' AND sa.deleted_at IS NULL
+             LIMIT 2 FOR UPDATE OF e, sa`,
+            [input.extensionId, tc.tenantId],
+          );
+          if (saResult.rows.length !== 1) {
+            throw new TRPCError({
+              code: saResult.rows.length === 0 ? "NOT_FOUND" : "CONFLICT",
+              message: "No single active SIP account found for this extension",
+            });
+          }
 
-        // Get SIP account
-        const saResult = await query(
-          `SELECT * FROM sip_accounts WHERE extension_id = $1 AND deleted_at IS NULL`,
-          [input.extensionId],
-        );
-        if (!saResult.rows[0])
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "No SIP account found",
-          });
+          const sa = saResult.rows[0];
+          if (!sa.sip_username || !sa.sip_domain ||
+              (sa.extension_sip_username || sa.extension_number) !== sa.sip_username ||
+              (sa.extension_sip_domain || "sip.phone11.ai") !== sa.sip_domain) {
+            throw new TRPCError({ code: "CONFLICT", message: "SIP account identity does not match its extension" });
+          }
+          await lockSipSubscriberName(client, sa.sip_username, sa.sip_domain, input.extensionId);
+          // The legacy subscriber table has no tenant FK. Match its current
+          // digest to this locked account before replacing any existing row.
+          const currentSubscriber = await client.query(
+            `SELECT ha1, ha1b FROM subscriber
+             WHERE username = $1 AND domain = $2 FOR UPDATE`,
+            [sa.sip_username, sa.sip_domain],
+          );
+          if (currentSubscriber.rows.length > 1 ||
+              (currentSubscriber.rows.length === 1 &&
+                (!sa.ha1 || !sa.ha1b ||
+                 currentSubscriber.rows[0].ha1 !== sa.ha1 ||
+                 currentSubscriber.rows[0].ha1b !== sa.ha1b))) {
+            throw new TRPCError({ code: "CONFLICT", message: "Subscriber credentials do not match this SIP account" });
+          }
+          const creds = regenerateSipCredentials(sa.sip_username, sa.sip_domain, sa.sip_domain);
 
-        const sa = saResult.rows[0];
-        const creds = regenerateSipCredentials(sa.sip_username, sa.sip_domain);
+          const updated = await client.query(
+            `UPDATE sip_accounts SET ha1 = $1, ha1b = $2, secret_ciphertext = $3,
+             secret_iv = $4, secret_tag = $5, dek_id = $6, updated_at = NOW()
+             WHERE id = $7 AND tenant_id = $8 AND status = 'active' AND deleted_at IS NULL
+             RETURNING id`,
+            [
+              creds.ha1,
+              creds.ha1b,
+              creds.secretCiphertext,
+              creds.secretIv,
+              creds.secretTag,
+              creds.dekId,
+              sa.id,
+              tc.tenantId,
+            ],
+          );
+          if (updated.rows.length !== 1) throw new TRPCError({ code: "CONFLICT" });
 
-        await query(
-          `UPDATE sip_accounts SET ha1 = $1, ha1b = $2, secret_ciphertext = $3, 
-           secret_iv = $4, secret_tag = $5, dek_id = $6, updated_at = NOW()
-           WHERE id = $7`,
-          [
-            creds.ha1,
-            creds.ha1b,
-            creds.secretCiphertext,
-            creds.secretIv,
-            creds.secretTag,
-            creds.dekId,
-            sa.id,
-          ],
-        );
+          // The encrypted account and Kamailio's live auth row must commit
+          // together; otherwise the displayed reset password cannot register.
+          const subscriber = currentSubscriber.rows.length === 1
+            ? await client.query(
+                `UPDATE subscriber SET password = $3, ha1 = $4, ha1b = $5
+                 WHERE username = $1 AND domain = $2 AND ha1 = $6 AND ha1b = $7
+                 RETURNING username`,
+                [creds.sipUsername, creds.sipDomain, creds.plaintextPassword, creds.ha1, creds.ha1b, sa.ha1, sa.ha1b],
+              )
+            : await client.query(
+                `INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (username, domain) DO NOTHING RETURNING username`,
+                [creds.sipUsername, creds.sipDomain, creds.plaintextPassword, creds.ha1, creds.ha1b],
+              );
+          if (subscriber.rows.length !== 1) {
+            throw new TRPCError({ code: "CONFLICT", message: "Subscriber changed before the password reset" });
+          }
 
+          return {
+            accountId: sa.id,
+            sipCredentials: {
+              username: creds.sipUsername,
+              domain: creds.sipDomain,
+              password: creds.plaintextPassword,
+            },
+          };
+        });
         await invalidateCache(`directory:${tc.tenantId}:*`);
-
         await writeAuditLog({
           tenantId: tc.tenantId,
           actorUserId: ctx.user!.id,
           action: "reset_password",
           resourceType: "sip_account",
-          resourceId: String(sa.id),
+          resourceId: String(reset.accountId),
           ipAddress: ctx.req.ip,
         });
-
-        return {
-          sipCredentials: {
-            username: creds.sipUsername,
-            domain: creds.sipDomain,
-            password: creds.plaintextPassword,
-          },
-        };
+        return { sipCredentials: reset.sipCredentials };
       }),
   }),
 
@@ -1341,7 +1455,7 @@ export const pbxRouter = router({
         const normalized = normalizeToE164(input.number);
 
         const result = await withTransaction(async (client) => {
-          await lockLiveDidAdmin(client, ctx.user!.id, tc.tenantId);
+          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId);
           return client.query(
             `INSERT INTO phone_numbers (tenant_id, number_e164, number_display, country, number_type, provider, status)
              VALUES ($1, $2, $3, $4, $5, $6, 'pending')
@@ -1414,7 +1528,7 @@ export const pbxRouter = router({
           throw new TRPCError({ code: "NOT_FOUND" });
         }
         await withTransaction(async (client) => {
-          await lockLiveDidAdmin(client, ctx.user!.id, tc.tenantId);
+          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId);
           if (input.assignedRouteType && input.assignedRouteId) {
             // Lock every referenced destination row, including the SIP account
             // joined for user extensions, until the DID update commits.

@@ -359,7 +359,18 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
       LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
         AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
-      WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
+      WHERE e.type = 'user'
+        AND (
+          -- A live SIP account has two current owner records. A stale
+          -- user_extensions row must never disclose the account password.
+          (sa.id IS NOT NULL AND e.user_id = $1 AND sa.user_id = $1 AND ue.user_id = $1)
+          OR (sa.id IS NULL AND e.user_id = $1 AND ue.user_id = $1)
+          OR (sa.id IS NULL AND e.user_id IS NULL AND ue.user_id = $1
+              AND NOT EXISTS (
+                SELECT 1 FROM user_extensions other_ue
+                WHERE other_ue.extension_id = e.id AND other_ue.user_id <> $1
+              ))
+        )
         AND COALESCE(e.status, 'active') = 'active'
         AND e.deleted_at IS NULL
         -- A legacy extension without a sip_accounts row may use its existing
@@ -457,47 +468,54 @@ export async function assignExtensionToUser(
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 
-  // Never allow the legacy route (or a future direct caller) to link an
-  // extension to someone outside that extension's active workspace.
-  const eligible = await db.query(
-    `SELECT e.id
-       FROM extensions e
-       JOIN tenant_memberships tm
-         ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
-       JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
-      WHERE e.id = $2 AND e.tenant_id = $3
-        AND e.status = 'active' AND e.deleted_at IS NULL
-      LIMIT 1`,
-    [userId, extensionId, tenantId],
-  );
-  if (eligible.rows.length !== 1) {
-    throw new Error("Extension assignee must be an active member of this workspace.");
-  }
-
-  if (isPrimary) {
-    await db.query(
-      `UPDATE user_extensions ue SET is_primary = false
+  await withTransaction(async (client) => {
+    // Serialize reassignment of this extension with ownership reads. The
+    // former assignee's link is removed in the same transaction as both
+    // authoritative owner fields change.
+    const eligible = await client.query(
+      `SELECT e.id
          FROM extensions e
-        WHERE ue.user_id = $1 AND ue.extension_id = e.id AND e.tenant_id = $2`,
-      [userId, tenantId],
+         JOIN tenant_memberships tm
+           ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
+         JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
+        WHERE e.id = $2 AND e.tenant_id = $3
+          AND e.status = 'active' AND e.deleted_at IS NULL
+        LIMIT 1 FOR UPDATE OF e`,
+      [userId, extensionId, tenantId],
     );
-  }
+    if (eligible.rows.length !== 1) {
+      throw new Error("Extension assignee must be an active member of this workspace.");
+    }
 
-  await db.query(`
-    INSERT INTO user_extensions (user_id, extension_id, is_primary)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (user_id, extension_id) DO UPDATE SET is_primary = EXCLUDED.is_primary
-  `, [userId, extensionId, isPrimary]);
+    await client.query(
+      `DELETE FROM user_extensions WHERE extension_id = $1 AND user_id <> $2`,
+      [extensionId, userId],
+    );
+    if (isPrimary) {
+      await client.query(
+        `UPDATE user_extensions ue SET is_primary = false
+           FROM extensions e
+          WHERE ue.user_id = $1 AND ue.extension_id = e.id AND e.tenant_id = $2`,
+        [userId, tenantId],
+      );
+    }
 
-  await db.query(
-    `UPDATE extensions SET user_id = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
-    [userId, extensionId, tenantId],
-  );
-  await db.query(
-    `UPDATE sip_accounts SET user_id = $1, updated_at = NOW()
-      WHERE extension_id = $2 AND tenant_id = $3`,
-    [userId, extensionId, tenantId],
-  );
+    await client.query(`
+      INSERT INTO user_extensions (user_id, extension_id, is_primary)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id, extension_id) DO UPDATE SET is_primary = EXCLUDED.is_primary
+    `, [userId, extensionId, isPrimary]);
+
+    await client.query(
+      `UPDATE extensions SET user_id = $1, updated_at = NOW() WHERE id = $2 AND tenant_id = $3`,
+      [userId, extensionId, tenantId],
+    );
+    await client.query(
+      `UPDATE sip_accounts SET user_id = $1, updated_at = NOW()
+        WHERE extension_id = $2 AND tenant_id = $3`,
+      [userId, extensionId, tenantId],
+    );
+  });
 
   return { success: true };
 }
@@ -543,13 +561,15 @@ export async function createExtension(input: {
       [extensionNumber, DEFAULT_SIP_DOMAIN],
     );
     const conflictingExtension = await client.query(
-      `SELECT id FROM extensions
-        WHERE extension_number = $1 AND tenant_id <> $2 AND deleted_at IS NULL
+      `SELECT id, tenant_id FROM extensions
+        WHERE extension_number = $1 AND deleted_at IS NULL
         LIMIT 1`,
-      [extensionNumber, orgId],
+      [extensionNumber],
     );
     if (conflictingExtension.rows.length > 0) {
-      throw new Error("This extension number is already in use by another workspace.");
+      throw new Error(conflictingExtension.rows[0].tenant_id === orgId
+        ? "This extension number is already in use by this workspace."
+        : "This extension number is already in use by another workspace.");
     }
 
     const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN, password);

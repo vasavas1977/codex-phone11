@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { randomBytes } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRPCError } from "@trpc/server";
+import { Pool } from "pg";
 
 const db = vi.hoisted(() => ({
   query: vi.fn(),
@@ -47,6 +49,10 @@ vi.mock("../server/profile/photo", () => ({
 import { pbxRouter } from "../server/pbx/pbx-router";
 // eslint-disable-next-line import/first
 import { getCallStats } from "../server/pbx/cdr-processor";
+// eslint-disable-next-line import/first
+import { createSipCredentials, regenerateSipCredentials } from "../server/pbx/sip-secrets";
+// eslint-disable-next-line import/first
+import { writeAuditLog } from "../server/pbx/audit";
 // eslint-disable-next-line import/first
 import { profilePhotoDescriptors } from "../server/profile/photo";
 // eslint-disable-next-line import/first
@@ -593,6 +599,7 @@ describe("PBX workspace administrator authorization", () => {
   it("rejects creating an extension for a person outside the active workspace", async () => {
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })
+      .mockResolvedValueOnce({ rows: [{ role: "admin" }] })
       .mockResolvedValueOnce({ rows: [] });
 
     await expect(
@@ -602,7 +609,7 @@ describe("PBX workspace administrator authorization", () => {
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
-    expect(db.query.mock.calls[1]).toEqual([
+    expect(db.query.mock.calls[2]).toEqual([
       expect.stringContaining("FROM tenant_memberships"),
       [88, 7],
     ]);
@@ -755,6 +762,308 @@ describe("PBX workspace administrator authorization", () => {
       expect.stringContaining("UPDATE sip_accounts"),
       [88, 44, 7],
     ]);
+  });
+});
+
+describe("admin SIP credential writes", () => {
+  const credentials = {
+    sipUsername: "3101",
+    sipDomain: "sip.phone11.ai",
+    plaintextPassword: "new-secret",
+    ha1: "new-ha1",
+    ha1b: "new-ha1b",
+    secretCiphertext: Buffer.from("ciphertext"),
+    secretIv: Buffer.from("iv"),
+    secretTag: Buffer.from("tag"),
+    dekId: "dek-v1",
+  };
+
+  function prepare(override?: (sql: string, parameters?: unknown[]) => { rows: unknown[] } | undefined) {
+    db.query.mockImplementation(async (sql: string, parameters?: unknown[]) => {
+      const special = override?.(sql, parameters);
+      if (special) return special;
+      if (sql.includes("ORDER BY tm.created_at")) return { rows: [membership("admin")] };
+      if (sql.includes("tm.role::text AS role")) return { rows: [{ role: "admin" }] };
+      if (sql.includes("SELECT 1 FROM tenant_memberships")) return { rows: [{ "?column?": 1 }] };
+      if (sql.includes("AS has_conflict")) return { rows: [{ has_conflict: false }] };
+      if (sql.includes("INSERT INTO subscriber") && sql.includes("DO NOTHING")) {
+        return { rows: [{ username: "3101" }] };
+      }
+      if (sql.includes("INSERT INTO extensions")) return { rows: [{ id: 44, tenant_id: 7 }] };
+      if (sql.includes("AS has_primary")) return { rows: [{ has_primary: false }] };
+      if (sql.includes("FROM sip_accounts sa")) {
+        return { rows: [{ id: 55, extension_id: 44, tenant_id: 7, sip_username: "3101", sip_domain: "sip.phone11.ai", ha1: "old-ha1", ha1b: "old-ha1b", extension_sip_username: "3101", extension_sip_domain: "sip.phone11.ai", extension_number: "3101" }] };
+      }
+      if (sql.includes("SELECT ha1, ha1b FROM subscriber")) return { rows: [{ ha1: "old-ha1", ha1b: "old-ha1b" }] };
+      if (sql.includes("UPDATE sip_accounts SET ha1")) return { rows: [{ id: 55 }] };
+      if (sql.includes("UPDATE subscriber SET password")) return { rows: [{ username: "3101" }] };
+      return { rows: [] };
+    });
+    vi.mocked(createSipCredentials).mockReturnValue(credentials);
+    vi.mocked(regenerateSipCredentials).mockReturnValue(credentials);
+  }
+
+  it("creates a subscriber and explicit assignee grant with the same credential in one transaction", async () => {
+    prepare();
+    await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3101", userId: 88 }))
+      .resolves.toMatchObject({ sipCredentials: { password: "new-secret" } });
+
+    expect(db.withTransaction).toHaveBeenCalledOnce();
+    const calls = db.query.mock.calls.map(([sql]) => String(sql));
+    const subscriber = calls.findIndex((sql) => sql.includes("INSERT INTO subscriber"));
+    const extension = calls.findIndex((sql) => sql.includes("INSERT INTO extensions"));
+    const account = calls.findIndex((sql) => sql.includes("INSERT INTO sip_accounts"));
+    const grant = calls.findIndex((sql) => sql.includes("INSERT INTO user_extensions"));
+    expect(subscriber).toBeGreaterThan(-1);
+    expect(extension).toBeGreaterThan(subscriber);
+    expect(account).toBeGreaterThan(extension);
+    expect(grant).toBeGreaterThan(account);
+    expect(db.query.mock.calls[subscriber][1]).toEqual(["3101", "sip.phone11.ai", "new-secret", "new-ha1", "new-ha1b"]);
+    expect(db.query.mock.calls[grant][1]).toEqual([88, 44, true]);
+    expect(calls.some((sql) => sql.includes("FOR UPDATE OF tm, t"))).toBe(true);
+    expect(calls.some((sql) => sql.includes("pg_advisory_xact_lock(hashtext($1), hashtext($2))"))).toBe(true);
+  });
+
+  it("refuses another workspace's SIP username before creating credentials or subscriber", async () => {
+    prepare((sql) => sql.includes("AS has_conflict") ? { rows: [{ has_conflict: true }] } : undefined);
+    await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3101" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(createSipCredentials).not.toHaveBeenCalled();
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber"))).toBe(false);
+  });
+
+  it("refuses an orphaned subscriber instead of overwriting its password", async () => {
+    prepare((sql) => sql.includes("INSERT INTO subscriber") ? { rows: [] } : undefined);
+    await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3101" }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO extensions"))).toBe(false);
+  });
+
+  it("aborts create if the SIP-account insert fails after the subscriber insert", async () => {
+    prepare((sql) => {
+      if (sql.includes("INSERT INTO sip_accounts")) throw new Error("SIP account write failed");
+      return undefined;
+    });
+    await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3101", userId: 88 }))
+      .rejects.toThrow("SIP account write failed");
+    expect(db.withTransaction).toHaveBeenCalledOnce();
+    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO user_extensions"))).toBe(false);
+  });
+
+  it("resets the encrypted account and Kamailio subscriber together", async () => {
+    prepare();
+    await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
+      .resolves.toEqual({ sipCredentials: { username: "3101", domain: "sip.phone11.ai", password: "new-secret" } });
+    expect(db.withTransaction).toHaveBeenCalledOnce();
+    expect(regenerateSipCredentials).toHaveBeenCalledWith("3101", "sip.phone11.ai", "sip.phone11.ai");
+    const calls = db.query.mock.calls.map(([sql]) => String(sql));
+    const account = calls.findIndex((sql) => sql.includes("UPDATE sip_accounts SET ha1"));
+    const subscriber = calls.findIndex((sql) => sql.includes("UPDATE subscriber SET password"));
+    expect(account).toBeGreaterThan(-1);
+    expect(subscriber).toBeGreaterThan(account);
+    expect(db.query.mock.calls[subscriber][1]).toEqual(["3101", "sip.phone11.ai", "new-secret", "new-ha1", "new-ha1b", "old-ha1", "old-ha1b"]);
+    expect(calls.some((sql) => sql.includes("FOR UPDATE OF e, sa"))).toBe(true);
+    expect(calls.some((sql) => sql.includes("SELECT ha1, ha1b FROM subscriber") && sql.includes("FOR UPDATE"))).toBe(true);
+  });
+
+  it("does not rotate a password when another phone account owns the subscriber name", async () => {
+    prepare((sql) => sql.includes("AS has_conflict") ? { rows: [{ has_conflict: true }] } : undefined);
+    await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(regenerateSipCredentials).not.toHaveBeenCalled();
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(false);
+  });
+
+  it("does not rotate a mismatched extension and SIP-account identity", async () => {
+    prepare((sql) => sql.includes("FROM sip_accounts sa") ? {
+      rows: [{ id: 55, extension_id: 44, tenant_id: 7, sip_username: "orphan", sip_domain: "sip.phone11.ai", extension_sip_username: "3101", extension_sip_domain: "sip.phone11.ai", extension_number: "3101" }],
+    } : undefined);
+    await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(regenerateSipCredentials).not.toHaveBeenCalled();
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber"))).toBe(false);
+  });
+
+  it("rejects an existing subscriber with a different current digest", async () => {
+    prepare((sql) => sql.includes("SELECT ha1, ha1b FROM subscriber")
+      ? { rows: [{ ha1: "another-account-ha1", ha1b: "another-account-ha1b" }] } : undefined);
+    await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(regenerateSipCredentials).not.toHaveBeenCalled();
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(false);
+  });
+
+  it("creates a missing subscriber without overwriting a concurrent insert", async () => {
+    prepare((sql) => {
+      if (sql.includes("SELECT ha1, ha1b FROM subscriber")) return { rows: [] };
+      if (sql.includes("INSERT INTO subscriber") && sql.includes("DO NOTHING")) return { rows: [{ username: "3101" }] };
+      return undefined;
+    });
+    await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
+      .resolves.toMatchObject({ sipCredentials: { password: "new-secret" } });
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("ON CONFLICT (username, domain) DO NOTHING RETURNING username"))).toBe(true);
+  });
+
+  it("rolls back a reset if a missing subscriber appears before guarded insertion", async () => {
+    prepare((sql) => {
+      if (sql.includes("SELECT ha1, ha1b FROM subscriber")) return { rows: [] };
+      if (sql.includes("INSERT INTO subscriber") && sql.includes("DO NOTHING")) return { rows: [] };
+      return undefined;
+    });
+    await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(writeAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("aborts reset if the subscriber write fails after the account update", async () => {
+    prepare((sql) => {
+      if (sql.includes("UPDATE subscriber SET password")) throw new Error("subscriber write failed");
+      return undefined;
+    });
+    await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
+      .rejects.toThrow("subscriber write failed");
+    expect(db.withTransaction).toHaveBeenCalledOnce();
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(true);
+    expect(writeAuditLog).not.toHaveBeenCalled();
+  });
+});
+
+const credentialTestDatabaseUrl = process.env.PHONE11_PBX_TEST_DATABASE_URL;
+if (credentialTestDatabaseUrl) {
+  const url = new URL(credentialTestDatabaseUrl);
+  if (!["postgres:", "postgresql:"].includes(url.protocol) ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      url.pathname !== "/phone11_pbx_test" || !url.port || url.search || url.hash) {
+    throw new Error("PBX credential test requires dedicated loopback phone11_pbx_test database");
+  }
+}
+
+describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated PostgreSQL", () => {
+  const schema = `pbx_admin_credentials_${randomBytes(8).toString("hex")}`;
+  const admin = new Pool({ connectionString: credentialTestDatabaseUrl, ssl: false });
+  const database = new Pool({ connectionString: credentialTestDatabaseUrl, ssl: false, options: `-c search_path=${schema}` });
+
+  it("commits matching credentials and rolls back failed create/reset writes", async () => {
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    try {
+      await database.query(`
+        CREATE TABLE tenants(id integer PRIMARY KEY, name text, status text);
+        CREATE TABLE tenant_memberships(user_id integer, tenant_id integer, role text, status text, created_at timestamptz DEFAULT NOW());
+        CREATE TABLE extensions(
+          id serial PRIMARY KEY, tenant_id integer, user_id integer, extension_number text,
+          display_name text, type text, sip_username text, sip_domain text, sip_password text,
+          caller_id_name text, caller_id_number text, transport text, status text,
+          deleted_at timestamptz, updated_at timestamptz
+        );
+        CREATE TABLE sip_accounts(
+          id serial PRIMARY KEY, tenant_id integer, extension_id integer, user_id integer,
+          sip_username text, sip_domain text, ha1 text, ha1b text, secret_ciphertext bytea,
+          secret_iv bytea, secret_tag bytea, dek_id text, transport_preference text,
+          status text, deleted_at timestamptz, updated_at timestamptz
+        );
+        CREATE TABLE subscriber(
+          username text, domain text, password text, ha1 text, ha1b text,
+          UNIQUE(username, domain)
+        );
+        CREATE TABLE user_extensions(
+          user_id integer, extension_id integer, is_primary boolean,
+          UNIQUE(user_id, extension_id)
+        );
+        INSERT INTO tenants VALUES (7,'Acme','active'), (8,'Other','active');
+        INSERT INTO tenant_memberships(user_id,tenant_id,role,status)
+        VALUES (9,7,'admin','active'), (88,7,'user','active');
+      `);
+      db.query.mockImplementation((sql: string, params?: unknown[]) => database.query(sql, params));
+      db.withTransaction.mockImplementation(async (callback) => {
+        const client = await database.connect();
+        try {
+          await client.query("BEGIN");
+          const result = await callback(client);
+          await client.query("COMMIT");
+          return result;
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
+      });
+      vi.mocked(createSipCredentials).mockImplementation((username: string) => ({
+        sipUsername: username, sipDomain: "sip.phone11.ai", plaintextPassword: `password-${username}`,
+        ha1: `ha1-${username}`, ha1b: `ha1b-${username}`, secretCiphertext: Buffer.from("cipher"),
+        secretIv: Buffer.from("iv"), secretTag: Buffer.from("tag"), dekId: "dek-v1",
+      }));
+
+      const created = await pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3101", userId: 88 });
+      const extensionId = created.id as number;
+      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows[0].password)
+        .toBe("password-3101");
+      expect((await database.query("SELECT user_id FROM sip_accounts WHERE extension_id=$1", [extensionId])).rows[0].user_id)
+        .toBe(88);
+      expect((await database.query("SELECT user_id FROM user_extensions WHERE extension_id=$1", [extensionId])).rows[0].user_id)
+        .toBe(88);
+
+      await database.query("ALTER TABLE sip_accounts ADD CONSTRAINT reject_3102 CHECK (sip_username <> '3102')");
+      await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3102", userId: 88 }))
+        .rejects.toThrow();
+      expect((await database.query("SELECT 1 FROM subscriber WHERE username='3102'")).rows).toHaveLength(0);
+      expect((await database.query("SELECT 1 FROM extensions WHERE extension_number='3102'")).rows).toHaveLength(0);
+
+      await database.query("INSERT INTO extensions(tenant_id,extension_number,sip_username,sip_domain,deleted_at) VALUES(8,'3103','3103','sip.phone11.ai',NULL)");
+      await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3103" }))
+        .rejects.toMatchObject({ code: "CONFLICT" });
+      expect((await database.query("SELECT 1 FROM subscriber WHERE username='3103'")).rows).toHaveLength(0);
+
+      await database.query("UPDATE subscriber SET ha1='foreign-ha1', ha1b='foreign-ha1b' WHERE username='3101'");
+      await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId }))
+        .rejects.toMatchObject({ code: "CONFLICT" });
+      expect((await database.query("SELECT ha1 FROM sip_accounts WHERE extension_id=$1", [extensionId])).rows[0].ha1)
+        .toBe("ha1-3101");
+      expect((await database.query("SELECT ha1 FROM subscriber WHERE username='3101'")).rows[0].ha1)
+        .toBe("foreign-ha1");
+      await database.query("UPDATE subscriber SET ha1='ha1-3101', ha1b='ha1b-3101' WHERE username='3101'");
+
+      vi.mocked(regenerateSipCredentials).mockReturnValue({
+        sipUsername: "3101", sipDomain: "sip.phone11.ai", plaintextPassword: "rotated-reset",
+        ha1: "rotated-ha1", ha1b: "rotated-ha1b", secretCiphertext: Buffer.from("rotated-cipher"),
+        secretIv: Buffer.from("rotated-iv"), secretTag: Buffer.from("rotated-tag"), dekId: "dek-v1",
+      });
+      await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId }))
+        .resolves.toMatchObject({ sipCredentials: { password: "rotated-reset" } });
+      expect((await database.query("SELECT ha1 FROM sip_accounts WHERE extension_id=$1", [extensionId])).rows[0].ha1)
+        .toBe("rotated-ha1");
+      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows[0].password)
+        .toBe("rotated-reset");
+
+      vi.mocked(regenerateSipCredentials).mockReturnValue({
+        sipUsername: "3101", sipDomain: "sip.phone11.ai", plaintextPassword: "blocked-reset",
+        ha1: "blocked-ha1", ha1b: "blocked-ha1b", secretCiphertext: Buffer.from("new-cipher"),
+        secretIv: Buffer.from("new-iv"), secretTag: Buffer.from("new-tag"), dekId: "dek-v1",
+      });
+      await database.query("ALTER TABLE subscriber ADD CONSTRAINT reject_reset CHECK (password <> 'blocked-reset')");
+      await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId }))
+        .rejects.toThrow();
+      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows[0].password)
+        .toBe("rotated-reset");
+      expect((await database.query("SELECT ha1 FROM sip_accounts WHERE extension_id=$1", [extensionId])).rows[0].ha1)
+        .toBe("rotated-ha1");
+
+      await database.query("DELETE FROM subscriber WHERE username='3101'");
+      vi.mocked(regenerateSipCredentials).mockReturnValue({
+        sipUsername: "3101", sipDomain: "sip.phone11.ai", plaintextPassword: "recovered-reset",
+        ha1: "recovered-ha1", ha1b: "recovered-ha1b", secretCiphertext: Buffer.from("recovered-cipher"),
+        secretIv: Buffer.from("recovered-iv"), secretTag: Buffer.from("recovered-tag"), dekId: "dek-v1",
+      });
+      await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId }))
+        .resolves.toMatchObject({ sipCredentials: { password: "recovered-reset" } });
+      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows[0].password)
+        .toBe("recovered-reset");
+    } finally {
+      await database.end();
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
   });
 });
 
