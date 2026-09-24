@@ -65,10 +65,11 @@ comparison against retained Build 49 passed. The same signed Build 92 was
 installed **in place** on the iPhone 15 Pro Max, without uninstalling Phone11.
 A fresh device inventory reported the expected bundle ID and Phone11
 1.0.0/build 92. The repository does not independently prove which signed-in
-account is on that handset. Remote launch was refused because iOS reported the
-phone locked; launch, retained sign-in, and runtime behavior await an unlocked
-handset check. The Mac desktop dialpad/SRTP commits change no iOS app code and
-did not require another iOS build.
+account is on that handset. The first remote launch was refused while iOS
+reported the phone locked; after it was unlocked, `devicectl` launched the
+same bundle successfully. Retained sign-in and in-app behavior still need an
+on-screen handset check. The Mac desktop dialpad/SRTP commits change no iOS
+app code and did not require another iOS build.
 
 Native avatar taps, modal gestures, SIP continuity and photo display still require on-screen handset acceptance. No backend deployment or provider action was performed.
 
