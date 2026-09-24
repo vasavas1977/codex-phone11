@@ -13,11 +13,12 @@ enum class ErrorCode { EOK, ENotIncoming };
 enum class LogLevel { NoLog };
 enum class RegState { Success, Failed, Removed, InProgress };
 enum class SipTransport { UDP, TCP, TLS };
+enum class SecureMedia { Disabled, SdesSrtp, DtlsSrtp };
 enum class HoldState { None, Local, Remote, LocalAndRemote };
 enum class DtmfMethod { DTMF_RTP, DTMF_INFO };
 struct ISiprixModule { bool initialized = false; bool accepted = false; bool held = false; bool muted = false; };
 struct IniData {};
-struct AccData {};
+struct AccData { SecureMedia secureMedia = SecureMedia::Disabled; };
 struct DestData {};
 using OnAccountRegState = void (*)(AccountId, RegState, const char*);
 using OnCallIncoming = void (*)(CallId, AccountId, bool, const char*, const char*);
@@ -55,7 +56,9 @@ inline void Acc_SetSipAuthId(AccData*, const char*) {}
 inline void Acc_SetSipPassword(AccData*, const char*) {}
 inline void Acc_SetExpireTime(AccData*, std::uint32_t) {}
 inline void Acc_SetTranspProtocol(AccData*, SipTransport) {}
-inline ErrorCode Account_Add(ISiprixModule* m, AccData*, AccountId* id) {
+inline void Acc_SetSecureMediaMode(AccData* a, SecureMedia mode) { a->secureMedia = mode; }
+inline ErrorCode Account_Add(ISiprixModule* m, AccData* a, AccountId* id) {
+  if (a->secureMedia != SecureMedia::SdesSrtp) return ErrorCode::ENotIncoming;
   *id = 1;
   std::thread([m] {
     std::this_thread::sleep_for(std::chrono::milliseconds(70));

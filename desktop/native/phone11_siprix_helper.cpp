@@ -149,6 +149,9 @@ class SiprixModule {
     Siprix::Acc_SetExpireTime(account, 300);
     Siprix::Acc_SetTranspProtocol(account, fields[4] == "TLS" ? Siprix::SipTransport::TLS :
                                         fields[4] == "TCP" ? Siprix::SipTransport::TCP : Siprix::SipTransport::UDP);
+    // Phone11 local extensions require SDES SRTP in the initial INVITE. SIP
+    // transport encryption alone does not secure or negotiate the media.
+    Siprix::Acc_SetSecureMediaMode(account, Siprix::SecureMedia::SdesSrtp);
     Siprix::AccountId id = 0;
     if (Siprix::Account_Add(module_, account, &id) != Siprix::ErrorCode::EOK || id == 0) return false;
     accountId_ = id;

@@ -27,7 +27,9 @@ function render(): void {
   (byId('end') as HTMLButtonElement).hidden = !call;
   (byId('mute') as HTMLButtonElement).hidden = !call || !['connected', 'held'].includes(call.state);
   (byId('hold') as HTMLButtonElement).hidden = !call || !['connected', 'held'].includes(call.state);
-  (byId('keypad') as HTMLElement).hidden = !call || !['connected', 'held'].includes(call.state);
+  const canEnterDestination = !busy && !call && state.calling.registered && state.calling.dialState === 'idle';
+  const canSendDtmf = !!call && ['connected', 'held'].includes(call.state);
+  (byId('keypad') as HTMLElement).hidden = !canEnterDestination && !canSendDtmf;
   byId('mute').textContent = call?.muted ? 'Unmute' : 'Mute';
   byId('hold').textContent = call?.state === 'held' ? 'Resume' : 'Hold';
 }
@@ -89,8 +91,18 @@ for (const operation of ['answer', 'end', 'mute', 'hold'] as const) {
 byId('keypad').addEventListener('click', event => {
   const target = event.target as HTMLElement;
   const digit = target.dataset.digit;
+  if (!digit || !/^[0-9*#]$/.test(digit)) return;
   const call = state?.calling.call;
-  if (digit && call && state?.generation) void request({ operation: 'dtmf', generation: state.generation, callId: call.id, digits: digit });
+  if (call) {
+    if (busy || !['connected', 'held'].includes(call.state) || !state?.generation) return;
+    void request({ operation: 'dtmf', generation: state.generation, callId: call.id, digits: digit });
+    return;
+  }
+  if (busy || !state?.signedIn || !state.calling.registered || state.calling.dialState !== 'idle') return;
+  const destination = byId('destination') as HTMLInputElement;
+  if (destination.value.length >= 32) return;
+  destination.value += digit;
+  destination.focus();
 });
 window.phone11.onUpdate(update => { state = applyTaggedSnapshot(state, update); render(); });
 const initialEpoch = accountEpoch;
