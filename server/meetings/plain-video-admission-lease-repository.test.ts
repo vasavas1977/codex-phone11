@@ -29,6 +29,8 @@ describe("plain-video admission issuance lease", () => {
       if (sql.includes("to_regclass")) return { rows: [{ available: true }] };
       if (sql.includes("FROM phone11_channel_meetings")) return { rows: [{ channel_id: "52345678-1234-4234-8234-123456789012" }] };
       if (sql.includes("FOR KEY SHARE OF member")) return { rows: [{ user_id: 7 }] };
+      if (sql.includes("FROM user_extensions")) return { rows: [{ id: 1, extension_id: 107 }] };
+      if (sql.includes("FROM extensions")) return { rows: [{ id: 107 }] };
       return { rows: [row] };
     });
     const repository = createPlainVideoAdmissionLeaseRepository(async (fn) => fn({ query } as never));
@@ -43,10 +45,15 @@ describe("plain-video admission issuance lease", () => {
     const statements = query.mock.calls.map(([statement]) => statement as string);
     const tenantLock = statements.findIndex((statement) => statement.includes("FROM tenants") && statement.includes("FOR SHARE"));
     const memberLock = statements.findIndex((statement) => statement.includes("FOR KEY SHARE OF member"));
+    const assignmentLock = statements.findIndex((statement) => statement.includes("FROM user_extensions") && statement.includes("FOR SHARE"));
+    const extensionLock = statements.findIndex((statement) => statement.includes("FROM extensions") && statement.includes("FOR SHARE"));
     const leaseWrite = statements.findIndex((statement) => statement.includes("INSERT INTO phone11_plain_video_admission_leases"));
     expect(tenantLock).toBe(0);
     expect(tenantLock).toBeLessThan(memberLock);
     expect(memberLock).toBeLessThan(leaseWrite);
+    expect(memberLock).toBeLessThan(assignmentLock);
+    expect(assignmentLock).toBeLessThan(extensionLock);
+    expect(extensionLock).toBeLessThan(leaseWrite);
     expect(sql).toContain("INSERT INTO phone11_plain_video_admission_leases");
     expect(sql).toContain("'pending'");
     expect(sql).toContain("clock_timestamp() + INTERVAL '5 minutes'");

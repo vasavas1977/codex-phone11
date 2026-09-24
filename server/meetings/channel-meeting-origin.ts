@@ -47,5 +47,22 @@ export async function channelMeetingOriginAllows(
         WHERE ue.user_id=member.user_id AND extension.tenant_id=member.tenant_id
           AND extension.status='active' AND extension.deleted_at IS NULL)${lock}`,
     [grant.tenantId, source.rows[0].channel_id, grant.userId]);
-  return member.rows.length === 1;
+  if (member.rows.length !== 1) return false;
+  if (!lockMembership) return true;
+
+  // Keep the extension authority stable through the lease transaction. Start
+  // and admin edits lock assignments before extensions in this same order.
+  // Separate statements avoid leaving the join planner to choose lock order.
+  const assignments = await db.query(`SELECT assignment.id,assignment.extension_id
+    FROM user_extensions assignment
+    JOIN extensions extension ON extension.id=assignment.extension_id AND extension.tenant_id=$2
+    WHERE assignment.user_id=$1 ORDER BY assignment.id FOR SHARE OF assignment`,
+  [grant.userId, grant.tenantId]);
+  if (!assignments.rows.length) return false;
+  const extensionIds = [...new Set(assignments.rows.map((row) => Number(row.extension_id)))].sort((a, b) => a - b);
+  const extensions = await db.query(`SELECT id FROM extensions
+    WHERE id=ANY($1::integer[]) AND tenant_id=$2 AND status='active' AND deleted_at IS NULL
+    ORDER BY id FOR SHARE`, [extensionIds, grant.tenantId]);
+  const eligible = new Set(extensions.rows.map((row) => Number(row.id)));
+  return assignments.rows.some((row) => eligible.has(Number(row.extension_id)));
 }
