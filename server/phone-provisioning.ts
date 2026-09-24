@@ -12,12 +12,14 @@
  */
 
 import { getPool, withTransaction } from "./pbx/db";
-import { createSipCredentials, decryptSecret } from "./pbx/sip-secrets";
+import { computeHA1, computeHA1B, createSipCredentials, decryptSecret } from "./pbx/sip-secrets";
 
 export interface PhoneConfig {
   configured: boolean;
   tenantId?: number;
   extension?: {
+    /** Selected tenant-owned extension ID, bound to the same SIP row below. */
+    id?: number;
     number: string;
     displayName: string;
     callerIdName?: string;
@@ -72,29 +74,41 @@ function toBuffer(value: unknown): Buffer | null {
   return Buffer.from(value, "base64");
 }
 
-function getSipPassword(row: any): string {
-  // Kamailio authenticates against subscriber.password. Prefer that same source
-  // so mobile provisioning cannot drift from the live SIP auth table.
-  if (row.subscriber_password) {
-    return row.subscriber_password;
-  }
+function getSipPassword(row: any): string | null {
+  const username = row.account_sip_username || row.sip_username || row.extension_number;
+  const domain = row.account_sip_domain || row.sip_domain || DEFAULT_SIP_DOMAIN;
+  const password = row.subscriber_password;
+  if (!username || !domain || typeof password !== "string" || !password) return null;
+  if (row.account_id !== null && row.account_id !== undefined &&
+      ((row.sip_username || row.extension_number) !== username ||
+       (row.sip_domain || DEFAULT_SIP_DOMAIN) !== domain)) return null;
 
-  const ciphertext = toBuffer(row.secret_ciphertext);
-  const iv = toBuffer(row.secret_iv);
-  const tag = toBuffer(row.secret_tag);
-
-  if (ciphertext && iv && tag) {
-    try {
-      return decryptSecret(ciphertext, iv, tag);
-    } catch (error) {
-      console.warn("[PhoneProvisioning] Could not decrypt SIP secret, falling back to extension password");
+  const ha1 = computeHA1(username, domain, password);
+  const ha1b = computeHA1B(username, domain, domain, password);
+  if (!ha1 || !ha1b || row.subscriber_ha1 !== ha1 || row.subscriber_ha1b !== ha1b) return null;
+  if (row.account_id !== null && row.account_id !== undefined) {
+    if (row.account_ha1 !== ha1 || row.account_ha1b !== ha1b) return null;
+    const hasSecret = row.secret_ciphertext != null || row.secret_iv != null || row.secret_tag != null;
+    if (hasSecret) {
+      const ciphertext = toBuffer(row.secret_ciphertext);
+      const iv = toBuffer(row.secret_iv);
+      const tag = toBuffer(row.secret_tag);
+      if (!ciphertext || !iv || !tag) return null;
+      try {
+        if (decryptSecret(ciphertext, iv, tag) !== password) return null;
+      } catch {
+        return null;
+      }
     }
+  } else if (row.sip_password !== password) {
+    // A legacy extension has no account digest, so its own stored secret must
+    // prove ownership of the global Kamailio subscriber row.
+    return null;
   }
-
-  return row.sip_password || row.password || "";
+  return password;
 }
 
-function buildConfig(ext: any, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
+function buildConfig(ext: any, password: string, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
   const transport = normalizeSipTransport(ext.transport_preference || ext.transport);
   const sipDomain = ext.account_sip_domain || ext.sip_domain || DEFAULT_SIP_DOMAIN;
   const sipUsername = ext.account_sip_username || ext.sip_username || ext.extension_number;
@@ -103,6 +117,7 @@ function buildConfig(ext: any, dids: Array<{ number: string; description: string
     configured: true,
     tenantId: Number.isSafeInteger(ext.tenant_id) && ext.tenant_id > 0 ? ext.tenant_id : undefined,
     extension: {
+      id: Number.isSafeInteger(ext.id) && ext.id > 0 ? ext.id : undefined,
       number: ext.extension_number,
       displayName: ext.display_name || `Extension ${ext.extension_number}`,
       callerIdName: ext.caller_id_name,
@@ -110,7 +125,7 @@ function buildConfig(ext: any, dids: Array<{ number: string; description: string
     },
     sip: {
       username: sipUsername,
-      password: getSipPassword(ext),
+      password,
       domain: sipDomain,
       port: getSipPort(transport),
       transport,
@@ -347,9 +362,12 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
     const assignedResult = await db.query(`
       SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan,
              t.name as tenant_name, t.plan as tenant_plan,
-             sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
-             sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference,
-             sub.password as subscriber_password
+             sa.id as account_id, sa.sip_username as account_sip_username,
+             sa.sip_domain as account_sip_domain, sa.ha1 as account_ha1,
+             sa.ha1b as account_ha1b, sa.secret_ciphertext, sa.secret_iv,
+             sa.secret_tag, sa.transport_preference,
+             sub.password as subscriber_password, sub.ha1 as subscriber_ha1,
+             sub.ha1b as subscriber_ha1b
       FROM extensions e
       LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
       JOIN tenant_memberships tm ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
@@ -359,19 +377,56 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
       LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
         AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
-      WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
+      WHERE e.type = 'user'
+        AND (
+          -- A live SIP account has two current owner records. A stale
+          -- user_extensions row must never disclose the account password.
+          (sa.id IS NOT NULL AND e.user_id = $1 AND sa.user_id = $1 AND ue.user_id = $1)
+          OR (sa.id IS NULL AND e.user_id = $1 AND ue.user_id = $1)
+          OR (sa.id IS NULL AND e.user_id IS NULL AND ue.user_id = $1
+              AND NOT EXISTS (
+                SELECT 1 FROM user_extensions other_ue
+                WHERE other_ue.extension_id = e.id AND other_ue.user_id <> $1
+              ))
+        )
         AND COALESCE(e.status, 'active') = 'active'
         AND e.deleted_at IS NULL
         -- A legacy extension without a sip_accounts row may use its existing
         -- credential fields. Once an account exists, only its live state can
         -- provision credentials; suspended/deleted accounts fail closed.
         AND (sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL))
+        AND NOT EXISTS (
+          SELECT 1 FROM extensions other_e
+          WHERE other_e.id <> e.id AND other_e.deleted_at IS NULL
+            AND COALESCE(NULLIF(other_e.sip_username, ''), other_e.extension_number) =
+              COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND COALESCE(NULLIF(other_e.sip_domain, ''), $2) =
+              COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM sip_accounts other_sa
+          WHERE other_sa.id IS DISTINCT FROM sa.id
+            AND other_sa.status = 'active' AND other_sa.deleted_at IS NULL
+            AND other_sa.sip_username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND other_sa.sip_domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM sip_accounts second_sa
+          WHERE second_sa.extension_id = e.id AND second_sa.tenant_id = e.tenant_id
+            AND second_sa.id IS DISTINCT FROM sa.id
+            AND second_sa.status = 'active' AND second_sa.deleted_at IS NULL
+        )
+        AND (SELECT COUNT(*) FROM subscriber matching_sub
+          WHERE matching_sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND matching_sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)) = 1
       ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
       LIMIT 1
     `, [userId, DEFAULT_SIP_DOMAIN]);
 
     if (assignedResult.rows.length > 0) {
       const ext = assignedResult.rows[0];
+      const password = getSipPassword(ext);
+      if (!password) return { configured: false };
       const didsResult = await db.query(`
         SELECT number, description FROM did_numbers
         WHERE tenant_id = $1
@@ -382,6 +437,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
 
       return buildConfig(
         ext,
+        password,
         didsResult.rows.map((d: any) => ({
           number: d.number,
           description: d.description || "",

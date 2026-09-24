@@ -15,10 +15,12 @@ vi.mock("../server/pbx/db", () => ({
 }));
 vi.mock("../server/pbx/sip-secrets", () => ({
   createSipCredentials: vi.fn(),
+  computeHA1: vi.fn(),
+  computeHA1B: vi.fn(),
   decryptSecret: vi.fn(),
 }));
 
-import { createSipCredentials } from "../server/pbx/sip-secrets";
+import { computeHA1, computeHA1B, createSipCredentials } from "../server/pbx/sip-secrets";
 import { assignExtensionToUser, createExtension, ensurePilotExtensionForUser, getPhoneConfig } from "../server/phone-provisioning";
 
 const assignedExtension = {
@@ -29,7 +31,11 @@ const assignedExtension = {
   display_name: "Primary",
   account_sip_username: "3001",
   account_sip_domain: "sip.phone11.ai",
+  account_id: null,
+  sip_password: "test-password",
   subscriber_password: "test-password",
+  subscriber_ha1: "ha1:3001:sip.phone11.ai:test-password",
+  subscriber_ha1b: "ha1b:3001:sip.phone11.ai:sip.phone11.ai:test-password",
   transport_preference: "TLS",
   org_name: "Phone11",
   org_plan: "business",
@@ -40,6 +46,8 @@ const assignedExtension = {
 describe("Phone11 phone provisioning ownership", () => {
   beforeEach(() => {
     state.assignedRows = [];
+    vi.mocked(computeHA1).mockImplementation((username, realm, password) => `ha1:${username}:${realm}:${password}`);
+    vi.mocked(computeHA1B).mockImplementation((username, domain, realm, password) => `ha1b:${username}:${domain}:${realm}:${password}`);
     state.pool.query.mockReset();
     state.withTransaction.mockClear();
     state.pool.query.mockImplementation(async (sql: string) => {
@@ -59,7 +67,7 @@ describe("Phone11 phone provisioning ownership", () => {
 
     await expect(getPhoneConfig(17, "member-open-id")).resolves.toMatchObject({
       configured: true,
-      extension: { number: "3001", displayName: "Primary" },
+      extension: { id: 3001, number: "3001", displayName: "Primary" },
       sip: { username: "3001", password: "test-password" },
     });
     const assignmentQuery = String(state.pool.query.mock.calls.find(([sql]) => String(sql).includes("ue.is_primary"))?.[0]);
@@ -78,6 +86,11 @@ describe("Phone11 phone provisioning ownership", () => {
     const assignmentQuery = String(state.pool.query.mock.calls.find(([sql]) => String(sql).includes("ue.is_primary"))?.[0]);
     expect(assignmentQuery).toContain("sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL)");
     expect(assignmentQuery).not.toContain("sa.status = 'active' AND sa.deleted_at IS NULL\n      LEFT JOIN subscriber");
+  });
+
+  it("withholds phone credentials if the subscriber digest no longer matches", async () => {
+    state.assignedRows = [{ ...assignedExtension, subscriber_ha1: "other-account" }];
+    await expect(getPhoneConfig(17, "member-open-id")).resolves.toEqual({ configured: false });
   });
 
   it("does not bootstrap another SIP account for an inactive pilot member", async () => {
