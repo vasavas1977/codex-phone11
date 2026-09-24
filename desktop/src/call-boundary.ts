@@ -143,7 +143,8 @@ export class DesktopCallBoundary {
     supersededAnswer: boolean;
   } | null = null;
 
-  constructor(private readonly port: HelperPort, private readonly dialCallbackTimeoutMs = 30_000) {
+  constructor(private readonly port: HelperPort, private readonly dialCallbackTimeoutMs = 30_000,
+              private readonly onStateChange?: () => void) {
     if (!Number.isSafeInteger(dialCallbackTimeoutMs) || dialCallbackTimeoutMs < 1)
       throw new Error("Invalid dial timeout");
   }
@@ -283,13 +284,21 @@ export class DesktopCallBoundary {
             this.dialState === "requesting") {
           this.dialTimer = null;
           this.dialState = "reconcile";
+          this.onStateChange?.();
         }
       }, this.dialCallbackTimeoutMs);
       try {
         await this.port.execute({ ...command, destination: action.destination });
-      } catch {
+      } catch (error) {
         if (this.session?.revision === action.sessionRevision && this.generation === command.generation &&
-            this.dialState === "requesting") this.resetPending();
+            this.dialState === "requesting") {
+          if (this.dialTimer) clearTimeout(this.dialTimer);
+          this.dialTimer = null;
+          // A transport error may follow helper acceptance. Only a definite
+          // pre-acceptance refusal frees the one-call slot for retry.
+          this.dialState = error instanceof HelperCommandRejectedError ? "idle" : "reconcile";
+          this.onStateChange?.();
+        }
         throw new Error("Call could not start");
       }
       if (this.session?.revision !== action.sessionRevision || this.generation !== command.generation)
@@ -329,6 +338,7 @@ export class DesktopCallBoundary {
         if (this.pendingCallAction === reserved) {
           reserved.timer = null;
           reserved.phase = "reconcile";
+          this.onStateChange?.();
         }
       }, this.dialCallbackTimeoutMs);
     } else {
@@ -340,16 +350,17 @@ export class DesktopCallBoundary {
       else await this.port.execute({ ...command, callId: action.callId });
     } catch (error) {
       if (callbackAction && reservation && this.pendingCallAction === reservation) {
-        if (action.operation === "end" && error instanceof HelperCommandRejectedError &&
+        if (error instanceof HelperCommandRejectedError &&
             this.session?.revision === action.sessionRevision && this.generation === action.generation &&
             this.call?.id === action.callId) {
-          // A confirmed refusal did not queue a hang-up. Keep the exact known
-          // call available so its user can try End again. If a preceding Answer
-          // was accepted but unconfirmed, keep its reservation until its callback.
+          // A confirmed refusal did not queue Answer or End. A matching live
+          // call may retry; an End that superseded an uncertain Answer restores
+          // that exact Answer reconciliation reservation.
           this.clearPendingCallAction();
-          if (reservation.supersededAnswer) this.pendingCallAction = {
+          if (action.operation === "end" && reservation.supersededAnswer) this.pendingCallAction = {
             operation: "answer", callId: action.callId, phase: "reconcile", timer: null, supersededAnswer: false,
           };
+          this.onStateChange?.();
         } else {
           // Transport failures may occur after acceptance. A second End must
           // wait for a trusted terminal callback or a helper/session reset.

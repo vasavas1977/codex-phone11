@@ -200,14 +200,23 @@ test("concurrent dial requests reserve one call before the first helper command 
   await assert.rejects(boundary.handleRendererAction(action, binding), /unavailable/);
 });
 
-test("a helper command failure releases dial reservation; missing callback fails closed for reconciliation", async () => {
+test("ambiguous dial failure and missing callback retain reconciliation; definite refusal permits retry", async () => {
   const failed = new DesktopCallBoundary({ execute: async () => { throw new Error("secret native error"); } });
   failed.startHelperGeneration("helper-A");
   failed.bindSession(binding, "helper-A");
   failed.receiveHelperEvent({ version: 1, generation: "helper-A", sequence: 1, sessionRevision: binding.revision, accountId: binding.accountId, type: "registration", registered: true });
   const action = { operation: "dial", sessionRevision: binding.revision, destination: "1020" };
   await assert.rejects(failed.handleRendererAction(action, binding), /Call could not start/);
-  assert.equal(failed.snapshot().dialState, "idle");
+  assert.equal(failed.snapshot().dialState, "reconcile");
+  await assert.rejects(failed.handleRendererAction(action, binding), /unavailable/);
+
+  const refused = new DesktopCallBoundary({ execute: async () => { throw new HelperCommandRejectedError(); } });
+  refused.startHelperGeneration("helper-A");
+  refused.bindSession(binding, "helper-A");
+  refused.receiveHelperEvent({ version: 1, generation: "helper-A", sequence: 1, sessionRevision: binding.revision,
+    accountId: binding.accountId, type: "registration", registered: true });
+  await assert.rejects(refused.handleRendererAction(action, binding), /Call could not start/);
+  assert.equal(refused.snapshot().dialState, "idle");
 
   const silent = new DesktopCallBoundary({ execute: async () => {} }, 5);
   silent.startHelperGeneration("helper-A");
@@ -219,6 +228,47 @@ test("a helper command failure releases dial reservation; missing callback fails
   await assert.rejects(silent.handleRendererAction(action, binding), /unavailable/);
   silent.startHelperGeneration("helper-B");
   assert.equal(silent.snapshot().dialState, "idle");
+});
+
+test("callback timeouts publish fresh public snapshots", async () => {
+  const snapshots: string[] = [];
+  let boundary!: DesktopCallBoundary;
+  boundary = new DesktopCallBoundary({ execute: async () => {} }, 5,
+    () => snapshots.push(JSON.stringify(boundary.snapshot())));
+  boundary.startHelperGeneration("helper-A");
+  boundary.bindSession(binding, "helper-A");
+  boundary.receiveHelperEvent({ version: 1, generation: "helper-A", sequence: 1,
+    sessionRevision: binding.revision, accountId: binding.accountId, type: "registration", registered: true });
+  await boundary.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" }, binding);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.ok(snapshots.some(value => JSON.parse(value).dialState === "reconcile"));
+  boundary.receiveHelperEvent({ version: 1, generation: "helper-A", sequence: 2,
+    sessionRevision: binding.revision, accountId: binding.accountId, type: "call", callId: "42", state: "connected" });
+  await boundary.handleRendererAction({ operation: "end", sessionRevision: binding.revision,
+    generation: "helper-A", callId: "42" }, binding);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.ok(snapshots.some(value => JSON.parse(value).callActionState === "reconcile"));
+  boundary.clear();
+});
+
+test("definite Answer refusal releases only its current reservation for retry", async () => {
+  let count = 0;
+  const boundary = new DesktopCallBoundary({ execute: async command => {
+    if (command.operation === "answer" && ++count === 1) throw new HelperCommandRejectedError();
+  } });
+  boundary.startHelperGeneration("helper-A");
+  boundary.bindSession(binding, "helper-A");
+  boundary.receiveHelperEvent({ version: 1, generation: "helper-A", sequence: 1,
+    sessionRevision: binding.revision, accountId: binding.accountId, type: "registration", registered: true });
+  boundary.receiveHelperEvent({ version: 1, generation: "helper-A", sequence: 2,
+    sessionRevision: binding.revision, accountId: binding.accountId, type: "call", callId: "42", state: "incoming" });
+  const answer = { operation: "answer", sessionRevision: binding.revision, generation: "helper-A", callId: "42" };
+  await assert.rejects(boundary.handleRendererAction(answer, binding), /could not complete/);
+  assert.equal(boundary.snapshot().callActionState, "idle");
+  await boundary.handleRendererAction(answer, binding);
+  assert.equal(count, 2);
+  assert.equal(boundary.snapshot().callActionState, "requesting");
+  boundary.clear();
 });
 
 test("duplicate answer and end commands cannot overlap", async () => {

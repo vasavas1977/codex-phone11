@@ -6,10 +6,39 @@ between an authenticated renderer and a local Siprix helper. The renderer gets
 only registration and single-call state; it cannot issue account, credential,
 license, or arbitrary helper commands.
 
-The main process must validate the IPC sender and obtain the current
+`src/helper-supervisor.ts` now provides the main-process helper adapter. It
+requires an explicit privileged `verifyHelper` callback that checks the
+canonical packaged executable path and its signature/hash before it requests
+SIP credentials; an arbitrary absolute executable path is rejected. It
+spawns the verified named native binary without a shell, with private stdin and
+stdout pipes and ignored stderr. It serializes versioned commands, parses
+allowlisted native replies/events, stamps events with a fresh helper generation,
+the current authenticated session/account and a monotonic sequence, and closes
+the helper on malformed output, timeout, exit or account change. Every queued
+write rechecks the exact authenticated session, including a provisioning write
+queued after initialization. Native output cannot select its own tenant,
+account, generation or session. Credentials are
+requested through an injected privileged provider immediately before start;
+the provider must enforce the tenant/extension grant. The adapter does not
+store a SIP password in renderer state, argv, environment, disk or logs. A
+JavaScript string remains in process memory while the provisioning write is
+pending, so the caller must keep the provider and main process private. There
+is still no concrete credential-provider or Electron IPC wiring in this repo.
+
+On sign-out or helper replacement, `stop()` invalidates renderer state at once,
+sends `v1 shutdown` followed by pipe EOF, and waits for process exit before
+another helper can start. It escalates to forced termination after a bounded
+grace period. If exit cannot be confirmed, restart stays blocked. This is
+local cleanup and **does not prove that an active PBX dialog received BYE**;
+the live call must be ended and verified separately before relying on server
+side termination.
+
+The embedding main process must validate the IPC sender and obtain the current
 authenticated `DesktopSession` on **every** action. The helper supervisor calls
-`startHelperGeneration` on each spawn, provisions the Siprix account through a
-separate privileged path, then calls `bindSession`. Its events must carry the
+`startHelperGeneration` on each spawn, obtains the Siprix account through the
+injected privileged provider and binds that exact session before sending the
+provisioning frame so an immediate registration callback is not lost. A failed
+provisioning reply tears the helper down. Its events carry the
 exact helper generation, session revision, account ID and increasing sequence.
 `clear` is mandatory on sign-out, helper exit and account change. Accepted
 helper commands do not mean a call is connected; only callback events change
@@ -21,7 +50,10 @@ Dial, Answer, and End reserve their call action before awaiting the helper.
 Helper command acceptance does not release the reservation: matching call
 callbacks do. If a callback is absent after 30 seconds, the public snapshot
 reports `reconcile` and duplicate actions remain blocked until a matching
-callback or helper/session reset. Native helper errors are reduced to generic
+callback or helper/session reset. The supervisor publishes timeout state
+transitions to the renderer snapshot subscriber. An ambiguous dial transport
+failure also remains in `reconcile`; only a definite pre-acceptance helper
+refusal releases that slot. Native helper errors are reduced to generic
 renderer errors because SIP responses can contain private account details.
 End can replace a pending Answer for the same call, including when the Answer
 callback was lost. End then remains reserved until termination. A trusted
@@ -31,14 +63,14 @@ live call so the user can retry. If End had superseded an Answer still awaiting
 its connected callback, a refused End restores the Answer reconciliation state;
 the user can still retry End, but cannot send a second Answer. A connected
 callback received while End is pending resolves that Answer uncertainty.
-An ordinary rejection may follow dispatch;
+The same definite pre-acceptance refusal releases the matching Answer
+reservation for a safe retry. An ordinary rejection may follow dispatch;
 it keeps End in reconciliation until a matching terminal callback or session
 reset. The helper adapter must never include raw SIP details in either error.
-Call IDs
-terminated in the current helper generation are ignored if a late callback
+Call IDs terminated in the current helper generation are ignored if a late callback
 tries to revive them.
 
-Run `./node_modules/.bin/tsx --test desktop/tests/call-boundary.node.ts` from
+Run `./node_modules/.bin/tsx --test desktop/tests/call-boundary.node.ts desktop/tests/helper-supervisor.node.ts` from
 the repository root. No Siprix vendor binaries, credentials, or license keys
 are stored here.
 
@@ -55,7 +87,7 @@ server, extension, auth ID, password, and transport (`TLS`, `TCP`, or `UDP`).
 Only the authenticated main process may send those fields. A malformed frame
 closes the helper. Replies have `version`, `ok`, and `initialized`; snapshots
 also have `registered` and `callId`. Asynchronous registration and call events
-are separate JSON lines; the future main-process adapter must correlate them
+are separate JSON lines; the main-process adapter correlates them
 with its current helper generation and authenticated session before exposing
 them to `DesktopCallBoundary`. Command acceptance is never proof of SIP
 registration or call connection. The native helper is limited to one call.
@@ -102,11 +134,25 @@ cmake -S desktop/native -B /tmp/phone11-desktop-helper-build -G Xcode \
 cmake --build /tmp/phone11-desktop-helper-build --config Release
 ```
 
-On Windows, use the same CMake source with Visual Studio 2022 and point
-`SIPRIX_SDK_ROOT` at an external checkout containing the vendor `win/`
-headers, import library and DLLs. The build copies DLLs next to the helper
-output; they must be handled under the vendor's distribution license. The
-Windows target has **not** been compiled or run here.
+On Windows, run from a Visual Studio 2022 x64 developer environment. For a
+protocol-only build using the checked-in fake SDK:
+
+```powershell
+cmake -S desktop/native -B "$env:TEMP\phone11-desktop-helper-fake" -G "Visual Studio 17 2022" -A x64 -DPHONE11_USE_FAKE_SDK=ON
+cmake --build "$env:TEMP\phone11-desktop-helper-fake" --config Release
+```
+
+For a vendor build, point `SIPRIX_SDK_ROOT` to an external checkout containing
+the vendor `win/` headers, import library and DLLs:
+
+```powershell
+cmake -S desktop/native -B "$env:TEMP\phone11-desktop-helper" -G "Visual Studio 17 2022" -A x64 "-DSIPRIX_SDK_ROOT=C:\path\to\siprixua"
+cmake --build "$env:TEMP\phone11-desktop-helper" --config Release
+```
+
+The vendor build copies DLLs next to the helper output; distribution remains
+subject to the vendor license. A Windows CI workflow is present, but has not
+run on this head, and no Windows runtime/media behavior has been verified.
 
 Local macOS arm64 evidence on 24 September 2026: CMake 4.4.3 generated an
 Xcode 16.4 project and the Release helper compiled against the pinned SDK.
@@ -120,8 +166,8 @@ For a repeatable local smoke test, run
 It checks invalid and oversized input, response shape, shutdown, and that
 input text is not echoed.
 
-This is **not yet a desktop softphone**: authenticated provisioning, the
-main-process helper supervisor/event adapter, Electron IPC/window shell, secure
+This is **not yet a desktop softphone**: a concrete privileged credential
+provider and account grant, Electron IPC/window shell, secure
 OS credential storage, packaging, signing, live PBX registration and two-way
 media remain required. Siprix's free trial limits calls to 60 seconds; that
 limit is acceptable for current development and must be expected in call

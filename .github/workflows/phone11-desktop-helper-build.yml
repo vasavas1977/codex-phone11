@@ -43,6 +43,9 @@ jobs:
           ref: 38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f
           path: _vendor/siprixua
           persist-credentials: false
+      - name: Check pinned Windows SDK and build contract
+        shell: pwsh
+        run: python desktop/native/test_windows_build_contract.py "$env:GITHUB_WORKSPACE\_vendor\siprixua"
       - name: Compile native helper
         shell: pwsh
         run: |
@@ -52,3 +55,12 @@ jobs:
         shell: pwsh
         run: |
           python desktop/native/test_bootstrap.py "$env:RUNNER_TEMP\phone11-desktop-helper\Release\phone11_siprix_helper.exe"
+      - name: Compile protocol test double with MSVC
+        shell: pwsh
+        run: |
+          cmake -S desktop/native -B "$env:RUNNER_TEMP\phone11-desktop-helper-fake" -G "Visual Studio 17 2022" -A x64 -DPHONE11_USE_FAKE_SDK=ON
+          cmake --build "$env:RUNNER_TEMP\phone11-desktop-helper-fake" --config Release
+      - name: Smoke-test Windows protocol test double
+        shell: pwsh
+        run: |
+          python desktop/native/test_bootstrap.py "$env:RUNNER_TEMP\phone11-desktop-helper-fake\Release\phone11_siprix_helper.exe"
