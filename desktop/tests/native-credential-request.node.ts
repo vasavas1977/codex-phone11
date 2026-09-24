@@ -6,7 +6,7 @@ import { AuthenticatedDesktopProvider } from "../src/authenticated-provider";
 
 test("native credential transport sends no browser metadata and keeps the bearer header", async () => {
   let observed: { method?: string; path?: string; origin?: string; mode?: string;
-    site?: string; cookie?: string; client?: string; body: string } | undefined;
+    site?: string; cookie?: string | string[]; client?: string | string[]; body: string } | undefined;
   const server = createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", chunk => chunks.push(chunk));

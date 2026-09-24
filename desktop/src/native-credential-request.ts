@@ -15,7 +15,9 @@ export async function postNativeCredential(
   }
   const request = url.protocol === "https:" ? httpsRequest : httpRequest;
   return new Promise<Response>((resolve, reject) => {
-    const outgoing = request(url, {
+    // Pass the validated URL as a string so the http/https overload union
+    // remains compatible with both Node request implementations.
+    const outgoing = request(url.toString(), {
       method: "POST", signal,
       headers: {
         "Content-Type": "application/json",

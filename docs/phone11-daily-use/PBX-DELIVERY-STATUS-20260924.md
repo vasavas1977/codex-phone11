@@ -111,7 +111,7 @@ resources. The local bundle passed helper-tree and embedded-pin checks,
 to the sign-in screen showing the 60-second trial limit. It uses an ad-hoc
 signature, not a Developer ID distribution signature or notarization.
 Independent final source review found no remaining concrete P0–P2 packaging
-issue. There has been no account sign-in or live call in this package. These
+issue. At packaging time, no account sign-in or live call had been observed. These
 checks do not constitute a signed iPhone or distributable desktop build, a
 Windows runtime build, a live PBX route, an actual phone call, or production
 deployment.
@@ -123,8 +123,8 @@ setup error. The intended backend `https://api.phone11.ai` reports auth ready
 and email/password enabled; repository mobile and owned-auth settings also
 point there. The macOS trial was repackaged with that exact API origin, passed
 helper-integrity and ad-hoc signature checks, and opened to sign-in. An
-authenticated retry and a call have not yet been observed. No backend deploy
-was needed for this origin correction.
+authenticated retry and a call had not yet been observed. No backend deploy
+was needed for that origin correction.
 
 A separate local Windows x64 package workflow now checks the pinned official
 Siprix SDK revision and DLL hashes, requires an externally compiled x64
@@ -140,3 +140,31 @@ not a SIP registration or proof of the configured transport for either test
 account. The desktop trial must use its server-provisioned transport; do not
 switch it to plaintext solely to make the probe pass. Confirm the actual PBX
 listener and certificate before a TLS desktop call acceptance test.
+
+## Desktop trial sign-in recovery (24 September 2026)
+
+The installed macOS trial authenticated against `https://api.phone11.ai` but
+then reported that calling access could not be loaded. The live tRPC backend
+served a phone configuration without `extension.id`, which the protected
+desktop provider requires. The deployed backend bundle matched pinned source
+commit `9aab162`; a narrow overlay brought its phone-provisioning read path to
+the current tenant, active-membership, explicit-grant and SIP-digest checks.
+One inactive historical SIP account for extension 1020 required the duplicate
+identity guard to count only active, non-deleted competing accounts.
+
+The replacement image `sha256:b714cec08a15f6465baba58204a3473494e8c043bd3cef5323b5a35d676f6baa`
+was started on loopback port 3007 while the prior 3006 service remained live.
+Its bundle SHA-256 is `8dda0429b527238d96e742f03e8c2f8b523247c705b5d3cf9350c0a57e699897`.
+An isolated runtime probe returned configured extension ID 4 / 3001 for test
+user 1, ID 1 / 1020 for test user 2, and no configuration for an unrelated
+user; no SIP secret was printed. The Nginx tRPC route was then moved from
+3006 to 3007 using the guarded operator and receipt at
+`/var/lib/phone11-desktop-provisioning-route/20260924T163132Z-0e29f178edeecb57`.
+The resulting site SHA-256 is
+`66e18ffe1a93f643c541c501620b184fd31c2ce8958f1920947156ebe7e4b81f`.
+Both API containers remained healthy and the public unauthenticated tRPC
+request returned 401. The separate desktop app still needs a fresh user
+sign-in attempt and a real SIP registration/call; none is inferred from these
+server checks. Roll back with the guarded route operator and sealed receipt
+if that acceptance fails. The public `api.phone11.ai` origin is the desktop
+API; `1toall.phone11.ai` does not serve this tRPC path.

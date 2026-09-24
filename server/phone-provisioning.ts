@@ -406,7 +406,8 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
         )
         AND NOT EXISTS (
           SELECT 1 FROM sip_accounts other_sa
-          WHERE other_sa.id IS DISTINCT FROM sa.id AND other_sa.deleted_at IS NULL
+          WHERE other_sa.id IS DISTINCT FROM sa.id
+            AND other_sa.status = 'active' AND other_sa.deleted_at IS NULL
             AND other_sa.sip_username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
             AND other_sa.sip_domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
         )

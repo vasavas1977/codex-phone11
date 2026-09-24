@@ -318,6 +318,16 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
         extension: { id: 3001, number: "3001" },
         sip: { username: "3001", password: "new-owner-secret" },
       });
+      await database.query(`INSERT INTO sip_accounts VALUES
+        (2,3001,1,17,'3001','sip.phone11.ai',NULL,NULL,NULL,
+         'stale-ha1','stale-ha1b','TLS','inactive',NULL)`);
+      await expect(getPhoneConfig(18, "inactive-historical-account")).resolves.toMatchObject({
+        configured: true,
+        extension: { id: 3001, number: "3001" },
+        sip: { username: "3001", password: "new-owner-secret" },
+      });
+      await expect(getPhoneConfig(17, "stale-account-owner")).resolves.toEqual({ configured: false });
+      await database.query("DELETE FROM sip_accounts WHERE id=2");
       await database.query("UPDATE subscriber SET password='foreign-secret' WHERE username='3001'");
       await expect(getPhoneConfig(18, "foreign-subscriber")).resolves.toEqual({ configured: false });
       await database.query("UPDATE subscriber SET password='new-owner-secret' WHERE username='3001'");
