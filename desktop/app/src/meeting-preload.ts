@@ -2,6 +2,7 @@ import { ipcRenderer } from 'electron';
 import { Participant, Room, RoomEvent, Track } from 'livekit-client';
 import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
 import { MeetingMediaLifecycle } from './meeting-media-lifecycle';
+import { MeetingVideoSlot } from './meeting-video-slot';
 import type { DesktopMeetingGrant } from '../../src/authenticated-provider';
 
 // This isolated preload is the only Chromium world that receives a media grant.
@@ -14,6 +15,7 @@ const mediaLifecycle = new MeetingMediaLifecycle();
 let leaving: Promise<void> | null = null;
 type ParticipantTile = {
   participant: Participant;
+  camera: MeetingVideoSlot;
   tile: HTMLElement;
   media: HTMLElement;
   placeholder: HTMLElement;
@@ -24,6 +26,7 @@ type ParticipantTile = {
   rosterState: HTMLElement;
 };
 const participantTiles = new Map<string, ParticipantTile>();
+const screenShares = new Map<string, { slot: MeetingVideoSlot; tile: HTMLElement; caption: HTMLElement }>();
 let layoutMode: 'gallery' | 'speaker' = 'gallery';
 let activeSpeakerSid: string | null = null;
 const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
@@ -35,7 +38,7 @@ function participantKey(participant: Participant): string {
 }
 
 function participantName(participant: Participant): string {
-  return participant.isLocal ? 'You' : participant.name?.trim() || participant.identity || 'Participant';
+  return participant.isLocal ? 'You' : participant.name?.trim() || 'Participant';
 }
 
 function initials(name: string): string {
@@ -74,7 +77,7 @@ function createParticipantTile(participant: Participant): ParticipantTile {
   const rosterState = document.createElement('span');
   rosterState.className = 'roster-media';
   rosterEntry.append(rosterName, rosterState);
-  return { participant, tile, media, placeholder, name, audioState, rosterEntry, rosterName, rosterState };
+  return { participant, camera: new MeetingVideoSlot(), tile, media, placeholder, name, audioState, rosterEntry, rosterName, rosterState };
 }
 
 function renderLayout(): void {
@@ -105,44 +108,66 @@ function renderLayout(): void {
 
 function attachCamera(participant: Participant, item: ParticipantTile): void {
   const publication = participant.getTrackPublication(Track.Source.Camera);
-  const track = participant.isCameraEnabled ? publication?.track : undefined;
-  const existing = item.media.querySelector('video');
-  if (!track) {
-    if (existing) {
-      detachTrack(publication?.track);
-      existing.remove();
+  const track = participant.isCameraEnabled ? publication?.videoTrack : undefined;
+  item.camera.update(track, video => {
+    video.className = 'participant-video';
+    video.setAttribute('playsinline', '');
+    video.setAttribute('aria-label', `${participantName(participant)} video`);
+    if (participant.isLocal) { video.id = 'self-preview'; video.muted = true; }
+    item.media.appendChild(video);
+  });
+  item.media.classList.toggle('has-video', Boolean(track));
+  item.placeholder.textContent = initials(participantName(participant));
+}
+
+function syncScreenShares(participants: Participant[]): void {
+  const live = new Set<string>();
+  for (const participant of participants) {
+    const publication = participant.getTrackPublication(Track.Source.ScreenShare);
+    const track = publication?.isMuted ? undefined : publication?.videoTrack;
+    if (!track) continue;
+    const key = participantKey(participant);
+    live.add(key);
+    let share = screenShares.get(key);
+    if (!share) {
+      const tile = document.createElement('article');
+      tile.className = 'screen-share';
+      const caption = document.createElement('div');
+      caption.className = 'tile-caption';
+      tile.appendChild(caption);
+      share = { slot: new MeetingVideoSlot(), tile, caption };
+      screenShares.set(key, share);
+      el('screen-shares').appendChild(tile);
     }
-    item.media.classList.remove('has-video');
-    item.placeholder.textContent = initials(participantName(participant));
-    return;
+    share.caption.textContent = `${participantName(participant)} is sharing`;
+    const tile = share.tile;
+    share.slot.update(track, video => {
+      video.setAttribute('playsinline', '');
+      video.setAttribute('aria-label', `${participantName(participant)} shared screen`);
+      video.muted = true;
+      tile.prepend(video);
+    });
   }
-  if (existing?.dataset.trackSid === publication?.trackSid) {
-    item.media.classList.add('has-video');
-    return;
+  for (const [key, share] of screenShares) {
+    if (live.has(key)) continue;
+    share.slot.clear();
+    share.tile.remove();
+    screenShares.delete(key);
   }
-  existing?.remove();
-  const video = track.attach() as HTMLVideoElement;
-  video.className = 'participant-video';
-  video.dataset.trackSid = publication?.trackSid ?? '';
-  video.setAttribute('playsinline', '');
-  video.setAttribute('aria-label', `${participantName(participant)} video`);
-  if (participant.isLocal) {
-    video.id = 'self-preview';
-    video.muted = true;
-  }
-  item.media.appendChild(video);
-  item.media.classList.add('has-video');
+  el('screen-shares').hidden = screenShares.size === 0;
 }
 
 function syncParticipants(): void {
   if (!room) return;
   const participants = [room.localParticipant, ...room.remoteParticipants.values()];
+  syncScreenShares(participants);
   const liveKeys = new Set(participants.map(participantKey));
   for (const [key, item] of participantTiles) {
     if (liveKeys.has(key)) continue;
     for (const publication of item.participant.trackPublications.values()) {
       detachTrack(publication.track);
     }
+    item.camera.clear();
     item.tile.remove();
     item.rosterEntry.remove();
     participantTiles.delete(key);
@@ -178,7 +203,9 @@ function syncParticipants(): void {
 }
 
 function clearParticipantUi(): void {
+  syncScreenShares([]);
   for (const item of participantTiles.values()) {
+    item.camera.clear();
     for (const publication of item.participant.trackPublications.values()) {
       detachTrack(publication.track);
     }
@@ -209,25 +236,9 @@ function updateRoomUi(): void {
     : 'Listening only';
 }
 
-function attachRemote(track: { kind: Track.Kind; attach: () => HTMLElement }, participant: Participant): void {
-  const element = track.attach();
-  if (track.kind === Track.Kind.Audio) el('remote-audio').appendChild(element);
-  else if (track.kind === Track.Kind.Video) {
-    const item = participantTiles.get(participantKey(participant)) ?? createParticipantTile(participant);
-    if (!participantTiles.has(participantKey(participant))) {
-      participantTiles.set(participantKey(participant), item);
-      el('participant-list').appendChild(item.rosterEntry);
-    }
-    const video = element as HTMLVideoElement;
-    video.className = 'participant-video';
-    video.dataset.trackSid = participant.getTrackPublication(Track.Source.Camera)?.trackSid ?? '';
-    video.setAttribute('playsinline', '');
-    video.setAttribute('aria-label', `${participantName(participant)} video`);
-    item.media.querySelector('video')?.remove();
-    item.media.appendChild(video);
-    item.media.classList.add('has-video');
-    syncParticipants();
-  }
+function attachRemote(track: { kind: Track.Kind; attach: () => HTMLElement }, _participant: Participant): void {
+  if (track.kind === Track.Kind.Audio) el('remote-audio').appendChild(track.attach());
+  else if (track.kind === Track.Kind.Video) syncParticipants();
 }
 
 function leave(): Promise<void> {
@@ -300,6 +311,7 @@ async function join(): Promise<void> {
       for (const publication of participant.trackPublications.values()) {
         detachTrack(publication.track);
       }
+      item?.camera.clear();
       item?.tile.remove();
       item?.rosterEntry.remove();
       participantTiles.delete(participantKey(participant));
