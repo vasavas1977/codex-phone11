@@ -38,7 +38,7 @@ test("SDK acceptance does not assert a connected call; callback sequence control
   await assert.rejects(boundary.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" }, binding), /unavailable/);
   assert.equal(event(1, { type: "registration", registered: true }), true);
   const accepted = await boundary.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" }, binding);
-  assert.deepEqual(accepted, { version: 1, registered: true, call: null, dialState: "requesting", callActionState: "idle" });
+  assert.deepEqual(accepted, { version: 1, registered: true, call: null, dialState: "requesting", callActionState: "idle", holdMessage: null });
   assert.equal(commands[0]?.destination, "1020");
   assert.equal(event(2, { type: "call", callId: "42", state: "dialing" }), true);
   assert.equal(boundary.snapshot().call?.state, "dialing");
@@ -83,7 +83,7 @@ test("helper restart clears stale calls and requires trusted rebinding", async (
   event(1, { type: "registration", registered: true });
   event(2, { type: "call", callId: "42", state: "incoming" });
   boundary.startHelperGeneration("helper-B");
-  assert.deepEqual(boundary.snapshot(), { version: 1, registered: false, call: null, dialState: "idle", callActionState: "idle" });
+  assert.deepEqual(boundary.snapshot(), { version: 1, registered: false, call: null, dialState: "idle", callActionState: "idle", holdMessage: null });
   assert.equal(event(3, { type: "call", callId: "42", state: "connected" }), false);
   await assert.rejects(boundary.handleRendererAction({ operation: "end", sessionRevision: binding.revision, generation: "helper-A", callId: "42" }, binding), /session changed/);
   boundary.bindSession(binding, "helper-B");
@@ -101,6 +101,70 @@ test("call controls permit only current connected call and validated DTMF", asyn
   assert.throws(() => parseRendererAction({ operation: "dtmf", sessionRevision: binding.revision, generation: "helper-A", callId: "42", digits: "12;rm" }));
   event(3, { type: "call", callId: "42", state: "terminated" });
   await assert.rejects(boundary.handleRendererAction({ operation: "end", sessionRevision: binding.revision, generation: "helper-A", callId: "42" }, binding), /Call changed/);
+});
+
+test("hold uncertainty is scoped to the exact helper, session, account and live call", async () => {
+  const { boundary, commands, event } = setup();
+  event(1, { type: "registration", registered: true });
+  event(2, { type: "call", callId: "42", state: "connected" });
+  const error = { type: "hold_error", callId: "42", code: "state_unconfirmed", holdControl: "blocked" };
+  assert.equal(event(2, error), false); // stale sequence
+  assert.equal(event(3, { ...error, generation: "helper-old" }), false);
+  assert.equal(event(3, { ...error, sessionRevision: "session-old" }), false);
+  assert.equal(event(3, { ...error, accountId: "sip-other" }), false);
+  assert.equal(event(3, { ...error, callId: "43" }), false);
+  assert.equal(event(3, { ...error, code: "secret SIP error" }), false);
+  assert.equal(event(3, { ...error, holdControl: "ready" }), false);
+  assert.equal(boundary.snapshot().holdMessage, null);
+  assert.equal(event(3, { ...error, rawSipText: "secret SIP error" }), true);
+  assert.equal(boundary.snapshot().holdMessage, "Hold unavailable; end call if needed");
+  assert.equal(JSON.stringify(boundary.snapshot()).includes("secret"), false);
+  await assert.rejects(boundary.handleRendererAction({ operation: "hold", sessionRevision: binding.revision,
+    generation: "helper-A", callId: "42", value: false }, binding), /Hold unavailable/);
+  assert.equal(commands.length, 0);
+  await boundary.handleRendererAction({ operation: "end", sessionRevision: binding.revision,
+    generation: "helper-A", callId: "42" }, binding);
+  assert.equal(commands.at(-1)?.operation, "end");
+  assert.equal(event(4, { type: "call", callId: "42", state: "terminated" }), true);
+  assert.equal(boundary.snapshot().holdMessage, null);
+  assert.equal(event(5, error), false);
+});
+
+test("hold warning clears on helper generation and session replacement", () => {
+  const { boundary, event } = setup();
+  event(1, { type: "registration", registered: true });
+  event(2, { type: "call", callId: "42", state: "held" });
+  event(3, { type: "hold_error", callId: "42", code: "state_unconfirmed", holdControl: "blocked" });
+  boundary.startHelperGeneration("helper-B");
+  assert.equal(boundary.snapshot().holdMessage, null);
+  assert.equal(event(4, { type: "hold_error", callId: "42", code: "state_unconfirmed", holdControl: "blocked" }), false);
+  boundary.bindSession(binding, "helper-B");
+  assert.equal(boundary.snapshot().holdMessage, null);
+});
+
+test("only matching late local-state recovery reopens Hold; generic call events do not", async () => {
+  const { boundary, commands, event } = setup();
+  event(1, { type: "registration", registered: true });
+  event(2, { type: "call", callId: "42", state: "connected" });
+  const recovered = { type: "hold_recovered", callId: "42", code: "state_confirmed", holdControl: "ready" };
+  assert.equal(event(3, recovered), false); // unsolicited recovery
+  assert.equal(event(3, { type: "hold_error", callId: "42", code: "state_unconfirmed", holdControl: "blocked" }), true);
+  assert.equal(event(4, { type: "call", callId: "42", state: "held" }), true);
+  assert.equal(boundary.snapshot().holdMessage, "Hold unavailable; end call if needed");
+  assert.equal(event(4, recovered), false);
+  assert.equal(event(5, { ...recovered, generation: "helper-old" }), false);
+  assert.equal(event(5, { ...recovered, sessionRevision: "session-old" }), false);
+  assert.equal(event(5, { ...recovered, accountId: "sip-other" }), false);
+  assert.equal(event(5, { ...recovered, callId: "43" }), false);
+  assert.equal(event(5, { ...recovered, code: "remote_only" }), false);
+  assert.equal(event(5, { ...recovered, holdControl: "blocked" }), false);
+  assert.equal(boundary.snapshot().holdMessage, "Hold unavailable; end call if needed");
+  assert.equal(event(5, recovered), true);
+  assert.equal(boundary.snapshot().holdMessage, null);
+  await boundary.handleRendererAction({ operation: "hold", sessionRevision: binding.revision,
+    generation: "helper-A", callId: "42", value: false }, binding);
+  assert.equal(commands.at(-1)?.operation, "hold");
+  assert.equal(event(6, recovered), false); // no warning left to clear
 });
 
 test("registration loss preserves End for a connected call", async () => {

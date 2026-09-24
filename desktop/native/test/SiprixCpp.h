@@ -13,7 +13,9 @@ enum class ErrorCode { EOK, ENotIncoming };
 enum class LogLevel { NoLog };
 enum class RegState { Success, Failed, Removed, InProgress };
 enum class SipTransport { UDP, TCP, TLS };
-struct ISiprixModule { bool initialized = false; bool accepted = false; };
+enum class HoldState { None, Local, Remote, LocalAndRemote };
+enum class DtmfMethod { DTMF_RTP, DTMF_INFO };
+struct ISiprixModule { bool initialized = false; bool accepted = false; bool held = false; bool muted = false; };
 struct IniData {};
 struct AccData {};
 struct DestData {};
@@ -22,8 +24,11 @@ using OnCallIncoming = void (*)(CallId, AccountId, bool, const char*, const char
 using OnCallProceeding = void (*)(CallId, const char*);
 using OnCallConnected = void (*)(CallId, const char*, const char*, bool);
 using OnCallTerminated = void (*)(CallId, std::uint32_t);
+using OnCallHeld = void (*)(CallId, HoldState);
 inline OnCallIncoming incomingCallback = nullptr;
 inline OnCallTerminated terminatedCallback = nullptr;
+inline OnCallConnected connectedCallback = nullptr;
+inline OnCallHeld heldCallback = nullptr;
 inline ISiprixModule module;
 inline IniData ini;
 inline AccData account;
@@ -40,7 +45,8 @@ inline void Ini_SetSingleCallMode(IniData*, bool) {}
 inline ErrorCode Callback_SetAccountRegState(ISiprixModule*, OnAccountRegState) { return ErrorCode::EOK; }
 inline ErrorCode Callback_SetCallIncoming(ISiprixModule*, OnCallIncoming cb) { incomingCallback = cb; return ErrorCode::EOK; }
 inline ErrorCode Callback_SetCallProceeding(ISiprixModule*, OnCallProceeding) { return ErrorCode::EOK; }
-inline ErrorCode Callback_SetCallConnected(ISiprixModule*, OnCallConnected) { return ErrorCode::EOK; }
+inline ErrorCode Callback_SetCallConnected(ISiprixModule*, OnCallConnected cb) { connectedCallback = cb; return ErrorCode::EOK; }
+inline ErrorCode Callback_SetCallHeld(ISiprixModule*, OnCallHeld cb) { heldCallback = cb; return ErrorCode::EOK; }
 inline ErrorCode Callback_SetCallTerminated(ISiprixModule*, OnCallTerminated cb) { terminatedCallback = cb; return ErrorCode::EOK; }
 inline AccData* Acc_GetDefault() { return &account; }
 inline void Acc_SetSipServer(AccData*, const char*) {}
@@ -68,6 +74,56 @@ inline ErrorCode Call_Invite(ISiprixModule*, DestData*, CallId* id) { *id = 201;
 inline ErrorCode Call_Accept(ISiprixModule* m, CallId id, bool) {
   if (id != 200) return ErrorCode::ENotIncoming;
   m->accepted = true;
+  std::thread([m, id] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    if (m->initialized && connectedCallback) connectedCallback(id, "private-from", "private-to", false);
+  }).detach();
+  return ErrorCode::EOK;
+}
+inline ErrorCode Call_MuteMic(ISiprixModule* m, CallId id, bool value) {
+  if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
+  m->muted = value;
+  return ErrorCode::EOK;
+}
+inline ErrorCode Call_GetHoldState(ISiprixModule* m, CallId id, HoldState* state) {
+  if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
+  *state = m->held ? HoldState::Local : HoldState::None;
+  return ErrorCode::EOK;
+}
+inline ErrorCode Call_Hold(ISiprixModule* m, CallId id) {
+  if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
+#ifdef PHONE11_FAKE_HOLD_DELAYED_STATE
+  const bool nextHeld = !m->held;
+  std::thread([m, id, nextHeld] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(160));
+    if (m->initialized && heldCallback) heldCallback(id, HoldState::Remote);
+    std::this_thread::sleep_for(std::chrono::milliseconds(90));
+    if (m->initialized) {
+      m->held = nextHeld;
+      if (heldCallback) heldCallback(id, nextHeld ? HoldState::Local : HoldState::None);
+    }
+  }).detach();
+  return ErrorCode::EOK;
+#endif
+#ifndef PHONE11_FAKE_HOLD_NO_STATE_CHANGE
+  m->held = !m->held;
+#endif
+  const HoldState finalState = m->held ? HoldState::Local : HoldState::None;
+#ifdef PHONE11_FAKE_REMOTE_FIRST
+  if (heldCallback) heldCallback(id, HoldState::Remote);
+#endif
+#ifndef PHONE11_FAKE_DROP_HOLD_CALLBACK
+  std::thread([m, id, finalState] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    if (m->initialized && heldCallback) heldCallback(id, finalState);
+  }).detach();
+#endif
+  return ErrorCode::EOK;
+}
+inline ErrorCode Call_SendDtmf(ISiprixModule* m, CallId id, const char* digits,
+                               std::uint16_t duration, std::uint16_t gap, DtmfMethod method) {
+  if (id != 200 || !m->accepted || !digits || duration != 200 || gap != 50 || method != DtmfMethod::DTMF_RTP)
+    return ErrorCode::ENotIncoming;
   return ErrorCode::EOK;
 }
 inline ErrorCode Call_Reject(ISiprixModule* m, CallId id, std::uint16_t) {

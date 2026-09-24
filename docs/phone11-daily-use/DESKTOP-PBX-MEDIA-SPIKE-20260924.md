@@ -1,7 +1,8 @@
 # Phone11 desktop PBX media spike — macOS and Windows
 
-**Decision status (24 September 2026):** source and vendor research only. No
-desktop package, PBX change, registration, or desktop call was made. The first
+**Decision status (24 September 2026):** a Phone11 native helper and versioned
+desktop call boundary now exist in source, but there is no signed desktop
+package, PBX change, registration, or desktop call. The first
 signed desktop release target is **macOS and Windows**. This note narrows the
 calling foundation; [desktop UCC readiness](DESKTOP-UCC-READINESS-20260916.md)
 continues to own the broader UI and release checklist.

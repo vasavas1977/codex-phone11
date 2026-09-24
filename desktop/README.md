@@ -47,7 +47,9 @@ are stored here.
 `native/phone11_siprix_helper.cpp` compiles against the pinned upstream
 SiprixUA SDK but includes no vendor code or binary in this repository. Its
 private stdin protocol now accepts `v1 init`, `v1 snapshot`, `v1 provision`,
-`v1 dial DESTINATION`, `v1 answer CALL_ID`, `v1 end CALL_ID`, and `v1 shutdown`.
+`v1 dial DESTINATION`, `v1 answer CALL_ID`, `v1 end CALL_ID`,
+`v1 mute CALL_ID 0|1`, `v1 hold CALL_ID 0|1`,
+`v1 dtmf CALL_ID DIGITS`, and `v1 shutdown`.
 `v1 provision` consumes exactly five further newline-delimited fields: SIP
 server, extension, auth ID, password, and transport (`TLS`, `TCP`, or `UDP`).
 Only the authenticated main process may send those fields. A malformed frame
@@ -69,7 +71,28 @@ specifies that `Call_Bye` sends BYE or CANCEL as appropriate. The helper
 guards this transition against concurrent callbacks. Run
 `python3 desktop/native/test_accept_end.py` for the fake-SDK protocol test of
 reject-before-answer and accept-then-end-before-connected. It does not prove
+two-way audio. `python3 desktop/native/test_controls.py` covers connected-call
+mute, hold/resume, DTMF and invalid or stale-call commands. The helper emits
+the confirmed hold state from Siprix's callback; the trial SDK still limits
+calls to about 60 seconds. These local tests do not prove
 live SIP signaling or media.
+
+If Siprix accepts a hold toggle but does not confirm it, the native helper
+checks the local hold state after 15 seconds. When the state remains uncertain,
+it emits `hold_error` with `code: state_unconfirmed` and
+`holdControl: blocked`. The privileged supervisor must attach the current
+helper generation, authenticated session revision, account, and monotonic
+sequence before passing that event to `DesktopCallBoundary`. The boundary
+rejects stale or mismatched events and exposes only the fixed renderer message
+“Hold unavailable; end call if needed.” Further hold toggles remain blocked
+for that call, while End remains available. The warning clears on call end,
+session change, or helper restart. A later `OnCallHeld` that confirms the
+requested local hold state on that same call emits `hold_recovered` with
+`code: state_confirmed` and `holdControl: ready`. The boundary clears the
+warning and allows Hold again only after that exact authenticated, ordered
+recovery event; a generic held event or remote-only hold update cannot clear
+it. The desktop boundary accepts mute, hold,
+and DTMF actions, but this is not yet an integrated desktop call UI.
 
 On macOS, with the pinned SDK checked out externally:
 

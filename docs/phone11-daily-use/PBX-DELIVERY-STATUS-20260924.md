@@ -14,7 +14,22 @@ working PBX behavior.
 | Recents and voicemail | Local call history and authenticated personal voicemail playback exist in source. | Prove missed calls while the app is unavailable, multi-device CDR reconciliation, protected playback and mailbox ownership on the deployed service. |
 | Manage existing users and extensions | The Phone11 admin portal has API-backed membership role/status and extension assignment. This source candidate adds explicit workspace selection for these operations. | Deploy matching API/web versions and test owner, admin, member, revoked user and two-tenant access; identity creation/invitations remain a separate shared-account workflow. |
 | Configure DID, IVR, ring group, queue and business hours | API-backed screens and advanced routing schema exist in source, including action/member/agent/rule editors. This candidate scopes DID inventory and workspace timezone settings to a selected tenant. It disables DID route editing for multi-workspace admins until destination lists also use that tenant. A separate, unapplied number-inventory migration stages new numbers as pending and creates no carrier assignments or routes. | Review and commission the optional schemas and exact Kamailio/FreeSWITCH routes in an isolated tenant, then exercise a real test DID through each path and failure fallback. Carrier-verified activation and E911 provisioning remain separate operator work. Other multi-workspace routing sections still need explicit tenant inputs on every route. |
-| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary and a native helper with private-pipe account provisioning and one-call dial/answer/end controls exist in source. The macOS arm64 helper builds and passes bootstrap and fake-SDK Answer/End tests. The Siprix trial is acceptable for prototype calls with its 60-second call limit. | Verify deployed TLS/SRTP ingress; connect the helper to an authenticated main-process adapter and app shell, compile on Windows, package signed apps, then prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
+| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary and a native helper with private-pipe account provisioning, one-call dial/answer/end, mute, hold/resume and DTMF controls exist in source. The macOS arm64 helper builds and passes bootstrap and fake-SDK call-control tests. The Siprix trial is acceptable for prototype calls with its 60-second call limit. | Verify deployed TLS/SRTP ingress; connect the helper to an authenticated main-process adapter and app shell, compile on Windows, package signed apps, then prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
+
+SIP provisioning is being tightened so the authenticated user must have an
+active workspace membership, a matching explicit extension grant, and matching
+extension/SIP-account ownership before receiving a password. Reassigning an
+extension revokes former grants in the same transaction. Production encryption
+now requires an explicit `SIP_DEK_SECRET`; changing that key without migrating
+existing ciphertext would make those records unreadable. These source changes
+need deployment-key provenance and a reviewed rollout before production use.
+Admin extension creation now writes the assigned user's grant and the same
+password into both the SIP account and Kamailio subscriber within one
+transaction. Admin password reset rotates those two stores together and checks
+that the account identity belongs to the selected extension. These paths have
+isolated PostgreSQL commit/rollback coverage; a live SIP REGISTER remains to
+be proven. Audit entries are written after commit through the existing
+best-effort audit helper, so audit delivery itself is not atomic.
 
 ## Product and service ownership
 
@@ -68,15 +83,17 @@ source, deployment and device evidence.
 
 ## Source verification for this candidate
 
-On 24 September 2026, the web/mobile Vitest run completed with 2,061 passing
-tests and 285 skipped; the separate Node/native-source suite passed 69 tests.
-The targeted PBX admin, transfer and profile suites passed 143 tests with six
-skipped. TypeScript checking, the backend bundle, the Expo static web export,
-and changed-file lint (zero errors) also passed. The desktop call boundary
-passed 19 focused Node tests and an independent source re-review found no
-remaining P0–P2 issue in its End recovery path. The local macOS arm64 Siprix
-helper compiled and passed its private-pipe bootstrap smoke and fake-SDK
-Answer/End transition tests. A pinned
+On 24 September 2026, the latest full web/mobile Vitest run completed with
+2,080 passing tests and 290 skipped; the separate Node/native-source suite
+passed 69 tests. A separate isolated PostgreSQL run passed all 120 PBX admin,
+provisioning and SIP-key tests, including commit/rollback, stale-grant and
+subscriber-ownership cases. TypeScript checking, the backend bundle, and
+changed-file lint (zero errors) passed. An earlier Expo static web export also
+passed before these server/desktop-only changes. The desktop call boundary
+passed 22 focused Node tests. The local macOS arm64 Siprix helper compiled and
+passed its private-pipe bootstrap smoke, Answer/End, mute/hold/DTMF and
+late-hold-recovery fake-SDK tests. Independent source re-review found no
+remaining P0–P2 issue in the reviewed PBX credential and desktop hold paths. A pinned
 macOS/Windows build workflow is present in source but has not run on CI. These
 checks do not constitute a signed iPhone or desktop build, a Windows build, a
 live PBX route, an actual phone call, or production deployment.

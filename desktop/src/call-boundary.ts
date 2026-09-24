@@ -23,6 +23,7 @@ export type PublicSnapshot = Readonly<{
   call: PublicCall | null;
   dialState: "idle" | "requesting" | "reconcile";
   callActionState: "idle" | "requesting" | "reconcile";
+  holdMessage: "Hold unavailable; end call if needed" | null;
 }>;
 
 export type HelperCommand = Readonly<{
@@ -56,7 +57,9 @@ export class HelperCommandRejectedError extends Error {
 
 type HelperEvent =
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "registration"; registered: boolean }
-  | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "call"; callId: string; state: CallState | "terminated"; muted?: boolean };
+  | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "call"; callId: string; state: CallState | "terminated"; muted?: boolean }
+  | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "hold_error"; callId: string; code: "state_unconfirmed"; holdControl: "blocked" }
+  | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "hold_recovered"; callId: string; code: "state_confirmed"; holdControl: "ready" };
 
 export type RendererAction =
   | { operation: "snapshot"; sessionRevision: string }
@@ -111,6 +114,12 @@ function parseHelperEvent(input: unknown): HelperEvent | null {
   if (input.type === "call" && isCallId(input.callId) && typeof input.state === "string" && states.includes(input.state) &&
       (input.muted === undefined || typeof input.muted === "boolean"))
     return { ...base, type: "call", callId: input.callId, state: input.state as CallState | "terminated", muted: input.muted as boolean | undefined };
+  if (input.type === "hold_error" && isCallId(input.callId) &&
+      input.code === "state_unconfirmed" && input.holdControl === "blocked")
+    return { ...base, type: "hold_error", callId: input.callId, code: "state_unconfirmed", holdControl: "blocked" };
+  if (input.type === "hold_recovered" && isCallId(input.callId) &&
+      input.code === "state_confirmed" && input.holdControl === "ready")
+    return { ...base, type: "hold_recovered", callId: input.callId, code: "state_confirmed", holdControl: "ready" };
   return null;
 }
 
@@ -121,6 +130,7 @@ export class DesktopCallBoundary {
   private sequence = 0;
   private registered = false;
   private call: PublicCall | null = null;
+  private holdMessage: "Hold unavailable; end call if needed" | null = null;
   private terminatedCallIds = new Set<string>();
   private dialState: "idle" | "requesting" | "reconcile" = "idle";
   private dialTimer: ReturnType<typeof setTimeout> | null = null;
@@ -160,6 +170,7 @@ export class DesktopCallBoundary {
     this.sequence = 0;
     this.registered = false;
     this.call = null;
+    this.holdMessage = null;
     this.terminatedCallIds.clear();
   }
 
@@ -174,6 +185,7 @@ export class DesktopCallBoundary {
     this.session = Object.freeze({ ...session });
     this.registered = false;
     this.call = null;
+    this.holdMessage = null;
     this.terminatedCallIds.clear();
     this.sequence = 0;
   }
@@ -184,6 +196,7 @@ export class DesktopCallBoundary {
     this.session = null;
     this.registered = false;
     this.call = null;
+    this.holdMessage = null;
     this.terminatedCallIds.clear();
     this.sequence = 0;
   }
@@ -200,11 +213,26 @@ export class DesktopCallBoundary {
       // End control until the helper reports termination or the session ends.
       return true;
     }
+    if (event.type === "hold_error") {
+      if (this.call?.id !== event.callId ||
+          (this.call.state !== "connected" && this.call.state !== "held")) return false;
+      this.sequence = event.sequence;
+      this.holdMessage = "Hold unavailable; end call if needed";
+      return true;
+    }
+    if (event.type === "hold_recovered") {
+      if (!this.holdMessage || this.call?.id !== event.callId ||
+          (this.call.state !== "connected" && this.call.state !== "held")) return false;
+      this.sequence = event.sequence;
+      this.holdMessage = null;
+      return true;
+    }
     if (event.state === "terminated") {
       if (this.call?.id !== event.callId) return false;
       this.sequence = event.sequence;
       this.terminatedCallIds.add(event.callId);
       this.call = null;
+      this.holdMessage = null;
       this.resetPending();
       return true;
     }
@@ -227,7 +255,8 @@ export class DesktopCallBoundary {
 
   snapshot(): PublicSnapshot {
     return { version: 1, registered: this.registered, call: this.call ? { ...this.call } : null,
-      dialState: this.dialState, callActionState: this.pendingCallAction?.phase ?? "idle" };
+      dialState: this.dialState, callActionState: this.pendingCallAction?.phase ?? "idle",
+      holdMessage: this.holdMessage };
   }
 
   async handleRendererAction(input: unknown, currentSession: DesktopSession | null): Promise<PublicSnapshot> {
@@ -272,6 +301,7 @@ export class DesktopCallBoundary {
     if (action.operation === "answer" && this.call.state !== "incoming") throw new Error("Call is not ringing");
     if ((action.operation === "mute" || action.operation === "hold" || action.operation === "dtmf") &&
         !["connected", "held"].includes(this.call.state)) throw new Error("Call is not connected");
+    if (action.operation === "hold" && this.holdMessage) throw new Error("Hold unavailable");
     const callbackAction = action.operation === "answer" || action.operation === "end";
     let supersededAnswer = false;
     if (callbackAction && this.pendingCallAction) {
