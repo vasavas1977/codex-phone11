@@ -179,9 +179,17 @@ PBX relayed the INVITE; the desktop account had not enabled secure media.
 The helper now requests SDES SRTP. A disposable loopback registrar confirmed
 that the rebuilt real SDK offers `RTP/SAVP` and
 `AES_CM_128_HMAC_SHA1_80` without exposing its SDP keys. The updated Mac app
-is installed locally and ad-hoc signed. Live answer and two-way audio still
-need verification after signing back in. The Xcode local ad-hoc signature is
+is installed locally and ad-hoc signed. The Xcode local ad-hoc signature is
 not a release signature.
+
+After the owner signed back in and reported the desktop trial working, a
+read-only PBX check found a 3001-to-1020 call with `180 Ringing`, `200 OK`,
+then an in-dialog BYE about 10.5 seconds after answer; the prior `488` was
+absent. This supports a connected call and confirms the deployed secure-media
+gate passed. No packet capture covered that call, and the server has no local
+CDR row, so two-way audio quality remains a handset report rather than an
+independent measurement. The installed Mac UI also accepted a dialpad tap
+while idle and appended that digit to the destination, which was then restored.
 
 For a repeatable local smoke test, run
 `python3 desktop/native/test_bootstrap.py /path/to/phone11_siprix_helper`.
@@ -189,7 +197,7 @@ It checks invalid and oversized input, response shape, shutdown, and that
 input text is not echoed.
 
 This is **not yet a released desktop softphone**: distributable macOS and Windows
-packaging/signing, a successful live PBX call, and two-way media remain required.
+packaging/signing, repeated call acceptance, and two-way media checks remain required.
 Optional persistent login would require secure OS credential storage; the
 current trial keeps the bearer in memory only. Siprix's free trial limits each call to 60 seconds; that
 limit is acceptable for current development and must be expected in call
