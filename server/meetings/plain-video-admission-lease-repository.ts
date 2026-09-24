@@ -70,7 +70,8 @@ export function createPlainVideoAdmissionLeaseRepository(
              ${plainVideoAdmissionSelection}
               WHERE r.id = $1 AND r.tenant_id = $2 AND m.user_id = $3
                 AND ${plainVideoAdmissionAdmitted}
-              FOR UPDATE OF r, t, m, ai, tm
+              FOR UPDATE OF r, m, ai, tm
+              FOR SHARE OF t
            ), created AS (
              INSERT INTO phone11_plain_video_admission_leases
                (id, tenant_id, meeting_id, user_id, participant_id,
@@ -138,7 +139,8 @@ export function createPlainVideoAdmissionLeaseRepository(
                 AND l.room_revision = $6 AND l.member_revision = $7
                 AND r.revision = $6 AND m.revision = $7
                 AND ${plainVideoAdmissionAdmitted}
-              FOR UPDATE OF l, r, t, m, ai, tm
+              FOR UPDATE OF l, r, m, ai, tm
+              FOR SHARE OF t
            ), issued AS (
              UPDATE phone11_plain_video_admission_leases l
                 SET state = 'issued'
@@ -178,6 +180,7 @@ export function createPlainVideoPostgresIssuanceTransaction(
     try {
       await client.query("BEGIN");
       await client.query("SET LOCAL statement_timeout = '3s'");
+      await client.query("SET LOCAL lock_timeout = '2s'");
       const value = await fn(client);
       await client.query("COMMIT");
       return value;
