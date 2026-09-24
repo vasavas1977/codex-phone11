@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { connect11PlainVideoTokenSchema } from "./connect11-plain-video-facade";
+import { normalizePlainVideoDisplayName } from "./plain-video-display-name";
 import type {
   Connect11PlainVideoAdmissionClient,
   Connect11PlainVideoAdmissionResolver,
@@ -40,6 +41,7 @@ const tenantExternalConfigSchema = z
     rtcUrl: z.string().refine((value) => secureUrl(value, "wss:")),
     statusCredential: secret,
     joinCredential: secret,
+    displayNameEnabled: z.boolean().optional(),
   })
   .strict();
 
@@ -129,6 +131,7 @@ const trustedAdmissionSchema = z
     meetingId: z.string().uuid(),
     participantId: opaqueIdentifier,
     grantProfile: z.enum(["interactive", "listener"]),
+    displayName: z.string().optional(),
   })
   .strict();
 
@@ -147,6 +150,8 @@ function trustedAdmissionFor(
 ): TrustedConnect11PlainVideoAdmission | null {
   const parsed = trustedAdmissionSchema.safeParse(raw);
   if (!parsed.success || parsed.data.meetingId !== grant.meetingId) return null;
+  if (parsed.data.displayName !== undefined &&
+      normalizePlainVideoDisplayName(parsed.data.displayName) !== parsed.data.displayName) return null;
   return parsed.data;
 }
 
@@ -180,14 +185,16 @@ export function createConnect11PlainVideoTenantProvider(
         throw new PlainVideoTenantProviderUnavailableError();
       }
 
-      const pending = await resolver.prepare(grant.data);
-      const admission = trustedAdmissionFor(pending.admission, grant.data);
-      if (!admission) throw new PlainVideoTenantProviderUnavailableError();
-
       const tenant = effectiveConfiguration.tenants.find(
         (item) => item.tenantId === grant.data.tenantId,
       );
       if (!tenant) throw new PlainVideoTenantProviderUnavailableError();
+      const pending = tenant.displayNameEnabled === true
+        ? await resolver.prepare(grant.data, true)
+        : await resolver.prepare(grant.data);
+      const admission = trustedAdmissionFor(pending.admission, grant.data);
+      if (!admission || (tenant.displayNameEnabled !== true && admission.displayName !== undefined))
+        throw new PlainVideoTenantProviderUnavailableError();
 
       const token = connect11PlainVideoTokenSchema.safeParse(
         await clientFactory.create(tenant).admit(admission),

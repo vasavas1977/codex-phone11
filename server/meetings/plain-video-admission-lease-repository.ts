@@ -28,6 +28,7 @@ const leaseRowSchema = plainVideoAdmissionRowSchema.extend({
 export type PlainVideoAdmissionLease = PlainVideoAdmissionRecord & {
   leaseId: string;
   expiresAt: Date;
+  displayName?: string;
 };
 
 export type PlainVideoIssuanceTransaction = <T>(
@@ -60,7 +61,7 @@ export function createPlainVideoAdmissionLeaseRepository(
   transaction: PlainVideoIssuanceTransaction,
 ) {
   return {
-    async begin(rawGrant: MeetingGrant): Promise<PlainVideoAdmissionLease | null> {
+    async begin(rawGrant: MeetingGrant, includeDisplayName = false): Promise<PlainVideoAdmissionLease | null> {
       const grant = trustedGrantSchema.safeParse(rawGrant);
       if (!grant.success) return null;
       return transaction(async (db) => {
@@ -88,7 +89,25 @@ export function createPlainVideoAdmissionLeaseRepository(
           [grant.data.meetingId, grant.data.tenantId, grant.data.userId, randomUUID()],
         );
         if (result.rows.length !== 1) return null;
-        return leaseFrom(result.rows[0], grant.data);
+        const lease = leaseFrom(result.rows[0], grant.data);
+        if (!lease || !includeDisplayName) return lease;
+        // The directory name is read in the same transaction as the pending
+        // lease, using the workspace's active assignment and membership path.
+        const directory = await db.query(
+          `SELECT u.name FROM users u
+             JOIN phone11_auth_identity ai ON ai.legacy_user_id = u.id AND ai.disabled_at IS NULL
+             JOIN tenant_memberships tm ON tm.user_id = u.id AND tm.tenant_id = $1 AND tm.status = 'active'
+             JOIN tenants t ON t.id = tm.tenant_id AND t.status = 'active'
+             JOIN user_extensions ue ON ue.user_id = u.id
+             JOIN extensions e ON e.id = ue.extension_id AND e.tenant_id = tm.tenant_id
+               AND e.status = 'active' AND e.deleted_at IS NULL
+            WHERE u.id = $2
+            LIMIT 1 FOR SHARE OF u, ai, tm, t, ue, e`,
+          [grant.data.tenantId, grant.data.userId],
+        );
+        return directory.rows.length === 1
+          ? { ...lease, displayName: directory.rows[0].name }
+          : lease;
       });
     },
 

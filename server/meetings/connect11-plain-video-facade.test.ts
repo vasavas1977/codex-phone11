@@ -46,6 +46,9 @@ describe("Connect11 plain video facade", () => {
       participant_id: "person_01",
       grant_profile: "interactive",
     });
+    expect(request.mock.calls[1][1].body).toBe(
+      '{"meeting_id":"meeting_01","participant_id":"person_01","grant_profile":"interactive"}',
+    );
     expect(String(request.mock.calls[1][0])).toBe(
       "https://connect11.example/api/v1/realtime/plain-video/tokens",
     );
@@ -60,6 +63,16 @@ describe("Connect11 plain video facade", () => {
       }),
     ).rejects.toThrow();
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed presentation names before any provider request", async () => {
+    for (const displayName of ["  Member", "Bad\u202eName", "😀".repeat(70)]) {
+      const request = responses(capability, token);
+      await expect(createConnect11PlainVideoFacade(config, request).admit({
+        ...admission, displayName,
+      })).rejects.toThrow("unavailable");
+      expect(request).not.toHaveBeenCalled();
+    }
   });
 
   it("fails closed for unavailable, malformed, or unsafe responses", async () => {

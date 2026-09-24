@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizePlainVideoDisplayName } from "./plain-video-display-name";
 
 const contractVersion = "phone11-plain-video.v1";
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,96}$/);
@@ -26,6 +27,7 @@ const admissionSchema = z
     meetingId: identifier,
     participantId: identifier,
     grantProfile,
+    displayName: z.string().optional(),
   })
   .strict();
 
@@ -185,6 +187,8 @@ export function createConnect11PlainVideoFacade(
       const rawAdmission = admissionSchema.safeParse(raw);
       if (!rawAdmission.success) throw unavailable();
       const admission = rawAdmission.data;
+      if (admission.displayName !== undefined &&
+          normalizePlainVideoDisplayName(admission.displayName) !== admission.displayName) throw unavailable();
       const status = await capabilities();
       if (
         !status.available ||
@@ -200,6 +204,7 @@ export function createConnect11PlainVideoFacade(
             meeting_id: admission.meetingId,
             participant_id: admission.participantId,
             grant_profile: admission.grantProfile,
+            ...(admission.displayName === undefined ? {} : { display_name: admission.displayName }),
           }),
         }),
       );
