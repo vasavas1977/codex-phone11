@@ -45,13 +45,31 @@ are stored here.
 ## Native helper bootstrap
 
 `native/phone11_siprix_helper.cpp` compiles against the pinned upstream
-SiprixUA SDK but includes no vendor code or binary in this repository. It
-accepts only three newline-delimited commands on private stdin:
-`v1 init`, `v1 snapshot`, and `v1 shutdown`. Every reply is one JSON line with
-`version`, `ok`, and `initialized`. Invalid and oversized commands receive a
-generic error. The helper never echoes input, SIP headers, raw SDK errors, or
-credentials. It explicitly keeps TLS certificate verification enabled and
-vendor file/IDE logging off. EOF tears down the module.
+SiprixUA SDK but includes no vendor code or binary in this repository. Its
+private stdin protocol now accepts `v1 init`, `v1 snapshot`, `v1 provision`,
+`v1 dial DESTINATION`, `v1 answer CALL_ID`, `v1 end CALL_ID`, and `v1 shutdown`.
+`v1 provision` consumes exactly five further newline-delimited fields: SIP
+server, extension, auth ID, password, and transport (`TLS`, `TCP`, or `UDP`).
+Only the authenticated main process may send those fields. A malformed frame
+closes the helper. Replies have `version`, `ok`, and `initialized`; snapshots
+also have `registered` and `callId`. Asynchronous registration and call events
+are separate JSON lines; the future main-process adapter must correlate them
+with its current helper generation and authenticated session before exposing
+them to `DesktopCallBoundary`. Command acceptance is never proof of SIP
+registration or call connection. The native helper is limited to one call.
+It rejects a second incoming call and refuses dial until registration callback
+success. It never echoes credentials, SIP headers, raw SDK errors, or incoming
+caller details. TLS certificate verification remains enabled and SDK logging
+remains off. EOF tears down the module.
+
+An unanswered incoming call uses Siprix `Call_Reject` when the user ends it.
+After `Call_Accept` succeeds, End uses `Call_Bye` for that exact call even if
+`OnCallConnected` is still pending; [Siprix's API](https://docs.siprix-voip.com/rst/api.html)
+specifies that `Call_Bye` sends BYE or CANCEL as appropriate. The helper
+guards this transition against concurrent callbacks. Run
+`python3 desktop/native/test_accept_end.py` for the fake-SDK protocol test of
+reject-before-answer and accept-then-end-before-connected. It does not prove
+live SIP signaling or media.
 
 On macOS, with the pinned SDK checked out externally:
 
@@ -68,21 +86,23 @@ output; they must be handled under the vendor's distribution license. The
 Windows target has **not** been compiled or run here.
 
 Local macOS arm64 evidence on 24 September 2026: CMake 4.4.3 generated an
-Xcode 16.4 project, Release build succeeded, and a direct private-pipe run of
-snapshot → init → snapshot → shutdown exited 0 with `false → true → true →
-false` initialized states and empty stderr. This is an SDK initialization
-proof, with no account, registration, call, audio, production license, app
-signing or notarization. The Xcode local ad-hoc signature is not a release
-signature.
+Xcode 16.4 project and the Release helper compiled against the pinned SDK.
+The pipe smoke checks initialization, rejected call commands before
+registration, invalid provisioning, malformed-frame teardown, and empty
+stderr. No real account, call, or audio has been tested. The Xcode local
+ad-hoc signature is not a release signature.
 
 For a repeatable local smoke test, run
 `python3 desktop/native/test_bootstrap.py /path/to/phone11_siprix_helper`.
 It checks invalid and oversized input, response shape, shutdown, and that
 input text is not echoed.
 
-This is **not yet a desktop softphone**: native account/call operations,
-authenticated provisioning, Electron IPC/window shell, secure OS credential storage,
-packaging, signing, live PBX registration and two-way media remain required.
+This is **not yet a desktop softphone**: authenticated provisioning, the
+main-process helper supervisor/event adapter, Electron IPC/window shell, secure
+OS credential storage, packaging, signing, live PBX registration and two-way
+media remain required. Siprix's free trial limits calls to 60 seconds; that
+limit is acceptable for current development and must be expected in call
+tests. A paid distribution license has not been verified.
 The pinned SiprixUA vendor sample is a separate compile proof only. The
 [desktop media spike](../docs/phone11-daily-use/DESKTOP-PBX-MEDIA-SPIKE-20260924.md)
 records the macOS/Windows runtime and release acceptance gates.
