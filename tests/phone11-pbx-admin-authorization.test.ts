@@ -814,14 +814,15 @@ describe("DID route assignment", () => {
       .mockResolvedValueOnce({ rows: [membership("admin", 7), membership("owner", 12)] })
       .mockResolvedValueOnce({ rows: phoneNumberSchemaRows })
       .mockResolvedValueOnce({ rows: [{ role: "owner" }] })
-      .mockResolvedValueOnce({ rows: [{ id: 55, tenant_id: 12 }] });
+      .mockResolvedValueOnce({ rows: [{ id: 55, tenant_id: 12, status: "pending" }] });
 
     await expect(pbxRouter.createCaller(context()).phoneNumbers.create({
       tenantId: 12,
       number: "+6620303988",
-    })).resolves.toMatchObject({ id: 55, tenant_id: 12 });
+    })).resolves.toMatchObject({ id: 55, tenant_id: 12, status: "pending" });
     expect(db.query.mock.calls[2][1]).toEqual([9, 12]);
     expect(db.query.mock.calls[3][1][0]).toBe(12);
+    expect(String(db.query.mock.calls[3][0])).toContain("'pending'");
   });
 
   it("routes a number in the selected workspace under the authorization lock", async () => {

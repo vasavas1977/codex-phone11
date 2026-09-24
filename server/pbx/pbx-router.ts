@@ -1320,7 +1320,7 @@ export const pbxRouter = router({
         };
       }),
 
-    /** Add a phone number */
+    /** Stage a number. Carrier-verified activation is a separate operator path. */
     create: protectedProcedure
       .input(
         z.object({
@@ -1344,7 +1344,7 @@ export const pbxRouter = router({
           await lockLiveDidAdmin(client, ctx.user!.id, tc.tenantId);
           return client.query(
             `INSERT INTO phone_numbers (tenant_id, number_e164, number_display, country, number_type, provider, status)
-             VALUES ($1, $2, $3, $4, $5, $6, 'active')
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending')
              RETURNING *`,
             [
               tc.tenantId,
@@ -1363,7 +1363,7 @@ export const pbxRouter = router({
           action: "create",
           resourceType: "phone_number",
           resourceId: String(result.rows[0].id),
-          newValue: { number: normalized.e164, type: input.numberType },
+          newValue: { number: normalized.e164, type: input.numberType, status: "pending" },
           ipAddress: ctx.req.ip,
         });
 

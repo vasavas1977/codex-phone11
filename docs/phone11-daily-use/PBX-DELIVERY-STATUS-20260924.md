@@ -13,8 +13,8 @@ working PBX behavior.
 | Direct call transfer | This source candidate adds a simple destination screen, available only when the installed iOS bridge advertises callback-confirmed blind transfer. | Sign a new build and prove successful and rejected PBX REFER against a second endpoint. Warm and voicemail transfer are separate work. |
 | Recents and voicemail | Local call history and authenticated personal voicemail playback exist in source. | Prove missed calls while the app is unavailable, multi-device CDR reconciliation, protected playback and mailbox ownership on the deployed service. |
 | Manage existing users and extensions | The Phone11 admin portal has API-backed membership role/status and extension assignment. This source candidate adds explicit workspace selection for these operations. | Deploy matching API/web versions and test owner, admin, member, revoked user and two-tenant access; identity creation/invitations remain a separate shared-account workflow. |
-| Configure DID, IVR, ring group, queue and business hours | API-backed screens and advanced routing schema exist in source, including action/member/agent/rule editors. This candidate scopes DID inventory and workspace timezone settings to a selected tenant. It disables DID route editing for multi-workspace admins until destination lists also use that tenant. | Commission the schema and exact Kamailio/FreeSWITCH routes in an isolated tenant, then exercise a real test DID through each path and failure fallback. Other multi-workspace routing sections still need explicit tenant inputs on every route. |
-| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned, source-tested desktop call boundary and a native helper bootstrap exist; the macOS arm64 helper builds and initializes locally. | Verify deployed TLS/SRTP ingress and desktop SDK/license; implement privileged provisioning and real helper call operations, compile on Windows, package signed apps, then prove repeated inbound/outbound two-way audio and lifecycle cases. No desktop calling claim until that acceptance passes. |
+| Configure DID, IVR, ring group, queue and business hours | API-backed screens and advanced routing schema exist in source, including action/member/agent/rule editors. This candidate scopes DID inventory and workspace timezone settings to a selected tenant. It disables DID route editing for multi-workspace admins until destination lists also use that tenant. A separate, unapplied number-inventory migration stages new numbers as pending and creates no carrier assignments or routes. | Review and commission the optional schemas and exact Kamailio/FreeSWITCH routes in an isolated tenant, then exercise a real test DID through each path and failure fallback. Carrier-verified activation and E911 provisioning remain separate operator work. Other multi-workspace routing sections still need explicit tenant inputs on every route. |
+| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned, source-tested desktop call boundary and a native helper bootstrap exist; the macOS arm64 helper builds and initializes locally. The Siprix trial is acceptable for prototype calls with its 60-second call limit. | Verify deployed TLS/SRTP ingress; implement privileged provisioning and real helper call operations, compile on Windows, package signed apps, then prove repeated inbound/outbound two-way audio and lifecycle cases. A paid redistribution license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
 
 ## Product and service ownership
 
@@ -40,9 +40,12 @@ working PBX behavior.
 2. Deploy the matching API and static portal to a controlled test environment.
    Test two tenants, one shared administrator, role revocation, extension
    assignment and cross-tenant denial. Record exact source/build/schema IDs.
-3. Commission advanced routing with a read-only schema preflight, reviewed
-   migration and PBX config. Use a non-customer DID and real calls; capture
-   ringing, answer, audio, fallback, CDR and audit evidence.
+3. Review the number-inventory migration against the selected database before
+   applying it. It adds no number or route and defaults admin-created inventory
+   to pending. Commission advanced routing with a read-only schema preflight,
+   reviewed migration and PBX config. Use a non-customer, carrier-provisioned
+   DID and real calls; capture ringing, answer, audio, fallback, CDR and audit
+   evidence before any operator activates its route.
 4. Sign the iPhone transfer candidate and run a real two-endpoint transfer
    matrix. Extend to warm and voicemail transfer only after separate native
    and PBX confirmation.
