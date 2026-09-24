@@ -71,7 +71,8 @@ export class AuthenticatedDesktopProvider {
     let phase: "auth_unavailable" | "phone_access_unavailable" = "auth_unavailable";
     try {
       const signed = await this.send("/api/auth/sign-in/email", {
-        method: "POST", headers: { "content-type": "application/json", "X-Phone11-Client": "native" },
+        method: "POST", headers: { "content-type": "application/json", "X-Phone11-Client": "native",
+          Origin: this.origin },
         body: JSON.stringify({ email, password, rememberMe: false }),
       }, epoch);
       if (signed.status === 401)
@@ -138,7 +139,7 @@ export class AuthenticatedDesktopProvider {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
     try { await this.request(`${this.origin}/api/auth/sign-out`, {
-      method: "POST", headers: { authorization: `Bearer ${token}` }, signal: controller.signal,
+      method: "POST", headers: { authorization: `Bearer ${token}`, Origin: this.origin }, signal: controller.signal,
       cache: "no-store", credentials: "omit", redirect: "error",
     }); } catch { /* Local authority was already removed. */ }
     finally { clearTimeout(timeout); }
