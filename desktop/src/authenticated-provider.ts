@@ -2,6 +2,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { DesktopSession } from "./call-boundary";
 import type { SipAccountSecret } from "./helper-supervisor";
+import { postNativeCredential } from "./native-credential-request";
 
 type Fetch = typeof fetch;
 type RecordValue = Record<string, unknown>;
@@ -38,6 +39,8 @@ export class DesktopAuthenticationError extends Error {
 export class AuthenticatedDesktopProvider {
   private readonly origin: string;
   private readonly request: Fetch;
+  private readonly injectedRequest: boolean;
+  private readonly allowHttpLoopbackForTests: boolean;
   private epoch = 0;
   private token: string | null = null;
   private session: DesktopSession | null = null;
@@ -56,6 +59,8 @@ export class AuthenticatedDesktopProvider {
       throw new DesktopAuthenticationError();
     this.origin = url.origin;
     this.request = options.fetch ?? fetch;
+    this.injectedRequest = options.fetch !== undefined;
+    this.allowHttpLoopbackForTests = options.allowHttpLoopbackForTests === true;
   }
 
   currentSession(): DesktopSession | null { return this.session; }
@@ -71,8 +76,7 @@ export class AuthenticatedDesktopProvider {
     let phase: "auth_unavailable" | "phone_access_unavailable" = "auth_unavailable";
     try {
       const signed = await this.send("/api/auth/sign-in/email", {
-        method: "POST", headers: { "content-type": "application/json", "X-Phone11-Client": "native",
-          Origin: this.origin },
+        method: "POST", headers: { "content-type": "application/json", "X-Phone11-Client": "native" },
         body: JSON.stringify({ email, password, rememberMe: false }),
       }, epoch);
       if (signed.status === 401)
@@ -165,9 +169,12 @@ export class AuthenticatedDesktopProvider {
     this.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 15000);
     try {
-      const response = await this.request(`${this.origin}${path}`, {
-        ...init, signal: controller.signal, cache: "no-store", credentials: "omit", redirect: "error",
-      });
+      const response = path === "/api/auth/sign-in/email" && !this.injectedRequest
+        ? await postNativeCredential(`${this.origin}${path}`, String(init.body), controller.signal,
+          this.allowHttpLoopbackForTests)
+        : await this.request(`${this.origin}${path}`, {
+          ...init, signal: controller.signal, cache: "no-store", credentials: "omit", redirect: "error",
+        });
       this.assertEpoch(epoch);
       return response;
     } finally {

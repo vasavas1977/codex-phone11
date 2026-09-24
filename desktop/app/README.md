@@ -1,10 +1,10 @@
 # Phone11 desktop trial shell
 
-This local Electron shell targets macOS and Windows and shows the Siprix official trial's 60-second call notice. It uses Phone11's privileged auth provider and Siprix helper supervisor. An ad-hoc signed local macOS arm64 package has launched to the sign-in screen without credentials. Windows runtime and live calls remain unverified.
+This local Electron shell targets macOS and Windows and shows the Siprix official trial's 60-second call notice. It uses Phone11's privileged auth provider and Siprix helper supervisor. An ad-hoc signed local macOS arm64 package has launched; Windows runtime and live calls remain unverified.
 
 From `desktop/app`, run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`. Copy `resources/config.example.json` to `resources/config.json` and set the deployed Phone11 HTTPS API origin. For the current production Phone11 backend, that origin is `https://api.phone11.ai`; `https://phone11.ai` serves an older API and cannot complete this desktop sign-in flow. Confirm `/api/ready/auth` returns `{ "ready": true }` at the selected origin before packaging. The app quits if its config file is absent or invalid.
 
-Sign-in failures show only fixed, non-secret messages for rejected credentials, unavailable phone access, unavailable authentication service, or local calling startup. The renderer never displays upstream response bodies or helper errors. A successful sign-in still requires an observed SIP registration and trial call before declaring desktop calling ready.
+Credential sign-in uses a native HTTPS request without browser Origin or Sec-Fetch headers. Phone11 exposes its bearer token only for that originless native request; Node's `fetch` adds `Sec-Fetch-Mode` and must not replace this transport. Sign-in failures show only fixed, non-secret messages for rejected credentials, unavailable phone access, unavailable authentication service, or local calling startup. The renderer never displays upstream response bodies or helper errors. A successful sign-in still requires an observed SIP registration and trial call before declaring desktop calling ready.
 
 Stage the **complete** platform helper output before generating the integrity manifest:
 

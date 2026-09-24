@@ -19,7 +19,7 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
     if (url.pathname === "/api/auth/sign-in/email") {
       assert.equal(init?.method, "POST");
       assert.equal(new Headers(init?.headers).get("X-Phone11-Client"), "native");
-      assert.equal(new Headers(init?.headers).get("Origin"), "http://127.0.0.1:3000");
+      assert.equal(new Headers(init?.headers).has("Origin"), false);
       assert.equal(new Headers(init?.headers).has("Referer"), false);
       assert.equal(new Headers(init?.headers).has("sec-fetch-site"), false);
       assert.equal(JSON.parse(String(init?.body)).rememberMe, false);
