@@ -8,9 +8,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test test/*.test.ts",
     "start": "npm run build && electron .",
-    "manifest:helper": "node scripts/create-helper-manifest.mjs"
+    "manifest:helper": "node scripts/create-helper-manifest.mjs",
+    "package:mac:local": "tsx scripts/package-macos-local.ts"
   },
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "@types/node": "^22.19.3",
     "electron": "^44.4.5",
     "esbuild": "^0.25.12",

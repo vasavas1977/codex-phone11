@@ -14,7 +14,7 @@ working PBX behavior.
 | Recents and voicemail | Local call history and authenticated personal voicemail playback exist in source. | Prove missed calls while the app is unavailable, multi-device CDR reconciliation, protected playback and mailbox ownership on the deployed service. |
 | Manage existing users and extensions | The Phone11 admin portal has API-backed membership role/status and extension assignment. This source candidate adds explicit workspace selection for these operations. | Deploy matching API/web versions and test owner, admin, member, revoked user and two-tenant access; identity creation/invitations remain a separate shared-account workflow. |
 | Configure DID, IVR, ring group, queue and business hours | API-backed screens and advanced routing schema exist in source, including action/member/agent/rule editors. This candidate scopes DID inventory and workspace timezone settings to a selected tenant. It disables DID route editing for multi-workspace admins until destination lists also use that tenant. A separate, unapplied number-inventory migration stages new numbers as pending and creates no carrier assignments or routes. | Review and commission the optional schemas and exact Kamailio/FreeSWITCH routes in an isolated tenant, then exercise a real test DID through each path and failure fallback. Carrier-verified activation and E911 provisioning remain separate operator work. Other multi-workspace routing sections still need explicit tenant inputs on every route. |
-| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary, privileged helper supervisor, native helper, protected credential provider, and minimal Electron trial shell exist in source. The helper implements one-call dial/answer/end, mute, hold/resume and DTMF through private pipes. The macOS arm64 helper builds and passes bootstrap and fake-SDK call-control tests. The Siprix trial is acceptable for prototype calls with its per-call 60-second limit. | Finish independent review of the desktop shell and full packaged helper tree, then verify deployed TLS/SRTP ingress, compile on Windows, package signed apps, and prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
+| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary, privileged helper supervisor, native helper, protected credential provider, and minimal Electron trial shell exist in source. The helper implements one-call dial/answer/end, mute, hold/resume and DTMF through private pipes. The macOS arm64 helper builds and passes bootstrap and fake-SDK call-control tests. A local ad-hoc signed macOS package has passed integrity/signature checks and opened to sign-in. The Siprix trial is acceptable for prototype calls with its per-call 60-second limit. | Sign in with a test account, verify deployed TLS/SRTP ingress, compile and run on Windows, package formally signed apps, and prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
 
 SIP provisioning in this source candidate requires the authenticated user to have an
 active workspace membership, a matching explicit extension grant, and matching
@@ -103,13 +103,18 @@ workflow has not run on CI. The authenticated provider's focused tests passed
 and its sign-in/grant lookup had an independent read-only source review. After
 the packaging and stale-update fixes, the desktop boundary/provider tests
 passed 43/43 and Electron shell tests passed 5/5. A real macOS helper bundle
-copied to a temporary staging directory passed full-tree integrity verification
-and credential-free startup; the Electron 44 trial window opened and displayed
-its local sign-in screen. Independent final source review found no concrete
-P0–P2 issue. This is not a packaged Electron launch, account sign-in, or call.
-These checks do not constitute a signed iPhone or
-desktop build, a Windows build, a live PBX route, an actual phone call, or
-production deployment.
+copied to an external staging directory passed full-tree integrity verification
+and credential-free startup. The Electron 44 macOS arm64 trial package was
+then built locally from committed app source with only the required staged
+resources. The local bundle passed helper-tree and embedded-pin checks,
+`codesign --verify --deep --strict`, and opened from its final Downloads path
+to the sign-in screen showing the 60-second trial limit. It uses an ad-hoc
+signature, not a Developer ID distribution signature or notarization.
+Independent final source review found no remaining concrete P0–P2 packaging
+issue. There has been no account sign-in or live call in this package. These
+checks do not constitute a signed iPhone or distributable desktop build, a
+Windows runtime build, a live PBX route, an actual phone call, or production
+deployment.
 
 A read-only reachability probe from this Mac on 24 September resolved
 `sip.phone11.ai` to `43.210.122.111`: TCP 5060 accepted a connection, while

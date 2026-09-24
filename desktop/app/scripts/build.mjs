@@ -5,12 +5,17 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const resourcesDir = process.env.PHONE11_RESOURCE_STAGE || resolve(root, 'resources');
+// JavaScript bundles are platform-neutral; an explicit target allows the
+// Windows package to embed its verified Windows helper manifest on a Mac.
+const targetPlatform = process.env.PHONE11_BUILD_PLATFORM || process.platform;
+if (targetPlatform !== 'darwin' && targetPlatform !== 'win32')
+  throw new Error('Unsupported Phone11 desktop build platform');
 await mkdir(resolve(root, 'dist'), { recursive: true });
 let pinnedHash = '0'.repeat(64); // No staged helper means calling fails closed.
 try {
   const bytes = await readFile(resolve(resourcesDir, 'helper-integrity.json'));
   const manifest = JSON.parse(bytes.toString('utf8'));
-  if (manifest.platform !== process.platform || !manifest.files || !manifest.symlinks)
+  if (manifest.platform !== targetPlatform || !manifest.files || !manifest.symlinks)
     throw new Error('Invalid platform helper integrity manifest');
   pinnedHash = createHash('sha256').update(bytes).digest('hex');
 } catch (error) {
