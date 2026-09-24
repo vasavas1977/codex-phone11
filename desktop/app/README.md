@@ -2,7 +2,7 @@
 
 This local Electron shell targets macOS and Windows and shows the Siprix official trial's 60-second call notice. It uses Phone11's privileged auth provider and Siprix helper supervisor. An ad-hoc signed local macOS arm64 package has launched to the sign-in screen without credentials. Windows runtime and live calls remain unverified.
 
-From `desktop/app`, run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`. Copy `resources/config.example.json` to `resources/config.json` and set the deployed Phone11 HTTPS API origin. The app quits if that file is absent or invalid.
+From `desktop/app`, run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`. Copy `resources/config.example.json` to `resources/config.json` and set the deployed Phone11 HTTPS API origin. For the current production Phone11 backend, that origin is `https://api.phone11.ai`; `https://phone11.ai` serves an older API and cannot complete this desktop sign-in flow. Confirm `/api/ready/auth` returns `{ "ready": true }` at the selected origin before packaging. The app quits if its config file is absent or invalid.
 
 Stage the **complete** platform helper output before generating the integrity manifest:
 

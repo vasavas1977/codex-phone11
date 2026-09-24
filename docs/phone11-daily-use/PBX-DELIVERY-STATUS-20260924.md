@@ -116,6 +116,16 @@ checks do not constitute a signed iPhone or distributable desktop build, a
 Windows runtime build, a live PBX route, an actual phone call, or production
 deployment.
 
+The first local trial package mistakenly targeted `https://phone11.ai`, whose
+public health endpoint reports old build `7b0c678` and whose auth-readiness
+route is absent. A user sign-in attempt in that package displayed the generic
+setup error. The intended backend `https://api.phone11.ai` reports auth ready
+and email/password enabled; repository mobile and owned-auth settings also
+point there. The macOS trial was repackaged with that exact API origin, passed
+helper-integrity and ad-hoc signature checks, and opened to sign-in. An
+authenticated retry and a call have not yet been observed. No backend deploy
+was needed for this origin correction.
+
 A separate local Windows x64 package workflow now checks the pinned official
 Siprix SDK revision and DLL hashes, requires an externally compiled x64
 Phone11 helper, and verifies the packaged helper and manifest pin. Its source
