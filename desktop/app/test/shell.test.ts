@@ -42,6 +42,9 @@ test('sign out stops helper and clears public session without secret emission', 
 });
 test('sign-in errors identify the safe failing stage without showing upstream details', () => {
   assert.equal(signInFailureMessage(new Error('PHONE11_CREDENTIALS_REJECTED')), 'Email or password was not accepted.');
+  assert.match(signInFailureMessage(new Error('PHONE11_ORIGIN_REJECTED')), /origin check/);
+  assert.match(signInFailureMessage(new Error('PHONE11_EMAIL_UNVERIFIED')), /Verify your Phone11 email/);
+  assert.match(signInFailureMessage(new Error('PHONE11_AUTH_BLOCKED')), /blocked this sign-in/);
   assert.match(signInFailureMessage(new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE')), /calling access/);
   assert.match(signInFailureMessage(new Error('PHONE11_CALLING_UNAVAILABLE')), /calling could not start/);
   assert.equal(signInFailureMessage(new Error('secret-token=private')), 'Phone11 sign-in is unavailable. Try again.');

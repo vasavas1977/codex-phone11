@@ -12,6 +12,9 @@ export type TaggedSnapshot = { sessionRevision: string; generation: string;
 export function signInFailureMessage(error: unknown): string {
   const text = String(error);
   if (text.includes('PHONE11_CREDENTIALS_REJECTED')) return 'Email or password was not accepted.';
+  if (text.includes('PHONE11_ORIGIN_REJECTED')) return 'Desktop sign-in blocked by Phone11 origin check.';
+  if (text.includes('PHONE11_EMAIL_UNVERIFIED')) return 'Verify your Phone11 email before signing in.';
+  if (text.includes('PHONE11_AUTH_BLOCKED')) return 'Phone11 blocked this sign-in request. Contact support.';
   if (text.includes('PHONE11_PHONE_ACCESS_UNAVAILABLE'))
     return 'Signed in, but calling access could not be loaded. Check your extension assignment or retry.';
   if (text.includes('PHONE11_CALLING_UNAVAILABLE')) return 'Signed in, but calling could not start on this Mac.';
@@ -57,6 +60,9 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
           'code' in error ? (error as DesktopAuthenticationError).code : null;
         if (authCode === 'credentials_rejected')
           throw new Error('PHONE11_CREDENTIALS_REJECTED');
+        if (authCode === 'origin_rejected') throw new Error('PHONE11_ORIGIN_REJECTED');
+        if (authCode === 'email_unverified') throw new Error('PHONE11_EMAIL_UNVERIFIED');
+        if (authCode === 'auth_blocked') throw new Error('PHONE11_AUTH_BLOCKED');
         if (authCode === 'phone_access_unavailable')
           throw new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE');
         throw new Error('PHONE11_AUTH_UNAVAILABLE');

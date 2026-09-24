@@ -8,7 +8,7 @@ const json = (value: unknown, status = 200, headers?: HeadersInit): Response =>
   new Response(JSON.stringify(value), { status, headers });
 const trpc = (value: unknown): Response => json({ result: { data: { json: value } } });
 
-function harness(overrides: { authStatus?: number; tenantId?: number; extension?: string;
+function harness(overrides: { authStatus?: number; authCode?: string; tenantId?: number; extension?: string;
   extensionId?: number; userId?: number; malformed?: boolean; rotatedPassword?: string;
   secondTenantId?: number; secondExtensionId?: number; secondUsername?: string } = {}) {
   const paths: string[] = [];
@@ -23,7 +23,7 @@ function harness(overrides: { authStatus?: number; tenantId?: number; extension?
       assert.equal(new Headers(init?.headers).has("Referer"), false);
       assert.equal(new Headers(init?.headers).has("sec-fetch-site"), false);
       assert.equal(JSON.parse(String(init?.body)).rememberMe, false);
-      return json({ success: true }, overrides.authStatus ?? 200,
+      return json(overrides.authCode ? { code: overrides.authCode } : { success: true }, overrides.authStatus ?? 200,
         { "set-auth-token": bearer });
     }
     assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${bearer}`);
@@ -67,6 +67,9 @@ test("sign-in binds the own extension, and provisioning rechecks the grant", asy
 
 test("auth rejection and malformed config fail closed without revealing credentials", async () => {
   for (const [options, code] of [[{ authStatus: 401 }, "credentials_rejected"],
+    [{ authStatus: 403, authCode: "INVALID_ORIGIN" }, "origin_rejected"],
+    [{ authStatus: 403, authCode: "EMAIL_NOT_VERIFIED" }, "email_unverified"],
+    [{ authStatus: 403, authCode: "OTHER_BLOCK" }, "auth_blocked"],
     [{ malformed: true }, "phone_access_unavailable"]] as const) {
     const { provider } = harness(options);
     await assert.rejects(provider.signIn("user@example.test", "login-secret"), error => {

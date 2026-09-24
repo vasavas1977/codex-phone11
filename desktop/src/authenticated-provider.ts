@@ -28,7 +28,8 @@ export type AuthenticatedProviderOptions = Readonly<{
 
 /** Never attach an upstream error as cause: it may contain a token or SIP secret. */
 export class DesktopAuthenticationError extends Error {
-  constructor(readonly code: "credentials_rejected" | "auth_unavailable" | "phone_access_unavailable" = "auth_unavailable") {
+  constructor(readonly code: "credentials_rejected" | "origin_rejected" | "email_unverified" |
+    "auth_blocked" | "auth_unavailable" | "phone_access_unavailable" = "auth_unavailable") {
     super(`Desktop authentication failed: ${code}`);
     this.name = "DesktopAuthenticationError";
   }
@@ -73,8 +74,23 @@ export class AuthenticatedDesktopProvider {
         method: "POST", headers: { "content-type": "application/json", "X-Phone11-Client": "native" },
         body: JSON.stringify({ email, password, rememberMe: false }),
       }, epoch);
-      if (signed.status === 401 || signed.status === 403)
+      if (signed.status === 401)
         throw new DesktopAuthenticationError("credentials_rejected");
+      if (signed.status === 403) {
+        let remoteCode: unknown;
+        let remoteError: unknown;
+        try {
+          const body = await signed.text();
+          if (body.length <= 4096) {
+            const parsed = JSON.parse(body) as unknown;
+            if (isRecord(parsed)) { remoteCode = parsed.code; remoteError = parsed.error; }
+          }
+        } catch { /* Never surface an upstream body or parse error. */ }
+        if (["INVALID_ORIGIN", "MISSING_OR_NULL_ORIGIN", "CROSS_SITE_NAVIGATION_LOGIN_BLOCKED"].includes(remoteCode as string) ||
+            remoteError === "Origin not allowed") throw new DesktopAuthenticationError("origin_rejected");
+        if (remoteCode === "EMAIL_NOT_VERIFIED") throw new DesktopAuthenticationError("email_unverified");
+        throw new DesktopAuthenticationError("auth_blocked");
+      }
       const token = signed.headers.get("set-auth-token");
       if (!signed.ok || !clean(token, 4096)) throw new DesktopAuthenticationError();
       const signInBody = await this.json(signed);
@@ -90,7 +106,8 @@ export class AuthenticatedDesktopProvider {
     } catch (error) {
       if (this.epoch === epoch) this.clear();
       throw new DesktopAuthenticationError(error instanceof DesktopAuthenticationError &&
-        error.code === "credentials_rejected" ? error.code : phase);
+        ["credentials_rejected", "origin_rejected", "email_unverified", "auth_blocked"].includes(error.code)
+        ? error.code : phase);
     }
   }
 
