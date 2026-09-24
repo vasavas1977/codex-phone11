@@ -4,14 +4,20 @@ import { createChannelMeetingAdminRepository } from "./channel-meeting-admin-rep
 
 const channelId = "12345678-1234-4234-8234-123456789012";
 
-function repository(options: { admin?: boolean; tenant?: boolean; installed?: boolean; channel?: boolean; member?: boolean } = {}) {
+function repository(options: { admin?: boolean; adminRevokedAtLock?: boolean; extensionRevokedAtLock?: boolean; tenant?: boolean; installed?: boolean; channel?: boolean; member?: boolean } = {}) {
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.startsWith("SET LOCAL")) return { rows: [] };
     if (sql.includes("pg_advisory_xact_lock")) return { rows: [] };
     if (sql.includes("SELECT id FROM tenants"))
       return { rows: options.tenant === false ? [] : [{ id: 41 }] };
+    if (sql.includes("SELECT user_id,role FROM tenant_memberships"))
+      return { rows: options.member === false ? [{ user_id: 7, role: "admin" }] : [
+        { user_id: 7, role: options.adminRevokedAtLock ? "member" : "admin" }, { user_id: 8, role: "member" },
+      ] };
     if (sql.includes("SELECT user_id FROM tenant_memberships"))
       return { rows: options.admin === false ? [] : [{ user_id: 7 }] };
+    if (sql.includes("WHERE legacy_user_id=ANY"))
+      return { rows: [{ legacy_user_id: 7 }, { legacy_user_id: 8 }] };
     if (sql.includes("SELECT legacy_user_id FROM phone11_auth_identity"))
       return { rows: [{ legacy_user_id: 7 }] };
     if (sql.includes("to_regclass('public.phone11_channel_meetings')"))
@@ -20,10 +26,16 @@ function repository(options: { admin?: boolean; tenant?: boolean; installed?: bo
       return { rows: [{ id: channelId, name: "Team", kind: "channel" }] };
     if (sql.includes("COALESCE(NULLIF(users.name"))
       return { rows: [{ conversation_id: channelId, user_id: 8, name: "Colleague", can_start_meeting: true }] };
-    if (sql.includes("SELECT conversation.id FROM phone11_chat_conversations"))
+    if (sql.includes("SELECT id FROM phone11_chat_conversations"))
       return { rows: options.channel === false ? [] : [{ id: channelId }] };
-    if (sql.includes("SELECT member.user_id") && sql.includes("FROM phone11_chat_members member"))
+    if (sql.includes("SELECT user_id FROM phone11_chat_members"))
       return { rows: options.member === false ? [] : [{ user_id: 8 }] };
+    if (sql.includes("SELECT assignment.user_id FROM user_extensions"))
+      return { rows: options.member === false ? [] : [{ user_id: 8, extension_id: 108 }] };
+    if (sql.includes("SELECT assignment.user_id,assignment.extension_id FROM user_extensions"))
+      return { rows: options.member === false ? [] : [{ user_id: 8, extension_id: 108 }] };
+    if (sql.includes("SELECT id FROM extensions") && sql.includes("FOR SHARE"))
+      return { rows: options.member === false || options.extensionRevokedAtLock ? [] : [{ id: 108 }] };
     if (sql.includes("UPDATE phone11_chat_members SET can_start_meeting"))
       return { rows: [{ user_id: values?.[2], can_start_meeting: values?.[3] }] };
     throw new Error(`Unexpected query: ${sql}`);
@@ -63,7 +75,9 @@ describe("channel meeting administration", () => {
       .resolves.toEqual({ channelId, userId: 8, canStartMeeting: false });
     const update = query.mock.calls.find(([sql]) => sql.includes("UPDATE phone11_chat_members"));
     expect(update?.[1]).toEqual([41, channelId, 8, false]);
-    expect(query.mock.calls.some(([sql]) => sql.includes("member.tenant_id=$1 AND member.conversation_id=$2"))).toBe(true);
+    expect(query.mock.calls.some(([sql, values]) => sql.includes("FROM phone11_chat_members")
+      && sql.includes("tenant_id=$1 AND conversation_id=$2 AND user_id=$3")
+      && values?.[0] === 41 && values?.[1] === channelId && values?.[2] === 8)).toBe(true);
   });
 
   it("prechecks admin access without a row lock, then takes the channel lock before locking authorization rows", async () => {
@@ -71,11 +85,11 @@ describe("channel meeting administration", () => {
     await api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true);
     const statements = query.mock.calls.map(([sql]) => sql);
     const tenantChecks = statements.map((sql, index) => sql.includes("SELECT id FROM tenants") ? index : -1).filter((index) => index >= 0);
-    const membershipChecks = statements.map((sql, index) => sql.includes("SELECT user_id FROM tenant_memberships") ? index : -1).filter((index) => index >= 0);
+    const membershipChecks = statements.map((sql, index) => sql.includes("FROM tenant_memberships") ? index : -1).filter((index) => index >= 0);
     const identityChecks = statements.map((sql, index) => sql.includes("SELECT legacy_user_id FROM phone11_auth_identity") ? index : -1).filter((index) => index >= 0);
     const advisory = statements.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
-    const channel = statements.findIndex((sql) => sql.includes("SELECT conversation.id FROM phone11_chat_conversations"));
-    const member = statements.findIndex((sql) => sql.includes("SELECT member.user_id"));
+    const channel = statements.findIndex((sql) => sql.includes("SELECT id FROM phone11_chat_conversations"));
+    const member = statements.findIndex((sql) => sql.includes("SELECT user_id FROM phone11_chat_members"));
     expect(tenantChecks).toHaveLength(2);
     expect(membershipChecks).toHaveLength(2);
     expect(identityChecks).toHaveLength(2);
@@ -85,9 +99,9 @@ describe("channel meeting administration", () => {
     expect(identityChecks[0]).toBeLessThan(advisory);
     expect(advisory).toBeLessThan(tenantChecks[1]);
     expect(tenantChecks[1]).toBeLessThan(membershipChecks[1]);
+    expect(channel).toBeLessThan(member);
+    expect(member).toBeLessThan(membershipChecks[1]);
     expect(membershipChecks[1]).toBeLessThan(identityChecks[1]);
-    expect(advisory).toBeLessThan(channel);
-    expect(advisory).toBeLessThan(member);
     expect(statements[tenantChecks[1]]).toContain("FOR SHARE");
     expect(statements[membershipChecks[1]]).toContain("FOR SHARE");
     expect(statements[identityChecks[1]]).toContain("FOR SHARE");
@@ -100,14 +114,17 @@ describe("channel meeting administration", () => {
     for (const id of [first, second]) {
       const { api, query } = repository();
       await api.setHostPermission(7, { tenantId: 41, channelId: id, userId: 8, canStartMeeting: true }, true);
-      const statements = query.mock.calls.map(([sql]) => sql);
+    const statements = query.mock.calls.map(([sql]) => sql);
       const advisory = statements.findIndex((sql) => sql.includes("pg_advisory_xact_lock"));
       const tenantLock = statements.findIndex((sql) => sql.includes("SELECT id FROM tenants") && sql.includes("FOR SHARE"));
-      const membershipLock = statements.findIndex((sql) => sql.includes("SELECT user_id FROM tenant_memberships") && sql.includes("FOR SHARE"));
-      const identityLock = statements.findIndex((sql) => sql.includes("SELECT legacy_user_id FROM phone11_auth_identity") && sql.includes("FOR SHARE"));
-      const channelLock = statements.findIndex((sql) => sql.includes("SELECT conversation.id FROM phone11_chat_conversations"));
-      expect([advisory, tenantLock, membershipLock, identityLock, channelLock])
-        .toEqual([...new Set([advisory, tenantLock, membershipLock, identityLock, channelLock])].sort((a, b) => a - b));
+      const membershipLock = statements.findIndex((sql) => sql.includes("SELECT user_id,role FROM tenant_memberships") && sql.includes("FOR SHARE"));
+      const identityLock = statements.findIndex((sql) => sql.includes("WHERE legacy_user_id=ANY") && sql.includes("FOR SHARE"));
+      const channelLock = statements.findIndex((sql) => sql.includes("SELECT id FROM phone11_chat_conversations") && sql.includes("FOR SHARE"));
+      const memberLock = statements.findIndex((sql) => sql.includes("SELECT user_id FROM phone11_chat_members") && sql.includes("FOR UPDATE"));
+      const assignmentLock = statements.findIndex((sql) => sql.includes("SELECT assignment.user_id,assignment.extension_id FROM user_extensions") && sql.includes("FOR SHARE"));
+      const extensionLock = statements.findIndex((sql) => sql.includes("SELECT id FROM extensions") && sql.includes("FOR SHARE"));
+      expect([advisory, tenantLock, channelLock, memberLock, membershipLock, identityLock, assignmentLock, extensionLock])
+        .toEqual([...new Set([advisory, tenantLock, channelLock, memberLock, membershipLock, identityLock, assignmentLock, extensionLock])].sort((a, b) => a - b));
       expect(query.mock.calls[advisory][1]).toEqual([`phone11-channel-meeting:41:${id}`]);
       expect(query.mock.calls[tenantLock][1]).toEqual([41]);
     }
@@ -121,5 +138,22 @@ describe("channel meeting administration", () => {
     await expect(inactive.api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true))
       .rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(inactive.query.mock.calls.some(([sql]) => sql.includes("UPDATE phone11_chat_members"))).toBe(false);
+  });
+
+  it("rechecks administrator role after the advisory, tenant, channel and member locks", async () => {
+    const revoked = repository({ adminRevokedAtLock: true });
+    await expect(revoked.api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    const statements = revoked.query.mock.calls.map(([sql]) => sql);
+    expect(statements.findIndex((sql) => sql.includes("pg_advisory_xact_lock")))
+      .toBeLessThan(statements.findIndex((sql) => sql.includes("SELECT user_id,role FROM tenant_memberships")));
+    expect(statements.some((sql) => sql.includes("UPDATE phone11_chat_members"))).toBe(false);
+  });
+
+  it("rejects an extension revoked after assignment selection without changing host permission", async () => {
+    const revoked = repository({ extensionRevokedAtLock: true });
+    await expect(revoked.api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: true }, true))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(revoked.query.mock.calls.some(([sql]) => sql.includes("UPDATE phone11_chat_members"))).toBe(false);
   });
 });
