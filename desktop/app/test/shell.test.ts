@@ -4,8 +4,9 @@ import { mkdtemp, mkdir, writeFile, symlink, rm, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { validSender, createHandlers, applyTaggedSnapshot, type PublicState } from '../src/ipc';
+import { validSender, createHandlers, applyTaggedSnapshot, signInFailureMessage, type PublicState } from '../src/ipc';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
+import { DesktopAuthenticationError } from '../../src/authenticated-provider';
 import type { DesktopSession } from '../../src/call-boundary';
 const empty = { version: 1 as const, registered: false, call: null, dialState: 'idle' as const,
   callActionState: 'idle' as const, holdMessage: null };
@@ -38,6 +39,36 @@ test('sign out stops helper and clears public session without secret emission', 
   assert.equal(stopped, true);
   assert.equal(current, null);
   assert.equal(generation, null);
+});
+test('sign-in errors identify the safe failing stage without showing upstream details', () => {
+  assert.equal(signInFailureMessage(new Error('PHONE11_CREDENTIALS_REJECTED')), 'Email or password was not accepted.');
+  assert.match(signInFailureMessage(new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE')), /calling access/);
+  assert.match(signInFailureMessage(new Error('PHONE11_CALLING_UNAVAILABLE')), /calling could not start/);
+  assert.equal(signInFailureMessage(new Error('secret-token=private')), 'Phone11 sign-in is unavailable. Try again.');
+});
+test('IPC distinguishes rejected credentials from a local helper failure and clears the session', async () => {
+  let current: DesktopSession | null = null;
+  let failure: Error | null = new DesktopAuthenticationError('credentials_rejected');
+  let helperStarts = 0;
+  const provider = { currentSession: () => current, currentExtensionNumber: () => current ? '3001' : null,
+    signOut: async () => { current = null; },
+    signIn: async () => {
+      if (failure) throw failure;
+      current = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 1, extensionId: 2 };
+    } };
+  const helper = { stop: async () => true, snapshot: () => empty,
+    start: async () => { helperStarts++; throw new Error('private local helper detail'); } };
+  let generation: string | null = null;
+  const handlers = createHandlers(provider as never, helper as never, () => generation, value => { generation = value; });
+  await assert.rejects(handlers.signIn({ email: 'person@example.test', password: 'private-login' }),
+    /PHONE11_CREDENTIALS_REJECTED/);
+  assert.equal(helperStarts, 0);
+  assert.equal(handlers.state().signedIn, false);
+  failure = null;
+  await assert.rejects(handlers.signIn({ email: 'person@example.test', password: 'private-login' }),
+    /PHONE11_CALLING_UNAVAILABLE/);
+  assert.equal(helperStarts, 1);
+  assert.equal(handlers.state().signedIn, false);
 });
 test('late call results cannot replace a different account or helper generation', () => {
   const accountB: PublicState = { signedIn: true, sessionRevision: 'b', generation: 'gb',

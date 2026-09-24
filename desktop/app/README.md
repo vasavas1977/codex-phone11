@@ -4,6 +4,8 @@ This local Electron shell targets macOS and Windows and shows the Siprix officia
 
 From `desktop/app`, run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`. Copy `resources/config.example.json` to `resources/config.json` and set the deployed Phone11 HTTPS API origin. For the current production Phone11 backend, that origin is `https://api.phone11.ai`; `https://phone11.ai` serves an older API and cannot complete this desktop sign-in flow. Confirm `/api/ready/auth` returns `{ "ready": true }` at the selected origin before packaging. The app quits if its config file is absent or invalid.
 
+Sign-in failures show only fixed, non-secret messages for rejected credentials, unavailable phone access, unavailable authentication service, or local calling startup. The renderer never displays upstream response bodies or helper errors. A successful sign-in still requires an observed SIP registration and trial call before declaring desktop calling ready.
+
 Stage the **complete** platform helper output before generating the integrity manifest:
 
 - macOS: copy the native CMake output `phone11_siprix_helper.app` as `resources/helper/mac/phone11_siprix_helper.app`. Keep `Contents/MacOS/phone11_siprix_helper` and the embedded `Contents/Frameworks/siprix.framework` and `siprixMedia.framework` with their internal symlinks and files. The helper's loader path resolves the frameworks from `@executable_path/../Frameworks`.

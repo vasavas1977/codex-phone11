@@ -1,4 +1,4 @@
-import { applyTaggedSnapshot, type PublicState, type TaggedSnapshot } from './ipc';
+import { applyTaggedSnapshot, signInFailureMessage, type PublicState, type TaggedSnapshot } from './ipc';
 import type { PublicSnapshot } from '../../src/call-boundary';
 
 declare global { interface Window { phone11: {
@@ -63,7 +63,7 @@ byId('login-form').addEventListener('submit', async event => {
   try {
     const signedIn = await window.phone11.signIn(email, password);
     if (accountEpoch === epoch) { state = signedIn; busy = false; message(''); render(); }
-  } catch { if (accountEpoch === epoch) message('Sign-in or calling setup unavailable.'); }
+  } catch (error) { if (accountEpoch === epoch) message(signInFailureMessage(error)); }
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;

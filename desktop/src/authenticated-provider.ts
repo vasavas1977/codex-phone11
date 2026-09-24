@@ -28,8 +28,8 @@ export type AuthenticatedProviderOptions = Readonly<{
 
 /** Never attach an upstream error as cause: it may contain a token or SIP secret. */
 export class DesktopAuthenticationError extends Error {
-  constructor() {
-    super("Desktop authentication or calling provisioning unavailable");
+  constructor(readonly code: "credentials_rejected" | "auth_unavailable" | "phone_access_unavailable" = "auth_unavailable") {
+    super(`Desktop authentication failed: ${code}`);
     this.name = "DesktopAuthenticationError";
   }
 }
@@ -67,15 +67,19 @@ export class AuthenticatedDesktopProvider {
     const epoch = this.epoch;
     if (!clean(email, 320) || typeof password !== "string" || !password || password.length > 4096)
       throw new DesktopAuthenticationError();
+    let phase: "auth_unavailable" | "phone_access_unavailable" = "auth_unavailable";
     try {
       const signed = await this.send("/api/auth/sign-in/email", {
         method: "POST", headers: { "content-type": "application/json", "X-Phone11-Client": "native" },
         body: JSON.stringify({ email, password, rememberMe: false }),
       }, epoch);
+      if (signed.status === 401 || signed.status === 403)
+        throw new DesktopAuthenticationError("credentials_rejected");
       const token = signed.headers.get("set-auth-token");
       if (!signed.ok || !clean(token, 4096)) throw new DesktopAuthenticationError();
       const signInBody = await this.json(signed);
       if (!isRecord(signInBody) || signInBody.success !== true) throw new DesktopAuthenticationError();
+      phase = "phone_access_unavailable";
       const bound = await this.lookup(token, epoch);
       this.assertEpoch(epoch);
       this.token = token;
@@ -83,9 +87,10 @@ export class AuthenticatedDesktopProvider {
       this.extensionNumber = bound.secret.extension;
       this.fingerprint = bound.fingerprint;
       return bound.session;
-    } catch {
+    } catch (error) {
       if (this.epoch === epoch) this.clear();
-      throw new DesktopAuthenticationError();
+      throw new DesktopAuthenticationError(error instanceof DesktopAuthenticationError &&
+        error.code === "credentials_rejected" ? error.code : phase);
     }
   }
 

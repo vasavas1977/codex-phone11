@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuthenticatedDesktopProvider } from "../src/authenticated-provider";
+import { AuthenticatedDesktopProvider, DesktopAuthenticationError } from "../src/authenticated-provider";
 
 const bearer = "private-bearer-token";
 const password = "private-sip-password";
@@ -66,9 +66,11 @@ test("sign-in binds the own extension, and provisioning rechecks the grant", asy
 });
 
 test("auth rejection and malformed config fail closed without revealing credentials", async () => {
-  for (const options of [{ authStatus: 401 }, { malformed: true }]) {
+  for (const [options, code] of [[{ authStatus: 401 }, "credentials_rejected"],
+    [{ malformed: true }, "phone_access_unavailable"]] as const) {
     const { provider } = harness(options);
     await assert.rejects(provider.signIn("user@example.test", "login-secret"), error => {
+      assert.equal(error instanceof DesktopAuthenticationError && error.code, code);
       assert.equal(String(error).includes(password), false);
       assert.equal(String(error).includes(bearer), false);
       assert.equal(String(error).includes("login-secret"), false);
