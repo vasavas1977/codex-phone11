@@ -163,8 +163,11 @@ user; no SIP secret was printed. The Nginx tRPC route was then moved from
 The resulting site SHA-256 is
 `66e18ffe1a93f643c541c501620b184fd31c2ce8958f1920947156ebe7e4b81f`.
 Both API containers remained healthy and the public unauthenticated tRPC
-request returned 401. The separate desktop app still needs a fresh user
-sign-in attempt and a real SIP registration/call; none is inferred from these
-server checks. Roll back with the guarded route operator and sealed receipt
-if that acceptance fails. The public `api.phone11.ai` origin is the desktop
+request returned 401. After the user retried sign-in, direct inspection of
+the installed Mac app showed `Tenant 1 · Extension 3001`, `Ready to call`,
+and no active call. The renderer displays `Ready to call` only when its
+calling state reports registration. Desktop sign-in, extension loading and
+registered UI state are therefore observed; ringing and two-way audio still
+need a real call test. Roll back with the guarded route operator and sealed
+receipt if acceptance fails. The public `api.phone11.ai` origin is the desktop
 API; `1toall.phone11.ai` does not serve this tRPC path.
