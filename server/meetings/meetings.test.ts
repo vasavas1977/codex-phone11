@@ -39,7 +39,7 @@ describe("meeting admission", () => {
   });
 
   it("rejects client-selected room, identity, tenant, mode and role", () => {
-    for (const key of ["room", "identity", "tenantId", "mode", "role"]) {
+    for (const key of ["room", "identity", "tenantId", "mode", "role", "displayName", "display_name"]) {
       expect(joinMeetingSchema.safeParse({ meetingId: grant.meetingId, [key]: "attacker" }).success).toBe(false);
     }
   });

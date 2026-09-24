@@ -1,4 +1,5 @@
 import type { MeetingGrant } from "./service";
+import { normalizePlainVideoDisplayName } from "./plain-video-display-name";
 import {
   createPlainVideoAdmissionLeaseRepository,
   type PlainVideoAdmissionLease,
@@ -9,6 +10,7 @@ export type TrustedConnect11PlainVideoAdmission = {
   meetingId: string;
   participantId: string;
   grantProfile: "interactive" | "listener";
+  displayName?: string;
 };
 
 export class PlainVideoAdmissionUnavailableError extends Error {
@@ -59,14 +61,20 @@ export function createPlainVideoAdmissionResolver(
   repository = createPlainVideoAdmissionLeaseRepository(transaction),
 ) {
   return {
-    async prepare(grant: MeetingGrant): Promise<{
+    async prepare(grant: MeetingGrant, includeDisplayName = false): Promise<{
       admission: TrustedConnect11PlainVideoAdmission;
       lease: PlainVideoAdmissionLease;
     }> {
       if (!isTrustedGrant(grant)) throw new PlainVideoAdmissionUnavailableError();
-      const record = await repository.begin(grant);
+      const record = includeDisplayName
+        ? await repository.begin(grant, true)
+        : await repository.begin(grant);
       const admission = record && admissionFrom(record, grant);
       if (!admission) throw new PlainVideoAdmissionUnavailableError();
+      if (includeDisplayName) {
+        const name = normalizePlainVideoDisplayName(record.displayName);
+        if (name) admission.displayName = name;
+      }
       return { admission, lease: record };
     },
 

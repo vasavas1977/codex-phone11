@@ -6,10 +6,11 @@ export type TrustedConnect11PlainVideoAdmission = {
   meetingId: string;
   participantId: string;
   grantProfile: "interactive" | "listener";
+  displayName?: string;
 };
 
 export interface Connect11PlainVideoAdmissionResolver {
-  prepare(grant: MeetingGrant): Promise<{
+  prepare(grant: MeetingGrant, includeDisplayName?: boolean): Promise<{
     admission: TrustedConnect11PlainVideoAdmission;
     lease: PlainVideoAdmissionLease;
   }>;

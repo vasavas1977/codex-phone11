@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { PlainVideoAdmissionLease } from "./plain-video-admission-lease-repository";
 import { createConnect11PlainVideoFacade } from "./connect11-plain-video-facade";
+import { createPlainVideoAdmissionResolver } from "./plain-video-admission-resolver";
 import {
   createConnect11PlainVideoTenantProvider,
   PlainVideoTenantProviderUnavailableError,
@@ -211,5 +212,46 @@ describe("Connect11 plain-video tenant provider", () => {
       participant_id: "participant_41_7",
       grant_profile: "interactive",
     });
+  });
+
+  it("sends a normalized tenant directory label only for the opted-in tenant", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const request = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({
+          contract_version: "phone11-plain-video.v1",
+          rtc_url: "wss://media-41.connect11.example/join",
+          access_token: "synthetic",
+          expires_at: Math.floor(Date.now() / 1_000) + 300,
+        }));
+      }
+      return new Response(JSON.stringify(capabilities));
+    });
+    const begin = vi.fn(async (_grant: Grant, withName?: boolean) => ({
+      ...leaseFor(),
+      ...(withName ? { displayName: "  e\u0301 สวัสดี 👩‍💻  " } : {}),
+    }));
+    const resolver = createPlainVideoAdmissionResolver(vi.fn(), {
+      begin,
+      confirm: vi.fn().mockResolvedValue(leaseFor()),
+    });
+    const factory = { create: (tenant: Connect11PlainVideoTenantExternalConfig) =>
+      createConnect11PlainVideoFacade({ baseUrl: tenant.apiBaseUrl,
+        statusCredential: tenant.statusCredential, joinCredential: tenant.joinCredential }, request) };
+    const baseTenant = configuration.tenants[0];
+    for (const displayNameEnabled of [undefined, true]) {
+      const provider = createConnect11PlainVideoTenantProvider(
+        readConnect11PlainVideoTenantConfiguration({ enabled: true,
+          tenants: [{ ...baseTenant, ...(displayNameEnabled ? { displayNameEnabled } : {}) }] }),
+        resolver, factory,
+      );
+      await provider.join(firstGrant);
+    }
+    expect(bodies[0]).toEqual({ meeting_id: firstGrant.meetingId,
+      participant_id: "participant_41_7", grant_profile: "interactive" });
+    expect(bodies[1]).toEqual({ ...bodies[0], display_name: "é สวัสดี 👩‍💻" });
+    expect(begin.mock.calls[0]).toEqual([firstGrant]);
+    expect(begin.mock.calls[1]).toEqual([firstGrant, true]);
   });
 });

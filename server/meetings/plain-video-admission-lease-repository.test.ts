@@ -23,6 +23,27 @@ const row = {
 };
 
 describe("plain-video admission issuance lease", () => {
+  it("reads a label only through the active tenant directory after admission", async () => {
+    let revoked = false;
+    const query = vi.fn(async (sql: string, _values?: unknown[]) => {
+      if (sql.includes("FROM tenants") && sql.includes("FOR SHARE")) return { rows: [{ id: 41 }] };
+      if (sql.includes("to_regclass")) return { rows: [{ available: false }] };
+      if (sql.includes("INSERT INTO phone11_plain_video_admission_leases")) return { rows: [row] };
+      if (sql.includes("SELECT u.name FROM users")) return { rows: revoked ? [] : [{ name: "Test Member" }] };
+      return { rows: [] };
+    });
+    const repository = createPlainVideoAdmissionLeaseRepository(async (fn) => fn({ query } as never));
+    expect(await repository.begin(grant)).not.toHaveProperty("displayName");
+    expect((await repository.begin(grant, true))?.displayName).toBe("Test Member");
+    const directory = query.mock.calls.find(([sql]) => sql.includes("SELECT u.name FROM users"))!;
+    expect(directory[1]).toEqual([41, 7]);
+    expect(directory[0]).toContain("tm.status = 'active'");
+    expect(directory[0]).toContain("t.status = 'active'");
+    expect(directory[0]).toContain("ai.disabled_at IS NULL");
+    expect(directory[0]).toContain("e.status = 'active' AND e.deleted_at IS NULL");
+    revoked = true;
+    expect(await repository.begin(grant, true)).not.toHaveProperty("displayName");
+  });
   it("persists a pending snapshot only from active server-owned admission state", async () => {
     const query = vi.fn(async (sql: string, _values?: unknown[]) => {
       if (sql.includes("FROM tenants") && sql.includes("FOR SHARE")) return { rows: [{ id: 41 }] };

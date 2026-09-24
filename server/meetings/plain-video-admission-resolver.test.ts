@@ -75,4 +75,20 @@ describe("plain-video admission resolver", () => {
       await expect(resolver.confirm(lease)).rejects.toBeInstanceOf(PlainVideoAdmissionUnavailableError);
     }
   });
+
+  it("normalizes a trusted directory label only when explicitly requested", async () => {
+    const repository = {
+      begin: vi.fn().mockResolvedValue({ ...lease, displayName: "  e\u0301 สวัสดี 👩‍💻  " }),
+      confirm: vi.fn().mockResolvedValue(lease),
+    };
+    const resolver = createPlainVideoAdmissionResolver(vi.fn(), repository);
+    expect((await resolver.prepare(grant)).admission).not.toHaveProperty("displayName");
+    expect((await resolver.prepare(grant, true)).admission.displayName).toBe("é สวัสดี 👩‍💻");
+    expect(repository.begin).toHaveBeenLastCalledWith(grant, true);
+    expect(await resolver.confirm(lease)).not.toHaveProperty("displayName");
+    for (const bad of [null, "", "\u202eSpoof", "bad\u0001name", "x".repeat(81), "😀".repeat(70)]) {
+      repository.begin.mockResolvedValueOnce({ ...lease, displayName: bad });
+      expect((await resolver.prepare(grant, true)).admission).not.toHaveProperty("displayName");
+    }
+  });
 });
