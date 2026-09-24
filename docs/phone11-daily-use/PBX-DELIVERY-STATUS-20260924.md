@@ -110,3 +110,11 @@ P0–P2 issue. This is not a packaged Electron launch, account sign-in, or call.
 These checks do not constitute a signed iPhone or
 desktop build, a Windows build, a live PBX route, an actual phone call, or
 production deployment.
+
+A read-only reachability probe from this Mac on 24 September resolved
+`sip.phone11.ai` to `43.210.122.111`: TCP 5060 accepted a connection, while
+TCP/TLS 5061 refused it. This is a single vantage-point network observation,
+not a SIP registration or proof of the configured transport for either test
+account. The desktop trial must use its server-provisioned transport; do not
+switch it to plaintext solely to make the probe pass. Confirm the actual PBX
+listener and certificate before a TLS desktop call acceptance test.
