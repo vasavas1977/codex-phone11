@@ -95,11 +95,15 @@ export function createChannelMeetingRepository(transaction: Transaction = withTr
           `phone11-channel-meeting:${input.tenantId}:${input.channelId}`,
         ]);
         const requestedParticipants = [input.actorId, ...input.selectedMemberIds].sort((a, b) => a - b);
-        const lockedChannel = await db.query(`SELECT conversation.id
-          FROM phone11_chat_conversations conversation
-          JOIN tenants tenant ON tenant.id=conversation.tenant_id AND tenant.status='active'
-          WHERE conversation.tenant_id=$1 AND conversation.id=$2 AND conversation.kind IN ('group','channel')
-          FOR UPDATE OF conversation,tenant`, [input.tenantId, input.channelId]);
+        // Explicit table order is shared with admin host-permission edits:
+        // tenant, channel, member, membership, identity, assignment/extension.
+        // A joined FOR UPDATE leaves tenant/channel acquisition to the planner.
+        const lockedTenant = await db.query(`SELECT id FROM tenants
+          WHERE id=$1 AND status='active' FOR UPDATE`, [input.tenantId]);
+        if (lockedTenant.rows.length !== 1)
+          throw new TRPCError({ code: "FORBIDDEN", message: "This channel is no longer eligible for a meeting." });
+        const lockedChannel = await db.query(`SELECT id FROM phone11_chat_conversations
+          WHERE tenant_id=$1 AND id=$2 AND kind IN ('group','channel') FOR UPDATE`, [input.tenantId, input.channelId]);
         if (lockedChannel.rows.length !== 1)
           throw new TRPCError({ code: "FORBIDDEN", message: "This channel is no longer eligible for a meeting." });
 
@@ -129,14 +133,19 @@ export function createChannelMeetingRepository(transaction: Transaction = withTr
           ORDER BY identity.legacy_user_id FOR UPDATE OF identity`, [requestedParticipants]);
         if (!hasEveryParticipant(lockedIdentities.rows, requestedParticipants))
           throw new TRPCError({ code: "FORBIDDEN", message: "A channel meeting participant has no active identity." });
-        const lockedAssignments = await db.query(`SELECT assignment.user_id
+        const lockedAssignments = await db.query(`SELECT assignment.user_id,assignment.extension_id
           FROM user_extensions assignment
           JOIN extensions extension ON extension.id=assignment.extension_id
             AND extension.tenant_id=$1 AND extension.status='active' AND extension.deleted_at IS NULL
           WHERE assignment.user_id=ANY($2::integer[])
           ORDER BY assignment.user_id,assignment.id
-          FOR UPDATE OF assignment,extension`, [input.tenantId, requestedParticipants]);
-        if (!hasEveryParticipant(lockedAssignments.rows, requestedParticipants))
+          FOR UPDATE OF assignment`, [input.tenantId, requestedParticipants]);
+        const extensionIds = [...new Set(lockedAssignments.rows.map((row) => Number(row.extension_id)))].sort((a, b) => a - b);
+        const lockedExtensions = await db.query(`SELECT id FROM extensions
+          WHERE id=ANY($1::integer[]) AND tenant_id=$2 AND status='active' AND deleted_at IS NULL
+          ORDER BY id FOR UPDATE`, [extensionIds, input.tenantId]);
+        const eligibleExtensions = new Set(lockedExtensions.rows.map((row) => Number(row.id)));
+        if (!hasEveryParticipant(lockedAssignments.rows.filter((row) => eligibleExtensions.has(Number(row.extension_id))), requestedParticipants))
           throw new TRPCError({ code: "FORBIDDEN", message: "A channel meeting participant has no active extension." });
         if (!await starterAuthorized(db, input))
           throw new TRPCError({ code: "FORBIDDEN", message: "You cannot start a meeting in this channel." });

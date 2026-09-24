@@ -19,11 +19,15 @@ function repositoryWith(handler: (sql: string, values?: unknown[]) => Promise<{ 
 }
 
 const lockedRows = (sql: string) => {
-  if (sql.includes("FOR UPDATE OF conversation,tenant")) return [{ id: input.channelId }];
+  if (sql.includes("FROM tenants") && sql.includes("FOR UPDATE")) return [{ id: input.tenantId }];
+  if (sql.includes("FROM phone11_chat_conversations") && sql.includes("FOR UPDATE")) return [{ id: input.channelId }];
   if (sql.includes("FOR UPDATE OF member")) return [{ user_id: 7 }, { user_id: 8 }, { user_id: 9 }];
   if (sql.includes("FOR UPDATE OF membership")) return [{ user_id: 7 }, { user_id: 8 }, { user_id: 9 }];
   if (sql.includes("FOR UPDATE OF identity")) return [{ user_id: 7 }, { user_id: 8 }, { user_id: 9 }];
-  if (sql.includes("FOR UPDATE OF assignment,extension")) return [{ user_id: 7 }, { user_id: 8 }, { user_id: 9 }];
+  if (sql.includes("FOR UPDATE OF assignment")) return [
+    { user_id: 7, extension_id: 107 }, { user_id: 8, extension_id: 108 }, { user_id: 9, extension_id: 109 },
+  ];
+  if (sql.includes("FROM extensions") && sql.includes("FOR UPDATE")) return [{ id: 107 }, { id: 108 }, { id: 109 }];
   return undefined;
 };
 
@@ -44,6 +48,33 @@ describe("channel meeting repository", () => {
     expect(statements.filter((sql) => sql.includes("INSERT INTO phone11_plain_video_admission_members"))).toHaveLength(3);
     expect(statements.filter((sql) => sql.includes("INSERT INTO phone11_channel_meeting_invitations"))).toHaveLength(2);
     expect(statements.join("\n")).not.toContain("access_token");
+  });
+
+  it("takes tenant, channel, member, membership, identity and extension locks in that order", async () => {
+    const { repository, query } = repositoryWith(async (sql) => {
+      if (sql.includes("information_schema.columns")) return { rows: [{ available: true }] };
+      const locked = lockedRows(sql); if (locked) return { rows: locked };
+      if (sql.includes("SELECT member.user_id") && sql.includes("conversation.kind")) return { rows: [{ user_id: 7 }] };
+      if (sql.includes("FROM phone11_channel_meetings WHERE")) return { rows: [] };
+      if (sql.includes("member.user_id=ANY")) return { rows: [{ user_id: 8 }, { user_id: 9 }] };
+      return { rows: [] };
+    });
+    await repository.start(input);
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    const lockAt = (fragment: string) => statements.findIndex((sql) => sql.includes(fragment));
+    const ordered = [
+      lockAt("FROM tenants\n          WHERE id=$1 AND status='active' FOR UPDATE"),
+      lockAt("FROM phone11_chat_conversations\n          WHERE tenant_id=$1 AND id=$2"),
+      lockAt("FROM phone11_chat_members member\n          WHERE member.tenant_id=$1"),
+      lockAt("FROM tenant_memberships membership\n          WHERE membership.tenant_id=$1"),
+      lockAt("FROM phone11_auth_identity identity\n          WHERE identity.legacy_user_id=ANY"),
+      lockAt("FROM user_extensions assignment\n          JOIN extensions extension"),
+      lockAt("FROM extensions\n          WHERE id=ANY($1::integer[])"),
+    ];
+    expect(ordered.every((index) => index >= 0)).toBe(true);
+    expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+    expect(statements[ordered[0]]).toContain("FOR UPDATE");
+    expect(statements[ordered[1]]).toContain("FOR UPDATE");
   });
 
   it("returns the same meeting for an exact replay and conflicts on changed payload", async () => {

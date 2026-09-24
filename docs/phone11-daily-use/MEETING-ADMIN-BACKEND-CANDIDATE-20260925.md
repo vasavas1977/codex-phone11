@@ -1,0 +1,16 @@
+# Meeting admin and tenant-bound join backend candidate
+
+This source-only candidate starts at `9aab1625655c981e16fee8fab0a2e2af9f0fe2e1` and changes only the meeting router/service, channel-meeting start/admin repositories, and their focused tests. It does not include or replace the live backend's later operational overlay. Apply as a reviewed patch against the exact running source; do not redeploy this branch wholesale.
+
+The authenticated `meetings.adminOverview` and `meetings.adminSetHostPermission` routes require active owner/admin membership in the selected tenant. The repository also checks active Phone11 identity, channel and member membership, active assigned extension, and the installed channel-meeting schema. Writes serialize with channel meeting creation using its advisory lock, then take explicit tenant, channel, member, membership, identity, and assignment/extension row locks in that order. The admin role is rechecked after those locks. The default for a missing meeting configuration or storage is unavailable. `meetings.availableForTenant` lists only admissions for the requested configured tenant; optional `tenantId` on `meetings.join` rejects a cross-tenant grant before provider issuance. The old join request remains valid for current mobile clients.
+
+Local checks on this candidate: focused meeting suites, TypeScript `--noEmit`, and server bundle built with esbuild. These checks use local test doubles and source. They do not prove PostgreSQL concurrency, the hosted schema, running API, Connect11 admission, or mobile/desktop behavior.
+
+Before any production deployment:
+
+1. Pin and inspect the exact running backend source and its narrow overlay. Three-way merge this focused meeting patch into that source. Re-run the same focused tests, TypeScript, and backend bundle on the *merged* candidate. Preserve all unrelated deployed routes and authentication behavior.
+2. Run a read-only PostgreSQL schema preflight for `tenants`, `tenant_memberships`, `phone11_auth_identity`, `users`, `user_extensions`, `extensions`, `phone11_chat_conversations`, `phone11_chat_members.can_start_meeting`, `phone11_channel_meetings`, and `phone11_channel_meeting_invitations`. Verify existing migration order, keys, indexes, and member-removal trigger from `channel-meeting-migration.sql`. Do not infer live installation from source files.
+3. Review authorization and lock order independently against the merged source and actual PostgreSQL version. A transaction-level concurrency test should race host-permission edits with meeting start and membership removal. Confirm errors fail closed and do not issue provider tokens.
+4. Deploy only via the controlled backend release process with a rollback artifact. Smoke-test admin denial for a normal user and another tenant, an authorized channel overview and reversible host-permission edit, tenant-scoped desktop meeting list, and same-tenant join. Confirm the old mobile join path still works. Keep source, deployment, provider, and device evidence separate.
+
+Known limit: the admin overview intentionally refuses workspaces with more than 50 channels or 5,000 eligible members, rather than returning a partial management list. The present candidate offers channel-host permission management, not Zoom's full meeting-policy inheritance, waiting-room administration, recordings, or scheduling.
