@@ -32,6 +32,7 @@ import {
 } from "./cdr-processor";
 import { SELF_SERVICE_CALL_OWNERSHIP_SQL } from "../../lib/pbx/self-service-usage";
 import { profilePhotoDescriptors } from "../profile/photo";
+import { reactivateExtensionSipAuth, revokeExtensionSipAuth, rotateExtensionSipAuth } from "../phone-provisioning";
 
 // ============================================================================
 // Zod Schemas
@@ -115,7 +116,7 @@ async function lockLivePbxAdmin(
   actorUserId: number,
   tenantId: number,
   resource = "phone number",
-): Promise<void> {
+): Promise<"owner" | "admin"> {
   const actor = await client.query(
     `SELECT tm.role::text AS role
        FROM tenant_memberships tm
@@ -133,6 +134,7 @@ async function lockLivePbxAdmin(
       message: `Workspace administrator access changed before the ${resource} was saved`,
     });
   }
+  return actor.rows[0].role as "owner" | "admin";
 }
 
 /** Subscriber usernames are global in the legacy Kamailio schema. */
@@ -621,6 +623,7 @@ export const pbxRouter = router({
           // Serialize membership changes for this workspace so two concurrent
           // admin edits cannot remove the final active administrator.
           await client.query("SELECT pg_advisory_xact_lock($1)", [tc.tenantId]);
+          const actorRole = await lockLivePbxAdmin(client, actorUserId, tc.tenantId, "member change");
 
           const current = await client.query(
             `SELECT tm.user_id, tm.role, tm.status, u.name, u.email
@@ -644,7 +647,7 @@ export const pbxRouter = router({
 
           // An administrator may manage ordinary members, but cannot change
           // another administrator or grant administrator privilege.
-          if (tc.role !== "owner" && (member.role !== "user" || input.role !== undefined)) {
+          if (actorRole !== "owner" && (member.role !== "user" || input.role !== undefined)) {
             throw new TRPCError({
               code: "FORBIDDEN",
               message: "Only a workspace owner can change administrator roles.",
@@ -673,6 +676,33 @@ export const pbxRouter = router({
                 message: "Keep at least one active workspace administrator.",
               });
             }
+          }
+
+          if (member.status === "active" && nextStatus === "inactive") {
+            const assigned = await client.query(
+              `SELECT id FROM extensions
+                WHERE tenant_id=$1 AND user_id=$2 AND status='active' AND deleted_at IS NULL
+                ORDER BY id FOR UPDATE`,
+              [tc.tenantId, input.userId],
+            );
+            for (const extension of assigned.rows) {
+              await revokeExtensionSipAuth(client, extension.id, tc.tenantId);
+              await client.query(
+                `UPDATE extensions SET status='suspended', sip_password='', updated_at=NOW()
+                  WHERE id=$1 AND tenant_id=$2`,
+                [extension.id, tc.tenantId],
+              );
+              await client.query(
+                `UPDATE sip_accounts SET status='suspended', updated_at=NOW()
+                  WHERE extension_id=$1 AND tenant_id=$2 AND status='active' AND deleted_at IS NULL`,
+                [extension.id, tc.tenantId],
+              );
+            }
+            await client.query(
+              `DELETE FROM user_extensions ue USING extensions e
+                WHERE ue.extension_id=e.id AND e.tenant_id=$1 AND ue.user_id=$2`,
+              [tc.tenantId, input.userId],
+            );
           }
 
           const updated = await client.query(
@@ -824,10 +854,12 @@ export const pbxRouter = router({
       .query(async ({ ctx, input }) => {
         const tc = await getTenantAdminReadCtx(ctx, input?.tenantId);
         const p = buildPaginationSQL(input || {});
+        const [sortColumn, sortDirection] = p.orderBy.split(" ");
+        const extensionOrderBy = `${["email", "name"].includes(sortColumn) ? "u" : "e"}.${sortColumn} ${sortDirection}`;
 
         const [dataResult, countResult] = await Promise.all([
           query(
-            `SELECT e.*, sa.sip_username, sa.sip_domain, sa.status as sip_status,
+            `SELECT (to_jsonb(e) - 'sip_password' - 'password') AS extension, sa.sip_username, sa.sip_domain, sa.status as sip_status,
                     sa.last_registered_at, sa.transport_preference,
                     u.name as user_name, u.email as user_email
              FROM extensions e
@@ -842,7 +874,7 @@ export const pbxRouter = router({
                    AND actor_tm.role::text IN ('owner', 'admin')
                    AND actor_t.status = 'active'
                )
-             ORDER BY ${p.orderBy} LIMIT $2 OFFSET $3`,
+             ORDER BY ${extensionOrderBy} LIMIT $2 OFFSET $3`,
             [tc.tenantId, p.limit, p.offset, ctx.user!.id],
           ),
           query(
@@ -861,7 +893,7 @@ export const pbxRouter = router({
         ]);
 
         return buildPaginatedResponse(
-          dataResult.rows,
+          dataResult.rows.map(({ extension, ...other }) => ({ ...extension, ...other })),
           parseInt(countResult.rows[0]?.total || "0"),
           input || {},
         );
@@ -873,7 +905,7 @@ export const pbxRouter = router({
       .query(async ({ ctx, input }) => {
         const tc = await getTenantAdminReadCtx(ctx, input.tenantId);
         const result = await query(
-          `SELECT e.*, sa.sip_username, sa.sip_domain, sa.status as sip_status,
+          `SELECT (to_jsonb(e) - 'sip_password' - 'password') AS extension, sa.sip_username, sa.sip_domain, sa.status as sip_status,
                   sa.last_registered_at, sa.transport_preference, sa.websocket_enabled,
                   u.name as user_name, u.email as user_email
            FROM extensions e
@@ -891,7 +923,8 @@ export const pbxRouter = router({
           [input.id, tc.tenantId, ctx.user!.id],
         );
         if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
-        return result.rows[0];
+        const { extension, ...other } = result.rows[0];
+        return { ...extension, ...other };
       }),
 
     /** Create a new extension with SIP account */
@@ -1028,13 +1061,13 @@ export const pbxRouter = router({
             );
           }
 
-          // Return extension + one-time password display
+          // Provisioning supplies credentials only to the assigned user.
+          const { sip_password, password: legacyPassword, ...safeExtension } = ext;
           return {
-            ...ext,
+            ...safeExtension,
             sipCredentials: {
               username: creds.sipUsername,
               domain: creds.sipDomain,
-              password: creds.plaintextPassword, // One-time display only!
               transport: input.transport,
             },
           };
@@ -1103,19 +1136,20 @@ export const pbxRouter = router({
         const hasAssignmentChange = input.userId !== undefined;
         const assignedUserId = input.userId;
 
-        const applyUpdate = async (
-          execute: SqlQuery,
-          lockExtension: boolean,
-        ) => {
+        const oldValue = await withTransaction(async (client) => {
+          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "extension update");
+          const execute: SqlQuery = (sql, parameters) => client.query(sql, parameters);
           // Fetch and lock the tenant-owned source row before changing grants.
           const oldResult = await execute(
-            `SELECT * FROM extensions
-             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL${
-               lockExtension ? " FOR UPDATE" : ""
-             }`,
+            `SELECT (to_jsonb(e) - 'sip_password' - 'password') AS old_value, e.user_id, e.status
+             FROM extensions e WHERE e.id = $1 AND e.tenant_id = $2
+               AND e.deleted_at IS NULL FOR UPDATE OF e`,
             [input.id, tc.tenantId],
           );
           if (!oldResult.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
+          const oldExtension = oldResult.rows[0] as { user_id: number | null; status: string; old_value: Record<string, unknown> };
+          const disabling = oldExtension.status === "active" && input.status !== undefined && input.status !== "active";
+          const enabling = oldExtension.status !== "active" && input.status === "active";
 
           if (
             hasAssignmentChange &&
@@ -1127,6 +1161,32 @@ export const pbxRouter = router({
               assignedUserId,
               tc.tenantId,
             );
+          }
+          if (enabling) {
+            const owner = assignedUserId === undefined ? oldExtension.user_id : assignedUserId;
+            if (owner === null || owner === undefined) {
+              throw new TRPCError({ code: "CONFLICT", message: "Assign an active member before re-enabling this extension" });
+            }
+            await requireAssignableTenantMember(execute, owner, tc.tenantId);
+            await reactivateExtensionSipAuth(client, input.id, tc.tenantId);
+            await execute(
+              `INSERT INTO user_extensions(user_id, extension_id, is_primary)
+               VALUES($1,$2,false) ON CONFLICT(user_id,extension_id) DO NOTHING`,
+              [owner, input.id],
+            );
+          } else if (hasAssignmentChange && !disabling && oldExtension.status === "active" &&
+                     oldExtension.user_id !== (assignedUserId ?? null)) {
+            await rotateExtensionSipAuth(client, input.id, tc.tenantId);
+          }
+          if (disabling) {
+            await revokeExtensionSipAuth(client, input.id, tc.tenantId);
+            await execute(
+              `UPDATE sip_accounts SET status='suspended', updated_at=NOW()
+                WHERE extension_id=$1 AND tenant_id=$2 AND status='active' AND deleted_at IS NULL`,
+              [input.id, tc.tenantId],
+            );
+            await execute(`UPDATE extensions SET sip_password='' WHERE id=$1 AND tenant_id=$2`,
+              [input.id, tc.tenantId]);
           }
 
           const updateValues = [...vals, input.id, tc.tenantId];
@@ -1182,7 +1242,7 @@ export const pbxRouter = router({
                SET user_id = $1, updated_at = NOW()
                WHERE extension_id = $2
                  AND tenant_id = $3
-                 AND status = 'active'
+                 AND status IN ('active', 'suspended')
                  AND deleted_at IS NULL
                RETURNING id`,
               [assignedUserId ?? null, input.id, tc.tenantId],
@@ -1195,20 +1255,8 @@ export const pbxRouter = router({
             }
           }
 
-          return oldResult.rows[0];
-        };
-
-        const oldValue = hasAssignmentChange
-          ? await withTransaction((client) =>
-              applyUpdate(
-                (sql, parameters) => client.query(sql, parameters),
-                true,
-              ),
-            )
-          : await applyUpdate(
-              (sql, parameters) => query(sql, parameters),
-              false,
-            );
+          return oldExtension.old_value;
+        });
 
         // Invalidate cache
         await invalidateCache(`directory:${tc.tenantId}:*`);
@@ -1232,22 +1280,21 @@ export const pbxRouter = router({
       .input(z.object({ id: z.number(), tenantId: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
-        if (
-          !(await validateTenantOwnership("extensions", input.id, tc.tenantId))
-        ) {
-          throw new TRPCError({ code: "NOT_FOUND" });
-        }
-
         await withTransaction(async (client) => {
+          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "extension deletion");
+          await revokeExtensionSipAuth(client, input.id, tc.tenantId);
           // Soft delete extension
-          await client.query(
-            `UPDATE extensions SET deleted_at = NOW(), status = 'disabled' WHERE id = $1`,
-            [input.id],
+          const deleted = await client.query(
+            `UPDATE extensions SET deleted_at = NOW(), status = 'disabled', sip_password = ''
+             WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL RETURNING id`,
+            [input.id, tc.tenantId],
           );
+          if (deleted.rows.length !== 1) throw new TRPCError({ code: "NOT_FOUND" });
           // Soft delete associated SIP account
           await client.query(
-            `UPDATE sip_accounts SET deleted_at = NOW(), status = 'disabled' WHERE extension_id = $1`,
-            [input.id],
+            `UPDATE sip_accounts SET deleted_at = NOW(), status = 'disabled'
+             WHERE extension_id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+            [input.id, tc.tenantId],
           );
         });
 
@@ -1355,7 +1402,6 @@ export const pbxRouter = router({
             sipCredentials: {
               username: creds.sipUsername,
               domain: creds.sipDomain,
-              password: creds.plaintextPassword,
             },
           };
         });
@@ -1736,10 +1782,13 @@ export const pbxRouter = router({
         sets.push(`updated_at = NOW()`);
         vals.push(tc.tenantId);
 
-        await query(
-          `UPDATE fraud_controls SET ${sets.join(", ")} WHERE tenant_id = $${idx}`,
-          vals,
-        );
+        await withTransaction(async (client) => {
+          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "fraud controls");
+          await client.query(
+            `UPDATE fraud_controls SET ${sets.join(", ")} WHERE tenant_id = $${idx}`,
+            vals,
+          );
+        });
 
         await writeAuditLog({
           tenantId: tc.tenantId,

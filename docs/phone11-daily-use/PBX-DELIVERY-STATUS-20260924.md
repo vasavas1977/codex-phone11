@@ -14,12 +14,20 @@ working PBX behavior.
 | Recents and voicemail | Local call history and authenticated personal voicemail playback exist in source. | Prove missed calls while the app is unavailable, multi-device CDR reconciliation, protected playback and mailbox ownership on the deployed service. |
 | Manage existing users and extensions | The Phone11 admin portal has API-backed membership role/status and extension assignment. This source candidate adds explicit workspace selection for these operations. | Deploy matching API/web versions and test owner, admin, member, revoked user and two-tenant access; identity creation/invitations remain a separate shared-account workflow. |
 | Configure DID, IVR, ring group, queue and business hours | API-backed screens and advanced routing schema exist in source, including action/member/agent/rule editors. This candidate scopes DID inventory and workspace timezone settings to a selected tenant. It disables DID route editing for multi-workspace admins until destination lists also use that tenant. A separate, unapplied number-inventory migration stages new numbers as pending and creates no carrier assignments or routes. | Review and commission the optional schemas and exact Kamailio/FreeSWITCH routes in an isolated tenant, then exercise a real test DID through each path and failure fallback. Carrier-verified activation and E911 provisioning remain separate operator work. Other multi-workspace routing sections still need explicit tenant inputs on every route. |
-| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary and a native helper with private-pipe account provisioning, one-call dial/answer/end, mute, hold/resume and DTMF controls exist in source. The macOS arm64 helper builds and passes bootstrap and fake-SDK call-control tests. The Siprix trial is acceptable for prototype calls with its 60-second call limit. | Verify deployed TLS/SRTP ingress; connect the helper to an authenticated main-process adapter and app shell, compile on Windows, package signed apps, then prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
+| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary, privileged helper supervisor, and native helper with private-pipe account provisioning, one-call dial/answer/end, mute, hold/resume and DTMF controls exist in source. The macOS arm64 helper builds and passes bootstrap and fake-SDK call-control tests. The Siprix trial is acceptable for prototype calls with its 60-second call limit. | Verify deployed TLS/SRTP ingress; supply a real authenticated credential provider, verified helper executable and sender-validated desktop IPC/app shell, compile on Windows, package signed apps, then prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
 
-SIP provisioning is being tightened so the authenticated user must have an
+SIP provisioning in this source candidate requires the authenticated user to have an
 active workspace membership, a matching explicit extension grant, and matching
-extension/SIP-account ownership before receiving a password. Reassigning an
-extension revokes former grants in the same transaction. Production encryption
+extension/SIP-account/subscriber identity and digest before receiving a password.
+Ambiguous global SIP identities fail closed. Reassigning an extension revokes
+former grants and rotates its authentication in the same transaction. Suspending
+an extension or deactivating its workspace member revokes its subscriber
+authentication; re-enabling it requires an active assignee and mints a fresh
+secret. The admin API no longer returns the plaintext password on create/reset,
+and PBX audit reads redact legacy credential fields. A cached Kamailio
+registration and an established call can outlive this database revocation;
+the [registrar acceptance procedure](PBX-SIP-REVOCATION-ACCEPTANCE-20260924.md)
+must be completed before claiming immediate offboarding. Production encryption
 now requires an explicit `SIP_DEK_SECRET`; changing that key without migrating
 existing ciphertext would make those records unreadable. These source changes
 need deployment-key provenance and a reviewed rollout before production use.
@@ -64,9 +72,9 @@ best-effort audit helper, so audit delivery itself is not atomic.
 4. Sign the iPhone transfer candidate and run a real two-endpoint transfer
    matrix. Extend to warm and voicemail transfer only after separate native
    and PBX confirmation.
-5. Connect the native helper's account and one-call operations to a privileged
-   desktop session adapter, adding the remaining media controls and a minimal
-   app shell. Build the same helper on Windows. Prove both against the isolated
+5. Connect the source-tested privileged helper supervisor to a concrete
+   authenticated credential provider, verified packaged binary, sender-checked
+   desktop IPC and minimal app shell. Build the same helper on Windows. Prove both against the isolated
    PBX before packaging signed macOS and Windows apps around the tested
    boundary. Do not enable the browser dialer as a substitute for desktop
    calling.
@@ -83,17 +91,15 @@ source, deployment and device evidence.
 
 ## Source verification for this candidate
 
-On 24 September 2026, the latest full web/mobile Vitest run completed with
-2,080 passing tests and 290 skipped; the separate Node/native-source suite
-passed 69 tests. A separate isolated PostgreSQL run passed all 120 PBX admin,
-provisioning and SIP-key tests, including commit/rollback, stale-grant and
-subscriber-ownership cases. TypeScript checking, the backend bundle, and
-changed-file lint (zero errors) passed. An earlier Expo static web export also
-passed before these server/desktop-only changes. The desktop call boundary
-passed 22 focused Node tests. The local macOS arm64 Siprix helper compiled and
-passed its private-pipe bootstrap smoke, Answer/End, mute/hold/DTMF and
-late-hold-recovery fake-SDK tests. Independent source re-review found no
-remaining P0–P2 issue in the reviewed PBX credential and desktop hold paths. A pinned
-macOS/Windows build workflow is present in source but has not run on CI. These
-checks do not constitute a signed iPhone or desktop build, a Windows build, a
-live PBX route, an actual phone call, or production deployment.
+On 24 September 2026, the full web/mobile Vitest run completed with
+2,088 passing tests and 291 skipped; the separate Node/native-source suite
+passed 69 tests. An isolated PostgreSQL focused run passed 131 PBX admin,
+provisioning and legacy-admin tests after the SIP revocation and authorization
+edits. TypeScript checking, the backend bundle and `git diff --check` passed.
+The desktop call boundary and supervisor passed 37 focused Node tests after
+the independent stale-session fix; the local macOS arm64 Siprix helper compiled and
+passed its private-pipe and fake-SDK call-control smoke tests. The pinned
+Windows SDK source contract passes locally, but the macOS/Windows build
+workflow has not run on CI. These checks do not constitute a signed iPhone or
+desktop build, a Windows build, a live PBX route, an actual phone call, or
+production deployment.

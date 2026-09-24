@@ -72,8 +72,18 @@ describe("legacy phone administration tenant isolation", () => {
     await expect(caller.phone.createDid({ orgId: 7, number: "+6620000000" })).resolves.toEqual({ id: 73 });
 
     expect(provisioning.createExtension).toHaveBeenCalledWith(expect.objectContaining({ orgId: 7 }));
+    expect(provisioning.createExtension).toHaveBeenCalledWith(expect.objectContaining({ actorUserId: 9 }));
     expect(provisioning.createDidNumber).toHaveBeenCalledWith(expect.objectContaining({ orgId: 7 }));
     expect(db.query.mock.calls.map(([, values]) => values)).toEqual([[9, 7], [9, 7]]);
+  });
+
+  it("ignores a caller-supplied weak SIP password and uses server-generated credentials", async () => {
+    db.query.mockResolvedValueOnce({ rows: [{ tenant_id: 7 }] });
+    provisioning.createExtension.mockResolvedValueOnce({ id: 41 });
+    await appRouter.createCaller(context()).phone.createExtension({
+      orgId: 7, extensionNumber: "4101", password: "1",
+    } as any);
+    expect(provisioning.createExtension.mock.calls[0][0]).not.toHaveProperty("password");
   });
 
   it.each(["createExtension", "createDid"] as const)(

@@ -17,10 +17,13 @@ vi.mock("../server/pbx/db", () => ({
 }));
 vi.mock("../server/pbx/sip-secrets", () => ({
   createSipCredentials: vi.fn(),
+  regenerateSipCredentials: vi.fn(),
+  computeHA1: vi.fn(),
+  computeHA1B: vi.fn(),
   decryptSecret: vi.fn(),
 }));
 
-import { createSipCredentials } from "../server/pbx/sip-secrets";
+import { computeHA1, computeHA1B, createSipCredentials, decryptSecret, regenerateSipCredentials } from "../server/pbx/sip-secrets";
 import { assignExtensionToUser, createExtension, ensurePilotExtensionForUser, getPhoneConfig } from "../server/phone-provisioning";
 
 const assignedExtension = {
@@ -31,7 +34,12 @@ const assignedExtension = {
   display_name: "Primary",
   account_sip_username: "3001",
   account_sip_domain: "sip.phone11.ai",
+  account_id: 1,
+  account_ha1: "ha1:3001:sip.phone11.ai:test-password",
+  account_ha1b: "ha1b:3001:sip.phone11.ai:sip.phone11.ai:test-password",
   subscriber_password: "test-password",
+  subscriber_ha1: "ha1:3001:sip.phone11.ai:test-password",
+  subscriber_ha1b: "ha1b:3001:sip.phone11.ai:sip.phone11.ai:test-password",
   transport_preference: "TLS",
   org_name: "Phone11",
   org_plan: "business",
@@ -42,6 +50,9 @@ const assignedExtension = {
 describe("Phone11 phone provisioning ownership", () => {
   beforeEach(() => {
     state.assignedRows = [];
+    vi.mocked(computeHA1).mockImplementation((username, realm, password) => `ha1:${username}:${realm}:${password}`);
+    vi.mocked(computeHA1B).mockImplementation((username, domain, realm, password) => `ha1b:${username}:${domain}:${realm}:${password}`);
+    vi.mocked(decryptSecret).mockReset();
     state.pool.query.mockReset();
     state.withTransaction.mockClear();
     state.pool.query.mockImplementation(async (sql: string) => {
@@ -57,7 +68,8 @@ describe("Phone11 phone provisioning ownership", () => {
   });
 
   it("returns the extension already assigned to the authenticated user", async () => {
-    state.assignedRows = [assignedExtension];
+    state.assignedRows = [{ ...assignedExtension, account_id: null, account_ha1: null,
+      account_ha1b: null, sip_password: "test-password" }];
 
     await expect(getPhoneConfig(17, "member-open-id")).resolves.toMatchObject({
       configured: true,
@@ -80,6 +92,24 @@ describe("Phone11 phone provisioning ownership", () => {
     const assignmentQuery = String(state.pool.query.mock.calls.find(([sql]) => String(sql).includes("ue.is_primary"))?.[0]);
     expect(assignmentQuery).toContain("sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL)");
     expect(assignmentQuery).not.toContain("sa.status = 'active' AND sa.deleted_at IS NULL\n      LEFT JOIN subscriber");
+  });
+
+  it("fails closed on subscriber digest drift or encrypted account secret failure", async () => {
+    state.assignedRows = [{ ...assignedExtension, subscriber_ha1: "foreign-ha1" }];
+    await expect(getPhoneConfig(17, "member-open-id")).resolves.toEqual({ configured: false });
+    state.assignedRows = [{ ...assignedExtension, secret_ciphertext: Buffer.from("cipher"),
+      secret_iv: Buffer.from("iv"), secret_tag: Buffer.from("tag"), sip_password: "stale-secret" }];
+    vi.mocked(decryptSecret).mockImplementation(() => { throw new Error("bad key"); });
+    await expect(getPhoneConfig(17, "member-open-id")).resolves.toEqual({ configured: false });
+  });
+
+  it("provisions a matching encrypted account only after decryption agrees with Kamailio", async () => {
+    state.assignedRows = [{ ...assignedExtension, secret_ciphertext: Buffer.from("cipher"),
+      secret_iv: Buffer.from("iv"), secret_tag: Buffer.from("tag") }];
+    vi.mocked(decryptSecret).mockReturnValue("test-password");
+    await expect(getPhoneConfig(17, "member-open-id")).resolves.toMatchObject({
+      configured: true, sip: { username: "3001", password: "test-password" },
+    });
   });
 
   it("does not bootstrap another SIP account for an inactive pilot member", async () => {
@@ -112,9 +142,11 @@ describe("Phone11 phone provisioning ownership", () => {
     );
 
     expect(state.pool.query).toHaveBeenCalledWith(
-      expect.stringContaining("tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'"),
-      [17, 3001, 7],
+      expect.stringContaining("tm.user_id=$1 AND tm.tenant_id=$2"),
+      [17, 7],
     );
+    expect(state.pool.query.mock.calls.some(([sql]) =>
+      String(sql).includes("FOR UPDATE OF tm, t") && String(sql).includes("tm.user_id=$1 AND tm.tenant_id=$2"))).toBe(true);
     expect(
       state.pool.query.mock.calls.some(([sql]) =>
         /INSERT INTO user_extensions|UPDATE user_extensions ue SET is_primary|UPDATE extensions SET user_id/.test(String(sql)),
@@ -124,8 +156,8 @@ describe("Phone11 phone provisioning ownership", () => {
 
   it("revokes the former extension link in the reassignment transaction", async () => {
     state.pool.query.mockImplementation(async (sql: string) =>
-      sql.includes("JOIN tenant_memberships tm")
-        ? { rows: [{ id: 3001 }] }
+      sql.includes("JOIN tenant_memberships tm") || sql.includes("FROM tenant_memberships tm")
+        ? { rows: [{ id: 3001, user_id: 18 }] }
         : { rows: [] },
     );
 
@@ -173,6 +205,24 @@ describe("Phone11 phone provisioning ownership", () => {
       .toBe(false);
   });
 
+  it("refuses an orphaned global subscriber instead of changing its password", async () => {
+    vi.mocked(createSipCredentials).mockReturnValue({
+      plaintextPassword: "new-secret", sipUsername: "4101", sipDomain: "sip.phone11.ai",
+      ha1: "new-ha1", ha1b: "new-ha1b", secretCiphertext: Buffer.from("cipher"),
+      secretIv: Buffer.from("iv"), secretTag: Buffer.from("tag"), dekId: "test-key",
+    });
+    state.pool.query.mockImplementation(async (sql: string) => {
+      if (sql.includes("WHERE extension_number = $1 AND deleted_at IS NULL")) return { rows: [] };
+      if (sql.includes("INSERT INTO subscriber")) return { rows: [] };
+      return { rows: [] };
+    });
+
+    await expect(createExtension({ orgId: 7, extensionNumber: "4101" }))
+      .rejects.toThrow("already has a subscriber account");
+    expect(state.pool.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO extensions")))
+      .toBe(false);
+  });
+
   it("serializes the global SIP username ownership check with all provisioning writes", async () => {
     vi.mocked(createSipCredentials).mockReturnValue({
       plaintextPassword: "test-password",
@@ -187,6 +237,7 @@ describe("Phone11 phone provisioning ownership", () => {
     });
     state.pool.query.mockImplementation(async (sql: string) => {
       if (sql.includes("WHERE extension_number = $1 AND deleted_at IS NULL")) return { rows: [] };
+      if (sql.includes("INSERT INTO subscriber")) return { rows: [{ username: "4101" }] };
       if (sql.includes("INSERT INTO extensions")) return { rows: [{ id: 4101 }] };
       return { rows: [] };
     });
@@ -216,8 +267,8 @@ if (ownershipDatabaseUrl) {
 
 describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated PostgreSQL", () => {
   const schema = `pbx_ownership_${randomBytes(8).toString("hex")}`;
-  const admin = new Pool({ connectionString: ownershipDatabaseUrl, ssl: false });
-  const database = new Pool({ connectionString: ownershipDatabaseUrl, ssl: false, options: `-c search_path=${schema}` });
+  let admin = new Pool({ connectionString: ownershipDatabaseUrl, ssl: false });
+  let database = new Pool({ connectionString: ownershipDatabaseUrl, ssl: false, options: `-c search_path=${schema}` });
 
   it("never returns the new owner's SIP password through a stale old-user link", async () => {
     await admin.query(`CREATE SCHEMA ${schema}`);
@@ -228,26 +279,30 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
         CREATE TABLE extensions(
           id integer PRIMARY KEY, tenant_id integer, org_id integer, user_id integer,
           extension_number text, display_name text, type text, sip_username text,
-          sip_domain text, status text, deleted_at timestamptz
+          sip_domain text, sip_password text, status text, deleted_at timestamptz
         );
         CREATE TABLE user_extensions(user_id integer, extension_id integer, is_primary boolean);
-        CREATE TABLE tenant_memberships(user_id integer, tenant_id integer, status text);
+        CREATE TABLE tenant_memberships(user_id integer, tenant_id integer, status text, role text);
         CREATE TABLE sip_accounts(
           id integer PRIMARY KEY, extension_id integer, tenant_id integer, user_id integer,
           sip_username text, sip_domain text, secret_ciphertext bytea,
-          secret_iv bytea, secret_tag bytea, transport_preference text,
+          secret_iv bytea, secret_tag bytea, ha1 text, ha1b text, transport_preference text,
           status text, deleted_at timestamptz
         );
-        CREATE TABLE subscriber(username text, domain text, password text);
+        CREATE TABLE subscriber(username text, domain text, password text, ha1 text, ha1b text);
         INSERT INTO tenants VALUES (1,'Phone11','business','active');
         INSERT INTO organizations VALUES (1,'Phone11','business');
-        INSERT INTO tenant_memberships VALUES (17,1,'active'), (18,1,'active');
+        INSERT INTO tenant_memberships VALUES (17,1,'active','user'), (18,1,'active','user'), (9,1,'active','admin');
         INSERT INTO extensions VALUES
-          (3001,1,1,18,'3001','Current owner','user','3001','sip.phone11.ai','active',NULL);
+          (3001,1,1,18,'3001','Current owner','user','3001','sip.phone11.ai','new-owner-secret','active',NULL);
         INSERT INTO user_extensions VALUES (17,3001,true), (18,3001,true);
         INSERT INTO sip_accounts VALUES
-          (1,3001,1,18,'3001','sip.phone11.ai',NULL,NULL,NULL,'TLS','active',NULL);
-        INSERT INTO subscriber VALUES ('3001','sip.phone11.ai','new-owner-secret');
+          (1,3001,1,18,'3001','sip.phone11.ai',NULL,NULL,NULL,
+           'ha1:3001:sip.phone11.ai:new-owner-secret',
+           'ha1b:3001:sip.phone11.ai:sip.phone11.ai:new-owner-secret','TLS','active',NULL);
+        INSERT INTO subscriber VALUES ('3001','sip.phone11.ai','new-owner-secret',
+          'ha1:3001:sip.phone11.ai:new-owner-secret',
+          'ha1b:3001:sip.phone11.ai:sip.phone11.ai:new-owner-secret');
       `);
       state.pool.query.mockReset();
       state.pool.query.mockImplementation(async (sql: string, params?: unknown[]) => {
@@ -261,6 +316,18 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
         configured: true,
         sip: { username: "3001", password: "new-owner-secret" },
       });
+      await database.query("UPDATE subscriber SET password='foreign-secret' WHERE username='3001'");
+      await expect(getPhoneConfig(18, "foreign-subscriber")).resolves.toEqual({ configured: false });
+      await database.query("UPDATE subscriber SET password='new-owner-secret' WHERE username='3001'");
+      await database.query(`INSERT INTO extensions VALUES
+        (3002,1,1,17,'3001','Duplicate global identity','user','3001','sip.phone11.ai','other-secret','active',NULL)`);
+      await expect(getPhoneConfig(18, "duplicate-global-identity")).resolves.toEqual({ configured: false });
+      await database.query("DELETE FROM extensions WHERE id=3002");
+      await database.query(`INSERT INTO sip_accounts VALUES
+        (2,3001,1,18,'other-identity','sip.phone11.ai',NULL,NULL,NULL,
+         'other-ha1','other-ha1b','TLS','active',NULL)`);
+      await expect(getPhoneConfig(18, "duplicate-active-account")).resolves.toEqual({ configured: false });
+      await database.query("DELETE FROM sip_accounts WHERE id=2");
 
       await database.query("DELETE FROM user_extensions WHERE user_id = 18 AND extension_id = 3001");
       await expect(getPhoneConfig(18, "revoked-owner")).resolves.toEqual({ configured: false });
@@ -279,6 +346,106 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
         configured: true,
         sip: { password: "new-owner-secret" },
       });
+
+      // The router's earlier admin precheck is not authoritative once a
+      // transaction starts: a revoked actor must not create or reassign.
+      state.pool.query.mockImplementation(async (sql: string, params?: unknown[]) =>
+        sql.includes("SELECT number, description FROM did_numbers") ? { rows: [] } : database.query(sql, params));
+      await database.query("UPDATE tenant_memberships SET status='inactive' WHERE user_id=9");
+      await expect(createExtension({ orgId: 1, extensionNumber: "4001", actorUserId: 9 }))
+        .rejects.toThrow("administrator access");
+      await expect(assignExtensionToUser(17, 3001, true, 1, 9))
+        .rejects.toThrow("administrator access");
+      expect((await database.query("SELECT 1 FROM extensions WHERE extension_number='4001'")).rows).toHaveLength(0);
+      expect((await database.query("SELECT user_id FROM extensions WHERE id=3001")).rows[0].user_id).toBe(18);
+    } finally {
+      await database.end();
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
+  });
+
+  it("rotates the legacy assignment's live account and subscriber in one transaction", async () => {
+    admin = new Pool({ connectionString: ownershipDatabaseUrl, ssl: false });
+    database = new Pool({ connectionString: ownershipDatabaseUrl, ssl: false, options: `-c search_path=${schema}` });
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    try {
+      await database.query(`
+        CREATE TABLE tenants(id integer PRIMARY KEY, status text);
+        CREATE TABLE tenant_memberships(user_id integer, tenant_id integer, status text);
+        CREATE TABLE extensions(id integer PRIMARY KEY, tenant_id integer, user_id integer,
+          extension_number text, sip_username text, sip_domain text, sip_password text,
+          status text, deleted_at timestamptz, updated_at timestamptz);
+        CREATE TABLE user_extensions(user_id integer, extension_id integer, is_primary boolean,
+          UNIQUE(user_id, extension_id));
+        CREATE TABLE sip_accounts(id integer PRIMARY KEY, extension_id integer, tenant_id integer,
+          user_id integer, sip_username text, sip_domain text, ha1 text, ha1b text,
+          secret_ciphertext bytea, secret_iv bytea, secret_tag bytea, dek_id text,
+          status text, deleted_at timestamptz, updated_at timestamptz);
+        CREATE TABLE subscriber(username text, domain text, password text, ha1 text, ha1b text,
+          UNIQUE(username, domain));
+        INSERT INTO tenants VALUES(7,'active');
+        INSERT INTO tenant_memberships VALUES(17,7,'active'),(18,7,'active');
+        INSERT INTO extensions VALUES(3001,7,17,'3001','3001','sip.phone11.ai','old-secret','active',NULL,NOW());
+        INSERT INTO user_extensions VALUES(17,3001,true);
+        INSERT INTO sip_accounts(id,extension_id,tenant_id,user_id,sip_username,sip_domain,ha1,ha1b,status)
+          VALUES(1,3001,7,17,'3001','sip.phone11.ai','old-ha1','old-ha1b','active');
+        INSERT INTO subscriber VALUES('3001','sip.phone11.ai','old-secret','old-ha1','old-ha1b');
+      `);
+      state.pool.query.mockReset();
+      // Schema bootstrapping is outside this transaction-focused fixture. The
+      // assignment itself uses the real PostgreSQL client supplied below.
+      state.pool.query.mockResolvedValue({ rows: [] });
+      state.withTransaction.mockImplementation(async (callback) => {
+        const client = await database.connect();
+        try {
+          await client.query("BEGIN");
+          const result = await callback(client);
+          await client.query("COMMIT");
+          return result;
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally { client.release(); }
+      });
+      vi.mocked(regenerateSipCredentials).mockReturnValue({
+        plaintextPassword: "new-secret", sipUsername: "3001", sipDomain: "sip.phone11.ai",
+        ha1: "new-ha1", ha1b: "new-ha1b", secretCiphertext: Buffer.from("new-cipher"),
+        secretIv: Buffer.from("new-iv"), secretTag: Buffer.from("new-tag"), dekId: "test-key",
+      });
+
+      await database.query("INSERT INTO subscriber VALUES('4000','sip.phone11.ai','foreign-secret','foreign-ha1','foreign-ha1b')");
+      vi.mocked(createSipCredentials).mockReturnValue({
+        plaintextPassword: "takeover-secret", sipUsername: "4000", sipDomain: "sip.phone11.ai",
+        ha1: "takeover-ha1", ha1b: "takeover-ha1b", secretCiphertext: Buffer.from("takeover-cipher"),
+        secretIv: Buffer.from("takeover-iv"), secretTag: Buffer.from("takeover-tag"), dekId: "test-key",
+      });
+      await expect(createExtension({ orgId: 7, extensionNumber: "4000" }))
+        .rejects.toThrow("already has a subscriber account");
+      expect((await database.query("SELECT password FROM subscriber WHERE username='4000'")).rows[0].password)
+        .toBe("foreign-secret");
+      expect((await database.query("SELECT id FROM extensions WHERE extension_number='4000'")).rows).toHaveLength(0);
+
+      await expect(assignExtensionToUser(18, 3001, true, 7)).resolves.toEqual({ success: true });
+      expect((await database.query("SELECT user_id, sip_password FROM extensions WHERE id=3001")).rows[0])
+        .toMatchObject({ user_id: 18, sip_password: "" });
+      expect((await database.query("SELECT user_id, ha1 FROM sip_accounts WHERE id=1")).rows[0])
+        .toMatchObject({ user_id: 18, ha1: "new-ha1" });
+      expect((await database.query("SELECT password, ha1 FROM subscriber WHERE username='3001'")).rows[0])
+        .toMatchObject({ password: "new-secret", ha1: "new-ha1" });
+      expect((await database.query("SELECT user_id FROM user_extensions WHERE extension_id=3001")).rows)
+        .toEqual([{ user_id: 18 }]);
+
+      await database.query("ALTER TABLE subscriber ADD CONSTRAINT reject_rollback CHECK (password <> 'blocked-secret')");
+      vi.mocked(regenerateSipCredentials).mockReturnValue({
+        plaintextPassword: "blocked-secret", sipUsername: "3001", sipDomain: "sip.phone11.ai",
+        ha1: "blocked-ha1", ha1b: "blocked-ha1b", secretCiphertext: Buffer.from("blocked-cipher"),
+        secretIv: Buffer.from("blocked-iv"), secretTag: Buffer.from("blocked-tag"), dekId: "test-key",
+      });
+      await expect(assignExtensionToUser(17, 3001, true, 7)).rejects.toThrow();
+      expect((await database.query("SELECT user_id FROM extensions WHERE id=3001")).rows[0].user_id).toBe(18);
+      expect((await database.query("SELECT password FROM subscriber WHERE username='3001'")).rows[0].password)
+        .toBe("new-secret");
     } finally {
       await database.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);

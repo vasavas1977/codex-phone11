@@ -176,11 +176,10 @@ export const appRouter = router({
         orgId: phoneTenantIdSchema.optional(),
         extensionNumber: z.string(),
         displayName: z.string().optional(),
-        password: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId, true);
-        return createExtension({ ...input, orgId: tenantId });
+        return createExtension({ ...input, orgId: tenantId, actorUserId: ctx.user.id });
       }),
 
     /** Legacy admin: assign only inside the extension's live administrator workspace. */
@@ -202,7 +201,7 @@ export const appRouter = router({
           throw new TRPCError({ code: "NOT_FOUND", message: "Extension not found." });
         }
         const tenantId = await requirePhoneTenantAdmin(ctx.user.id, extensionTenantId);
-        return assignExtensionToUser(input.userId, input.extensionId, input.isPrimary, tenantId);
+        return assignExtensionToUser(input.userId, input.extensionId, input.isPrimary, tenantId, ctx.user.id);
       }),
 
     /** Legacy admin: return only organizations the caller can administer. */

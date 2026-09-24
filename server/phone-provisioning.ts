@@ -11,8 +11,9 @@
  * 4. Returns SIP credentials to the app
  */
 
+import type { PoolClient } from "pg";
 import { getPool, withTransaction } from "./pbx/db";
-import { createSipCredentials, decryptSecret } from "./pbx/sip-secrets";
+import { computeHA1, computeHA1B, createSipCredentials, decryptSecret, regenerateSipCredentials } from "./pbx/sip-secrets";
 
 export interface PhoneConfig {
   configured: boolean;
@@ -72,29 +73,41 @@ function toBuffer(value: unknown): Buffer | null {
   return Buffer.from(value, "base64");
 }
 
-function getSipPassword(row: any): string {
-  // Kamailio authenticates against subscriber.password. Prefer that same source
-  // so mobile provisioning cannot drift from the live SIP auth table.
-  if (row.subscriber_password) {
-    return row.subscriber_password;
-  }
+function getSipPassword(row: any): string | null {
+  const username = row.account_sip_username || row.sip_username || row.extension_number;
+  const domain = row.account_sip_domain || row.sip_domain || DEFAULT_SIP_DOMAIN;
+  const password = row.subscriber_password;
+  if (!username || !domain || typeof password !== "string" || !password) return null;
+  if (row.account_id !== null && row.account_id !== undefined &&
+      ((row.sip_username || row.extension_number) !== username ||
+       (row.sip_domain || DEFAULT_SIP_DOMAIN) !== domain)) return null;
 
-  const ciphertext = toBuffer(row.secret_ciphertext);
-  const iv = toBuffer(row.secret_iv);
-  const tag = toBuffer(row.secret_tag);
-
-  if (ciphertext && iv && tag) {
-    try {
-      return decryptSecret(ciphertext, iv, tag);
-    } catch (error) {
-      console.warn("[PhoneProvisioning] Could not decrypt SIP secret, falling back to extension password");
+  const ha1 = computeHA1(username, domain, password);
+  const ha1b = computeHA1B(username, domain, domain, password);
+  if (!ha1 || !ha1b || row.subscriber_ha1 !== ha1 || row.subscriber_ha1b !== ha1b) return null;
+  if (row.account_id !== null && row.account_id !== undefined) {
+    if (row.account_ha1 !== ha1 || row.account_ha1b !== ha1b) return null;
+    const hasSecret = row.secret_ciphertext != null || row.secret_iv != null || row.secret_tag != null;
+    if (hasSecret) {
+      const ciphertext = toBuffer(row.secret_ciphertext);
+      const iv = toBuffer(row.secret_iv);
+      const tag = toBuffer(row.secret_tag);
+      if (!ciphertext || !iv || !tag) return null;
+      try {
+        if (decryptSecret(ciphertext, iv, tag) !== password) return null;
+      } catch {
+        return null;
+      }
     }
+  } else if (row.sip_password !== password) {
+    // A legacy extension has no account digest, so its own stored secret must
+    // prove ownership of the global Kamailio subscriber row.
+    return null;
   }
-
-  return row.sip_password || row.password || "";
+  return password;
 }
 
-function buildConfig(ext: any, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
+function buildConfig(ext: any, password: string, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
   const transport = normalizeSipTransport(ext.transport_preference || ext.transport);
   const sipDomain = ext.account_sip_domain || ext.sip_domain || DEFAULT_SIP_DOMAIN;
   const sipUsername = ext.account_sip_username || ext.sip_username || ext.extension_number;
@@ -110,7 +123,7 @@ function buildConfig(ext: any, dids: Array<{ number: string; description: string
     },
     sip: {
       username: sipUsername,
-      password: getSipPassword(ext),
+      password,
       domain: sipDomain,
       port: getSipPort(transport),
       transport,
@@ -347,9 +360,12 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
     const assignedResult = await db.query(`
       SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan,
              t.name as tenant_name, t.plan as tenant_plan,
-             sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
-             sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference,
-             sub.password as subscriber_password
+             sa.id as account_id, sa.sip_username as account_sip_username,
+             sa.sip_domain as account_sip_domain, sa.ha1 as account_ha1,
+             sa.ha1b as account_ha1b, sa.secret_ciphertext, sa.secret_iv,
+             sa.secret_tag, sa.transport_preference,
+             sub.password as subscriber_password, sub.ha1 as subscriber_ha1,
+             sub.ha1b as subscriber_ha1b
       FROM extensions e
       LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
       JOIN tenant_memberships tm ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
@@ -377,12 +393,37 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
         -- credential fields. Once an account exists, only its live state can
         -- provision credentials; suspended/deleted accounts fail closed.
         AND (sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL))
+        AND NOT EXISTS (
+          SELECT 1 FROM extensions other_e
+          WHERE other_e.id <> e.id AND other_e.deleted_at IS NULL
+            AND COALESCE(NULLIF(other_e.sip_username, ''), other_e.extension_number) =
+              COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND COALESCE(NULLIF(other_e.sip_domain, ''), $2) =
+              COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM sip_accounts other_sa
+          WHERE other_sa.id IS DISTINCT FROM sa.id AND other_sa.deleted_at IS NULL
+            AND other_sa.sip_username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND other_sa.sip_domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM sip_accounts second_sa
+          WHERE second_sa.extension_id = e.id AND second_sa.tenant_id = e.tenant_id
+            AND second_sa.id IS DISTINCT FROM sa.id
+            AND second_sa.status = 'active' AND second_sa.deleted_at IS NULL
+        )
+        AND (SELECT COUNT(*) FROM subscriber matching_sub
+          WHERE matching_sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND matching_sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)) = 1
       ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
       LIMIT 1
     `, [userId, DEFAULT_SIP_DOMAIN]);
 
     if (assignedResult.rows.length > 0) {
       const ext = assignedResult.rows[0];
+      const password = getSipPassword(ext);
+      if (!password) return { configured: false };
       const didsResult = await db.query(`
         SELECT number, description FROM did_numbers
         WHERE tenant_id = $1
@@ -393,6 +434,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
 
       return buildConfig(
         ext,
+        password,
         didsResult.rows.map((d: any) => ({
           number: d.number,
           description: d.description || "",
@@ -405,6 +447,173 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
     console.error("[PhoneProvisioning] getPhoneConfig error:", error);
     throw error;
   }
+}
+
+/**
+ * Change a tenant-owned extension's SIP authentication in the same transaction
+ * as its assignee. A previous assignee has already received the old password,
+ * so changing database ownership alone does not revoke calling access.
+ * Existing registrar contacts and established dialogs require a separate
+ * operator-verified invalidation; this only changes future authentication.
+ */
+export async function rotateExtensionSipAuth(
+  client: PoolClient,
+  extensionId: number,
+  tenantId: number,
+): Promise<void> {
+  const state = await lockExtensionSipAuth(client, extensionId, tenantId);
+  const creds = regenerateSipCredentials(state.username, state.domain, state.domain);
+  if (state.accountId !== null) {
+    const updated = await client.query(
+      `UPDATE sip_accounts SET ha1 = $1, ha1b = $2, secret_ciphertext = $3,
+              secret_iv = $4, secret_tag = $5, dek_id = $6, updated_at = NOW()
+        WHERE id = $7 AND extension_id = $8 AND tenant_id = $9
+          AND status = 'active' AND deleted_at IS NULL RETURNING id`,
+      [creds.ha1, creds.ha1b, creds.secretCiphertext, creds.secretIv,
+        creds.secretTag, creds.dekId, state.accountId, extensionId, tenantId],
+    );
+    if (updated.rows.length !== 1) throw new Error("SIP account changed before reassignment.");
+    await client.query(
+      `UPDATE extensions SET sip_password = '' WHERE id = $1 AND tenant_id = $2`,
+      [extensionId, tenantId],
+    );
+  } else {
+    // Preserve provisioning for an old extension with no sip_accounts row.
+    await client.query(
+      `UPDATE extensions SET sip_password = $1 WHERE id = $2 AND tenant_id = $3`,
+      [creds.plaintextPassword, extensionId, tenantId],
+    );
+  }
+  if (state.subscriberPresent) {
+    const updated = await client.query(
+      `UPDATE subscriber SET password = $3, ha1 = $4, ha1b = $5
+        WHERE username = $1 AND domain = $2 AND ha1 = $6 AND ha1b = $7
+        RETURNING username`,
+      [state.username, state.domain, creds.plaintextPassword, creds.ha1,
+        creds.ha1b, state.ha1, state.ha1b],
+    );
+    if (updated.rows.length !== 1) throw new Error("SIP subscriber changed before reassignment.");
+  } else {
+    const inserted = await client.query(
+      `INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (username, domain) DO NOTHING RETURNING username`,
+      [state.username, state.domain, creds.plaintextPassword, creds.ha1, creds.ha1b],
+    );
+    if (inserted.rows.length !== 1) throw new Error("SIP subscriber changed before reassignment.");
+  }
+}
+
+/** Remove only an auth row proven to belong to the locked extension/account. */
+export async function revokeExtensionSipAuth(
+  client: PoolClient,
+  extensionId: number,
+  tenantId: number,
+): Promise<void> {
+  const state = await lockExtensionSipAuth(client, extensionId, tenantId, true);
+  if (!state.subscriberPresent) return;
+  const deleted = await client.query(
+    `DELETE FROM subscriber WHERE username = $1 AND domain = $2
+       AND ha1 = $3 AND ha1b = $4 RETURNING username`,
+    [state.username, state.domain, state.ha1, state.ha1b],
+  );
+  if (deleted.rows.length !== 1) throw new Error("SIP subscriber changed before deletion.");
+}
+
+/** A suspended extension comes back only with a new credential, never its old password. */
+export async function reactivateExtensionSipAuth(
+  client: PoolClient,
+  extensionId: number,
+  tenantId: number,
+): Promise<void> {
+  const state = await lockExtensionSipAuth(client, extensionId, tenantId, true, true);
+  if (state.subscriberPresent) {
+    throw new Error("Suspended extension still has a SIP subscriber credential.");
+  }
+  const creds = regenerateSipCredentials(state.username, state.domain, state.domain);
+  if (state.accountId !== null) {
+    const updated = await client.query(
+      `UPDATE sip_accounts SET status='active', ha1=$1, ha1b=$2,
+              secret_ciphertext=$3, secret_iv=$4, secret_tag=$5,
+              dek_id=$6, updated_at=NOW()
+        WHERE id=$7 AND extension_id=$8 AND tenant_id=$9
+          AND status='suspended' AND deleted_at IS NULL RETURNING id`,
+      [creds.ha1, creds.ha1b, creds.secretCiphertext, creds.secretIv,
+        creds.secretTag, creds.dekId, state.accountId, extensionId, tenantId],
+    );
+    if (updated.rows.length !== 1) throw new Error("SIP account changed before reactivation.");
+  } else {
+    await client.query(
+      `UPDATE extensions SET sip_password=$1 WHERE id=$2 AND tenant_id=$3`,
+      [creds.plaintextPassword, extensionId, tenantId],
+    );
+  }
+  const inserted = await client.query(
+    `INSERT INTO subscriber(username, domain, password, ha1, ha1b)
+     VALUES($1,$2,$3,$4,$5)
+     ON CONFLICT(username, domain) DO NOTHING RETURNING username`,
+    [state.username, state.domain, creds.plaintextPassword, creds.ha1, creds.ha1b],
+  );
+  if (inserted.rows.length !== 1) throw new Error("SIP subscriber changed before reactivation.");
+}
+
+async function lockExtensionSipAuth(client: PoolClient, extensionId: number, tenantId: number,
+  allowCredentialFree = false, allowSuspendedAccount = false) {
+  const ext = await client.query(
+    `SELECT id, extension_number, sip_username, sip_domain, sip_password
+       FROM extensions WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+       FOR UPDATE`,
+    [extensionId, tenantId],
+  );
+  if (ext.rows.length !== 1) throw new Error("Extension is not available in this workspace.");
+  const accounts = await client.query(
+    `SELECT id, sip_username, sip_domain, ha1, ha1b FROM sip_accounts
+      WHERE extension_id = $1 AND tenant_id = $2 AND status = ANY($3::text[])
+        AND deleted_at IS NULL LIMIT 2 FOR UPDATE`,
+    [extensionId, tenantId, allowSuspendedAccount ? ['suspended'] : ['active']],
+  );
+  if (accounts.rows.length > 1) throw new Error("Extension has multiple active SIP accounts.");
+  const account = accounts.rows[0];
+  const username = account?.sip_username || ext.rows[0].sip_username || ext.rows[0].extension_number;
+  const domain = account?.sip_domain || ext.rows[0].sip_domain || DEFAULT_SIP_DOMAIN;
+  if (!username || !domain ||
+      (account && ((ext.rows[0].sip_username || ext.rows[0].extension_number) !== username ||
+        (ext.rows[0].sip_domain || DEFAULT_SIP_DOMAIN) !== domain))) {
+    throw new Error("SIP account identity does not match its extension.");
+  }
+  await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [username, domain]);
+  const foreign = await client.query(
+    `SELECT (
+       EXISTS (SELECT 1 FROM extensions e WHERE e.deleted_at IS NULL
+                 AND e.id <> $3 AND COALESCE(NULLIF(e.sip_username, ''), e.extension_number) = $1
+                 AND COALESCE(NULLIF(e.sip_domain, ''), $2) = $2)
+       OR EXISTS (SELECT 1 FROM sip_accounts sa WHERE sa.deleted_at IS NULL
+                 AND sa.extension_id IS DISTINCT FROM $3
+                 AND sa.sip_username = $1 AND sa.sip_domain = $2)
+     ) AS has_conflict`,
+    [username, domain, extensionId],
+  );
+  if (foreign.rows.length !== 1 || foreign.rows[0].has_conflict !== false) {
+    throw new Error("SIP username is used by another phone account.");
+  }
+  const subscriber = await client.query(
+    `SELECT ha1, ha1b FROM subscriber WHERE username = $1 AND domain = $2 FOR UPDATE`,
+    [username, domain],
+  );
+  if (subscriber.rows.length > 1) throw new Error("SIP subscriber identity is ambiguous.");
+  const ha1 = account?.ha1 || (ext.rows[0].sip_password
+    ? computeHA1(username, domain, ext.rows[0].sip_password) : null);
+  const ha1b = account?.ha1b || (ext.rows[0].sip_password
+    ? computeHA1B(username, domain, domain, ext.rows[0].sip_password) : null);
+  if (subscriber.rows.length === 1 && (!ha1 || !ha1b ||
+      subscriber.rows[0].ha1 !== ha1 || subscriber.rows[0].ha1b !== ha1b)) {
+    throw new Error("SIP subscriber credentials do not match this extension.");
+  }
+  if (!account && !ext.rows[0].sip_password && (!allowCredentialFree || subscriber.rows.length !== 0)) {
+    throw new Error("Legacy extension has no verifiable SIP credential.");
+  }
+  return { accountId: account?.id ?? null, username, domain, ha1, ha1b,
+    subscriberPresent: subscriber.rows.length === 1 };
 }
 
 /**
@@ -464,16 +673,29 @@ export async function assignExtensionToUser(
   extensionId: number,
   isPrimary: boolean = true,
   tenantId: number = 1,
+  actorUserId?: number,
 ) {
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 
   await withTransaction(async (client) => {
+    if (actorUserId !== undefined) await lockLegacyPhoneAdmin(client, actorUserId, tenantId);
+    const assignee = await client.query(
+      `SELECT tm.user_id FROM tenant_memberships tm
+         JOIN tenants t ON t.id=tm.tenant_id
+        WHERE tm.user_id=$1 AND tm.tenant_id=$2
+          AND tm.status='active' AND t.status='active'
+        FOR UPDATE OF tm, t`,
+      [userId, tenantId],
+    );
+    if (assignee.rows.length !== 1) {
+      throw new Error("Extension assignee must be an active member of this workspace.");
+    }
     // Serialize reassignment of this extension with ownership reads. The
     // former assignee's link is removed in the same transaction as both
     // authoritative owner fields change.
     const eligible = await client.query(
-      `SELECT e.id
+      `SELECT e.id, e.user_id
          FROM extensions e
          JOIN tenant_memberships tm
            ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
@@ -485,6 +707,9 @@ export async function assignExtensionToUser(
     );
     if (eligible.rows.length !== 1) {
       throw new Error("Extension assignee must be an active member of this workspace.");
+    }
+    if (eligible.rows[0].user_id !== userId) {
+      await rotateExtensionSipAuth(client, extensionId, tenantId);
     }
 
     await client.query(
@@ -535,7 +760,9 @@ export async function listExtensions(orgId: number) {
       AND e.deleted_at IS NULL
     ORDER BY e.extension_number
   `, [orgId]);
-  return result.rows;
+  return result.rows.map(({ sip_password, password, ...safe }: {
+    sip_password?: string; password?: string;
+  }) => safe);
 }
 
 /**
@@ -545,13 +772,14 @@ export async function createExtension(input: {
   orgId: number;
   extensionNumber: string;
   displayName?: string;
-  password?: string;
+  actorUserId?: number;
 }) {
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 
-  const { orgId, extensionNumber, displayName, password } = input;
+  const { orgId, extensionNumber, displayName } = input;
   return withTransaction(async (client) => {
+    if (input.actorUserId !== undefined) await lockLegacyPhoneAdmin(client, input.actorUserId, orgId);
     // Kamailio subscriber usernames are global in this legacy schema. The
     // transaction-scoped lock makes the ownership check and credential write
     // indivisible across tenants, while the transaction rolls back a subscriber
@@ -572,15 +800,16 @@ export async function createExtension(input: {
         : "This extension number is already in use by another workspace.");
     }
 
-    const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN, password);
-    await client.query(`
+    const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN);
+    const subscriber = await client.query(`
       INSERT INTO subscriber (username, domain, password, ha1, ha1b)
       VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (username, domain) DO UPDATE SET
-        password = EXCLUDED.password,
-        ha1 = EXCLUDED.ha1,
-        ha1b = EXCLUDED.ha1b
+      ON CONFLICT (username, domain) DO NOTHING
+      RETURNING username
     `, [extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, creds.ha1, creds.ha1b]);
+    if (subscriber.rows.length !== 1) {
+      throw new Error("This SIP username already has a subscriber account.");
+    }
 
     const result = await client.query(`
       INSERT INTO extensions (
@@ -612,8 +841,22 @@ export async function createExtension(input: {
       DEFAULT_SIP_TRANSPORT,
     ]);
 
-    return ext;
+    const { sip_password, password: legacyPassword, ...safeExtension } = ext;
+    return safeExtension;
   });
+}
+
+async function lockLegacyPhoneAdmin(client: PoolClient, actorUserId: number, tenantId: number): Promise<void> {
+  const actor = await client.query(
+    `SELECT tm.role FROM tenant_memberships tm
+       JOIN tenants t ON t.id = tm.tenant_id
+      WHERE tm.user_id = $1 AND tm.tenant_id = $2
+        AND tm.status = 'active' AND tm.role IN ('owner', 'admin')
+        AND t.status = 'active'
+      FOR UPDATE OF tm, t`,
+    [actorUserId, tenantId],
+  );
+  if (actor.rows.length !== 1) throw new Error("Workspace administrator access is required.");
 }
 
 /**
