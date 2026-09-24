@@ -143,15 +143,23 @@ describe("enterprise phone-number administration", () => {
     expect(phoneNumbers).toContain("assigned_route_type");
     expect(phoneNumbers).toContain("assigned_route_id");
   });
+
+  it("keeps destination editing closed when the selected account has multiple workspaces", () => {
+    expect(phoneNumbers).toContain("const canEditRoutes = workspace.canUseImplicitTenant");
+    expect(phoneNumbers).toContain("disabled={routeMutation.isPending || !canEditRoutes}");
+    expect(phoneNumbers).toContain("if (!canEditRoutes) return;");
+    expect(phoneNumbers).toContain("Call destination editing is not available yet for accounts in multiple workspaces.");
+    expect(phoneNumbers).toContain("tenantId: routeTenantId");
+  });
 });
 
 describe("tenant query guards", () => {
   it("lets both directory hooks wait for verified admin membership", () => {
     expect(hooks).toMatch(
-      /useExtensions\([\s\S]*?enabled: boolean = true[\s\S]*?\{ enabled, staleTime: 30_000 \}/,
+      /useExtensions\([\s\S]*?enabled: boolean = true[\s\S]*?enabled: enabled && workspace.selectedTenantId !== null/,
     );
     expect(hooks).toMatch(
-      /usePhoneNumbers\([\s\S]*?enabled: boolean = true[\s\S]*?\{ enabled, staleTime: 30_000 \}/,
+      /usePhoneNumbers\([\s\S]*?enabled: boolean = true[\s\S]*?enabled: enabled && workspace.selectedTenantId !== null/,
     );
   });
 });

@@ -88,7 +88,7 @@ export async function resolveTenantContext(
 
   let activeMembership: TenantMembership;
 
-  if (requestedTenantId) {
+  if (requestedTenantId !== undefined) {
     const found = memberships.find((m) => m.tenantId === requestedTenantId);
     if (!found) {
       throw new TRPCError({
@@ -119,6 +119,29 @@ export function hasRole(userRole: string, requiredRole: string): boolean {
   const userLevel = hierarchy.indexOf(userRole);
   const requiredLevel = hierarchy.indexOf(requiredRole);
   return userLevel >= requiredLevel;
+}
+
+/** Recheck admin write authority without the membership cache. */
+export async function requireLiveTenantAdminMembership(
+  userId: number,
+  tenantId: number,
+): Promise<string> {
+  const result = await query(
+    `SELECT tm.role FROM tenant_memberships tm
+     JOIN tenants t ON t.id = tm.tenant_id
+     WHERE tm.user_id = $1 AND tm.tenant_id = $2
+       AND tm.status = 'active' AND t.status = 'active'
+       AND tm.role::text IN ('owner', 'admin')
+     LIMIT 1`,
+    [userId, tenantId],
+  );
+  if (!result.rows[0]) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Workspace administrator access has changed",
+    });
+  }
+  return result.rows[0].role as string;
 }
 
 /**

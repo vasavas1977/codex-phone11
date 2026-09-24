@@ -30,7 +30,7 @@ export default function ActiveCallScreen() {
     type?: string;
     callId?: string;
   }>();
-  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf } = useSip();
+  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf, supportsBlindTransfer } = useSip();
   const call = useSipCallStore((state) =>
     resolveCurrentCall(state, requestedCallId),
   );
@@ -107,6 +107,7 @@ export default function ActiveCallScreen() {
   const controlsReady = Boolean(
     call && (call.status === "active" || call.status === "held"),
   );
+  const canTransfer = Boolean(call && call.status === "active" && !held && supportsBlindTransfer?.());
   const control = async (operation: () => Promise<void>) => {
     if (!controlsReady) return;
     try {
@@ -333,6 +334,13 @@ export default function ActiveCallScreen() {
             handleHold,
             held,
             held ? "Resume" : "Hold",
+          )}
+          {canTransfer && callControl(
+            "Transfer",
+            "Transfer call",
+            "phone.arrow.up.right",
+            () => router.push({ pathname: "/call/transfer", params: { callId: call!.id } }),
+            false,
           )}
         </View>
       </View>

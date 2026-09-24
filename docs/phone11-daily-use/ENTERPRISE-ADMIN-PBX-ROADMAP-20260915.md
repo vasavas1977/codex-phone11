@@ -1,5 +1,11 @@
 # Phone11 enterprise administration and PBX roadmap — 15 September 2026
 
+> **24 September source audit:** the IVR digit-action, ring-group member,
+> queue-agent, and time-condition rule editors now exist in the Phone11 admin
+> source. The earlier "incomplete editors" notes below have been corrected.
+> This audit does not establish that the advanced schema, telephony routes, or
+> admin screens are deployed or that a real carrier DID has reached them.
+
 ## Product direction
 
 Phone11 should give each enterprise a private administration workspace with simple defaults and progressively deeper controls. The first usable release should let a workspace administrator assign people and numbers, define how incoming calls flow, see whether endpoints are healthy, and understand failed or poor-quality calls without exposing another tenant's data.
@@ -59,7 +65,10 @@ Unless a row explicitly says otherwise, the items below are source-ready only.
 - Business hours can be listed, created with weekday hours plus open/closed destinations, and deleted.
 - The overview links to Business Hours and no longer presents hard-coded infrastructure health as live telemetry.
 
-These screens establish a real tenant API path in source. They are not yet complete editors: the current Edit/Members controls do not configure ring-group membership, IVR digit actions do not have a complete editor, queue-agent membership and availability do not have a complete editor, and business hours do not yet provide full holiday, exception, or existing-rule editing.
+These screens establish a real tenant API path in source. IVR digit actions,
+ring-group membership, queue-agent membership, and existing time-condition
+rules have source-backed editors. Holiday/exception scheduling, commissioned
+runtime routing, and full operational acceptance remain separate work.
 
 ## Remaining administration gaps
 
@@ -69,7 +78,10 @@ The following hidden or incomplete paths must not be used as operational evidenc
 - **Phone-number provisioning:** the visible number inventory is live and tenant-scoped, but ordering, porting, and route editing are intentionally unavailable until a carrier-backed provisioning workflow exists.
 - **Analytics:** the administration screen reads available tenant CDRs. It is not live PBX telemetry, carrier evidence, call-quality measurement, or an operational report until its data pipeline is commissioned and verified.
 - **System health:** `app/admin/system.tsx` now presents an explicit unavailable screen until workspace telemetry is connected. It does not show fabricated health values or offer simulated operations.
-- **Advanced routing editors:** IVR digit actions, ring-group members and fallbacks, queue agents/availability/overflow, and holiday/exception schedules still need complete API-backed management.
+- **Advanced routing completion:** the basic action/member/agent/rule editors
+  exist in source. Holiday/exception schedules, queue availability and
+  overflow behavior, and each saved route still need complete admin/runtime
+  acceptance against the deployed PBX.
 - **Personal self-service:** the portal reads assigned extensions, direct numbers, CDR-backed call activity, and owner-scoped voicemail only. Call activity requires an immutable caller or callee user identity captured at call time, so legacy identity-free records stay hidden and an extension reassignment never exposes its former user's history. It does not manage billing, payment methods, support tickets, profile/password changes, number acquisition, or forwarding/DND because no verified service path supports those actions.
 - **Operations and governance:** live QoS, endpoint inventory, alerts, emergency locations/policies, recording governance, bulk lifecycle, delegated scopes, approvals, and audit review remain release work.
 

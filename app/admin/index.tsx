@@ -26,9 +26,10 @@ import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import {
   type PbxManagementCapabilities,
-  usePbxCapabilities,
+  usePbxAdminCapabilities,
   usePbxDashboardStats,
   usePbxRecentCalls,
+  usePbxAdminWorkspace,
   useTenant,
 } from "@/hooks/use-pbx-admin";
 
@@ -38,6 +39,7 @@ interface QuickAction {
   label: string;
   route: string;
   facility?: keyof PbxManagementCapabilities;
+  requiresImplicitTenant?: boolean;
 }
 
 export default function AdminDashboard() {
@@ -47,18 +49,21 @@ export default function AdminDashboard() {
   const [refreshing, setRefreshing] = useState(false);
 
   const { user } = useAuth({ autoFetch: false });
+  const workspace = usePbxAdminWorkspace();
   const tenantQuery = useTenant(Boolean(user));
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
   );
-  const capabilitiesQuery = usePbxCapabilities(
+  const capabilitiesQuery = usePbxAdminCapabilities(
     tenantQuery.isSuccess && canManage,
   );
   // Admin-only queries wait until the signed-in workspace role is known.
-  const statsQuery = usePbxDashboardStats(tenantQuery.isSuccess && canManage);
+  const statsQuery = usePbxDashboardStats(
+    tenantQuery.isSuccess && canManage && workspace.canUseImplicitTenant,
+  );
   const recentCallsQuery = usePbxRecentCalls(
     5,
-    tenantQuery.isSuccess && canManage,
+    tenantQuery.isSuccess && canManage && workspace.canUseImplicitTenant,
   );
 
   const stats = statsQuery.data;
@@ -90,6 +95,7 @@ export default function AdminDashboard() {
       label: "IVR menus",
       route: "/admin/ivr",
       facility: "ivr",
+      requiresImplicitTenant: true,
     },
     {
       icon: "person.3.fill",
@@ -97,6 +103,7 @@ export default function AdminDashboard() {
       label: "Ring Groups",
       route: "/admin/ring-groups",
       facility: "ringGroups",
+      requiresImplicitTenant: true,
     },
     {
       icon: "person.line.dotted.person.fill",
@@ -104,6 +111,7 @@ export default function AdminDashboard() {
       label: "Queues",
       route: "/admin/queues",
       facility: "queues",
+      requiresImplicitTenant: true,
     },
     {
       icon: "calendar.badge.clock",
@@ -111,6 +119,7 @@ export default function AdminDashboard() {
       label: "Business Hours",
       route: "/admin/schedules",
       facility: "businessHours",
+      requiresImplicitTenant: true,
     },
     {
       icon: "gearshape.fill",
@@ -123,19 +132,25 @@ export default function AdminDashboard() {
       iconColor: "#14B8A6",
       label: "Call analytics",
       route: "/admin/analytics",
+      requiresImplicitTenant: true,
     },
   ];
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await Promise.all([
-      statsQuery.refetch(),
-      recentCallsQuery.refetch(),
+      workspace.membershipsQuery.refetch(),
       tenantQuery.refetch(),
       capabilitiesQuery.refetch(),
+      ...(workspace.canUseImplicitTenant
+        ? [
+            statsQuery.refetch(),
+            recentCallsQuery.refetch(),
+          ]
+        : []),
     ]);
     setRefreshing(false);
-  }, [capabilitiesQuery, statsQuery, recentCallsQuery, tenantQuery]);
+  }, [capabilitiesQuery, statsQuery, recentCallsQuery, tenantQuery, workspace]);
 
   const formatDuration = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -177,6 +192,52 @@ export default function AdminDashboard() {
         actionLabel="Sign in"
         onAction={() => router.replace(portalSignInRoute("/admin"))}
       />
+    );
+  }
+
+  if (workspace.membershipsQuery.isLoading) {
+    return (
+      <AdminAccessState
+        title="Checking workspace access"
+        detail="Phone11 is confirming your workspace membership."
+        loading
+      />
+    );
+  }
+
+  if (workspace.membershipsQuery.isError) {
+    return (
+      <AdminAccessState
+        title="Workspace administration is unavailable"
+        detail="Phone11 could not confirm your workspace membership."
+        actionLabel="Try again"
+        onAction={() => void workspace.membershipsQuery.refetch()}
+      />
+    );
+  }
+
+  if (workspace.manageableMemberships.length === 0) {
+    return (
+      <AdminAccessState
+        title="Workspace administration"
+        detail="Only workspace owners and administrators can open this area."
+      />
+    );
+  }
+
+  if (workspace.selectedTenantId === null) {
+    return (
+      <ScreenContainer>
+        <View style={styles.workspaceChoicePage}>
+          <Text style={[styles.title, { color: colors.foreground }]}>
+            Choose a workspace
+          </Text>
+          <Text style={[styles.subtitle, { color: colors.muted }]}>
+            Select the workspace you want to manage.
+          </Text>
+          <AdminWorkspacePicker workspace={workspace} colors={colors} />
+        </View>
+      </ScreenContainer>
     );
   }
 
@@ -254,8 +315,28 @@ export default function AdminDashboard() {
           </View>
         </View>
 
+        {workspace.manageableMemberships.length > 1 ? (
+          <AdminWorkspacePicker workspace={workspace} colors={colors} />
+        ) : null}
+
+        {workspace.hasMultipleMemberships ? (
+          <Text style={[styles.workspaceNotice, { color: colors.muted }]}>
+            People, Extensions, Phone numbers, and Workspace settings use your
+            selected workspace. Phone-number route editing and other PBX
+            sections remain unavailable until every related server control can
+            target that workspace safely.
+          </Text>
+        ) : null}
+
         {/* Stats Grid */}
-        {statsQuery.isLoading ? (
+        {workspace.hasMultipleMemberships ? (
+          <View style={styles.emptyState}>
+            <Text style={{ color: colors.muted }}>
+              Call and extension totals are unavailable for accounts with
+              multiple workspaces.
+            </Text>
+          </View>
+        ) : statsQuery.isLoading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="small" color={colors.primary} />
             <Text style={[styles.loadingText, { color: colors.muted }]}>
@@ -361,8 +442,14 @@ export default function AdminDashboard() {
         <View style={styles.actionsGrid}>
           {quickActions.map((action, i) => {
             const available =
-              !action.facility || capabilitiesQuery.data?.[action.facility] === true;
-            const checking = Boolean(action.facility) && capabilitiesQuery.isLoading;
+              !(
+                action.requiresImplicitTenant &&
+                workspace.hasMultipleMemberships
+              ) &&
+              (!action.facility ||
+                capabilitiesQuery.data?.[action.facility] === true);
+            const checking =
+              Boolean(action.facility) && capabilitiesQuery.isLoading;
             return (
               <TouchableOpacity
                 key={i}
@@ -371,12 +458,15 @@ export default function AdminDashboard() {
                 accessibilityLabel={
                   available
                     ? action.label
-                    : `${action.label}: ${checking ? "checking availability" : "not available"}`
+                    : `${action.label}: ${action.requiresImplicitTenant && workspace.hasMultipleMemberships ? "not available for multiple workspaces" : checking ? "checking availability" : "not available"}`
                 }
                 disabled={!available}
                 style={[
                   styles.actionCard,
-                  { backgroundColor: colors.surface, borderColor: colors.border },
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
                   !available && styles.actionCardDisabled,
                 ]}
                 onPress={() => router.push(action.route as any)}
@@ -394,12 +484,21 @@ export default function AdminDashboard() {
                     color={action.iconColor}
                   />
                 </View>
-                <Text style={[styles.actionLabel, { color: colors.foreground }]}>
+                <Text
+                  style={[styles.actionLabel, { color: colors.foreground }]}
+                >
                   {action.label}
                 </Text>
                 {action.facility && !available ? (
-                  <Text style={[styles.actionAvailability, { color: colors.muted }]}>
-                    {checking ? "Checking availability" : "Not available"}
+                  <Text
+                    style={[styles.actionAvailability, { color: colors.muted }]}
+                  >
+                    {action.requiresImplicitTenant &&
+                    workspace.hasMultipleMemberships
+                      ? "Multiple workspaces"
+                      : checking
+                        ? "Checking availability"
+                        : "Not available"}
                   </Text>
                 ) : null}
               </TouchableOpacity>
@@ -417,7 +516,14 @@ export default function AdminDashboard() {
             { backgroundColor: colors.surface, borderColor: colors.border },
           ]}
         >
-          {recentCallsQuery.isLoading ? (
+          {workspace.hasMultipleMemberships ? (
+            <View style={styles.emptyState}>
+              <Text style={{ color: colors.muted }}>
+                Recent calls are unavailable for accounts with multiple
+                workspaces.
+              </Text>
+            </View>
+          ) : recentCallsQuery.isLoading ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="small" color={colors.primary} />
             </View>
@@ -496,7 +602,82 @@ export default function AdminDashboard() {
   );
 }
 
+function AdminWorkspacePicker({
+  workspace,
+  colors,
+}: {
+  workspace: ReturnType<typeof usePbxAdminWorkspace>;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={styles.workspacePicker}>
+      {workspace.manageableMemberships.map((membership) => {
+        const selected = workspace.selectedTenantId === membership.tenantId;
+        return (
+          <TouchableOpacity
+            key={membership.tenantId}
+            accessibilityRole="button"
+            accessibilityLabel={`Manage ${membership.tenantName}`}
+            accessibilityState={{ selected }}
+            onPress={() => workspace.chooseTenant(membership.tenantId)}
+            style={[
+              styles.workspaceOption,
+              {
+                borderColor: selected ? colors.primary : colors.border,
+                backgroundColor: colors.surface,
+              },
+            ]}
+          >
+            <Text
+              style={{
+                color: colors.foreground,
+                fontWeight: selected ? "700" : "500",
+              }}
+            >
+              {membership.tenantName}
+            </Text>
+            <Text style={{ color: colors.muted, fontSize: 12 }}>
+              {membership.role === "owner" ? "Owner" : "Administrator"}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  workspaceChoicePage: {
+    flex: 1,
+    justifyContent: "center",
+    width: "100%",
+    maxWidth: 560,
+    alignSelf: "center",
+    padding: 24,
+  },
+  workspacePicker: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 16,
+  },
+  workspaceOption: {
+    minHeight: 54,
+    minWidth: 140,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    justifyContent: "center",
+    gap: 2,
+  },
+  workspaceNotice: {
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    fontSize: 12,
+    lineHeight: 18,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",

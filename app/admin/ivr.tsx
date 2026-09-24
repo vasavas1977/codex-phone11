@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList, Alert,
   TextInput, Modal, ActivityIndicator,
@@ -40,6 +41,14 @@ const EXIT_ACTIONS = [
 ] as const;
 
 export default function AdminIVR() {
+  return (
+    <AdminWorkspaceBoundary requiresImplicitTenant>
+      <AdminIVRContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function AdminIVRContent() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;

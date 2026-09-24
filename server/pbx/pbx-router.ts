@@ -15,6 +15,7 @@ import { normalizeToE164 } from "./e164";
 import {
   resolveTenantContext,
   hasRole,
+  requireLiveTenantAdminMembership,
   validateTenantOwnership,
 } from "./tenant-middleware";
 import { buildPaginationSQL, buildPaginatedResponse } from "./pagination";
@@ -43,6 +44,10 @@ const paginationSchema = z.object({
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
 
+const selectedTenantSchema = z.object({
+  tenantId: z.number().int().positive(),
+}).strict();
+
 // ============================================================================
 // Helper: resolve tenant from user context
 // ============================================================================
@@ -55,6 +60,17 @@ async function getTenantAdminCtx(ctx: any, requestedTenantId?: number) {
   const tenant = await getTenantCtx(ctx, requestedTenantId);
   if (!hasRole(tenant.role, "admin")) {
     throw new TRPCError({ code: "FORBIDDEN" });
+  }
+  return tenant;
+}
+
+async function getTenantAdminReadCtx(ctx: any, requestedTenantId?: number) {
+  const tenant = await getTenantAdminCtx(ctx, requestedTenantId);
+  if (requestedTenantId === undefined && tenant.memberships.length !== 1) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Select a workspace before viewing phone administration",
+    });
   }
   return tenant;
 }
@@ -87,7 +103,35 @@ async function getTenantAdminMutationCtx(ctx: any, requestedTenantId?: number) {
       message: "Select a workspace before changing phone settings",
     });
   }
-  return tenant;
+  // A cached membership can remain valid for five minutes after revocation.
+  // Recheck every PBX admin mutation against the current database role.
+  const liveRole = await requireLiveTenantAdminMembership(ctx.user!.id, tenant.tenantId);
+  return { ...tenant, role: liveRole };
+}
+
+/** Hold the actor's admin role through a DID write's transaction commit. */
+async function lockLiveDidAdmin(
+  client: PoolClient,
+  actorUserId: number,
+  tenantId: number,
+): Promise<void> {
+  const actor = await client.query(
+    `SELECT tm.role::text AS role
+       FROM tenant_memberships tm
+       JOIN tenants t ON t.id = tm.tenant_id
+      WHERE tm.user_id = $1 AND tm.tenant_id = $2
+        AND tm.status = 'active'
+        AND tm.role::text IN ('owner', 'admin')
+        AND t.status = 'active'
+      FOR UPDATE OF tm, t`,
+    [actorUserId, tenantId],
+  );
+  if (!actor.rows[0]) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Workspace administrator access changed before the phone number was saved",
+    });
+  }
 }
 
 function voicemailUnavailable(error: unknown): never {
@@ -152,14 +196,16 @@ const didRouteTargets: Record<
 };
 
 async function requireDidRouteTarget(
+  client: PoolClient,
   routeType: AssignableDidRouteType,
   routeId: number,
   tenantId: number,
 ) {
   const route = didRouteTargets[routeType];
-  const result = await query(
+  const result = await client.query(
     `SELECT ${route.idColumn} AS id FROM ${route.table}
-     WHERE ${route.idColumn} = $1 AND ${route.tenantColumn} = $2${route.activeClause} LIMIT 1`,
+     WHERE ${route.idColumn} = $1 AND ${route.tenantColumn} = $2${route.activeClause}
+     LIMIT 1 FOR SHARE`,
     [routeId, tenantId],
   );
   if (result.rows.length !== 1) {
@@ -291,37 +337,54 @@ export async function upsertBusinessHoursTimezone(
 // PBX Router
 // ============================================================================
 export const pbxRouter = router({
-  capabilities: protectedProcedure.query(() => readManagementCapabilities()),
+  capabilities: protectedProcedure
+    .input(selectedTenantSchema.optional())
+    .query(async ({ ctx, input }) => {
+      // The legacy self-service portal reads global schema availability. An
+      // admin page supplying a workspace must prove a current admin role.
+      if (input?.tenantId !== undefined) {
+        const tc = await getTenantAdminReadCtx(ctx, input.tenantId);
+        await requireLiveTenantAdminMembership(ctx.user!.id, tc.tenantId);
+      }
+      return readManagementCapabilities();
+    }),
 
   // ========================================================================
   // TENANT
   // ========================================================================
   tenant: router({
     /** Get current tenant details */
-    get: protectedProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantCtx(ctx);
-      const settingsAvailable = await tenantSettingsSchemaAvailable();
-      const result = await query(
-        `SELECT t.*,
+    get: protectedProcedure
+      .input(selectedTenantSchema.optional())
+      .query(async ({ ctx, input }) => {
+        const tc = await getTenantCtx(ctx, input?.tenantId);
+        const settingsAvailable = await tenantSettingsSchemaAvailable();
+        const result = await query(
+          `SELECT t.*, actor_tm.role::text AS live_user_role,
                 ${
                   settingsAvailable
                     ? "ts.business_hours_timezone"
                     : "NULL::text AS business_hours_timezone"
                 }
          FROM tenants t
+         JOIN tenant_memberships actor_tm
+           ON actor_tm.tenant_id = t.id
+          AND actor_tm.user_id = $2
+          AND actor_tm.status = 'active'
          ${settingsAvailable ? "LEFT JOIN tenant_settings ts ON t.id = ts.tenant_id" : ""}
-         WHERE t.id = $1`,
-        [tc.tenantId],
-      );
-      if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
-      return {
-        ...result.rows[0],
-        settingsAvailable,
-        supportedSettings: settingsAvailable ? ["businessHoursTimezone"] : [],
-        userRole: tc.role,
-        memberships: tc.memberships,
-      };
-    }),
+         WHERE t.id = $1 AND t.status = 'active'`,
+          [tc.tenantId, ctx.user!.id],
+        );
+        if (!result.rows[0]) throw new TRPCError({ code: "FORBIDDEN" });
+        const { live_user_role, ...tenantDetails } = result.rows[0];
+        return {
+          ...tenantDetails,
+          settingsAvailable,
+          supportedSettings: settingsAvailable ? ["businessHoursTimezone"] : [],
+          userRole: live_user_role,
+          memberships: tc.memberships,
+        };
+      }),
 
     /** Update tenant settings */
     updateSettings: protectedProcedure
@@ -386,8 +449,10 @@ export const pbxRouter = router({
      * extension. Deliberately expose only public identity and assignment state;
      * SIP credentials and authentication records never enter this directory.
      */
-    people: protectedProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantAdminCtx(ctx);
+    people: protectedProcedure
+      .input(selectedTenantSchema.optional())
+      .query(async ({ ctx, input }) => {
+      const tc = await getTenantAdminReadCtx(ctx, input?.tenantId);
       const result = await query(
         `SELECT tm.user_id AS id, u.name, u.email,
                 EXISTS (
@@ -412,9 +477,17 @@ export const pbxRouter = router({
           AND e.status = 'active'
           AND e.deleted_at IS NULL
          WHERE tm.tenant_id = $1 AND tm.status = 'active'
+           AND EXISTS (
+             SELECT 1 FROM tenant_memberships actor_tm
+             JOIN tenants actor_t ON actor_t.id = actor_tm.tenant_id
+             WHERE actor_tm.tenant_id = $1 AND actor_tm.user_id = $2
+               AND actor_tm.status = 'active'
+               AND actor_tm.role::text IN ('owner', 'admin')
+               AND actor_t.status = 'active'
+           )
          GROUP BY tm.user_id, u.name, u.email
          ORDER BY lower(COALESCE(u.name, '')), lower(COALESCE(u.email, '')), tm.user_id`,
-        [tc.tenantId],
+        [tc.tenantId, ctx.user!.id],
       );
       // The photo route independently requires an active membership and an
       // active assigned extension. Only issue descriptors for those people.
@@ -423,7 +496,7 @@ export const pbxRouter = router({
         .map((row) => Number(row.id));
       const publicRows = result.rows.map(({ profile_photo_authorized, ...row }) => row);
       return attachMemberPhotoDescriptors(tc.tenantId, publicRows, photoEligibleIds);
-    }),
+      }),
 
     /**
      * Workspace membership directory for tenant administrators. This is
@@ -431,8 +504,10 @@ export const pbxRouter = router({
      * person needs an identity-verification and invitation-delivery service,
      * neither of which is available through this PBX API.
      */
-    members: protectedProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantAdminCtx(ctx);
+    members: protectedProcedure
+      .input(selectedTenantSchema.optional())
+      .query(async ({ ctx, input }) => {
+      const tc = await getTenantAdminReadCtx(ctx, input?.tenantId);
       const result = await query(
         `SELECT tm.user_id AS id, u.name, u.email, tm.role, tm.status,
                 tm.created_at,
@@ -458,6 +533,14 @@ export const pbxRouter = router({
           AND e.status = 'active'
           AND e.deleted_at IS NULL
          WHERE tm.tenant_id = $1
+           AND EXISTS (
+             SELECT 1 FROM tenant_memberships actor_tm
+             JOIN tenants actor_t ON actor_t.id = actor_tm.tenant_id
+             WHERE actor_tm.tenant_id = $1 AND actor_tm.user_id = $2
+               AND actor_tm.status = 'active'
+               AND actor_tm.role::text IN ('owner', 'admin')
+               AND actor_t.status = 'active'
+           )
          GROUP BY tm.user_id, u.name, u.email, tm.role, tm.status, tm.created_at
          ORDER BY
            CASE tm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
@@ -465,7 +548,7 @@ export const pbxRouter = router({
            lower(COALESCE(u.name, '')),
            lower(COALESCE(u.email, '')),
            tm.user_id`,
-        [tc.tenantId],
+        [tc.tenantId, ctx.user!.id],
       );
       // Inactive memberships and active members without an assigned active
       // extension are not authorized by the photo route and remain initials-only.
@@ -474,7 +557,7 @@ export const pbxRouter = router({
         .map((row) => Number(row.id));
       const publicRows = result.rows.map(({ profile_photo_authorized, ...row }) => row);
       return attachMemberPhotoDescriptors(tc.tenantId, publicRows, photoEligibleIds);
-    }),
+      }),
 
     /**
      * Update an existing workspace membership. Owners remain immutable here;
@@ -485,6 +568,7 @@ export const pbxRouter = router({
       .input(
         z
           .object({
+            tenantId: z.number().int().positive().optional(),
             userId: z.number().int().positive(),
             role: z.enum(["admin", "user"]).optional(),
             status: z.enum(["active", "inactive"]).optional(),
@@ -494,7 +578,7 @@ export const pbxRouter = router({
           }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         const actorUserId = ctx.user!.id;
 
         const result = await withTransaction(async (client) => {
@@ -700,9 +784,9 @@ export const pbxRouter = router({
   extensions: router({
     /** List extensions for current tenant */
     list: protectedProcedure
-      .input(paginationSchema.optional())
+      .input(paginationSchema.extend({ tenantId: z.number().int().positive().optional() }).optional())
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminReadCtx(ctx, input?.tenantId);
         const p = buildPaginationSQL(input || {});
 
         const [dataResult, countResult] = await Promise.all([
@@ -714,12 +798,29 @@ export const pbxRouter = router({
              LEFT JOIN sip_accounts sa ON e.id = sa.extension_id AND sa.deleted_at IS NULL
              LEFT JOIN users u ON e.user_id = u.id
              WHERE e.tenant_id = $1 AND e.deleted_at IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM tenant_memberships actor_tm
+                 JOIN tenants actor_t ON actor_t.id = actor_tm.tenant_id
+                 WHERE actor_tm.tenant_id = $1 AND actor_tm.user_id = $4
+                   AND actor_tm.status = 'active'
+                   AND actor_tm.role::text IN ('owner', 'admin')
+                   AND actor_t.status = 'active'
+               )
              ORDER BY ${p.orderBy} LIMIT $2 OFFSET $3`,
-            [tc.tenantId, p.limit, p.offset],
+            [tc.tenantId, p.limit, p.offset, ctx.user!.id],
           ),
           query(
-            `SELECT COUNT(*) as total FROM extensions WHERE tenant_id = $1 AND deleted_at IS NULL`,
-            [tc.tenantId],
+            `SELECT COUNT(*) as total FROM extensions e
+             WHERE e.tenant_id = $1 AND e.deleted_at IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM tenant_memberships actor_tm
+                 JOIN tenants actor_t ON actor_t.id = actor_tm.tenant_id
+                 WHERE actor_tm.tenant_id = $1 AND actor_tm.user_id = $2
+                   AND actor_tm.status = 'active'
+                   AND actor_tm.role::text IN ('owner', 'admin')
+                   AND actor_t.status = 'active'
+               )`,
+            [tc.tenantId, ctx.user!.id],
           ),
         ]);
 
@@ -732,9 +833,9 @@ export const pbxRouter = router({
 
     /** Get single extension */
     get: protectedProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.number(), tenantId: z.number().int().positive().optional() }))
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminReadCtx(ctx, input.tenantId);
         const result = await query(
           `SELECT e.*, sa.sip_username, sa.sip_domain, sa.status as sip_status,
                   sa.last_registered_at, sa.transport_preference, sa.websocket_enabled,
@@ -742,8 +843,16 @@ export const pbxRouter = router({
            FROM extensions e
            LEFT JOIN sip_accounts sa ON e.id = sa.extension_id AND sa.deleted_at IS NULL
            LEFT JOIN users u ON e.user_id = u.id
-           WHERE e.id = $1 AND e.tenant_id = $2 AND e.deleted_at IS NULL`,
-          [input.id, tc.tenantId],
+           WHERE e.id = $1 AND e.tenant_id = $2 AND e.deleted_at IS NULL
+             AND EXISTS (
+               SELECT 1 FROM tenant_memberships actor_tm
+               JOIN tenants actor_t ON actor_t.id = actor_tm.tenant_id
+               WHERE actor_tm.tenant_id = $2 AND actor_tm.user_id = $3
+                 AND actor_tm.status = 'active'
+                 AND actor_tm.role::text IN ('owner', 'admin')
+                 AND actor_t.status = 'active'
+             )`,
+          [input.id, tc.tenantId, ctx.user!.id],
         );
         if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
         return result.rows[0];
@@ -753,6 +862,7 @@ export const pbxRouter = router({
     create: protectedProcedure
       .input(
         z.object({
+          tenantId: z.number().int().positive().optional(),
           extensionNumber: z.string().min(2).max(10),
           displayName: z.string().optional(),
           type: z
@@ -773,7 +883,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
@@ -873,6 +983,7 @@ export const pbxRouter = router({
     update: protectedProcedure
       .input(
         z.object({
+          tenantId: z.number().int().positive().optional(),
           id: z.number(),
           displayName: z.string().optional(),
           callerIdName: z.string().optional(),
@@ -888,7 +999,7 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         const sets: string[] = [];
         const vals: any[] = [];
         let idx = 1;
@@ -1046,9 +1157,9 @@ export const pbxRouter = router({
 
     /** Soft delete an extension */
     delete: protectedProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.number(), tenantId: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (
           !(await validateTenantOwnership("extensions", input.id, tc.tenantId))
         ) {
@@ -1084,9 +1195,9 @@ export const pbxRouter = router({
 
     /** Reset SIP password for an extension */
     resetPassword: protectedProcedure
-      .input(z.object({ extensionId: z.number() }))
+      .input(z.object({ extensionId: z.number(), tenantId: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (
           !(await validateTenantOwnership(
             "extensions",
@@ -1153,9 +1264,12 @@ export const pbxRouter = router({
   phoneNumbers: router({
     /** List phone numbers */
     list: protectedProcedure
-      .input(paginationSchema.optional())
+      .input(paginationSchema.extend({
+        tenantId: z.number().int().positive().optional(),
+      }).optional())
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantAdminReadCtx(ctx, input?.tenantId);
+        await requireLiveTenantAdminMembership(ctx.user!.id, tc.tenantId);
         const p = buildPaginationSQL(input || {});
         if (!(await phoneNumberSchemaAvailable())) {
           return {
@@ -1170,12 +1284,29 @@ export const pbxRouter = router({
              FROM phone_numbers pn
              LEFT JOIN emergency_addresses ea ON pn.e911_address_id = ea.id
              WHERE pn.tenant_id = $1 AND pn.deleted_at IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM tenant_memberships actor_tm
+                 JOIN tenants actor_t ON actor_t.id = actor_tm.tenant_id
+                 WHERE actor_tm.tenant_id = $1 AND actor_tm.user_id = $4
+                   AND actor_tm.status = 'active'
+                   AND actor_tm.role::text IN ('owner', 'admin')
+                   AND actor_t.status = 'active'
+               )
              ORDER BY ${p.orderBy} LIMIT $2 OFFSET $3`,
-            [tc.tenantId, p.limit, p.offset],
+            [tc.tenantId, p.limit, p.offset, ctx.user!.id],
           ),
           query(
-            `SELECT COUNT(*) as total FROM phone_numbers WHERE tenant_id = $1 AND deleted_at IS NULL`,
-            [tc.tenantId],
+            `SELECT COUNT(*) as total FROM phone_numbers pn
+             WHERE pn.tenant_id = $1 AND pn.deleted_at IS NULL
+               AND EXISTS (
+                 SELECT 1 FROM tenant_memberships actor_tm
+                 JOIN tenants actor_t ON actor_t.id = actor_tm.tenant_id
+                 WHERE actor_tm.tenant_id = $1 AND actor_tm.user_id = $2
+                   AND actor_tm.status = 'active'
+                   AND actor_tm.role::text IN ('owner', 'admin')
+                   AND actor_t.status = 'active'
+               )`,
+            [tc.tenantId, ctx.user!.id],
           ),
         ]);
 
@@ -1193,6 +1324,7 @@ export const pbxRouter = router({
     create: protectedProcedure
       .input(
         z.object({
+          tenantId: z.number().int().positive().optional(),
           number: z.string(),
           numberType: z
             .enum(["local", "mobile", "toll_free", "international"])
@@ -1202,25 +1334,28 @@ export const pbxRouter = router({
         }),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (!(await phoneNumberSchemaAvailable())) {
           throw phoneNumberSchemaUnavailable();
         }
         const normalized = normalizeToE164(input.number);
 
-        const result = await query(
-          `INSERT INTO phone_numbers (tenant_id, number_e164, number_display, country, number_type, provider, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'active')
-           RETURNING *`,
-          [
-            tc.tenantId,
-            normalized.e164,
-            normalized.display,
-            input.country,
-            input.numberType,
-            input.provider,
-          ],
-        );
+        const result = await withTransaction(async (client) => {
+          await lockLiveDidAdmin(client, ctx.user!.id, tc.tenantId);
+          return client.query(
+            `INSERT INTO phone_numbers (tenant_id, number_e164, number_display, country, number_type, provider, status)
+             VALUES ($1, $2, $3, $4, $5, $6, 'active')
+             RETURNING *`,
+            [
+              tc.tenantId,
+              normalized.e164,
+              normalized.display,
+              input.country,
+              input.numberType,
+              input.provider,
+            ],
+          );
+        });
 
         await writeAuditLog({
           tenantId: tc.tenantId,
@@ -1240,6 +1375,7 @@ export const pbxRouter = router({
       .input(
         z
           .object({
+            tenantId: z.number().int().positive().optional(),
             id: z.number(),
             assignedRouteType: z
               .enum([
@@ -1264,7 +1400,7 @@ export const pbxRouter = router({
           ),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (!(await phoneNumberSchemaAvailable())) {
           throw phoneNumberSchemaUnavailable();
         }
@@ -1277,24 +1413,31 @@ export const pbxRouter = router({
         ) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
-        if (input.assignedRouteType && input.assignedRouteId) {
-          await requireDidRouteTarget(
-            input.assignedRouteType,
-            input.assignedRouteId,
-            tc.tenantId,
+        await withTransaction(async (client) => {
+          await lockLiveDidAdmin(client, ctx.user!.id, tc.tenantId);
+          if (input.assignedRouteType && input.assignedRouteId) {
+            // Lock every referenced destination row, including the SIP account
+            // joined for user extensions, until the DID update commits.
+            await requireDidRouteTarget(
+              client,
+              input.assignedRouteType,
+              input.assignedRouteId,
+              tc.tenantId,
+            );
+          }
+          const updated = await client.query(
+            `UPDATE phone_numbers SET assigned_route_type = $1, assigned_route_id = $2, updated_at = NOW()
+             WHERE id = $3 AND tenant_id = $4 AND deleted_at IS NULL
+             RETURNING id`,
+            [
+              input.assignedRouteType,
+              input.assignedRouteId,
+              input.id,
+              tc.tenantId,
+            ],
           );
-        }
-
-        await query(
-          `UPDATE phone_numbers SET assigned_route_type = $1, assigned_route_id = $2, updated_at = NOW()
-           WHERE id = $3 AND tenant_id = $4`,
-          [
-            input.assignedRouteType,
-            input.assignedRouteId,
-            input.id,
-            tc.tenantId,
-          ],
-        );
+          if (!updated.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
+        });
 
         await invalidateCache(`routing:${tc.tenantId}:*`);
 

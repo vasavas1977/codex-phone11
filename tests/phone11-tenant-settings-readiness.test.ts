@@ -16,6 +16,10 @@ const db = vi.hoisted(() => ({ query: vi.fn(), withTransaction: vi.fn() }));
 const audit = vi.hoisted(() => ({ writeAuditLog: vi.fn() }));
 
 vi.mock("../server/pbx/db", () => db);
+vi.mock("../server/pbx/tenant-middleware", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../server/pbx/tenant-middleware")>()),
+  requireLiveTenantAdminMembership: vi.fn(async () => "admin"),
+}));
 vi.mock("../server/pbx/redis", () => ({
   cacheGetOrSet: vi.fn((_key, _ttl, callback) => callback()),
   invalidateCache: vi.fn(),
@@ -78,7 +82,7 @@ describe("workspace setting API", () => {
       .mockResolvedValueOnce({ rows: schemaRows })
       .mockResolvedValueOnce({
         rows: [
-          { id: 7, name: "Tenant 7", business_hours_timezone: "Asia/Bangkok" },
+          { id: 7, name: "Tenant 7", business_hours_timezone: "Asia/Bangkok", live_user_role: "admin" },
         ],
       });
 
@@ -92,7 +96,7 @@ describe("workspace setting API", () => {
     });
     expect(db.query.mock.calls[2]).toEqual([
       expect.stringContaining("WHERE t.id = $1"),
-      [7],
+      [7, 9],
     ]);
     expect(String(db.query.mock.calls[2][0])).not.toMatch(
       /default_caller_id|recording_default_policy|max_ring_timeout_seconds/,

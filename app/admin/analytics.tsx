@@ -3,6 +3,7 @@
  * not a statement about PBX health, real-time activity, or CDR completeness.
  */
 import { useCallback, useMemo, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ActivityIndicator,
   RefreshControl,
@@ -75,6 +76,14 @@ function NumberRanking({
 }
 
 export default function CallAnalyticsScreen() {
+  return (
+    <AdminWorkspaceBoundary requiresImplicitTenant>
+      <CallAnalyticsScreenContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function CallAnalyticsScreenContent() {
   const colors = useColors();
   const { width } = useWindowDimensions();
   const wide = width >= 900;

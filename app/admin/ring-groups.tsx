@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList,
   Alert, TextInput, Modal, ActivityIndicator,
@@ -56,6 +57,14 @@ function asFallbackAction(value: unknown): FallbackAction {
 }
 
 export default function AdminRingGroups() {
+  return (
+    <AdminWorkspaceBoundary requiresImplicitTenant>
+      <AdminRingGroupsContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function AdminRingGroupsContent() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;

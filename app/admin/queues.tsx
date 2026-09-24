@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList,
   Alert, TextInput, Modal, ActivityIndicator,
@@ -29,6 +30,14 @@ import {
 import { normalizeQueueAgent, validateQueueAgents, type QueueAgentDraft } from "@/lib/pbx/queue-agents";
 
 export default function AdminQueues() {
+  return (
+    <AdminWorkspaceBoundary requiresImplicitTenant>
+      <AdminQueuesContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function AdminQueuesContent() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;

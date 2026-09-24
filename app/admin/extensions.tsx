@@ -6,6 +6,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ActivityIndicator,
   Alert,
@@ -66,6 +67,14 @@ function errorMessage(error: unknown) {
 }
 
 export default function AdminExtensions() {
+  return (
+    <AdminWorkspaceBoundary>
+      <AdminExtensionsContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function AdminExtensionsContent() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
   const tenantQuery = useTenant();
@@ -147,6 +156,10 @@ export default function AdminExtensions() {
   };
 
   const handleCreate = async () => {
+    if (!tenantId) {
+      Alert.alert("Choose a workspace", "Select a workspace before creating an extension.");
+      return;
+    }
     const number = extension.trim();
     if (!/^\d{2,10}$/.test(number)) {
       Alert.alert(
@@ -158,6 +171,7 @@ export default function AdminExtensions() {
 
     try {
       await createExtension.mutateAsync({
+        tenantId,
         extensionNumber: number,
         displayName: displayName.trim() || `Extension ${number}`,
         type: "user",
@@ -187,8 +201,13 @@ export default function AdminExtensions() {
 
   const saveAssignment = async () => {
     if (!editingAssignment) return;
+    if (!tenantId) {
+      setAssignmentError("Select a workspace before assigning an extension.");
+      return;
+    }
     try {
       await updateExtension.mutateAsync({
+        tenantId,
         id: editingAssignment.id,
         userId: selectedPersonId,
       });

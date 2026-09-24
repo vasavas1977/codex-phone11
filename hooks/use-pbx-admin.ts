@@ -6,6 +6,116 @@
  * call records, fraud controls, and dashboard stats.
  */
 import { trpc } from "@/lib/trpc";
+import { useEffect, useSyncExternalStore } from "react";
+import { useAuth } from "@/hooks/use-auth";
+import * as Auth from "@/lib/_core/auth";
+
+type AdminWorkspaceSelection = {
+  userId: number | null;
+  tenantId: number | null;
+};
+let adminWorkspaceSelection: AdminWorkspaceSelection = {
+  userId: null,
+  tenantId: null,
+};
+const adminWorkspaceListeners = new Set<() => void>();
+
+function subscribeAdminWorkspace(listener: () => void) {
+  adminWorkspaceListeners.add(listener);
+  return () => adminWorkspaceListeners.delete(listener);
+}
+
+function getAdminWorkspaceSelection() {
+  return adminWorkspaceSelection;
+}
+
+function setAdminWorkspaceSelection(
+  userId: number | null,
+  tenantId: number | null,
+) {
+  if (
+    adminWorkspaceSelection.userId === userId &&
+    adminWorkspaceSelection.tenantId === tenantId
+  )
+    return;
+  adminWorkspaceSelection = { userId, tenantId };
+  adminWorkspaceListeners.forEach((listener) => listener());
+}
+
+// Reset even if the administrator leaves these pages before signing out.
+Auth.addAuthChangeListener(() => {
+  const userId = Auth.getAuthSnapshot().user?.id ?? null;
+  if (adminWorkspaceSelection.userId !== userId)
+    setAdminWorkspaceSelection(userId, null);
+});
+
+/** A session-only admin choice. Never infer a multi-workspace write target. */
+export function usePbxAdminWorkspace() {
+  const { user } = useAuth({ autoFetch: false });
+  const userId = typeof user?.id === "number" ? user.id : null;
+  const selection = useSyncExternalStore(
+    subscribeAdminWorkspace,
+    getAdminWorkspaceSelection,
+    getAdminWorkspaceSelection,
+  );
+  const membershipsQuery = trpc.pbx.tenant.memberships.useQuery(undefined, {
+    enabled: userId !== null,
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
+  // This query has no server input, so a cached response may belong to the
+  // prior login until refetch completes. Discard it before resolving a target.
+  const memberships = (membershipsQuery.data ?? []).filter(
+    (membership) => membership.userId === userId,
+  );
+  const manageableMemberships = memberships.filter(
+    (membership) => membership.role === "owner" || membership.role === "admin",
+  );
+  const storedTenantId =
+    selection.userId === userId ? selection.tenantId : null;
+  const selectedTenantId =
+    manageableMemberships.length === 1
+      ? manageableMemberships[0].tenantId
+      : manageableMemberships.some(
+            (membership) => membership.tenantId === storedTenantId,
+          )
+        ? storedTenantId
+        : null;
+
+  useEffect(() => {
+    // A different signed-in account must never inherit the previous account's
+    // workspace choice, even if React Query still has old response data.
+    if (selection.userId !== userId) setAdminWorkspaceSelection(userId, null);
+  }, [selection.userId, userId]);
+
+  const chooseTenant = (tenantId: number) => {
+    if (
+      userId === null ||
+      !manageableMemberships.some(
+        (membership) => membership.tenantId === tenantId,
+      )
+    )
+      return;
+    setAdminWorkspaceSelection(userId, tenantId);
+  };
+
+  return {
+    membershipsQuery,
+    manageableMemberships,
+    selectedTenantId,
+    chooseTenant,
+    // Legacy PBX procedures without tenantId are safe only when the account
+    // has exactly one active membership, regardless of its role elsewhere.
+    canUseImplicitTenant:
+      membershipsQuery.isSuccess && memberships.length === 1,
+    needsSelection:
+      membershipsQuery.isSuccess &&
+      manageableMemberships.length > 1 &&
+      selectedTenantId === null,
+    hasMultipleMemberships:
+      membershipsQuery.isSuccess && memberships.length > 1,
+  };
+}
 
 export type PbxManagementCapabilities = {
   phoneNumbers: boolean;
@@ -29,6 +139,21 @@ export function usePbxCapabilities(enabled: boolean = true) {
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
   });
+}
+
+/** Schema availability bound to a live selected workspace administrator. */
+export function usePbxAdminCapabilities(enabled: boolean = true) {
+  const workspace = usePbxAdminWorkspace();
+  return trpc.pbx.capabilities.useQuery(
+    { tenantId: workspace.selectedTenantId ?? 0 },
+    {
+      enabled: enabled && workspace.selectedTenantId !== null,
+      staleTime: 0,
+      gcTime: 0,
+      refetchOnMount: "always",
+      refetchOnWindowFocus: true,
+    },
+  );
 }
 
 // ============================================================================
@@ -72,32 +197,45 @@ export function usePbxCallAnalytics(period: PbxAnalyticsPeriod) {
 // Tenant
 // ============================================================================
 export function useTenant(enabled: boolean = true) {
-  return trpc.pbx.tenant.get.useQuery(undefined, {
-    enabled,
-    staleTime: 300_000, // 5 min cache
-  });
+  const workspace = usePbxAdminWorkspace();
+  return trpc.pbx.tenant.get.useQuery(
+    { tenantId: workspace.selectedTenantId ?? 0 },
+    {
+      enabled: enabled && workspace.selectedTenantId !== null,
+      staleTime: 300_000, // 5 min cache
+    },
+  );
 }
 
-export function useTenantMemberships() {
+export function useTenantMemberships(enabled: boolean = true) {
   return trpc.pbx.tenant.memberships.useQuery(undefined, {
+    enabled,
     staleTime: 300_000,
   });
 }
 
 /** Active, same-workspace people with safe display identity only. */
 export function useTenantPeople(enabled: boolean = true) {
-  return trpc.pbx.tenant.people.useQuery(undefined, {
-    enabled,
-    staleTime: 30_000,
-  });
+  const workspace = usePbxAdminWorkspace();
+  return trpc.pbx.tenant.people.useQuery(
+    { tenantId: workspace.selectedTenantId ?? 0 },
+    {
+      enabled: enabled && workspace.selectedTenantId !== null,
+      staleTime: 30_000,
+    },
+  );
 }
 
 /** Existing workspace members, including inactive memberships, for admins. */
 export function useTenantMembers(enabled: boolean = true) {
-  return trpc.pbx.tenant.members.useQuery(undefined, {
-    enabled,
-    staleTime: 30_000,
-  });
+  const workspace = usePbxAdminWorkspace();
+  return trpc.pbx.tenant.members.useQuery(
+    { tenantId: workspace.selectedTenantId ?? 0 },
+    {
+      enabled: enabled && workspace.selectedTenantId !== null,
+      staleTime: 30_000,
+    },
+  );
 }
 
 export function useUpdateTenantMember() {
@@ -107,6 +245,7 @@ export function useUpdateTenantMember() {
       void utils.pbx.tenant.members.invalidate();
       void utils.pbx.tenant.people.invalidate();
       void utils.pbx.tenant.get.invalidate();
+      void utils.pbx.tenant.memberships.invalidate();
       void utils.pbx.extensions.list.invalidate();
     },
   });
@@ -167,17 +306,28 @@ export function useExtensions(
   pageSize: number = 25,
   enabled: boolean = true,
 ) {
+  const workspace = usePbxAdminWorkspace();
   return trpc.pbx.extensions.list.useQuery(
-    { page, pageSize, sortBy: "extension_number", sortOrder: "asc" },
-    { enabled, staleTime: 30_000 },
+    {
+      page,
+      pageSize,
+      sortBy: "extension_number",
+      sortOrder: "asc",
+      tenantId: workspace.selectedTenantId ?? 0,
+    },
+    {
+      enabled: enabled && workspace.selectedTenantId !== null,
+      staleTime: 30_000,
+    },
   );
 }
 
 export function useExtension(id: number) {
+  const workspace = usePbxAdminWorkspace();
   return trpc.pbx.extensions.get.useQuery(
-    { id },
+    { id, tenantId: workspace.selectedTenantId ?? 0 },
     {
-      enabled: id > 0,
+      enabled: id > 0 && workspace.selectedTenantId !== null,
       staleTime: 30_000,
     },
   );
@@ -225,9 +375,13 @@ export function usePhoneNumbers(
   pageSize: number = 25,
   enabled: boolean = true,
 ) {
+  const workspace = usePbxAdminWorkspace();
   return trpc.pbx.phoneNumbers.list.useQuery(
-    { page, pageSize },
-    { enabled, staleTime: 30_000 },
+    { page, pageSize, tenantId: workspace.selectedTenantId ?? 0 },
+    {
+      enabled: enabled && workspace.selectedTenantId !== null,
+      staleTime: 30_000,
+    },
   );
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ActivityIndicator,
   Alert,
@@ -43,6 +44,14 @@ const ROUTES = [
 type RouteAction = (typeof ROUTES)[number]["value"];
 
 export default function AdminSchedules() {
+  return (
+    <AdminWorkspaceBoundary requiresImplicitTenant>
+      <AdminSchedulesContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function AdminSchedulesContent() {
   const colors = useColors();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;

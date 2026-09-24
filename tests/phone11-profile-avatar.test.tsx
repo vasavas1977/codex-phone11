@@ -70,7 +70,11 @@ it("opens the exact person profile and consumes the parent row's selection gestu
   m.press(event);
   expect(event.stopPropagation).toHaveBeenCalledOnce();
   expect(open).toHaveBeenCalledOnce();
-  expect(open).toHaveBeenCalledWith({ tenantId: 20, userId: 2 });
+  expect(open).toHaveBeenCalledWith(expect.objectContaining({
+    tenantId: 20,
+    userId: 2,
+    name: "Nathasa W.",
+  }));
 });
 
 it.each([

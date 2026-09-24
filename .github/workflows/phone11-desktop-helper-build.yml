@@ -1,0 +1,54 @@
+name: Phone11 desktop helper build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/phone11-desktop-helper-build.yml
+      - desktop/native/**
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: siprix/SiprixUA
+          ref: 38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f
+          path: _vendor/siprixua
+          persist-credentials: false
+      - name: Compile native helper
+        shell: bash
+        run: |
+          cmake -S desktop/native -B "$RUNNER_TEMP/phone11-desktop-helper" -G Xcode \
+            -DSIPRIX_SDK_ROOT="$GITHUB_WORKSPACE/_vendor/siprixua"
+          cmake --build "$RUNNER_TEMP/phone11-desktop-helper" --config Release
+      - name: Smoke-test private-pipe bootstrap
+        shell: bash
+        run: |
+          python3 desktop/native/test_bootstrap.py \
+            "$RUNNER_TEMP/phone11-desktop-helper/Release/phone11_siprix_helper.app/Contents/MacOS/phone11_siprix_helper"
+
+  windows-x64:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: siprix/SiprixUA
+          ref: 38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f
+          path: _vendor/siprixua
+          persist-credentials: false
+      - name: Compile native helper
+        shell: pwsh
+        run: |
+          cmake -S desktop/native -B "$env:RUNNER_TEMP\phone11-desktop-helper" -G "Visual Studio 17 2022" -A x64 "-DSIPRIX_SDK_ROOT=$env:GITHUB_WORKSPACE\_vendor\siprixua"
+          cmake --build "$env:RUNNER_TEMP\phone11-desktop-helper" --config Release
+      - name: Smoke-test private-pipe bootstrap
+        shell: pwsh
+        run: |
+          python desktop/native/test_bootstrap.py "$env:RUNNER_TEMP\phone11-desktop-helper\Release\phone11_siprix_helper.exe"

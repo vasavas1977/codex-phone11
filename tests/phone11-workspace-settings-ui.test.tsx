@@ -87,6 +87,9 @@ vi.mock("expo-router", () => ({
   },
 }));
 vi.mock("../components/screen-container", () => ({ ScreenContainer: element }));
+vi.mock("../components/admin/admin-workspace-boundary", () => ({
+  AdminWorkspaceBoundary: element,
+}));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
 vi.mock("../constants/oauth", () => ({
   portalSignInRoute: (path: string) => `/auth/sign-in?returnTo=${path}`,
@@ -103,6 +106,9 @@ vi.mock("../hooks/use-colors", () => ({
     success: "#080",
     surface: "#eee",
   }),
+}));
+vi.mock("../hooks/use-pbx-admin", () => ({
+  usePbxAdminWorkspace: () => ({ selectedTenantId: 18 }),
 }));
 vi.mock("../lib/trpc", () => ({
   trpc: {
@@ -220,7 +226,7 @@ describe("workspace timezone screen", () => {
     expect(m.presses.get("Save workspace timezone").disabled).toBe(true);
     expect(m.mutateAsync).not.toHaveBeenCalled();
     expect(m.getUseQuery).toHaveBeenCalledWith(
-      undefined,
+      { tenantId: 18 },
       expect.objectContaining({
         gcTime: 0,
         refetchOnMount: "always",
@@ -239,6 +245,7 @@ describe("workspace timezone screen", () => {
 
     expect(m.mutateAsync).toHaveBeenCalledOnce();
     expect(m.mutateAsync).toHaveBeenCalledWith({
+      tenantId: 18,
       businessHoursTimezone: "Asia/Tokyo",
     });
     expect(m.invalidate).toHaveBeenCalledOnce();
@@ -257,6 +264,15 @@ describe("workspace timezone screen", () => {
     expect(render()).toContain(
       "Enter a supported IANA time zone, such as Asia/Bangkok.",
     );
+  });
+
+  it("does not save a stale tenant response into another selected workspace", async () => {
+    m.tenantQuery.data = validTenant({ id: 19 });
+    render();
+    typeTimezone("Asia/Tokyo");
+    render();
+    await save();
+    expect(m.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("does not render writable controls without the confirmed capability or role", () => {

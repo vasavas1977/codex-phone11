@@ -6,6 +6,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ActivityIndicator,
   FlatList,
@@ -28,7 +29,8 @@ import {
   useExtensions,
   useIvrMenus,
   type PbxManagementCapabilities,
-  usePbxCapabilities,
+  usePbxAdminCapabilities,
+  usePbxAdminWorkspace,
   usePhoneNumbers,
   useRingGroups,
   useTenant,
@@ -173,6 +175,16 @@ function routeLabel(
     : "Unavailable destination";
 }
 
+function inventoryRouteLabel(
+  row: PhoneNumberRow,
+  destinations: Record<RouteType, DestinationOption[]>,
+  canEditRoutes: boolean,
+) {
+  if (canEditRoutes) return routeLabel(row, destinations);
+  if (!row.assigned_route_type || !row.assigned_route_id) return "Unassigned";
+  return `${routeTypeLabel(row.assigned_route_type) || "Destination"} · #${row.assigned_route_id}`;
+}
+
 function typeLabel(value?: string | null) {
   if (!value) return "Number";
   return value
@@ -185,13 +197,22 @@ function errorMessage(error: unknown) {
 }
 
 export default function AdminDIDs() {
+  return (
+    <AdminWorkspaceBoundary>
+      <AdminDIDsContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function AdminDIDsContent() {
   const colors = useColors();
+  const workspace = usePbxAdminWorkspace();
   const tenantQuery = useTenant();
   const tenantId = Number(tenantQuery.data?.id || 0);
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
   );
-  const capabilitiesQuery = usePbxCapabilities(
+  const capabilitiesQuery = usePbxAdminCapabilities(
     tenantQuery.isSuccess && canManage,
   );
   const schemaPhoneNumbersAvailable =
@@ -204,7 +225,11 @@ export default function AdminDIDs() {
   );
   const phoneNumbersAvailable =
     schemaPhoneNumbersAvailable && numbersQuery.data?.available !== false;
-  const routeDestinationsEnabled = phoneNumbersAvailable && routeTenantId > 0;
+  // The destination directories still resolve an implicit tenant. Keep route
+  // editing closed for multi-workspace accounts until each list is explicit.
+  const canEditRoutes = workspace.canUseImplicitTenant;
+  const routeDestinationsEnabled =
+    phoneNumbersAvailable && routeTenantId > 0 && canEditRoutes;
   const routeMutation = useAssignPhoneNumberRoute();
   const extensionsQuery = useExtensions(1, 100, routeDestinationsEnabled);
   const ringGroupsQuery = useRingGroups(
@@ -305,12 +330,14 @@ export default function AdminDIDs() {
         String(row.provider || "")
           .toLowerCase()
           .includes(needle) ||
-        routeLabel(row, allDestinations).toLowerCase().includes(needle);
+        inventoryRouteLabel(row, allDestinations, canEditRoutes)
+          .toLowerCase().includes(needle);
       return matchesFilter && matchesSearch;
     });
-  }, [allDestinations, filter, rows, search]);
+  }, [allDestinations, canEditRoutes, filter, rows, search]);
 
   const openRouteEditor = (number: PhoneNumberRow) => {
+    if (!canEditRoutes) return;
     const routeType = routeTypeLabel(number.assigned_route_type)
       ? (number.assigned_route_type as RouteType)
       : null;
@@ -337,7 +364,7 @@ export default function AdminDIDs() {
   };
 
   const saveRoute = async () => {
-    if (!editingNumber) return;
+    if (!editingNumber || !canEditRoutes || !routeTenantId) return;
     if (
       selectedRouteType &&
       !destinationOptions[selectedRouteType].some(
@@ -349,6 +376,7 @@ export default function AdminDIDs() {
     }
     try {
       await routeMutation.mutateAsync({
+        tenantId: routeTenantId,
         id: editingNumber.id,
         assignedRouteType: selectedRouteType,
         assignedRouteId: selectedRouteType ? selectedRouteId : null,
@@ -369,8 +397,10 @@ export default function AdminDIDs() {
     );
     return (
       <TouchableOpacity
-        accessibilityLabel={`Change destination for ${numberLabel(item)}`}
-        disabled={routeMutation.isPending}
+        accessibilityLabel={canEditRoutes
+          ? `Change destination for ${numberLabel(item)}`
+          : `Phone number ${numberLabel(item)}`}
+        disabled={routeMutation.isPending || !canEditRoutes}
         onPress={() => openRouteEditor(item)}
         style={[
           styles.card,
@@ -400,7 +430,7 @@ export default function AdminDIDs() {
               { color: assigned ? colors.primary : colors.muted },
             ]}
           >
-            {routeLabel(item, allDestinations)}
+            {inventoryRouteLabel(item, allDestinations, canEditRoutes)}
           </Text>
         </View>
         <View style={styles.cardEnd}>
@@ -424,7 +454,9 @@ export default function AdminDIDs() {
               {String(item.status || "unknown").toUpperCase()}
             </Text>
           </View>
-          <Text style={[styles.edit, { color: colors.primary }]}>Edit</Text>
+          {canEditRoutes ? (
+            <Text style={[styles.edit, { color: colors.primary }]}>Edit</Text>
+          ) : null}
         </View>
       </TouchableOpacity>
     );
@@ -541,6 +573,11 @@ export default function AdminDIDs() {
 
       {canManage && phoneNumbersAvailable && (
         <>
+          {!canEditRoutes ? (
+            <Text style={[styles.stateText, { color: colors.muted, marginHorizontal: 20 }]}>
+              Call destination editing is not available yet for accounts in multiple workspaces.
+            </Text>
+          ) : null}
           <View
             style={[
               styles.search,

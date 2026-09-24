@@ -6,6 +6,7 @@
  * invitation-delivery path yet.
  */
 import { useMemo, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ActivityIndicator,
   Alert,
@@ -60,6 +61,14 @@ function roleLabel(role: MembershipRole) {
 }
 
 export default function AdminUsers() {
+  return (
+    <AdminWorkspaceBoundary>
+      <AdminUsersContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function AdminUsersContent() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
   const tenantQuery = useTenant();
@@ -130,10 +139,15 @@ export default function AdminUsers() {
   const save = async () => {
     if (!editing) return;
     const changes: {
+      tenantId: number;
       userId: number;
       role?: "admin" | "user";
       status?: MembershipStatus;
-    } = { userId: editing.id };
+    } = { tenantId: tenantId ?? 0, userId: editing.id };
+    if (!tenantId) {
+      setSaveError("Select a workspace before changing a member.");
+      return;
+    }
     if (
       canManageAdministrators &&
       editing.role !== "owner" &&

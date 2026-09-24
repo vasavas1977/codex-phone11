@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ActivityIndicator,
   Pressable,
@@ -15,6 +16,7 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { portalSignInRoute } from "@/constants/oauth";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
+import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
 import {
   BUSINESS_HOURS_TIMEZONE_CAPABILITY,
   canManageWorkspaceTimezone,
@@ -76,12 +78,23 @@ function WorkspaceSettingsState({
 }
 
 export default function WorkspaceSettingsScreen() {
+  return (
+    <AdminWorkspaceBoundary>
+      <WorkspaceSettingsScreenContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function WorkspaceSettingsScreenContent() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
+  const workspace = usePbxAdminWorkspace();
   // Schema-backed settings availability is a write gate, so do not reuse a
   // cached observation when this page opens.
-  const tenantQuery = trpc.pbx.tenant.get.useQuery(undefined, {
-    enabled: Boolean(user),
+  const tenantQuery = trpc.pbx.tenant.get.useQuery({
+    tenantId: workspace.selectedTenantId ?? 0,
+  }, {
+    enabled: Boolean(user) && workspace.selectedTenantId !== null,
     staleTime: 0,
     gcTime: 0,
     refetchOnMount: "always",
@@ -186,7 +199,11 @@ export default function WorkspaceSettingsScreen() {
   }
 
   const saveTimezone = async () => {
-    if (updateSettings.isPending) return;
+    if (
+      updateSettings.isPending ||
+      workspace.selectedTenantId === null ||
+      tenant.id !== workspace.selectedTenantId
+    ) return;
     const timezone = normalizeIanaTimezone(draft);
     if (!timezone) {
       setSavedMessage(null);
@@ -197,7 +214,10 @@ export default function WorkspaceSettingsScreen() {
     setSaveError(null);
     setSavedMessage(null);
     try {
-      await updateSettings.mutateAsync({ businessHoursTimezone: timezone });
+      await updateSettings.mutateAsync({
+        tenantId: workspace.selectedTenantId,
+        businessHoursTimezone: timezone,
+      });
       setDraft(timezone);
       setIsEdited(false);
       setSavedMessage("Workspace timezone saved.");

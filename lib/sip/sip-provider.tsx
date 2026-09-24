@@ -16,6 +16,7 @@ import {
 } from "../meetings/native-session";
 import type { MediaLease } from "../meetings/media-ownership";
 import { sipEngine } from "./engine";
+import { siprixEngine } from "./siprix-engine";
 import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
 import { useSipDiagnosticsStore } from "./diagnostics-store";
@@ -31,6 +32,7 @@ interface SipContextValue {
   setSpeaker: (callId: string, speaker: boolean) => Promise<void>;
   sendDtmf: (callId: string, digit: string) => Promise<void>;
   transferCall: (callId: string, destination: string) => Promise<void>;
+  supportsBlindTransfer: () => boolean;
 }
 
 const SipContext = createContext<SipContextValue>({
@@ -43,6 +45,7 @@ const SipContext = createContext<SipContextValue>({
   setSpeaker: async () => {},
   sendDtmf: async () => {},
   transferCall: async () => {},
+  supportsBlindTransfer: () => false,
 });
 
 export function SipProvider({ children }: { children: React.ReactNode }) {
@@ -322,6 +325,9 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     transferCall: async (id, dest) => {
       await sipEngine.transferCall(id, dest);
     },
+    supportsBlindTransfer: () => Platform.OS === "ios" &&
+      process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" &&
+      siprixEngine.supportsBlindTransfer(),
   };
 
   return <SipContext.Provider value={value}>{children}</SipContext.Provider>;

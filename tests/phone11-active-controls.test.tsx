@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   alert: vi.fn(),
   back: vi.fn(),
   replace: vi.fn(),
+  push: vi.fn(),
+  transferAvailable: false,
 }));
 vi.mock("react-native", () => ({
   Alert: { alert: mocks.alert },
@@ -57,7 +59,7 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ top: 20, bottom: 30 }),
 }));
 vi.mock("expo-router", () => ({
-  router: { back: mocks.back, replace: mocks.replace, canGoBack: () => true },
+  router: { back: mocks.back, replace: mocks.replace, push: mocks.push, canGoBack: () => true },
   useLocalSearchParams: () => mocks.params,
 }));
 vi.mock("expo-haptics", () => ({
@@ -89,6 +91,7 @@ vi.mock("../lib/sip/sip-provider", () => ({
     setHold: mocks.hold,
     setSpeaker: mocks.speaker,
     sendDtmf: mocks.dtmf,
+    supportsBlindTransfer: () => mocks.transferAvailable,
   }),
 }));
 vi.mock("../lib/sip/call-store", () => ({
@@ -110,6 +113,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.press.clear();
   mocks.params = { callId: "call-1" };
+  mocks.transferAvailable = false;
   mocks.state = {
     activeCalls: {
       "call-1": {
@@ -176,6 +180,24 @@ it("excludes unsupported transfer and video controls from a live call", () => {
   expect(html).not.toContain("Transfer");
   expect(html).not.toContain("Video");
   expect(html).toContain("End call");
+});
+
+it("opens native transfer only for the active unheld call and preserves its identity", async () => {
+  mocks.transferAvailable = true;
+  renderToStaticMarkup(<ActiveCallScreen />);
+  await mocks.press.get("Transfer call")!.run();
+  expect(mocks.push).toHaveBeenCalledWith({ pathname: "/call/transfer", params: { callId: "call-1" } });
+
+  mocks.press.clear();
+  mocks.state.activeCalls["call-1"].isHeld = true;
+  mocks.state.activeCalls["call-1"].status = "held";
+  renderToStaticMarkup(<ActiveCallScreen />);
+  expect(mocks.press.has("Transfer call")).toBe(false);
+
+  mocks.press.clear();
+  mocks.params.callId = "stale-call";
+  renderToStaticMarkup(<ActiveCallScreen />);
+  expect(mocks.press.has("Transfer call")).toBe(false);
 });
 
 it("keeps microphone, hold, speaker and End outside scrolling call details", () => {
