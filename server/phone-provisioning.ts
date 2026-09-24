@@ -19,6 +19,8 @@ export interface PhoneConfig {
   configured: boolean;
   tenantId?: number;
   extension?: {
+    /** Selected tenant-owned extension ID, bound to the same SIP row below. */
+    id?: number;
     number: string;
     displayName: string;
     callerIdName?: string;
@@ -116,6 +118,7 @@ function buildConfig(ext: any, password: string, dids: Array<{ number: string; d
     configured: true,
     tenantId: Number.isSafeInteger(ext.tenant_id) && ext.tenant_id > 0 ? ext.tenant_id : undefined,
     extension: {
+      id: Number.isSafeInteger(ext.id) && ext.id > 0 ? ext.id : undefined,
       number: ext.extension_number,
       displayName: ext.display_name || `Extension ${ext.extension_number}`,
       callerIdName: ext.caller_id_name,

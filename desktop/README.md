@@ -1,7 +1,7 @@
 # Phone11 desktop calling boundary
 
 `src/call-boundary.ts` is a versioned, source-tested control boundary for the
-planned macOS and Windows calling app. It runs in a privileged main process,
+macOS and Windows trial calling app in `app/`. It runs in a privileged main process,
 between an authenticated renderer and a local Siprix helper. The renderer gets
 only registration and single-call state; it cannot issue account, credential,
 license, or arbitrary helper commands.
@@ -22,8 +22,24 @@ requested through an injected privileged provider immediately before start;
 the provider must enforce the tenant/extension grant. The adapter does not
 store a SIP password in renderer state, argv, environment, disk or logs. A
 JavaScript string remains in process memory while the provisioning write is
-pending, so the caller must keep the provider and main process private. There
-is still no concrete credential-provider or Electron IPC wiring in this repo.
+pending, so the caller must keep the provider and main process private.
+
+`src/authenticated-provider.ts` supplies the concrete privileged credential
+provider. The embedding main process constructs `AuthenticatedDesktopProvider`
+with an HTTPS API origin, calls `signIn(email, password)`, passes
+`currentSession()` and `provision(session)` to the helper supervisor, and calls
+`signOut()` plus supervisor `stop()` on sign-out. Sign-in uses the native auth
+header and an in-memory bearer; provisioning rechecks `/api/auth/me`,
+and the protected `phone.getConfig` response before returning the SIP password.
+The selected config response must carry a numeric `extension.id` beside its
+tenant ID and SIP credentials; the provider binds them as one grant even for
+multi-tenant users. It rejects a changed grant or SIP credential between sign-in
+and provisioning. Session and provisioning results are immutable.
+No bearer or SIP password is persisted or sent to the renderer. The SIP
+password is a persistent PBX credential on the server and must be treated as
+secret even though this desktop provider keeps it only in memory. The minimal
+Electron shell in `app/` supplies sender-checked IPC and trial call controls;
+it is not yet a signed or live-call-validated desktop release.
 
 On sign-out or helper replacement, `stop()` invalidates renderer state at once,
 sends `v1 shutdown` followed by pipe EOF, and waits for process exit before
@@ -124,7 +140,8 @@ requested local hold state on that same call emits `hold_recovered` with
 warning and allows Hold again only after that exact authenticated, ordered
 recovery event; a generic held event or remote-only hold update cannot clear
 it. The desktop boundary accepts mute, hold,
-and DTMF actions, but this is not yet an integrated desktop call UI.
+and DTMF actions. The trial shell surfaces those controls but has no live-call
+acceptance yet.
 
 On macOS, with the pinned SDK checked out externally:
 
@@ -166,10 +183,10 @@ For a repeatable local smoke test, run
 It checks invalid and oversized input, response shape, shutdown, and that
 input text is not echoed.
 
-This is **not yet a desktop softphone**: a concrete privileged credential
-provider and account grant, Electron IPC/window shell, secure
-OS credential storage, packaging, signing, live PBX registration and two-way
-media remain required. Siprix's free trial limits calls to 60 seconds; that
+This is **not yet a released desktop softphone**: verified macOS and Windows
+packaging, signing, live PBX registration and two-way media remain required.
+Optional persistent login would require secure OS credential storage; the
+current trial keeps the bearer in memory only. Siprix's free trial limits each call to 60 seconds; that
 limit is acceptable for current development and must be expected in call
 tests. A paid distribution license has not been verified.
 The pinned SiprixUA vendor sample is a separate compile proof only. The

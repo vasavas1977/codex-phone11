@@ -1,8 +1,9 @@
 # Phone11 desktop PBX media spike — macOS and Windows
 
-**Decision status (24 September 2026):** a Phone11 native helper and versioned
-desktop call boundary now exist in source, but there is no signed desktop
-package, PBX change, registration, or desktop call. The first
+**Decision status (24 September 2026):** a Phone11 native helper, versioned
+desktop call boundary, protected credential provider, and minimal Electron
+trial shell now exist in source, but there is no signed desktop package,
+PBX change, registration, or desktop call. The first
 signed desktop release target is **macOS and Windows**. This note narrows the
 calling foundation; [desktop UCC readiness](DESKTOP-UCC-READINESS-20260916.md)
 continues to own the broader UI and release checklist.
@@ -29,8 +30,8 @@ side; never expose them through a generic renderer IPC or remote page.
 This is the smallest credible route to both requested operating systems because
 the vendor supplies one C++ API and desktop binaries for both, and Phone11
 already uses Siprix with a native SIP/TLS and SDES-SRTP account shape on iOS.
-The Electron shell is a proposed integration choice, **not an implemented or
-validated desktop architecture**. A helper process avoids Electron ABI rebuilds
+The Electron shell is implemented as a source-only trial, **not a validated
+desktop release**. A helper process avoids Electron ABI rebuilds
 for the vendor library and keeps SIP/media alive if the call view reloads. Its
 supervisor must fail closed on helper crash, sign-out, account change, or stale
 call IDs. Electron may remain running in the tray; a quit or OS shutdown ends
@@ -121,17 +122,19 @@ reviewed PBX transport change. Do not silently downgrade to UDP/plain WS.
    `cmake --build build --config Release` after generation. Do not stage vendor
    binaries in public artifacts or print credentials.
 2. With a dedicated test account, prove REGISTER challenge/success over TLS,
-   an outbound and an inbound call against a second real endpoint, two-way
-   audio longer than 60 seconds under a production-capable test license,
+   an outbound and an inbound call against a second real endpoint. On the
+   approved free trial, run short two-way calls and verify the expected
+   60-second cutoff. A separate paid-license run must prove sustained audio
+   before daily use. Check
    SRTP negotiated on both legs, End, mute, hold/resume, DTMF and headset
    output/input switching. Capture redacted SIP status, SDP media profile,
    registration/call IDs and packet/RTPEngine counters. Verify certificate
    validation, 401/407 failure, wrong tenant, unavailable extension, busy,
    network loss/recovery and sleep/wake. Trial-only sub-minute calls can test
    mechanics but cannot close the daily-use gate.
-3. Wrap only those proven commands in a local helper protocol. Add a minimal
-   packaged Electron screen showing true registration/call/device state and
-   inbound notification. Run the same call matrix on a signed macOS package
+3. Validate the source-tested local helper protocol and minimal Electron trial
+   shell against real registration and call evidence. Add a signed package with
+   reliable incoming-call notification. Run the same call matrix on macOS
    and a signed Windows package, including app minimized, renderer reload,
    helper crash/restart, logout, locked screen, microphone denial/recovery and
    unplugged headset. Confirm quit semantics in the UI.

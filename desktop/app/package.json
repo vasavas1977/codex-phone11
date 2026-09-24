@@ -1,0 +1,20 @@
+{
+  "name": "phone11-desktop-trial",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "start": "npm run build && electron .",
+    "manifest:helper": "node scripts/create-helper-manifest.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "electron": "^44.4.5",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3"
+  }
+}

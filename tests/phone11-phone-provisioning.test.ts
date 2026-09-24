@@ -73,7 +73,7 @@ describe("Phone11 phone provisioning ownership", () => {
 
     await expect(getPhoneConfig(17, "member-open-id")).resolves.toMatchObject({
       configured: true,
-      extension: { number: "3001", displayName: "Primary" },
+      extension: { id: 3001, number: "3001", displayName: "Primary" },
       sip: { username: "3001", password: "test-password" },
     });
     const assignmentQuery = String(state.pool.query.mock.calls.find(([sql]) => String(sql).includes("ue.is_primary"))?.[0]);
@@ -314,6 +314,8 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
       await expect(getPhoneConfig(17, "old-owner")).resolves.toEqual({ configured: false });
       await expect(getPhoneConfig(18, "new-owner")).resolves.toMatchObject({
         configured: true,
+        tenantId: 1,
+        extension: { id: 3001, number: "3001" },
         sip: { username: "3001", password: "new-owner-secret" },
       });
       await database.query("UPDATE subscriber SET password='foreign-secret' WHERE username='3001'");

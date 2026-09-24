@@ -14,7 +14,7 @@ working PBX behavior.
 | Recents and voicemail | Local call history and authenticated personal voicemail playback exist in source. | Prove missed calls while the app is unavailable, multi-device CDR reconciliation, protected playback and mailbox ownership on the deployed service. |
 | Manage existing users and extensions | The Phone11 admin portal has API-backed membership role/status and extension assignment. This source candidate adds explicit workspace selection for these operations. | Deploy matching API/web versions and test owner, admin, member, revoked user and two-tenant access; identity creation/invitations remain a separate shared-account workflow. |
 | Configure DID, IVR, ring group, queue and business hours | API-backed screens and advanced routing schema exist in source, including action/member/agent/rule editors. This candidate scopes DID inventory and workspace timezone settings to a selected tenant. It disables DID route editing for multi-workspace admins until destination lists also use that tenant. A separate, unapplied number-inventory migration stages new numbers as pending and creates no carrier assignments or routes. | Review and commission the optional schemas and exact Kamailio/FreeSWITCH routes in an isolated tenant, then exercise a real test DID through each path and failure fallback. Carrier-verified activation and E911 provisioning remain separate operator work. Other multi-workspace routing sections still need explicit tenant inputs on every route. |
-| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary, privileged helper supervisor, and native helper with private-pipe account provisioning, one-call dial/answer/end, mute, hold/resume and DTMF controls exist in source. The macOS arm64 helper builds and passes bootstrap and fake-SDK call-control tests. The Siprix trial is acceptable for prototype calls with its 60-second call limit. | Verify deployed TLS/SRTP ingress; supply a real authenticated credential provider, verified helper executable and sender-validated desktop IPC/app shell, compile on Windows, package signed apps, then prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
+| Call from macOS or Windows | The responsive web UI has no SIP/media engine. [Desktop media spike](DESKTOP-PBX-MEDIA-SPIKE-20260924.md) selects a native Siprix path for both OSes. A versioned desktop call boundary, privileged helper supervisor, native helper, protected credential provider, and minimal Electron trial shell exist in source. The helper implements one-call dial/answer/end, mute, hold/resume and DTMF through private pipes. The macOS arm64 helper builds and passes bootstrap and fake-SDK call-control tests. The Siprix trial is acceptable for prototype calls with its per-call 60-second limit. | Finish independent review of the desktop shell and full packaged helper tree, then verify deployed TLS/SRTP ingress, compile on Windows, package signed apps, and prove repeated inbound/outbound two-way audio and lifecycle cases. A paid license is needed before removing the trial limit. No desktop calling claim until that acceptance passes. |
 
 SIP provisioning in this source candidate requires the authenticated user to have an
 active workspace membership, a matching explicit extension grant, and matching
@@ -72,12 +72,11 @@ best-effort audit helper, so audit delivery itself is not atomic.
 4. Sign the iPhone transfer candidate and run a real two-endpoint transfer
    matrix. Extend to warm and voicemail transfer only after separate native
    and PBX confirmation.
-5. Connect the source-tested privileged helper supervisor to a concrete
-   authenticated credential provider, verified packaged binary, sender-checked
-   desktop IPC and minimal app shell. Build the same helper on Windows. Prove both against the isolated
-   PBX before packaging signed macOS and Windows apps around the tested
-   boundary. Do not enable the browser dialer as a substitute for desktop
-   calling.
+5. Complete the protected desktop provider and minimal Electron shell review,
+   including integrity verification for the Siprix libraries that the OS loader
+   uses. Build the helper on Windows. Prove macOS and Windows against the
+   isolated PBX before packaging signed apps around the tested boundary. Do
+   not enable the browser dialer as a substitute for desktop calling.
 
 The first release should keep the UI small: **Phone** for dialing/history and
 active-call actions; **Admin Portal** for People, Extensions, Numbers, Call
@@ -100,6 +99,14 @@ The desktop call boundary and supervisor passed 37 focused Node tests after
 the independent stale-session fix; the local macOS arm64 Siprix helper compiled and
 passed its private-pipe and fake-SDK call-control smoke tests. The pinned
 Windows SDK source contract passes locally, but the macOS/Windows build
-workflow has not run on CI. These checks do not constitute a signed iPhone or
+workflow has not run on CI. The authenticated provider's focused tests passed
+and its sign-in/grant lookup had an independent read-only source review. After
+the packaging and stale-update fixes, the desktop boundary/provider tests
+passed 43/43 and Electron shell tests passed 5/5. A real macOS helper bundle
+copied to a temporary staging directory passed full-tree integrity verification
+and credential-free startup; the Electron 44 trial window opened and displayed
+its local sign-in screen. Independent final source review found no concrete
+P0–P2 issue. This is not a packaged Electron launch, account sign-in, or call.
+These checks do not constitute a signed iPhone or
 desktop build, a Windows build, a live PBX route, an actual phone call, or
 production deployment.
