@@ -67,5 +67,12 @@ written, no database mutation has been attempted.
 
 Validation on 2026-09-25: seven focused Python tests passed. A disposable local
 PostgreSQL 17 cluster completed absent → applied → present-valid with the pinned
-SQL and a private applied receipt. These are source and disposable-database
-checks, not a hosted production migration or device notification acceptance.
+SQL and a private applied receipt.
+
+## Live migration receipt, 25 September 2026
+
+The VoIP host's API container supplied its production PostgreSQL connection settings only to an in-memory libpq bridge; no credential was printed or saved. A fresh read-only operator inspection reported `state=absent`, identity SHA-256 `60b612832105ddf5bfaa53156f69776bbb0bee00313d8269058559932e4ac45f`, and catalog SHA-256 `09d7b56c6651a093cc00b2d1e3690e86ed7aadbaa44e055321505d4c5726f329`. Independent metadata inspection confirmed PostgreSQL 16.13, intended `phone11ai` owner, `public` schema, required columns and tenant-bound unique key, no foreign grants, and an absent target.
+
+The root-owned mode-0600 manifest at `/root/phone11-all-mentions-pins.json` was pinned by SHA-256 `302cd5398f1d3c7f12b9b915797a40907ddc100599330d60ff7ed109652ecef6`. The guarded `apply` completed once with `status=applied`. A fresh read-only `inspect` reported `state=present_valid`, the same identity, and after-catalog SHA-256 `be186aa2eefdd17e223ad6a9bd1c4f1cf988fdf15ec5d60a8bc8a8be5075ba37`. The private applied receipt at `/root/phone11-chat-all-mentions-20260925/all-mentions-receipt.json` has SHA-256 `7250bfa9353253068a1204d089df36925eb7dc8f15a405e62a0b6e98c7c6bdc7` and matches that after-catalog hash. No API route, container, SIP service, or meeting service was changed for this migration.
+
+Owner/admin `chat.details.canMentionAll`, member rejection, push delivery, and two-handset behavior have not been exercised on the live tenant in this operation. The applied schema is necessary for `@all`; those behavior checks remain distinct from the catalog proof.
