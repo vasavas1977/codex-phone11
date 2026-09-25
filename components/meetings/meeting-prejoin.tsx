@@ -243,11 +243,14 @@ export function MeetingPrejoin({
                       </Text>
                       {admittedMeetings?.map((meeting, index) => {
                         const selected = meetingCode === meeting.meetingId;
+                        const title = safeMeetingTitle(meeting.title);
                         return (
                           <Pressable
                             key={meeting.meetingId}
                             accessibilityRole="button"
-                            accessibilityLabel={`Select admitted meeting ${index + 1}, ID ${meeting.meetingId}`}
+                            accessibilityLabel={title
+                              ? `Select admitted meeting ${index + 1}, ${title}`
+                              : `Select admitted meeting ${index + 1}, ID ${meeting.meetingId}`}
                             accessibilityState={{ selected }}
                             disabled={joining}
                             onPress={() => setMeetingCode(meeting.meetingId)}
@@ -264,7 +267,7 @@ export function MeetingPrejoin({
                             ]}
                           >
                             <Text style={{ color: colors.foreground }}>
-                              {safeMeetingTitle(meeting.title) ?? `Meeting ${index + 1}`} · {meeting.meetingId.slice(0, 8)}…{meeting.meetingId.slice(-5)}{selected ? " · Selected" : ""}
+                              {title ?? `Meeting ${index + 1} · ${meeting.meetingId.slice(0, 8)}…${meeting.meetingId.slice(-5)}`}{selected ? " · Selected" : ""}
                             </Text>
                           </Pressable>
                         );

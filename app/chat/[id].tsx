@@ -1676,7 +1676,12 @@ export default function ChatRoomScreen() {
                 )}
                 {!threadOpen && canInteract && actionIsCurrent(meetingInvitationScope.current) && meetingInvitations.filter(item => item.expiresAt > Date.now()).map(invitation => (
                   <Pressable key={invitation.invitationId} accessibilityRole="button" accessibilityLabel="Join channel meeting"
-                    onPress={() => router.push({ pathname: "/conference", params: { meetingId: invitation.meetingId } })}
+                    onPress={() => {
+                      const scope = currentScope();
+                      const invitationScope = meetingInvitationScope.current;
+                      if (!scope?.workspace || !invitationScope || !actionIsCurrent(invitationScope) || scope.workspace.id !== invitationScope.workspaceId) return;
+                      router.push({ pathname: "/conference", params: { meetingId: invitation.meetingId, tenantId: String(invitationScope.workspaceId), source: "channel" } });
+                    }}
                     style={[styles.notice, { flexDirection: "row", alignItems: "center", gap: 10 }]}>
                     <MaterialIcons name="videocam" size={24} color={colors.primary} />
                     <Text style={{ color: colors.primary }}>Meeting invitation · Join</Text>

@@ -201,6 +201,26 @@ it("shows a tenant-verified channel title but still joins by opaque meeting ID",
   expect(onJoin).toHaveBeenCalledWith({ meetingCode: meetingId, microphoneEnabled: false, cameraEnabled: false });
 });
 
+it("uses a channel title without an opaque ID in a multi-meeting choice", async () => {
+  const onJoin = vi.fn().mockResolvedValue(undefined);
+  const titledId = "8407bc84-63ef-48a0-bceb-b29b16043555";
+  const untitledId = "11111111-1111-4111-8111-111111111111";
+  const html = renderToStaticMarkup(createElement(MeetingPrejoin, {
+    authenticatedDisplayName: "Pilot",
+    admittedMeetings: [
+      { meetingId: untitledId },
+      { meetingId: titledId, title: "Government & SI Team" },
+    ],
+    initialMeetingCode: titledId, onJoin, onBack: () => undefined,
+  }));
+  expect(html).toContain("Government &amp; SI Team · Selected");
+  expect(html).not.toContain("8407bc84…43555");
+  expect(html).toContain("Meeting 1 · 11111111…11111");
+  expect(mocks.choices[`Select admitted meeting 2, Government & SI Team`]).toBeTypeOf("function");
+  await mocks.joinButton?.onPress();
+  expect(onJoin).toHaveBeenCalledWith({ meetingCode: titledId, microphoneEnabled: false, cameraEnabled: false });
+});
+
 it("does not show a title from another tenant, an unadmitted ID, or unsafe text", () => {
   const admitted = [{ meetingId: "11111111-1111-4111-8111-111111111111" }];
   const other = "22222222-2222-4222-8222-222222222222";
