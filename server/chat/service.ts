@@ -210,12 +210,27 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
       return scoped(userId, tenantId, async (db, workspace) => {
         // @all was added as an optional migration. Keep list usable on older
         // deployments while returning its mention contribution when present.
-        const supportsAllMentions = await allMentionsSupported(db);
-        const allMentionPredicate = supportsAllMentions ? `OR EXISTS (
+        // The individual mention table is also absent on pre-collaboration
+        // schemas, so don't report a fabricated zero when neither is available.
+        const mentionSupport = (await db.query(`SELECT
+          to_regclass('public.phone11_chat_message_all_mentions') IS NOT NULL AS all_supported,
+          to_regclass('public.phone11_chat_message_mentions') IS NOT NULL AS message_supported`)).rows[0];
+        const supportsAllMentions = mentionSupport?.all_supported === true;
+        const supportsMessageMentions = mentionSupport?.message_supported === true;
+        const mentionPredicates = [supportsMessageMentions ? `EXISTS (
+                 SELECT 1 FROM phone11_chat_message_mentions mention
+                 WHERE mention.tenant_id = msg.tenant_id
+                   AND mention.conversation_id = msg.conversation_id
+                   AND mention.message_id = msg.id AND mention.user_id = $2)` : "",
+          supportsAllMentions ? `EXISTS (
                  SELECT 1 FROM public.phone11_chat_message_all_mentions all_mention
                  WHERE all_mention.tenant_id = msg.tenant_id
                    AND all_mention.conversation_id = msg.conversation_id
-                   AND all_mention.message_id = msg.id)` : "";
+                   AND all_mention.message_id = msg.id)` : ""].filter(Boolean).join(" OR ");
+        const unreadMentionAggregate = mentionPredicates
+          ? `COUNT(*) FILTER (WHERE msg.deleted_at IS NULL
+               AND (${mentionPredicates}))::integer AS unread_mention_count`
+          : "NULL::integer AS unread_mention_count";
         const result = await db.query(
           `SELECT c.id, c.kind, c.name, c.created_at,
              ARRAY(SELECT cm.user_id FROM phone11_chat_members cm WHERE cm.tenant_id = c.tenant_id AND cm.conversation_id = c.id ORDER BY cm.user_id) AS member_ids,
@@ -224,22 +239,32 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
              CASE WHEN c.kind = 'direct' THEN EXISTS(SELECT 1 FROM phone11_chat_members other JOIN phone11_chat_blocks b ON b.tenant_id = c.tenant_id
                AND ((b.blocker_id = $2 AND b.blocked_id = other.user_id) OR (b.blocker_id = other.user_id AND b.blocked_id = $2))
                WHERE other.tenant_id = c.tenant_id AND other.conversation_id = c.id AND other.user_id <> $2) ELSE FALSE END AS blocked,
-             latest.content AS last_message, latest.created_at AS last_message_at,
+             latest.preview AS last_message, latest.created_at AS last_message_at,
              latest.sender_id AS last_message_sender_id, latest.sender_name AS last_message_sender_name,
              COALESCE(preference.muted, FALSE) AS notifications_muted,
-             (SELECT COUNT(*)::integer FROM phone11_chat_messages msg WHERE msg.tenant_id = c.tenant_id AND msg.conversation_id = c.id
-               AND msg.sequence > m.last_read_sequence AND msg.sender_id <> $2) AS unread_count,
-             (SELECT COUNT(*)::integer FROM phone11_chat_messages msg
-               WHERE msg.tenant_id = c.tenant_id AND msg.conversation_id = c.id
-                 AND msg.sequence > m.last_read_sequence AND msg.sender_id <> $2 AND msg.deleted_at IS NULL
-                 AND (EXISTS (SELECT 1 FROM phone11_chat_message_mentions mention
-                   WHERE mention.tenant_id = msg.tenant_id AND mention.conversation_id = msg.conversation_id
-                     AND mention.message_id = msg.id AND mention.user_id = $2)
-                   ${allMentionPredicate})) AS unread_mention_count
+             unread.unread_count, unread.unread_mention_count
            FROM phone11_chat_conversations c JOIN phone11_chat_members m ON m.tenant_id = c.tenant_id AND m.conversation_id = c.id AND m.user_id = $2
            LEFT JOIN phone11_chat_notification_preferences preference ON preference.tenant_id = c.tenant_id
              AND preference.conversation_id = c.id AND preference.user_id = $2
-           LEFT JOIN LATERAL (SELECT msg.content, msg.created_at, msg.sequence, msg.sender_id, sender.name AS sender_name
+           LEFT JOIN LATERAL (SELECT
+             COUNT(*)::integer AS unread_count,
+             ${unreadMentionAggregate}
+             FROM phone11_chat_messages msg WHERE msg.tenant_id = c.tenant_id AND msg.conversation_id = c.id
+               AND msg.sequence > m.last_read_sequence AND msg.sender_id <> $2) unread ON TRUE
+           LEFT JOIN LATERAL (SELECT msg.id, msg.created_at, msg.sequence, msg.sender_id, sender.name AS sender_name,
+             CASE WHEN btrim(msg.content) = '' THEN COALESCE((
+               SELECT CASE
+                 WHEN COUNT(*) = 0 THEN NULL
+                 WHEN COUNT(*) > 1 THEN 'Attachments'
+                 WHEN BOOL_OR(attachment.mime_type LIKE 'audio/%') THEN 'Voice message'
+                 WHEN BOOL_OR(attachment.mime_type LIKE 'image/%') THEN 'Photo'
+                 WHEN BOOL_OR(attachment.mime_type LIKE 'video/%') THEN 'Video'
+                 ELSE 'File'
+               END
+               FROM phone11_chat_attachments attachment
+               WHERE attachment.tenant_id = msg.tenant_id AND attachment.conversation_id = msg.conversation_id
+                 AND attachment.message_id = msg.id AND attachment.state = 'attached'
+             ), msg.content) ELSE msg.content END AS preview
              FROM phone11_chat_messages msg JOIN users sender ON sender.id = msg.sender_id
              WHERE msg.tenant_id = c.tenant_id AND msg.conversation_id = c.id ORDER BY msg.sequence DESC LIMIT 1) latest ON TRUE
            WHERE c.tenant_id = $1 ORDER BY COALESCE(latest.created_at, c.created_at) DESC LIMIT 200`, [workspace.id, userId]);
@@ -252,7 +277,8 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
           id: r.id, name: r.display_name || r.name, kind: r.kind, memberIds: r.member_ids.map(Number), lastMessage: r.last_message,
           lastMessageAt: new Date(r.last_message_at || r.created_at).getTime(), unreadCount: r.unread_count, blocked: Boolean(r.blocked),
           lastMessageSenderId: r.last_message_sender_id == null ? null : Number(r.last_message_sender_id),
-          lastMessageSenderName: r.last_message_sender_name || null, unreadMentionCount: r.unread_mention_count,
+          lastMessageSenderName: r.last_message_sender_name || null,
+          ...(r.unread_mention_count == null ? {} : { unreadMentionCount: Number(r.unread_mention_count) }),
           notificationsMuted: Boolean(r.notifications_muted),
         })) };
       });

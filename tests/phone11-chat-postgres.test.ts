@@ -168,6 +168,45 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     }
     expect((await service.details(1, 10, group.id)).canMentionAll).toBe(true);
   });
+  it("keeps inbox reads available with missing individual mentions and omits totals when all mention tables are absent", async () => {
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    await pool.query("ALTER TABLE phone11_chat_message_mentions RENAME TO phone11_chat_message_mentions_hidden");
+    try {
+      const messageId = randomUUID();
+      await pool.query(`INSERT INTO phone11_chat_messages (id, tenant_id, conversation_id, sender_id, client_id, content)
+        VALUES ($1, 10, $2, 1, $3, 'Hello @all')`, [messageId, group.id, randomUUID()]);
+      await pool.query(`INSERT INTO phone11_chat_message_all_mentions (tenant_id,conversation_id,message_id,start_offset,length)
+        VALUES (10,$1,$2,6,4)`, [group.id, messageId]);
+      expect((await service.list(2, 10)).channels.find(item => item.id === group.id)?.unreadMentionCount).toBe(1);
+      await pool.query("ALTER TABLE phone11_chat_message_all_mentions RENAME TO phone11_chat_message_all_mentions_hidden");
+      try {
+        const channel = (await service.list(2, 10)).channels.find(item => item.id === group.id);
+        expect(channel).toMatchObject({ id: group.id, unreadCount: 1 });
+        expect(channel).not.toHaveProperty("unreadMentionCount");
+      } finally {
+        await pool.query("ALTER TABLE phone11_chat_message_all_mentions_hidden RENAME TO phone11_chat_message_all_mentions");
+      }
+    } finally {
+      await pool.query("ALTER TABLE phone11_chat_message_mentions_hidden RENAME TO phone11_chat_message_mentions");
+    }
+  });
+  it("previews a voice-only latest message while leaving an empty channel without a preview", async () => {
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    expect((await service.list(1, 10)).channels.find(item => item.id === group.id)?.lastMessage).toBeNull();
+    const messageId = randomUUID();
+    await pool.query(`INSERT INTO phone11_chat_messages (id, tenant_id, conversation_id, sender_id, client_id, content)
+      VALUES ($1, 10, $2, 1, $3, ' ')`, [messageId, group.id, randomUUID()]);
+    await pool.query(`INSERT INTO phone11_chat_attachments
+      (id,tenant_id,conversation_id,uploaded_by,client_id,storage_key,filename,mime_type,size_bytes,content_sha256,state,message_id,attached_at)
+      VALUES ($1,10,$2,1,$3,'10/test/voice.wav','voice.wav','audio/wav',10,repeat('a',64),'attached',$4,NOW())`,
+      [randomUUID(), group.id, randomUUID(), messageId]);
+    // A staged upload is not attached to the message and must not affect its preview.
+    await pool.query(`INSERT INTO phone11_chat_attachments
+      (id,tenant_id,conversation_id,uploaded_by,client_id,storage_key,filename,mime_type,size_bytes,content_sha256,state,expires_at)
+      VALUES ($1,10,$2,1,$3,'10/test/pending.png','pending.png','image/png',10,repeat('b',64),'ready',NOW() + interval '1 hour')`,
+      [randomUUID(), group.id, randomUUID()]);
+    expect((await service.list(2, 10)).channels.find(item => item.id === group.id)?.lastMessage).toBe("Voice message");
+  });
   it("removes deactivated members from Team Chat and restores them only after reactivation", async () => {
     const { id } = await room();
     await pool.query("UPDATE tenant_memberships SET status = 'inactive' WHERE user_id = 2 AND tenant_id = 10");
