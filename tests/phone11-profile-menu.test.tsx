@@ -62,7 +62,7 @@ it("renders only authenticated account and provisioned extension data", () => {
   expect(html).toContain("nathasa@phone11.ai");
   expect(html).toContain("Extension 3001");
   expect(html).toContain('aria-label="My profile"');
-  expect(html).toContain("Workspace status will be available after your company updates this app.");
+  expect(html).toContain("Workspace status is not available for this workspace.");
   expect(html).toContain("Settings");
   expect(html).not.toMatch(/Personal meeting|QR code/i);
 });
@@ -157,7 +157,25 @@ it("renders persisted status summaries as a compact account menu", () => {
   expect(html).toContain("In a customer review");
   expect(html).toContain("Availability, status, and location apply to Phone11");
   expect(html).not.toContain("20 min");
-  expect(html).not.toContain("Workspace status will be available after your company updates this app.");
+  expect(html).not.toContain("Workspace status is not available for this workspace.");
+});
+
+it("distinguishes workspace status loading from an error with a retry action", () => {
+  const common = {
+    identity: { name: "Nathasa W.", email: "nathasa@phone11.ai" }, phone: null,
+    onBack: vi.fn(), onOpenSettings: vi.fn(), workspaceName: "Phone11",
+  };
+  const loading = renderToStaticMarkup(createElement(AccountHub, {
+    ...common, profileLoading: true,
+  }));
+  expect(loading).toContain("Checking workspace status…");
+  expect(loading).not.toContain("Retry workspace status");
+  const failed = renderToStaticMarkup(createElement(AccountHub, {
+    ...common, profileLoadError: true, onRetryWorkspaceProfile: vi.fn(async () => undefined),
+  }));
+  expect(failed).toContain("Could not load workspace status.");
+  expect(failed).toContain('aria-label="Retry workspace status"');
+  expect(failed).not.toContain("company updates this app");
 });
 
 it("does not invent a profile when authenticated identity is absent", () => {

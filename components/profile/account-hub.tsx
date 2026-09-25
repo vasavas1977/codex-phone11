@@ -63,6 +63,9 @@ type AccountHubProps = {
   onOpenSettings: () => void;
   workspaceProfile?: WorkspaceProfileStatus;
   profileAvailable?: boolean;
+  profileLoading?: boolean;
+  profileLoadError?: boolean;
+  onRetryWorkspaceProfile?: () => Promise<unknown>;
   profileSaving?: boolean;
   profileError?: string | null;
   onUpdateWorkspaceProfile?: (update: WorkspaceProfileUpdate) => Promise<unknown>;
@@ -227,7 +230,7 @@ export function AccountDetails({ identity, phone, workspaceName, photo, workspac
 }
 
 /** Shows auth-owned identity and server-persisted workspace preferences. */
-export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoDescriptor, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
+export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileLoading = false, profileLoadError = false, onRetryWorkspaceProfile, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoDescriptor, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
   const colors = useColors();
   const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "photo" | null>(null);
   const [showDetails, setShowDetails] = useState(false);
@@ -286,7 +289,17 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
           <MenuRow icon={profile.manualAvailability === "dnd" ? "minus.circle" : profile.manualAvailability === "away" || profile.manualAvailability === "out_of_office" ? "moon.fill" : "circle.fill"} title="Availability" detail={availabilitySummary(profile.manualAvailability)} onPress={() => setSheet("availability")} />
           <MenuRow icon="face.smiling" title="Status" detail={profile.statusText || "Set a status"} onPress={() => setSheet("status")} />
           <MenuRow icon="building.2.fill" title="Work location" detail={workLocationSummary(profile.workLocation)} onPress={() => setSheet("location")} last />
-        </> : <Text style={[styles.unavailable, { color: colors.muted }]}>Workspace status will be available after your company updates this app.</Text>}
+        </> : <View>
+          <Text style={[styles.unavailable, { color: colors.muted }]}>
+            {profileLoading ? "Checking workspace status…" : profileLoadError ? "Could not load workspace status." : "Workspace status is not available for this workspace."}
+          </Text>
+          {profileLoadError && onRetryWorkspaceProfile && <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Retry workspace status"
+            onPress={() => { void onRetryWorkspaceProfile().catch(() => { /* The scoped query exposes the retry failure. */ }); }}
+            style={{ minHeight: 44, alignSelf: "center", justifyContent: "center", paddingHorizontal: 16 }}
+          ><Text style={{ color: colors.primary, fontSize: 15, fontWeight: "600" }}>Try again</Text></Pressable>}
+        </View>}
       </View>
       {profileError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profileError}</Text>}
       {profilePhotoError && <Text accessibilityRole="alert" style={[styles.error, { color: colors.error }]}>{profilePhotoError}</Text>}

@@ -265,16 +265,45 @@ export default function RecentsScreen() {
           gap: 14,
         }}
       >
-        <Text
-          accessibilityRole="header"
+        <View
           style={{
-            fontSize: 28,
-            fontWeight: "700",
-            color: colors.foreground,
+            minHeight: 44,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
           }}
         >
-          Recents
-        </Text>
+          <Text
+            accessibilityRole="header"
+            style={{
+              fontSize: 28,
+              fontWeight: "700",
+              color: colors.foreground,
+            }}
+          >
+            Recents
+          </Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Open voicemail"
+            onPress={() => router.push("/voicemail")}
+            style={{
+              minHeight: 44,
+              paddingHorizontal: 14,
+              borderRadius: 12,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: colors.surface,
+            }}
+          >
+            <Text
+              style={{ color: colors.primary, fontSize: 14, fontWeight: "600" }}
+            >
+              Voicemail
+            </Text>
+          </TouchableOpacity>
+        </View>
         <TextInput
           accessibilityLabel="Search recent calls"
           value={search}

@@ -243,6 +243,17 @@ it("allows a commissioned photo while the separate workspace status service is u
   });
 });
 
+it("retries workspace status only for the active owner and workspace", async () => {
+  m.query = { ...m.query, data: undefined, isSuccess: false, error: new Error("status unavailable") };
+  const profile = useRenderedWorkspaceProfile();
+  await profile.refetchProfile();
+  expect(m.query.refetch).toHaveBeenCalledOnce();
+  m.query.refetch.mockClear();
+  m.chat = { ...m.chat, workspace: { id: 30, name: "Other work" } };
+  await profile.refetchProfile();
+  expect(m.query.refetch).not.toHaveBeenCalled();
+});
+
 it("shows a successful upload even if local persistence fails, without refetching unavailable status", async () => {
   m.query = { ...m.query, data: undefined, isSuccess: false, error: new Error("status schema missing") };
   m.photoQuery = { ...m.photoQuery, data: { available: true } };

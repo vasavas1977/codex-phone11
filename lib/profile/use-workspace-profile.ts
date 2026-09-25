@@ -114,6 +114,11 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
     saving: currentSave && saveState.pending,
     error: currentSave ? saveState.error : null,
     photoAvailable: enabled && photoCapability.data?.available === true,
+    async refetchProfile() {
+      const action = scope.current;
+      if (!action || !isCurrent(action)) return;
+      await profile.refetch();
+    },
     async refetchPhotoSettings() {
       if (!enabled || !owner || !tenantId) return;
       await photoCapability.refetch();

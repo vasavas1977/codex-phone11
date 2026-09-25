@@ -10,6 +10,48 @@ import { useAuth } from "@/hooks/use-auth";
 import { chatNotificationClientEnabled } from "@/lib/notifications/client";
 import { useThemeContext, type AppearancePreference } from "@/lib/theme-provider";
 import { trpc } from "@/lib/trpc";
+import type { RegistrationState, SipAccount } from "@/lib/sip/account-store";
+
+type StatusTone = "success" | "warning" | "error" | "muted";
+
+export function enabledPhoneAccountForUser(
+  account: SipAccount | null | undefined,
+  userId: number | undefined,
+): SipAccount | null {
+  return userId && account?.ownerUserId === userId && account.enabled
+    ? account
+    : null;
+}
+
+export function phoneConnectionStatus(
+  signedIn: boolean,
+  hasAccount: boolean,
+  state: RegistrationState,
+): { label: string; tone: StatusTone } {
+  if (!signedIn) return { label: "Sign in to connect", tone: "muted" };
+  if (!hasAccount) return { label: "Extension setup required", tone: "warning" };
+  switch (state) {
+    case "registered":
+      return { label: "Ready to call", tone: "success" };
+    case "registering":
+      return { label: "Connecting…", tone: "warning" };
+    case "failed":
+      return { label: "Connection failed", tone: "error" };
+    case "network_error":
+      return { label: "Offline", tone: "error" };
+    default:
+      return { label: "Connecting…", tone: "muted" };
+  }
+}
+
+export const PHONE11_PREVIEW_AVAILABILITY_COPY = {
+  foreground:
+    "Calls are available while Phone11 is open. Incoming-call alerts while the app is in the background or closed require commissioned native support and are not available in this preview.",
+  meetings:
+    "Preview calls are limited to 60 seconds by the SIP trial. Team Chat video meetings are available when enabled for your workspace and channel.",
+  other:
+    "Call transfer, PBX conference calling and SMS are not available in this preview.",
+} as const;
 
 export default function SettingsScreen() {
   const colors = useColors();
@@ -23,7 +65,7 @@ export default function SettingsScreen() {
     String(tenantQuery.data?.userRole || ""),
   );
   const saved = useSipAccountStore(s => s.account);
-  const account = saved?.ownerUserId === user?.id ? saved : null;
+  const account = enabledPhoneAccountForUser(saved, user?.id);
   const state = useSipAccountStore(s => s.registrationState);
   const { reconnectPhone } = useSip();
   const [busy, setBusy] = useState(false);
@@ -49,13 +91,14 @@ export default function SettingsScreen() {
       {action && <Text style={{ color: colors.muted, fontSize: 22 }}>›</Text>}
     </Pressable>
   );
-  const status = !user ? "Sign in to connect" : !account ? "Extension setup required" : state === "registered" ? "Ready to call" : state === "registering" ? "Connecting…" : "Offline · reconnecting automatically";
+  const status = phoneConnectionStatus(Boolean(user), Boolean(account), state);
+  const statusColor = colors[status.tone];
   return <ScreenContainer><ScrollView contentContainerStyle={styles.content}>
     <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Settings</Text>
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <Text style={[styles.name, { color: colors.foreground }]}>{user?.name || "Your work account"}</Text>
       <Text style={[styles.detail, { color: colors.muted }]}>{account ? `Extension ${account.username}` : "No extension connected"}</Text>
-      <Text style={{ color: state === "registered" && account ? colors.success : colors.warning, marginTop: 12 }}>{status}</Text>
+      <Text style={{ color: statusColor, marginTop: 12 }}>{status.label}</Text>
     </View>
     {row("My profile", "View your work account and phone extension", () => router.push("/profile"))}
     {row("Phone account", "View your assigned extension and connection", () => router.push(user ? "/settings/sip" : "/auth/sign-in"))}
@@ -87,8 +130,9 @@ export default function SettingsScreen() {
     {canManageWorkspace && row("Workspace administration", "Manage people, numbers and call routing", () => router.push("/admin"))}
     <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
       <Text style={[styles.rowTitle, { color: colors.foreground }]}>Preview availability</Text>
-      <Text style={[styles.detail, { color: colors.muted }]}>Calls are available while Phone11 is open. Incoming-call alerts while the app is in the background or closed require commissioned native support and are not available in this preview.</Text>
-      <Text style={[styles.detail, { color: colors.muted }]}>Preview calls are limited to 60 seconds. Video, transfer, conference calling and SMS are not available yet.</Text>
+      <Text style={[styles.detail, { color: colors.muted }]}>{PHONE11_PREVIEW_AVAILABILITY_COPY.foreground}</Text>
+      <Text style={[styles.detail, { color: colors.muted }]}>{PHONE11_PREVIEW_AVAILABILITY_COPY.meetings}</Text>
+      <Text style={[styles.detail, { color: colors.muted }]}>{PHONE11_PREVIEW_AVAILABILITY_COPY.other}</Text>
     </View>
     {row("Connection diagnostics", "Troubleshooting information for support", () => router.push("/settings/sip-diagnostics"))}
     {user ? row("Sign out", "Disconnect this work account from the app", signOut, true) : row("Sign in", "Connect your work account", () => router.push(SIGN_IN_ROUTE))}

@@ -35,7 +35,16 @@ const mocks = vi.hoisted(() => ({
   call: vi.fn(async () => {}),
   refresh: undefined as (() => void) | undefined,
   refreshing: false,
-  press: new Map<string, { run: () => unknown; disabled: boolean }>(),
+  routerPush: vi.fn(),
+  press: new Map<
+    string,
+    {
+      run: () => unknown;
+      disabled: boolean;
+      role?: string;
+      minHeight?: number;
+    }
+  >(),
 }));
 vi.mock("../lib/sip/account-store", () => ({
   useSipAccountStore: (selector: (state: any) => unknown) => selector({ account: mocks.account }),
@@ -54,7 +63,7 @@ vi.mock("../components/device-contacts-list", () => ({
 vi.mock("../hooks/use-device-contacts", () => ({
   useDeviceContacts: () => ({ people: mocks.contacts }),
 }));
-vi.mock("expo-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock("expo-router", () => ({ useRouter: () => ({ push: mocks.routerPush }) }));
 vi.mock("../hooks/use-cloud-recordings", () => ({
   useCloudRecordings: () => mocks.cloud,
 }));
@@ -94,14 +103,21 @@ vi.mock("react-native", () => ({
   TouchableOpacity: ({
     children,
     accessibilityLabel,
+    accessibilityRole,
     onPress,
     disabled,
+    style,
   }: any) => {
     if (accessibilityLabel)
-      mocks.press.set(accessibilityLabel, { run: onPress, disabled });
+      mocks.press.set(accessibilityLabel, {
+        run: onPress,
+        disabled,
+        role: accessibilityRole,
+        minHeight: style?.minHeight,
+      });
     return createElement(
       "button",
-      { "aria-label": accessibilityLabel, disabled },
+      { "aria-label": accessibilityLabel, disabled, onClick: onPress, role: accessibilityRole },
       children,
     );
   },
@@ -160,6 +176,7 @@ beforeEach(() => {
   mocks.cloud.items = [];
   mocks.cloud.loading = false;
   mocks.calling = false;
+  mocks.routerPush.mockReset();
   mocks.history = {
     ownerUserId: 1,
     entries: [entry()],
@@ -167,6 +184,14 @@ beforeEach(() => {
     error: null,
     reload: vi.fn(),
   };
+});
+it("opens voicemail from Recents with an accessible 44-point target", async () => {
+  renderToStaticMarkup(<RecentsScreen />);
+  const voicemail = mocks.press.get("Open voicemail")!;
+  expect(voicemail.role).toBe("button");
+  expect(voicemail.minHeight).toBeGreaterThanOrEqual(44);
+  await voicemail.run();
+  expect(mocks.routerPush).toHaveBeenCalledWith("/voicemail");
 });
 it("expands a row without dialing; only its explicit call button places a call", async () => {
   renderToStaticMarkup(<RecentsScreen />);

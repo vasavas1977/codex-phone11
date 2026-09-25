@@ -104,6 +104,9 @@ export default function ProfileScreen() {
         onOpenSettings={() => router.push("/(tabs)/settings")}
         workspaceProfile={workspaceProfile.profile}
         profileAvailable={workspaceProfile.profileAvailable}
+        profileLoading={workspaceProfile.loading}
+        profileLoadError={workspaceProfile.loadError}
+        onRetryWorkspaceProfile={workspaceProfile.refetchProfile}
         profileSaving={workspaceProfile.saving}
         profileError={workspaceProfile.error ? "Could not save profile settings. Try again." : null}
         onUpdateWorkspaceProfile={workspaceProfile.save}
