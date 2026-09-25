@@ -35,7 +35,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 
-SCHEMA = "phone11-profile-dnd-rollout/v3"
+SCHEMA = "phone11-profile-dnd-rollout/v4"
 RECEIPT_SCHEMA = "phone11-migration-receipt/v1"
 INTENT_SCHEMA = "phone11-runtime-mutation-intent/v1"
 SHUTDOWN_RECEIPT_SCHEMA = "phone11-runtime-shutdown-receipt/v1"
@@ -342,6 +342,14 @@ class ParkedPin:
 
 
 @dataclass(frozen=True)
+class InfrastructurePin:
+    name: str
+    container_id: str
+    image: str
+    runtime_sha256: str
+
+
+@dataclass(frozen=True)
 class Pins:
     release_sha: str
     release_build: str
@@ -352,6 +360,7 @@ class Pins:
     candidate: RuntimePin
     release_candidate: RuntimePin | None
     parked: tuple[ParkedPin, ...]
+    infrastructure: tuple[InfrastructurePin, ...]
     baseline_compose: ComposePin
     candidate_compose: ComposePin
     rollback_compose: ComposePin
@@ -427,6 +436,16 @@ def _parked(value: Any) -> ParkedPin:
     return ParkedPin(name, value["container_id"], value["image"], value["runtime_sha256"], kind, port, build, source_sha)
 
 
+def _infrastructure(value: Any) -> InfrastructurePin:
+    guarded(isinstance(value, Mapping), "manifest")
+    exact_keys(value, {"name", "container_id", "image", "runtime_sha256"})
+    name = value.get("name")
+    guarded(isinstance(name, str) and name in INFRASTRUCTURE_SERVICES, "manifest")
+    guarded(isinstance(value.get("container_id"), str) and bool(re.fullmatch(r"[0-9a-f]{64}", value["container_id"])), "manifest")
+    guarded(is_digest(value.get("image")) and is_sha256(value.get("runtime_sha256")), "manifest")
+    return InfrastructurePin(name, value["container_id"], value["image"], value["runtime_sha256"])
+
+
 def parse_manifest(document: Mapping[str, Any]) -> Pins:
     exact_keys(document, {"schema", "release", "current", "compose", "rollback", "migration", "probes", "guard", "nginx", "kamailio", "public_origin"})
     guarded(document.get("schema") == SCHEMA and document.get("public_origin") == PUBLIC_ORIGIN, "manifest")
@@ -436,7 +455,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     rollback, migration = document["rollback"], document["migration"]
     probes, guard, nginx, kamailio = document["probes"], document["guard"], document["nginx"], document["kamailio"]
     exact_keys(release, {"sha", "build", "image", "bundle_sha256", "lock_sha256"})
-    exact_keys(current, {"baseline", "candidate", "release_candidate", "parked"})
+    exact_keys(current, {"baseline", "candidate", "release_candidate", "parked", "infrastructure"})
     exact_keys(compose, {"baseline", "candidate"})
     exact_keys(rollback, {"image", "build", "normalized_runtime_sha256", "baseline_operation_id", "baseline_intent_sha256", "compose", "disabled_compose"})
     exact_keys(migration, {"artifacts", "verify", "verify_sha256", "database_sha256", "before_catalog_sha256", "after_catalog_sha256", "receipt", "receipt_sha256"})
@@ -487,6 +506,10 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     parked_values = current["parked"]
     guarded(isinstance(parked_values, list) and len(parked_values) <= 16, "manifest")
     parked = tuple(_parked(item) for item in parked_values)
+    infrastructure_values = current["infrastructure"]
+    guarded(isinstance(infrastructure_values, list) and len(infrastructure_values) <= len(INFRASTRUCTURE_SERVICES), "manifest")
+    infrastructure = tuple(_infrastructure(item) for item in infrastructure_values)
+    guarded(len({item.name for item in infrastructure}) == len(infrastructure), "manifest")
     names = [item.name for item in parked]
     ports = [item.port for item in parked if item.port is not None]
     guarded(len(set(names)) == len(names) and len(set(ports)) == len(ports)
@@ -501,7 +524,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
         guarded(nginx["candidate_header"] == release["build"], "manifest")
     return Pins(
         release["sha"], release["build"], release["image"], release["bundle_sha256"], release["lock_sha256"],
-        baseline, candidate, release_candidate, parked, _compose(compose["baseline"]), _compose(compose["candidate"]),
+        baseline, candidate, release_candidate, parked, infrastructure, _compose(compose["baseline"]), _compose(compose["candidate"]),
         _compose(rollback["compose"]), _compose(rollback["disabled_compose"]), rollback["image"], rollback["build"], rollback["normalized_runtime_sha256"], rollback["baseline_operation_id"], rollback["baseline_intent_sha256"],
         tuple(parsed_artifacts), Path(migration["verify"]), migration["verify_sha256"],
         migration["database_sha256"], migration["before_catalog_sha256"], migration["after_catalog_sha256"],
@@ -1167,7 +1190,9 @@ class Operator:
             raise GuardError("runtime_count") from error
         defaults = 0
         parked = {pin.name: pin for pin in self.pins.parked}
+        infrastructure = {pin.name: pin for pin in self.pins.infrastructure}
         seen_parked: set[str] = set()
+        seen_infrastructure: set[str] = set()
         expected_images = {self.pins.baseline.image, self.pins.candidate.image, self.pins.image, self.pins.rollback_image}
         projects = {baseline_config["name"], candidate_config["name"]}
         services = {self.pins.baseline_compose.service, self.pins.candidate_compose.service}
@@ -1178,13 +1203,20 @@ class Operator:
             state = inspect.get("State")
             guarded(isinstance(labels, Mapping) and isinstance(state, Mapping), "runtime_count")
             if name in INFRASTRUCTURE_SERVICES:
+                pin = infrastructure.get(name)
                 guarded(
-                    labels.get("com.docker.compose.project") == baseline_config["name"]
+                    pin is not None
+                    and name not in seen_infrastructure
+                    and inspect.get("Id") == pin.container_id
+                    and inspect.get("Image") == pin.image
+                    and canonical_hash(runtime_shape(inspect)) == pin.runtime_sha256
+                    and labels.get("com.docker.compose.project") == baseline_config["name"]
                     and labels.get("com.docker.compose.service") == INFRASTRUCTURE_SERVICES[name]
                     and inspect.get("Image") not in expected_images
                     and not any(key.startswith("PHONE11_") for key in env),
                     "runtime_count",
                 )
+                seen_infrastructure.add(name)
                 continue
             phone11_like = (
                 name.startswith("cp11-")
@@ -1233,6 +1265,7 @@ class Operator:
             else:
                 raise GuardError("unknown_worker")
         guarded(seen_parked == set(parked), "parked_runtime")
+        guarded(seen_infrastructure == set(infrastructure), "runtime_count")
         guarded(defaults <= 1 and (require_default_running is None or defaults == (1 if require_default_running else 0)), "runtime_count")
 
     def compose_inputs(self) -> tuple[Mapping[str, Any], Mapping[str, Any]]:

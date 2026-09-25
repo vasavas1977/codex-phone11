@@ -47,6 +47,7 @@ def manifest(**changes: object) -> dict[str, object]:
             "candidate": runtime("c", OLD_DIGEST, "old-candidate"),
             "release_candidate": None,
             "parked": [],
+            "infrastructure": [],
         },
         "compose": {
             "baseline": compose("/root/baseline.json", "backend"),
@@ -291,28 +292,57 @@ class ProfileDndRolloutTests(unittest.TestCase):
     def test_compose_infrastructure_is_not_counted_as_a_phone11_worker(self) -> None:
         services = ("postgres", "redis", "freeswitch", "kamailio", "flexisip", "rtpengine")
         names = [f"cp11-{service}" for service in services]
+        reviewed = [{
+            "Id": chr(ord("a") + index) * 64,
+            "Image": "sha256:" + chr(ord("a") + index) * 64,
+            "State": {"Running": True},
+            "Config": {
+                "Image": f"reviewed-{service}:1",
+                "Cmd": [service],
+                "Env": [],
+                "Labels": {
+                    "com.docker.compose.project": "cloudphone11-prod",
+                    "com.docker.compose.service": service,
+                },
+            },
+            "HostConfig": {"PortBindings": {}},
+            "NetworkSettings": {"Networks": {}},
+            "Mounts": [],
+        } for index, service in enumerate(services)]
+        infrastructure = [{
+            "name": name, "container_id": row["Id"], "image": row["Image"],
+            "runtime_sha256": rollout.canonical_hash(rollout.runtime_shape(row)),
+        } for name, row in zip(names, reviewed)]
 
         def check(extra_name: str | None = None, *, role_on_postgres: bool = False,
                   wrong_service_on_postgres: bool = False,
-                  backend_image_on_postgres: bool = False) -> None:
+                  backend_image_on_postgres: bool = False,
+                  worker_cmd_on_postgres: bool = False,
+                  unreviewed_worker_on_postgres: bool = False,
+                  omit_postgres_pin: bool = False) -> None:
             system = FakeSystem()
             inventory = names + ([extra_name] if extra_name else [])
             system.command = lambda args, **_kwargs: ("\n".join(inventory) + "\n").encode() if args[:3] == ["docker", "ps", "-a"] else b""
-            system.json_responses = [[{
-                "Id": chr(ord("a") + index) * 64,
-                "Image": (OLD_DIGEST if index == 0 and backend_image_on_postgres
-                          else "sha256:" + chr(ord("a") + index) * 64),
-                "State": {"Running": True},
-                "Config": {
-                    "Env": ["PHONE11_RUNTIME_ROLE=default"] if index == 0 and role_on_postgres else [],
-                    "Labels": {
-                        "com.docker.compose.project": "cloudphone11-prod",
-                        "com.docker.compose.service": "redis" if index == 0 and wrong_service_on_postgres else name.removeprefix("cp11-"),
-                    } if index < len(services) else {},
-                },
-                "HostConfig": {"PortBindings": {}},
-            }] for index, name in enumerate(inventory)]
-            rollout.Operator(pins(), system).require_worker_topology(
+            rows = json.loads(json.dumps(reviewed))
+            postgres = rows[0]
+            if role_on_postgres:
+                postgres["Config"]["Env"] = ["PHONE11_RUNTIME_ROLE=default"]
+            if wrong_service_on_postgres:
+                postgres["Config"]["Labels"]["com.docker.compose.service"] = "redis"
+            if backend_image_on_postgres:
+                postgres["Image"] = OLD_DIGEST
+            if worker_cmd_on_postgres:
+                postgres["Config"]["Cmd"] = ["node", "dist/notification-worker.mjs"]
+            if unreviewed_worker_on_postgres:
+                postgres["Image"] = "sha256:" + "9" * 64
+                postgres["Config"]["Cmd"] = ["node", "dist/notification-worker.mjs"]
+            if extra_name:
+                rows.append({"Id": "9" * 64, "Image": "sha256:" + "9" * 64,
+                             "State": {"Running": True}, "Config": {"Env": [], "Labels": {}},
+                             "HostConfig": {"PortBindings": {}}})
+            system.json_responses = [[row] for row in rows]
+            selected_pins = infrastructure[1:] if omit_postgres_pin else infrastructure
+            rollout.Operator(pins(current__infrastructure=selected_pins), system).require_worker_topology(
                 {"name": "cloudphone11-prod"}, {"name": "phone11-profile-dnd"},
                 require_default_running=None,
             )
@@ -323,10 +353,17 @@ class ProfileDndRolloutTests(unittest.TestCase):
                 check(extra_name)
             self.assertEqual(error.exception.stage, "unknown_worker")
         for options in ({"role_on_postgres": True}, {"wrong_service_on_postgres": True},
-                        {"backend_image_on_postgres": True}):
+                        {"backend_image_on_postgres": True},
+                        {"worker_cmd_on_postgres": True},
+                        {"unreviewed_worker_on_postgres": True},
+                        {"omit_postgres_pin": True}):
             with self.subTest(options=options), self.assertRaises(rollout.GuardError) as error:
                 check(**options)
             self.assertEqual(error.exception.stage, "runtime_count")
+
+        duplicate = infrastructure[:-1] + [infrastructure[0]]
+        with self.assertRaises(rollout.GuardError):
+            pins(current__infrastructure=duplicate)
 
     def test_manifest_requires_exact_origin_hashes_and_two_distinct_images(self) -> None:
         current = pins()

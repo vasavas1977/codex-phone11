@@ -28,8 +28,9 @@ source sequence described here while preserving the observed topology:
   listed in `current.parked` with exact live identity/runtime pins; any
   unlisted Phone11-like runtime remains a hard failure;
 - the six known production Compose infrastructure services are recognized by
-  exact container name, project/service labels, non-backend image, and absence
-  of Phone11 runtime flags; an unlisted API or worker container remains blocked;
+  exact `current.infrastructure` container ID, image, runtime hash,
+  project/service labels, and absence of Phone11 runtime flags; an unlisted
+  API or worker container remains blocked;
 - only the exact `/api/trpc` and `/api/trpc/` locations may move;
 - Kamailio and FreeSWITCH are inspected but never changed, reloaded, or restarted;
 - the old 3010 candidate is not stopped during a route change, allowing
@@ -153,7 +154,7 @@ host, do not run `--replace-baseline` or either baseline rollback. A successful
 
 ## Manifest construction
 
-The manifest schema is `phone11-profile-dnd-rollout/v3`. Populate it from a
+The manifest schema is `phone11-profile-dnd-rollout/v4`. Populate it from a
 fresh, read-only inventory. Placeholder, mutable-tag, shortened-ID, stale, or
 unreviewed values are rejected.
 
@@ -178,6 +179,11 @@ The important sections are:
   additionally has its exact command, component label, worker flag, and absence
   of published ports checked. The list is re-inventoried and repinned at every
   phase. Missing, changed, duplicated, default-role, or unlisted workers block.
+- `current.infrastructure`: exact name, full container ID, immutable image ID,
+  and canonical runtime hash for each existing production Compose PostgreSQL,
+  Redis, FreeSWITCH, Kamailio, Flexisip, and RTPEngine container. The hash
+  binds command, entrypoint, environment, mounts, ports, networks, and labels.
+  Any changed or unpinned infrastructure container blocks worker inventory.
 - `compose.baseline` and `compose.candidate`: file hash, rendered canonical JSON
   hash, and exact service name. The baseline and old rollback renderings may
   differ only by image/build. The disabled rollback may additionally change
