@@ -317,7 +317,10 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
         get(target, property, receiver) {
           if (property !== "query") return Reflect.get(target, property, receiver);
           return async (sql: string, values?: unknown[]) => {
-            if (sql.includes("FOR UPDATE OF assignment,extension")) {
+            // The repository locks assignments and extensions in separate,
+            // ordered statements. Hold only after the final extension lock so
+            // the revocation races the last authorization check, not setup.
+            if (sql.includes("FROM extensions") && sql.includes("ORDER BY id FOR UPDATE")) {
               const result = await client.query(sql, values);
               lockedRows = result.rows;
               signalLocked();
@@ -338,7 +341,7 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
       requestId: randomUUID(), fingerprint: "b".repeat(64), meetingId });
     const observedStart = start.then(value => ({ value }), error => ({ error }));
     await locked;
-    expect(lockedRows).toEqual([{ user_id: 1 }, { user_id: 2 }]);
+    expect(lockedRows).toEqual([{ id: 1 }, { id: 2 }]);
     let revoked = false;
     const revocation = pool.query(`UPDATE phone11_chat_members SET can_start_meeting=FALSE
       WHERE tenant_id=10 AND conversation_id=$1 AND user_id=1`, [id]).then(() => { revoked = true; });
