@@ -317,9 +317,9 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
         get(target, property, receiver) {
           if (property !== "query") return Reflect.get(target, property, receiver);
           return async (sql: string, values?: unknown[]) => {
-            if (sql.includes("FOR UPDATE OF assignment,extension")) {
+            if (sql.includes("FOR UPDATE OF assignment")) {
               const result = await client.query(sql, values);
-              lockedRows = result.rows;
+              lockedRows = result.rows.map(({ user_id }: { user_id: number }) => ({ user_id }));
               signalLocked();
               return result;
             }
