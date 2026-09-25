@@ -9,13 +9,15 @@ provider admission fence, root-owned evidence record, current-topology
 manifest, frozen Compose inputs, and immutable merged release image are not
 commissioned. The commands below are a source interface for a later
 controlled maintenance window; they are not live readiness evidence.
-The concrete two-control maintenance contract, source inventory command and
-remaining telephony-owner decision are recorded in
-`PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md`.
+The current 3010/3012 topology and unresolved gates are recorded in
+`PROFILE-DND-3010-TOPOLOGY-HANDOFF-20260926.md`. The older
+`PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md` explains admission-control
+requirements but assumes a port-3002 candidate; its host commands and route
+sequence are historical, not instructions for this topology.
 
 The guarded operator is
 `scripts/phone11-profile-dnd-rollout.py`. It implements the ordered profile/DND
-rollout in the dispatcher plan while preserving the current topology:
+source sequence described here while preserving the observed topology:
 
 - `cp11-backend` stays the sole default-role worker and port-3000 SIP wake owner;
 - `cp11-api-candidate-chat-inbox` stays workerless on loopback port 3010;
@@ -50,7 +52,8 @@ git diff --check -- \
 
 Source tests are not live readiness. Commissioning still requires an
 independent exact-head review, a clean release commit, immutable image digest,
-live protected pins, and the owner decisions listed in the rollout plan.
+live protected pins, and the admission-control decisions described in the
+current-topology handoff.
 
 ## Private staging contract
 

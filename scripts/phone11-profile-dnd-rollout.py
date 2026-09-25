@@ -1170,7 +1170,8 @@ class Operator:
             state = inspect.get("State")
             guarded(isinstance(labels, Mapping) and isinstance(state, Mapping), "runtime_count")
             phone11_like = (
-                name in {BASELINE_CONTAINER, CANDIDATE_CONTAINER, RELEASE_CANDIDATE_CONTAINER} or name in parked
+                name.startswith("cp11-")
+                or name in {BASELINE_CONTAINER, CANDIDATE_CONTAINER, RELEASE_CANDIDATE_CONTAINER} or name in parked
                 or inspect.get("Image") in expected_images
                 or labels.get("com.docker.compose.project") in projects
                 or labels.get("com.docker.compose.service") in services

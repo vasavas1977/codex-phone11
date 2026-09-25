@@ -273,6 +273,21 @@ class ProfileDndRolloutTests(unittest.TestCase):
             rollout.Operator(current, system).require_worker_topology({"name": "baseline"}, {"name": "candidate"}, require_default_running=None)
         self.assertEqual(error.exception.stage, "unknown_worker")
 
+    def test_markerless_cp11_container_still_blocks_topology(self) -> None:
+        system = FakeSystem()
+        system.command = lambda args, **_kwargs: b"cp11-shadow-worker\n" if args[:3] == ["docker", "ps", "-a"] else b""
+        system.json_responses = [[{
+            "Id": "f" * 64, "Image": "sha256:" + "9" * 64,
+            "State": {"Running": True},
+            "Config": {"Env": [], "Labels": {}},
+            "HostConfig": {"PortBindings": {}},
+        }]]
+        with self.assertRaises(rollout.GuardError) as error:
+            rollout.Operator(pins(), system).require_worker_topology(
+                {"name": "baseline"}, {"name": "candidate"}, require_default_running=None,
+            )
+        self.assertEqual(error.exception.stage, "unknown_worker")
+
     def test_manifest_requires_exact_origin_hashes_and_two_distinct_images(self) -> None:
         current = pins()
         self.assertEqual(current.public_origin, rollout.PUBLIC_ORIGIN)
