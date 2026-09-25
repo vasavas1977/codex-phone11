@@ -1,9 +1,9 @@
-# Direct-meeting prejoin web candidate — 25 September 2026
+# Direct-meeting prejoin release — 25 September 2026
 
 The committed client at `47d48a697921fc20f7b638f6b00447072b9fe7b7`
 shows the safe admitted meeting title when a deep link selects that exact
-meeting. Join continues to use its opaque meeting ID. This is a prepared static
-web candidate; no host upload, Nginx change, or activation has occurred.
+meeting. Join continues to use its opaque meeting ID. The web candidate below
+was subsequently activated and independently checked on the live site.
 
 ## Sealed local artifact
 
@@ -76,6 +76,46 @@ sudo python3 /opt/phone11ai/portal-operator/47d48a697921fc20f7b638f6b00447072b9f
 
 Local checks passed: five wrapper tests, 22 controller regression tests, Python
 compilation, the controller's full target-release validation, tracked-source
-blob comparison, and archive-to-manifest verification. Host prepare, live
-activation, browser behavior, and device behavior remain unrun for this
-candidate.
+blob comparison, and archive-to-manifest verification.
+
+## Activation and browser evidence
+
+- The candidate was installed at the commit-named release path above, root
+  owned and read-only for serving. The predecessor `5e7bf01152ddab01a6a043c464e0f4749c71c55d`
+  and its receipt were retained for guarded rollback.
+- The fresh, root-only host manifest was
+  `/root/phone11-static-portal-47d48a6.json`, SHA-256
+  `a088329e8bd3833e344c616835491c417109d43ac451c669b4667987deaf25fc`.
+  The pre-activation TLS site and effective Nginx configuration hashes were
+  `e3ca95837a5017913a079059f1cfdc13820c236d09bb8d3a4f35ecc434a4020f`
+  and `9f08b86f87a3ca0268f26b29164fca785ad3c95462e5bd9c733eacc121e79c5d`.
+- Guarded prepare, activation dry run, and activation all passed. The current
+  symlink points to this release. The new root-only receipt is
+  `/etc/nginx/phone11-static-portal-rollout/47d48a697921fc20f7b638f6b00447072b9fe7b7/receipt.json`,
+  SHA-256 `5433674e2d4ba9d96ba72f202d7905dded0c67de4060654749bab447e98c527b`.
+  The TLS site hash remained unchanged and `nginx -t` passed.
+- Public marker and browser-entry hashes matched the sealed artifact.
+  `/portal`, `/conference`, and `/teamchat` returned HTTP 200. In a signed-in
+  browser, the direct Test channel link with its meeting ID showed `Meeting
+  Test`, no other meeting choices, and an enabled Join meeting button after
+  session hydration. This proves the web prejoin route, not an actual room
+  connection or native handset behavior.
+
+## Signed iOS build
+
+- EAS internal iOS build 99 finished from exact source commit
+  `47d48a697921fc20f7b638f6b00447072b9fe7b7`:
+  <https://expo.dev/accounts/vasavas/projects/phone11ai/builds/c99719e8-02d9-48b3-8d70-972efa26d1da>.
+  The IPA is retained at
+  `/Users/vasavas16macbookpro/Library/Application Support/Phone11/verified-builds/99/Phone11-99.ipa`,
+  SHA-256 `f39487a9185bf5dd513ad80f9e0336a1b577cd9152c94fed511daabd6b657b95`.
+- Focused native tests passed 11/11 and TypeScript `--noEmit` passed before
+  build. The signed daily-pilot verifier passed against the retained build 49
+  baseline, including deep signature, production APNs, Siprix framework and
+  bridge, call-mode and wake/chat markers, disabled OTA, and matching signing
+  team and provisioned devices.
+- The paired iPhone 17 Pro Max reported build 98 before installation and build
+  99 afterward. `codesign --verify --deep --strict` passed on the extracted
+  app, and `devicectl` launched its bundle successfully. The 1020 iPhone was
+  unavailable to this Mac. No on-device prejoin visual, room join, media, or
+  two-device behavior is claimed from this installation and launch alone.
