@@ -25,6 +25,9 @@ vi.mock("../lib/trpc", () => ({
       available: {
         useQuery: vi.fn(() => ({ isLoading: false, isFetching: false, data: [], error: null, refetch: vi.fn() })),
       },
+      availableForTenant: {
+        useQuery: vi.fn(() => ({ isLoading: false, isFetching: false, data: [], error: null, refetch: vi.fn() })),
+      },
     },
   },
 }));
