@@ -168,6 +168,19 @@ export function createMeetingService(
         return [];
       }
     },
+    /** Exact admitted lookup for a freshly created room that may fall outside the bounded list. */
+    async availableMeetingForTenant(userId: number, tenantId: number, meetingId: string,
+      configuredTenantIds: readonly number[]): Promise<{ meetingId: string; tenantId: number } | null> {
+      if (!provider || !Number.isSafeInteger(userId) || userId < 1 ||
+          !Number.isSafeInteger(tenantId) || tenantId < 1 ||
+          !configuredTenantIds.includes(tenantId) ||
+          !joinMeetingSchema.safeParse({ meetingId, tenantId }).success) return null;
+      try {
+        const grant = await repository.authorize(userId, meetingId);
+        return grant?.userId === userId && grant.meetingId === meetingId && grant.tenantId === tenantId
+          ? { meetingId, tenantId } : null;
+      } catch { return null; }
+    },
     async join(userId: number, raw: unknown) {
       if (!Number.isSafeInteger(userId) || userId < 1)
         throw new TRPCError({ code: "UNAUTHORIZED" });

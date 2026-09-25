@@ -51,12 +51,14 @@ export function ContactDetails({
     );
   const { placeCall } = usePhoneCall();
   const pending = useRef(false);
-  const [busy, setBusy] = useState<"call" | "message" | null>(null);
-  const act = async (kind: "call" | "message") => {
-    if (!person || !tenantId || pending.current) return;
+  const meetingAttempt = useRef<{ key: string; requestId: string } | null>(null);
+  const [busy, setBusy] = useState<"call" | "message" | "meet" | null>(null);
+  const act = async (kind: "call" | "message" | "meet") => {
+    if (!person || !tenantId || pending.current || directory.workspace?.id !== tenantId ||
+      getAuthSnapshot().user?.id !== directory.owner) return;
     pending.current = true;
     setBusy(kind);
-    const owner = getAuthSnapshot().user?.id;
+    const owner = getAuthSnapshot().user;
     try {
       if (kind === "call") {
         if (
@@ -64,7 +66,7 @@ export function ContactDetails({
             person,
             tenantId,
             useSipAccountStore.getState().account,
-            owner,
+            owner?.id,
           )
         ) {
           Alert.alert(
@@ -74,22 +76,53 @@ export function ContactDetails({
           return;
         }
         await placeCall(person.extension!);
-      } else {
+      } else if (kind === "message") {
         const channelId = await openDirectConversation(tenantId, person.id);
-        if (getAuthSnapshot().user?.id === owner)
+        if (getAuthSnapshot().user === owner)
           router.push({
             pathname: "/chat/[id]",
             params: { id: channelId, tenantId },
           });
+      } else {
+        const conversationId = await openDirectConversation(tenantId, person.id);
+        if (getAuthSnapshot().user !== owner) return;
+        const { createChatTransport } = await import("@/lib/chat/transport");
+        const meetings = createChatTransport();
+        const capability = await meetings.directMeetingCapabilities(tenantId, conversationId);
+        if (getAuthSnapshot().user !== owner) return;
+        if (!capability.available || !capability.canStart) {
+          Alert.alert("Meeting unavailable", "Meeting hosting is not enabled for this contact in this workspace.");
+          return;
+        }
+        const key = `${owner!.id}:${tenantId}:${conversationId}`;
+        const attempt = meetingAttempt.current?.key === key ? meetingAttempt.current : {
+          key,
+          requestId: "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, character => {
+            const random = Math.floor(Math.random() * 16);
+            return (character === "x" ? random : (random & 3) | 8).toString(16);
+          }),
+        };
+        meetingAttempt.current = attempt;
+        const result = await meetings.startDirectMeeting(tenantId, conversationId, attempt.requestId);
+        if (getAuthSnapshot().user !== owner) return;
+        meetingAttempt.current = null;
+        router.push({ pathname: "/conference", params: {
+          meetingId: result.meetingId,
+          tenantId: String(tenantId),
+          source: "direct",
+        } });
       }
     } catch {
+      if (getAuthSnapshot().user !== owner) return;
       Alert.alert(
         kind === "call"
           ? "Call could not start"
-          : "Conversation could not open",
+          : kind === "meet" ? "Meeting could not start" : "Conversation could not open",
         kind === "call"
           ? "Check that your phone is connected, then try again."
-          : "Check your connection and try again.",
+          : kind === "meet"
+            ? "Check your connection and try again. The same meeting request will be recovered safely."
+            : "Check your connection and try again.",
       );
     } finally {
       pending.current = false;
@@ -167,6 +200,20 @@ export function ContactDetails({
             </Text>
           </View>
           <View style={styles.actions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Meet with ${person.name}`}
+              accessibilityHint="Check meeting access, then invite this contact to a video meeting."
+              accessibilityState={{ disabled: busy !== null, busy: busy === "meet" }}
+              disabled={busy !== null}
+              onPress={() => void act("meet")}
+              style={[styles.action, { backgroundColor: colors.surface, opacity: busy ? 0.6 : 1 }]}
+            >
+              <IconSymbol name="video.fill" size={22} color={colors.primary} />
+              <Text style={[styles.actionText, { color: colors.primary }]}>
+                {busy === "meet" ? "Starting…" : "Meet"}
+              </Text>
+            </Pressable>
             {canCall && (
               <Pressable
                 accessibilityRole="button"

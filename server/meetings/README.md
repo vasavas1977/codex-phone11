@@ -39,4 +39,15 @@ also revokes the corresponding admission revision. If the additive migration
 is absent, legacy admitted-room reads continue unchanged while channel meeting
 capabilities and invitations return unavailable.
 
+Direct-contact meetings extend that source with the separate additive
+`direct-meeting-migration.sql`. Both members must still be active in the exact
+workspace, assigned to active extensions, and unblocked. A host grant defaults
+false. The start request uses a stable request ID and invites only the other
+member; current pair membership and block state are checked again when a token
+is issued. The admin API pages eligible direct chats with an opaque UUID cursor
+in sets of 50 so a workspace with more than 100 direct chats remains manageable.
+The direct migration and admin grant must be applied explicitly before the
+mobile actions can start a meeting. This candidate keeps the deployed chat
+inbox source as its base and does not include the newer admin meetings screen.
+
 Run: `node_modules/.bin/vitest run server/meetings/meetings.test.ts`.

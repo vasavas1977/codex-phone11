@@ -50,7 +50,7 @@ describe("plain-video admission issuance lease", () => {
       if (sql.includes("to_regclass")) return { rows: [{ available: true }] };
       if (sql.includes("FROM phone11_channel_meetings")) return { rows: [{ channel_id: "52345678-1234-4234-8234-123456789012" }] };
       if (sql.includes("FOR KEY SHARE OF member")) return { rows: [{ user_id: 7 }] };
-      if (sql.includes("FROM user_extensions")) return { rows: [{ id: 1, extension_id: 107 }] };
+      if (sql.includes("FROM user_extensions")) return { rows: [{ id: 1, user_id: 7, extension_id: 107 }] };
       if (sql.includes("FROM extensions")) return { rows: [{ id: 107 }] };
       return { rows: [row] };
     });

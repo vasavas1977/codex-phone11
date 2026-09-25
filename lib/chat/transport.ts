@@ -120,6 +120,12 @@ export function createChatTransport() {
       withClient(c => c.meetings.startChannelMeeting.mutate({ tenantId, channelId, selectedMemberIds, requestId })),
     channelMeetingInvitations: (tenantId: number, channelId: string) =>
       withClient(c => c.meetings.invitations.query({ tenantId, channelId })),
+    directMeetingCapabilities: (tenantId: number, conversationId: string) =>
+      withClient(c => c.meetings.directCapabilities.query({ tenantId, conversationId })),
+    startDirectMeeting: (tenantId: number, conversationId: string, requestId: string) =>
+      withClient(c => c.meetings.startDirectMeeting.mutate({ tenantId, conversationId, requestId })),
+    directMeetingInvitations: (tenantId: number, conversationId: string) =>
+      withClient(c => c.meetings.directInvitations.query({ tenantId, conversationId })),
     details: (tenantId: number, id: string) =>
       withClient((c) => c.chat.details.query({ tenantId, id })),
     typingPublish: (tenantId: number, id: string, input: { threadRootId?: string; sessionId: string; generation: string; sequence: number; active: boolean }) =>

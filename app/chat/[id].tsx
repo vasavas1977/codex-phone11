@@ -44,7 +44,7 @@ import { usePresencePolling } from "@/lib/chat/presence-store";
 import { useChatTyping } from "@/lib/chat/typing";
 import { TypingIndicator } from "@/components/chat/typing-indicator";
 import { ChatPeerCall } from "@/components/chat/peer-call";
-import { ChatMeetingAction } from "@/components/chat/meeting-action";
+import { DirectMeetingAction } from "@/components/chat/direct-meeting-action";
 import { ChannelMeetingPicker } from "@/components/chat/channel-meeting-picker";
 import {
   ProfileAvatar,
@@ -152,7 +152,7 @@ export default function ChatRoomScreen() {
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [channelMeetingCapability, setChannelMeetingCapability] = useState<{ available: boolean; canStart: boolean; maxSelectedMembers: number } | null>(null);
   const [channelMeetingBusy, setChannelMeetingBusy] = useState(false);
-  const [meetingInvitations, setMeetingInvitations] = useState<Awaited<ReturnType<typeof messageApi.channelMeetingInvitations>>>([]);
+  const [meetingInvitations, setMeetingInvitations] = useState<Array<{ invitationId: string; meetingId: string; expiresAt: number }>>([]);
   const [channelMeetingOpen, setChannelMeetingOpen] = useState(false);
   const [channelMeetingScope, setChannelMeetingScope] = useState<SendAction | null>(null);
   const [channelMeetingMembers, setChannelMeetingMembers] = useState<ChatConversationDetails["members"]>([]);
@@ -643,13 +643,15 @@ export default function ChatRoomScreen() {
     }
   };
   useFocusEffect(useCallback(() => {
-    if (!user || !chat.workspace || !channel || !["channel", "group"].includes(channel.kind)) return;
+    if (!user || !chat.workspace || !channel || !["channel", "group", "direct"].includes(channel.kind)) return;
     const action = { owner: user, workspaceId: chat.workspace.id, roomId: id };
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
       try {
-        const items = await messageApi.channelMeetingInvitations(action.workspaceId, id);
+        const items = channel.kind === "direct"
+          ? await messageApi.directMeetingInvitations(action.workspaceId, id)
+          : await messageApi.channelMeetingInvitations(action.workspaceId, id);
         if (!stopped && actionIsCurrent(action)) { meetingInvitationScope.current = action; setMeetingInvitations(items.filter(item => item.expiresAt > Date.now())); }
       } catch {
         if (!stopped && actionIsCurrent(action)) setMeetingInvitations([]);
@@ -1517,7 +1519,7 @@ export default function ChatRoomScreen() {
                 >{memberContext}</Text>}
               </Pressable>
               {!threadOpen && directPeerId && chat.workspace && (
-                <ChatMeetingAction />
+                <DirectMeetingAction tenantId={chat.workspace.id} conversationId={id} />
               )}
               {!threadOpen &&
                 (channel?.kind === "channel" || channel?.kind === "group") &&
@@ -1656,8 +1658,13 @@ export default function ChatRoomScreen() {
                   </Text>
                 )}
                 {!threadOpen && canInteract && actionIsCurrent(meetingInvitationScope.current) && meetingInvitations.filter(item => item.expiresAt > Date.now()).map(invitation => (
-                  <Pressable key={invitation.invitationId} accessibilityRole="button" accessibilityLabel="Join channel meeting"
-                    onPress={() => router.push({ pathname: "/conference", params: { meetingId: invitation.meetingId } })}
+                  <Pressable key={invitation.invitationId} accessibilityRole="button" accessibilityLabel={channel?.kind === "direct" ? "Join contact meeting" : "Join channel meeting"}
+                    onPress={() => {
+                      const scope = currentScope();
+                      const invitationScope = meetingInvitationScope.current;
+                      if (!scope?.workspace || !invitationScope || !actionIsCurrent(invitationScope) || scope.workspace.id !== invitationScope.workspaceId) return;
+                      router.push({ pathname: "/conference", params: { meetingId: invitation.meetingId, tenantId: String(invitationScope.workspaceId), source: channel?.kind === "direct" ? "direct" : "channel" } });
+                    }}
                     style={[styles.notice, { flexDirection: "row", alignItems: "center", gap: 10 }]}>
                     <MaterialIcons name="videocam" size={24} color={colors.primary} />
                     <Text style={{ color: colors.primary }}>Meeting invitation · Join</Text>

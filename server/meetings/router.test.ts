@@ -62,9 +62,12 @@ describe("mounted plain-video meetings router", () => {
       .createCaller({ user, req: {}, res: {} } as never);
     await api.adminOverview({ tenantId: 41 });
     await api.adminOverview({ tenantId: 42 });
+    const directCursor = "22345678-1234-4234-8234-123456789012";
+    await api.adminOverview({ tenantId: 41, directCursor });
     await api.adminSetHostPermission({ tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true });
-    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(1, 7, 41, true);
-    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(2, 7, 42, false);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(1, 7, 41, true, undefined);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(2, 7, 42, false, undefined);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(3, 7, 41, true, directCursor);
     expect(channelAdminRepository.setHostPermission).toHaveBeenCalledWith(7,
       { tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true }, true);
   });

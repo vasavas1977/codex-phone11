@@ -19,6 +19,9 @@ import {
   startChannelMeetingSchema,
 } from "./channel-meeting-service";
 import { createConnect11PlainVideoFacade } from "./connect11-plain-video-facade";
+import { createDirectMeetingRepository, type DirectMeetingRepository } from "./direct-meeting-repository";
+import { adminSetDirectHostPermissionSchema, createDirectMeetingService,
+  directMeetingScopeSchema, startDirectMeetingSchema } from "./direct-meeting-service";
 import { readServerConnect11PlainVideoTenantConfiguration } from "./connect11-plain-video-config";
 import {
   createConnect11PlainVideoTenantProvider,
@@ -60,6 +63,7 @@ export type MeetingsRouterDependencies = {
   clientFactory?: PlainVideoClientFactory;
   channelRepository?: ChannelMeetingRepository;
   channelAdminRepository?: ChannelMeetingAdminRepository;
+  directRepository?: DirectMeetingRepository;
 };
 
 function defaultClientFactory(): PlainVideoClientFactory {
@@ -138,18 +142,35 @@ export function createMeetingsRouter(
       ? channelConfiguration.tenantIds.filter(id => configured.configuredTenantIds.includes(id))
       : [],
   );
+  const directService = createDirectMeetingService(
+    dependencies.directRepository ?? createDirectMeetingRepository(),
+    channelConfiguration.enabled
+      ? channelConfiguration.tenantIds.filter(id => configured.configuredTenantIds.includes(id))
+      : [],
+  );
   const channelAdminRepository = dependencies.channelAdminRepository ?? createChannelMeetingAdminRepository();
   const selectedTenantSchema = z.object({ tenantId: z.number().int().positive().refine(Number.isSafeInteger) }).strict();
+  const exactMeetingSchema = selectedTenantSchema.extend({ meetingId: z.string().uuid() }).strict();
   const channelEnabled = (tenantId: number) => channelConfiguration.enabled
     && channelConfiguration.tenantIds.includes(tenantId)
     && configured.configuredTenantIds.includes(tenantId);
   return router({
     adminOverview: protectedProcedure
       .input(adminOverviewSchema)
-      .query(({ ctx, input }) => channelAdminRepository.overview(ctx.user.id, input.tenantId, channelEnabled(input.tenantId))),
+      .query(({ ctx, input }) => channelAdminRepository.overview(ctx.user.id, input.tenantId, channelEnabled(input.tenantId), input.directCursor)),
     adminSetHostPermission: protectedProcedure
       .input(adminSetHostPermissionSchema)
       .mutation(({ ctx, input }) => channelAdminRepository.setHostPermission(ctx.user.id, input, channelEnabled(input.tenantId))),
+    adminSetDirectHostPermission: protectedProcedure
+      .input(adminSetDirectHostPermissionSchema)
+      .mutation(async ({ ctx, input }) => {
+        const result = await channelAdminRepository.setHostPermission(ctx.user.id, {
+          tenantId: input.tenantId, channelId: input.conversationId,
+          userId: input.userId, canStartMeeting: input.canStartMeeting,
+        }, channelEnabled(input.tenantId), "direct");
+        return { conversationId: result.channelId, userId: result.userId,
+          canStartMeeting: result.canStartMeeting };
+      }),
     capabilities: protectedProcedure.query(({ ctx }) =>
       configured.service.capabilitiesFor(
         ctx.user.id,
@@ -170,6 +191,10 @@ export function createMeetingsRouter(
           configured.configuredTenantIds.filter((tenantId) => tenantId === input.tenantId),
         )).map((meeting) => ({ ...meeting, tenantId: input.tenantId })),
       ),
+    availableMeetingForTenant: protectedProcedure
+      .input(exactMeetingSchema)
+      .query(({ ctx, input }) => configured.service.availableMeetingForTenant(
+        ctx.user.id, input.tenantId, input.meetingId, configured.configuredTenantIds)),
     join: protectedProcedure
       .input(joinMeetingSchema)
       .mutation(({ ctx, input }) =>
@@ -184,6 +209,15 @@ export function createMeetingsRouter(
     invitations: protectedProcedure
       .input(channelInvitationsSchema)
       .query(({ ctx, input }) => channelService.invitations(ctx.user.id, input)),
+    directCapabilities: protectedProcedure
+      .input(directMeetingScopeSchema)
+      .query(({ ctx, input }) => directService.capabilities(ctx.user.id, input)),
+    startDirectMeeting: protectedProcedure
+      .input(startDirectMeetingSchema)
+      .mutation(({ ctx, input }) => directService.start(ctx.user.id, input)),
+    directInvitations: protectedProcedure
+      .input(directMeetingScopeSchema)
+      .query(({ ctx, input }) => directService.invitations(ctx.user.id, input)),
   });
 }
 

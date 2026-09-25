@@ -15,9 +15,12 @@ const mocks = vi.hoisted(() => ({
   press: new Map<string, () => unknown>(),
   call: vi.fn(async () => {}),
   openMessage: vi.fn(async () => "channel-1"),
+  meetingCapability: vi.fn(async () => ({ available: true, canStart: true })),
+  startDirectMeeting: vi.fn(async () => ({ meetingId: "22222222-2222-4222-8222-222222222222" })),
   push: vi.fn(),
   alert: vi.fn(),
   directoryCalls: [] as unknown[][],
+  authUser: { id: 1 },
 }));
 vi.mock("react", async (original) => {
   const actual = await original<typeof import("react")>();
@@ -105,8 +108,12 @@ vi.mock("../lib/sip/account-store", () => ({
   ),
 }));
 vi.mock("../lib/_core/auth", () => ({
-  getAuthSnapshot: () => ({ user: { id: 1 } }),
+  getAuthSnapshot: () => ({ user: mocks.authUser }),
 }));
+vi.mock("../lib/chat/transport", () => ({ createChatTransport: () => ({
+  directMeetingCapabilities: mocks.meetingCapability,
+  startDirectMeeting: mocks.startDirectMeeting,
+}) }));
 import ContactsScreen from "../app/(tabs)/contacts";
 import ContactDetailScreen from "../app/contacts/[id]";
 beforeEach(() => {
@@ -189,6 +196,22 @@ it("opens only a server-created conversation in the same tenant", async () => {
     pathname: "/chat/[id]",
     params: { id: "channel-1", tenantId: 1 },
   });
+});
+it("checks contact meeting permission before starting and opens the exact room", async () => {
+  renderToStaticMarkup(<ContactDetailScreen />);
+  await mocks.press.get("Meet with สมชาย")!();
+  await vi.waitFor(() => expect(mocks.meetingCapability).toHaveBeenCalledWith(1, "channel-1"));
+  expect(mocks.startDirectMeeting).toHaveBeenCalledWith(1, "channel-1", expect.stringMatching(/^[0-9a-f-]{36}$/));
+  expect(mocks.push).toHaveBeenCalledWith({ pathname: "/conference", params: {
+    meetingId: "22222222-2222-4222-8222-222222222222", tenantId: "1", source: "direct",
+  } });
+});
+it("does not create a contact meeting when hosting permission is absent", async () => {
+  mocks.meetingCapability.mockResolvedValueOnce({ available: false, canStart: false });
+  renderToStaticMarkup(<ContactDetailScreen />);
+  await mocks.press.get("Meet with สมชาย")!();
+  await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith("Meeting unavailable", expect.any(String)));
+  expect(mocks.startDirectMeeting).not.toHaveBeenCalled();
 });
 it("omits unavailable phone action and rejects stale contact IDs", () => {
   mocks.directory.people[0].extension = null;
