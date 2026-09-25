@@ -70,5 +70,20 @@ or channel-title check fails.
 
 Local validation completed: the wrapper's five focused tests, the companion's
 22 regression tests, Python compilation, and full pinned export-tree validation
-passed. This is source/export evidence; the web update has not yet been staged
-or activated on the edge, and there is no new handset audio/video evidence.
+passed. Independent source review found no P0–P2.
+
+The candidate was staged on the Phone11 web edge with root-owned serving files
+and a root-only manifest. Guarded `--prepare`, `--activate --dry-run`, and
+`--activate` passed. The active link now resolves to
+`/var/www/phone11-portal/releases/5e7bf01152ddab01a6a043c464e0f4749c71c55d`.
+The root-only activation receipt is
+`/etc/nginx/phone11-static-portal-rollout/5e7bf01152ddab01a6a043c464e0f4749c71c55d/receipt.json`,
+SHA-256 `b932fd73f881f031c7abc881d84ccbcb08042a03b11dbe2a4954eea8c10d8a8d`.
+The Nginx site SHA-256 remains
+`e3ca95837a5017913a079059f1cfdc13820c236d09bb8d3a4f35ecc434a4020f`.
+Public marker and browser-entry hashes match their sealed pins, and `/portal`,
+`/conference`, and `/teamchat` each returned HTTP 200. In a signed-in Test
+channel, a new meeting appeared as **Test** in prejoin, joined with microphone
+and camera off, showed **Connected**, and left cleanly. This verifies title
+display and one-person browser lifecycle; it does not verify two-device media,
+iPhone behavior, or desktop runtime.
