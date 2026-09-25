@@ -5,7 +5,9 @@ import { createChannelMeetingAdminRepository } from "./channel-meeting-admin-rep
 const channelId = "12345678-1234-4234-8234-123456789012";
 const directId = "22345678-1234-4234-8234-123456789012";
 
-function repository(options: { admin?: boolean; adminRevokedAtLock?: boolean; extensionRevokedAtLock?: boolean; tenant?: boolean; installed?: boolean; channel?: boolean; member?: boolean; direct?: boolean } = {}) {
+function repository(options: { admin?: boolean; adminRevokedAtLock?: boolean; extensionRevokedAtLock?: boolean; tenant?: boolean; installed?: boolean; channel?: boolean; member?: boolean; direct?: boolean; directCount?: number } = {}) {
+  const directIds = Array.from({ length: options.directCount ?? 0 }, (_, index) =>
+    `22345678-1234-4234-8234-${String(index + 1).padStart(12, "0")}`);
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.startsWith("SET LOCAL")) return { rows: [] };
     if (sql.includes("pg_advisory_xact_lock")) return { rows: [] };
@@ -28,9 +30,15 @@ function repository(options: { admin?: boolean; adminRevokedAtLock?: boolean; ex
     if (sql.includes("SELECT id,name,kind FROM phone11_chat_conversations"))
       return { rows: [{ id: channelId, name: "Team", kind: "channel" }] };
     if (sql.includes("SELECT conversation.id,conversation.name,conversation.kind"))
-      return { rows: options.direct ? [{ id: directId, name: "Direct message", kind: "direct" }] : [] };
+      return { rows: directIds.length ? directIds.filter((id) => id > String(values?.[1] ?? "")).slice(0, 51)
+        .map((id) => ({ id, name: `Direct ${id}`, kind: "direct" }))
+        : options.direct ? [{ id: directId, name: "Direct message", kind: "direct" }] : [] };
     if (sql.includes("COALESCE(NULLIF(users.name"))
       return { rows: [{ conversation_id: channelId, user_id: 8, name: "Colleague", can_start_meeting: true },
+        ...directIds.filter((id) => (values?.[1] as string[] | undefined)?.includes(id)).flatMap((id) => [
+          { conversation_id: id, user_id: 7, name: "Admin", can_start_meeting: false },
+          { conversation_id: id, user_id: 8, name: "Colleague", can_start_meeting: false },
+        ]),
         ...(options.direct ? [{ conversation_id: directId, user_id: 7, name: "Admin", can_start_meeting: false },
           { conversation_id: directId, user_id: 8, name: "Colleague", can_start_meeting: false }] : [])] };
     if (sql.includes("SELECT id FROM phone11_chat_conversations"))
@@ -78,7 +86,7 @@ describe("channel meeting administration", () => {
     const { api, query } = repository();
     await expect(api.overview(7, 41, true)).resolves.toEqual({ available: true, channels: [{
       id: channelId, name: "Team", kind: "channel", members: [{ userId: 8, name: "Colleague", canStartMeeting: true }],
-    }], directConversations: [], directConversationsReason: undefined });
+    }], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined });
     await expect(api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: false }, true))
       .resolves.toEqual({ channelId, userId: 8, canStartMeeting: false });
     const update = query.mock.calls.find(([sql]) => sql.includes("UPDATE phone11_chat_members"));
@@ -101,6 +109,29 @@ describe("channel meeting administration", () => {
     expect(directConversation?.[1]).toEqual([41, directId]);
     expect(query.mock.calls.some(([sql, values]) => sql.includes("UPDATE phone11_chat_members")
       && values?.[1] === directId && values?.[2] === 8)).toBe(true);
+  });
+
+  it("pages past 100 direct chats and can grant the 101st without dropping the workspace", async () => {
+    const { api, query } = repository({ directCount: 101 });
+    const first = await api.overview(7, 41, true);
+    expect(first.available).toBe(true);
+    expect(first.directConversations).toHaveLength(50);
+    expect(first.directNextCursor).toBe(first.directConversations[49].id);
+    const second = await api.overview(7, 41, true, first.directNextCursor);
+    expect(second.directConversations).toHaveLength(50);
+    expect(second.directNextCursor).toBe(second.directConversations[49].id);
+    const third = await api.overview(7, 41, true, second.directNextCursor);
+    expect(third.directConversations).toHaveLength(1);
+    expect(third.directNextCursor).toBeUndefined();
+    const last = third.directConversations[0];
+    await expect(api.setHostPermission(7, { tenantId: 41, channelId: last.id,
+      userId: 8, canStartMeeting: true }, true, "direct"))
+      .resolves.toMatchObject({ channelId: last.id, canStartMeeting: true });
+    const directQueries = query.mock.calls.filter(([sql]) => sql.includes("SELECT conversation.id,conversation.name,conversation.kind"));
+    expect(directQueries).toHaveLength(3);
+    expect(directQueries.every(([sql, values]) => sql.includes("conversation.tenant_id=$1")
+      && sql.includes("conversation.id > $2::uuid") && values?.[0] === 41)).toBe(true);
+    expect(directQueries.map(([, values]) => values?.[1])).toEqual([null, first.directNextCursor, second.directNextCursor]);
   });
 
   it("prechecks admin access without a row lock, then takes the channel lock before locking authorization rows", async () => {

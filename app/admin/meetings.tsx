@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -46,6 +46,12 @@ function AdminMeetingsContent() {
     null,
   );
   const [memberSearch, setMemberSearch] = useState("");
+  const [directCursors, setDirectCursors] = useState<(string | undefined)[]>([undefined]);
+  const directPage = directCursors.length - 1;
+  useEffect(() => {
+    setDirectCursors([undefined]);
+    setSelectedConversationId(null);
+  }, [tenantId]);
   const tenant = trpc.pbx.tenant.get.useQuery(
     { tenantId: tenantId ?? 0 },
     { enabled: Boolean(user) && tenantId !== null, staleTime: 0 },
@@ -80,7 +86,7 @@ function AdminMeetingsContent() {
     user?.id,
   ]);
   const overview = trpc.meetings.adminOverview.useQuery(
-    { tenantId: tenantId ?? 0 },
+    { tenantId: tenantId ?? 0, directCursor: directCursors[directPage] },
     {
       enabled: Boolean(user) && tenantId !== null && canManage,
       staleTime: 0,
@@ -217,7 +223,7 @@ function AdminMeetingsContent() {
             {overview.data?.reason ||
               "Meeting management is not enabled for this workspace."}
           </Text>
-        ) : conversations.length === 0 ? (
+        ) : conversations.length === 0 && directPage === 0 && !overview.data.directNextCursor ? (
           <Text style={[styles.stateText, { color: colors.muted }]}>
             No conversations are available for meeting hosting.
           </Text>
@@ -309,7 +315,8 @@ function AdminMeetingsContent() {
             </View>
           </>
         ) : (
-          conversations.map((conversation) => (
+          <>
+          {conversations.map((conversation) => (
             <Pressable
               key={conversation.id}
               accessibilityRole="button"
@@ -338,7 +345,32 @@ function AdminMeetingsContent() {
               </View>
               <IconSymbol name="chevron.right" size={18} color={colors.muted} />
             </Pressable>
-          ))
+          ))}
+          {directPage > 0 || overview.data.directNextCursor ? (
+            <View style={styles.pageControls}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Previous direct chats"
+                disabled={directPage === 0}
+                onPress={() => setDirectCursors((cursors) => cursors.slice(0, -1))}
+              >
+                <Text style={{ color: directPage === 0 ? colors.muted : colors.primary }}>Previous</Text>
+              </Pressable>
+              <Text style={{ color: colors.muted }}>Direct chats · page {directPage + 1}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Next direct chats"
+                disabled={!overview.data.directNextCursor}
+                onPress={() => {
+                  if (overview.data.directNextCursor)
+                    setDirectCursors((cursors) => [...cursors, overview.data!.directNextCursor]);
+                }}
+              >
+                <Text style={{ color: overview.data.directNextCursor ? colors.primary : colors.muted }}>Next</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          </>
         )}
         {saveError ? (
           <Text accessibilityRole="alert" style={styles.error}>
@@ -403,6 +435,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   moreMembers: { fontSize: 13, lineHeight: 20, marginTop: 12 },
+  pageControls: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 14, gap: 10 },
   member: {
     minHeight: 60,
     flexDirection: "row",
