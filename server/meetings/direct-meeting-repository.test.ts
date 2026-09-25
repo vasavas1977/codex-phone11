@@ -87,5 +87,11 @@ describe("direct meeting repository", () => {
     expect(select?.[0]).toContain("invitation.recipient_id=$2");
     expect(select?.[0]).toContain("source.origin_kind='direct'");
     expect(select?.[0]).toContain("phone11_chat_blocks");
+    await expect(api.invitations(8, 41)).resolves.toEqual([]);
+    const inboxSelect = query.mock.calls.filter(([sql]) => String(sql).includes("invitation.id AS invitation_id")).at(-1);
+    expect(inboxSelect?.[1]).toEqual([41, 8, null]);
+    expect(inboxSelect?.[0]).toContain("($3::uuid IS NULL OR invitation.channel_id=$3)");
+    expect(inboxSelect?.[0]).toContain("admission.revoked_at IS NULL");
+    expect(inboxSelect?.[0]).toContain("source.expires_at>clock_timestamp()+INTERVAL '5 minutes'");
   });
 });

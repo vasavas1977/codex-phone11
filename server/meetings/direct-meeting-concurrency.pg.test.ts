@@ -12,6 +12,7 @@ const socket = "/tmp/phone11-direct-meeting-candidate-pg/socket";
 const enabled = process.env.PHONE11_TEST_DISPOSABLE_PG === "YES"
   && process.env.PHONE11_TEST_PG_SOCKET === socket;
 const directId = "12345678-1234-4234-8234-123456789012";
+const secondDirectId = "d2345678-1234-4234-8234-123456789012";
 const foreignId = "22345678-1234-4234-8234-123456789012";
 const meetingId = "32345678-1234-4234-8234-123456789012";
 const secondMeetingId = "42345678-1234-4234-8234-123456789012";
@@ -116,9 +117,12 @@ describe.runIf(enabled)("direct meetings on disposable PostgreSQL 17", () => {
       INSERT INTO extensions VALUES(107,41,'active',NULL),(108,41,'active',NULL),(207,42,'active',NULL),(209,42,'active',NULL);
       INSERT INTO user_extensions VALUES(1,7,107),(2,8,108),(3,7,207),(4,9,209);
       INSERT INTO phone11_chat_conversations VALUES('${directId}',41,'direct','Direct'),
+        ('${secondDirectId}',41,'direct','Second direct'),
         ('${foreignId}',42,'direct','Other');
       INSERT INTO phone11_chat_members(tenant_id,conversation_id,user_id) VALUES
-        (41,'${directId}',7),(41,'${directId}',8),(42,'${foreignId}',7),(42,'${foreignId}',9);
+        (41,'${directId}',7),(41,'${directId}',8),
+        (41,'${secondDirectId}',7),(41,'${secondDirectId}',8),
+        (42,'${foreignId}',7),(42,'${foreignId}',9);
     `);
   });
 
@@ -150,6 +154,17 @@ describe.runIf(enabled)("direct meetings on disposable PostgreSQL 17", () => {
     expect(await direct.invitations(7, 41, directId)).toEqual([]);
     expect(await direct.invitations(8, 42, directId)).toEqual([]);
     expect(await direct.invitations(8, 41, directId)).toHaveLength(1);
+    expect(await direct.invitations(8, 41)).toHaveLength(1);
+    expect(await direct.invitations(7, 41)).toEqual([]);
+    expect(await direct.invitations(8, 42)).toEqual([]);
+    await admin.setHostPermission(7, { tenantId: 41, channelId: secondDirectId,
+      userId: 7, canStartMeeting: true }, true, "direct");
+    await direct.start({ ...input, conversationId: secondDirectId,
+      requestId: "e2345678-1234-4234-8234-123456789012",
+      meetingId: "f2345678-1234-4234-8234-123456789012" });
+    expect((await direct.invitations(8, 41)).map(item => item.conversationId).sort())
+      .toEqual([directId, secondDirectId].sort());
+    expect(await direct.invitations(8, 41, directId)).toHaveLength(1);
     const invitation = await pool.query("SELECT recipient_id FROM phone11_channel_meeting_invitations WHERE meeting_id=$1", [meetingId]);
     expect(invitation.rows).toEqual([{ recipient_id: 8 }]);
 
@@ -168,6 +183,7 @@ describe.runIf(enabled)("direct meetings on disposable PostgreSQL 17", () => {
     releaseStart.release();
     await expect(startAfterGrant).resolves.toMatchObject({ meetingId: secondMeetingId });
     await blocking;
+    await expect(direct.invitations(8, 41)).resolves.toEqual([]);
     const revoked = await pool.query(`SELECT user_id,revoked_at FROM phone11_plain_video_admission_members
       WHERE meeting_id=$1 ORDER BY user_id`, [secondMeetingId]);
     expect(revoked.rows).toHaveLength(2);
@@ -207,6 +223,7 @@ describe.runIf(enabled)("direct meetings on disposable PostgreSQL 17", () => {
     expect(beforeHostDisabled).not.toBeNull();
     await pool.query("UPDATE phone11_auth_identity SET disabled_at=clock_timestamp() WHERE legacy_user_id=7");
     await expect(direct.invitations(8, 41, directId)).resolves.toEqual([]);
+    await expect(direct.invitations(8, 41)).resolves.toEqual([]);
     await expect(lease.begin(recipientGrant)).resolves.toBeNull();
     await expect(lease.confirm(beforeHostDisabled!)).resolves.toBeNull();
     await pool.query("UPDATE phone11_auth_identity SET disabled_at=NULL WHERE legacy_user_id=7");

@@ -164,7 +164,7 @@ export function createDirectMeetingRepository(transaction: typeof withTransactio
       });
     },
 
-    async invitations(userId: number, tenantId: number, conversationId: string) {
+    async invitations(userId: number, tenantId: number, conversationId?: string) {
       return transaction(async (db) => {
         await db.query("SET LOCAL statement_timeout = '3s'");
         if (!await installed(db)) return [];
@@ -194,7 +194,8 @@ export function createDirectMeetingRepository(transaction: typeof withTransactio
             AND identity.disabled_at IS NULL
           JOIN phone11_auth_identity host_identity ON host_identity.legacy_user_id=source.created_by
             AND host_identity.disabled_at IS NULL
-          WHERE invitation.tenant_id=$1 AND invitation.recipient_id=$2 AND invitation.channel_id=$3
+          WHERE invitation.tenant_id=$1 AND invitation.recipient_id=$2
+            AND ($3::uuid IS NULL OR invitation.channel_id=$3)
             AND source.expires_at>clock_timestamp()+INTERVAL '5 minutes'
             AND (SELECT count(*) FROM phone11_chat_members peer WHERE peer.tenant_id=source.tenant_id
               AND peer.conversation_id=source.channel_id)=2
@@ -209,7 +210,7 @@ export function createDirectMeetingRepository(transaction: typeof withTransactio
               ON extension.id=assignment.extension_id AND extension.tenant_id=source.tenant_id
                 AND extension.status='active' AND extension.deleted_at IS NULL
               WHERE assignment.user_id=source.created_by)
-          ORDER BY invitation.created_at DESC LIMIT 50`, [tenantId, userId, conversationId]);
+          ORDER BY invitation.created_at DESC LIMIT 50`, [tenantId, userId, conversationId ?? null]);
         return rows.rows.flatMap((row) => {
           const parsed = invitationRow.safeParse(row);
           return parsed.success ? [{ invitationId: parsed.data.invitation_id, meetingId: parsed.data.meeting_id,
