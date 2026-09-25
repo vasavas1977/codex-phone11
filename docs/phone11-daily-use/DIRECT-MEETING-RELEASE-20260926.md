@@ -11,8 +11,8 @@ This is a release operator plan, not evidence that direct-contact meetings are l
 | Predecessor image | `sha256:55b593f0c392c67bc74589dcae4cb0e36b2f2e6dcd8a3552be781429ed0e2d77` |
 | Predecessor source and bundle | `2d125819a7f1713f05b3eaa3bcbf5e5672a84e0c`, `75381c01555e1d924eddc2da2c97a1f1e44224dec5c4f03947518e24f6148b5b` |
 | Current Nginx site SHA-256 | `1b9b4c7d89d2c65c6bf8b730decd57513c46194fe21b5470981c7525d0b0ed26` |
-| Candidate backend source | `2bbb1ed2e49fb6c1ede1e1aa443eba4fc98238f1` (`codex/phone11-direct-on-inbox-20260926`) |
-| Candidate backend bundle SHA-256 | `b42e1b4a88cf063b69aa2faa66fcd944224f5f2f66f4302fdee36513afe3aa74` |
+| Candidate backend source | `00b2ef21518c092819c95ae956963f5f191543e4` (`codex/phone11-direct-on-inbox-20260926`) |
+| Candidate backend bundle SHA-256 | `1f5abb9e19da7a6040d26634d64f8ea139049c61840884477afafc097ae14bbe` |
 | Candidate build/container/port | `direct-meeting-20260926`, `cp11-api-candidate-direct-meeting`, `127.0.0.1:3011` |
 
 The candidate source must be independently reviewed at the exact SHA and the backend bundle must be reproduced from it. These pins are for the backend bundle. The signed iOS app needs its own source/build/artifact proof; deploying the API does not update either iPhone.

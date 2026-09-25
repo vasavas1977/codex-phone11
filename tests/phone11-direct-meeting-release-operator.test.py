@@ -71,8 +71,8 @@ class DirectMeetingOperatorTest(unittest.TestCase):
         self.assertEqual(overlay.SOURCE_SHA, route.TARGET_SOURCE_SHA)
         self.assertEqual(overlay.BUNDLE_SHA, route.TARGET_BUNDLE)
         self.assertEqual(overlay.BUILD, route.TARGET_BUILD)
-        self.assertEqual(route.TARGET_SOURCE_SHA, "2bbb1ed2e49fb6c1ede1e1aa443eba4fc98238f1")
-        self.assertEqual(route.TARGET_BUNDLE, "b42e1b4a88cf063b69aa2faa66fcd944224f5f2f66f4302fdee36513afe3aa74")
+        self.assertEqual(route.TARGET_SOURCE_SHA, "00b2ef21518c092819c95ae956963f5f191543e4")
+        self.assertEqual(route.TARGET_BUNDLE, "1f5abb9e19da7a6040d26634d64f8ea139049c61840884477afafc097ae14bbe")
         self.assertEqual(route.LOCK, Path("/run/phone11-desktop-provisioning-route.lock"))
         self.assertEqual(route.ORIGINAL_SHA256, "1b9b4c7d89d2c65c6bf8b730decd57513c46194fe21b5470981c7525d0b0ed26")
 
