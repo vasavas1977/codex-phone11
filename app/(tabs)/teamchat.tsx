@@ -163,6 +163,7 @@ export default function TeamChatScreen() {
   const composerVisible = composing && ownsWorkspace && actionIsCurrent(composerScope);
   const visiblePeople = ownsWorkspace ? chat.people.filter(person => `${person.name} ${person.extension || ""}`.toLowerCase().includes(peopleSearch.trim().toLowerCase())) : [];
   const moreSelection = filter === "group" ? "Groups" : filter === "drafts" ? "Drafts" : null;
+  const emptyMentions = filter === "mentions" && !search.trim();
   const presenceIds = [...new Set([
     ...chat.people.map(person => person.id),
     ...chat.channels.flatMap(channel => channel.kind === "direct" ? channel.memberIds.filter(id => id !== user?.id) : []),
@@ -212,7 +213,7 @@ export default function TeamChatScreen() {
             {(item.unreadMentionCount ?? 0) > 0 && <Text accessibilityLabel="You were mentioned" style={[styles.mentionBadge, { color: colors.primary }]}>@</Text>}
             {item.unreadCount > 0 && <View accessibilityLabel={`${item.unreadCount} unread messages`} style={styles.badge}><Text style={styles.buttonText}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</Text></View>}
           </View>}
-        </Pressable>} ListEmptyComponent={<View style={styles.empty}>{chat.loading && (!ownsWorkspace || chat.channels.length === 0) && !actionIsCurrent(refreshingAction) ? <ActivityIndicator accessibilityLabel="Loading conversations" color={colors.primary} /> : <><Text style={[styles.emptyTitle, fg]}>{chat.error ? "Chat is unavailable" : search || filter !== "all" ? "No matching conversations" : "Start a conversation"}</Text><Text style={{ color: colors.muted, textAlign: "center" }}>{chat.error ? "Your messages will appear when the connection is restored." : search || filter !== "all" ? "Try another filter or search." : "Choose New message to message someone in your workspace."}</Text></>}</View>} />
+        </Pressable>} ListEmptyComponent={<View style={styles.empty}>{chat.loading && (!ownsWorkspace || chat.channels.length === 0) && !actionIsCurrent(refreshingAction) ? <ActivityIndicator accessibilityLabel="Loading conversations" color={colors.primary} /> : <><Text style={[styles.emptyTitle, fg]}>{chat.error ? "Chat is unavailable" : emptyMentions ? "No unread mentions" : search || filter !== "all" ? "No matching conversations" : "Start a conversation"}</Text>{!emptyMentions || chat.error ? <Text style={{ color: colors.muted, textAlign: "center" }}>{chat.error ? "Your messages will appear when the connection is restored." : search || filter !== "all" ? "Try another filter or search." : "Choose New message to message someone in your workspace."}</Text> : null}</>}</View>} />
       </>}
     </View>
     <Modal visible={composerVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => !creating && setComposing(false)}>

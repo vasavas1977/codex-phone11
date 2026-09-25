@@ -187,6 +187,22 @@ it("filters unread mentions using server counts rather than typed @ text", () =>
 
   m.state.channels[1] = { ...m.state.channels[1], unreadMentionCount: 0 };
   html = render();
-  expect(html).toContain("No matching conversations");
+  expect(html).toContain("No unread mentions");
+  expect(html).not.toContain("No matching conversations");
+  expect(html).not.toContain("Try another filter or search.");
   expect(html).not.toContain("@Owner typed text");
+
+  m.buttons.get("Search conversations").onPress(); render();
+  m.inputs.get("Search conversations").onChangeText("missing");
+  html = render();
+  expect(html).toContain("No matching conversations");
+  expect(html).toContain("Try another filter or search.");
+
+  m.buttons.get("Search conversations").onPress(); render();
+  m.state.channels = m.state.channels.map((channel: { unreadCount?: number }) => ({ ...channel, unreadCount: 0 }));
+  m.buttons.get("Unread conversations").onPress();
+  expect(render()).toContain("No matching conversations");
+  m.state.channels = [];
+  m.buttons.get("All conversations").onPress();
+  expect(render()).toContain("Start a conversation");
 });

@@ -138,6 +138,24 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     await expect(service.send(1, 10, group.id, randomUUID(), "Again @all", undefined, [], [], { start: 6, length: 4 }))
       .resolves.toMatchObject({ allMention: { start: 6, length: 4 } });
   });
+  it("rejects unauthorized @all sends across member and tenant boundaries without persisting them", async () => {
+    const alpha = await service.create(1, 10, "group", "Alpha team", [2]);
+    const beta = await service.create(3, 20, "group", "Beta team", [6]);
+    const sendAll = (userId: number, tenantId: number, id: string) =>
+      service.send(userId, tenantId, id, randomUUID(), "Hello @all", undefined, [], [], { start: 6, length: 4 });
+
+    await expect(sendAll(2, 10, alpha.id)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(sendAll(5, 10, alpha.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(sendAll(3, 10, alpha.id)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(sendAll(3, 20, alpha.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(sendAll(1, 10, beta.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    const persisted = await pool.query(`SELECT
+      (SELECT count(*)::integer FROM phone11_chat_messages WHERE conversation_id IN ($1, $2)) AS messages,
+      (SELECT count(*)::integer FROM phone11_chat_message_all_mentions WHERE conversation_id IN ($1, $2)) AS all_mentions`,
+      [alpha.id, beta.id]);
+    expect(persisted.rows[0]).toEqual({ messages: 0, all_mentions: 0 });
+  });
   it("returns an accepted mention retry after authority changes but rejects a fresh send", async () => {
     const group = await service.create(1, 10, "group", "Team", [2]);
     const clientId = randomUUID();
