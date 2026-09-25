@@ -62,6 +62,22 @@ class MeetingTitleOperatorTest(unittest.TestCase):
             with self.subTest(drift=drift), self.assertRaises(route.GuardError):
                 route.rewrite_trpc(drift, 3008, 3009)
 
+    def test_only_exact_loopback_host_binding_is_accepted(self):
+        for port in (3008, 3009):
+            with self.subTest(port=port):
+                binding = {f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]}
+                info = {"HostConfig": {"PortBindings": binding},
+                        "NetworkSettings": {"Ports": {**binding, "3000/tcp": None}}}
+                route.require_loopback_binding(info, port, "binding")
+                extra = {"3000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "3000"}]}
+                for field in ("HostConfig", "NetworkSettings"):
+                    exposed = {"HostConfig": {"PortBindings": dict(binding)},
+                               "NetworkSettings": {"Ports": {**binding, "3000/tcp": None}}}
+                    key = "PortBindings" if field == "HostConfig" else "Ports"
+                    exposed[field][key].update(extra)
+                    with self.assertRaisesRegex(route.GuardError, "binding"):
+                        route.require_loopback_binding(exposed, port, "binding")
+
     def test_start_refuses_candidate_source_label_drift_before_container_creation(self):
         source = {"Image": start.SOURCE_IMAGE, "State": {"Status": "running"}}
         image = {"Id": "sha256:" + "a" * 64, "Config": {"Labels": {

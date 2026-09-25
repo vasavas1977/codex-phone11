@@ -128,15 +128,22 @@ def container_info(name: str) -> dict[str, Any]:
     return item
 
 
+def require_loopback_binding(info: dict[str, Any], port: int, stage: str) -> None:
+    expected = {f"{port}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(port)}]}
+    require((info.get("HostConfig") or {}).get("PortBindings") == expected, stage)
+    network_ports = (info.get("NetworkSettings") or {}).get("Ports")
+    require(isinstance(network_ports, dict)
+            and network_ports.get(f"{port}/tcp") == expected[f"{port}/tcp"]
+            and all(not entries for key, entries in network_ports.items() if key != f"{port}/tcp"), stage)
+
+
 def check_candidate(image: str, bundle: str, build: str) -> None:
     info = container_info(TARGET_CONTAINER)
     require(info.get("Image") == "sha256:" + image, "candidate_image")
     labels = (info.get("Config") or {}).get("Labels") or {}
     require(labels.get("com.phone11.source-sha") == TARGET_SOURCE_SHA
             and labels.get("com.phone11.bundle-sha256") == TARGET_BUNDLE, "candidate_labels")
-    bindings = (info.get("NetworkSettings") or {}).get("Ports") or {}
-    bound = [entry for entries in bindings.values() if isinstance(entries, list) for entry in entries]
-    require(any(entry.get("HostIp") in ("127.0.0.1", "::1") and entry.get("HostPort") == str(TARGET_PORT) for entry in bound), "candidate_binding")
+    require_loopback_binding(info, TARGET_PORT, "candidate_binding")
     bundle_result = command(["docker", "exec", TARGET_CONTAINER, "sha256sum", "/app/dist/index.mjs"])
     require(bundle_result.decode("ascii", "strict").split()[0] == bundle, "candidate_bundle")
     connection = http.client.HTTPConnection("127.0.0.1", TARGET_PORT, timeout=5)
@@ -155,9 +162,7 @@ def check_candidate(image: str, bundle: str, build: str) -> None:
 def check_predecessor() -> None:
     info = container_info(CURRENT_CONTAINER)
     require(info.get("Image") == CURRENT_IMAGE, "predecessor_image")
-    bindings = (info.get("NetworkSettings") or {}).get("Ports") or {}
-    bound = [entry for entries in bindings.values() if isinstance(entries, list) for entry in entries]
-    require(any(entry.get("HostIp") in ("127.0.0.1", "::1") and entry.get("HostPort") == str(CURRENT_PORT) for entry in bound), "predecessor_binding")
+    require_loopback_binding(info, CURRENT_PORT, "predecessor_binding")
     bundle_result = command(["docker", "exec", CURRENT_CONTAINER, "sha256sum", "/app/dist/index.mjs"])
     require(bundle_result.decode("ascii", "strict").split()[0] == CURRENT_BUNDLE, "predecessor_bundle")
     connection = http.client.HTTPConnection("127.0.0.1", CURRENT_PORT, timeout=5)
