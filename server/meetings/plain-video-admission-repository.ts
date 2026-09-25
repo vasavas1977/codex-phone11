@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 
-import type { MeetingGrant, MeetingRepository } from "./service";
+import type { AvailableMeetingGrant, MeetingGrant, MeetingRepository } from "./service";
 import { channelMeetingOriginAllows } from "./channel-meeting-origin";
 
 const opaqueIdentifier = z.string().regex(/^[A-Za-z0-9_-]{1,96}$/);
@@ -32,6 +32,49 @@ export type PlainVideoAdmissionQuery = Pick<PoolClient, "query">;
 export type PlainVideoReadOnlyTransaction = <T>(
   fn: (db: PlainVideoAdmissionQuery) => Promise<T>,
 ) => Promise<T>;
+
+/** A channel name is presentation data, never an admission or media identity. */
+function normalizedChannelMeetingTitle(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const title = value.normalize("NFC").trim();
+  if (!title || Array.from(title).length > 100 || Buffer.byteLength(title, "utf8") > 400) return undefined;
+  if (/[\u0000-\u001f\u007f-\u009f\ud800-\udfff\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(title)) return undefined;
+  return title;
+}
+
+/** A bounded, exact-key recheck; legacy rooms and unavailable channel storage have no title. */
+async function availableChannelMeetingTitle(db: PlainVideoAdmissionQuery, grant: MeetingGrant): Promise<string | undefined> {
+  try {
+    const support = await db.query("SELECT to_regclass('public.phone11_channel_meetings') IS NOT NULL AS available");
+    if (support.rows[0]?.available !== true) return undefined;
+    const result = await db.query(`SELECT conversation.name AS title
+      FROM phone11_channel_meetings source
+      JOIN phone11_chat_conversations conversation ON conversation.tenant_id=source.tenant_id
+        AND conversation.id=source.channel_id AND conversation.kind IN ('group','channel')
+      JOIN phone11_chat_members member ON member.tenant_id=source.tenant_id
+        AND member.conversation_id=source.channel_id AND member.user_id=$3
+      JOIN tenant_memberships membership ON membership.tenant_id=source.tenant_id
+        AND membership.user_id=member.user_id AND membership.status='active'
+      JOIN tenants tenant ON tenant.id=source.tenant_id AND tenant.status='active'
+      JOIN phone11_auth_identity identity ON identity.legacy_user_id=member.user_id
+        AND identity.disabled_at IS NULL
+      JOIN phone11_plain_video_admission_rooms room ON room.id=source.meeting_id
+        AND room.tenant_id=source.tenant_id AND room.state='open' AND room.ended_at IS NULL
+      JOIN phone11_plain_video_admission_members admission ON admission.meeting_id=room.id
+        AND admission.tenant_id=room.tenant_id AND admission.user_id=member.user_id
+        AND admission.revoked_at IS NULL AND admission.lobby_state='admitted'
+      WHERE source.meeting_id=$1 AND source.tenant_id=$2
+        AND source.expires_at>clock_timestamp()+INTERVAL '5 minutes'
+        AND EXISTS(SELECT 1 FROM user_extensions ue JOIN extensions extension ON extension.id=ue.extension_id
+          WHERE ue.user_id=member.user_id AND extension.tenant_id=source.tenant_id
+            AND extension.status='active' AND extension.deleted_at IS NULL)
+      LIMIT 2`, [grant.meetingId, grant.tenantId, grant.userId]);
+    return result.rows.length === 1 ? normalizedChannelMeetingTitle(result.rows[0].title) : undefined;
+  } catch {
+    // The title is optional. Failure must not revoke a separately admitted legacy room.
+    return undefined;
+  }
+}
 
 export function parseExactPlainVideoAdmissionRecord(
   row: unknown,
@@ -170,7 +213,7 @@ export function createPlainVideoAdmissionRepository() {
         !configuredTenantIds.length
       )
         return [];
-      const available: MeetingGrant[] = [];
+      const available: AvailableMeetingGrant[] = [];
       let afterMeetingId: string | null = null;
       while (available.length < 10) {
         const result = await candidatePage(db, userId, configuredTenantIds, afterMeetingId);
@@ -180,8 +223,12 @@ export function createPlainVideoAdmissionRepository() {
             configuredTenantIds.includes(parsed.data.tenant_id) &&
             await channelMeetingOriginAllows(db, {
               meetingId: parsed.data.meeting_id, tenantId: parsed.data.tenant_id, userId: parsed.data.user_id,
-            })) available.push({ meetingId: parsed.data.meeting_id,
-              tenantId: parsed.data.tenant_id, userId: parsed.data.user_id });
+            })) {
+              const grant = { meetingId: parsed.data.meeting_id,
+                tenantId: parsed.data.tenant_id, userId: parsed.data.user_id };
+              const title = await availableChannelMeetingTitle(db, grant);
+              available.push(title ? { ...grant, title } : grant);
+            }
           if (available.length === 10) break;
         }
         if (result.rows.length < 10 || available.length === 10) break;

@@ -156,11 +156,11 @@ export function createMeetingsRouter(
         configured.configuredTenantIds,
       ),
     ),
-    available: protectedProcedure.query(({ ctx }) =>
-      configured.service.availableMeetingsFor(
+    available: protectedProcedure.query(async ({ ctx }) =>
+      (await configured.service.availableMeetingsFor(
         ctx.user.id,
         configured.configuredTenantIds,
-      ),
+      )).map(({ meetingId }) => ({ meetingId })),
     ),
     availableForTenant: protectedProcedure
       .input(selectedTenantSchema)
