@@ -21,7 +21,7 @@ import {
 import { createConnect11PlainVideoFacade } from "./connect11-plain-video-facade";
 import { createDirectMeetingRepository, type DirectMeetingRepository } from "./direct-meeting-repository";
 import { adminSetDirectHostPermissionSchema, createDirectMeetingService,
-  directMeetingScopeSchema, startDirectMeetingSchema } from "./direct-meeting-service";
+  directMeetingInboxSchema, directMeetingScopeSchema, startDirectMeetingSchema } from "./direct-meeting-service";
 import { readServerConnect11PlainVideoTenantConfiguration } from "./connect11-plain-video-config";
 import {
   createConnect11PlainVideoTenantProvider,
@@ -218,6 +218,9 @@ export function createMeetingsRouter(
     directInvitations: protectedProcedure
       .input(directMeetingScopeSchema)
       .query(({ ctx, input }) => directService.invitations(ctx.user.id, input)),
+    directInbox: protectedProcedure
+      .input(directMeetingInboxSchema)
+      .query(({ ctx, input }) => directService.inbox(ctx.user.id, input)),
   });
 }
 

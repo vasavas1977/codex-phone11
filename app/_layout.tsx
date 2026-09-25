@@ -20,6 +20,7 @@ import { PhoneProvisioner } from "@/lib/sip/phone-provisioner";
 import { SipProvider } from "@/lib/sip/sip-provider";
 import { CurrentCallBanner } from "@/components/current-call-banner";
 import { ChatForegroundRefresh } from "@/lib/chat/foreground-refresh";
+import { DirectMeetingInboxBanner } from "@/components/chat/direct-meeting-inbox-banner";
 import { ChatNotifications } from "@/lib/notifications/chat-notifications";
 import { Phone11PresencePublisher } from "@/lib/chat/presence";
 import * as Auth from "@/lib/_core/auth";
@@ -116,6 +117,7 @@ function RootNavigator() {
               <Stack.Screen name="conference/room" options={{ gestureEnabled: false }} />
             </Stack>
             <CurrentCallBanner />
+            <DirectMeetingInboxBanner />
             </ProfileCardProvider>
             <StatusBar style={colorScheme === "dark" ? "light" : "dark"} backgroundColor={colors.background} />
           </QueryClientProvider>

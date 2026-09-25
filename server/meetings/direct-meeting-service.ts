@@ -7,6 +7,7 @@ import type { DirectMeetingRepository } from "./direct-meeting-repository";
 const positiveId = z.number().int().positive().refine(Number.isSafeInteger);
 export const directMeetingScopeSchema = z.object({ tenantId: positiveId,
   conversationId: z.string().uuid() }).strict();
+export const directMeetingInboxSchema = z.object({ tenantId: positiveId }).strict();
 export const startDirectMeetingSchema = directMeetingScopeSchema.extend({ requestId: z.string().uuid() }).strict();
 export const adminSetDirectHostPermissionSchema = directMeetingScopeSchema.extend({
   userId: positiveId, canStartMeeting: z.boolean(),
@@ -30,6 +31,10 @@ export function createDirectMeetingService(
     invitations(userId: number, input: z.infer<typeof directMeetingScopeSchema>) {
       if (!configured(input.tenantId)) return [];
       return repository.invitations(userId, input.tenantId, input.conversationId);
+    },
+    inbox(userId: number, input: z.infer<typeof directMeetingInboxSchema>) {
+      if (!configured(input.tenantId)) return [];
+      return repository.invitations(userId, input.tenantId);
     },
   };
 }

@@ -62,9 +62,15 @@ describe("mounted plain-video meetings router", () => {
       .createCaller({ user, req: {}, res: {} } as never);
     await api.adminOverview({ tenantId: 41 });
     await api.adminOverview({ tenantId: 42 });
+    const directCursor = "22345678-1234-4234-8234-123456789012";
+    await api.adminOverview({ tenantId: 41, directCursor });
+    const channelCursor = "32345678-1234-4234-8234-123456789012";
+    await api.adminOverview({ tenantId: 41, channelCursor });
     await api.adminSetHostPermission({ tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true });
-    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(1, 7, 41, true);
-    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(2, 7, 42, false);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(1, 7, 41, true, undefined, undefined);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(2, 7, 42, false, undefined, undefined);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(3, 7, 41, true, directCursor, undefined);
+    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(4, 7, 41, true, undefined, channelCursor);
     expect(channelAdminRepository.setHostPermission).toHaveBeenCalledWith(7,
       { tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true }, true);
   });
@@ -108,6 +114,22 @@ describe("mounted plain-video meetings router", () => {
       .resolves.toHaveLength(1);
     expect(channelRepository.start).toHaveBeenCalledWith(expect.objectContaining({ actorId: user.id }));
     expect(channelRepository.invitations).toHaveBeenCalledWith(user.id, 41, meetingId);
+  });
+
+  it("lists direct invitations for the signed-in recipient across conversations in one admitted workspace", async () => {
+    const invitations = vi.fn().mockResolvedValue([{ invitationId: meetingId, conversationId: meetingId }]);
+    const directRepository = { canStart: vi.fn(), start: vi.fn(), invitations };
+    const api = createMeetingsRouter({
+      PHONE11_CHANNEL_MEETINGS_ENABLED: "1", PHONE11_CHANNEL_MEETING_TENANT_IDS: "41",
+      [connect11PlainVideoTenantConfigEnvironment]: JSON.stringify(configuration),
+    }, { directRepository: directRepository as never, repository: { authorize: vi.fn() },
+      resolver: { prepare: vi.fn(), confirm: vi.fn() } }).createCaller({ user, req: {}, res: {} } as never);
+    await expect(api.directInbox({ tenantId: 41 })).resolves.toHaveLength(1);
+    expect(invitations).toHaveBeenCalledWith(user.id, 41);
+    await expect(api.directInbox({ tenantId: 42 })).resolves.toEqual([]);
+    expect(invitations).toHaveBeenCalledTimes(1);
+    await expect(api.directInbox({ tenantId: 41, conversationId: meetingId } as never))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("cannot create channel meetings without a matching configured video tenant", async () => {
