@@ -17,7 +17,7 @@ import { ProfileAvatar, useProfilePhotoCacheScope } from "@/components/profile/p
 import { ProfileCardProvider } from "@/components/profile/profile-card-provider";
 import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
 
-type Filter = "all" | "unread" | "chats" | "group" | "channel" | "drafts";
+type Filter = "all" | "unread" | "mentions" | "chats" | "group" | "channel" | "drafts";
 type ScopedAction = { owner: ReturnType<typeof useAuth>["user"]; workspaceId: number };
 
 const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(part => part.charAt(0)).join("").toUpperCase() || "?";
@@ -156,7 +156,7 @@ export default function TeamChatScreen() {
 
   const rows = (ownsWorkspace ? chat.channels : []).filter(channel => {
     const matchesSearch = channel.name.toLowerCase().includes(search.trim().toLowerCase());
-    const matchesFilter = filter === "all" || (filter === "unread" ? channel.unreadCount > 0 : filter === "drafts" ? Boolean(chat.drafts[channel.id]?.trim()) : filter === "chats" ? channel.kind === "direct" || channel.kind === "group" : channel.kind === filter);
+    const matchesFilter = filter === "all" || (filter === "unread" ? channel.unreadCount > 0 : filter === "mentions" ? (channel.unreadMentionCount ?? 0) > 0 : filter === "drafts" ? Boolean(chat.drafts[channel.id]?.trim()) : filter === "chats" ? channel.kind === "direct" || channel.kind === "group" : channel.kind === filter);
     return matchesSearch && matchesFilter;
   });
   const fg = { color: colors.foreground };
@@ -196,7 +196,7 @@ export default function TeamChatScreen() {
         <NotificationEnrollmentPrompt ownerId={user?.id} tenantId={chat.workspace?.id} />
         {searchOpen && <TextInput autoFocus accessibilityLabel="Search conversations" value={search} onChangeText={setSearch} placeholder="Search conversations" placeholderTextColor={colors.muted} style={[styles.search, fg, { backgroundColor: colors.surface, borderColor: colors.border }]} />}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterStrip} contentContainerStyle={styles.filters}>
-          {([ ["all", "All"], ["unread", "Unread"], ["chats", "Chats"], ["channel", "Channels"] ] as [Filter, string][]).map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${label} conversations`} accessibilityState={{ selected: filter === value }} onPress={() => setFilter(value)} style={[styles.chip, { borderColor: colors.border, backgroundColor: filter === value ? colors.primary : colors.surface }]}><Text style={{ color: filter === value ? "white" : colors.foreground, fontSize: 14 }}>{label}</Text></Pressable>)}
+          {([ ["all", "All"], ["unread", "Unread"], ["mentions", "Mentions"], ["chats", "Chats"], ["channel", "Channels"] ] as [Filter, string][]).map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${label} conversations`} accessibilityState={{ selected: filter === value }} onPress={() => setFilter(value)} style={[styles.chip, { borderColor: colors.border, backgroundColor: filter === value ? colors.primary : colors.surface }]}><Text style={{ color: filter === value ? "white" : colors.foreground, fontSize: 14 }}>{label}</Text></Pressable>)}
           <Pressable accessibilityRole="button" accessibilityLabel={`More filters${moreSelection ? `, ${moreSelection} selected` : ""}`} accessibilityState={{ expanded: moreFiltersOpen, selected: Boolean(moreSelection) }} onPress={() => setMoreFiltersOpen(open => !open)} style={[styles.moreFilter, { backgroundColor: moreSelection ? colors.primary + "12" : "transparent" }]}><Text style={{ color: moreSelection ? colors.primary : colors.muted, fontSize: 14, fontWeight: "600" }}>{moreSelection || "More"}</Text></Pressable>
         </ScrollView>
         {moreFiltersOpen && <View style={[styles.moreMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>{([ ["group", "Groups"], ["drafts", "Drafts"] ] as [Filter, string][]).map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${label} conversations`} accessibilityState={{ selected: filter === value }} onPress={() => { setFilter(value); setMoreFiltersOpen(false); }} style={styles.menuItem}><Text style={{ color: colors.foreground }}>{label}</Text></Pressable>)}</View>}

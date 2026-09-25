@@ -21,7 +21,7 @@ function element({ children }: any) { return createElement("div", null, children
 vi.mock("react-native", () => ({
   View: element, Text: ({ children, accessibilityLabel, style }: any) => createElement("span", { "aria-label": accessibilityLabel, "data-color": Array.isArray(style) ? style.at(-1)?.color : style?.color }, children), ActivityIndicator: element, ScrollView: element, KeyboardAvoidingView: element,
   Modal: ({ visible, children }: any) => visible ? children : null,
-  FlatList: (props: any) => { if (props.onRefresh) m.list = props; return createElement("div", null, ...props.data.map((item: any, index: number) => createElement("section", { key: index }, props.renderItem({ item, index })))); },
+  FlatList: (props: any) => { if (props.onRefresh) m.list = props; return createElement("div", null, ...(props.data.length ? props.data.map((item: any, index: number) => createElement("section", { key: index }, props.renderItem({ item, index }))) : [props.ListEmptyComponent])); },
   TextInput: (props: any) => { m.inputs.set(props.accessibilityLabel, props); return createElement("input", { value: props.value, readOnly: true }); },
   Pressable: (props: any) => { if (props.accessibilityLabel) m.buttons.set(props.accessibilityLabel, props); return createElement("button", { disabled: props.disabled }, props.children); },
   AppState: { currentState: "active", addEventListener: (_event: string, listener: (state: string) => void) => { m.appStateListener = listener; return { remove: vi.fn() }; } }, StyleSheet: { create: (styles: any) => styles, hairlineWidth: 1 },
@@ -172,4 +172,21 @@ it("uses authoritative mention counts and sender details with legacy fallbacks",
   expect(m.buttons.get("Open Announcements").accessibilityHint).not.toContain("mentioned");
   m.state.channels[1].lastMessageSenderId = 1;
   expect(render()).toContain("You: Ready");
+});
+
+it("filters unread mentions using server counts rather than typed @ text", () => {
+  m.state.channels[1] = { ...m.state.channels[1], unreadMentionCount: 1 };
+  m.state.channels[2].lastMessage = "@Owner typed text without a mention descriptor";
+  render();
+  m.buttons.get("Mentions conversations").onPress();
+  let html = render();
+  expect(m.buttons.get("Mentions conversations").accessibilityState.selected).toBe(true);
+  expect(html).toContain("Launch team");
+  expect(html).not.toContain("Announcements");
+  expect(html).not.toContain("Alice Adams");
+
+  m.state.channels[1] = { ...m.state.channels[1], unreadMentionCount: 0 };
+  html = render();
+  expect(html).toContain("No matching conversations");
+  expect(html).not.toContain("@Owner typed text");
 });
