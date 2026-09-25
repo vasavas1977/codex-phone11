@@ -2,6 +2,7 @@ import { ipcRenderer } from 'electron';
 import { Participant, Room, RoomEvent, Track } from 'livekit-client';
 import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
+import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
 import type { DesktopMeetingGrant } from '../../src/authenticated-provider';
 
@@ -13,6 +14,10 @@ let busy = false;
 let canPublish = false;
 const mediaLifecycle = new MeetingMediaLifecycle();
 const prejoinCamera = new PrejoinCameraPreview();
+const prejoinMicrophone = new PrejoinMicrophoneCheck();
+let speakerContext: AudioContext | null = null;
+let speakerOscillator: OscillatorNode | null = null;
+let speakerTimer: ReturnType<typeof setTimeout> | null = null;
 let leaving: Promise<void> | null = null;
 type ParticipantTile = {
   participant: Participant;
@@ -40,6 +45,103 @@ function clearPreview(): void {
   video.srcObject = null;
   video.hidden = true;
   el('preview-empty').hidden = false;
+}
+
+function stopSpeakerTest(): void {
+  if (speakerTimer) clearTimeout(speakerTimer);
+  speakerTimer = null;
+  try { speakerOscillator?.stop(); } catch { /* The short test tone may already have ended. */ }
+  try { speakerOscillator?.disconnect(); } catch { /* Context teardown continues. */ }
+  speakerOscillator = null;
+  const context = speakerContext;
+  speakerContext = null;
+  if (context) void context.close().catch(() => undefined);
+  const button = el<HTMLButtonElement>('test-speaker');
+  button.textContent = 'Play test sound';
+  button.setAttribute('aria-pressed', 'false');
+}
+
+function stopPrejoinAudio(): void {
+  prejoinMicrophone.stop(handle => cancelAnimationFrame(handle));
+  stopSpeakerTest();
+  const meter = el<HTMLDivElement>('mic-level').parentElement as HTMLDivElement;
+  meter.setAttribute('aria-valuenow', '0');
+  el('mic-level').style.width = '0%';
+  el<HTMLButtonElement>('test-microphone').textContent = 'Test microphone';
+  el<HTMLButtonElement>('test-microphone').setAttribute('aria-pressed', 'false');
+}
+
+async function playSpeakerTest(): Promise<void> {
+  if (busy || room) return;
+  if (speakerContext) {
+    stopSpeakerTest();
+    el('audio-check-status').textContent = 'Test sound stopped';
+    return;
+  }
+  stopPrejoinAudio();
+  try {
+    const context = new AudioContext();
+    speakerContext = context;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.frequency.value = 440;
+    gain.gain.value = 0.12;
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    await context.resume();
+    if (speakerContext !== context || busy || room) return;
+    speakerOscillator = oscillator;
+    oscillator.start();
+    const button = el<HTMLButtonElement>('test-speaker');
+    button.textContent = 'Stop test sound';
+    button.setAttribute('aria-pressed', 'true');
+    el('audio-check-status').textContent = 'Playing a short test sound';
+    speakerTimer = setTimeout(() => {
+      stopSpeakerTest();
+      el('audio-check-status').textContent = 'Test sound finished';
+    }, 900);
+  } catch {
+    stopSpeakerTest();
+    el('audio-check-status').textContent = 'Test sound is unavailable. Check your system audio output.';
+  }
+}
+
+async function testMicrophone(): Promise<void> {
+  if (busy || room) return;
+  const button = el<HTMLButtonElement>('test-microphone');
+  if (button.getAttribute('aria-pressed') === 'true') {
+    stopPrejoinAudio();
+    el('audio-check-status').textContent = 'Microphone test stopped';
+    return;
+  }
+  stopPrejoinAudio();
+  button.textContent = 'Cancel microphone test';
+  button.setAttribute('aria-pressed', 'true');
+  el('audio-check-status').textContent = 'Requesting microphone access…';
+  try {
+    const started = await prejoinMicrophone.start(
+      () => navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+      () => new AudioContext(),
+      callback => requestAnimationFrame(callback),
+      handle => cancelAnimationFrame(handle),
+      level => {
+        const meter = el<HTMLDivElement>('mic-level').parentElement as HTMLDivElement;
+        meter.setAttribute('aria-valuenow', String(level));
+        el('mic-level').style.width = `${level}%`;
+      },
+    );
+    if (!started || busy || room) return;
+    button.textContent = 'Stop microphone test';
+    button.setAttribute('aria-pressed', 'true');
+    el('audio-check-status').textContent = 'Speak now. Audio is not recorded or sent.';
+  } catch (cause) {
+    button.textContent = 'Test microphone';
+    button.setAttribute('aria-pressed', 'false');
+    const denied = cause instanceof DOMException && (cause.name === 'NotAllowedError' || cause.name === 'PermissionDeniedError');
+    el('audio-check-status').textContent = denied
+      ? 'Microphone permission denied. Allow access in system settings.'
+      : 'Microphone test unavailable. Check your microphone and permissions.';
+  }
 }
 
 async function changePrejoinCamera(): Promise<void> {
@@ -295,6 +397,7 @@ function leave(): Promise<void> {
   room = null;
   canPublish = false;
   clearPreview();
+  stopPrejoinAudio();
   leaving = (async () => {
     // In-flight getUserMedia/publish must settle before disconnect and the main-process ack.
     await mediaLifecycle.cancelAndDrain();
@@ -324,6 +427,8 @@ async function join(): Promise<void> {
   el<HTMLInputElement>('start-camera').disabled = true;
   error('');
   status('Joining…');
+  // Stop local prejoin checks synchronously before requesting admission or meeting media.
+  stopPrejoinAudio();
   await mediaLifecycle.run(async current => {
   let next: Room | null = null;
   try {
@@ -457,6 +562,9 @@ async function toggle(kind: 'mic' | 'camera'): Promise<void> {
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
   el<HTMLInputElement>('start-camera').addEventListener('change', () => { void changePrejoinCamera(); });
+  el<HTMLButtonElement>('test-speaker').addEventListener('click', () => { void playSpeakerTest(); });
+  el<HTMLButtonElement>('test-microphone').addEventListener('click', () => { void testMicrophone(); });
+  window.addEventListener('beforeunload', stopPrejoinAudio, { once: true });
   el<HTMLButtonElement>('layout-gallery').addEventListener('click', () => {
     layoutMode = 'gallery';
     if (room) renderLayout();

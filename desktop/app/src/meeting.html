@@ -10,6 +10,13 @@
       <div id="preview-empty"><svg class="preview-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="m15 10 6-3v10l-6-3"/></svg><p id="preview-message">Camera is off. Select the camera option to preview before joining.</p></div>
     </div>
     <div class="prejoin-options"><label for="meeting-select">Meeting</label><select id="meeting-select" disabled><option>Loading…</option></select>
+      <section class="audio-check" aria-labelledby="audio-check-title">
+        <h2 id="audio-check-title">Audio check</h2>
+        <p>Test your sound and microphone before joining. Microphone audio stays on this device.</p>
+        <div class="audio-check-actions"><button id="test-speaker" type="button">Play test sound</button><button id="test-microphone" type="button" aria-pressed="false">Test microphone</button></div>
+        <div class="mic-meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="mic-level"></span></div>
+        <p id="audio-check-status" role="status" aria-live="polite">Audio checks are off</p>
+      </section>
       <label class="switch"><input id="start-mic" type="checkbox"> Join with microphone on</label>
       <label class="switch"><input id="start-camera" type="checkbox"> Join with camera on and preview now</label>
       <button id="join" type="button" disabled>Join meeting</button><p id="prejoin-error" role="alert"></p></div>

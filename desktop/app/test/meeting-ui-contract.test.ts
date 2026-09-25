@@ -45,3 +45,18 @@ test('prejoin camera capture is opt-in and remains inside the isolated meeting p
   assert.match(preload, /Camera preview is unavailable/);
   assert.match(preload, /Camera permission denied/);
 });
+
+test('prejoin audio check is user-started, local only, and has visible stop controls', () => {
+  assert.match(html, /id="test-speaker"[^>]*>Play test sound/);
+  assert.match(html, /id="test-microphone"[^>]*aria-pressed="false"[^>]*>Test microphone/);
+  assert.match(html, /id="audio-check-status" role="status" aria-live="polite"/);
+  assert.match(preload, /getUserMedia\(\{ audio: true, video: false \}\)/);
+  assert.match(preload, /el<HTMLButtonElement>\('test-microphone'\)\.addEventListener\('click'/);
+  assert.match(preload, /el<HTMLButtonElement>\('test-speaker'\)\.addEventListener\('click'/);
+  assert.match(preload, /stopPrejoinAudio\(\);[\s\S]*?MEETING_CHANNELS\.join/);
+  assert.match(preload, /leave\(\): Promise<void>[\s\S]*?stopPrejoinAudio\(\)/);
+  assert.match(preload, /beforeunload', stopPrejoinAudio/);
+  assert.match(html, /Microphone audio stays on this device/);
+  assert.match(preload, /Audio is not recorded or sent/);
+  assert.doesNotMatch(html, /token|grant/i);
+});

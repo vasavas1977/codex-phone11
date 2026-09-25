@@ -30,6 +30,14 @@ h1 { font-size: 27px; letter-spacing: -.025em; margin: 3px 0; }
 .prejoin-options > label:first-child { font-weight: 700; }
 .switch { display: flex; align-items: center; gap: 12px; }
 .switch input { width: 18px; height: 18px; accent-color: #3379f6; }
+.audio-check { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #141f31; }
+.audio-check h2 { margin: 0 0 3px; font-size: 15px; }
+.audio-check p { margin: 3px 0 10px; color: var(--muted); font-size: 12px; }
+.audio-check-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.audio-check-actions button { flex: 1; padding: 8px 10px; font-size: 13px; }
+.mic-meter { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 4px; background: #344156; }
+.mic-meter span { display: block; width: 0; height: 100%; background: #42c58a; transition: width 80ms linear; }
+#audio-check-status { min-height: 1.4em; margin: 7px 0 0; }
 select, button { font: inherit; }
 select, button { border: 1px solid #4a5d79; border-radius: 10px; color: inherit; background: #263652; padding: 11px 15px; }
 button { cursor: pointer; transition: background-color .15s ease, border-color .15s ease; }
