@@ -2,7 +2,7 @@
 
 The live static web client displays **No unread mentions** when the Mentions
 filter is selected without unread mentions. The matching signed iOS build is
-installed on the paired iPhone 17 Pro Max. Native visual verification of this
+installed on both paired test iPhones. Native visual verification of this
 specific copy remains pending because iPhone Mirroring stopped at the Mac's
 protected login prompt after installation.
 
@@ -74,7 +74,10 @@ and rollback. The earlier Mentions wrapper remains unchanged.
   `86a3b57b4e29532f5fc393c802b73d549384577a4fceed5ee9d0da995af0ff2f`.
   The IPA passed the daily-pilot verifier, including signing, Siprix, and
   production APNs checks. `devicectl` installed it in place on paired iPhone
-  17 Pro Max and device inventory reported Phone11 1.0.0 build 102.
+  17 Pro Max and device inventory reported Phone11 1.0.0 build 102. Its
+  embedded provisioning profile also includes the paired iPhone 15 Pro Max
+  used by test account 1020. That device was updated in place from Build 96,
+  and its device inventory likewise reported Phone11 1.0.0 build 102.
 - CI run `https://github.com/vasavas1977/codex-phone11/actions/runs/36141874184`
   passed native-check, build, and all daily-use jobs on source `3e8686b`.
   Locally, 12 focused inbox tests, 85 disposable PostgreSQL chat/notification
