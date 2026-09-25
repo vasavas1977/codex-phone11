@@ -6,7 +6,10 @@ import { withTransaction } from "../pbx/db";
 
 const positiveId = z.number().int().positive().refine(Number.isSafeInteger);
 const adminTenantSchema = z.object({ tenantId: positiveId });
-export const adminOverviewSchema = adminTenantSchema.extend({ directCursor: z.string().uuid().optional() }).strict();
+export const adminOverviewSchema = adminTenantSchema.extend({
+  channelCursor: z.string().uuid().optional(),
+  directCursor: z.string().uuid().optional(),
+}).strict();
 export const adminSetHostPermissionSchema = adminTenantSchema.extend({
   channelId: z.string().uuid(),
   userId: positiveId,
@@ -65,17 +68,18 @@ export type ChannelMeetingAdminRepository = ReturnType<typeof createChannelMeeti
 
 export function createChannelMeetingAdminRepository(transaction: typeof withTransaction = withTransaction) {
   return {
-    async overview(actorId: number, tenantId: number, enabled: boolean, directCursor?: string) {
+    async overview(actorId: number, tenantId: number, enabled: boolean, directCursor?: string, channelCursor?: string) {
       return transaction(async (db) => {
         await bound(db);
         await requireAdminPrecheck(db, actorId, tenantId, true);
-        if (!enabled) return { available: false, reason: "Channel meetings are not configured for this workspace.", channels: [], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined };
-        if (!await installed(db)) return { available: false, reason: "Channel meeting storage is not installed.", channels: [], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined };
+        if (!enabled) return { available: false, reason: "Channel meetings are not configured for this workspace.", channels: [], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined, channelNextCursor: undefined };
+        if (!await installed(db)) return { available: false, reason: "Channel meeting storage is not installed.", channels: [], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined, channelNextCursor: undefined };
         const channels = await db.query(`SELECT id,name,kind FROM phone11_chat_conversations
-          WHERE tenant_id=$1 AND kind IN ('group','channel') ORDER BY name,id LIMIT 51`, [tenantId]);
-        if (channels.rows.length > 50)
-          return { available: false, reason: "This workspace has more channels than this management view can safely display.", channels: [], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined };
-        const parsedChannels = channels.rows.map((row) => channelRow.parse(row));
+          WHERE tenant_id=$1 AND kind IN ('group','channel')
+            AND ($2::uuid IS NULL OR id > $2::uuid)
+          ORDER BY id LIMIT 51`, [tenantId, channelCursor ?? null]);
+        const channelNextCursor = channels.rows.length > 50 ? String(channels.rows[49].id) : undefined;
+        const parsedChannels = channels.rows.slice(0, 50).map((row) => channelRow.parse(row));
         const directEnabled = await directInstalled(db);
         const directs = directEnabled ? await db.query(`SELECT conversation.id,conversation.name,conversation.kind
           FROM phone11_chat_conversations conversation
@@ -89,7 +93,7 @@ export function createChannelMeetingAdminRepository(transaction: typeof withTran
           z.object({ id: z.string().uuid(), name: z.string(), kind: z.literal("direct") }).parse(row));
         const allConversations = [...parsedChannels, ...parsedDirects];
         if (allConversations.length === 0) return { available: true, channels: [], directConversations: [],
-          directConversationsReason: undefined, directNextCursor };
+          directConversationsReason: undefined, directNextCursor, channelNextCursor };
         const members = await db.query(`SELECT member.conversation_id,member.user_id,
             COALESCE(NULLIF(users.name,''),'Team member') AS name,member.can_start_meeting
           FROM phone11_chat_members member
@@ -105,7 +109,7 @@ export function createChannelMeetingAdminRepository(transaction: typeof withTran
           ORDER BY member.conversation_id,users.name,member.user_id LIMIT 5001`,
         [tenantId, allConversations.map((conversation) => conversation.id)]);
         if (members.rows.length > 5000)
-          return { available: false, reason: "This workspace has more members than this management view can safely display.", channels: [], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined };
+          return { available: false, reason: "This workspace has more members than this management view can safely display.", channels: [], directConversations: [], directConversationsReason: undefined, directNextCursor: undefined, channelNextCursor: undefined };
         const parsedMembers = members.rows.map((row) => memberRow.parse(row));
         const directConversations = parsedDirects.flatMap((conversation) => {
           const pair = parsedMembers.filter((member) => member.conversation_id === conversation.id);
@@ -119,7 +123,7 @@ export function createChannelMeetingAdminRepository(transaction: typeof withTran
             userId: member.user_id, name: member.name, canStartMeeting: member.can_start_meeting,
           })),
         })), directConversations,
-        directConversationsReason: undefined, directNextCursor };
+        directConversationsReason: undefined, directNextCursor, channelNextCursor };
       });
     },
 

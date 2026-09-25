@@ -44,10 +44,11 @@ Direct-contact meetings extend that source with the separate additive
 workspace, assigned to active extensions, and unblocked. A host grant defaults
 false. The start request uses a stable request ID and invites only the other
 member; current pair membership and block state are checked again when a token
-is issued. The admin API pages eligible direct chats with an opaque UUID cursor
-in sets of 50 so a workspace with more than 100 direct chats remains manageable.
+is issued. The admin API pages eligible direct chats and channels independently
+with opaque UUID cursors in sets of 50, so large workspaces remain manageable.
 The direct migration and admin grant must be applied explicitly before the
-mobile actions can start a meeting. This candidate keeps the deployed chat
-inbox source as its base and does not include the newer admin meetings screen.
+mobile actions can start a meeting. The admin meeting-hosting screen exposes
+both pagers and guarded grants. This candidate keeps the deployed chat inbox
+source as its base.
 
 Run: `node_modules/.bin/vitest run server/meetings/meetings.test.ts`.

@@ -157,7 +157,7 @@ export function createMeetingsRouter(
   return router({
     adminOverview: protectedProcedure
       .input(adminOverviewSchema)
-      .query(({ ctx, input }) => channelAdminRepository.overview(ctx.user.id, input.tenantId, channelEnabled(input.tenantId), input.directCursor)),
+      .query(({ ctx, input }) => channelAdminRepository.overview(ctx.user.id, input.tenantId, channelEnabled(input.tenantId), input.directCursor, input.channelCursor)),
     adminSetHostPermission: protectedProcedure
       .input(adminSetHostPermissionSchema)
       .mutation(({ ctx, input }) => channelAdminRepository.setHostPermission(ctx.user.id, input, channelEnabled(input.tenantId))),

@@ -72,6 +72,12 @@ export default function AdminDashboard() {
       route: "/admin/users",
     },
     {
+      icon: "video.fill",
+      iconColor: "#0057FF",
+      label: "Meeting hosting",
+      route: "/admin/meetings",
+    },
+    {
       icon: "phone.fill",
       iconColor: "#0369A1",
       label: "Extensions",
