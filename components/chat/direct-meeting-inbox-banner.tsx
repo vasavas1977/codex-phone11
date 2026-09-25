@@ -46,7 +46,7 @@ export function DirectMeetingInboxBanner() {
       } catch {
         if (current() && request === latestRequest) setInbox({ owner: user, tenantId, items: [] });
       } finally {
-        if (!stopped && AppState.currentState === "active") timer = setTimeout(refresh, 10_000);
+        if (current() && request === latestRequest) timer = setTimeout(refresh, 10_000);
       }
     };
     const subscription = AppState.addEventListener("change", state => {
