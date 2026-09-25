@@ -12,6 +12,7 @@ import {
 import { useColors } from "@/hooks/use-colors";
 import {
   initialMeetingSelection,
+  safeMeetingTitle,
   type AdmittedMeeting,
 } from "@/lib/meetings/admitted-selection";
 import { meetingJoinFailureReference } from "@/lib/meetings/join-failure";
@@ -229,7 +230,7 @@ export function MeetingPrejoin({
                   meetingCode === admittedMeetings[0].meetingId &&
                   (!initialMeetingCode || initialMeetingCode === meetingCode) ? (
                     <Text style={{ color: colors.muted }}>
-                      Your admitted meeting is ready.
+                      {safeMeetingTitle(admittedMeetings[0].title) ?? "Your admitted meeting is ready."}
                     </Text>
                   ) : (
                     <>
@@ -263,7 +264,7 @@ export function MeetingPrejoin({
                             ]}
                           >
                             <Text style={{ color: colors.foreground }}>
-                              Meeting {index + 1} · {meeting.meetingId.slice(0, 8)}…{meeting.meetingId.slice(-5)}{selected ? " · Selected" : ""}
+                              {safeMeetingTitle(meeting.title) ?? `Meeting ${index + 1}`} · {meeting.meetingId.slice(0, 8)}…{meeting.meetingId.slice(-5)}{selected ? " · Selected" : ""}
                             </Text>
                           </Pressable>
                         );

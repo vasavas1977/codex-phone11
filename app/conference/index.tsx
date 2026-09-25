@@ -6,6 +6,8 @@ import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
 import { Platform } from "react-native";
 import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
+import { admittedMeetingsWithTenantTitles } from "@/lib/meetings/admitted-selection";
+import { useChatStore } from "@/lib/chat/store";
 import {
   MeetingJoinFailure,
   meetingJoinFailureStage,
@@ -91,9 +93,18 @@ function EnabledMeetingPrejoin({
 }
 
 export default function ConferenceScreen() {
-  const params = useLocalSearchParams<{ meetingId?: string }>();
+  const params = useLocalSearchParams<{ meetingId?: string; tenantId?: string; source?: string }>();
   const requestedMeeting = typeof params.meetingId === "string" ? params.meetingId : "";
   const { user } = useAuth({ autoFetch: false });
+  const chatOwnerId = useChatStore(state => state.userId);
+  const selectedWorkspaceId = useChatStore(state => state.workspace?.id);
+  const requestedTenantId = Number(params.tenantId);
+  const selectedTenantId =
+    params.source === "channel" &&
+    Number.isSafeInteger(requestedTenantId) && requestedTenantId > 0 &&
+    user?.id === chatOwnerId && selectedWorkspaceId === requestedTenantId
+      ? requestedTenantId
+      : null;
   const capabilities = trpc.meetings.capabilities.useQuery(undefined, {
     enabled: !!user,
     retry: false,
@@ -102,6 +113,13 @@ export default function ConferenceScreen() {
     enabled: !!user && capabilities.data?.available === true,
     retry: false,
   });
+  const tenantMeetings = trpc.meetings.availableForTenant.useQuery(
+    { tenantId: selectedTenantId ?? 0 },
+    { enabled: !!user && capabilities.data?.available === true && selectedTenantId !== null, retry: false, staleTime: 0 },
+  );
+  const displayedMeetings = admittedMeetings.data
+    ? admittedMeetingsWithTenantTitles(admittedMeetings.data, tenantMeetings.data, selectedTenantId)
+    : undefined;
   const reason = !user
     ? "Sign in to join your workspace meetings."
     : capabilities.isLoading
@@ -120,12 +138,12 @@ export default function ConferenceScreen() {
                 : undefined;
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
-      {user && !capabilities.error && !admittedMeetings.error && capabilities.data?.available && admittedMeetings.data?.length ? (
+      {user && !capabilities.error && !admittedMeetings.error && capabilities.data?.available && displayedMeetings?.length ? (
         <EnabledMeetingPrejoin
-          key={`${user.id}:${requestedMeeting}:${admittedMeetings.data.map(item => item.meetingId).join(",")}`}
+          key={`${user.id}:${requestedMeeting}:${displayedMeetings.map(item => item.meetingId).join(",")}`}
           initialMeetingCode={requestedMeeting}
           user={user}
-          admittedMeetings={admittedMeetings.data}
+          admittedMeetings={displayedMeetings}
           onBack={() =>
             router.canGoBack() ? router.back() : router.replace("/(tabs)")
           }

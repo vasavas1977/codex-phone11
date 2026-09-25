@@ -87,6 +87,7 @@ import {
   MeetingJoinFailure,
   meetingJoinFailureReference,
 } from "../lib/meetings/join-failure";
+import { admittedMeetingsWithTenantTitles } from "../lib/meetings/admitted-selection";
 
 beforeEach(() => {
   mocks.values = [];
@@ -180,6 +181,39 @@ it("preselects the admitted meeting from the URL and identifies it in a multi-me
     microphoneEnabled: false,
     cameraEnabled: false,
   });
+});
+
+it("shows a tenant-verified channel title but still joins by opaque meeting ID", async () => {
+  const onJoin = vi.fn().mockResolvedValue(undefined);
+  const meetingId = "8407bc84-63ef-48a0-bceb-b29b16043555";
+  const admitted = admittedMeetingsWithTenantTitles(
+    [{ meetingId }],
+    [{ meetingId, tenantId: 41, title: "Government & SI Team" }],
+    41,
+  );
+  const html = renderToStaticMarkup(createElement(MeetingPrejoin, {
+    authenticatedDisplayName: "Pilot", admittedMeetings: admitted,
+    initialMeetingCode: meetingId, onJoin, onBack: () => undefined,
+  }));
+  expect(html).toContain("Government &amp; SI Team");
+  expect(html).not.toContain("Meeting code");
+  await mocks.joinButton?.onPress();
+  expect(onJoin).toHaveBeenCalledWith({ meetingCode: meetingId, microphoneEnabled: false, cameraEnabled: false });
+});
+
+it("does not show a title from another tenant, an unadmitted ID, or unsafe text", () => {
+  const admitted = [{ meetingId: "11111111-1111-4111-8111-111111111111" }];
+  const other = "22222222-2222-4222-8222-222222222222";
+  expect(admittedMeetingsWithTenantTitles(admitted, [
+    { meetingId: admitted[0].meetingId, tenantId: 42, title: "Other tenant" },
+    { meetingId: other, tenantId: 41, title: "Unadmitted" },
+  ], 41)).toEqual(admitted);
+  expect(admittedMeetingsWithTenantTitles(admitted, [
+    { meetingId: admitted[0].meetingId, tenantId: 41, title: "Unsafe\u202e title" },
+  ], 41)).toEqual(admitted);
+  expect(admittedMeetingsWithTenantTitles(admitted, [
+    { meetingId: admitted[0].meetingId, tenantId: 41, title: "Channel" },
+  ], null)).toEqual(admitted);
 });
 
 it("requires an explicit choice when a stale link has one different admitted meeting", async () => {

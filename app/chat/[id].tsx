@@ -652,7 +652,7 @@ export default function ChatRoomScreen() {
       if (!actionIsCurrent(action) || channelMeetingRequestRef.current !== action) return;
       closeChannelMeetingPicker();
       meetingStartRef.current = null;
-      router.push({ pathname: "/conference", params: { meetingId: result.meetingId } });
+      router.push({ pathname: "/conference", params: { meetingId: result.meetingId, tenantId: String(action.workspaceId), source: "channel" } });
     } catch {
       if (actionIsCurrent(action) && channelMeetingRequestRef.current === action)
         setChannelMeetingError("Could not confirm the meeting. Try again with the same selection to recover it safely.");
