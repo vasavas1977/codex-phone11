@@ -225,14 +225,20 @@ export function MeetingPrejoin({
                   <Text style={[styles.label, { color: colors.foreground }]}>
                     Meeting
                   </Text>
-                  {admittedMeetings?.length === 1 ? (
+                  {admittedMeetings?.length === 1 &&
+                  meetingCode === admittedMeetings[0].meetingId &&
+                  (!initialMeetingCode || initialMeetingCode === meetingCode) ? (
                     <Text style={{ color: colors.muted }}>
                       Your admitted meeting is ready.
                     </Text>
                   ) : (
                     <>
                       <Text style={{ color: colors.muted }}>
-                        Select an admitted meeting.
+                        {initialMeetingCode && !meetingCode
+                          ? "That meeting is no longer available. Select an admitted meeting."
+                          : meetingCode
+                            ? "Admitted meeting selected."
+                            : "Select an admitted meeting."}
                       </Text>
                       {admittedMeetings?.map((meeting, index) => {
                         const selected = meetingCode === meeting.meetingId;

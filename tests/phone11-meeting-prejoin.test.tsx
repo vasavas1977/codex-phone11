@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   joinButton: undefined as
     | undefined
     | { onPress: () => unknown; disabled: boolean },
+  choices: {} as Record<string, () => unknown>,
   switches: {} as Record<string, { value: boolean; onValueChange: (value: boolean) => void }>,
 }));
 
@@ -53,6 +54,8 @@ vi.mock("react-native", () => ({
   Pressable: ({ children, onPress, disabled, accessibilityLabel }: any) => {
     if (!accessibilityLabel)
       mocks.joinButton = { onPress, disabled: Boolean(disabled) };
+    if (accessibilityLabel?.startsWith("Select admitted meeting "))
+      mocks.choices[accessibilityLabel] = onPress;
     return createElement("button", { disabled, "aria-label": accessibilityLabel }, children);
   },
   ScrollView: element,
@@ -91,6 +94,7 @@ beforeEach(() => {
   mocks.stateIndex = 0;
   mocks.refIndex = 0;
   mocks.joinButton = undefined;
+  mocks.choices = {};
   mocks.switches = {};
 });
 
@@ -98,6 +102,7 @@ function render(onJoin: () => Promise<void>) {
   mocks.stateIndex = 0;
   mocks.refIndex = 0;
   mocks.joinButton = undefined;
+  mocks.choices = {};
   mocks.switches = {};
   return renderToStaticMarkup(
     createElement(MeetingPrejoin, {
@@ -172,6 +177,40 @@ it("preselects the admitted meeting from the URL and identifies it in a multi-me
   await mocks.joinButton?.onPress();
   expect(onJoin).toHaveBeenCalledWith({
     meetingCode: requested,
+    microphoneEnabled: false,
+    cameraEnabled: false,
+  });
+});
+
+it("requires an explicit choice when a stale link has one different admitted meeting", async () => {
+  const onJoin = vi.fn().mockResolvedValue(undefined);
+  const available = "11111111-1111-4111-8111-111111111111";
+  const props = {
+    authenticatedDisplayName: "Pilot",
+    admittedMeetings: [{ meetingId: available }],
+    initialMeetingCode: "22222222-2222-4222-8222-222222222222",
+    onJoin,
+    onBack: () => undefined,
+  };
+  const renderStaleLink = () => {
+    mocks.stateIndex = 0;
+    mocks.refIndex = 0;
+    return renderToStaticMarkup(createElement(MeetingPrejoin, props));
+  };
+
+  const first = renderStaleLink();
+  expect(first).toContain("That meeting is no longer available.");
+  expect(first).toContain("Meeting 1 · 11111111…11111");
+  expect(mocks.joinButton?.disabled).toBe(true);
+  expect(onJoin).not.toHaveBeenCalled();
+
+  mocks.choices[`Select admitted meeting 1, ID ${available}`]();
+  const selected = renderStaleLink();
+  expect(selected).toContain("Meeting 1 · 11111111…11111 · Selected");
+  expect(mocks.joinButton?.disabled).toBe(false);
+  await mocks.joinButton?.onPress();
+  expect(onJoin).toHaveBeenCalledWith({
+    meetingCode: available,
     microphoneEnabled: false,
     cameraEnabled: false,
   });
