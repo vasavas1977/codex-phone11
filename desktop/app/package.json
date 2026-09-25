@@ -10,7 +10,8 @@
     "test:meeting-preview": "node scripts/test-meeting-preview.mjs",
     "start": "npm run build && electron .",
     "manifest:helper": "node scripts/create-helper-manifest.mjs",
-    "package:mac:local": "tsx scripts/package-macos-local.ts"
+    "package:mac:local": "tsx scripts/package-macos-local.ts",
+    "package:win:local": "tsx scripts/package-windows-local.ts"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",

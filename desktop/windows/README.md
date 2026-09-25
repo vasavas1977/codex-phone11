@@ -34,8 +34,8 @@ confirm distribution terms with Siprix before sharing a package.
    PHONE11_SIPRIX_SDK_ROOT=/private/tmp/phone11-siprixua-windows-trial \
    PHONE11_WINDOWS_HELPER_EXE=/private/tmp/phone11_siprix_helper.exe \
    PHONE11_PACKAGE_OUTPUT="$HOME/Downloads/Phone11 Windows Trial Local Package" \
-   PHONE11_API_ORIGIN=https://phone11.example.com/ \
-   ./node_modules/.bin/tsx desktop/app/scripts/package-windows-local.ts
+   PHONE11_API_ORIGIN=https://api.phone11.ai/ \
+   npm --prefix desktop/app run package:win:local
    ```
 
 The script requires an x64 PE helper and the pinned official SiprixUA checkout.
