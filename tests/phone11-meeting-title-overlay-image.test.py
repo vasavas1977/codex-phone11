@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -113,6 +114,43 @@ class OverlayTests(unittest.TestCase):
                 archive.addfile(info, io.BytesIO(data))
         return target, "sha256:" + hashlib.sha256(layer_bytes.getvalue()).hexdigest()
 
+    def saved_oci_image(
+        self, entries: list[tuple[str, bytes, int, int, int]], *,
+        codec: str = "application/vnd.docker.image.rootfs.diff.tar.gzip",
+        corrupt_blob_name: bool = False,
+        blob_override: bytes | None = None,
+    ) -> tuple[Path, str]:
+        layer_bytes = io.BytesIO()
+        with tarfile.open(fileobj=layer_bytes, mode="w") as layer:
+            for name, data, uid, gid, mode in entries:
+                info = tarfile.TarInfo(name)
+                info.size, info.uid, info.gid, info.mode = len(data), uid, gid, mode
+                layer.addfile(info, io.BytesIO(data))
+        raw = layer_bytes.getvalue()
+        blob = blob_override if blob_override is not None else gzip.compress(raw, mtime=0)
+        blob_hash = hashlib.sha256(blob).hexdigest()
+        blob_name = "0" * 64 if corrupt_blob_name else blob_hash
+        blob_path = "blobs/sha256/" + blob_name
+        image_manifest = json.dumps({"layers": [{
+            "mediaType": codec, "digest": "sha256:" + blob_name, "size": len(blob),
+        }]}).encode()
+        manifest_hash = hashlib.sha256(image_manifest).hexdigest()
+        index = json.dumps({"manifests": [{
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": "sha256:" + manifest_hash, "size": len(image_manifest),
+        }]}).encode()
+        manifest = json.dumps([{"Layers": ["old/layer.tar", blob_path]}]).encode()
+        target = Path(self.temp.name) / "saved-oci.tar"
+        with tarfile.open(target, "w") as archive:
+            for name, data in (
+                ("manifest.json", manifest), ("index.json", index),
+                ("blobs/sha256/" + manifest_hash, image_manifest), (blob_path, blob),
+            ):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        return target, "sha256:" + hashlib.sha256(raw).hexdigest()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
 
@@ -140,6 +178,42 @@ class OverlayTests(unittest.TestCase):
                 overlay.check_added_layer(wrong_owner, owner_hash)
         finally:
             overlay.BUNDLE_SHA = original
+
+    def test_oci_gzip_layer_checks_blob_descriptor_diffid_and_one_file(self):
+        original = overlay.BUNDLE_SHA
+        try:
+            overlay.BUNDLE_SHA = hashlib.sha256(b"reviewed bundle").hexdigest()
+            good, diffid = self.saved_oci_image([
+                ("app/dist/index.mjs", b"reviewed bundle", 1001, 1001, 0o644),
+            ])
+            overlay.check_added_layer(good, diffid)
+            with self.assertRaisesRegex(RuntimeError, "does not match image RootFS"):
+                overlay.check_added_layer(good, "sha256:" + "0" * 64)
+            wrong_file, wrong_diffid = self.saved_oci_image([
+                ("app/dist/index.mjs", b"reviewed bundle", 1001, 1001, 0o644),
+                ("app/secret", b"no", 1001, 1001, 0o644),
+            ])
+            with self.assertRaisesRegex(RuntimeError, "unexpected entry"):
+                overlay.check_added_layer(wrong_file, wrong_diffid)
+        finally:
+            overlay.BUNDLE_SHA = original
+
+    def test_oci_gzip_layer_rejects_tampering_codec_and_decompression_bomb(self):
+        entries = [("app/dist/index.mjs", b"reviewed bundle", 1001, 1001, 0o644)]
+        tampered, diffid = self.saved_oci_image(entries, corrupt_blob_name=True)
+        with self.assertRaisesRegex(RuntimeError, "blob hash changed"):
+            overlay.check_added_layer(tampered, diffid)
+        unsupported, diffid = self.saved_oci_image(entries, codec="application/vnd.oci.image.layer.v1.tar+zstd")
+        with self.assertRaisesRegex(RuntimeError, "codec is unsupported"):
+            overlay.check_added_layer(unsupported, diffid)
+        invalid, diffid = self.saved_oci_image(entries, blob_override=b"not gzip")
+        with self.assertRaisesRegex(RuntimeError, "not gzip"):
+            overlay.check_added_layer(invalid, diffid)
+        bomb, diffid = self.saved_oci_image([
+            ("app/dist/index.mjs", b"x" * 8_000_001, 1001, 1001, 0o644),
+        ])
+        with self.assertRaisesRegex(RuntimeError, "uncompressed layer is unexpectedly large"):
+            overlay.check_added_layer(bomb, diffid)
 
 
 if __name__ == "__main__":

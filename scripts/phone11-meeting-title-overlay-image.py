@@ -8,6 +8,7 @@ container or change the live route. It prints only the resulting image ID.
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -145,6 +146,49 @@ def check_history(parent_id: str, candidate_id: str) -> None:
         raise RuntimeError("candidate history does not extend the exact parent")
 
 
+def read_small_json_member(archive: tarfile.TarFile, name: str) -> tuple[bytes, dict]:
+    member = archive.extractfile(name)
+    if member is None:
+        raise RuntimeError("candidate OCI manifest member missing")
+    contents = member.read(1_000_001)
+    if len(contents) > 1_000_000:
+        raise RuntimeError("candidate OCI manifest member is unexpectedly large")
+    parsed = json.loads(contents)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("candidate OCI manifest member is invalid")
+    return contents, parsed
+
+
+def check_oci_layer_descriptor(archive: tarfile.TarFile, layer_path: str, blob_size: int) -> None:
+    _, index = read_small_json_member(archive, "index.json")
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list) or len(manifests) != 1:
+        raise RuntimeError("candidate OCI image index is ambiguous")
+    descriptor = manifests[0]
+    if not isinstance(descriptor, dict) or descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json":
+        raise RuntimeError("candidate OCI image manifest type is unsupported")
+    digest = descriptor.get("digest")
+    if not isinstance(digest, str) or not IMAGE_ID_RE.fullmatch(digest):
+        raise RuntimeError("candidate OCI image manifest digest is invalid")
+    manifest_bytes, image_manifest = read_small_json_member(
+        archive, "blobs/sha256/" + digest.removeprefix("sha256:"))
+    if (hashlib.sha256(manifest_bytes).hexdigest() != digest.removeprefix("sha256:")
+            or descriptor.get("size") != len(manifest_bytes)):
+        raise RuntimeError("candidate OCI image manifest hash changed")
+    layers = image_manifest.get("layers")
+    if not isinstance(layers, list) or not layers or not isinstance(layers[-1], dict):
+        raise RuntimeError("candidate OCI layer descriptor is missing")
+    added = layers[-1]
+    if added.get("mediaType") not in {
+        "application/vnd.docker.image.rootfs.diff.tar.gzip",
+        "application/vnd.oci.image.layer.v1.tar+gzip",
+    }:
+        raise RuntimeError("candidate OCI layer codec is unsupported")
+    if (added.get("digest") != "sha256:" + layer_path.rsplit("/", 1)[-1]
+            or added.get("size") != blob_size):
+        raise RuntimeError("candidate OCI layer descriptor changed")
+
+
 def check_added_layer(saved_image: Path, expected_layer: str) -> None:
     """Read Docker-save metadata and only the last layer; extract no files."""
     with tarfile.open(saved_image, "r:") as outer:
@@ -157,16 +201,37 @@ def check_added_layer(saved_image: Path, expected_layer: str) -> None:
         layers = manifest[0].get("Layers")
         if not isinstance(layers, list) or not layers:
             raise RuntimeError("candidate image layers missing")
-        added = outer.extractfile(layers[-1])
+        layer_path = layers[-1]
+        if not isinstance(layer_path, str):
+            raise RuntimeError("candidate added layer path is invalid")
+        added = outer.extractfile(layer_path)
         if added is None:
             raise RuntimeError("candidate added layer missing")
         layer_bytes = added.read(8_000_001)
         if len(layer_bytes) > 8_000_000:
             raise RuntimeError("candidate added layer is unexpectedly large")
+        # Docker 29's classic builder exports an OCI gzip blob. Its blob hash
+        # names the compressed bytes, while RootFS.Layers contains the hash of
+        # the uncompressed tar (diffID). Older Docker saves use raw layer.tar.
+        if re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", layer_path):
+            check_oci_layer_descriptor(outer, layer_path, len(layer_bytes))
+            if hashlib.sha256(layer_bytes).hexdigest() != layer_path.rsplit("/", 1)[-1]:
+                raise RuntimeError("candidate OCI layer blob hash changed")
+            if not layer_bytes.startswith(b"\x1f\x8b"):
+                raise RuntimeError("candidate OCI layer is not gzip")
+            try:
+                with gzip.GzipFile(fileobj=io.BytesIO(layer_bytes)) as compressed:
+                    layer_bytes = compressed.read(8_000_001)
+            except (OSError, EOFError) as error:
+                raise RuntimeError("candidate OCI layer gzip is invalid") from error
+            if len(layer_bytes) > 8_000_000:
+                raise RuntimeError("candidate uncompressed layer is unexpectedly large")
+        elif not layer_path.endswith("/layer.tar"):
+            raise RuntimeError("candidate added layer format is unsupported")
         if "sha256:" + hashlib.sha256(layer_bytes).hexdigest() != expected_layer:
             raise RuntimeError("candidate saved layer does not match image RootFS")
         files = []
-        with tarfile.open(fileobj=io.BytesIO(layer_bytes), mode="r:*") as layer:
+        with tarfile.open(fileobj=io.BytesIO(layer_bytes), mode="r:") as layer:
             for entry in layer:
                 path = entry.name.removeprefix("./").rstrip("/")
                 if entry.isdir():
