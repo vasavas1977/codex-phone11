@@ -81,6 +81,25 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     const beta = await service.create(3, 20, "direct", "Beta", [6]);
     await expect(service.details(1, 10, beta.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
+  it("returns latest sender identity and counts only unread, live mentions for the current member", async () => {
+    const { id } = await room();
+    const directMention = await service.send(1, 10, id, randomUUID(), "Hello @Bob", undefined, [], [{ userId: 2, start: 6, length: 4 }]);
+    expect((await service.list(2, 10)).channels[0]).toMatchObject({
+      lastMessage: "Hello @Bob", lastMessageSenderId: 1, lastMessageSenderName: "Alice", unreadMentionCount: 1,
+    });
+    expect((await service.list(1, 10)).channels[0].unreadMentionCount).toBe(0);
+
+    await service.delete(1, 10, id, directMention.id);
+    expect((await service.list(2, 10)).channels[0]).toMatchObject({
+      lastMessage: "Message deleted.", lastMessageSenderId: 1, unreadMentionCount: 0,
+    });
+
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    const allMention = await service.send(1, 10, group.id, randomUUID(), "Hello @all", undefined, [], [], { start: 6, length: 4 });
+    expect((await service.list(2, 10)).channels.find(channel => channel.id === group.id)?.unreadMentionCount).toBe(1);
+    await service.read(2, 10, group.id, allMention.sequence);
+    expect((await service.list(2, 10)).channels.find(channel => channel.id === group.id)?.unreadMentionCount).toBe(0);
+  });
   it("exposes only server-generated tenant-scoped photo paths in directory, details, and messages", async () => {
     const aliceVersion = "11111111-1111-4111-8111-111111111111";
     const bobVersion = "22222222-2222-4222-8222-222222222222";
@@ -141,12 +160,52 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     try {
       expect((await service.details(1, 10, group.id)).canMentionAll).toBe(false);
       await expect(service.history(1, 10, group.id)).resolves.toMatchObject({ messages: [] });
+      await expect(service.list(1, 10)).resolves.toMatchObject({ channels: [expect.objectContaining({ unreadMentionCount: 0 })] });
       await expect(service.send(1, 10, group.id, randomUUID(), "@all", undefined, [], [], { start: 0, length: 4 }))
         .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     } finally {
       await pool.query("ALTER TABLE phone11_chat_message_all_mentions_hidden RENAME TO phone11_chat_message_all_mentions");
     }
     expect((await service.details(1, 10, group.id)).canMentionAll).toBe(true);
+  });
+  it("keeps inbox reads available with missing individual mentions and omits totals when all mention tables are absent", async () => {
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    await pool.query("ALTER TABLE phone11_chat_message_mentions RENAME TO phone11_chat_message_mentions_hidden");
+    try {
+      const messageId = randomUUID();
+      await pool.query(`INSERT INTO phone11_chat_messages (id, tenant_id, conversation_id, sender_id, client_id, content)
+        VALUES ($1, 10, $2, 1, $3, 'Hello @all')`, [messageId, group.id, randomUUID()]);
+      await pool.query(`INSERT INTO phone11_chat_message_all_mentions (tenant_id,conversation_id,message_id,start_offset,length)
+        VALUES (10,$1,$2,6,4)`, [group.id, messageId]);
+      expect((await service.list(2, 10)).channels.find(item => item.id === group.id)?.unreadMentionCount).toBe(1);
+      await pool.query("ALTER TABLE phone11_chat_message_all_mentions RENAME TO phone11_chat_message_all_mentions_hidden");
+      try {
+        const channel = (await service.list(2, 10)).channels.find(item => item.id === group.id);
+        expect(channel).toMatchObject({ id: group.id, unreadCount: 1 });
+        expect(channel).not.toHaveProperty("unreadMentionCount");
+      } finally {
+        await pool.query("ALTER TABLE phone11_chat_message_all_mentions_hidden RENAME TO phone11_chat_message_all_mentions");
+      }
+    } finally {
+      await pool.query("ALTER TABLE phone11_chat_message_mentions_hidden RENAME TO phone11_chat_message_mentions");
+    }
+  });
+  it("previews a voice-only latest message while leaving an empty channel without a preview", async () => {
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    expect((await service.list(1, 10)).channels.find(item => item.id === group.id)?.lastMessage).toBeNull();
+    const messageId = randomUUID();
+    await pool.query(`INSERT INTO phone11_chat_messages (id, tenant_id, conversation_id, sender_id, client_id, content)
+      VALUES ($1, 10, $2, 1, $3, ' ')`, [messageId, group.id, randomUUID()]);
+    await pool.query(`INSERT INTO phone11_chat_attachments
+      (id,tenant_id,conversation_id,uploaded_by,client_id,storage_key,filename,mime_type,size_bytes,content_sha256,state,message_id,attached_at)
+      VALUES ($1,10,$2,1,$3,'10/test/voice.wav','voice.wav','audio/wav',10,repeat('a',64),'attached',$4,NOW())`,
+      [randomUUID(), group.id, randomUUID(), messageId]);
+    // A staged upload is not attached to the message and must not affect its preview.
+    await pool.query(`INSERT INTO phone11_chat_attachments
+      (id,tenant_id,conversation_id,uploaded_by,client_id,storage_key,filename,mime_type,size_bytes,content_sha256,state,expires_at)
+      VALUES ($1,10,$2,1,$3,'10/test/pending.png','pending.png','image/png',10,repeat('b',64),'ready',NOW() + interval '1 hour')`,
+      [randomUUID(), group.id, randomUUID()]);
+    expect((await service.list(2, 10)).channels.find(item => item.id === group.id)?.lastMessage).toBe("Voice message");
   });
   it("removes deactivated members from Team Chat and restores them only after reactivation", async () => {
     const { id } = await room();
