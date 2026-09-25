@@ -1,6 +1,14 @@
 # Direct-contact meetings: guarded live candidate
 
-This is a release operator plan, not evidence that direct-contact meetings are live. The reviewed candidate is the direct-meeting port on top of the active Team Chat inbox source. It preserves inbox behavior and uses a new loopback API candidate before moving only the two public tRPC locations.
+This is the guarded release plan and current rollout record. The reviewed candidate is the direct-meeting port on top of the active Team Chat inbox source. It preserves inbox behavior and uses a new loopback API candidate before moving only the two public tRPC locations.
+
+## Live rollout record, 26 September 2026
+
+The exact direct-meeting migration was applied to the active VoIP PostgreSQL database after a protected backup and isolated restore rehearsal. The applied migration receipt and recovery check passed. The 3011 candidate image is `sha256:c32a2a3a72061f2d4dbb8a54a1528666fd25003cd9782ae9de4ffa60c0e7d1b3`, built from backend source `00b2ef21518c092819c95ae956963f5f191543e4` and bundle SHA-256 `1f5abb9e19da7a6040d26634d64f8ea139049c61840884477afafc097ae14bbe`. Guarded route receipt `/var/lib/phone11-direct-meeting-release-route/20260925T190157Z-225ab558495ccbde` is active. The VoIP Nginx site SHA-256 is `2f744bb0df277cd4cbe7a50c2a6f9122530821d7bfa56f32d1fdb2ac64c59520`; 3010 remains running for rollback.
+
+The public app API is `https://api.phone11.ai`, which forwards through the separate portal host to the VoIP route. `https://1toall.phone11.ai` intentionally returns 404 for `/api/`. Public authenticated readback showed direct hosting enabled for users 1 and 2 in tenant 1 chat `6e56c486-cec8-495a-8861-4b2433862206`. The protected start endpoint created meeting `fca343f5-ccde-4cfb-91f0-2858a45c150d`, user 2's direct inbox returned its invitation, and both users received admission URL/token responses without credential values being logged. This proves API admission and invitation delivery, **not** native room connection or two-way audio/video.
+
+Signed iOS build `f53d2350-d7f2-45f8-b06b-2cf8d178e94d` from mobile source `20809a8e665f5d960fe7185d043088e35385cd31` was installed on both paired test iPhones (17 Pro Max and 15 Pro Max). Each device was locked when remote launch was attempted, so physical invitation, join, media, background/reopen, and call coexistence remain unverified. Do not call the two-phone acceptance gate passed until those checks are observed.
 
 ## Exact current pins and source proof
 
