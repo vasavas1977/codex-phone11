@@ -65,6 +65,7 @@ type AccountHubProps = {
   profileAvailable?: boolean;
   profileLoading?: boolean;
   profileLoadError?: boolean;
+  profileUnavailable?: boolean;
   onRetryWorkspaceProfile?: () => Promise<unknown>;
   profileSaving?: boolean;
   profileError?: string | null;
@@ -230,7 +231,7 @@ export function AccountDetails({ identity, phone, workspaceName, photo, workspac
 }
 
 /** Shows auth-owned identity and server-persisted workspace preferences. */
-export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileLoading = false, profileLoadError = false, onRetryWorkspaceProfile, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoDescriptor, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
+export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileLoading = false, profileLoadError = false, profileUnavailable = false, onRetryWorkspaceProfile, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoDescriptor, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
   const colors = useColors();
   const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "photo" | null>(null);
   const [showDetails, setShowDetails] = useState(false);
@@ -291,7 +292,7 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
           <MenuRow icon="building.2.fill" title="Work location" detail={workLocationSummary(profile.workLocation)} onPress={() => setSheet("location")} last />
         </> : <View>
           <Text style={[styles.unavailable, { color: colors.muted }]}>
-            {profileLoading ? "Checking workspace status…" : profileLoadError ? "Could not load workspace status." : "Workspace status is not available for this workspace."}
+            {profileLoading ? "Checking workspace status…" : profileUnavailable ? "Workspace status is not enabled for this workspace yet." : profileLoadError ? "Could not load workspace status." : "Workspace status is not available for this workspace."}
           </Text>
           {profileLoadError && onRetryWorkspaceProfile && <Pressable
             accessibilityRole="button"

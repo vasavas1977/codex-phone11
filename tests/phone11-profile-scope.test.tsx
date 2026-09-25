@@ -254,6 +254,17 @@ it("retries workspace status only for the active owner and workspace", async () 
   expect(m.query.refetch).not.toHaveBeenCalled();
 });
 
+it("treats an uncommissioned workspace status endpoint as unavailable without retrying", async () => {
+  m.query = { ...m.query, data: undefined, isSuccess: false, error: { data: { code: "PRECONDITION_FAILED" } } };
+  const profile = useRenderedWorkspaceProfile();
+  expect(profile.profileUnavailable).toBe(true);
+  expect(profile.loadError).toBe(false);
+  await profile.refetchProfile();
+  expect(m.query.refetch).not.toHaveBeenCalled();
+  renderProfile();
+  expect(m.hub).toMatchObject({ profileLoadError: false, profileUnavailable: true });
+});
+
 it("shows a successful upload even if local persistence fails, without refetching unavailable status", async () => {
   m.query = { ...m.query, data: undefined, isSuccess: false, error: new Error("status schema missing") };
   m.photoQuery = { ...m.photoQuery, data: { available: true } };

@@ -16,7 +16,7 @@ vi.mock("../hooks/use-hidden-calls", () => ({
   }),
 }));
 vi.mock("../hooks/use-call-favorites", () => ({
-  useCallFavorites: () => ({ starred: () => false, toggle: vi.fn() }),
+  useCallFavorites: () => ({ starred: (number: string) => mocks.starredNumbers.has(number), toggle: vi.fn(), loading: false }),
 }));
 vi.mock("../lib/chat/store", () => ({
   useChatStore: () => ({ userId: null, workspace: null }),
@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   call: vi.fn(async () => {}),
   refresh: undefined as (() => void) | undefined,
   refreshing: false,
+  starredNumbers: new Set<string>(),
   routerPush: vi.fn(),
   press: new Map<
     string,
@@ -176,6 +177,7 @@ beforeEach(() => {
   mocks.cloud.items = [];
   mocks.cloud.loading = false;
   mocks.calling = false;
+  mocks.starredNumbers.clear();
   mocks.routerPush.mockReset();
   mocks.history = {
     ownerUserId: 1,
@@ -314,7 +316,41 @@ it("offers compact filters and name-or-number search", () => {
   expect(html).toContain('aria-label="Show all calls"');
   expect(html).toContain('aria-label="Show missed calls"');
   expect(html).not.toContain('aria-label="Show ai summary calls"');
-  expect(html).not.toContain('aria-label="Show starred calls"');
+  expect(html).toContain('aria-label="Show starred calls"');
+});
+
+it("filters starred calls by the current owner's saved phone-number favorites", () => {
+  const rows = [
+    {
+      id: "call-1",
+      name: "Somchai",
+      number: "+66825826667",
+      direction: "incoming",
+      startedAt: 2,
+      time: "10:01",
+      duration: "1:00",
+    },
+    {
+      id: "call-2",
+      name: "Nathasa",
+      number: "+66815551234",
+      direction: "outgoing",
+      startedAt: 1,
+      time: "10:00",
+      duration: "0:30",
+    },
+  ] as any[];
+  const favorites = (number: string) => mocks.starredNumbers.has(number);
+  const filtered = () =>
+    filterRecentsRows(rows, "starred", "", () => false, favorites).map(
+      (row) => row.id,
+    );
+
+  expect(filtered()).toEqual([]);
+  mocks.starredNumbers.add("+66825826667");
+  expect(filtered()).toEqual(["call-1"]);
+  mocks.starredNumbers.delete("+66825826667");
+  expect(filtered()).toEqual([]);
 });
 
 it("keeps recordings with and without summaries together", () => {

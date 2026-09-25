@@ -85,6 +85,9 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
   };
   const currentSave = !!saveState && enabled && saveState.owner === owner && saveState.tenantId === tenantId;
   const currentPhotoSave = !!photoSaveState && enabled && photoSaveState.scope === scope.current;
+  // The status endpoint uses PRECONDITION_FAILED while workspace status is
+  // not commissioned. This is a capability state, not a transient failure.
+  const profileUnavailable = (profile.error as { data?: { code?: unknown } } | null)?.data?.code === "PRECONDITION_FAILED";
   const ownedProfile = enabled && profile.data?.userId === owner!.id
     ? profile.data as WorkspaceProfileStatus : undefined;
   const scopedLocalPhoto = enabled && localPhoto?.scope === scope.current
@@ -108,7 +111,8 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
     profileAvailable: !!ownedProfile && profile.isSuccess,
     photoDescriptor,
     loading: enabled && profile.isLoading,
-    loadError: !!profile.error,
+    loadError: !!profile.error && !profileUnavailable,
+    profileUnavailable,
     photoCapabilityError: !!photoCapability.error,
     photoCapabilityLoading: enabled && photoCapability.isLoading,
     saving: currentSave && saveState.pending,
@@ -116,7 +120,7 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
     photoAvailable: enabled && photoCapability.data?.available === true,
     async refetchProfile() {
       const action = scope.current;
-      if (!action || !isCurrent(action)) return;
+      if (!action || !isCurrent(action) || profileUnavailable) return;
       await profile.refetch();
     },
     async refetchPhotoSettings() {

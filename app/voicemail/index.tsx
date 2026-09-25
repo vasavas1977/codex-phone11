@@ -4,8 +4,10 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { Playback } from "@/components/cloud-recordings/cloud-playback";
 import { useAuth } from "@/hooks/use-auth";
+import { usePhoneCall } from "@/hooks/use-phone-call";
 import { useColors } from "@/hooks/use-colors";
 import { voicemailPlaybackURL } from "@/lib/cloud-recordings/presentation";
+import { normalizeDialInput } from "@/lib/sip/dial-input";
 import { trpc } from "@/lib/trpc";
 
 type Voicemail = {
@@ -25,6 +27,53 @@ const formatDuration = (seconds: number) => {
 
 const voicemailTitle = (message: Voicemail) =>
   message.caller_name?.trim() || message.caller_number || "Unknown caller";
+
+export function voicemailCallbackTarget(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const number = normalizeDialInput(value);
+  return number && /^\+?\d{2,20}$/.test(number) ? number : null;
+}
+
+export function voicemailInboxErrorMessage(error: unknown): string {
+  let code: unknown;
+  if (error !== null && typeof error === "object") {
+    const data = (error as { data?: unknown }).data;
+    if (data !== null && typeof data === "object")
+      code = (data as { code?: unknown }).code;
+  }
+  if (code === "SERVICE_UNAVAILABLE")
+    return "Voicemail storage is not configured. Ask an administrator to finish setup.";
+  if (code === "UNAUTHORIZED") return "Sign in again to view voicemail.";
+  if (code === "FORBIDDEN") return "You do not have access to this voicemail inbox.";
+  return "Could not load voicemail. Check your connection and try again.";
+}
+
+export function VoicemailCallbackAction({
+  callerNumber,
+  callerName,
+}: {
+  callerNumber: string;
+  callerName: string;
+}) {
+  const colors = useColors();
+  const { placeCall, calling } = usePhoneCall();
+  const target = voicemailCallbackTarget(callerNumber);
+  if (!target) return null;
+
+  return (
+    <TouchableOpacity
+      accessibilityRole="button"
+      accessibilityLabel={`Call back ${callerName}`}
+      disabled={calling}
+      onPress={() => {
+        if (!calling) void placeCall(target);
+      }}
+      style={styles.callback}
+    >
+      <Text style={{ color: colors.primary }}>{calling ? "Calling…" : "Call back"}</Text>
+    </TouchableOpacity>
+  );
+}
 
 const voicemailSourceURL = (base: string, path: string) => {
   const id = /^\/api\/recordings\/voicemail\/([1-9][0-9]*)$/.exec(path)?.[1];
@@ -72,7 +121,7 @@ export default function VoicemailScreen() {
   const unavailable = !user
     ? "Sign in to view voicemail."
     : inbox.error
-      ? "Voicemail is unavailable. Ask an administrator to complete voicemail inbox storage setup."
+      ? voicemailInboxErrorMessage(inbox.error)
       : undefined;
 
   return (
@@ -139,6 +188,10 @@ export default function VoicemailScreen() {
                     sourceURL={voicemailSourceURL}
                     allowShare={false}
                   />
+                  <VoicemailCallbackAction
+                    callerNumber={message.caller_number}
+                    callerName={voicemailTitle(message)}
+                  />
                   <TouchableOpacity
                     accessibilityRole="button"
                     accessibilityLabel={`Delete voicemail from ${voicemailTitle(message)}`}
@@ -180,5 +233,6 @@ const styles = StyleSheet.create({
   unread: { width: 9, height: 9, borderRadius: 5 },
   expanded: { borderTopWidth: 1, padding: 14, gap: 10 },
   mailbox: { fontSize: 12, fontWeight: "600" },
+  callback: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start", paddingHorizontal: 8 },
   delete: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
 });

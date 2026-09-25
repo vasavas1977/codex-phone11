@@ -106,6 +106,7 @@ export default function ProfileScreen() {
         profileAvailable={workspaceProfile.profileAvailable}
         profileLoading={workspaceProfile.loading}
         profileLoadError={workspaceProfile.loadError}
+        profileUnavailable={workspaceProfile.profileUnavailable}
         onRetryWorkspaceProfile={workspaceProfile.refetchProfile}
         profileSaving={workspaceProfile.saving}
         profileError={workspaceProfile.error ? "Could not save profile settings. Try again." : null}

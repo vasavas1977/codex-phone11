@@ -176,6 +176,11 @@ it("distinguishes workspace status loading from an error with a retry action", (
   expect(failed).toContain("Could not load workspace status.");
   expect(failed).toContain('aria-label="Retry workspace status"');
   expect(failed).not.toContain("company updates this app");
+  const unavailable = renderToStaticMarkup(createElement(AccountHub, {
+    ...common, profileUnavailable: true, onRetryWorkspaceProfile: vi.fn(async () => undefined),
+  }));
+  expect(unavailable).toContain("Workspace status is not enabled for this workspace yet.");
+  expect(unavailable).not.toContain("Retry workspace status");
 });
 
 it("does not invent a profile when authenticated identity is absent", () => {

@@ -51,12 +51,13 @@ type Row = HistoryRowCall & {
   recording?: CloudRecording;
   avatar?: RecentCallAvatar;
 };
-type RecentsFilter = "all" | "missed" | "recorded" | "hidden";
+type RecentsFilter = "all" | "starred" | "missed" | "recorded" | "hidden";
 const filters: readonly {
   value: Exclude<RecentsFilter, "hidden">;
   label: string;
 }[] = [
   { value: "all", label: "All" },
+  { value: "starred", label: "Starred" },
   { value: "missed", label: "Missed" },
   { value: "recorded", label: "Recorded" },
 ];
@@ -80,15 +81,18 @@ export function filterRecentsRows(
   filter: RecentsFilter,
   query: string,
   hidden: (row: Row) => boolean,
+  starred: (number: string) => boolean = () => false,
 ) {
   return rows
     .filter((row) => (filter === "hidden" ? hidden(row) : !hidden(row)))
     .filter((row) =>
-      filter === "missed"
-        ? row.direction === "missed"
-        : filter === "recorded"
-          ? row.recordingReady
-          : true,
+      filter === "starred"
+        ? starred(row.number)
+        : filter === "missed"
+          ? row.direction === "missed"
+          : filter === "recorded"
+            ? row.recordingReady
+            : true,
     )
     .filter((row) => matchesSearch(row, query))
     .sort((a, b) => b.startedAt - a.startedAt);
@@ -225,6 +229,7 @@ export default function RecentsScreen() {
     filter,
     search,
     isHidden,
+    favorites.starred,
   );
   const actionCall = actionId
     ? rows.find((row) => row.id === actionId)
@@ -422,13 +427,17 @@ export default function RecentsScreen() {
               ? "Sign in to see your calls"
               : history.loading || !hidden.ready
                 ? "Loading calls..."
-                : filter === "missed"
-                  ? "No missed calls"
+                : filter === "starred" && favorites.loading
+                  ? "Loading starred calls..."
                   : search.trim()
                     ? "No calls match your search"
-                    : filter === "recorded"
-                      ? "No recorded calls"
-                      : "No saved calls"}
+                    : filter === "starred"
+                      ? "No starred calls"
+                      : filter === "missed"
+                        ? "No missed calls"
+                        : filter === "recorded"
+                          ? "No recorded calls"
+                          : "No saved calls"}
           </Text>
         }
         renderItem={({ item, index }) => (
