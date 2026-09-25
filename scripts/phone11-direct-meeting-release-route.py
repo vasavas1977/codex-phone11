@@ -35,6 +35,9 @@ ORIGINAL_SHA256 = "1b9b4c7d89d2c65c6bf8b730decd57513c46194fe21b5470981c7525d0b0e
 CURRENT_CONTAINER = "cp11-api-candidate-chat-inbox"
 CURRENT_IMAGE = "sha256:55b593f0c392c67bc74589dcae4cb0e36b2f2e6dcd8a3552be781429ed0e2d77"
 CURRENT_BUNDLE = "75381c01555e1d924eddc2da2c97a1f1e44224dec5c4f03947518e24f6148b5b"
+CURRENT_CONTAINER_ID = "2b8a0746153a273cb061073fe6d26302811d055ee666fd0eacf39fe1c3a20db7"
+CURRENT_SOURCE_SHA = "2d125819a7f1713f05b3eaa3bcbf5e5672a84e0c"
+CURRENT_LOCK_SHA = "24a72aa60f0b43fe3afdad41f2e0f0f348f75ac065172627913fe72d43f2c801"
 TARGET_CONTAINER = "cp11-api-candidate-direct-meeting"
 TARGET_SOURCE_SHA = "00b2ef21518c092819c95ae956963f5f191543e4"
 TARGET_BUNDLE = "1f5abb9e19da7a6040d26634d64f8ea139049c61840884477afafc097ae14bbe"
@@ -43,6 +46,13 @@ CURRENT_PORT = 3010
 TARGET_PORT = 3011
 MAX_SITE_BYTES = 2 * 1024 * 1024
 MAX_COMMAND_BYTES = 2 * 1024 * 1024
+MIGRATION_ROOT = Path("/opt/phone11ai/direct-meeting-20260926/migration")
+MIGRATION_OPERATOR = MIGRATION_ROOT / "phone11-direct-meetings-migrate.py"
+MIGRATION_OPERATOR_SHA256 = "d1505d50b6f161681394cdc207cfb37e8931edd0e7e157975bdf289792c108cf"
+MIGRATION_SQL = MIGRATION_ROOT / "direct-meeting-migration.sql"
+MIGRATION_SQL_SHA256 = "043174f9cdf6d113d85e20945be4302b14a0ea9365a1798bc428b5d51c59f4e8"
+MIGRATION_MANIFEST = MIGRATION_ROOT / "manifest.json"
+MIGRATION_RECEIPT = Path("/var/lib/phone11-direct-meetings/receipt.json")
 
 
 class GuardError(RuntimeError):
@@ -236,6 +246,86 @@ def receipt_bytes(receipt: dict[str, Any]) -> bytes:
     return (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
+def _protected_directory(path: Path) -> None:
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_gid == 0
+            and stat.S_IMODE(info.st_mode) == 0o700, "migration_directory")
+
+
+def _sha(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def check_migration_applied() -> None:
+    """Bind an applied migration receipt to the current protected PostgreSQL catalog.
+
+    The reviewed migration operator's inventory mode is read-only. Its exact
+    bytes and SQL are pinned before execution; it emits fingerprints only.
+    """
+    _protected_directory(MIGRATION_ROOT)
+    _protected_directory(MIGRATION_RECEIPT.parent)
+    operator, _ = read_regular(MIGRATION_OPERATOR, root_only=True)
+    sql, _ = read_regular(MIGRATION_SQL, root_only=True)
+    require(digest(operator) == MIGRATION_OPERATOR_SHA256
+            and digest(sql) == MIGRATION_SQL_SHA256, "migration_artifact")
+    manifest_raw, _ = read_regular(MIGRATION_MANIFEST, root_only=True)
+    receipt_raw, _ = read_regular(MIGRATION_RECEIPT, root_only=True)
+    manifest = json.loads(manifest_raw)
+    receipt = json.loads(receipt_raw)
+    require(isinstance(manifest, dict) and set(manifest) == {
+        "schema", "target", "release", "database_identity_sha256",
+        "before_catalog_sha256", "after_catalog_sha256", "sql_sha256",
+    }, "migration_manifest")
+    require(isinstance(receipt, dict) and set(receipt) == {
+        "schema", "manifest_sha256", "sql_sha256", "database_identity_sha256",
+        "before_catalog_sha256", "after_catalog_sha256", "container_id", "image",
+        "source_sha", "bundle_sha256", "lock_sha256", "backup_proof_sha256",
+        "restore_proof_sha256", "status", "verification_sha256",
+    }, "migration_receipt")
+    expected_target = {"container_id": CURRENT_CONTAINER_ID, "container_name": CURRENT_CONTAINER,
+                       "image": CURRENT_IMAGE, "container_port": CURRENT_PORT, "host_port": CURRENT_PORT}
+    expected_release = {"source_sha": CURRENT_SOURCE_SHA, "bundle_sha256": CURRENT_BUNDLE,
+                        "lock_sha256": CURRENT_LOCK_SHA}
+    require(manifest["schema"] == "phone11.direct-meetings-migration-manifest/v1"
+            and manifest["target"] == expected_target
+            and manifest["release"] == expected_release
+            and manifest["sql_sha256"] == MIGRATION_SQL_SHA256
+            and all(_sha(manifest[key]) for key in ("database_identity_sha256",
+                    "before_catalog_sha256", "after_catalog_sha256"))
+            and manifest["before_catalog_sha256"] != manifest["after_catalog_sha256"],
+            "migration_manifest")
+    require(receipt["schema"] == "phone11.direct-meetings-migration-journal/v1"
+            and receipt["status"] == "applied"
+            and receipt["manifest_sha256"] == digest(manifest_raw)
+            and receipt["sql_sha256"] == MIGRATION_SQL_SHA256
+            and receipt["container_id"] == CURRENT_CONTAINER_ID
+            and receipt["image"] == CURRENT_IMAGE
+            and receipt["source_sha"] == CURRENT_SOURCE_SHA
+            and receipt["bundle_sha256"] == CURRENT_BUNDLE
+            and receipt["lock_sha256"] == CURRENT_LOCK_SHA
+            and all(_sha(receipt[key]) for key in ("backup_proof_sha256", "restore_proof_sha256"))
+            and all(receipt[key] == manifest[key] for key in (
+                "database_identity_sha256", "before_catalog_sha256", "after_catalog_sha256")),
+            "migration_receipt")
+    verified = {key: manifest[key] for key in ("database_identity_sha256",
+                "before_catalog_sha256", "after_catalog_sha256", "sql_sha256")}
+    require(receipt["verification_sha256"] == digest(json.dumps(
+        verified, sort_keys=True, separators=(",", ":")).encode()), "migration_receipt")
+    raw = command(["/usr/bin/python3", str(MIGRATION_OPERATOR), "--inventory",
+                   "--sql", str(MIGRATION_SQL), "--container-id", CURRENT_CONTAINER_ID,
+                   "--container-name", CURRENT_CONTAINER, "--container-port", str(CURRENT_PORT),
+                   "--host-port", str(CURRENT_PORT)], timeout=30)
+    inventory = json.loads(raw)
+    require(isinstance(inventory, dict) and inventory.get("schema") ==
+            "phone11.direct-meetings-migration-inventory/v1"
+            and inventory.get("target") == expected_target
+            and inventory.get("release") == expected_release
+            and inventory.get("sql_sha256") == MIGRATION_SQL_SHA256
+            and inventory.get("database_identity_sha256") == manifest["database_identity_sha256"]
+            and inventory.get("before_catalog_sha256") == manifest["after_catalog_sha256"],
+            "migration_catalog")
+
+
 def inventory() -> None:
     site, info = read_regular(SITE)
     require(info.st_uid == 0 and info.st_gid == 0, "site_owner")
@@ -247,7 +337,7 @@ RECEIPT_FIELDS = {"schema", "site", "before_sha256", "active_sha256", "target_co
                   "target_image", "target_source_sha", "target_bundle_sha256", "target_build", "state"}
 
 
-def load_receipt(receipt_dir: Path, expected_state: str) -> tuple[dict[str, Any], bytes, bytes]:
+def load_receipt(receipt_dir: Path, expected_state: str | tuple[str, ...]) -> tuple[dict[str, Any], bytes, bytes]:
     require(receipt_dir.parent == STATE_ROOT and not receipt_dir.is_symlink(), "receipt_path")
     directory = receipt_dir.lstat()
     require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == 0 and directory.st_gid == 0
@@ -255,8 +345,9 @@ def load_receipt(receipt_dir: Path, expected_state: str) -> tuple[dict[str, Any]
     raw, _ = read_regular(receipt_dir / "receipt.json", root_only=True)
     record = json.loads(raw)
     require(isinstance(record, dict) and set(record) == RECEIPT_FIELDS, "receipt_shape")
+    accepted = (expected_state,) if isinstance(expected_state, str) else expected_state
     require(record["schema"] == SCHEMA and record["site"] == str(SITE)
-            and record["target_container"] == TARGET_CONTAINER and record["state"] == expected_state
+            and record["target_container"] == TARGET_CONTAINER and record["state"] in accepted
             and record["before_sha256"] == ORIGINAL_SHA256
             and record["target_source_sha"] == TARGET_SOURCE_SHA
             and record["target_bundle_sha256"] == TARGET_BUNDLE
@@ -280,6 +371,7 @@ def prepare(image: str) -> None:
         target = rewrite_trpc(site, CURRENT_PORT, TARGET_PORT)
         require(rewrite_trpc(target, TARGET_PORT, CURRENT_PORT) == site, "route_roundtrip")
         check_predecessor()
+        check_migration_applied()
         check_candidate(image, TARGET_BUNDLE, TARGET_BUILD)
         ensure_state_root()
         run = STATE_ROOT / (time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(8))
@@ -308,6 +400,7 @@ def activate(receipt_dir: Path) -> None:
         require(info.st_uid == 0 and info.st_gid == 0, "site_owner")
         require(current == site, "site_drift")
         check_predecessor()
+        check_migration_applied()
         check_candidate(record["target_image"][7:], TARGET_BUNDLE, TARGET_BUILD)
         current, _ = read_regular(SITE)
         require(current == site, "site_drift")
@@ -355,6 +448,34 @@ def rollback(receipt_dir: Path) -> None:
                           "site_sha256": digest(before)}, sort_keys=True))
 
 
+def recover(receipt_dir: Path) -> None:
+    """Resolve an interrupted activate/rollback toward the pinned predecessor.
+
+    A prepared receipt with an active site means the process stopped between
+    writing/reloading Nginx and recording state. Rewriting the sealed before
+    site and reloading is safe whether Nginx had switched or not. A receipt in
+    active state with an already-restored site is handled the same way.
+    """
+    require(os.geteuid() == 0, "root_required")
+    with lock():
+        ensure_state_root()
+        record, before, active = load_receipt(receipt_dir, ("prepared", "active"))
+        site, info = read_regular(SITE)
+        require(info.st_uid == 0 and info.st_gid == 0, "site_owner")
+        require(site in (before, active), "site_drift")
+        check_predecessor()
+        if site == active:
+            atomic_write(SITE, before, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
+        # Reload even when the file already equals before: an interrupted
+        # rollback may have restored the file without reloading Nginx.
+        nginx_validate_and_reload()
+        require(read_regular(SITE)[0] == before, "site_drift")
+        record["state"] = "rolled_back"
+        atomic_write(receipt_dir / "receipt.json", receipt_bytes(record), mode=0o600)
+        print(json.dumps({"state": "rolled_back", "receipt_dir": str(receipt_dir),
+                          "site_sha256": digest(before)}, sort_keys=True))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
@@ -365,6 +486,8 @@ def main() -> int:
     activate_parser.add_argument("--receipt-dir", type=Path, required=True)
     rollback_parser = actions.add_parser("rollback", help="restore the sealed predecessor site")
     rollback_parser.add_argument("--receipt-dir", type=Path, required=True)
+    recover_parser = actions.add_parser("recover", help="settle an interrupted switch to the predecessor")
+    recover_parser.add_argument("--receipt-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.action == "inventory":
@@ -373,8 +496,10 @@ def main() -> int:
             prepare(args.image_sha256)
         elif args.action == "activate":
             activate(args.receipt_dir)
-        else:
+        elif args.action == "rollback":
             rollback(args.receipt_dir)
+        else:
+            recover(args.receipt_dir)
         return 0
     except (GuardError, OSError, ValueError, TimeoutError, subprocess.TimeoutExpired):
         print("Phone11 route operation refused; inspect the sealed receipt and live site before retrying.", file=sys.stderr)

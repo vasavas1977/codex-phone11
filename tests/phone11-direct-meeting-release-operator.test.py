@@ -128,6 +128,7 @@ class DirectMeetingOperatorTest(unittest.TestCase):
                  patch.object(route, "lock", return_value=nullcontext()), \
                  patch.object(route, "ensure_state_root"), \
                  patch.object(route, "check_predecessor") as predecessor, \
+                 patch.object(route, "check_migration_applied") as migration, \
                  patch.object(route, "check_candidate") as candidate, \
                  patch.object(route, "read_regular", side_effect=read), \
                  patch.object(route, "atomic_write", side_effect=write):
@@ -138,7 +139,84 @@ class DirectMeetingOperatorTest(unittest.TestCase):
             self.assertEqual((receipt_dir / "site.active").read_bytes(), active)
             self.assertIn(b'"state":"prepared"', (receipt_dir / "receipt.json").read_bytes())
             predecessor.assert_called_once()
+            migration.assert_called_once()
             candidate.assert_called_once_with("a" * 64, route.TARGET_BUNDLE, route.TARGET_BUILD)
+
+    def test_migration_gate_rejects_unmigrated_live_catalog(self):
+        operator_bytes, sql_bytes = b"reviewed operator", b"reviewed sql"
+        manifest = {
+            "schema": "phone11.direct-meetings-migration-manifest/v1",
+            "target": {"container_id": route.CURRENT_CONTAINER_ID,
+                       "container_name": route.CURRENT_CONTAINER, "image": route.CURRENT_IMAGE,
+                       "container_port": 3010, "host_port": 3010},
+            "release": {"source_sha": route.CURRENT_SOURCE_SHA,
+                        "bundle_sha256": route.CURRENT_BUNDLE,
+                        "lock_sha256": route.CURRENT_LOCK_SHA},
+            "database_identity_sha256": "a" * 64,
+            "before_catalog_sha256": "b" * 64,
+            "after_catalog_sha256": "c" * 64,
+            "sql_sha256": route.digest(sql_bytes),
+        }
+        manifest_raw = json.dumps(manifest).encode()
+        verification = {key: manifest[key] for key in (
+            "database_identity_sha256", "before_catalog_sha256", "after_catalog_sha256", "sql_sha256")}
+        receipt = {"schema": "phone11.direct-meetings-migration-journal/v1",
+                   "manifest_sha256": route.digest(manifest_raw),
+                   "sql_sha256": manifest["sql_sha256"],
+                   "database_identity_sha256": manifest["database_identity_sha256"],
+                   "before_catalog_sha256": manifest["before_catalog_sha256"],
+                   "after_catalog_sha256": manifest["after_catalog_sha256"],
+                   "container_id": route.CURRENT_CONTAINER_ID, "image": route.CURRENT_IMAGE,
+                   "source_sha": route.CURRENT_SOURCE_SHA, "bundle_sha256": route.CURRENT_BUNDLE,
+                   "lock_sha256": route.CURRENT_LOCK_SHA,
+                   "backup_proof_sha256": "d" * 64, "restore_proof_sha256": "e" * 64,
+                   "status": "applied",
+                   "verification_sha256": route.digest(json.dumps(
+                       verification, sort_keys=True, separators=(",", ":")).encode())}
+        data = {route.MIGRATION_OPERATOR: operator_bytes, route.MIGRATION_SQL: sql_bytes,
+                route.MIGRATION_MANIFEST: manifest_raw,
+                route.MIGRATION_RECEIPT: json.dumps(receipt).encode()}
+        def read(path, **_):
+            return data[path], INFO
+        inventory = {"schema": "phone11.direct-meetings-migration-inventory/v1",
+                     "target": manifest["target"], "release": manifest["release"],
+                     "sql_sha256": manifest["sql_sha256"],
+                     "database_identity_sha256": manifest["database_identity_sha256"],
+                     "before_catalog_sha256": manifest["before_catalog_sha256"]}
+        with patch.object(route, "_protected_directory"), \
+             patch.object(route, "read_regular", side_effect=read), \
+             patch.object(route, "MIGRATION_OPERATOR_SHA256", route.digest(operator_bytes)), \
+             patch.object(route, "MIGRATION_SQL_SHA256", route.digest(sql_bytes)), \
+             patch.object(route, "command", side_effect=lambda *_args, **_kwargs: json.dumps(inventory).encode()):
+            with self.assertRaisesRegex(route.GuardError, "migration_catalog"):
+                route.check_migration_applied()
+            inventory["before_catalog_sha256"] = manifest["after_catalog_sha256"]
+            route.check_migration_applied()
+            inventory["database_identity_sha256"] = "f" * 64
+            with self.assertRaisesRegex(route.GuardError, "migration_catalog"):
+                route.check_migration_applied()
+            inventory["database_identity_sha256"] = manifest["database_identity_sha256"]
+            receipt["status"] = "intent"
+            data[route.MIGRATION_RECEIPT] = json.dumps(receipt).encode()
+            with self.assertRaisesRegex(route.GuardError, "migration_receipt"):
+                route.check_migration_applied()
+
+    def test_activation_refuses_unmigrated_catalog_before_route_write(self):
+        active = route.rewrite_trpc(SITE, 3010, 3011)
+        with TemporaryDirectory() as root:
+            site_path = Path(root) / "site"
+            site_path.write_bytes(SITE)
+            with patch.object(route, "SITE", site_path), patch.object(route.os, "geteuid", return_value=0), \
+                 patch.object(route, "lock", return_value=nullcontext()), patch.object(route, "ensure_state_root"), \
+                 patch.object(route, "load_receipt", return_value=({"target_image": "sha256:" + "a" * 64}, SITE, active)), \
+                 patch.object(route, "read_regular", return_value=(SITE, INFO)), \
+                 patch.object(route, "check_predecessor"), \
+                 patch.object(route, "check_migration_applied", side_effect=route.GuardError("migration_catalog")), \
+                 patch.object(route, "check_candidate") as candidate, patch.object(route, "atomic_write") as write:
+                with self.assertRaisesRegex(route.GuardError, "migration_catalog"):
+                    route.activate(Path(root) / "receipt")
+                candidate.assert_not_called()
+                write.assert_not_called()
 
     def test_activate_rechecks_and_can_rollback_exact_snapshot(self):
         active = route.rewrite_trpc(SITE, 3010, 3011)
@@ -156,7 +234,8 @@ class DirectMeetingOperatorTest(unittest.TestCase):
             with patch.object(route, "STATE_ROOT", state), patch.object(route, "SITE", site_path), \
                  patch.object(route.os, "geteuid", return_value=0), patch.object(route, "lock", return_value=nullcontext()), \
                  patch.object(route, "ensure_state_root"), patch.object(route, "load_receipt", return_value=(record, SITE, active)) as load_receipt, \
-                 patch.object(route, "check_predecessor"), patch.object(route, "check_candidate") as candidate, \
+                 patch.object(route, "check_predecessor"), patch.object(route, "check_migration_applied"), \
+                 patch.object(route, "check_candidate") as candidate, \
                  patch.object(route, "read_regular", side_effect=read), patch.object(route, "atomic_write", side_effect=write), \
                  patch.object(route, "nginx_validate_and_reload") as reload:
                 route.activate(receipt_dir)
@@ -200,6 +279,63 @@ class DirectMeetingOperatorTest(unittest.TestCase):
                 with self.assertRaisesRegex(route.GuardError, "site_drift"):
                     route.rollback(Path(root) / "receipt")
                 write.assert_not_called()
+
+    def test_interrupted_switch_recovers_prepared_active_site_to_predecessor(self):
+        active = route.rewrite_trpc(SITE, 3010, 3011)
+        record = {"state": "prepared"}
+        with TemporaryDirectory() as root:
+            (Path(root) / "receipt").mkdir()
+            site_path = Path(root) / "site"
+            site_path.write_bytes(active)
+            def read(path, **_):
+                return path.read_bytes(), INFO
+            def write(path, data, **_):
+                path.write_bytes(data)
+            with patch.object(route, "SITE", site_path), patch.object(route.os, "geteuid", return_value=0), \
+                 patch.object(route, "lock", return_value=nullcontext()), patch.object(route, "ensure_state_root"), \
+                 patch.object(route, "load_receipt", return_value=(record, SITE, active)) as load, \
+                 patch.object(route, "check_predecessor") as predecessor, \
+                 patch.object(route, "read_regular", side_effect=read), \
+                 patch.object(route, "atomic_write", side_effect=write), \
+                 patch.object(route, "nginx_validate_and_reload") as reload:
+                route.recover(Path(root) / "receipt")
+            self.assertEqual(site_path.read_bytes(), SITE)
+            self.assertEqual(record["state"], "rolled_back")
+            self.assertIn(b'"state":"rolled_back"', (Path(root) / "receipt" / "receipt.json").read_bytes())
+            load.assert_called_once_with(Path(root) / "receipt", ("prepared", "active"))
+            predecessor.assert_called_once()
+            reload.assert_called_once()
+
+    def test_recovery_retries_when_reload_failed_after_site_restore(self):
+        active = route.rewrite_trpc(SITE, 3010, 3011)
+        record = {"state": "prepared"}
+        with TemporaryDirectory() as root:
+            (Path(root) / "receipt").mkdir()
+            site_path = Path(root) / "site"
+            site_path.write_bytes(active)
+            def read(path, **_):
+                return path.read_bytes(), INFO
+            def write(path, data, **_):
+                path.write_bytes(data)
+            calls = 0
+            def reload():
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise route.GuardError("nginx_failed")
+            with patch.object(route, "SITE", site_path), patch.object(route.os, "geteuid", return_value=0), \
+                 patch.object(route, "lock", return_value=nullcontext()), patch.object(route, "ensure_state_root"), \
+                 patch.object(route, "load_receipt", return_value=(record, SITE, active)), \
+                 patch.object(route, "check_predecessor"), patch.object(route, "read_regular", side_effect=read), \
+                 patch.object(route, "atomic_write", side_effect=write), \
+                 patch.object(route, "nginx_validate_and_reload", side_effect=reload):
+                with self.assertRaisesRegex(route.GuardError, "nginx_failed"):
+                    route.recover(Path(root) / "receipt")
+                self.assertEqual(site_path.read_bytes(), SITE)
+                self.assertEqual(record["state"], "prepared")
+                route.recover(Path(root) / "receipt")
+                self.assertEqual(record["state"], "rolled_back")
+            self.assertEqual(calls, 2)
 
     def test_receipt_integrity_rejects_tampered_snapshot(self):
         active = route.rewrite_trpc(SITE, 3010, 3011)
@@ -245,7 +381,8 @@ class DirectMeetingOperatorTest(unittest.TestCase):
             with patch.object(route, "SITE", site_path), patch.object(route.os, "geteuid", return_value=0), \
                  patch.object(route, "lock", return_value=nullcontext()), patch.object(route, "ensure_state_root"), \
                  patch.object(route, "load_receipt", return_value=(record, SITE, active)), \
-                 patch.object(route, "check_predecessor"), patch.object(route, "check_candidate"), \
+                 patch.object(route, "check_predecessor"), patch.object(route, "check_migration_applied"), \
+                 patch.object(route, "check_candidate"), \
                  patch.object(route, "read_regular", side_effect=read), patch.object(route, "atomic_write", side_effect=write), \
                  patch.object(route, "nginx_validate_and_reload", side_effect=reload):
                 with self.assertRaisesRegex(route.GuardError, "nginx_failed"):
