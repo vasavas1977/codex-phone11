@@ -22,6 +22,11 @@ spec.loader.exec_module(overlay)
 
 
 class OverlayTests(unittest.TestCase):
+    def test_build_requires_root_before_reading_any_bundle(self):
+        with patch.object(overlay.os, "geteuid", return_value=501):
+            with self.assertRaisesRegex(RuntimeError, "root is required"):
+                overlay.build(Path("/does/not/exist"))
+
     def test_history_requires_exact_parent_suffix(self):
         def encode(values):
             return "\n".join(json.dumps({"CreatedBy": command, "Size": size})

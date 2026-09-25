@@ -189,6 +189,8 @@ def check_added_layer(saved_image: Path, expected_layer: str) -> None:
 
 
 def build(bundle_path: Path) -> str:
+    if os.geteuid() != 0:
+        raise RuntimeError("root is required for the protected host image build")
     if sha256_file(bundle_path) != BUNDLE_SHA:
         raise RuntimeError("candidate bundle does not match the reviewed SHA-256")
     parent = inspect_image(PARENT_IMAGE)
