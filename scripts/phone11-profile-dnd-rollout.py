@@ -44,6 +44,14 @@ PROBE_SCHEMA = "phone11-profile-dnd-probes/v1"
 BASELINE_CONTAINER = "cp11-backend"
 CANDIDATE_CONTAINER = "cp11-api-candidate-chat-inbox"
 RELEASE_CANDIDATE_CONTAINER = "cp11-api-candidate-profile-dnd"
+INFRASTRUCTURE_SERVICES = {
+    "cp11-postgres": "postgres",
+    "cp11-redis": "redis",
+    "cp11-freeswitch": "freeswitch",
+    "cp11-kamailio": "kamailio",
+    "cp11-flexisip": "flexisip",
+    "cp11-rtpengine": "rtpengine",
+}
 BASELINE_PORT = 3000
 CANDIDATE_PORT = 3010
 RELEASE_CANDIDATE_PORT = 3012
@@ -1169,6 +1177,15 @@ class Operator:
             labels = inspect.get("Config", {}).get("Labels")
             state = inspect.get("State")
             guarded(isinstance(labels, Mapping) and isinstance(state, Mapping), "runtime_count")
+            if name in INFRASTRUCTURE_SERVICES:
+                guarded(
+                    labels.get("com.docker.compose.project") == baseline_config["name"]
+                    and labels.get("com.docker.compose.service") == INFRASTRUCTURE_SERVICES[name]
+                    and inspect.get("Image") not in expected_images
+                    and not any(key.startswith("PHONE11_") for key in env),
+                    "runtime_count",
+                )
+                continue
             phone11_like = (
                 name.startswith("cp11-")
                 or name in {BASELINE_CONTAINER, CANDIDATE_CONTAINER, RELEASE_CANDIDATE_CONTAINER} or name in parked

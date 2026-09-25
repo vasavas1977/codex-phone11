@@ -288,6 +288,46 @@ class ProfileDndRolloutTests(unittest.TestCase):
             )
         self.assertEqual(error.exception.stage, "unknown_worker")
 
+    def test_compose_infrastructure_is_not_counted_as_a_phone11_worker(self) -> None:
+        services = ("postgres", "redis", "freeswitch", "kamailio", "flexisip", "rtpengine")
+        names = [f"cp11-{service}" for service in services]
+
+        def check(extra_name: str | None = None, *, role_on_postgres: bool = False,
+                  wrong_service_on_postgres: bool = False,
+                  backend_image_on_postgres: bool = False) -> None:
+            system = FakeSystem()
+            inventory = names + ([extra_name] if extra_name else [])
+            system.command = lambda args, **_kwargs: ("\n".join(inventory) + "\n").encode() if args[:3] == ["docker", "ps", "-a"] else b""
+            system.json_responses = [[{
+                "Id": chr(ord("a") + index) * 64,
+                "Image": (OLD_DIGEST if index == 0 and backend_image_on_postgres
+                          else "sha256:" + chr(ord("a") + index) * 64),
+                "State": {"Running": True},
+                "Config": {
+                    "Env": ["PHONE11_RUNTIME_ROLE=default"] if index == 0 and role_on_postgres else [],
+                    "Labels": {
+                        "com.docker.compose.project": "cloudphone11-prod",
+                        "com.docker.compose.service": "redis" if index == 0 and wrong_service_on_postgres else name.removeprefix("cp11-"),
+                    } if index < len(services) else {},
+                },
+                "HostConfig": {"PortBindings": {}},
+            }] for index, name in enumerate(inventory)]
+            rollout.Operator(pins(), system).require_worker_topology(
+                {"name": "cloudphone11-prod"}, {"name": "phone11-profile-dnd"},
+                require_default_running=None,
+            )
+
+        check()
+        for extra_name in ("cp11-api-candidate-surprise", "cp11-shadow-worker"):
+            with self.subTest(extra_name=extra_name), self.assertRaises(rollout.GuardError) as error:
+                check(extra_name)
+            self.assertEqual(error.exception.stage, "unknown_worker")
+        for options in ({"role_on_postgres": True}, {"wrong_service_on_postgres": True},
+                        {"backend_image_on_postgres": True}):
+            with self.subTest(options=options), self.assertRaises(rollout.GuardError) as error:
+                check(**options)
+            self.assertEqual(error.exception.stage, "runtime_count")
+
     def test_manifest_requires_exact_origin_hashes_and_two_distinct_images(self) -> None:
         current = pins()
         self.assertEqual(current.public_origin, rollout.PUBLIC_ORIGIN)

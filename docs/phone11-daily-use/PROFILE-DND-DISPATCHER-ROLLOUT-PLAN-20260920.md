@@ -1,7 +1,14 @@
 # Phone11 profile, standby presence, and DND dispatcher rollout plan
 
 **Owner:** Phone11 operations | **Frequency:** one controlled pilot rollout
-**Last updated:** 20 September 2026 | **Status:** plan only; no production action authorized or run
+**Last updated:** 20 September 2026 | **Status:** superseded topology plan; do not execute its host commands
+
+This plan records the port-3002 topology as it stood on 20 September. The
+current port-3010 starting state, port-3012 release candidate, source sequence,
+and unresolved activation gates are in
+`PROFILE-DND-3010-TOPOLOGY-HANDOFF-20260926.md` and
+`PROFILE-DND-ROLLOUT-OPERATOR-20260920.md`. Use those documents for any new
+rollout preparation.
 
 The host admission requirement is now decomposed into the executable contract
 in `PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md`: an edge HTTP mutation
@@ -13,7 +20,8 @@ blocked; zero-active snapshots alone are not stop authority.
 
 Deploy the workspace-profile schema and the matching Team Chat notification
 checks without changing SIP routing or running duplicate background services.
-Public `/api/trpc` currently uses `cp11-api-candidate` on loopback port 3002.
+At the time of this plan, public `/api/trpc` used `cp11-api-candidate` on
+loopback port 3002.
 `cp11-backend` on port 3000 remains the only owner of SIP wake, ordinary
 notification dispatch, media/recording workers, ESL, and WebSocket shutdown.
 Kamailio calls `http://127.0.0.1:3000/api/phone11/wake` directly.

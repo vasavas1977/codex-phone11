@@ -21,7 +21,11 @@ Eight older API candidates occupy 3002 through 3009, and the independent
 published port. The original v2 operator rejected all of these as unknown.
 The v3 source accepts only entries individually pinned in `current.parked`;
 it never accepts a general `cp11-*` wildcard. The operator still rejects
-every unlisted Phone11-like process and more than one default worker.
+every unlisted Phone11-like process and more than one default worker. The
+production Compose infrastructure containers are exempt only by exact
+name/project/service identity, a non-backend image, and no Phone11 runtime
+flags.
+
 The active 3010 candidate is a standalone overlay without Compose
 project/service labels. The operator preserves it and stages a distinct
 Compose-managed `cp11-api-candidate-profile-dnd` on loopback 3012. Both 3012

@@ -27,6 +27,9 @@ source sequence described here while preserving the observed topology:
 - every older API container and the dedicated photo-cleanup worker must be
   listed in `current.parked` with exact live identity/runtime pins; any
   unlisted Phone11-like runtime remains a hard failure;
+- the six known production Compose infrastructure services are recognized by
+  exact container name, project/service labels, non-backend image, and absence
+  of Phone11 runtime flags; an unlisted API or worker container remains blocked;
 - only the exact `/api/trpc` and `/api/trpc/` locations may move;
 - Kamailio and FreeSWITCH are inspected but never changed, reloaded, or restarted;
 - the old 3010 candidate is not stopped during a route change, allowing
