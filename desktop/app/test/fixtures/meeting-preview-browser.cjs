@@ -34,6 +34,8 @@ async function main() {
   };
   await win.loadFile(process.env.PHONE11_PREVIEW_QA_HTML);
   await until("!document.querySelector('#join').disabled", 'meeting list');
+  assert.equal(await evaluate("document.querySelector('#meeting-select option').textContent"), 'Test channel');
+  assert.equal(await evaluate("document.querySelector('#meeting-select option').value"), '12345678-1234-4234-8234-123456789012');
   assert.equal(await evaluate("document.querySelector('#prejoin-video').srcObject === null"), true);
   assert.equal(await evaluate("document.querySelector('#start-camera').checked"), false);
 

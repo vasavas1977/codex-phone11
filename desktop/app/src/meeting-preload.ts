@@ -594,22 +594,26 @@ async function load(): Promise<void> {
     revision = state.revision;
     const select = el<HTMLSelectElement>('meeting-select');
     select.replaceChildren();
-    const meetingIds = [...state.meetingIds].sort();
-    for (const [index, id] of meetingIds.entries()) {
+    const meetings = [...state.meetings].sort((a, b) => a.meetingId.localeCompare(b.meetingId));
+    const titleCounts = new Map<string, number>();
+    for (const { title } of meetings) if (title) titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1);
+    for (const [index, { meetingId, title }] of meetings.entries()) {
       const option = document.createElement('option');
-      option.value = id;
-      option.textContent = `Meeting ${index + 1} · …${id.slice(-6).toUpperCase()}`;
-      option.title = `Room ID: ${id}`;
+      option.value = meetingId;
+      option.textContent = title
+        ? `${title}${(titleCounts.get(title) ?? 0) > 1 ? ` · …${meetingId.slice(-6).toUpperCase()}` : ''}`
+        : `Meeting ${index + 1} · …${meetingId.slice(-6).toUpperCase()}`;
+      option.title = `Room ID: ${meetingId}`;
       select.appendChild(option);
     }
-    if (!state.meetingIds.length) {
+    if (!meetings.length) {
       const option = document.createElement('option');
       option.textContent = 'No admitted meetings';
       select.appendChild(option);
     }
-    select.disabled = !state.meetingIds.length;
-    el<HTMLButtonElement>('join').disabled = !state.meetingIds.length;
-    status(state.meetingIds.length ? 'Ready to join' : 'No admitted meetings for this account');
+    select.disabled = !meetings.length;
+    el<HTMLButtonElement>('join').disabled = !meetings.length;
+    status(meetings.length ? 'Ready to join' : 'No admitted meetings for this account');
   } catch {
     error('Meeting access could not be checked. Close this window and try again.');
     status('Meeting access unavailable');

@@ -25,7 +25,9 @@ const ipcRenderer = {
   send: (...args) => realIpc.send(...args),
   invoke: async channel => {
     if (channel === 'phone11:meeting-state') return {
-      revision: 'synthetic-preview-test', meetingIds: ['12345678-1234-4234-8234-123456789012']
+      revision: 'synthetic-preview-test', meetings: [
+        { meetingId: '12345678-1234-4234-8234-123456789012', title: 'Test channel' }
+      ]
     };
     if (channel === 'phone11:meeting-join') {
       if (previewStreams.some(stream => stream.getTracks().some(track => track.readyState !== 'ended')))

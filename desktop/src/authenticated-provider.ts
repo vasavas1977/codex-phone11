@@ -24,6 +24,11 @@ const safeMeetingUrl = (value: unknown): value is string => {
 };
 export type DesktopMeetingGrant = Readonly<{ url: string; token: string;
   grantProfile: "interactive" | "listener"; expiresAt: number }>;
+export type DesktopMeetingListing = Readonly<{ meetingId: string; title?: string }>;
+const safeMeetingTitle = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value === value.normalize("NFC").trim() &&
+  Array.from(value).length <= 100 && Buffer.byteLength(value, "utf8") <= 400 &&
+  !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value);
 const same = (a: DesktopSession, b: DesktopSession): boolean =>
   a.revision === b.revision && a.userId === b.userId && a.tenantId === b.tenantId &&
   a.extensionId === b.extensionId && a.accountId === b.accountId;
@@ -79,7 +84,7 @@ export class AuthenticatedDesktopProvider {
   currentExtensionNumber(): string | null { return this.session ? this.extensionNumber : null; }
 
   /** Admitted rooms only. No media credential crosses this privileged boundary. */
-  async availableMeetings(expectedRevision: string): Promise<readonly string[]> {
+  async availableMeetings(expectedRevision: string): Promise<readonly DesktopMeetingListing[]> {
     const { token, epoch } = this.meetingAuthority(expectedRevision);
     const tenantId = this.session!.tenantId;
     const value = await this.query("meetings.availableForTenant", token, epoch, { tenantId });
@@ -87,7 +92,15 @@ export class AuthenticatedDesktopProvider {
     if (!Array.isArray(value) || value.length > 100 ||
         !value.every(item => isRecord(item) && meetingId(item.meetingId) && item.tenantId === tenantId))
       throw new DesktopAuthenticationError();
-    return [...new Set(value.map(item => item.meetingId as string))];
+    const meetings = new Map<string, DesktopMeetingListing>();
+    for (const item of value) {
+      const id = item.meetingId as string;
+      if (!meetings.has(id)) meetings.set(id, {
+        meetingId: id,
+        ...(safeMeetingTitle(item.title) ? { title: item.title } : {}),
+      });
+    }
+    return [...meetings.values()];
   }
 
   /** A short-lived server admission. Never expose this result to the calling renderer. */

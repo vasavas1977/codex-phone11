@@ -169,15 +169,31 @@ test("desktop meetings use admitted IDs and keep media grants outside public ses
   const { provider, paths } = harness();
   const session = await provider.signIn("user@example.test", "login-secret");
   await assert.rejects(provider.availableMeetings("stale-revision"));
-  const ids = await provider.availableMeetings(session.revision);
-  assert.deepEqual(ids, ["11111111-1111-4111-8111-111111111111"]);
-  const grant = await provider.joinMeeting(session.revision, ids[0]);
+  const meetings = await provider.availableMeetings(session.revision);
+  assert.deepEqual(meetings, [{ meetingId: "11111111-1111-4111-8111-111111111111" }]);
+  const grant = await provider.joinMeeting(session.revision, meetings[0].meetingId);
   assert.deepEqual(grant, { url: "wss://room.example.test", token: "private-room-token",
     grantProfile: "interactive", expiresAt: grant.expiresAt });
   assert.equal(JSON.stringify(provider.currentSession()).includes(grant.token), false);
   assert.equal(paths.filter(path => path.endsWith("meetings.join")).length, 1);
   await provider.signOut();
-  await assert.rejects(provider.joinMeeting(session.revision, ids[0]));
+  await assert.rejects(provider.joinMeeting(session.revision, meetings[0].meetingId));
+});
+
+test("desktop meeting titles are bounded presentation data and never join authority", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  for (const [title, expected] of [
+    ["Government & SI Team", "Government & SI Team"],
+    ["\u202eTeam", undefined],
+    [" A channel ", undefined],
+    ["x".repeat(101), undefined],
+  ] as const) {
+    const { provider } = harness({ availableMeetings: [{ meetingId: id, tenantId: 9, title }] });
+    const session = await provider.signIn("user@example.test", "login-secret");
+    assert.deepEqual(await provider.availableMeetings(session.revision), [
+      { meetingId: id, ...(expected ? { title: expected } : {}) },
+    ]);
+  }
 });
 
 test("desktop meeting admission rejects malformed, expired, and credential-bearing grants", async () => {

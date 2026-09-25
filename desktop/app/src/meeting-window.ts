@@ -89,10 +89,10 @@ export class DesktopMeetingWindow {
     ipcMain.handle(MEETING_CHANNELS.state, async event => {
       if (!this.valid(event) || !this.revision) throw new Error('Meeting session changed');
       const revision = this.revision;
-      const ids = await this.provider.availableMeetings(revision);
+      const meetings = await this.provider.availableMeetings(revision);
       if (!this.valid(event) || this.revision !== revision) throw new Error('Meeting session changed');
-      this.admitted = new Set(ids);
-      return { revision, meetingIds: ids } satisfies PublicMeetingState;
+      this.admitted = new Set(meetings.map(({ meetingId }) => meetingId));
+      return { revision, meetings } satisfies PublicMeetingState;
     });
     ipcMain.handle(MEETING_CHANNELS.join, async (event, input: unknown): Promise<DesktopMeetingGrant> => {
       if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined ||
