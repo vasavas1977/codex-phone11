@@ -8,6 +8,10 @@ export interface ChatPerson {
 export interface ChatChannel {
   id: string; name: string; kind: ChatKind; memberIds: number[];
   lastMessage: string | null; lastMessageAt: number; unreadCount: number; blocked: boolean;
+  /** Latest-message identity and unread mention total, omitted by older servers. */
+  lastMessageSenderId?: number | null;
+  lastMessageSenderName?: string | null;
+  unreadMentionCount?: number;
   /** The current member's private preference; omitted by older servers. */
   notificationsMuted?: boolean;
 }

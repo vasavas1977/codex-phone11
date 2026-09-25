@@ -81,6 +81,25 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     const beta = await service.create(3, 20, "direct", "Beta", [6]);
     await expect(service.details(1, 10, beta.id)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
+  it("returns latest sender identity and counts only unread, live mentions for the current member", async () => {
+    const { id } = await room();
+    const directMention = await service.send(1, 10, id, randomUUID(), "Hello @Bob", undefined, [], [{ userId: 2, start: 6, length: 4 }]);
+    expect((await service.list(2, 10)).channels[0]).toMatchObject({
+      lastMessage: "Hello @Bob", lastMessageSenderId: 1, lastMessageSenderName: "Alice", unreadMentionCount: 1,
+    });
+    expect((await service.list(1, 10)).channels[0].unreadMentionCount).toBe(0);
+
+    await service.delete(1, 10, id, directMention.id);
+    expect((await service.list(2, 10)).channels[0]).toMatchObject({
+      lastMessage: "Message deleted.", lastMessageSenderId: 1, unreadMentionCount: 0,
+    });
+
+    const group = await service.create(1, 10, "group", "Team", [2]);
+    const allMention = await service.send(1, 10, group.id, randomUUID(), "Hello @all", undefined, [], [], { start: 6, length: 4 });
+    expect((await service.list(2, 10)).channels.find(channel => channel.id === group.id)?.unreadMentionCount).toBe(1);
+    await service.read(2, 10, group.id, allMention.sequence);
+    expect((await service.list(2, 10)).channels.find(channel => channel.id === group.id)?.unreadMentionCount).toBe(0);
+  });
   it("exposes only server-generated tenant-scoped photo paths in directory, details, and messages", async () => {
     const aliceVersion = "11111111-1111-4111-8111-111111111111";
     const bobVersion = "22222222-2222-4222-8222-222222222222";
@@ -141,6 +160,7 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
     try {
       expect((await service.details(1, 10, group.id)).canMentionAll).toBe(false);
       await expect(service.history(1, 10, group.id)).resolves.toMatchObject({ messages: [] });
+      await expect(service.list(1, 10)).resolves.toMatchObject({ channels: [expect.objectContaining({ unreadMentionCount: 0 })] });
       await expect(service.send(1, 10, group.id, randomUUID(), "@all", undefined, [], [], { start: 0, length: 4 }))
         .rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     } finally {
