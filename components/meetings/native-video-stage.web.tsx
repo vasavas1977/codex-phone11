@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { AudioTrack, VideoTrack } from "livekit-client";
 
 import type { BrowserRoom } from "@/lib/meetings/browser-session";
+import { meetingParticipantDisplayName } from "@/lib/meetings/participant-display-name";
 
 type Publication = { track?: AudioTrack | VideoTrack; audioTrack?: AudioTrack; videoTrack?: VideoTrack };
 type MediaParticipant = {
@@ -73,9 +74,19 @@ export function NativeVideoStage({
   }, [mediaRoom]);
   const localVideo = mediaRoom && firstVideo(mediaRoom.localParticipant);
   const remotes = mediaRoom ? Array.from(mediaRoom.remoteParticipants.values()) : [];
-  const remoteVideos = remotes.flatMap(participant => {
+  const remoteVideos = remotes.flatMap((participant, index) => {
     const track = firstVideo(participant);
-    return track ? [{ identity: participant.identity, label: participant.name || participant.identity, track }] : [];
+    return track
+      ? [{
+          identity: participant.identity,
+          label: meetingParticipantDisplayName(
+            participant.name,
+            participant.identity,
+            `Participant ${index + 1}`,
+          ),
+          track,
+        }]
+      : [];
   });
   const remoteAudio = remotes.flatMap(participant => audioTracks(participant).map((track, index) => ({
     key: `${participant.identity}:${index}`, track,

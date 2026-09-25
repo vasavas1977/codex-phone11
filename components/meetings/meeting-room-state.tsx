@@ -24,6 +24,7 @@ import {
   meetingAvatarPerson,
   meetingAvatarTenant,
 } from "@/lib/meetings/participant-avatar";
+import { meetingParticipantDisplayName } from "@/lib/meetings/participant-display-name";
 import {
   type BrowserMeetingSession,
   type BrowserRoom,
@@ -170,6 +171,25 @@ export function MeetingRoomState({
   const localParticipant = snapshot.participants.find(
     (participant) => participant.local,
   );
+  const participantLabels = useMemo(() => {
+    let remoteIndex = 0;
+    return new Map(
+      snapshot.participants.map((participant) => {
+        if (participant.local) {
+          return [participant.identity, user?.name?.trim() || "You"] as const;
+        }
+        remoteIndex += 1;
+        return [
+          participant.identity,
+          meetingParticipantDisplayName(
+            participant.name,
+            participant.identity,
+            `Participant ${remoteIndex}`,
+          ),
+        ] as const;
+      }),
+    );
+  }, [snapshot.participants, user?.name]);
   const meetingTenantId = meetingAvatarTenant(
     localParticipant?.identity,
     user?.id,
@@ -199,10 +219,10 @@ export function MeetingRoomState({
       new Map(
         snapshot.participants.map((participant) => [
           participant.identity,
-          participant.name,
+          participantLabels.get(participant.identity) ?? "Participant",
         ]),
       ),
-    [snapshot.participants],
+    [snapshot.participants, participantLabels],
   );
   const visibleCaptions = captions
     .filter((caption) => caption.text.trim())
@@ -262,7 +282,9 @@ export function MeetingRoomState({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={session ? "Leave meeting" : "Back"}
-          accessibilityHint={session ? "Ends this meeting on your device." : undefined}
+          accessibilityHint={
+            session ? "Ends this meeting on your device." : undefined
+          }
           disabled={leaving}
           onPress={session ? () => void leave() : onBack}
           style={styles.backButton}
@@ -535,7 +557,10 @@ export function MeetingRoomState({
                       style={[styles.participant, { borderColor: "#FFFFFF1F" }]}
                     >
                       <ProfileAvatar
-                        name={participant.name}
+                        name={
+                          participantLabels.get(participant.identity) ??
+                          "Participant"
+                        }
                         photoUrl={
                           participant.local &&
                           ownPhoto &&
@@ -568,11 +593,12 @@ export function MeetingRoomState({
                               )?.id
                         }
                         size={40}
-                        accessibilityLabel={`${participant.name} profile photo`}
+                        accessibilityLabel={`${participantLabels.get(participant.identity) ?? "Participant"} profile photo`}
                       />
                       <View style={styles.participantCopy}>
                         <Text numberOfLines={1} style={styles.participantName}>
-                          {participant.name}
+                          {participantLabels.get(participant.identity) ??
+                            "Participant"}
                           {participant.local ? " (You)" : ""}
                         </Text>
                         <Text style={styles.participantMeta}>

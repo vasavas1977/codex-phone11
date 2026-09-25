@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { createRequire } from "node:module";
+import { MeetingRoomState } from "../components/meetings/meeting-room-state";
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
@@ -61,7 +62,7 @@ vi.mock("../hooks/use-colors", () => ({
   }),
 }));
 vi.mock("../hooks/use-auth", () => ({
-  useAuth: () => ({ user: { id: 3001 } }),
+  useAuth: () => ({ user: { id: 3001, name: "Current Person" } }),
 }));
 vi.mock("../hooks/use-directory", () => ({
   useDirectory: () => ({
@@ -76,12 +77,19 @@ vi.mock("../lib/profile/use-workspace-profile", () => ({
   useWorkspaceProfile: () => ({ photoDescriptor: null }),
 }));
 vi.mock("../components/profile/profile-avatar", () => ({
-  ProfileAvatar: ({ name, photoUrl, tenantId, userId }: any) =>
+  ProfileAvatar: ({
+    name,
+    photoUrl,
+    tenantId,
+    userId,
+    accessibilityLabel,
+  }: any) =>
     createElement("span", {
       "data-name": name,
       "data-photo": photoUrl ?? "",
       "data-tenant": tenantId,
       "data-user": userId,
+      "aria-label": accessibilityLabel,
     }),
   useProfilePhotoCacheScope: vi.fn(),
 }));
@@ -93,8 +101,6 @@ vi.mock("../components/ui/icon-symbol", () => ({
     createElement("span", { "data-icon": name }),
 }));
 
-import { MeetingRoomState } from "../components/meetings/meeting-room-state";
-
 beforeEach(() => {
   mocks.stateIndex = 0;
   mocks.openParticipants = false;
@@ -103,11 +109,12 @@ beforeEach(() => {
 function room(
   localIdentity = "p11-t7-u3001",
   remoteIdentity = "p11-t7-u1020",
-  captions: Array<{
+  captions: {
     id: string;
     text: string;
     participantIdentity?: string;
-  }> = [],
+  }[] = [],
+  remoteName = "Teammate",
 ) {
   mocks.stateIndex = 0;
   const participants = [
@@ -122,7 +129,7 @@ function room(
     },
     {
       identity: remoteIdentity,
-      name: "Teammate",
+      name: remoteName,
       local: false,
       speaking: false,
       microphone: false,
@@ -155,6 +162,29 @@ it("falls back when a participant identity is from another tenant", () => {
   expect(room("p11-t7-u3001", "p11-t8-u1020")).not.toContain(
     'data-photo="/api/profile/photo/7/1020',
   );
+  mocks.openParticipants = false;
+});
+
+it("uses the signed-in profile name for self and hides an opaque remote identity", () => {
+  mocks.openParticipants = true;
+  const opaqueIdentity = "6fa4634ade063138::phone11-plain-video-abc123";
+  const html = room("p11-t7-u3001", opaqueIdentity, [], opaqueIdentity);
+
+  expect(html).toContain("Current Person (You)");
+  expect(html).toContain("Participant 1");
+  expect(html).not.toContain(opaqueIdentity);
+  expect(html).not.toContain("p11-t7-u3001");
+  expect(html).toContain('aria-label="Participant 1 profile photo"');
+  mocks.openParticipants = false;
+});
+
+it("keeps a trusted remote display name in the participant row and accessibility label", () => {
+  mocks.openParticipants = true;
+  const html = room("p11-t7-u3001", "provider-opaque-id", [], "Nok S.");
+
+  expect(html).toContain("Nok S.");
+  expect(html).toContain('aria-label="Nok S. profile photo"');
+  expect(html).not.toContain("provider-opaque-id");
   mocks.openParticipants = false;
 });
 
