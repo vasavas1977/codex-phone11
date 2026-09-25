@@ -35,16 +35,18 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 
-SCHEMA = "phone11-profile-dnd-rollout/v2"
+SCHEMA = "phone11-profile-dnd-rollout/v3"
 RECEIPT_SCHEMA = "phone11-migration-receipt/v1"
 INTENT_SCHEMA = "phone11-runtime-mutation-intent/v1"
 SHUTDOWN_RECEIPT_SCHEMA = "phone11-runtime-shutdown-receipt/v1"
 GUARD_SCHEMA = "phone11-profile-dnd-guard/v1"
 PROBE_SCHEMA = "phone11-profile-dnd-probes/v1"
 BASELINE_CONTAINER = "cp11-backend"
-CANDIDATE_CONTAINER = "cp11-api-candidate"
+CANDIDATE_CONTAINER = "cp11-api-candidate-chat-inbox"
+RELEASE_CANDIDATE_CONTAINER = "cp11-api-candidate-profile-dnd"
 BASELINE_PORT = 3000
-CANDIDATE_PORT = 3002
+CANDIDATE_PORT = 3010
+RELEASE_CANDIDATE_PORT = 3012
 WAKE_URL = "http://127.0.0.1:3000/api/phone11/wake"
 PUBLIC_ORIGIN = "https://api.phone11.ai"
 LOCK_FILE = Path("/run/phone11-profile-dnd-rollout.lock")
@@ -60,7 +62,7 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 DOCKER_STOP_SECONDS = 35
 EXPECTED_PROBES = {
-    "existing_phone", "existing_chat", "mixed_batch", "profile_self",
+    "existing_phone", "existing_chat", "chat_inbox", "mixed_batch", "profile_self",
     "colleague_presence", "notification_readiness", "denied_tenant",
     "revoked_membership",
 }
@@ -320,6 +322,18 @@ class MigrationArtifact:
 
 
 @dataclass(frozen=True)
+class ParkedPin:
+    name: str
+    container_id: str
+    image: str
+    runtime_sha256: str
+    kind: str
+    port: int | None
+    build: str | None
+    source_sha: str | None
+
+
+@dataclass(frozen=True)
 class Pins:
     release_sha: str
     release_build: str
@@ -328,6 +342,8 @@ class Pins:
     lock_sha256: str
     baseline: RuntimePin
     candidate: RuntimePin
+    release_candidate: RuntimePin | None
+    parked: tuple[ParkedPin, ...]
     baseline_compose: ComposePin
     candidate_compose: ComposePin
     rollback_compose: ComposePin
@@ -355,6 +371,8 @@ class Pins:
     nginx_site_sha256: str
     nginx_dump_sha256: str
     nginx_marker: str
+    nginx_candidate_header: str
+    nginx_first_location_indent: int
     route: str
     profile_gate_committed: bool
     kamailio_path: str
@@ -383,6 +401,24 @@ def _compose(value: Any) -> ComposePin:
     return ComposePin(Path(value["file"]), value["sha256"], value["rendered_sha256"], value["service"])
 
 
+def _parked(value: Any) -> ParkedPin:
+    guarded(isinstance(value, Mapping), "manifest")
+    exact_keys(value, {"name", "container_id", "image", "runtime_sha256", "kind", "port", "build", "source_sha"})
+    name, kind, port, build, source_sha = (value.get(key) for key in ("name", "kind", "port", "build", "source_sha"))
+    guarded(isinstance(name, str) and bool(re.fullmatch(r"cp11-[a-z0-9-]{1,63}", name)), "manifest")
+    guarded(isinstance(value.get("container_id"), str) and bool(re.fullmatch(r"[0-9a-f]{64}", value["container_id"])), "manifest")
+    guarded(is_digest(value.get("image")) and is_sha256(value.get("runtime_sha256")), "manifest")
+    guarded(source_sha is None or (isinstance(source_sha, str) and bool(re.fullmatch(r"[0-9a-f]{40}", source_sha))), "manifest")
+    if kind == "api-candidate":
+        guarded(name.startswith("cp11-api-candidate-") or name in {"cp11-api-candidate", "cp11-password-recovery"}, "manifest")
+        guarded(type(port) is int and 3002 <= port <= 3009 and isinstance(build, str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", build)), "manifest")
+    elif kind == "profile-photo-cleanup":
+        guarded(name == "cp11-profile-photo-worker" and port is None and build is None and source_sha is not None, "manifest")
+    else:
+        raise GuardError("manifest")
+    return ParkedPin(name, value["container_id"], value["image"], value["runtime_sha256"], kind, port, build, source_sha)
+
+
 def parse_manifest(document: Mapping[str, Any]) -> Pins:
     exact_keys(document, {"schema", "release", "current", "compose", "rollback", "migration", "probes", "guard", "nginx", "kamailio", "public_origin"})
     guarded(document.get("schema") == SCHEMA and document.get("public_origin") == PUBLIC_ORIGIN, "manifest")
@@ -392,13 +428,13 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     rollback, migration = document["rollback"], document["migration"]
     probes, guard, nginx, kamailio = document["probes"], document["guard"], document["nginx"], document["kamailio"]
     exact_keys(release, {"sha", "build", "image", "bundle_sha256", "lock_sha256"})
-    exact_keys(current, {"baseline", "candidate"})
+    exact_keys(current, {"baseline", "candidate", "release_candidate", "parked"})
     exact_keys(compose, {"baseline", "candidate"})
     exact_keys(rollback, {"image", "build", "normalized_runtime_sha256", "baseline_operation_id", "baseline_intent_sha256", "compose", "disabled_compose"})
     exact_keys(migration, {"artifacts", "verify", "verify_sha256", "database_sha256", "before_catalog_sha256", "after_catalog_sha256", "receipt", "receipt_sha256"})
     exact_keys(probes, {"file", "sha256"})
     exact_keys(guard, {"program", "sha256", "fence_id", "fence_evidence_sha256"})
-    exact_keys(nginx, {"site", "site_sha256", "dump_sha256", "marker", "route", "profile_gate_committed"})
+    exact_keys(nginx, {"site", "site_sha256", "dump_sha256", "marker", "candidate_header", "first_location_indent", "route", "profile_gate_committed"})
     exact_keys(kamailio, {"config_path", "config_sha256", "wake_occurrences"})
     guarded(isinstance(release.get("sha"), str) and bool(re.fullmatch(r"[0-9a-f]{40}", release["sha"])), "manifest")
     guarded(isinstance(release.get("build"), str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", release["build"])), "manifest")
@@ -432,22 +468,38 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
         "manifest",
     )
     guarded(nginx.get("route") in {"candidate", "baseline"}, "manifest")
+    guarded(isinstance(nginx.get("candidate_header"), str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", nginx["candidate_header"])), "manifest")
+    guarded(type(nginx.get("first_location_indent")) is int and nginx["first_location_indent"] in {4, 8}, "manifest")
     guarded(type(nginx.get("profile_gate_committed")) is bool, "manifest")
     guarded(nginx.get("profile_gate_committed") == (receipt_sha is not None), "manifest")
     guarded(isinstance(kamailio.get("config_path"), str) and kamailio["config_path"].startswith("/"), "manifest")
     guarded(type(kamailio.get("wake_occurrences")) is int and 1 <= kamailio["wake_occurrences"] <= 100, "manifest")
     baseline, candidate = _runtime(current["baseline"]), _runtime(current["candidate"])
+    release_candidate = _runtime(current["release_candidate"]) if current["release_candidate"] is not None else None
+    parked_values = current["parked"]
+    guarded(isinstance(parked_values, list) and len(parked_values) <= 16, "manifest")
+    parked = tuple(_parked(item) for item in parked_values)
+    names = [item.name for item in parked]
+    ports = [item.port for item in parked if item.port is not None]
+    guarded(len(set(names)) == len(names) and len(set(ports)) == len(ports)
+            and all(name not in {BASELINE_CONTAINER, CANDIDATE_CONTAINER, RELEASE_CANDIDATE_CONTAINER} for name in names)
+            and all(port not in {BASELINE_PORT, CANDIDATE_PORT, RELEASE_CANDIDATE_PORT} for port in ports)
+            and sum(item.kind == "profile-photo-cleanup" for item in parked) <= 1, "manifest")
     guarded(baseline.image != release["image"] or baseline.build == release["build"], "manifest")
-    guarded(candidate.image != release["image"] or candidate.build == release["build"], "manifest")
+    guarded(release_candidate is None or (release_candidate.image == release["image"]
+            and release_candidate.build == release["build"]), "manifest")
+    guarded(not nginx["profile_gate_committed"] or release_candidate is not None, "manifest")
+    if nginx["route"] == "candidate" and nginx["profile_gate_committed"]:
+        guarded(nginx["candidate_header"] == release["build"], "manifest")
     return Pins(
         release["sha"], release["build"], release["image"], release["bundle_sha256"], release["lock_sha256"],
-        baseline, candidate, _compose(compose["baseline"]), _compose(compose["candidate"]),
+        baseline, candidate, release_candidate, parked, _compose(compose["baseline"]), _compose(compose["candidate"]),
         _compose(rollback["compose"]), _compose(rollback["disabled_compose"]), rollback["image"], rollback["build"], rollback["normalized_runtime_sha256"], rollback["baseline_operation_id"], rollback["baseline_intent_sha256"],
         tuple(parsed_artifacts), Path(migration["verify"]), migration["verify_sha256"],
         migration["database_sha256"], migration["before_catalog_sha256"], migration["after_catalog_sha256"],
         Path(migration["receipt"]), receipt_sha, Path(probes["file"]), probes["sha256"],
         Path(guard["program"]), guard["sha256"], guard["fence_id"], guard["fence_evidence_sha256"], Path(nginx["site"]), nginx["site_sha256"], nginx["dump_sha256"],
-        nginx["marker"], nginx["route"], nginx["profile_gate_committed"], kamailio["config_path"], kamailio["config_sha256"], kamailio["wake_occurrences"], document["public_origin"],
+        nginx["marker"], nginx["candidate_header"], nginx["first_location_indent"], nginx["route"], nginx["profile_gate_committed"], kamailio["config_path"], kamailio["config_sha256"], kamailio["wake_occurrences"], document["public_origin"],
     )
 
 
@@ -693,19 +745,42 @@ def run_probes(system: System, origin: str, probes: Sequence[Mapping[str, Any]],
         guarded(all(value in text for value in probe["required"]) and all(value not in text for value in probe["forbidden"]), "probes")
 
 
-def proxy_fragment(marker: str, *, port: int, build: str, candidate: bool) -> bytes:
-    guarded(port in {BASELINE_PORT, CANDIDATE_PORT} and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", build)), "nginx_route")
+def proxy_location_blocks(*, port: int, build: str, candidate: bool, first_location_indent: int = 4) -> tuple[bytes, bytes]:
+    guarded(port in {BASELINE_PORT, CANDIDATE_PORT, RELEASE_CANDIDATE_PORT} and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", build)), "nginx_route")
+    guarded(first_location_indent in {4, 8}, "nginx_route")
     header = f"        add_header X-Phone11-Api-Candidate {build} always;\n" if candidate else ""
     block = []
-    for location in ("location = /api/trpc", "location ^~ /api/trpc/"):
+    for index, location in enumerate(("location = /api/trpc", "location ^~ /api/trpc/")):
+        indent = " " * (first_location_indent if index == 0 else 4)
         block.append(
-            f"    {location} {{\n        proxy_pass http://127.0.0.1:{port};\n"
+            f"{indent}{location} {{\n        proxy_pass http://127.0.0.1:{port};\n"
             "        proxy_http_version 1.1;\n        proxy_pass_request_headers on;\n"
             "        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n"
             "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n"
             "        proxy_set_header X-Forwarded-Proto $scheme;\n" + header + "    }\n"
         )
-    return ("".join(block) + f"    {marker}\n").encode()
+    return block[0].encode(), block[1].encode()
+
+
+def proxy_fragment(marker: str, *, port: int, build: str, candidate: bool) -> bytes:
+    return b"".join(proxy_location_blocks(port=port, build=build, candidate=candidate)) + f"    {marker}\n".encode()
+
+
+def replace_proxy_locations(
+    site: bytes, *, current_port: int, current_build: str, current_candidate: bool,
+    target_port: int, target_build: str, target_candidate: bool, first_location_indent: int,
+) -> bytes:
+    before = proxy_location_blocks(port=current_port, build=current_build, candidate=current_candidate,
+                                   first_location_indent=first_location_indent)
+    after = proxy_location_blocks(port=target_port, build=target_build, candidate=target_candidate,
+                                  first_location_indent=first_location_indent)
+    guarded(all(site.count(block) == 1 for block in before), "nginx_route")
+    routed = site
+    for existing, replacement in zip(before, after):
+        routed = routed.replace(existing, replacement, 1)
+    guarded(routed != site and routed.count(b"location = /api/trpc") == 1
+            and routed.count(b"location ^~ /api/trpc/") == 1, "nginx_route")
+    return routed
 
 
 MIGRATION_NODE = r'''
@@ -954,15 +1029,13 @@ class Operator:
     def nginx(self) -> bytes:
         raw = pinned_read(self.pins.nginx_site, self.pins.nginx_site_sha256, "nginx", mode=None)
         guarded(raw.count(self.pins.nginx_marker.encode()) == 1, "nginx")
-        current_port = CANDIDATE_PORT if self.pins.route == "candidate" else BASELINE_PORT
-        current_build = self.pins.candidate.build if self.pins.route == "candidate" else self.pins.baseline.build
-        current_fragment = proxy_fragment(
-            self.pins.nginx_marker,
-            port=current_port,
-            build=current_build,
-            candidate=self.pins.route == "candidate",
-        ).rstrip(b"\n")
-        guarded(raw.count(current_fragment) == 1, "nginx")
+        current_port = (RELEASE_CANDIDATE_PORT if self.pins.profile_gate_committed else CANDIDATE_PORT) if self.pins.route == "candidate" else BASELINE_PORT
+        current_build = self.pins.nginx_candidate_header if self.pins.route == "candidate" else self.pins.baseline.build
+        current_blocks = proxy_location_blocks(
+            port=current_port, build=current_build, candidate=self.pins.route == "candidate",
+            first_location_indent=self.pins.nginx_first_location_indent,
+        )
+        guarded(all(raw.count(block) == 1 for block in current_blocks), "nginx")
         guarded(raw.count(b"location = /api/trpc") == 1 and raw.count(b"location ^~ /api/trpc/") == 1, "nginx")
         guarded(sha256_bytes(self.system.command(["nginx", "-T"])) == self.pins.nginx_dump_sha256, "nginx")
         self.system.command(["nginx", "-t"])
@@ -1069,8 +1142,13 @@ class Operator:
         validate_runtime(
             self.system, CANDIDATE_CONTAINER, self.pins.candidate,
             role="api-candidate", port=CANDIDATE_PORT,
-            compose_project=candidate_config["name"], compose_service=self.pins.candidate_compose.service,
         )
+        if self.pins.release_candidate is not None:
+            validate_runtime(
+                self.system, RELEASE_CANDIDATE_CONTAINER, self.pins.release_candidate,
+                role="api-candidate", port=RELEASE_CANDIDATE_PORT,
+                compose_project=candidate_config["name"], compose_service=self.pins.candidate_compose.service,
+            )
         self.require_worker_topology(baseline_config, candidate_config, require_default_running=True if require_baseline_healthy else None)
 
     def require_worker_topology(self, baseline_config: Mapping[str, Any], candidate_config: Mapping[str, Any], *, require_default_running: bool | None = True) -> None:
@@ -1080,6 +1158,8 @@ class Operator:
         except UnicodeDecodeError as error:
             raise GuardError("runtime_count") from error
         defaults = 0
+        parked = {pin.name: pin for pin in self.pins.parked}
+        seen_parked: set[str] = set()
         expected_images = {self.pins.baseline.image, self.pins.candidate.image, self.pins.image, self.pins.rollback_image}
         projects = {baseline_config["name"], candidate_config["name"]}
         services = {self.pins.baseline_compose.service, self.pins.candidate_compose.service}
@@ -1090,7 +1170,7 @@ class Operator:
             state = inspect.get("State")
             guarded(isinstance(labels, Mapping) and isinstance(state, Mapping), "runtime_count")
             phone11_like = (
-                name in {BASELINE_CONTAINER, CANDIDATE_CONTAINER}
+                name in {BASELINE_CONTAINER, CANDIDATE_CONTAINER, RELEASE_CANDIDATE_CONTAINER} or name in parked
                 or inspect.get("Image") in expected_images
                 or labels.get("com.docker.compose.project") in projects
                 or labels.get("com.docker.compose.service") in services
@@ -1105,15 +1185,45 @@ class Operator:
                     defaults += 1
             elif name == CANDIDATE_CONTAINER:
                 guarded(role == "api-candidate", "runtime_count")
+            elif name == RELEASE_CANDIDATE_CONTAINER:
+                guarded(self.pins.release_candidate is not None and role == "api-candidate", "runtime_count")
+            elif name in parked:
+                pin = parked[name]
+                guarded(name not in seen_parked and inspect.get("Id") == pin.container_id
+                        and inspect.get("Image") == pin.image and state.get("Running") is True
+                        and state.get("OOMKilled") is not True
+                        and canonical_hash(runtime_shape(inspect)) == pin.runtime_sha256,
+                        "parked_runtime")
+                seen_parked.add(name)
+                guarded(labels.get("com.phone11.source-sha") == pin.source_sha,
+                        "parked_runtime")
+                bindings = inspect.get("HostConfig", {}).get("PortBindings")
+                if pin.kind == "api-candidate":
+                    guarded(role == "api-candidate" and env.get("PORT") == str(pin.port)
+                            and env.get("PHONE11_BUILD_SHA") == pin.build
+                            and isinstance(bindings, Mapping)
+                            and bindings.get(f"{pin.port}/tcp") == [{"HostIp": "127.0.0.1", "HostPort": str(pin.port)}],
+                            "parked_runtime")
+                else:
+                    config = inspect.get("Config", {})
+                    guarded(pin.kind == "profile-photo-cleanup"
+                            and "PHONE11_RUNTIME_ROLE" not in env
+                            and env.get("PHONE11_PROFILE_PHOTO_WORKER") == "1"
+                            and config.get("Cmd") == ["node", "dist/profile-photo-worker.mjs"]
+                            and labels.get("phone11.component") == "profile-photo-cleanup"
+                            and (bindings is None or bindings == {}), "parked_runtime")
             else:
                 raise GuardError("unknown_worker")
+        guarded(seen_parked == set(parked), "parked_runtime")
         guarded(defaults <= 1 and (require_default_running is None or defaults == (1 if require_default_running else 0)), "runtime_count")
 
     def compose_inputs(self) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
         baseline = render_compose(self.system, self.pins.baseline_compose, container=BASELINE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="default", port=BASELINE_PORT, notifications="1")
-        candidate = render_compose(self.system, self.pins.candidate_compose, container=CANDIDATE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="api-candidate", port=CANDIDATE_PORT, notifications=None)
+        candidate = render_compose(self.system, self.pins.candidate_compose, container=RELEASE_CANDIDATE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="api-candidate", port=RELEASE_CANDIDATE_PORT, notifications=None)
         rollback = render_compose(self.system, self.pins.rollback_compose, container=BASELINE_CONTAINER, image=self.pins.rollback_image, build=self.pins.rollback_build, role="default", port=BASELINE_PORT, notifications="1")
         disabled = render_compose(self.system, self.pins.rollback_disabled_compose, container=BASELINE_CONTAINER, image=self.pins.rollback_image, build=self.pins.rollback_build, role="default", port=BASELINE_PORT, notifications="0")
+        guarded(candidate["name"] != baseline["name"] and rollback["name"] == baseline["name"]
+                and disabled["name"] == baseline["name"], "compose_project")
         guarded(canonical_hash(normalized_release_compose(baseline, self.pins.baseline_compose.service)) == canonical_hash(normalized_release_compose(rollback, self.pins.rollback_compose.service)), "baseline_delta")
         guarded(canonical_hash(normalized_release_compose(disabled, self.pins.rollback_disabled_compose.service, disabled=True)) == canonical_hash(normalized_release_compose(rollback, self.pins.rollback_compose.service)), "rollback_delta")
         self.baseline_config, self.candidate_config = baseline, candidate
@@ -1144,14 +1254,20 @@ class Operator:
         validate_runtime(
             self.system, CANDIDATE_CONTAINER, self.pins.candidate,
             role="api-candidate", port=CANDIDATE_PORT, require_healthy=False,
-            compose_project=candidate_config["name"], compose_service=self.pins.candidate_compose.service,
         )
+        if self.pins.release_candidate is not None:
+            validate_runtime(
+                self.system, RELEASE_CANDIDATE_CONTAINER, self.pins.release_candidate,
+                role="api-candidate", port=RELEASE_CANDIDATE_PORT, require_healthy=False,
+                compose_project=candidate_config["name"], compose_service=self.pins.candidate_compose.service,
+            )
         self.require_worker_topology(baseline_config, candidate_config, require_default_running=None)
         return baseline_config, candidate_config, before_pin, stop
 
     def apply_migration(self) -> None:
         guarded(self.pins.route == "baseline" and not self.pins.profile_gate_committed, "migration_order")
         guarded(self.pins.migration_receipt_sha256 is None, "migration_receipt")
+        guarded(self.pins.release_candidate is not None, "migration_order")
         self.image()
         baseline_config, candidate_config = self.compose_inputs()
         self.current(baseline_config, candidate_config)
@@ -1160,7 +1276,7 @@ class Operator:
             path=BASELINE_RECEIPT, notifications="enabled",
         )
         self.validate_replacement_receipt(
-            action="replace_candidate", pin=self.pins.candidate,
+            action="start_candidate", pin=self.pins.release_candidate,
             path=CANDIDATE_RECEIPT, notifications=None,
         )
         self.receipt()
@@ -1360,6 +1476,13 @@ class Operator:
             "current": {
                 "baseline": runtime_contract(self.pins.baseline),
                 "candidate": runtime_contract(self.pins.candidate),
+                "release_candidate": runtime_contract(self.pins.release_candidate) if self.pins.release_candidate is not None else None,
+                "parked": [
+                    {"name": item.name, "container_id": item.container_id, "image": item.image,
+                     "runtime_sha256": item.runtime_sha256, "kind": item.kind, "port": item.port,
+                     "build": item.build, "source_sha": item.source_sha}
+                    for item in self.pins.parked
+                ],
             },
             "compose": {
                 "baseline": compose_contract(self.pins.baseline_compose),
@@ -1394,6 +1517,8 @@ class Operator:
             "nginx": {
                 "site": str(self.pins.nginx_site), "site_sha256": self.pins.nginx_site_sha256,
                 "dump_sha256": self.pins.nginx_dump_sha256, "marker": self.pins.nginx_marker,
+                "candidate_header": self.pins.nginx_candidate_header,
+                "first_location_indent": self.pins.nginx_first_location_indent,
                 "route": self.pins.route, "profile_gate_committed": self.pins.profile_gate_committed,
             },
             "kamailio": {
@@ -1510,6 +1635,11 @@ class Operator:
             and receipt.get("ordinary_chat_notifications") == notifications,
             "replacement_receipt",
         )
+        if action == "start_candidate":
+            guarded(receipt.get("before_container_id") is None
+                    and receipt.get("before_image") is None
+                    and receipt.get("before_runtime_sha256") is None
+                    and receipt.get("before_build") is None, "replacement_receipt")
 
     def replace_baseline(self) -> None:
         self.prepare()
@@ -1576,23 +1706,28 @@ class Operator:
     def replace_candidate(self) -> None:
         self.prepare()
         guarded(self.pins.route == "baseline" and not self.pins.profile_gate_committed and self.pins.migration_receipt_sha256 is None, "route_state")
+        guarded(self.pins.release_candidate is None and self.named_container_id(RELEASE_CANDIDATE_CONTAINER) is None, "candidate_identity")
         self.validate_replacement_receipt(
             action="replace_baseline", pin=self.pins.baseline,
             path=BASELINE_RECEIPT, notifications="enabled",
         )
-        document = render_compose(self.system, self.pins.candidate_compose, container=CANDIDATE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="api-candidate", port=CANDIDATE_PORT, notifications=None)
-        old = validate_runtime(self.system, CANDIDATE_CONTAINER, self.pins.candidate, role="api-candidate", port=CANDIDATE_PORT)
-        self._up(document, self.pins.candidate_compose, stop=(CANDIDATE_CONTAINER, self.pins.candidate.container_id))
-        inspect = one_inspect(self.system, CANDIDATE_CONTAINER, "candidate_replacement")
-        env = environment(inspect, "candidate_replacement")
-        guarded(inspect.get("Id") != old.get("Id") and inspect.get("Image") == self.pins.image and inspect.get("State", {}).get("Running") is True and env.get("PHONE11_RUNTIME_ROLE") == "api-candidate" and env.get("PORT") == str(CANDIDATE_PORT), "candidate_replacement")
-        guarded(canonical_hash(normalized_runtime_release(inspect)) == canonical_hash(normalized_runtime_release(old)), "candidate_runtime_delta")
-        guarded(self.baseline_config is not None and self.candidate_config is not None, "runtime_count")
-        self.require_worker_topology(self.baseline_config, self.candidate_config)
-        health(self.system, CANDIDATE_PORT, self.pins.release_build, "api-candidate")
-        run_probes(self.system, "http://127.0.0.1:3002", self.probes)
+        document = render_compose(self.system, self.pins.candidate_compose, container=RELEASE_CANDIDATE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="api-candidate", port=RELEASE_CANDIDATE_PORT, notifications=None)
+        validate_runtime(self.system, CANDIDATE_CONTAINER, self.pins.candidate, role="api-candidate", port=CANDIDATE_PORT)
+        self._up(document, self.pins.candidate_compose)
+        inspect = one_inspect(self.system, RELEASE_CANDIDATE_CONTAINER, "candidate_start")
+        env = environment(inspect, "candidate_start")
+        labels = inspect.get("Config", {}).get("Labels")
+        bindings = inspect.get("HostConfig", {}).get("PortBindings", {}).get(f"{RELEASE_CANDIDATE_PORT}/tcp")
+        guarded(inspect.get("Image") == self.pins.image and inspect.get("State", {}).get("Running") is True
+                and env.get("PHONE11_RUNTIME_ROLE") == "api-candidate" and env.get("PORT") == str(RELEASE_CANDIDATE_PORT)
+                and isinstance(labels, Mapping)
+                and labels.get("com.docker.compose.project") == document["name"]
+                and labels.get("com.docker.compose.service") == self.pins.candidate_compose.service
+                and bindings == [{"HostIp": "127.0.0.1", "HostPort": str(RELEASE_CANDIDATE_PORT)}], "candidate_start")
+        health(self.system, RELEASE_CANDIDATE_PORT, self.pins.release_build, "api-candidate")
+        run_probes(self.system, f"http://127.0.0.1:{RELEASE_CANDIDATE_PORT}", self.probes)
         self.wake()
-        self.save_runtime_receipt(CANDIDATE_RECEIPT, action="replace_candidate", before=self.pins.candidate, after=inspect, after_image=self.pins.image, after_build=self.pins.release_build, notifications=None)
+        self.save_runtime_receipt(CANDIDATE_RECEIPT, action="start_candidate", before=None, after=inspect, after_image=self.pins.image, after_build=self.pins.release_build, notifications=None)
 
     def _route(self, target: str) -> None:
         self.prepare()
@@ -1600,18 +1735,21 @@ class Operator:
             validate_runtime(self.system, BASELINE_CONTAINER, self.pins.baseline, role="default", port=BASELINE_PORT)
             self.validate_replacement_receipt(action="replace_baseline", pin=self.pins.baseline, path=BASELINE_RECEIPT, notifications="enabled")
         else:
-            validate_runtime(self.system, CANDIDATE_CONTAINER, self.pins.candidate, role="api-candidate", port=CANDIDATE_PORT)
-            self.validate_replacement_receipt(action="replace_candidate", pin=self.pins.candidate, path=CANDIDATE_RECEIPT, notifications=None)
-        target_port = BASELINE_PORT if target == "baseline" else CANDIDATE_PORT
+            guarded(self.pins.release_candidate is not None, "candidate_identity")
+            validate_runtime(self.system, RELEASE_CANDIDATE_CONTAINER, self.pins.release_candidate, role="api-candidate", port=RELEASE_CANDIDATE_PORT)
+            self.validate_replacement_receipt(action="start_candidate", pin=self.pins.release_candidate, path=CANDIDATE_RECEIPT, notifications=None)
+        target_port = BASELINE_PORT if target == "baseline" else RELEASE_CANDIDATE_PORT
         target_build = self.pins.release_build
         candidate = target == "candidate"
         original = self.nginx()
-        current_port = CANDIDATE_PORT if self.pins.route == "candidate" else BASELINE_PORT
-        current_build = self.pins.candidate.build if self.pins.route == "candidate" else self.pins.baseline.build
-        current_fragment = proxy_fragment(self.pins.nginx_marker, port=current_port, build=current_build, candidate=self.pins.route == "candidate").rstrip(b"\n")
-        target_fragment = proxy_fragment(self.pins.nginx_marker, port=target_port, build=target_build, candidate=candidate).rstrip(b"\n")
-        routed = original.replace(current_fragment, target_fragment, 1)
-        guarded(routed != original and routed.count(b"location = /api/trpc") == 1 and routed.count(b"location ^~ /api/trpc/") == 1, "nginx_route")
+        current_port = (RELEASE_CANDIDATE_PORT if self.pins.profile_gate_committed else CANDIDATE_PORT) if self.pins.route == "candidate" else BASELINE_PORT
+        current_build = self.pins.nginx_candidate_header if self.pins.route == "candidate" else self.pins.baseline.build
+        routed = replace_proxy_locations(
+            original, current_port=current_port, current_build=current_build,
+            current_candidate=self.pins.route == "candidate", target_port=target_port,
+            target_build=target_build, target_candidate=candidate,
+            first_location_indent=self.pins.nginx_first_location_indent,
+        )
         ensure_private_directory(STATE_ROOT, create=True)
         atomic_write(ROUTE_SITE, original)
         atomic_write(ROUTE_RECEIPT, canonical_bytes({"schema": SCHEMA, "site": str(self.pins.nginx_site), "before": sha256_bytes(original), "active": sha256_bytes(routed), "target": target}))
@@ -1648,14 +1786,14 @@ class Operator:
         guarded(self.pins.route == "baseline" and self.pins.profile_gate_committed, "route_state")
         self._route("candidate")
 
-    def _restore_route(self, *, expected: bytes | None = None) -> None:
+    def _restore_route(self, *, expected: bytes | None = None, expected_target: str = "candidate") -> None:
         receipt = strict_json(secure_read(ROUTE_RECEIPT), "rollback_route")
         exact_keys(receipt, {"schema", "site", "before", "active", "target"}, "rollback_route")
         original = secure_read(ROUTE_SITE)
         current = secure_read(self.pins.nginx_site, mode=None)
         guarded(receipt.get("schema") == SCHEMA and receipt.get("site") == str(self.pins.nginx_site) and sha256_bytes(original) == receipt.get("before"), "rollback_route")
         if expected is None:
-            guarded(receipt.get("target") == "candidate", "rollback_route")
+            guarded(receipt.get("target") == expected_target, "rollback_route")
         guarded(current == expected if expected is not None else sha256_bytes(current) == receipt.get("active"), "rollback_route")
         info = self.pins.nginx_site.stat()
         atomic_write(self.pins.nginx_site, original, mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
@@ -1668,6 +1806,18 @@ class Operator:
         validate_runtime(self.system, BASELINE_CONTAINER, self.pins.baseline, role="default", port=BASELINE_PORT)
         self.validate_replacement_receipt(action="replace_baseline", pin=self.pins.baseline, path=BASELINE_RECEIPT, notifications="enabled")
         self._restore_route()
+
+    def rollback_to_legacy_candidate(self) -> None:
+        """Restore the pinned 3010 route only before profile schema exposure."""
+        guarded(self.pins.route == "baseline" and not self.pins.profile_gate_committed
+                and self.pins.migration_receipt_sha256 is None, "legacy_route_state")
+        self.prepare()
+        validate_runtime(self.system, CANDIDATE_CONTAINER, self.pins.candidate,
+                         role="api-candidate", port=CANDIDATE_PORT)
+        self._restore_route(expected_target="baseline")
+        run_probes(self.system, self.pins.public_origin, self.probes,
+                   candidate_build=self.pins.nginx_candidate_header)
+        self.wake()
 
     def rollback_baseline_disabled(self) -> None:
         guarded(self.pins.profile_gate_committed, "dnd_exposure")
@@ -1705,7 +1855,7 @@ class Operator:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
-    for name in ("prepare", "apply-migration", "replace-baseline", "route-baseline", "replace-candidate", "route-candidate", "rollback-route", "rollback-baseline-disabled"):
+    for name in ("prepare", "apply-migration", "replace-baseline", "route-baseline", "replace-candidate", "route-candidate", "rollback-route", "rollback-to-legacy-candidate", "rollback-baseline-disabled"):
         modes.add_argument(f"--{name}", action="store_true", dest=name.replace("-", "_"))
     parser.add_argument("--manifest", required=True, type=Path)
     return parser.parse_args(argv)
@@ -1713,7 +1863,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = parse_args(argv)
-    mode = next(name for name in ("prepare", "apply_migration", "replace_baseline", "route_baseline", "replace_candidate", "route_candidate", "rollback_route", "rollback_baseline_disabled") if getattr(arguments, name))
+    mode = next(name for name in ("prepare", "apply_migration", "replace_baseline", "route_baseline", "replace_candidate", "route_candidate", "rollback_route", "rollback_to_legacy_candidate", "rollback_baseline_disabled") if getattr(arguments, name))
     try:
         operator = Operator(load_pins(arguments.manifest), System())
         with operator_lock():
@@ -1722,6 +1872,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("prepare=READY activation=NOT_RUN")
         elif mode == "rollback_route":
             print("rollback_route=PASS candidate=RUNNING")
+        elif mode == "rollback_to_legacy_candidate":
+            print("rollback_to_legacy_candidate=PASS profile_gate=UNCOMMITTED")
         elif mode == "rollback_baseline_disabled":
             print("rollback_baseline_disabled=PASS ordinary_chat_notifications=DISABLED")
         else:

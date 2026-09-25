@@ -3,11 +3,12 @@
 **Status:** source and hermetic tests only; no production command, image build,
 deployment, migration, provider contact, or notification send was run.
 
-**Current rollout decision:** blocked. The repository does not contain or stage
-the required host admission-fence controller/helper, its root-owned evidence
-record, production manifests, frozen Compose inputs, or immutable release
-image. The commands below are the reviewed interface for a later controlled
-maintenance window; they are not evidence that the host preconditions exist.
+**Current rollout decision:** blocked. The source operator now understands the
+observed 3010 candidate and exact-pinned parked runtimes, but the production
+provider admission fence, root-owned evidence record, current-topology
+manifest, frozen Compose inputs, and immutable merged release image are not
+commissioned. The commands below are a source interface for a later
+controlled maintenance window; they are not live readiness evidence.
 The concrete two-control maintenance contract, source inventory command and
 remaining telephony-owner decision are recorded in
 `PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md`.
@@ -17,10 +18,17 @@ The guarded operator is
 rollout in the dispatcher plan while preserving the current topology:
 
 - `cp11-backend` stays the sole default-role worker and port-3000 SIP wake owner;
-- `cp11-api-candidate` stays workerless on loopback port 3002;
+- `cp11-api-candidate-chat-inbox` stays workerless on loopback port 3010;
+- a distinct Compose-managed `cp11-api-candidate-profile-dnd` may start on
+  loopback 3012 only after public tRPC routes to the new baseline; the old
+  standalone 3010 candidate is never stopped or replaced by this operator;
+- every older API container and the dedicated photo-cleanup worker must be
+  listed in `current.parked` with exact live identity/runtime pins; any
+  unlisted Phone11-like runtime remains a hard failure;
 - only the exact `/api/trpc` and `/api/trpc/` locations may move;
 - Kamailio and FreeSWITCH are inspected but never changed, reloaded, or restarted;
-- the old candidate is not stopped during a route change, allowing requests to drain;
+- the old 3010 candidate is not stopped during a route change, allowing
+  requests to drain and preserving a pre-migration fallback;
 - a previous dispatcher restored after the profile migration commits must have
   `PHONE11_CHAT_NOTIFICATIONS_ENABLED=0`.
 
@@ -36,7 +44,8 @@ python3 tests/phone11-profile-dnd-rollout.test.py
 git diff --check -- \
   scripts/phone11-profile-dnd-rollout.py \
   tests/phone11-profile-dnd-rollout.test.py \
-  docs/phone11-daily-use/PROFILE-DND-ROLLOUT-OPERATOR-20260920.md
+  docs/phone11-daily-use/PROFILE-DND-ROLLOUT-OPERATOR-20260920.md \
+  docs/phone11-daily-use/PROFILE-DND-3010-TOPOLOGY-HANDOFF-20260926.md
 ```
 
 Source tests are not live readiness. Commissioning still requires an
@@ -138,7 +147,7 @@ host, do not run `--replace-baseline` or either baseline rollback. A successful
 
 ## Manifest construction
 
-The manifest schema is `phone11-profile-dnd-rollout/v2`. Populate it from a
+The manifest schema is `phone11-profile-dnd-rollout/v3`. Populate it from a
 fresh, read-only inventory. Placeholder, mutable-tag, shortened-ID, stale, or
 unreviewed values are rejected.
 
@@ -153,10 +162,22 @@ The important sections are:
   replacement-receipt hash after a replacement. Route changes require the
   current runtime to be the release image/build and consume that receipt before
   touching Nginx.
+- `current.release_candidate`: `null` before the separate 3012 container
+  starts, then its exact runtime pin and start-receipt hash. The 3010 candidate
+  remains separately pinned in `current.candidate` throughout the rollout.
+- `current.parked`: exact pins for each historical workerless API candidate
+  and the dedicated `cp11-profile-photo-worker`. Every row binds the full
+  container ID, immutable image ID, canonical runtime hash, kind, source label,
+  and, for an API candidate, its exact loopback port and build. The photo worker
+  additionally has its exact command, component label, worker flag, and absence
+  of published ports checked. The list is re-inventoried and repinned at every
+  phase. Missing, changed, duplicated, default-role, or unlisted workers block.
 - `compose.baseline` and `compose.candidate`: file hash, rendered canonical JSON
   hash, and exact service name. The baseline and old rollback renderings may
   differ only by image/build. The disabled rollback may additionally change
-  only `PHONE11_CHAT_NOTIFICATIONS_ENABLED` from `1` to `0`.
+  only `PHONE11_CHAT_NOTIFICATIONS_ENABLED` from `1` to `0`. Candidate Compose
+  must use a dedicated project and the unused 3012 name/loopback binding;
+  it does not claim ownership of the live standalone 3010 container.
 - `rollback.normalized_runtime_sha256`: canonical hash of the approved baseline
   runtime after normalizing container ID, image/build and reviewed release
   labels, Compose-generated config hash/path labels, and the emergency
@@ -183,10 +204,16 @@ The important sections are:
   already-applied catalog can recover a missing receipt after a committed
   transaction; no migration is replayed in that case.
 - `probes`: exact protected probe bundle containing precisely
-  `existing_phone`, `existing_chat`, `mixed_batch`, `profile_self`,
+  `existing_phone`, `existing_chat`, `chat_inbox`, `mixed_batch`, `profile_self`,
   `colleague_presence`, `notification_readiness`, `denied_tenant`, and
   `revoked_membership`. Responses are evaluated in memory and never printed.
 - `nginx.route`: the currently pinned route, `candidate` or `baseline`.
+  `nginx.candidate_header` pins the actual currently served candidate header,
+  which may predate the 3010 runtime build; once the release candidate is
+  routed it must equal the release build. `nginx.first_location_indent` pins
+  the existing first tRPC block's indentation. The operator replaces only
+  the two exact tRPC blocks and preserves intervening authentication routes
+  and the separately located insertion marker byte-for-byte.
   `nginx.profile_gate_committed` is `false` before migration and `true` exactly
   when the migration receipt exists. It marks the schema/rollback barrier, not
   whether a tenant enabled workspace status. The field may be false while the
@@ -224,7 +251,7 @@ After the owner authorizes the brief worker/wake interruption and all source,
 image, artifact, and live pins are current, use the ordered phases below. Run a
 fresh `--prepare` and repin between every phase. Migration is intentionally after
 both API runtimes have the tenant-gated code; the operator blocks it unless the
-baseline and candidate replacement receipts match the exact release pins and
+baseline replacement and candidate-start receipts match the exact release pins and
 public tRPC currently routes to the new baseline.
 
 ```sh
@@ -244,8 +271,10 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
   --route-candidate --manifest /root/phone11-profile-dnd-rollout.json
 ```
 
-The bridge through `--replace-candidate` is schema-free: the public route stays
-on the newly gated baseline while the old candidate drains and is replaced.
+The historically named `--replace-candidate` phase starts a separate
+Compose-managed candidate on 3012. It does not stop or remove the standalone
+3010 candidate. The public route stays on the newly gated baseline while 3012
+is verified and its start receipt is published.
 Only after both runtime receipts are pinned does `--apply-migration` create the
 tenant settings table. It starts empty, so every tenant remains disabled.
 Existing profile rows are preserved. After writing the migration receipt,
@@ -263,7 +292,7 @@ destructive DDL. Additive foreign keys with `ON DELETE CASCADE` are permitted;
 the actual profile, `@all` base, and `@all` live-delta SQL files are exercised by
 the hermetic tests. It never drops the additive schema.
 
-Baseline and candidate replacement use only the frozen rendered Compose model,
+Baseline replacement and parallel-candidate start use only the frozen rendered Compose model,
 `docker stop --time 35`, and one `docker compose ... up -d --no-deps <service>`.
 The application admits up to 30 seconds for shutdown, covering the bounded
 plain-video join path of two 10-second Connect11 requests and two 3-second
@@ -273,7 +302,7 @@ idle and admission-fence guard immediately before the baseline stop, repeats it
 after stop, and requires the identical fence evidence plus zero active calls,
 meetings, ESL/media/recording/background jobs and zero new `attempted`
 notification rows after restart. The minimal-interruption design is one bounded
-port-3000 stop/start while public tRPC remains on port 3002. Its safety depends
+port-3000 stop/start while public tRPC remains on port 3010. Its safety depends
 on the independently enforced fence and fresh zero-active evidence throughout;
 the stop timeout alone is never sufficient.
 
@@ -316,6 +345,16 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
 The command requires the exact route receipt and a healthy pinned new baseline,
 atomically restores the baseline-routed site, checks syntax, gracefully reloads
 Nginx, rechecks wake bytes, and leaves the candidate running to drain.
+
+Before the profile migration, a failed baseline route can be restored to the
+still-running legacy 3010 candidate using `--rollback-to-legacy-candidate` and
+the exact route receipt. This command rejects any committed profile migration.
+After profile activation, 3010 is not an executable rollback target in this
+operator. Such a restore would first require a separately reviewed read-only
+database gate proving **every** tenant disabled and a safe route receipt;
+the current source intentionally has no bypass. The primary post-migration
+route rollback is to the new DND-aware baseline, whose chat-inbox compatibility
+must be independently established before release.
 
 If the old baseline must be restored after the migration receipt is committed,
 use only:

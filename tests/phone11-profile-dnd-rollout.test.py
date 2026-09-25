@@ -45,6 +45,8 @@ def manifest(**changes: object) -> dict[str, object]:
         "current": {
             "baseline": runtime("b", OLD_DIGEST, "old-build"),
             "candidate": runtime("c", OLD_DIGEST, "old-candidate"),
+            "release_candidate": None,
+            "parked": [],
         },
         "compose": {
             "baseline": compose("/root/baseline.json", "backend"),
@@ -73,6 +75,7 @@ def manifest(**changes: object) -> dict[str, object]:
         "nginx": {
             "site": "/etc/nginx/sites-enabled/api.phone11.ai", "site_sha256": SHA,
             "dump_sha256": SHA2, "marker": "# PHONE11_PROFILE_DND_INSERT reviewed-123",
+            "candidate_header": "old-candidate", "first_location_indent": 4,
             "route": "candidate", "profile_gate_committed": False,
         },
         "kamailio": {"config_path": "/etc/kamailio/kamailio.cfg", "config_sha256": SHA, "wake_occurrences": 4},
@@ -82,6 +85,9 @@ def manifest(**changes: object) -> dict[str, object]:
         section, key = dotted.split("__", 1)
         assert isinstance(value[section], dict)
         value[section][key] = replacement
+    if value["nginx"]["profile_gate_committed"]:
+        value["current"]["release_candidate"] = runtime("e", DIGEST, "new-build")
+        value["nginx"]["candidate_header"] = "new-build"
     return value
 
 
@@ -159,6 +165,114 @@ class FakeSystem(rollout.System):
 
 
 class ProfileDndRolloutTests(unittest.TestCase):
+    def test_current_route_accepts_pinned_stale_header_and_separate_marker(self) -> None:
+        current = pins(nginx__candidate_header="channel-meetings-9aab162", nginx__first_location_indent=8)
+        blocks = rollout.proxy_location_blocks(port=rollout.CANDIDATE_PORT, build=current.nginx_candidate_header,
+                                                candidate=True, first_location_indent=8)
+        site = b"server {\n" + blocks[0] + blocks[1] + b"    location = /api/auth/sign-in/email { return 503; }\n    " + current.nginx_marker.encode() + b"\n}\n"
+        operator = rollout.Operator(current, FakeSystem())
+        object.__setattr__(current, "nginx_dump_sha256", rollout.sha256_bytes(b""))
+        with patch.object(rollout, "pinned_read", return_value=site):
+            self.assertEqual(operator.nginx(), site)
+        self.assertEqual(site.count(b"location = /api/trpc"), 1)
+        self.assertEqual(site.count(b"location ^~ /api/trpc/"), 1)
+        routed = rollout.replace_proxy_locations(
+            site, current_port=3010, current_build=current.nginx_candidate_header,
+            current_candidate=True, target_port=3000, target_build="new-build",
+            target_candidate=False, first_location_indent=8,
+        )
+        self.assertIn(b"location = /api/auth/sign-in/email { return 503; }", routed)
+        self.assertIn(current.nginx_marker.encode(), routed)
+        self.assertEqual(routed.count(b"proxy_pass http://127.0.0.1:3000;"), 2)
+        self.assertNotIn(b"X-Phone11-Api-Candidate", routed)
+        with self.assertRaises(rollout.GuardError):
+            rollout.replace_proxy_locations(site + blocks[0], current_port=3010,
+                                            current_build=current.nginx_candidate_header,
+                                            current_candidate=True, target_port=3000,
+                                            target_build="new-build", target_candidate=False,
+                                            first_location_indent=8)
+
+    def test_release_candidate_cannot_keep_stale_header(self) -> None:
+        document = manifest(nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
+        document["nginx"]["candidate_header"] = "channel-meetings-9aab162"
+        with self.assertRaises(rollout.GuardError) as error:
+            rollout.parse_manifest(document)
+        self.assertEqual(error.exception.stage, "manifest")
+
+    def test_protected_probe_bundle_requires_active_chat_inbox(self) -> None:
+        def bundle(labels):
+            return json.dumps({"schema": rollout.PROBE_SCHEMA, "probes": [
+                {"label": label, "method": "GET", "path": "/api/trpc/chat.inbox",
+                 "headers": {"Cookie": "private-fixture"}, "body": "", "status": 200,
+                 "required": [], "forbidden": []}
+                for label in labels
+            ]}).encode()
+        labels = sorted(rollout.EXPECTED_PROBES)
+        self.assertEqual(len(rollout.load_probes(bundle(labels))), len(labels))
+        with self.assertRaises(rollout.GuardError) as error:
+            rollout.load_probes(bundle([label for label in labels if label != "chat_inbox"]))
+        self.assertEqual(error.exception.stage, "probes")
+
+    def test_parked_runtime_requires_exact_repin_and_photo_worker_identity(self) -> None:
+        source = "a" * 40
+        parked = [
+            {"name": "cp11-api-candidate-meetings", "container_id": "d" * 64,
+             "image": OLD_DIGEST, "runtime_sha256": rollout.canonical_hash({"shape": "reviewed"}),
+             "kind": "api-candidate", "port": 3008, "build": "meeting-admin-20260925", "source_sha": source},
+            {"name": "cp11-profile-photo-worker", "container_id": "e" * 64,
+             "image": OLD_DIGEST, "runtime_sha256": rollout.canonical_hash({"shape": "reviewed"}),
+             "kind": "profile-photo-cleanup", "port": None, "build": None, "source_sha": source},
+        ]
+        def inspected(api_id: str = "d" * 64, photo_command: list[str] | None = None):
+            return [
+                {"Id": api_id, "Image": OLD_DIGEST, "State": {"Running": True},
+                 "Config": {"Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3008", "PHONE11_BUILD_SHA=meeting-admin-20260925"],
+                            "Labels": {"com.phone11.source-sha": source}},
+                 "HostConfig": {"PortBindings": {"3008/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3008"}]}}},
+                {"Id": "e" * 64, "Image": OLD_DIGEST, "State": {"Running": True},
+                 "Config": {"Env": ["PHONE11_PROFILE_PHOTO_WORKER=1"],
+                            "Cmd": photo_command or ["node", "dist/profile-photo-worker.mjs"],
+                            "Labels": {"com.phone11.source-sha": source, "phone11.component": "profile-photo-cleanup"}},
+                 "HostConfig": {"PortBindings": {}}},
+            ]
+        def check(current, inspected_rows):
+            system = FakeSystem()
+            system.json_responses = [[row] for row in inspected_rows]
+            system.command = lambda args, **_kwargs: b"cp11-api-candidate-meetings\ncp11-profile-photo-worker\n" if args[:3] == ["docker", "ps", "-a"] else b""
+            with patch.object(rollout, "runtime_shape", return_value={"shape": "reviewed"}):
+                rollout.Operator(current, system).require_worker_topology({"name": "baseline"}, {"name": "candidate"}, require_default_running=None)
+        check(pins(current__parked=parked), inspected())
+        with self.assertRaises(rollout.GuardError) as error:
+            check(pins(current__parked=parked), inspected(api_id="f" * 64))
+        self.assertEqual(error.exception.stage, "parked_runtime")
+        repinned = [dict(item) for item in parked]
+        repinned[0]["container_id"] = "f" * 64
+        check(pins(current__parked=repinned), inspected(api_id="f" * 64))
+        with self.assertRaises(rollout.GuardError) as error:
+            check(pins(current__parked=parked), inspected(photo_command=["node", "other.mjs"]))
+        self.assertEqual(error.exception.stage, "parked_runtime")
+
+    def test_parked_manifest_rejects_duplicate_ports_and_unreviewed_kind(self) -> None:
+        item = {"name": "cp11-api-candidate-meetings", "container_id": "d" * 64,
+                "image": OLD_DIGEST, "runtime_sha256": SHA, "kind": "api-candidate",
+                "port": 3008, "build": "meeting-admin-20260925", "source_sha": "a" * 40}
+        for entries in ([item, {**item, "name": "cp11-api-candidate-settings"}],
+                        [{**item, "kind": "default"}],
+                        [{**item, "port": 3010}]):
+            with self.subTest(entries=entries), self.assertRaises(rollout.GuardError):
+                pins(current__parked=entries)
+
+    def test_unpinned_api_candidate_still_blocks_topology(self) -> None:
+        current = pins()
+        system = FakeSystem()
+        system.command = lambda args, **_kwargs: b"cp11-api-candidate-surprise\n" if args[:3] == ["docker", "ps", "-a"] else b""
+        system.json_responses = [[{"Id": "f" * 64, "Image": OLD_DIGEST,
+                                  "State": {"Running": True},
+                                  "Config": {"Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3011"], "Labels": {}}}]]
+        with self.assertRaises(rollout.GuardError) as error:
+            rollout.Operator(current, system).require_worker_topology({"name": "baseline"}, {"name": "candidate"}, require_default_running=None)
+        self.assertEqual(error.exception.stage, "unknown_worker")
+
     def test_manifest_requires_exact_origin_hashes_and_two_distinct_images(self) -> None:
         current = pins()
         self.assertEqual(current.public_origin, rollout.PUBLIC_ORIGIN)
@@ -241,6 +355,21 @@ class ProfileDndRolloutTests(unittest.TestCase):
         disabled["services"]["backend"]["environment"]["PHONE11_CHAT_NOTIFICATIONS_ENABLED"] = "1"
         with self.assertRaises(rollout.GuardError):
             rollout.validate_compose(disabled, disabled_pin, container=rollout.BASELINE_CONTAINER, image=OLD_DIGEST, build=current.release_build, role="default", port=3000, notifications="0")
+
+    def test_parallel_candidate_requires_a_separate_compose_project(self) -> None:
+        current = pins()
+        baseline = rendered(current, container=rollout.BASELINE_CONTAINER, service="backend", image=DIGEST, role="default", port=3000, notifications="1")
+        candidate = rendered(current, container=rollout.RELEASE_CANDIDATE_CONTAINER, service="candidate", image=DIGEST, role="api-candidate", port=3012, notifications=None)
+        rollback = rendered(current, container=rollout.BASELINE_CONTAINER, service="backend", image=OLD_DIGEST, role="default", port=3000, notifications="1")
+        disabled = rendered(current, container=rollout.BASELINE_CONTAINER, service="backend", image=OLD_DIGEST, role="default", port=3000, notifications="0")
+        operator = rollout.Operator(current, FakeSystem())
+        with patch.object(rollout, "render_compose", side_effect=[baseline, candidate, rollback, disabled]):
+            with self.assertRaises(rollout.GuardError) as error:
+                operator.compose_inputs()
+        self.assertEqual(error.exception.stage, "compose_project")
+        candidate["name"] = "phone11-profile-dnd-candidate"
+        with patch.object(rollout, "render_compose", side_effect=[baseline, candidate, rollback, disabled]):
+            operator.compose_inputs()
 
     def test_prepare_has_no_service_or_proxy_mutation(self) -> None:
         system = FakeSystem()
@@ -456,16 +585,22 @@ class ProfileDndRolloutTests(unittest.TestCase):
              patch.object(rollout, "load_probes", return_value=[]), \
              patch.object(rollout, "validate_runtime") as validate:
             self.assertEqual(operator.rollback_preflight(), (*configs, None, None))
-        validate.assert_called_once_with(
+        self.assertEqual(validate.call_count, 2)
+        self.assertEqual(validate.call_args_list[0], call(
             operator.system, rollout.CANDIDATE_CONTAINER, current.candidate,
             role="api-candidate", port=rollout.CANDIDATE_PORT, require_healthy=False,
+        ))
+        self.assertEqual(validate.call_args_list[1], call(
+            operator.system, rollout.RELEASE_CANDIDATE_CONTAINER, current.release_candidate,
+            role="api-candidate", port=rollout.RELEASE_CANDIDATE_PORT, require_healthy=False,
             compose_project="candidate", compose_service=current.candidate_compose.service,
-        )
+        ))
 
     def test_disabled_rollback_preflight_does_not_require_candidate_health(self) -> None:
         document = manifest(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
         candidate_shape = {"candidate": "approved"}
         document["current"]["candidate"]["runtime_sha256"] = rollout.canonical_hash(candidate_shape)
+        document["current"]["release_candidate"]["runtime_sha256"] = rollout.canonical_hash(candidate_shape)
         current = rollout.parse_manifest(document)
         operator = rollout.Operator(current, FakeSystem())
         operator.image = Mock()
@@ -479,14 +614,21 @@ class ProfileDndRolloutTests(unittest.TestCase):
             "Id": current.candidate.container_id, "Image": current.candidate.image,
             "State": {"Running": False, "OOMKilled": False},
             "Config": {
-                "Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PHONE11_BUILD_SHA=old-candidate", "PORT=3002"],
+                "Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PHONE11_BUILD_SHA=old-candidate", "PORT=3010"],
                 "Labels": {"com.docker.compose.project": "candidate", "com.docker.compose.service": "candidate"},
             },
-            "HostConfig": {"PortBindings": {"3002/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3002"}]}},
+            "HostConfig": {"PortBindings": {"3010/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3010"}]}},
+        }
+        unhealthy_release = {
+            "Id": current.release_candidate.container_id, "Image": current.release_candidate.image,
+            "State": {"Running": False, "OOMKilled": False},
+            "Config": {"Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PHONE11_BUILD_SHA=new-build", "PORT=3012"],
+                       "Labels": {"com.docker.compose.project": "candidate", "com.docker.compose.service": "candidate"}},
+            "HostConfig": {"PortBindings": {"3012/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3012"}]}},
         }
         with patch.object(rollout, "pinned_read", return_value=b"{}"), \
              patch.object(rollout, "load_probes", return_value=[]), \
-             patch.object(rollout, "one_inspect", return_value=unhealthy), \
+             patch.object(rollout, "one_inspect", side_effect=[unhealthy, unhealthy_release]), \
              patch.object(rollout, "runtime_shape", return_value=candidate_shape), \
              patch.object(rollout, "health") as health_call:
             operator.rollback_preflight()
@@ -569,6 +711,48 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertEqual(error.exception.stage, "route_state")
         operator._up.assert_not_called()
 
+    def test_parallel_candidate_start_keeps_legacy_3010_running(self) -> None:
+        current = pins(nginx__route="baseline")
+        operator = rollout.Operator(current, FakeSystem())
+        operator.prepare = Mock()
+        operator.named_container_id = Mock(return_value=None)
+        operator.validate_replacement_receipt = Mock()
+        operator._up = Mock()
+        operator.wake = Mock()
+        operator.save_runtime_receipt = Mock()
+        operator.probes = []
+        document = {"name": "candidate"}
+        started = {
+            "Id": "e" * 64, "Image": current.image, "State": {"Running": True},
+            "Config": {"Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3012"],
+                       "Labels": {"com.docker.compose.project": "candidate", "com.docker.compose.service": "candidate"}},
+            "HostConfig": {"PortBindings": {"3012/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3012"}]}},
+        }
+        with patch.object(rollout, "render_compose", return_value=document), \
+             patch.object(rollout, "validate_runtime") as validate, \
+             patch.object(rollout, "one_inspect", return_value=started), \
+             patch.object(rollout, "health"), patch.object(rollout, "run_probes"):
+            operator.replace_candidate()
+        validate.assert_called_once_with(operator.system, rollout.CANDIDATE_CONTAINER,
+                                         current.candidate, role="api-candidate", port=3010)
+        operator._up.assert_called_once_with(document, current.candidate_compose)
+        operator.save_runtime_receipt.assert_called_once()
+        self.assertEqual(operator.save_runtime_receipt.call_args.kwargs["action"], "start_candidate")
+        self.assertIsNone(operator.save_runtime_receipt.call_args.kwargs["before"])
+
+    def test_legacy_route_restore_requires_uncommitted_profile_gate(self) -> None:
+        for changes in (
+            {"nginx__route": "candidate"},
+            {"nginx__route": "baseline", "nginx__profile_gate_committed": True, "migration__receipt_sha256": SHA},
+        ):
+            operator = rollout.Operator(pins(**changes), FakeSystem())
+            operator.prepare = Mock()
+            operator._restore_route = Mock()
+            with self.subTest(changes=changes), self.assertRaises(rollout.GuardError) as error:
+                operator.rollback_to_legacy_candidate()
+            self.assertEqual(error.exception.stage, "legacy_route_state")
+            operator._restore_route.assert_not_called()
+
     def test_candidate_replacement_is_forbidden_after_profile_schema_commit(self) -> None:
         current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
         operator = rollout.Operator(current, FakeSystem())
@@ -586,7 +770,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertEqual(error.exception.stage, "migration_order")
 
     def test_profile_migration_requires_receipts_for_both_gated_api_runtimes(self) -> None:
-        operator = rollout.Operator(pins(nginx__route="baseline"), FakeSystem())
+        operator = rollout.Operator(pins(nginx__route="baseline", current__release_candidate=runtime("e", DIGEST, "new-build")), FakeSystem())
         operator.image = Mock()
         operator.compose_inputs = Mock(return_value=({"name": "baseline"}, {"name": "candidate"}))
         operator.current = Mock()
@@ -598,7 +782,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertEqual(error.exception.stage, "replacement_receipt")
         self.assertEqual(
             [entry.kwargs["action"] for entry in operator.validate_replacement_receipt.call_args_list],
-            ["replace_baseline", "replace_candidate"],
+            ["replace_baseline", "start_candidate"],
         )
 
     def test_manifest_gate_flag_must_match_migration_receipt(self) -> None:
@@ -845,7 +1029,8 @@ class ProfileDndRolloutTests(unittest.TestCase):
 
     def test_apply_migration_recovers_exact_post_state_after_receipt_failure(self) -> None:
         document = manifest(nginx__route="baseline")
-        for name in ("baseline", "candidate"):
+        document["current"]["release_candidate"] = runtime("e", DIGEST, "new-build")
+        for name in ("baseline", "release_candidate"):
             document["current"][name].update({"image": DIGEST, "build": "new-build", "replacement_receipt_sha256": SHA})
         current = rollout.parse_manifest(document)
         operator = rollout.Operator(current, FakeSystem())
