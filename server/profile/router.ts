@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { protectedProcedure, router } from "../_core/trpc";
 import { getPool } from "../pbx/db";
-import { createProfileService, dndDurationMinutes, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, ProfileWorkspaceAdminAccessError, statusExpiryPresets } from "./service";
+import { createProfileService, dndDurationMinutes, ProfileDndUnavailableError, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, ProfileWorkspaceAdminAccessError, statusExpiryPresets } from "./service";
 import { manualAvailabilityValues, workLocationValues } from "./status";
 import { authorizeWorkspace } from "../chat/service";
 import { MAX_PROFILE_PHOTO_BYTES, profilePhotoCommissioned, profilePhotosAvailable, profilePhotoStorageReady } from "./photo";
@@ -41,6 +41,9 @@ export const profileUpdateSchema = z.object({
 });
 
 function trpcError(error: unknown): never {
+  if (error instanceof ProfileDndUnavailableError) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Do not disturb is not available for this workspace." });
+  }
   if (error instanceof ProfileStatusUnavailableError) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Profile status needs a workspace update." });
   }

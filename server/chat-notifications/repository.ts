@@ -20,10 +20,13 @@ const valid = `d.revision=o.device_revision AND o.expires_at>clock_timestamp() A
 async function notificationAllowed(db:PoolClient) {
  const profileStatusAvailable=(await db.query(`SELECT
    to_regclass('public.phone11_workspace_profile_status') IS NOT NULL
-   AND to_regclass('public.phone11_workspace_profile_status_settings') IS NOT NULL AS supported`)).rows[0]?.supported===true;
+   AND to_regclass('public.phone11_workspace_profile_status_settings') IS NOT NULL
+   AND EXISTS (SELECT 1 FROM pg_attribute
+     WHERE attrelid=to_regclass('public.phone11_workspace_profile_status_settings')
+       AND attname='dnd_enabled' AND NOT attisdropped) AS supported`)).rows[0]?.supported===true;
  return profileStatusAvailable ? `NOT EXISTS(SELECT 1 FROM phone11_workspace_profile_status profile
    JOIN phone11_workspace_profile_status_settings setting
-     ON setting.tenant_id=profile.tenant_id AND setting.enabled
+     ON setting.tenant_id=profile.tenant_id AND setting.enabled AND setting.dnd_enabled
    WHERE profile.tenant_id=d.tenant_id AND profile.user_id=d.user_id AND profile.manual_availability='dnd'
      AND profile.manual_availability_expires_at>clock_timestamp())` : 'TRUE';
 }

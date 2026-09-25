@@ -169,12 +169,14 @@ function ProfileStatusAdminScreenContent() {
           </View>
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Enable workspace status</Text>
           <Text style={[styles.description, { color: colors.muted }]}>
-            Members can manage their own availability, status text, and work location. Do not disturb suppresses ordinary Team Chat alerts while it is active; it does not change call or meeting routing.
+            {settingsQuery.data.dndEnabled
+              ? "Members can manage availability, status text, and work location. Do not disturb suppresses ordinary Team Chat alerts while active; it does not change call or meeting routing."
+              : "Members can manage availability, status text, and work location. Do not disturb requires a separate notification-worker rollout."}
           </Text>
 
           <View style={[styles.setting, { borderColor: colors.border, backgroundColor: colors.background }]}>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.settingTitle, { color: colors.foreground }]}>Profile status and Do not disturb</Text>
+              <Text style={[styles.settingTitle, { color: colors.foreground }]}>Profile status</Text>
               <Text style={[styles.settingDescription, { color: colors.muted }]}>
                 {settingsQuery.data.enabled ? "Enabled for this workspace." : "Disabled. Saved profile rows stay private until you enable this setting."}
               </Text>

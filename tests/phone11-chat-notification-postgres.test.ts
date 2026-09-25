@@ -80,6 +80,8 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'in_meeting',effectiveStatus:'in_meeting',source:'meeting'})]);
   await pool.query(`UPDATE phone11_workspace_profile_status SET manual_availability='dnd',
     manual_availability_expires_at=clock_timestamp()+interval '1 hour' WHERE tenant_id=10 AND user_id=2`);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'in_meeting',effectiveStatus:'in_meeting',manualAvailability:null,source:'meeting'})]);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=TRUE WHERE tenant_id=10');
   expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({status:'in_meeting',effectiveStatus:'dnd',source:'manual'})]);
   await chat.heartbeat(2,10,{sessionId,generation,sequence:2,status:'in_meeting',active:false});
   await repo.unregister(2,'s2',device.deviceId);
@@ -143,6 +145,7 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
  it('rechecks a mute added after enqueue before claim or dispatch',async()=>{await repo.register(2,'s2',device);await message();expect(await count()).toBe(1);await chat.setNotificationMute(2,10,conversation,true);expect(await repo.claim()).toBeNull();});
  it('suppresses new and queued alerts while unexpired Do not disturb is active',async()=>{
   await repo.register(2,'s2',device);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=TRUE WHERE tenant_id=10');
   await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
    VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
   await message();expect(await count()).toBe(0);
@@ -155,6 +158,7 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
  });
  it('uses the tenant enablement gate when DND is evaluated at enqueue and dispatch time',async()=>{
   await repo.register(2,'s2',device);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=TRUE WHERE tenant_id=10');
   await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
    VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
   await pool.query('UPDATE phone11_workspace_profile_status_settings SET enabled=FALSE WHERE tenant_id=10');
@@ -164,6 +168,18 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   expect(await repo.claim()).toBeNull();
   await pool.query('UPDATE phone11_workspace_profile_status_settings SET enabled=FALSE WHERE tenant_id=10');
   expect(await repo.claim()).not.toBeNull();
+ });
+ it('keeps ordinary alerts at enqueue, claim, and pre-provider checks with status-only enabled',async()=>{
+  await repo.register(2,'s2',device);
+  await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
+   VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
+  await message();expect(await count()).toBe(1);
+  const claim=(await repo.claim())!;expect(claim).not.toBeNull();
+  expect(await repo.current(claim)).toBe(true);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=TRUE WHERE tenant_id=10');
+  expect(await repo.current(claim)).toBe(false);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=FALSE WHERE tenant_id=10');
+  expect(await repo.current(claim)).toBe(true);
  });
  it('uncertain provider acceptance never retries or changes persisted message',async()=>{
   await repo.register(2,'s2',device);const msg=await message();const send=vi.fn(async()=>{throw new PushProviderError('transport');});const dispatch=createChatNotificationDispatcher(repo,send,()=>true);
@@ -187,7 +203,21 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   await pool.query(await readFile(new URL('../server/profile/migration.sql',import.meta.url),'utf8'));
   await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
    VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=TRUE WHERE tenant_id=10');
   await message();expect(await count()).toBe(1);
+ });
+ it('continues ordinary alerts against an older settings table without the DND column',async()=>{
+  await repo.register(2,'s2',device);
+  await pool.query('ALTER TABLE phone11_workspace_profile_status_settings DROP COLUMN dnd_enabled');
+  try {
+   await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
+    VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
+   await message();expect(await count()).toBe(1);
+   const claim=(await repo.claim())!;expect(claim).not.toBeNull();expect(await repo.current(claim)).toBe(true);
+  } finally {
+   await pool.query(await readFile(new URL('../server/profile/migration.sql',import.meta.url),'utf8'));
+  }
+  expect((await pool.query('SELECT dnd_enabled FROM phone11_workspace_profile_status_settings WHERE tenant_id=10')).rows[0].dnd_enabled).toBe(false);
  });
  it('bounded advisory lock contention fails instead of wedging enrollment',async()=>{
   const blocker=await pool.connect();try{await blocker.query('BEGIN');await blocker.query('SELECT pg_advisory_xact_lock(731104,2)');const started=Date.now();await expect(repo.register(2,'s2',device)).rejects.toThrow();expect(Date.now()-started).toBeLessThan(4000);}finally{await blocker.query('ROLLBACK');blocker.release();}

@@ -21,7 +21,7 @@ export type WorkspaceProfileStatus = {
 };
 
 export type WorkspaceProfileStatusLookup =
-  | { capability: "available"; rows: WorkspaceProfileStatus[] }
+  | { capability: "available"; dndEnabled: boolean; rows: WorkspaceProfileStatus[] }
   | { capability: "disabled"; rows: [] }
   | { capability: "unavailable"; rows: [] };
 
@@ -71,16 +71,19 @@ export async function getWorkspaceProfileStatuses(
 ): Promise<WorkspaceProfileStatusLookup> {
   const ids = [...new Set(userIds)].filter((id) => Number.isSafeInteger(id) && id > 0);
   if (!Number.isSafeInteger(viewerUserId) || viewerUserId < 1 || !Number.isSafeInteger(tenantId) || tenantId < 1 || ids.length === 0) {
-    return { capability: "available", rows: [] };
+    return { capability: "available", dndEnabled: false, rows: [] };
   }
   // Querying a missing relation inside the caller's existing transaction would
   // abort that transaction even if we caught 42P01. Preflight first instead;
   // no cached negative result means a just-applied migration is picked up.
   const capability = await db.query(
     `SELECT to_regclass('public.phone11_workspace_profile_status') AS status_relation,
-            to_regclass('public.phone11_workspace_profile_status_settings') AS settings_relation`,
+            to_regclass('public.phone11_workspace_profile_status_settings') AS settings_relation,
+            EXISTS (SELECT 1 FROM pg_attribute
+              WHERE attrelid = to_regclass('public.phone11_workspace_profile_status_settings')
+                AND attname = 'dnd_enabled' AND NOT attisdropped) AS dnd_column`,
   );
-  if (!capability.rows[0]?.status_relation || !capability.rows[0]?.settings_relation) {
+  if (!capability.rows[0]?.status_relation || !capability.rows[0]?.settings_relation || !capability.rows[0]?.dnd_column) {
     return { capability: "unavailable", rows: [] };
   }
   const result = await db.query(
@@ -90,11 +93,14 @@ export async function getWorkspaceProfileStatuses(
        )
        SELECT gate.viewer_authorized,
               gate.workspace_enabled,
+              gate.dnd_enabled,
               colleague.user_id,
-              CASE WHEN profile.manual_availability_expires_at IS NOT NULL
+              CASE WHEN profile.manual_availability = 'dnd' AND NOT gate.dnd_enabled THEN NULL
+                   WHEN profile.manual_availability_expires_at IS NOT NULL
                           AND profile.manual_availability_expires_at <= clock_timestamp()
                    THEN NULL ELSE profile.manual_availability END AS manual_availability,
-              CASE WHEN profile.manual_availability_expires_at IS NOT NULL
+              CASE WHEN profile.manual_availability = 'dnd' AND NOT gate.dnd_enabled THEN NULL
+                   WHEN profile.manual_availability_expires_at IS NOT NULL
                           AND profile.manual_availability_expires_at <= clock_timestamp()
                    THEN NULL ELSE profile.manual_availability_expires_at END AS manual_availability_expires_at,
               CASE WHEN profile.status_expires_at IS NOT NULL
@@ -113,7 +119,10 @@ export async function getWorkspaceProfileStatuses(
                   ) AS viewer_authorized,
                   COALESCE((SELECT setting.enabled
                     FROM phone11_workspace_profile_status_settings setting
-                    WHERE setting.tenant_id = $2), FALSE) AS workspace_enabled
+                    WHERE setting.tenant_id = $2), FALSE) AS workspace_enabled,
+                  COALESCE((SELECT setting.dnd_enabled
+                    FROM phone11_workspace_profile_status_settings setting
+                    WHERE setting.tenant_id = $2), FALSE) AS dnd_enabled
          ) gate
          LEFT JOIN requested ON gate.viewer_authorized AND gate.workspace_enabled
          LEFT JOIN tenant_memberships colleague
@@ -127,10 +136,11 @@ export async function getWorkspaceProfileStatuses(
       [viewerUserId, tenantId, ids],
     );
   const gate = result.rows[0];
-  if (gate?.viewer_authorized !== true) return { capability: "available", rows: [] };
+  if (gate?.viewer_authorized !== true) return { capability: "available", dndEnabled: false, rows: [] };
   if (gate.workspace_enabled !== true) return { capability: "disabled", rows: [] };
   return {
     capability: "available",
+    dndEnabled: gate.dnd_enabled === true,
     rows: result.rows
       .filter((row) => row.user_id !== null && row.user_id !== undefined)
       .map((row) => workspaceProfileStatusFromRow(row as Record<string, unknown>))

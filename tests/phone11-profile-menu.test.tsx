@@ -148,7 +148,7 @@ it("renders persisted status summaries as a compact account menu", () => {
   const html = renderToStaticMarkup(createElement(AccountHub, {
     identity: { name: "Nathasa W.", email: "nathasa@phone11.ai" }, phone: { extension: "3001" },
     onBack: vi.fn(), onOpenSettings: vi.fn(),
-    workspaceProfile: { userId: 1, manualAvailability: "dnd", manualAvailabilityExpiresAt: new Date("2026-09-20T11:00:00Z"), statusText: "In a customer review", statusExpiresAt: null, workLocation: "remote" },
+    workspaceProfile: { userId: 1, dndAvailable: true, manualAvailability: "dnd", manualAvailabilityExpiresAt: new Date("2026-09-20T11:00:00Z"), statusText: "In a customer review", statusExpiresAt: null, workLocation: "remote" },
     profileAvailable: true, profileSaving: false, profileError: null, onUpdateWorkspaceProfile: save,
     workspaceName: "Phone11",
   }));
@@ -158,6 +158,35 @@ it("renders persisted status summaries as a compact account menu", () => {
   expect(html).toContain("Availability, status, and location apply to Phone11");
   expect(html).not.toContain("20 min");
   expect(html).not.toContain("Workspace status is not available for this workspace.");
+});
+
+it("keeps Do not disturb out of the availability sheet until the server advertises its gate", () => {
+  const internals = (React as any).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+  const previousDispatcher = internals.H;
+  const hookState: any[] = [];
+  let hookIndex = 0;
+  const props = {
+    identity: { name: "Nathasa W.", email: "nathasa@phone11.ai" }, phone: null,
+    onBack: vi.fn(), onOpenSettings: vi.fn(), profileAvailable: true,
+    workspaceProfile: { userId: 1, manualAvailability: null, manualAvailabilityExpiresAt: null,
+      statusText: null, statusExpiresAt: null, workLocation: null },
+    onUpdateWorkspaceProfile: vi.fn(async () => undefined),
+  };
+  const renderHub = (dndAvailable?: boolean) => {
+    hookIndex = 0;
+    internals.H = { useState(initial: unknown) {
+      const index = hookIndex++;
+      if (!(index in hookState)) hookState[index] = initial;
+      return [hookState[index], (next: unknown) => { hookState[index] = next; }];
+    } };
+    try { return AccountHub({ ...props, workspaceProfile: { ...props.workspaceProfile, dndAvailable } }); }
+    finally { internals.H = previousDispatcher; }
+  };
+  findElement(renderHub(), element => element.props.title === "Availability" && typeof element.props.onPress === "function")?.props.onPress();
+  const statusOnly = findElement(renderHub(), element => element.props.title === "Availability" && element.props.visible === true);
+  expect(findElement(statusOnly, element => element.props.label === "Do not disturb")).toBeNull();
+  const commissioned = findElement(renderHub(true), element => element.props.title === "Availability" && element.props.visible === true);
+  expect(findElement(commissioned, element => element.props.label === "Do not disturb")).not.toBeNull();
 });
 
 it("distinguishes workspace status loading from an error with a retry action", () => {

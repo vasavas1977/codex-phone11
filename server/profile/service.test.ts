@@ -11,8 +11,8 @@ const profileRow = {
   status_expires_at: null,
   work_location: null,
 };
-const enabledProfileRow = { ...profileRow, viewer_authorized: true, workspace_enabled: true };
-const schemaRows = [{ status_relation: "phone11_workspace_profile_status", settings_relation: "phone11_workspace_profile_status_settings" }];
+const enabledProfileRow = { ...profileRow, viewer_authorized: true, workspace_enabled: true, dnd_enabled: false };
+const schemaRows = [{ status_relation: "phone11_workspace_profile_status", settings_relation: "phone11_workspace_profile_status_settings", dnd_column: true }];
 
 it("validates timed DND and bounded profile status inputs", () => {
   expect(profileUpdateSchema.safeParse({ tenantId: 4, availability: { value: "dnd" } }).success).toBe(false);
@@ -28,7 +28,7 @@ it("validates timed DND and bounded profile status inputs", () => {
 it("authorizes profile reads through active membership for both caller and colleague", async () => {
   const query = vi.fn(async (sql: string, _values?: unknown[]) => ({ rows: sql.includes("to_regclass") ? schemaRows : [enabledProfileRow] }));
   const result = await getWorkspaceProfileStatuses({ query } as any, 7, 4, [7, 9]);
-  expect(result).toEqual({ capability: "available", rows: [{ userId: 7, manualAvailability: null, manualAvailabilityExpiresAt: null, statusText: null, statusExpiresAt: null, workLocation: null }] });
+  expect(result).toEqual({ capability: "available", dndEnabled: false, rows: [{ userId: 7, manualAvailability: null, manualAvailabilityExpiresAt: null, statusText: null, statusExpiresAt: null, workLocation: null }] });
   const [sql, values] = query.mock.calls[1];
   expect(sql).toContain("viewer_authorized");
   expect(sql).toContain("colleague.status = 'active'");
@@ -40,6 +40,12 @@ it("fails closed when a pre-migration deployment has no profile table", async ()
   await expect(getWorkspaceProfileStatuses({ query } as any, 7, 4, [7])).resolves.toEqual({ capability: "unavailable", rows: [] });
   expect(query).toHaveBeenCalledOnce();
   expect(query.mock.calls[0][0]).toContain("phone11_workspace_profile_status_settings");
+});
+
+it("fails closed on an older settings table without the separate DND gate", async () => {
+  const query = vi.fn(async () => ({ rows: [{ ...schemaRows[0], dnd_column: false }] }));
+  await expect(getWorkspaceProfileStatuses({ query } as any, 7, 4, [7])).resolves.toEqual({ capability: "unavailable", rows: [] });
+  expect(query).toHaveBeenCalledOnce();
 });
 
 it("distinguishes a tenant that has not enabled profile status from missing schema", async () => {

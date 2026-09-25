@@ -31,8 +31,14 @@ CREATE INDEX IF NOT EXISTS phone11_workspace_profile_status_visible
 CREATE TABLE IF NOT EXISTS phone11_workspace_profile_status_settings (
   tenant_id INTEGER PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
   enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  dnd_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
+
+-- Additive for installations with the earlier settings table. No existing
+-- workspace acquires DND when this migration is applied.
+ALTER TABLE phone11_workspace_profile_status_settings
+  ADD COLUMN IF NOT EXISTS dnd_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 
 COMMIT;

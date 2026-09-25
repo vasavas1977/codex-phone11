@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { createProfileRouter } from "./router";
-import { createProfileService, ProfileStatusUnavailableError, ProfileWorkspaceAdminAccessError } from "./service";
+import { createProfileService, ProfileDndUnavailableError, ProfileStatusUnavailableError, ProfileWorkspaceAdminAccessError } from "./service";
 
 const context = (id: number | null) => ({
   user: id === null ? null : { id, role: "user" },
@@ -16,8 +16,16 @@ it("derives the administrator identity from the authenticated session and accept
   await expect(caller.adminSettings({ tenantId: 10 })).resolves.toEqual({ tenantId: 10, enabled: false, updatedBy: null, updatedAt: null });
   await expect(caller.setAdminEnabled({ tenantId: 10, enabled: true })).resolves.toMatchObject({ tenantId: 10, enabled: true, updatedBy: 7 });
   await expect(caller.setAdminEnabled({ tenantId: 10, enabled: true, userId: 9 } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  await expect(caller.setAdminEnabled({ tenantId: 10, enabled: true, dndEnabled: true } as never)).rejects.toMatchObject({ code: "BAD_REQUEST" });
   expect(adminSettings).toHaveBeenCalledWith(7, 10);
   expect(setAdminEnabled).toHaveBeenCalledWith(7, 10, true);
+});
+
+it("reports a direct DND mutation as unavailable before worker commissioning", async () => {
+  const service = { update: vi.fn(async () => { throw new ProfileDndUnavailableError(); }) } as unknown as ReturnType<typeof createProfileService>;
+  const caller = createProfileRouter(service).createCaller(context(7));
+  await expect(caller.update({ tenantId: 10, availability: { value: "dnd", expiresInMinutes: 60 } }))
+    .rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: "Do not disturb is not available for this workspace." });
 });
 
 it("requires an authenticated caller and maps unavailable schema separately from denied workspace roles", async () => {

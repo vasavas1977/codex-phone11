@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { URL } from "node:url";
 import { Pool } from "pg";
-import { createProfileService, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, ProfileWorkspaceAdminAccessError } from "../server/profile/service";
+import { createProfileService, ProfileDndUnavailableError, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, ProfileWorkspaceAdminAccessError } from "../server/profile/service";
 
 const connectionString = process.env.PHONE11_PROFILE_TEST_DATABASE_URL;
 if (connectionString) {
@@ -170,7 +170,7 @@ describe.skipIf(!connectionString)("workspace profile real PostgreSQL persistenc
 
   it("keeps workspace status disabled by default, owner/admin scoped, and preserves user rows when disabled", async () => {
     const service = createProfileService(pool);
-    await expect(service.adminSettings(1, 10)).resolves.toMatchObject({ tenantId: 10, enabled: false, updatedBy: null });
+    await expect(service.adminSettings(1, 10)).resolves.toMatchObject({ tenantId: 10, enabled: false, dndEnabled: false, updatedBy: null });
     await expect(service.self(1, 10)).rejects.toBeInstanceOf(ProfileStatusUnavailableError);
     await expect(service.update(2, 10, { workLocation: "remote" })).rejects.toBeInstanceOf(ProfileStatusUnavailableError);
 
@@ -178,17 +178,58 @@ describe.skipIf(!connectionString)("workspace profile real PostgreSQL persistenc
       await expect(service.setAdminEnabled(actorId, 10, true)).rejects.toBeInstanceOf(ProfileWorkspaceAdminAccessError);
       await expect(service.adminSettings(actorId, 10)).rejects.toBeInstanceOf(ProfileWorkspaceAdminAccessError);
     }
-    await expect(service.setAdminEnabled(4, 10, true)).resolves.toMatchObject({ enabled: true, updatedBy: 4 });
-    const saved = await service.update(2, 10, { availability: { value: "dnd", expiresInMinutes: 60 }, workLocation: "remote" });
-    expect(saved).toMatchObject({ manualAvailability: "dnd", workLocation: "remote" });
+    await expect(service.setAdminEnabled(4, 10, true)).resolves.toMatchObject({ enabled: true, dndEnabled: false, updatedBy: 4 });
+    await expect(service.update(2, 10, { availability: { value: "dnd", expiresInMinutes: 60 }, workLocation: "remote" }))
+      .rejects.toBeInstanceOf(ProfileDndUnavailableError);
+    expect((await pool.query("SELECT * FROM phone11_workspace_profile_status WHERE tenant_id=10 AND user_id=2")).rows).toEqual([]);
+    const saved = await service.update(2, 10, { availability: { value: "away" }, workLocation: "remote" });
+    expect(saved).toMatchObject({ manualAvailability: "away", workLocation: "remote", dndAvailable: false });
     await expect(service.self(3, 20)).rejects.toBeInstanceOf(ProfileStatusUnavailableError);
 
     await service.setAdminEnabled(1, 10, false);
     await expect(service.self(2, 10)).rejects.toBeInstanceOf(ProfileStatusUnavailableError);
     expect((await pool.query(`SELECT manual_availability,work_location FROM phone11_workspace_profile_status
-      WHERE tenant_id=10 AND user_id=2`)).rows[0]).toEqual({ manual_availability: "dnd", work_location: "remote" });
+      WHERE tenant_id=10 AND user_id=2`)).rows[0]).toEqual({ manual_availability: "away", work_location: "remote" });
     await service.setAdminEnabled(1, 10, true);
-    await expect(service.self(2, 10)).resolves.toMatchObject({ manualAvailability: "dnd", workLocation: "remote" });
+    await expect(service.self(2, 10)).resolves.toMatchObject({ manualAvailability: "away", workLocation: "remote", dndAvailable: false });
+  });
+
+  it("masks old DND rows and fences DND writes until the separate worker gate is commissioned", async () => {
+    const service = createProfileService(pool);
+    await service.setAdminEnabled(1, 10, true);
+    await pool.query(`INSERT INTO phone11_workspace_profile_status
+      (tenant_id,user_id,manual_availability,manual_availability_expires_at,status_text)
+      VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour','Working')`);
+    await expect(service.self(2, 10)).resolves.toMatchObject({ manualAvailability: null, manualAvailabilityExpiresAt: null, statusText: "Working", dndAvailable: false });
+    await expect(service.update(2, 10, { availability: { value: "dnd", expiresInMinutes: 60 } }))
+      .rejects.toBeInstanceOf(ProfileDndUnavailableError);
+    await pool.query("UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=TRUE WHERE tenant_id=10");
+    await expect(service.self(2, 10)).resolves.toMatchObject({ manualAvailability: "dnd", dndAvailable: true });
+    await service.update(2, 10, { availability: { value: "dnd", expiresInMinutes: 20 } });
+    await service.setAdminEnabled(1, 10, false);
+    await service.setAdminEnabled(1, 10, true);
+    await expect(service.adminSettings(1, 10)).resolves.toMatchObject({ dndEnabled: false });
+    await expect(service.self(2, 10)).resolves.toMatchObject({ manualAvailability: null, dndAvailable: false });
+    await pool.query("UPDATE phone11_workspace_profile_status_settings SET enabled=FALSE,dnd_enabled=TRUE WHERE tenant_id=10");
+    await expect(service.setAdminEnabled(1, 10, true)).resolves.toMatchObject({ dndEnabled: false });
+  });
+
+  it("rechecks the DND gate in the write when commissioning is revoked after the earlier read", async () => {
+    const live = createProfileService(pool);
+    await live.setAdminEnabled(1, 10, true);
+    await pool.query("UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=TRUE WHERE tenant_id=10");
+    let revoked = false;
+    const raced = createProfileService({ query: async (sql: string, values?: readonly unknown[]) => {
+      if (!revoked && sql.includes("INSERT INTO phone11_workspace_profile_status\n")) {
+        revoked = true;
+        await pool.query("UPDATE phone11_workspace_profile_status_settings SET dnd_enabled=FALSE WHERE tenant_id=10");
+      }
+      return pool.query(sql, values as unknown[] | undefined);
+    } } as never);
+    await expect(raced.update(2, 10, { availability: { value: "dnd", expiresInMinutes: 60 } }))
+      .rejects.toBeInstanceOf(ProfileDndUnavailableError);
+    expect(revoked).toBe(true);
+    expect((await pool.query("SELECT * FROM phone11_workspace_profile_status WHERE tenant_id=10 AND user_id=2")).rows).toEqual([]);
   });
 
   it("rechecks live admin membership in the setting write statement", async () => {
@@ -237,5 +278,9 @@ describe.skipIf(!connectionString)("workspace profile real PostgreSQL persistenc
     expect(result.rows.some((row) => row.object_kind === "column"
       && (row.object as Record<string, unknown>).table === "phone11_workspace_profile_status_settings"
       && (row.object as Record<string, unknown>).name === "enabled")).toBe(true);
+    expect((await pool.query(`SELECT attnotnull, pg_get_expr(adbin, adrelid) AS default_expr
+      FROM pg_attribute a JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+      WHERE a.attrelid='phone11_workspace_profile_status_settings'::regclass AND a.attname='dnd_enabled'`)).rows[0])
+      .toEqual({ attnotnull: true, default_expr: "false" });
   });
 });

@@ -13,6 +13,8 @@ export type StatusExpiryPreset = "1h" | "4h" | "today" | "week" | "always";
 
 export type WorkspaceProfileStatus = {
   userId: number;
+  /** Server-owned DND capability; an omitted value from an older API is false. */
+  dndAvailable?: boolean;
   /** Authenticated server-relative path; omitted by older servers. */
   photoUrl?: string | null;
   /** Changes whenever the stored photo changes; omitted by older servers. */
