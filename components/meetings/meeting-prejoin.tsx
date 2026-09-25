@@ -55,6 +55,11 @@ export function MeetingPrejoin({
     admittedMeetings,
     initialMeetingCode,
   );
+  const deepLinkedMeeting = initialMeetingCode
+    ? admittedMeetings?.find(
+        meeting => meeting.meetingId === initialMeetingCode,
+      )
+    : undefined;
   const [meetingCode, setMeetingCode] = useState(selection.meetingCode);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
@@ -226,7 +231,12 @@ export function MeetingPrejoin({
                   <Text style={[styles.label, { color: colors.foreground }]}>
                     Meeting
                   </Text>
-                  {admittedMeetings?.length === 1 &&
+                  {deepLinkedMeeting &&
+                  meetingCode === deepLinkedMeeting.meetingId ? (
+                    <Text style={{ color: colors.muted }}>
+                      {safeMeetingTitle(deepLinkedMeeting.title) ?? "Your meeting is ready"}
+                    </Text>
+                  ) : admittedMeetings?.length === 1 &&
                   meetingCode === admittedMeetings[0].meetingId &&
                   (!initialMeetingCode || initialMeetingCode === meetingCode) ? (
                     <Text style={{ color: colors.muted }}>

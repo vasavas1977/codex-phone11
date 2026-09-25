@@ -159,7 +159,7 @@ it("keeps capture off during prejoin and passes explicit media choices to join",
   });
 });
 
-it("preselects the admitted meeting from the URL and identifies it in a multi-meeting picker", async () => {
+it("shows only the exact linked admitted meeting when multiple meetings are available", async () => {
   const onJoin = vi.fn().mockResolvedValue(undefined);
   const requested = "8407bc84-63ef-48a0-bceb-b29b16043555";
   const html = renderToStaticMarkup(createElement(MeetingPrejoin, {
@@ -172,8 +172,11 @@ it("preselects the admitted meeting from the URL and identifies it in a multi-me
     onJoin,
     onBack: () => undefined,
   }));
-  expect(html).toContain("Meeting 2 · 8407bc84…43555 · Selected");
-  expect(html).toContain(`Select admitted meeting 2, ID ${requested}`);
+  expect(html).toContain("Your meeting is ready");
+  expect(html).not.toContain("Select admitted meeting");
+  expect(html).not.toContain("11111111…11111");
+  expect(html).not.toContain("8407bc84…43555");
+  expect(Object.keys(mocks.choices)).toHaveLength(0);
   expect(mocks.joinButton?.disabled).toBe(false);
   await mocks.joinButton?.onPress();
   expect(onJoin).toHaveBeenCalledWith({
@@ -183,7 +186,22 @@ it("preselects the admitted meeting from the URL and identifies it in a multi-me
   });
 });
 
-it("shows a tenant-verified channel title but still joins by opaque meeting ID", async () => {
+it("keeps the generic chooser when no meeting ID was supplied", () => {
+  const firstId = "11111111-1111-4111-8111-111111111111";
+  const secondId = "22222222-2222-4222-8222-222222222222";
+  const html = renderToStaticMarkup(createElement(MeetingPrejoin, {
+    admittedMeetings: [{ meetingId: firstId }, { meetingId: secondId }],
+    onJoin: vi.fn().mockResolvedValue(undefined),
+    onBack: () => undefined,
+  }));
+
+  expect(html).toContain("Select an admitted meeting.");
+  expect(html).toContain("Meeting 1 · 11111111…11111");
+  expect(html).toContain("Meeting 2 · 22222222…22222");
+  expect(Object.keys(mocks.choices)).toHaveLength(2);
+});
+
+it("shows a tenant-verified linked title without other choices and joins by opaque meeting ID", async () => {
   const onJoin = vi.fn().mockResolvedValue(undefined);
   const meetingId = "8407bc84-63ef-48a0-bceb-b29b16043555";
   const admitted = admittedMeetingsWithTenantTitles(
@@ -197,11 +215,13 @@ it("shows a tenant-verified channel title but still joins by opaque meeting ID",
   }));
   expect(html).toContain("Government &amp; SI Team");
   expect(html).not.toContain("Meeting code");
+  expect(html).not.toContain("Your meeting is ready");
+  expect(Object.keys(mocks.choices)).toHaveLength(0);
   await mocks.joinButton?.onPress();
   expect(onJoin).toHaveBeenCalledWith({ meetingCode: meetingId, microphoneEnabled: false, cameraEnabled: false });
 });
 
-it("uses a channel title without an opaque ID in a multi-meeting choice", async () => {
+it("uses the safe channel title for the linked target in a multi-meeting result", async () => {
   const onJoin = vi.fn().mockResolvedValue(undefined);
   const titledId = "8407bc84-63ef-48a0-bceb-b29b16043555";
   const untitledId = "11111111-1111-4111-8111-111111111111";
@@ -213,10 +233,11 @@ it("uses a channel title without an opaque ID in a multi-meeting choice", async 
     ],
     initialMeetingCode: titledId, onJoin, onBack: () => undefined,
   }));
-  expect(html).toContain("Government &amp; SI Team · Selected");
+  expect(html).toContain("Government &amp; SI Team");
   expect(html).not.toContain("8407bc84…43555");
-  expect(html).toContain("Meeting 1 · 11111111…11111");
-  expect(mocks.choices[`Select admitted meeting 2, Government & SI Team`]).toBeTypeOf("function");
+  expect(html).not.toContain("11111111…11111");
+  expect(html).not.toContain("Select admitted meeting");
+  expect(Object.keys(mocks.choices)).toHaveLength(0);
   await mocks.joinButton?.onPress();
   expect(onJoin).toHaveBeenCalledWith({ meetingCode: titledId, microphoneEnabled: false, cameraEnabled: false });
 });
