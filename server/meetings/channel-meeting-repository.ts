@@ -216,6 +216,8 @@ export function createChannelMeetingRepository(transaction: Transaction = withTr
           FROM phone11_channel_meeting_invitations invitation
           JOIN phone11_channel_meetings source ON source.meeting_id=invitation.meeting_id
             AND source.tenant_id=invitation.tenant_id AND source.channel_id=invitation.channel_id
+          JOIN phone11_chat_conversations conversation ON conversation.tenant_id=source.tenant_id
+            AND conversation.id=source.channel_id AND conversation.kind IN ('group','channel')
           JOIN phone11_plain_video_admission_rooms room ON room.id=invitation.meeting_id
             AND room.tenant_id=invitation.tenant_id AND room.state='open' AND room.ended_at IS NULL
           JOIN phone11_plain_video_admission_members admission ON admission.meeting_id=invitation.meeting_id

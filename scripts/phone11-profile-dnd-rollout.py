@@ -35,7 +35,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
 
 
-SCHEMA = "phone11-profile-dnd-rollout/v1"
+SCHEMA = "phone11-profile-dnd-rollout/v2"
 RECEIPT_SCHEMA = "phone11-migration-receipt/v1"
 INTENT_SCHEMA = "phone11-runtime-mutation-intent/v1"
 SHUTDOWN_RECEIPT_SCHEMA = "phone11-runtime-shutdown-receipt/v1"
@@ -356,7 +356,7 @@ class Pins:
     nginx_dump_sha256: str
     nginx_marker: str
     route: str
-    dnd_exposed: bool
+    profile_gate_committed: bool
     kamailio_path: str
     kamailio_sha256: str
     wake_occurrences: int
@@ -398,7 +398,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
     exact_keys(migration, {"artifacts", "verify", "verify_sha256", "database_sha256", "before_catalog_sha256", "after_catalog_sha256", "receipt", "receipt_sha256"})
     exact_keys(probes, {"file", "sha256"})
     exact_keys(guard, {"program", "sha256", "fence_id", "fence_evidence_sha256"})
-    exact_keys(nginx, {"site", "site_sha256", "dump_sha256", "marker", "route", "dnd_exposed"})
+    exact_keys(nginx, {"site", "site_sha256", "dump_sha256", "marker", "route", "profile_gate_committed"})
     exact_keys(kamailio, {"config_path", "config_sha256", "wake_occurrences"})
     guarded(isinstance(release.get("sha"), str) and bool(re.fullmatch(r"[0-9a-f]{40}", release["sha"])), "manifest")
     guarded(isinstance(release.get("build"), str) and bool(re.fullmatch(r"[A-Za-z0-9_.-]{7,128}", release["build"])), "manifest")
@@ -432,8 +432,8 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
         "manifest",
     )
     guarded(nginx.get("route") in {"candidate", "baseline"}, "manifest")
-    guarded(type(nginx.get("dnd_exposed")) is bool, "manifest")
-    guarded(nginx.get("route") != "baseline" or nginx.get("dnd_exposed") is True, "manifest")
+    guarded(type(nginx.get("profile_gate_committed")) is bool, "manifest")
+    guarded(nginx.get("profile_gate_committed") == (receipt_sha is not None), "manifest")
     guarded(isinstance(kamailio.get("config_path"), str) and kamailio["config_path"].startswith("/"), "manifest")
     guarded(type(kamailio.get("wake_occurrences")) is int and 1 <= kamailio["wake_occurrences"] <= 100, "manifest")
     baseline, candidate = _runtime(current["baseline"]), _runtime(current["candidate"])
@@ -447,7 +447,7 @@ def parse_manifest(document: Mapping[str, Any]) -> Pins:
         migration["database_sha256"], migration["before_catalog_sha256"], migration["after_catalog_sha256"],
         Path(migration["receipt"]), receipt_sha, Path(probes["file"]), probes["sha256"],
         Path(guard["program"]), guard["sha256"], guard["fence_id"], guard["fence_evidence_sha256"], Path(nginx["site"]), nginx["site_sha256"], nginx["dump_sha256"],
-        nginx["marker"], nginx["route"], nginx["dnd_exposed"], kamailio["config_path"], kamailio["config_sha256"], kamailio["wake_occurrences"], document["public_origin"],
+        nginx["marker"], nginx["route"], nginx["profile_gate_committed"], kamailio["config_path"], kamailio["config_sha256"], kamailio["wake_occurrences"], document["public_origin"],
     )
 
 
@@ -1120,7 +1120,7 @@ class Operator:
         return baseline, candidate
 
     def prepare(self) -> None:
-        guarded(not self.pins.dnd_exposed or self.pins.migration_receipt_sha256 is not None, "dnd_exposure")
+        guarded(self.pins.profile_gate_committed == (self.pins.migration_receipt_sha256 is not None), "migration_receipt")
         self.image()
         baseline_config, candidate_config = self.compose_inputs()
         self.current(baseline_config, candidate_config)
@@ -1133,7 +1133,7 @@ class Operator:
 
     def rollback_preflight(self) -> tuple[Mapping[str, Any], Mapping[str, Any], RuntimePin | None, tuple[str, str] | None]:
         """Validate rollback inputs without requiring either service healthy."""
-        guarded(self.pins.dnd_exposed and self.pins.migration_receipt_sha256 is not None, "dnd_exposure")
+        guarded(self.pins.profile_gate_committed and self.pins.migration_receipt_sha256 is not None, "dnd_exposure")
         self.image()
         baseline_config, candidate_config = self.compose_inputs()
         self.receipt()
@@ -1150,10 +1150,19 @@ class Operator:
         return baseline_config, candidate_config, before_pin, stop
 
     def apply_migration(self) -> None:
+        guarded(self.pins.route == "baseline" and not self.pins.profile_gate_committed, "migration_order")
         guarded(self.pins.migration_receipt_sha256 is None, "migration_receipt")
         self.image()
         baseline_config, candidate_config = self.compose_inputs()
         self.current(baseline_config, candidate_config)
+        self.validate_replacement_receipt(
+            action="replace_baseline", pin=self.pins.baseline,
+            path=BASELINE_RECEIPT, notifications="enabled",
+        )
+        self.validate_replacement_receipt(
+            action="replace_candidate", pin=self.pins.candidate,
+            path=CANDIDATE_RECEIPT, notifications=None,
+        )
         self.receipt()
         self.probes = load_probes(pinned_read(self.pins.probes_file, self.pins.probes_sha256, "probes"))
         self.nginx()
@@ -1385,7 +1394,7 @@ class Operator:
             "nginx": {
                 "site": str(self.pins.nginx_site), "site_sha256": self.pins.nginx_site_sha256,
                 "dump_sha256": self.pins.nginx_dump_sha256, "marker": self.pins.nginx_marker,
-                "route": self.pins.route, "dnd_exposed": self.pins.dnd_exposed,
+                "route": self.pins.route, "profile_gate_committed": self.pins.profile_gate_committed,
             },
             "kamailio": {
                 "config_path": self.pins.kamailio_path,
@@ -1398,7 +1407,7 @@ class Operator:
             "schema": INTENT_SCHEMA,
             "operation_id": self.pins.baseline_operation_id,
             "phase": "replace_baseline",
-            "dnd_exposed": self.pins.dnd_exposed,
+            "profile_gate_committed": self.pins.profile_gate_committed,
             "manifest_contract_sha256": canonical_hash(manifest_contract),
             "before_container_id": self.pins.baseline.container_id,
             "desired": {
@@ -1543,7 +1552,7 @@ class Operator:
             # Before profile/DND exposure, the pinned ordinary-alert rollback is
             # safe.  After exposure, operators must use the explicit disabled
             # rollback phase; an automatic old dispatcher restart is forbidden.
-            if not self.pins.dnd_exposed:
+            if not self.pins.profile_gate_committed:
                 try:
                     rollback = render_compose(self.system, self.pins.rollback_compose, container=BASELINE_CONTAINER, image=self.pins.rollback_image, build=self.pins.rollback_build, role="default", port=BASELINE_PORT, notifications="1")
                     rollback_guard = self.guard("baseline-auto-rollback", require_readiness=False, require_fence=True, expected_fence_id=before["admission_fence_id"], min_fence_remaining_ms=150_000)
@@ -1566,7 +1575,11 @@ class Operator:
 
     def replace_candidate(self) -> None:
         self.prepare()
-        guarded(self.pins.route == "baseline" and self.pins.dnd_exposed, "route_state")
+        guarded(self.pins.route == "baseline" and not self.pins.profile_gate_committed and self.pins.migration_receipt_sha256 is None, "route_state")
+        self.validate_replacement_receipt(
+            action="replace_baseline", pin=self.pins.baseline,
+            path=BASELINE_RECEIPT, notifications="enabled",
+        )
         document = render_compose(self.system, self.pins.candidate_compose, container=CANDIDATE_CONTAINER, image=self.pins.image, build=self.pins.release_build, role="api-candidate", port=CANDIDATE_PORT, notifications=None)
         old = validate_runtime(self.system, CANDIDATE_CONTAINER, self.pins.candidate, role="api-candidate", port=CANDIDATE_PORT)
         self._up(document, self.pins.candidate_compose, stop=(CANDIDATE_CONTAINER, self.pins.candidate.container_id))
@@ -1628,11 +1641,11 @@ class Operator:
             raise error
 
     def route_baseline(self) -> None:
-        guarded(self.pins.route == "candidate" and not self.pins.dnd_exposed, "route_state")
+        guarded(self.pins.route == "candidate" and not self.pins.profile_gate_committed, "route_state")
         self._route("baseline")
 
     def route_candidate(self) -> None:
-        guarded(self.pins.route == "baseline" and self.pins.dnd_exposed, "route_state")
+        guarded(self.pins.route == "baseline" and self.pins.profile_gate_committed, "route_state")
         self._route("candidate")
 
     def _restore_route(self, *, expected: bytes | None = None) -> None:
@@ -1651,13 +1664,13 @@ class Operator:
         self.wake()
 
     def rollback_route(self) -> None:
-        guarded(self.pins.route == "candidate" and self.pins.dnd_exposed, "route_state")
+        guarded(self.pins.route == "candidate" and self.pins.profile_gate_committed, "route_state")
         validate_runtime(self.system, BASELINE_CONTAINER, self.pins.baseline, role="default", port=BASELINE_PORT)
         self.validate_replacement_receipt(action="replace_baseline", pin=self.pins.baseline, path=BASELINE_RECEIPT, notifications="enabled")
         self._restore_route()
 
     def rollback_baseline_disabled(self) -> None:
-        guarded(self.pins.dnd_exposed, "dnd_exposure")
+        guarded(self.pins.profile_gate_committed, "dnd_exposure")
         baseline_config, candidate_config, before_pin, stop = self.rollback_preflight()
         before_guard = self.guard("rollback-baseline-disabled-before", require_readiness=False, require_fence=True, min_fence_remaining_ms=150_000)
         document = render_compose(self.system, self.pins.rollback_disabled_compose, container=BASELINE_CONTAINER, image=self.pins.rollback_image, build=self.pins.rollback_build, role="default", port=BASELINE_PORT, notifications="0")

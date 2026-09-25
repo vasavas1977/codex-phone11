@@ -30,6 +30,7 @@ import {
   requireVoicemailStorage,
   VoicemailStorageUnavailableError,
 } from "./cdr-processor";
+import { countVoicemails, deleteVoicemail, markVoicemailRead, voicemailStorageStatus } from "./voicemail-access";
 import { SELF_SERVICE_CALL_OWNERSHIP_SQL } from "../../lib/pbx/self-service-usage";
 import { profilePhotoDescriptors } from "../profile/photo";
 import { reactivateExtensionSipAuth, revokeExtensionSipAuth, rotateExtensionSipAuth } from "../phone-provisioning";
@@ -1101,6 +1102,7 @@ export const pbxRouter = router({
           cfbDestination: z.string().nullable().optional(),
           cfnaDestination: z.string().nullable().optional(),
           cfnaTimeoutSeconds: z.number().min(5).max(120).optional(),
+          voicemailEnabled: z.boolean().optional(),
         }),
       )
       .mutation(async ({ ctx, input }) => {
@@ -1121,6 +1123,7 @@ export const pbxRouter = router({
           cfbDestination: "cfb_destination",
           cfnaDestination: "cfna_destination",
           cfnaTimeoutSeconds: "cfna_timeout_seconds",
+          voicemailEnabled: "voicemail_enabled",
         };
 
         for (const [key, col] of Object.entries(fields)) {
@@ -1141,13 +1144,13 @@ export const pbxRouter = router({
           const execute: SqlQuery = (sql, parameters) => client.query(sql, parameters);
           // Fetch and lock the tenant-owned source row before changing grants.
           const oldResult = await execute(
-            `SELECT (to_jsonb(e) - 'sip_password' - 'password') AS old_value, e.user_id, e.status
+            `SELECT (to_jsonb(e) - 'sip_password' - 'password') AS old_value, e.user_id, e.status, e.type
              FROM extensions e WHERE e.id = $1 AND e.tenant_id = $2
                AND e.deleted_at IS NULL FOR UPDATE OF e`,
             [input.id, tc.tenantId],
           );
           if (!oldResult.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
-          const oldExtension = oldResult.rows[0] as { user_id: number | null; status: string; old_value: Record<string, unknown> };
+          const oldExtension = oldResult.rows[0] as { user_id: number | null; status: string; type: string; old_value: Record<string, unknown> };
           const disabling = oldExtension.status === "active" && input.status !== undefined && input.status !== "active";
           const enabling = oldExtension.status !== "active" && input.status === "active";
 
@@ -1161,6 +1164,17 @@ export const pbxRouter = router({
               assignedUserId,
               tc.tenantId,
             );
+          }
+          if (input.voicemailEnabled === true) {
+            const mailboxOwner = assignedUserId === undefined ? oldExtension.user_id : assignedUserId;
+            if (oldExtension.type !== "user" || mailboxOwner === null || mailboxOwner === undefined ||
+                (input.status ?? oldExtension.status) !== "active") {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Assign an active member to an active extension before enabling voicemail",
+              });
+            }
+            await requireAssignableTenantMember(execute, mailboxOwner, tc.tenantId);
           }
           if (enabling) {
             const owner = assignedUserId === undefined ? oldExtension.user_id : assignedUserId;
@@ -2108,6 +2122,14 @@ export const pbxRouter = router({
   // VOICEMAIL
   // ========================================================================
   voicemail: router({
+    /** Read-only admin status for the selected workspace's inbox prerequisites. */
+    storageStatus: protectedProcedure
+      .input(z.object({ tenantId: z.number().int().positive() }))
+      .query(async ({ ctx, input }) => {
+        await getTenantAdminReadCtx(ctx, input.tenantId);
+        return voicemailStorageStatus();
+      }),
+
     /** List voicemail messages */
     list: protectedProcedure
       .input(
@@ -2133,17 +2155,7 @@ export const pbxRouter = router({
         const tc = await getTenantCtx(ctx);
         try {
           await requireVoicemailStorage();
-          await query(
-            `UPDATE voicemail_messages vm
-             SET status = 'read', read_at = NOW()
-             FROM extensions e
-             JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $3
-             JOIN tenant_memberships tm ON tm.user_id = ue.user_id AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
-             WHERE vm.id = $1 AND vm.tenant_id = $2 AND vm.status = 'new'
-               AND e.id = vm.extension_id AND e.tenant_id = vm.tenant_id
-               AND e.status = 'active' AND e.deleted_at IS NULL`,
-            [input.id, tc.tenantId, ctx.user.id],
-          );
+          await markVoicemailRead(tc.tenantId, ctx.user.id, input.id);
         } catch (error) {
           voicemailUnavailable(error);
         }
@@ -2157,17 +2169,7 @@ export const pbxRouter = router({
         const tc = await getTenantCtx(ctx);
         try {
           await requireVoicemailStorage();
-          await query(
-            `UPDATE voicemail_messages vm
-             SET status = 'deleted', deleted_at = COALESCE(deleted_at, NOW())
-             FROM extensions e
-             JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $3
-             JOIN tenant_memberships tm ON tm.user_id = ue.user_id AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
-             WHERE vm.id = $1 AND vm.tenant_id = $2 AND vm.status != 'deleted'
-               AND e.id = vm.extension_id AND e.tenant_id = vm.tenant_id
-               AND e.status = 'active' AND e.deleted_at IS NULL`,
-            [input.id, tc.tenantId, ctx.user.id],
-          );
+          await deleteVoicemail(tc.tenantId, ctx.user.id, input.id);
         } catch (error) {
           voicemailUnavailable(error);
         }
@@ -2179,33 +2181,9 @@ export const pbxRouter = router({
       .input(z.object({ extension: z.string().regex(/^[1-9][0-9]{0,15}$/).optional() }).optional())
       .query(async ({ ctx, input }) => {
         const tc = await getTenantCtx(ctx);
-        const conditions = ["vm.tenant_id = $1", "vm.status != 'deleted'"];
-        const vals: Array<number | string> = [tc.tenantId, ctx.user.id];
-        if (input?.extension) {
-          conditions.push("e.extension_number = $3");
-          vals.push(input.extension);
-        }
         try {
           await requireVoicemailStorage();
-          const result = await query(
-            `SELECT
-               COUNT(*) as total,
-               COUNT(*) FILTER (WHERE vm.status = 'new') as unread
-             FROM voicemail_messages vm
-             JOIN extensions e
-               ON e.id = vm.extension_id AND e.tenant_id = vm.tenant_id
-             JOIN user_extensions ue
-               ON ue.extension_id = e.id AND ue.user_id = $2
-             JOIN tenant_memberships tm
-               ON tm.user_id = ue.user_id AND tm.tenant_id = vm.tenant_id AND tm.status = 'active'
-             WHERE ${conditions.join(" AND ")}
-               AND e.status = 'active' AND e.deleted_at IS NULL`,
-            vals,
-          );
-          return {
-            total: parseInt(result.rows[0]?.total || "0"),
-            unread: parseInt(result.rows[0]?.unread || "0"),
-          };
+          return await countVoicemails(tc.tenantId, ctx.user.id, input?.extension);
         } catch (error) {
           voicemailUnavailable(error);
         }

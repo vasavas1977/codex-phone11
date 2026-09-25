@@ -7,8 +7,12 @@ import path from "node:path";
 import { URL } from "node:url";
 
 const mocks = vi.hoisted(() => ({ auth: vi.fn(), query: vi.fn() }));
+const epoch = "10000000-0000-4000-8000-000000000001";
 vi.mock("../server/_core/sdk", () => ({ sdk: { authenticateRequest: mocks.auth } }));
-vi.mock("../server/pbx/db", () => ({ query: mocks.query }));
+vi.mock("../server/pbx/db", () => ({
+  query: mocks.query,
+  withTransaction: (fn: (client: { query: typeof mocks.query }) => Promise<unknown>) => fn({ query: mocks.query }),
+}));
 
 describe("voicemail storage migration contract", () => {
   it("rejects inactive extensions at the database boundary", async () => {
@@ -52,6 +56,21 @@ beforeEach(() => {
 });
 
 describe("voicemail storage", () => {
+  it("issues a durable pre-record admission for an active personal mailbox", async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const response = await fetch(`${base}/recordings/voicemail/admission?tenant_id=12&extension=3001`, {
+      method: "POST",
+      headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! },
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.message_uuid).toMatch(/^[0-9a-f-]{36}$/);
+    expect(mocks.query.mock.calls[0][0]).toContain("FOR SHARE OF e");
+    expect(mocks.query.mock.calls[1][1]).toEqual([body.message_uuid, 12, 42, 17, epoch]);
+  });
+
   it("requires a configured integration secret before mailbox or filesystem work", async () => {
     const response = await fetch(`${base}/recordings/voicemail?tenant_id=12&extension=3001&message_uuid=vm-1`, {
       method: "POST",
@@ -64,13 +83,14 @@ describe("voicemail storage", () => {
 
   it("stores a voicemail only for an active voicemail mailbox and persists tenant-scoped metadata", async () => {
     mocks.query
-      .mockResolvedValueOnce({ rows: [{ id: 42 }] })
+      .mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [{ extension_id: 42, owner_user_id: 17, owner_epoch: epoch }] })
       .mockResolvedValueOnce({ rows: [] })
       .mockImplementationOnce(async (sql: string, values: unknown[]) => {
         expect(sql).toContain("INSERT INTO voicemail_messages");
-        expect(values.slice(0, 6)).toEqual([12, 42, "vm-200", "+6620303001", "Caller", 19]);
-        expect(String(values[6])).toContain(`${path.sep}12${path.sep}`);
-        return { rows: [{ id: 5, storage_path: values[6], storage_size_bytes: values[7] }] };
+        expect(values.slice(0, 8)).toEqual([12, 42, 17, epoch, "vm-200", "+6620303001", "Caller", 19]);
+        expect(String(values[8])).toContain(`${path.sep}12${path.sep}`);
+        return { rows: [{ id: 5, owner_user_id: 17, owner_epoch: epoch, storage_path: values[8], storage_size_bytes: values[9] }] };
       });
     const response = await fetch(`${base}/recordings/voicemail?tenant_id=12&extension=3001&message_uuid=vm-200&caller_number=%2B6620303001&caller_name=Caller&duration_seconds=19`, {
       method: "POST",
@@ -83,11 +103,13 @@ describe("voicemail storage", () => {
     expect(response.status).toBe(201);
     expect(await response.json()).toMatchObject({ ok: true, id: 5, size: 11, duplicate: false });
     expect(mocks.query.mock.calls[0]).toEqual([
-      expect.stringContaining("voicemail_enabled = true"),
+      expect.stringContaining("e.voicemail_enabled = true"),
       [12, "3001"],
     ]);
-    const insert = mocks.query.mock.calls[2];
-    expect(await readFile(insert[1][6], "utf8")).toBe("voice-bytes");
+    expect(mocks.query.mock.calls[0][0]).toContain("JOIN user_extensions ue");
+    expect(mocks.query.mock.calls[0][0]).toContain("tm.status = 'active'");
+    const insert = mocks.query.mock.calls[3];
+    expect(await readFile(insert[1][8], "utf8")).toBe("voice-bytes");
   });
 
   it("is idempotent only when a repeat upload has identical audio and storage identity", async () => {
@@ -95,13 +117,14 @@ describe("voicemail storage", () => {
     let storedSize = 0;
     let duplicate = false;
     mocks.query.mockImplementation(async (sql: string, values: unknown[] = []) => {
-      if (sql.includes("FROM extensions")) return { rows: [{ id: 42 }] };
-      if (sql.includes("SELECT id, storage_path, storage_size_bytes"))
-        return { rows: duplicate ? [{ id: 8, storage_path: storedPath, storage_size_bytes: storedSize }] : [] };
+      if (sql.includes("FROM extensions e")) return { rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] };
+      if (sql.includes("FROM voicemail_deposit_admissions")) return { rows: [{ extension_id: 42, owner_user_id: 17, owner_epoch: epoch }] };
+      if (sql.includes("SELECT id, extension_id, owner_user_id, owner_epoch, storage_path, storage_size_bytes"))
+        return { rows: duplicate ? [{ id: 8, extension_id: 42, owner_user_id: 17, owner_epoch: epoch, storage_path: storedPath, storage_size_bytes: storedSize }] : [] };
       if (sql.includes("INSERT INTO voicemail_messages")) {
-        storedPath = String(values[6]);
-        storedSize = Number(values[7]);
-        return { rows: [{ id: 8, storage_path: storedPath, storage_size_bytes: storedSize }] };
+        storedPath = String(values[8]);
+        storedSize = Number(values[9]);
+        return { rows: [{ id: 8, extension_id: 42, owner_user_id: 17, owner_epoch: epoch, storage_path: storedPath, storage_size_bytes: storedSize }] };
       }
       throw new Error(`Unexpected query: ${sql}`);
     });
@@ -125,9 +148,10 @@ describe("voicemail storage", () => {
     await mkdir(path.dirname(existingPath), { recursive: true });
     await writeFile(existingPath, "same-voice");
     mocks.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("FROM extensions")) return { rows: [{ id: 42 }] };
+      if (sql.includes("FROM extensions e")) return { rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] };
+      if (sql.includes("FROM voicemail_deposit_admissions")) return { rows: [{ extension_id: 42, owner_user_id: 17, owner_epoch: epoch }] };
       if (sql.includes("FROM voicemail_messages")) {
-        return { rows: [{ id: 18, storage_path: existingPath, storage_size_bytes: 10 }] };
+        return { rows: [{ id: 18, extension_id: 42, owner_user_id: 17, owner_epoch: epoch, storage_path: existingPath, storage_size_bytes: 10 }] };
       }
       throw new Error(`Unexpected query: ${sql}`);
     });
@@ -146,7 +170,61 @@ describe("voicemail storage", () => {
     await expect(access(currentPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("authorizes voicemail playback by assigned extension before opening a file", async () => {
+  it("rejects a replay that points the same message UUID at another mailbox", async () => {
+    const existingPath = path.join(directory, "12", "2026-09", "vm-other-mailbox.wav");
+    await mkdir(path.dirname(existingPath), { recursive: true });
+    await writeFile(existingPath, "same-voice");
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [{ extension_id: 42, owner_user_id: 17, owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [{ id: 19, extension_id: 43, owner_user_id: 18, owner_epoch: epoch, storage_path: existingPath, storage_size_bytes: 10 }] });
+
+    const response = await fetch(`${base}/recordings/voicemail?tenant_id=12&extension=3001&message_uuid=vm-other-mailbox`, {
+      method: "POST",
+      headers: { "content-type": "audio/wav", "x-fs-secret": process.env.FS_SHARED_SECRET! },
+      body: "same-voice",
+    });
+
+    expect(response.status).toBe(503);
+    expect(await readFile(existingPath, "utf8")).toBe("same-voice");
+    expect(mocks.query).toHaveBeenCalledTimes(3);
+  });
+
+  it("quarantines a delayed upload after mailbox reassignment before writing media", async () => {
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ id: 42, user_id: 18, voicemail_owner_epoch: "20000000-0000-4000-8000-000000000002" }] })
+      .mockResolvedValueOnce({ rows: [{ extension_id: 42, owner_user_id: 17, owner_epoch: epoch }] });
+    const response = await fetch(`${base}/recordings/voicemail?tenant_id=12&extension=3001&message_uuid=vm-stale`, {
+      method: "POST",
+      headers: { "content-type": "audio/wav", "x-fs-secret": process.env.FS_SHARED_SECRET! },
+      body: "old-message",
+    });
+    expect(response.status).toBe(409);
+    expect(mocks.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a written object after an uncertain database failure so a concurrent winner is not erased", async () => {
+    let file = "";
+    mocks.query
+      .mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [{ extension_id: 42, owner_user_id: 17, owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockImplementationOnce(async (_sql: string, values: unknown[]) => {
+        file = String(values[8]);
+        throw new Error("uncertain commit");
+      });
+
+    const response = await fetch(`${base}/recordings/voicemail?tenant_id=12&extension=3001&message_uuid=vm-uncertain`, {
+      method: "POST",
+      headers: { "content-type": "audio/wav", "x-fs-secret": process.env.FS_SHARED_SECRET! },
+      body: "same-voice",
+    });
+
+    expect(response.status).toBe(503);
+    expect(await readFile(file, "utf8")).toBe("same-voice");
+  });
+
+  it("authorizes voicemail playback by deposit-time owner before opening a file", async () => {
     const file = path.join(directory, "12", "2026-09", "vm-play.wav");
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, "private voicemail");
@@ -155,7 +233,7 @@ describe("voicemail storage", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(await response.text()).toBe("private voicemail");
-    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("JOIN user_extensions ue"), [17, 9]);
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("vm.owner_user_id = $1"), [17, 9]);
     expect(mocks.query.mock.calls[0][0]).toContain("JOIN tenant_memberships tm");
     expect(mocks.query.mock.calls[0][0]).toContain("tm.status = 'active'");
   });
@@ -168,15 +246,16 @@ describe("voicemail storage", () => {
 });
 
 describe("voicemail inbox queries", () => {
-  it("requires the reviewed schema and scopes list results to the assigned extension", async () => {
+  it("requires the reviewed schema and scopes list results to the deposit-time owner", async () => {
     const { getVoicemails } = await import("../server/pbx/cdr-processor");
     mocks.query
-      .mockResolvedValueOnce({ rows: [{ name: "voicemail_messages" }] })
+      .mockResolvedValueOnce({ rows: [{ name: "voicemail_messages", admissions: "voicemail_deposit_admissions",
+        owner_columns: "2", guard_trigger: true, epoch_trigger: true }] })
       .mockResolvedValueOnce({ rows: [{ id: 7, extension_number: "3001", caller_number: "+6620303001" }] });
     const rows = await getVoicemails(12, 17, "3001");
     expect(rows).toEqual([{ id: 7, extension_number: "3001", caller_number: "+6620303001" }]);
     const [sql, values] = mocks.query.mock.calls[1];
-    expect(sql).toContain("JOIN user_extensions ue");
+    expect(sql).toContain("vm.owner_user_id = $2");
     expect(sql).toContain("JOIN tenant_memberships tm");
     expect(sql).toContain("tm.status = 'active'");
     expect(sql).toContain("vm.status != 'deleted'");
@@ -198,6 +277,31 @@ describe("voicemail inbox queries", () => {
     const { requireVoicemailStorage, VoicemailStorageUnavailableError } = await import("../server/pbx/cdr-processor");
     mocks.query.mockResolvedValueOnce({ rows: [{ name: null }] });
     await expect(requireVoicemailStorage()).rejects.toBeInstanceOf(VoicemailStorageUnavailableError);
+  });
+
+  it("quarantines a legacy schema without a non-null deposit-time owner", async () => {
+    const { requireVoicemailStorage, VoicemailStorageUnavailableError } = await import("../server/pbx/cdr-processor");
+    mocks.query.mockResolvedValueOnce({ rows: [{ name: "voicemail_messages", admissions: null, owner_columns: "1" }] });
+    await expect(requireVoicemailStorage()).rejects.toBeInstanceOf(VoicemailStorageUnavailableError);
+  });
+
+  it("fails closed when either ownership trigger is absent or disabled", async () => {
+    const { requireVoicemailStorage, VoicemailStorageUnavailableError } = await import("../server/pbx/cdr-processor");
+    for (const flags of [{ guard_trigger: false, epoch_trigger: true },
+      { guard_trigger: true, epoch_trigger: false }]) {
+      mocks.query.mockResolvedValueOnce({ rows: [{ name: "voicemail_messages",
+        admissions: "voicemail_deposit_admissions", owner_columns: "2", ...flags }] });
+      await expect(requireVoicemailStorage()).rejects.toBeInstanceOf(VoicemailStorageUnavailableError);
+    }
+  });
+
+  it("reports schema and writable media directory separately", async () => {
+    const { voicemailStorageStatus } = await import("../server/pbx/voicemail-access");
+    mocks.query.mockResolvedValueOnce({ rows: [{ name: null, admissions: null, owner_columns: "0" }] });
+    await expect(voicemailStorageStatus()).resolves.toEqual({ schemaReady: false, mediaDirectoryWritable: true });
+    mocks.query.mockResolvedValueOnce({ rows: [{ name: "voicemail_messages", admissions: "voicemail_deposit_admissions",
+      owner_columns: "2", guard_trigger: true, epoch_trigger: true }] });
+    await expect(voicemailStorageStatus()).resolves.toEqual({ schemaReady: true, mediaDirectoryWritable: true });
   });
 });
 

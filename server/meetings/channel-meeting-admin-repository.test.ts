@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { createChannelMeetingAdminRepository } from "./channel-meeting-admin-repository";
 
 const channelId = "12345678-1234-4234-8234-123456789012";
+const directId = "22345678-1234-4234-8234-123456789012";
 
-function repository(options: { admin?: boolean; adminRevokedAtLock?: boolean; extensionRevokedAtLock?: boolean; tenant?: boolean; installed?: boolean; channel?: boolean; member?: boolean } = {}) {
+function repository(options: { admin?: boolean; adminRevokedAtLock?: boolean; extensionRevokedAtLock?: boolean; tenant?: boolean; installed?: boolean; channel?: boolean; member?: boolean; direct?: boolean } = {}) {
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.startsWith("SET LOCAL")) return { rows: [] };
     if (sql.includes("pg_advisory_xact_lock")) return { rows: [] };
@@ -22,14 +23,21 @@ function repository(options: { admin?: boolean; adminRevokedAtLock?: boolean; ex
       return { rows: [{ legacy_user_id: 7 }] };
     if (sql.includes("to_regclass('public.phone11_channel_meetings')"))
       return { rows: [{ available: options.installed !== false }] };
+    if (sql.includes("phone11_direct_meeting_block_pair"))
+      return { rows: [{ available: options.installed !== false }] };
     if (sql.includes("SELECT id,name,kind FROM phone11_chat_conversations"))
       return { rows: [{ id: channelId, name: "Team", kind: "channel" }] };
+    if (sql.includes("SELECT conversation.id,conversation.name,conversation.kind"))
+      return { rows: options.direct ? [{ id: directId, name: "Direct message", kind: "direct" }] : [] };
     if (sql.includes("COALESCE(NULLIF(users.name"))
-      return { rows: [{ conversation_id: channelId, user_id: 8, name: "Colleague", can_start_meeting: true }] };
+      return { rows: [{ conversation_id: channelId, user_id: 8, name: "Colleague", can_start_meeting: true },
+        ...(options.direct ? [{ conversation_id: directId, user_id: 7, name: "Admin", can_start_meeting: false },
+          { conversation_id: directId, user_id: 8, name: "Colleague", can_start_meeting: false }] : [])] };
     if (sql.includes("SELECT id FROM phone11_chat_conversations"))
       return { rows: options.channel === false ? [] : [{ id: channelId }] };
     if (sql.includes("SELECT user_id FROM phone11_chat_members"))
-      return { rows: options.member === false ? [] : [{ user_id: 8 }] };
+      return { rows: options.member === false ? [] : sql.includes("LIMIT 3")
+        ? [{ user_id: 7 }, { user_id: 8 }] : [{ user_id: 8 }] };
     if (sql.includes("SELECT assignment.user_id FROM user_extensions"))
       return { rows: options.member === false ? [] : [{ user_id: 8, extension_id: 108 }] };
     if (sql.includes("SELECT assignment.user_id,assignment.extension_id FROM user_extensions"))
@@ -70,7 +78,7 @@ describe("channel meeting administration", () => {
     const { api, query } = repository();
     await expect(api.overview(7, 41, true)).resolves.toEqual({ available: true, channels: [{
       id: channelId, name: "Team", kind: "channel", members: [{ userId: 8, name: "Colleague", canStartMeeting: true }],
-    }] });
+    }], directConversations: [], directConversationsReason: undefined });
     await expect(api.setHostPermission(7, { tenantId: 41, channelId, userId: 8, canStartMeeting: false }, true))
       .resolves.toEqual({ channelId, userId: 8, canStartMeeting: false });
     const update = query.mock.calls.find(([sql]) => sql.includes("UPDATE phone11_chat_members"));
@@ -78,6 +86,21 @@ describe("channel meeting administration", () => {
     expect(query.mock.calls.some(([sql, values]) => sql.includes("FROM phone11_chat_members")
       && sql.includes("tenant_id=$1 AND conversation_id=$2 AND user_id=$3")
       && values?.[0] === 41 && values?.[1] === channelId && values?.[2] === 8)).toBe(true);
+  });
+
+  it("lists only exact two-member direct conversations and grants a selected member through the admin gate", async () => {
+    const { api, query } = repository({ direct: true });
+    await expect(api.overview(7, 41, true)).resolves.toMatchObject({ directConversations: [{
+      id: directId, kind: "direct", members: [
+        { userId: 7, canStartMeeting: false }, { userId: 8, canStartMeeting: false },
+      ],
+    }] });
+    await expect(api.setHostPermission(7, { tenantId: 41, channelId: directId, userId: 8,
+      canStartMeeting: true }, true, "direct")).resolves.toMatchObject({ userId: 8, canStartMeeting: true });
+    const directConversation = query.mock.calls.find(([sql]) => sql.includes("AND kind ='direct'"));
+    expect(directConversation?.[1]).toEqual([41, directId]);
+    expect(query.mock.calls.some(([sql, values]) => sql.includes("UPDATE phone11_chat_members")
+      && values?.[1] === directId && values?.[2] === 8)).toBe(true);
   });
 
   it("prechecks admin access without a row lock, then takes the channel lock before locking authorization rows", async () => {

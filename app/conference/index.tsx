@@ -6,7 +6,7 @@ import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
 import { Platform } from "react-native";
 import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
-import { admittedMeetingsWithTenantTitles } from "@/lib/meetings/admitted-selection";
+import { admittedMeetingsWithTenantTitles, safeMeetingTitle } from "@/lib/meetings/admitted-selection";
 import { useChatStore } from "@/lib/chat/store";
 import {
   MeetingJoinFailure,
@@ -99,8 +99,9 @@ export default function ConferenceScreen() {
   const chatOwnerId = useChatStore(state => state.userId);
   const selectedWorkspaceId = useChatStore(state => state.workspace?.id);
   const requestedTenantId = Number(params.tenantId);
+  const fromConversation = params.source === "channel" || params.source === "direct";
   const selectedTenantId =
-    params.source === "channel" &&
+    fromConversation &&
     Number.isSafeInteger(requestedTenantId) && requestedTenantId > 0 &&
     user?.id === chatOwnerId && selectedWorkspaceId === requestedTenantId
       ? requestedTenantId
@@ -110,18 +111,38 @@ export default function ConferenceScreen() {
     retry: false,
   });
   const admittedMeetings = trpc.meetings.available.useQuery(undefined, {
-    enabled: !!user && capabilities.data?.available === true,
+    enabled: !!user && capabilities.data?.available === true && !fromConversation,
     retry: false,
   });
   const tenantMeetings = trpc.meetings.availableForTenant.useQuery(
     { tenantId: selectedTenantId ?? 0 },
     { enabled: !!user && capabilities.data?.available === true && selectedTenantId !== null, retry: false, staleTime: 0 },
   );
-  const displayedMeetings = admittedMeetings.data
-    ? admittedMeetingsWithTenantTitles(admittedMeetings.data, tenantMeetings.data, selectedTenantId)
-    : undefined;
+  // A conversation link names one exact room. The general availability list
+  // is intentionally capped, so it cannot be used as proof that this room is
+  // admitted (or as the picker for a direct/channel invitation).
+  const exactMeeting = trpc.meetings.availableMeetingForTenant.useQuery(
+    { tenantId: selectedTenantId ?? 0, meetingId: requestedMeeting },
+    { enabled: !!user && capabilities.data?.available === true && selectedTenantId !== null && !!requestedMeeting, retry: false,
+      staleTime: 0, gcTime: 0, refetchOnMount: "always" },
+  );
+  const scopedMeeting = user && getAuthSnapshot().user === user && selectedTenantId !== null &&
+    !exactMeeting.isFetching && !exactMeeting.error && exactMeeting.data?.meetingId === requestedMeeting &&
+    exactMeeting.data?.tenantId === selectedTenantId
+    ? {
+        meetingId: requestedMeeting,
+        title: safeMeetingTitle(tenantMeetings.data?.find(row => row.meetingId === requestedMeeting)?.title),
+      }
+    : null;
+  const displayedMeetings = fromConversation
+    ? scopedMeeting ? [scopedMeeting] : undefined
+    : admittedMeetings.data
+      ? admittedMeetingsWithTenantTitles(admittedMeetings.data, undefined, null)
+      : undefined;
   const reason = !user
     ? "Sign in to join your workspace meetings."
+    : fromConversation && selectedTenantId === null
+      ? "Return to Team Chat and open this meeting from the current workspace."
     : capabilities.isLoading
       ? "Checking meeting availability…"
       : capabilities.error
@@ -129,6 +150,12 @@ export default function ConferenceScreen() {
         : !capabilities.data?.available
           ? (capabilities.data?.reason ??
             "Video meetings are being connected for your workspace. Joining is not available yet.")
+          : fromConversation && (exactMeeting.isLoading || exactMeeting.isFetching)
+            ? "Checking this meeting invitation…"
+            : fromConversation && exactMeeting.error
+              ? "Could not check this meeting invitation. Return to Team Chat and try again."
+              : fromConversation
+                ? scopedMeeting ? undefined : "This meeting invitation is no longer available."
           : admittedMeetings.isLoading
             ? "Loading your admitted meetings…"
             : admittedMeetings.error
@@ -138,7 +165,7 @@ export default function ConferenceScreen() {
                 : undefined;
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
-      {user && !capabilities.error && !admittedMeetings.error && capabilities.data?.available && displayedMeetings?.length ? (
+      {user && !capabilities.error && (fromConversation || !admittedMeetings.error) && capabilities.data?.available && displayedMeetings?.length ? (
         <EnabledMeetingPrejoin
           key={`${user.id}:${requestedMeeting}:${displayedMeetings.map(item => item.meetingId).join(",")}`}
           initialMeetingCode={requestedMeeting}
@@ -157,12 +184,13 @@ export default function ConferenceScreen() {
             user && !capabilities.isLoading
               ? () => {
                   void capabilities.refetch();
-                  void admittedMeetings.refetch();
+                  if (fromConversation) void exactMeeting.refetch();
+                  else void admittedMeetings.refetch();
                 }
               : undefined
           }
           checkingAvailability={
-            capabilities.isFetching || admittedMeetings.isFetching
+            capabilities.isFetching || (fromConversation ? exactMeeting.isFetching : admittedMeetings.isFetching)
           }
           onBack={() =>
             router.canGoBack() ? router.back() : router.replace("/(tabs)")

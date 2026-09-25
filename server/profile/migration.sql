@@ -25,4 +25,14 @@ CREATE TABLE IF NOT EXISTS phone11_workspace_profile_status (
 CREATE INDEX IF NOT EXISTS phone11_workspace_profile_status_visible
   ON phone11_workspace_profile_status(tenant_id, user_id, updated_at DESC);
 
+-- Workspace administrators explicitly commission profile status per tenant.
+-- An absent setting row is disabled, including on older databases that already
+-- contain profile rows. Applying this migration never exposes saved statuses.
+CREATE TABLE IF NOT EXISTS phone11_workspace_profile_status_settings (
+  tenant_id INTEGER PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_by INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
 COMMIT;

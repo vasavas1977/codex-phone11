@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
   openMessage: vi.fn(async () => "channel-1"),
   push: vi.fn(),
   alert: vi.fn(),
+  authUser: { id: 1 },
+  meetingCapability: vi.fn(async () => ({ available: true, canStart: true })),
+  meetingStart: vi.fn(async () => ({ meetingId: "22222222-2222-4222-8222-222222222222" })),
   directoryCalls: [] as unknown[][],
   avatars: [] as any[],
 }));
@@ -99,7 +102,7 @@ vi.mock("../components/profile/profile-avatar", () => ({
   useProfilePhotoCacheScope: () => {},
 }));
 vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ photoDescriptor: null }) }));
-vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: { id: 1 } }) }));
+vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: mocks.authUser }) }));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
     primary: "#008877",
@@ -126,7 +129,13 @@ vi.mock("../lib/sip/account-store", () => ({
   ),
 }));
 vi.mock("../lib/_core/auth", () => ({
-  getAuthSnapshot: () => ({ user: { id: 1 } }),
+  getAuthSnapshot: () => ({ user: mocks.authUser }),
+}));
+vi.mock("../lib/chat/transport", () => ({
+  createChatTransport: () => ({
+    directMeetingCapabilities: mocks.meetingCapability,
+    startDirectMeeting: mocks.meetingStart,
+  }),
 }));
 import ContactsScreen from "../app/(tabs)/contacts";
 import ContactDetailScreen from "../app/contacts/[id]";
@@ -173,6 +182,24 @@ it("selection and in-call profile cards show information without call or message
   renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded actionsEnabled={false} />);
   expect(mocks.press.has("Call สมชาย")).toBe(false);
   expect(mocks.press.has("Message สมชาย")).toBe(false);
+  expect(mocks.press.has("Meet with สมชาย")).toBe(false);
+});
+it("starts a contact meeting only after checking direct hosting permission", async () => {
+  renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded />);
+  mocks.press.get("Meet with สมชาย")!();
+  await vi.waitFor(() => expect(mocks.push).toHaveBeenCalledWith({
+    pathname: "/conference",
+    params: { meetingId: "22222222-2222-4222-8222-222222222222", tenantId: "1", source: "direct" },
+  }));
+  expect(mocks.meetingCapability).toHaveBeenCalledWith(1, "channel-1");
+  expect(mocks.meetingStart).toHaveBeenCalledWith(1, "channel-1", expect.stringMatching(/^[0-9a-f-]{36}$/));
+});
+it("does not create a room when direct meeting permission is absent", async () => {
+  mocks.meetingCapability.mockResolvedValueOnce({ available: false, canStart: false });
+  renderToStaticMarkup(<ContactDetails id="5" tenantId="1" embedded />);
+  mocks.press.get("Meet with สมชาย")!();
+  await vi.waitFor(() => expect(mocks.alert).toHaveBeenCalledWith("Meeting unavailable", expect.any(String)));
+  expect(mocks.meetingStart).not.toHaveBeenCalled();
 });
 it("embedded details follow the parent directory photo without a second directory fetch", () => {
   mocks.directory.people[0].photoUrl = "/api/profile/photo/1/5?v=old";

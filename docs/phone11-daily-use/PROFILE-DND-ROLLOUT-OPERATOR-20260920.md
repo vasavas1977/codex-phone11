@@ -13,15 +13,15 @@ remaining telephony-owner decision are recorded in
 `PROFILE-DND-HOST-ADMISSION-CONTRACT-20260921.md`.
 
 The guarded operator is
-`scripts/phone11-profile-dnd-rollout.py`. It implements the eight phases in the
-profile/DND dispatcher rollout plan while preserving the current topology:
+`scripts/phone11-profile-dnd-rollout.py`. It implements the ordered profile/DND
+rollout in the dispatcher plan while preserving the current topology:
 
 - `cp11-backend` stays the sole default-role worker and port-3000 SIP wake owner;
 - `cp11-api-candidate` stays workerless on loopback port 3002;
 - only the exact `/api/trpc` and `/api/trpc/` locations may move;
 - Kamailio and FreeSWITCH are inspected but never changed, reloaded, or restarted;
 - the old candidate is not stopped during a route change, allowing requests to drain;
-- an old dispatcher restored after DND exposure must have
+- a previous dispatcher restored after the profile migration commits must have
   `PHONE11_CHAT_NOTIFICATIONS_ENABLED=0`.
 
 ## Source validation
@@ -138,7 +138,7 @@ host, do not run `--replace-baseline` or either baseline rollback. A successful
 
 ## Manifest construction
 
-The manifest schema is `phone11-profile-dnd-rollout/v1`. Populate it from a
+The manifest schema is `phone11-profile-dnd-rollout/v2`. Populate it from a
 fresh, read-only inventory. Placeholder, mutable-tag, shortened-ID, stale, or
 unreviewed values are rejected.
 
@@ -174,10 +174,10 @@ The important sections are:
   item named `all_mentions`. Each item has its own exact committed file and
   SHA-256. Do not add `all_mentions` until that implementation and migration are
   merged into the selected clean release and independently reviewed.
-- `migration.verify`: one read-only `SELECT`/`WITH` query whose ordered rows
-  fully describe the profile table and, when selected, the `@all` objects,
-  including columns, primary/foreign keys, allowed-value and DND-expiry checks,
-  index, owner, and grants.
+- `migration.verify`: the SHA-pinned read-only query in
+  `server/profile/catalog-verification.sql`. Its ordered rows fingerprint both
+  profile tables' columns, primary/foreign keys, allowed-value and DND-expiry
+  checks, indexes, owner, and grants without selecting profile data.
 - `migration.receipt_sha256`: `null` before first apply. After apply, hash the
   exclusive receipt, set its exact SHA-256, and repin the manifest. An exact
   already-applied catalog can recover a missing receipt after a committed
@@ -187,9 +187,11 @@ The important sections are:
   `colleague_presence`, `notification_readiness`, `denied_tenant`, and
   `revoked_membership`. Responses are evaluated in memory and never printed.
 - `nginx.route`: the currently pinned route, `candidate` or `baseline`.
-  `nginx.dnd_exposed` is `false` before the first successful route to the new
-  baseline and permanently `true` after profile/DND becomes publicly writable.
-  A baseline route with `dnd_exposed=false` is rejected.
+  `nginx.profile_gate_committed` is `false` before migration and `true` exactly
+  when the migration receipt exists. It marks the schema/rollback barrier, not
+  whether a tenant enabled workspace status. The field may be false while the
+  new baseline serves tRPC before migration; the missing settings table keeps
+  workspace status and DND unavailable during that bridge.
 - `kamailio`: exact config hash, absolute in-container path, and positive exact
   occurrence count of `http://127.0.0.1:3000/api/phone11/wake`.
 - `guard`: exact helper hash, independently assigned fence ID, and the SHA-256
@@ -220,12 +222,12 @@ Expected output is exactly `prepare=READY activation=NOT_RUN`. Any
 
 After the owner authorizes the brief worker/wake interruption and all source,
 image, artifact, and live pins are current, use the ordered phases below. Run a
-fresh `--prepare` and repin between every phase.
+fresh `--prepare` and repin between every phase. Migration is intentionally after
+both API runtimes have the tenant-gated code; the operator blocks it unless the
+baseline and candidate replacement receipts match the exact release pins and
+public tRPC currently routes to the new baseline.
 
 ```sh
-sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
-  --apply-migration --manifest /root/phone11-profile-dnd-rollout.json
-
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
   --replace-baseline --manifest /root/phone11-profile-dnd-rollout.json
 
@@ -236,8 +238,20 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
   --replace-candidate --manifest /root/phone11-profile-dnd-rollout.json
 
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
+  --apply-migration --manifest /root/phone11-profile-dnd-rollout.json
+
+sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
   --route-candidate --manifest /root/phone11-profile-dnd-rollout.json
 ```
+
+The bridge through `--replace-candidate` is schema-free: the public route stays
+on the newly gated baseline while the old candidate drains and is replaced.
+Only after both runtime receipts are pinned does `--apply-migration` create the
+tenant settings table. It starts empty, so every tenant remains disabled.
+Existing profile rows are preserved. After writing the migration receipt,
+repin `profile_gate_committed=true`; no tenant should be enabled as part of this
+operator sequence. Tenant activation is a separate owner/admin action in the
+admin profile-status screen.
 
 The migration is one serializable transaction with a transaction advisory
 lock, `lock_timeout=2s`, `statement_timeout=30s`, exact database identity,
@@ -303,7 +317,8 @@ The command requires the exact route receipt and a healthy pinned new baseline,
 atomically restores the baseline-routed site, checks syntax, gracefully reloads
 Nginx, rechecks wake bytes, and leaves the candidate running to drain.
 
-If the old baseline must be restored after DND was publicly exposed, use only:
+If the old baseline must be restored after the migration receipt is committed,
+use only:
 
 ```sh
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
@@ -311,7 +326,7 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py \
   --manifest /root/phone11-profile-dnd-rollout.json
 ```
 
-The manifest must say `dnd_exposed=true`; the operator accepts only the exact
+The manifest must say `profile_gate_committed=true`; the operator accepts only the exact
 old rollback image/config with ordinary chat notifications set to `0`. Wake,
 recording, ESL, mounts, networks, limits, and restart policy remain pinned.
 Its rollback preflight accepts the exact pinned baseline even if unhealthy, an

@@ -21,6 +21,12 @@ import { useDirectory } from "@/hooks/use-directory";
 import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
 import { trpc } from "@/lib/trpc";
 
+function conversationTitle(conversation: { kind: string; name: string; members: readonly { name: string }[] }) {
+  return conversation.kind === "direct"
+    ? conversation.members.map(member => member.name).join(" · ")
+    : conversation.name;
+}
+
 export default function AdminMeetingsScreen() {
   return (
     <AdminWorkspaceBoundary>
@@ -36,7 +42,7 @@ function AdminMeetingsContent() {
   const tenantId = workspace.selectedTenantId;
   const [saveError, setSaveError] = useState<string | null>(null);
   const [changing, setChanging] = useState<string | null>(null);
-  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
     null,
   );
   const [memberSearch, setMemberSearch] = useState("");
@@ -82,30 +88,42 @@ function AdminMeetingsContent() {
     },
   );
   const setHostPermission = trpc.meetings.adminSetHostPermission.useMutation();
-  const selectedChannel = overview.data?.available
-    ? overview.data.channels.find((channel) => channel.id === selectedChannelId)
+  const setDirectHostPermission = trpc.meetings.adminSetDirectHostPermission.useMutation();
+  const conversations = overview.data?.available
+    ? [...overview.data.channels, ...overview.data.directConversations]
+    : [];
+  const selectedConversation = overview.data?.available
+    ? conversations.find((conversation) => conversation.id === selectedConversationId)
     : undefined;
-  const matchingMembers = selectedChannel
-    ? selectedChannel.members.filter((member) =>
+  const matchingMembers = selectedConversation
+    ? selectedConversation.members.filter((member) =>
         member.name.toLowerCase().includes(memberSearch.trim().toLowerCase()),
       )
     : [];
 
   const updateHostPermission = async (
-    channelId: string,
+    conversation: (typeof conversations)[number],
     userId: number,
     canStartMeeting: boolean,
   ) => {
     if (!tenantId || changing || !overview.data?.available) return;
     setSaveError(null);
-    setChanging(`${channelId}:${userId}`);
+    setChanging(`${conversation.id}:${userId}`);
     try {
-      await setHostPermission.mutateAsync({
-        tenantId,
-        channelId,
-        userId,
-        canStartMeeting,
-      });
+      if (conversation.kind === "direct")
+        await setDirectHostPermission.mutateAsync({
+          tenantId,
+          conversationId: conversation.id,
+          userId,
+          canStartMeeting,
+        });
+      else
+        await setHostPermission.mutateAsync({
+          tenantId,
+          channelId: conversation.id,
+          userId,
+          canStartMeeting,
+        });
       await overview.refetch();
     } catch (error) {
       setSaveError(
@@ -149,12 +167,17 @@ function AdminMeetingsContent() {
         </View>
 
         <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
-          {selectedChannel ? selectedChannel.name : "Channel hosting"}
+          {selectedConversation ? conversationTitle(selectedConversation) : "Meeting hosts"}
         </Text>
         <Text style={[styles.description, { color: colors.muted }]}>
-          Choose who can start a meeting from each group chat or channel.
-          Members can only join when selected by the host.
+          Choose who can start a meeting from each direct chat, group chat, or channel.
+          Group and channel members join only when selected by the host.
         </Text>
+        {overview.data?.available && overview.data.directConversationsReason ? (
+          <Text accessibilityRole="alert" style={[styles.description, { color: colors.muted }]}>
+            {overview.data.directConversationsReason}
+          </Text>
+        ) : null}
 
         {tenant.isLoading || overview.isLoading ? (
           <View style={styles.state}>
@@ -194,22 +217,22 @@ function AdminMeetingsContent() {
             {overview.data?.reason ||
               "Meeting management is not enabled for this workspace."}
           </Text>
-        ) : overview.data.channels.length === 0 ? (
+        ) : conversations.length === 0 ? (
           <Text style={[styles.stateText, { color: colors.muted }]}>
-            No group chats or channels are available for meeting hosting.
+            No conversations are available for meeting hosting.
           </Text>
-        ) : selectedChannel ? (
+        ) : selectedConversation ? (
           <>
             <Pressable
               accessibilityRole="button"
               onPress={() => {
-                setSelectedChannelId(null);
+                setSelectedConversationId(null);
                 setMemberSearch("");
                 setSaveError(null);
               }}
               style={styles.allChannels}
             >
-              <Text style={{ color: colors.primary }}>‹ All channels</Text>
+              <Text style={{ color: colors.primary }}>‹ All conversations</Text>
             </Pressable>
             <TextInput
               accessibilityLabel="Search meeting members"
@@ -233,7 +256,7 @@ function AdminMeetingsContent() {
               ]}
             >
               <Text style={[styles.channelMeta, { color: colors.muted }]}>
-                {matchingMembers.length} of {selectedChannel.members.length}{" "}
+                {matchingMembers.length} of {selectedConversation.members.length}{" "}
                 eligible members
               </Text>
               {matchingMembers.slice(0, 100).map((member) => (
@@ -263,13 +286,13 @@ function AdminMeetingsContent() {
                     </Text>
                   </View>
                   <Switch
-                    accessibilityLabel={`${member.name} can start meetings in ${selectedChannel.name}`}
+                    accessibilityLabel={`${member.name} can start meetings in ${conversationTitle(selectedConversation)}`}
                     accessibilityRole="switch"
                     value={member.canStartMeeting}
                     disabled={changing !== null}
                     onValueChange={(value) =>
                       void updateHostPermission(
-                        selectedChannel.id,
+                        selectedConversation,
                         member.userId,
                         value,
                       )
@@ -286,12 +309,12 @@ function AdminMeetingsContent() {
             </View>
           </>
         ) : (
-          overview.data.channels.map((channel) => (
+          conversations.map((conversation) => (
             <Pressable
-              key={channel.id}
+              key={conversation.id}
               accessibilityRole="button"
-              accessibilityLabel={`Manage meeting hosts in ${channel.name}`}
-              onPress={() => setSelectedChannelId(channel.id)}
+              accessibilityLabel={`Manage meeting hosts in ${conversationTitle(conversation)}`}
+              onPress={() => setSelectedConversationId(conversation.id)}
               style={[
                 styles.channelChoice,
                 { borderColor: colors.border, backgroundColor: colors.surface },
@@ -301,13 +324,13 @@ function AdminMeetingsContent() {
                 <Text
                   style={[styles.channelName, { color: colors.foreground }]}
                 >
-                  {channel.name}
+                  {conversationTitle(conversation)}
                 </Text>
                 <Text style={[styles.channelMeta, { color: colors.muted }]}>
-                  {channel.kind === "channel" ? "Channel" : "Group chat"} ·{" "}
-                  {channel.members.length} eligible members ·{" "}
+                  {conversation.kind === "direct" ? "Direct chat" : conversation.kind === "channel" ? "Channel" : "Group chat"} ·{" "}
+                  {conversation.members.length} eligible members ·{" "}
                   {
-                    channel.members.filter((member) => member.canStartMeeting)
+                    conversation.members.filter((member) => member.canStartMeeting)
                       .length
                   }{" "}
                   hosts

@@ -38,6 +38,7 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
    INSERT INTO users VALUES(1,'sender'),(2,'recipient'),(3,'outsider');INSERT INTO tenants VALUES(10,'first','active'),(20,'other','active');
    INSERT INTO extensions VALUES(1,10,'active',NULL,'1001'),(2,10,'active',NULL,'1002'),(3,20,'active',NULL,'2001');
    INSERT INTO tenant_memberships VALUES(1,10,'active'),(2,10,'active'),(3,20,'active');
+   INSERT INTO phone11_workspace_profile_status_settings(tenant_id,enabled) VALUES(10,TRUE);
    INSERT INTO user_extensions(user_id,extension_id)VALUES(1,1),(2,2),(3,3);
    INSERT INTO phone11_auth_identity VALUES('auth1',1,NULL),('auth2',2,NULL),('auth3',3,NULL);
    INSERT INTO phone11_auth_session VALUES('s1','auth1',NOW()+INTERVAL '1 day'),('s2','auth2',NOW()+INTERVAL '1 day'),('s3','auth3',NOW()+INTERVAL '1 day');`);
@@ -150,6 +151,18 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   await pool.query(`UPDATE phone11_workspace_profile_status SET manual_availability='dnd',manual_availability_expires_at=clock_timestamp()+interval '1 hour' WHERE tenant_id=10 AND user_id=2`);
   expect(await repo.claim()).toBeNull();
   await pool.query(`UPDATE phone11_workspace_profile_status SET manual_availability_expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=10 AND user_id=2`);
+  expect(await repo.claim()).not.toBeNull();
+ });
+ it('uses the tenant enablement gate when DND is evaluated at enqueue and dispatch time',async()=>{
+  await repo.register(2,'s2',device);
+  await pool.query(`INSERT INTO phone11_workspace_profile_status(tenant_id,user_id,manual_availability,manual_availability_expires_at)
+   VALUES(10,2,'dnd',clock_timestamp()+interval '1 hour')`);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET enabled=FALSE WHERE tenant_id=10');
+  await message();
+  expect(await count()).toBe(1);
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET enabled=TRUE WHERE tenant_id=10');
+  expect(await repo.claim()).toBeNull();
+  await pool.query('UPDATE phone11_workspace_profile_status_settings SET enabled=FALSE WHERE tenant_id=10');
   expect(await repo.claim()).not.toBeNull();
  });
  it('uncertain provider acceptance never retries or changes persisted message',async()=>{

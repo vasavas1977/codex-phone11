@@ -10,7 +10,13 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/serve
 
 const state = vi.hoisted(() => ({
   platform: "web" as "web" | "ios",
+  user: { id: 3001, name: "Pilot" },
   currentUserId: 3001,
+  params: { meetingId: "admitted-id" } as { meetingId: string; tenantId?: string; source?: string },
+  chatOwnerId: 3001,
+  workspaceId: 1,
+  generalMeetingsError: false,
+  exactMeeting: { meetingId: "admitted-id", tenantId: 1 } as { meetingId: string; tenantId: number } | null,
   onJoin: undefined as ((preferences: MeetingJoinPreferences) => Promise<void>) | undefined,
   resolveAdmission: undefined as ((admission: { url: string; token: string }) => void) | undefined,
   admit: vi.fn(),
@@ -22,19 +28,27 @@ const state = vi.hoisted(() => ({
 vi.mock("react-native", () => ({ Platform: { get OS() { return state.platform; } } }));
 vi.mock("expo-router", () => ({
   router: { push: state.push, back: vi.fn(), replace: vi.fn(), canGoBack: () => false },
-  useLocalSearchParams: () => ({ meetingId: "admitted-id" }),
+  useLocalSearchParams: () => state.params,
 }));
 vi.mock("@/hooks/use-auth", () => ({
-  useAuth: () => ({ user: { id: 3001, name: "Pilot" } }),
+  useAuth: () => ({ user: state.user }),
 }));
 vi.mock("@/lib/_core/auth", () => ({
-  getAuthSnapshot: () => ({ user: { id: state.currentUserId } }),
+  getAuthSnapshot: () => ({ user: state.currentUserId === 3001 ? state.user : { id: state.currentUserId } }),
+}));
+vi.mock("@/lib/chat/store", () => ({
+  useChatStore: (selector: (value: unknown) => unknown) => selector({
+    userId: state.chatOwnerId, workspace: { id: state.workspaceId },
+  }),
 }));
 vi.mock("@/lib/trpc", () => ({
   trpc: { meetings: {
     join: { useMutation: () => ({ mutateAsync: state.admit }) },
     capabilities: { useQuery: () => ({ data: { available: true }, isLoading: false, isFetching: false }) },
-    available: { useQuery: () => ({ data: [{ meetingId: "admitted-id" }], isLoading: false, isFetching: false }) },
+    available: { useQuery: () => ({ data: [{ meetingId: "admitted-id" }], isLoading: false, isFetching: false,
+      error: state.generalMeetingsError ? new Error("Global list unavailable") : null }) },
+    availableForTenant: { useQuery: () => ({ data: [], isLoading: false, isFetching: false }) },
+    availableMeetingForTenant: { useQuery: () => ({ data: state.exactMeeting, isLoading: false, isFetching: false }) },
   } },
 }));
 vi.mock("@/components/meetings/meeting-prejoin", () => ({
@@ -55,6 +69,11 @@ vi.mock("@/lib/sip/call-store", () => ({
 beforeEach(() => {
   state.platform = "web";
   state.currentUserId = 3001;
+  state.params = { meetingId: "admitted-id" };
+  state.chatOwnerId = 3001;
+  state.workspaceId = 1;
+  state.generalMeetingsError = false;
+  state.exactMeeting = { meetingId: "admitted-id", tenantId: 1 };
   state.onJoin = undefined;
   state.resolveAdmission = undefined;
   state.admit.mockReset();
@@ -99,4 +118,17 @@ it("passes the initiating account into the web lifecycle after admission", async
     camera: false,
   });
   expect(state.push).toHaveBeenCalledWith("/conference/room");
+});
+
+it("opens a direct invitation from exact admission even if the general list fails", () => {
+  state.params = { meetingId: "admitted-id", tenantId: "1", source: "direct" };
+  state.generalMeetingsError = true;
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  expect(state.onJoin).toBeTypeOf("function");
+});
+
+it("does not open a direct invitation from another selected workspace", () => {
+  state.params = { meetingId: "admitted-id", tenantId: "2", source: "direct" };
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  expect(state.onJoin).toBeUndefined();
 });

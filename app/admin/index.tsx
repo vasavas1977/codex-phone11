@@ -89,6 +89,12 @@ export default function AdminDashboard() {
       route: "/admin/extensions",
     },
     {
+      icon: "voicemail",
+      iconColor: "#0D9488",
+      label: "Voicemail",
+      route: "/admin/voicemail",
+    },
+    {
       icon: "number",
       iconColor: "#8B5CF6",
       label: "Phone numbers",
@@ -132,6 +138,12 @@ export default function AdminDashboard() {
       iconColor: "#6366F1",
       label: "Workspace settings",
       route: "/admin/workspace-settings",
+    },
+    {
+      icon: "person.fill",
+      iconColor: "#64748B",
+      label: "Workspace status",
+      route: "/admin/profile-status",
     },
     {
       icon: "chart.bar.fill",

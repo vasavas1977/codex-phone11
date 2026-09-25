@@ -58,8 +58,9 @@ The API candidate stays running during this short worker/wake restart.
 - [ ] One immutable image digest, bundle hash, source-input manifest, dependency
       lock hash, image history, and filesystem-diff review. A mutable tag is not
       an activation input.
-- [ ] Exact root-owned mode-0600 copies of `server/profile/migration.sql`, its
-      SHA-256, a reviewed migration operator, and its hermetic tests.
+- [ ] Exact root-owned mode-0600 copies of `server/profile/migration.sql` and
+      `server/profile/catalog-verification.sql`, their SHA-256 values, a reviewed
+      migration operator, and its hermetic tests.
 - [ ] Fresh database identity/catalog fingerprint and a post-apply
       `phone11-migration-receipt/v1`. Inspect schema only; do not export profile,
       message, device-token, or customer rows.
@@ -79,25 +80,24 @@ The API candidate stays running during this short worker/wake restart.
 - [ ] Protected rollback Compose for the exact old baseline image and a second
       emergency variant with `PHONE11_CHAT_NOTIFICATIONS_ENABLED=0`.
 
-## Required operator gap
+## Source operator contract
 
 The checked-in `phone11-chat-presence-receipts-migrate.py` is pinned to another
 migration, container ID, image, catalog, and target-table set. It must not be
-reused for the profile table. `phone11-parallel-api-pilot.py` provides the
-right atomic Nginx/rollback pattern, but its current source hardcodes the old
-`ACTIVE_IMAGE`, requires the candidate image to differ from it, and does not
-replace the default worker runtime. It cannot operate this new same-image
-baseline/candidate rollout unchanged.
+reused for the profile table. `scripts/phone11-profile-dnd-rollout.py` is the
+dedicated source operator. It requires replacement receipts for both runtimes
+before migration and uses `profile_gate_committed` to record the migration
+receipt. That field marks the schema/rollback barrier; it does not mean any
+tenant has enabled workspace status.
 
-Before rollout, add and independently review a guarded profile/worker operator
-with this exact command surface:
+The reviewed command surface is:
 
 ```text
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --prepare --manifest /root/phone11-profile-dnd-rollout.json
-sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --apply-migration --manifest /root/phone11-profile-dnd-rollout.json
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --replace-baseline --manifest /root/phone11-profile-dnd-rollout.json
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --route-baseline --manifest /root/phone11-profile-dnd-rollout.json
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --replace-candidate --manifest /root/phone11-profile-dnd-rollout.json
+sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --apply-migration --manifest /root/phone11-profile-dnd-rollout.json
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --route-candidate --manifest /root/phone11-profile-dnd-rollout.json
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --rollback-route --manifest /root/phone11-profile-dnd-rollout.json
 sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --rollback-baseline-disabled --manifest /root/phone11-profile-dnd-rollout.json
@@ -107,7 +107,7 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --rollbac
 `lock_timeout=2s`, `statement_timeout=30s`, exact database/catalog pins, an
 idempotent apply, post-state verification, and an exclusive receipt.
 `--replace-baseline` must rerun all pins and the fresh idle guard immediately
-before stopping exactly `cp11-backend` with `docker stop --time 20`, waiting
+before stopping exactly `cp11-backend` with `docker stop --time 35`, waiting
 for its bounded in-flight notification attempt to finish, and then running one
 `docker compose ... up -d --no-deps <exact-service>` against the frozen
 rendered configuration. It must reject a forced-kill/OOM exit and any newly
@@ -119,9 +119,8 @@ existing operator's atomic write, syntax check, graceful reload, exact-current
 hash check, durable rollback receipt, and candidate drain behavior, while
 pinning images from the manifest instead of source constants.
 
-Until that operator and its tests exist, the migration and baseline replacement
-are blocked. Do not substitute interactive `psql`, an unpinned Compose source,
-or ad-hoc `docker run` commands.
+Source and hermetic tests do not establish host readiness. Do not substitute
+interactive `psql`, an unpinned Compose source, or ad-hoc `docker run` commands.
 
 ## Ordered rollout
 
@@ -132,18 +131,7 @@ healthy old baseline and candidate, active public candidate route, unchanged
 wake target, protected probe validity, frozen rollback inputs, and a fresh idle
 result. Stop on drift.
 
-### 2. Apply only the additive profile migration
-
-Run `--apply-migration`. Verify the table, primary/foreign keys, allowed-value
-checks, DND expiry check, index, owner, and grants. Write the immutable receipt.
-Do not insert a status, alter a membership, or drop anything. Re-running
-`--prepare` must observe the receipt and the exact post-catalog fingerprint.
-
-Database rollback is forward-only: retain the empty/additive table. Application
-code handles its absence for rolling compatibility, but dropping it after use
-would destroy user preferences and can abort active transactions.
-
-### 3. Upgrade the sole worker/wake baseline first
+### 2. Upgrade the sole worker/wake baseline first
 
 Keep public tRPC on the existing port-3002 candidate. Rerun the call/SIP idle
 guard, then run `--replace-baseline`. The replacement must preserve the current
@@ -154,14 +142,15 @@ FreeSWITCH, Nginx, registrations, SIP transport rows, or provider credentials.
 Require direct port-3000 health with the new build/default role, exactly one
 running default-role container, existing wake readiness, notification readiness,
 and bounded database connectivity. Recheck the Kamailio hash and exact wake URL.
-If any check fails before the profile API is public, restore the exact old
-baseline Compose/image; the additive empty schema remains.
+If any check fails, restore the exact old baseline Compose/image; the migration
+has not run.
 
-### 4. Move public tRPC temporarily to the new baseline
+### 3. Move public tRPC temporarily to the new baseline
 
 The mode-0600 rollout manifest must pin the new baseline container/image/build,
-the still-running old candidate, current active Nginx bytes, prior rollback
-receipt, migration receipt, protected probes, and unchanged Kamailio bytes.
+the still-running old candidate, current active Nginx bytes, baseline
+replacement receipt, `profile_gate_committed=false` with no migration receipt,
+protected probes, and unchanged Kamailio bytes.
 Run:
 
 ```text
@@ -172,9 +161,10 @@ Expected result is `route_baseline=PASS candidate=RUNNING`. This is a proxy-only
 change: public tRPC now uses the new baseline on 3000 while the old candidate
 continues draining. The command must refuse stale pins or an intervening Nginx
 edit. Verify public authenticated phone/chat reads and the candidate build
-header's absence before proceeding.
+header's absence before proceeding. Workspace status remains unavailable while
+its settings relation is absent, so no tenant can enable it during this bridge.
 
-### 5. Replace the API candidate without workers
+### 4. Replace the API candidate without workers
 
 Using the separately frozen candidate Compose file, run:
 
@@ -185,7 +175,8 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --replace
 Recreate only `cp11-api-candidate` at `127.0.0.1:3002`. Require the new immutable image,
 `PHONE11_RUNTIME_ROLE=api-candidate`, exact `PORT=3002`, new build marker,
 existing network/mounts, and zero background service startup. Public tRPC stays
-on the new baseline during this replacement.
+on the new baseline during this replacement. The migration must remain
+unapplied; `--replace-candidate` refuses a committed migration.
 
 Run direct protected probes on 3002. They must cover existing phone reads,
 mixed tRPC batches, profile self-read, colleague presence, notification
@@ -196,6 +187,22 @@ Typing indicators are process-local and may disappear once when routing moves
 between runtimes. They must expire cleanly and must not be described as durable
 presence loss. Messages, notification outbox rows, presence leases, and profile
 preferences are database-backed and must remain intact.
+
+### 5. Apply the additive profile migration after both APIs are gated
+
+Only after both runtimes have been replaced by the reviewed release, while tRPC
+remains routed to the new baseline, repin the manifest with both exact
+replacement receipts and run `--apply-migration`. The operator requires both
+receipts, healthy runtime pins, and the baseline route. Verify the profile and
+tenant-settings tables, keys, owner, and grants; publish the exclusive
+migration receipt and repin `profile_gate_committed=true`. The new settings
+table has no tenant rows, so workspace status and DND remain disabled for every
+tenant. Existing profile status rows are retained. Do not backfill settings,
+statuses, memberships, or user choices.
+
+Database rollback is forward-only: retain the additive table. Do not drop it
+after use, since that would destroy user choices and could abort active
+transactions.
 
 ### 6. Route only tRPC back to the new candidate
 
@@ -212,6 +219,10 @@ Require `prepare=READY activation=NOT_RUN`, then `route_candidate=PASS`. The ope
 must install only exact `/api/trpc` and prefix `/api/trpc/` locations, syntax
 check, gracefully reload Nginx, prove the route locally and publicly, and leave
 both backends running. All other paths and direct wake remain on 3000.
+
+After source, schema, and route commissioning, a tenant owner or admin must
+explicitly enable workspace status in `/admin/profile-status`. The default
+remains off; enabling a tenant is separate from migration and rollout.
 
 ## Verification without sending a notification
 
@@ -246,16 +257,17 @@ sudo /opt/phone11ai/profile-dnd-rollout/phone11-profile-dnd-rollout.py --rollbac
 This returns only tRPC to the new baseline, gracefully reloads Nginx, and keeps
 the candidate running until drain. It does not change the schema or workers.
 
-Baseline failure before profile/DND is publicly writable: rerun the idle guard
-and use the guarded baseline rollback to restore the exact old image/runtime.
-Keep the profile table. Verify port-3000 wake and all existing workers.
+Baseline failure before migration: rerun the idle guard and use the guarded
+baseline rollback to restore the exact old image/runtime. Verify port-3000 wake
+and all existing workers.
 
-Baseline failure after profile/DND is publicly writable: never restart the old
-image with ordinary notification dispatch enabled. Use
+Baseline failure after the migration receipt is committed: never restart the
+old image with ordinary notification dispatch enabled. Use
 `--rollback-baseline-disabled`, which restores the old wake/recording/ESL
 runtime with `PHONE11_CHAT_NOTIFICATIONS_ENABLED=0`, and route tRPC to the
-compatible retained API only as allowed by the incident plan. This pauses all
-ordinary Team Chat alerts but prevents the old dispatcher from violating saved
+compatible retained API only as allowed by the incident plan. The tenant gate
+still defaults off. This pauses all ordinary Team Chat alerts but prevents the
+old dispatcher from violating saved
 DND. Preserve pending outbox and profile rows; do not replay, delete, or rewrite
 them. Restore notifications only with the reviewed new dispatcher image.
 
@@ -265,7 +277,8 @@ registrations, or the additive profile schema as part of this change.
 ## Decisions still required
 
 1. Approve a brief port-3000 wake/worker restart after a fresh all-idle guard.
-2. Approve and independently review the missing guarded profile/worker operator.
+2. Independently review and commission the source operator, host admission
+   fence, and exact manifest on the production host.
 3. Select the exact clean release SHA after the profile-owned commit lands.
 4. Decide whether to authorize one synthetic DND notification test. Without it,
    live APNs suppression remains unproven.

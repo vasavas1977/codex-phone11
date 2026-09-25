@@ -11,6 +11,8 @@ const profileRow = {
   status_expires_at: null,
   work_location: null,
 };
+const enabledProfileRow = { ...profileRow, viewer_authorized: true, workspace_enabled: true };
+const schemaRows = [{ status_relation: "phone11_workspace_profile_status", settings_relation: "phone11_workspace_profile_status_settings" }];
 
 it("validates timed DND and bounded profile status inputs", () => {
   expect(profileUpdateSchema.safeParse({ tenantId: 4, availability: { value: "dnd" } }).success).toBe(false);
@@ -24,11 +26,11 @@ it("validates timed DND and bounded profile status inputs", () => {
 });
 
 it("authorizes profile reads through active membership for both caller and colleague", async () => {
-  const query = vi.fn(async (sql: string, _values?: unknown[]) => ({ rows: sql.includes("to_regclass") ? [{ relation: "phone11_workspace_profile_status" }] : [profileRow] }));
+  const query = vi.fn(async (sql: string, _values?: unknown[]) => ({ rows: sql.includes("to_regclass") ? schemaRows : [enabledProfileRow] }));
   const result = await getWorkspaceProfileStatuses({ query } as any, 7, 4, [7, 9]);
   expect(result).toEqual({ capability: "available", rows: [{ userId: 7, manualAvailability: null, manualAvailabilityExpiresAt: null, statusText: null, statusExpiresAt: null, workLocation: null }] });
   const [sql, values] = query.mock.calls[1];
-  expect(sql).toContain("authorized_viewer");
+  expect(sql).toContain("viewer_authorized");
   expect(sql).toContain("colleague.status = 'active'");
   expect(values).toEqual([7, 4, [7, 9]]);
 });
@@ -37,15 +39,21 @@ it("fails closed when a pre-migration deployment has no profile table", async ()
   const query = vi.fn(async (_sql: string) => ({ rows: [{ relation: null }] }));
   await expect(getWorkspaceProfileStatuses({ query } as any, 7, 4, [7])).resolves.toEqual({ capability: "unavailable", rows: [] });
   expect(query).toHaveBeenCalledOnce();
-  expect(query.mock.calls[0][0]).toContain("to_regclass");
+  expect(query.mock.calls[0][0]).toContain("phone11_workspace_profile_status_settings");
+});
+
+it("distinguishes a tenant that has not enabled profile status from missing schema", async () => {
+  const query = vi.fn(async (sql: string) => ({ rows: sql.includes("to_regclass") ? schemaRows : [{ viewer_authorized: true, workspace_enabled: false, user_id: null }] }));
+  await expect(getWorkspaceProfileStatuses({ query } as any, 7, 4, [7])).resolves.toEqual({ capability: "disabled", rows: [] });
 });
 
 it("uses a 24-hour Busy expiry and the workspace-local next midnight for Today", async () => {
   const writes: unknown[][] = [];
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.includes("membership.user_id") && sql.includes("LIMIT 1")) return { rows: [{ time_zone: "America/New_York" }] };
-    if (sql.includes("to_regclass")) return { rows: [{ relation: "phone11_workspace_profile_status" }] };
+    if (sql.includes("to_regclass")) return { rows: schemaRows };
     if (sql.includes("INSERT INTO phone11_workspace_profile_status")) { writes.push(values ?? []); return { rows: [{ user_id: 7 }] }; }
+    if (sql.includes("WITH requested AS")) return { rows: [enabledProfileRow] };
     return { rows: [profileRow] };
   });
   const busy = createProfileService({ query } as any, () => new Date("2026-09-20T10:00:00Z"));
@@ -63,8 +71,9 @@ it("preserves an existing timed status when text changes without a new display t
   const writeSql: string[] = [];
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.includes("membership.user_id") && sql.includes("LIMIT 1")) return { rows: [{ time_zone: "Asia/Bangkok" }] };
-    if (sql.includes("to_regclass")) return { rows: [{ relation: "phone11_workspace_profile_status" }] };
+    if (sql.includes("to_regclass")) return { rows: schemaRows };
     if (sql.includes("INSERT INTO phone11_workspace_profile_status")) { writeSql.push(sql); writes.push(values ?? []); return { rows: [{ user_id: 7 }] }; }
+    if (sql.includes("WITH requested AS")) return { rows: [{ ...enabledProfileRow, status_text: "In a meeting", status_expires_at: existingExpiry }] };
     return { rows: [{ ...profileRow, status_text: "In a meeting", status_expires_at: existingExpiry }] };
   });
   const service = createProfileService({ query } as any, () => new Date("2026-09-20T10:00:00Z"));
@@ -85,8 +94,9 @@ it("does not write after membership is revoked between the early guard and confl
   let writeSql = "";
   const query = vi.fn(async (sql: string) => {
     if (sql.includes("membership.user_id") && sql.includes("LIMIT 1")) return { rows: [{ time_zone: "Asia/Bangkok" }] };
-    if (sql.includes("to_regclass")) return { rows: [{ relation: "phone11_workspace_profile_status" }] };
+    if (sql.includes("to_regclass")) return { rows: schemaRows };
     if (sql.includes("INSERT INTO phone11_workspace_profile_status")) { writeSql = sql; return { rows: [] }; }
+    if (sql.includes("WITH requested AS")) return { rows: [enabledProfileRow] };
     return { rows: [profileRow] };
   });
   const service = createProfileService({ query } as any);
@@ -100,8 +110,9 @@ it("does not write after membership is revoked between the early guard and confl
 it("writes only the authenticated self in the selected active workspace", async () => {
   const query = vi.fn(async (sql: string, _values?: unknown[]) => {
     if (sql.includes("membership.user_id") && sql.includes("LIMIT 1")) return { rows: [{ exists: 1 }] };
-    if (sql.includes("to_regclass")) return { rows: [{ relation: "phone11_workspace_profile_status" }] };
+    if (sql.includes("to_regclass")) return { rows: schemaRows };
     if (sql.includes("INSERT INTO phone11_workspace_profile_status")) return { rows: [{ user_id: 7 }] };
+    if (sql.includes("WITH requested AS")) return { rows: [enabledProfileRow] };
     return { rows: [profileRow] };
   });
   const service = createProfileService({ query } as any, () => new Date("2026-09-20T10:00:00Z"));
@@ -120,9 +131,10 @@ it("adds the current tenant-scoped photo descriptor to profile self", async () =
   const version = "11111111-1111-4111-8111-111111111111";
   const query = vi.fn(async (sql: string) => {
     if (sql.includes("membership.user_id") && sql.includes("LIMIT 1")) return { rows: [{ time_zone: "Asia/Bangkok" }] };
-    if (sql.includes("to_regclass('public.phone11_workspace_profile_status')")) return { rows: [{ relation: "phone11_workspace_profile_status" }] };
+    if (sql.includes("to_regclass('public.phone11_workspace_profile_status')")) return { rows: schemaRows };
     if (sql.includes("to_regclass('public.phone11_workspace_profile_photos')")) return { rows: [{ photos: "phone11_workspace_profile_photos", deletions: "phone11_profile_photo_deletions" }] };
     if (sql.includes("FROM phone11_workspace_profile_photos")) return { rows: [{ tenant_id: 4, user_id: 7, version, mime_type: "image/png" }] };
+    if (sql.includes("WITH requested AS")) return { rows: [enabledProfileRow] };
     return { rows: [profileRow] };
   });
   await expect(createProfileService({ query } as any).self(7, 4)).resolves.toMatchObject({

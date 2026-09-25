@@ -120,7 +120,7 @@ describe("enterprise PBX admin screen source contracts", () => {
 
   it("shows only implemented, source-backed management destinations", () => {
     expect(dashboard).not.toContain('route: "/admin/call-history"');
-    expect(dashboard).not.toContain('route: "/admin/voicemail"');
+    expect(dashboard).toContain('route: "/admin/voicemail"');
     expect(dashboard).not.toContain('route: "/admin/live-calls"');
     expect(dashboard).not.toContain('route: "/admin/settings"');
     expect(dashboard).toContain('label: "Call analytics"');

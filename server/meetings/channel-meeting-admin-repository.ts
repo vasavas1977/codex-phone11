@@ -50,6 +50,16 @@ async function installed(db: PoolClient) {
   return result.rows[0]?.available === true;
 }
 
+async function directInstalled(db: PoolClient) {
+  const result = await db.query(`SELECT EXISTS(SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='phone11_channel_meetings' AND column_name='origin_kind')
+    AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass('public.phone11_channel_meetings')
+      AND conname='phone11_channel_meetings_origin_kind_check' AND convalidated)
+    AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('public.phone11_chat_blocks')
+      AND tgname='phone11_direct_meeting_block_pair' AND tgenabled='O') AS available`);
+  return result.rows[0]?.available === true;
+}
+
 export type ChannelMeetingAdminRepository = ReturnType<typeof createChannelMeetingAdminRepository>;
 
 export function createChannelMeetingAdminRepository(transaction: typeof withTransaction = withTransaction) {
@@ -58,14 +68,26 @@ export function createChannelMeetingAdminRepository(transaction: typeof withTran
       return transaction(async (db) => {
         await bound(db);
         await requireAdminPrecheck(db, actorId, tenantId, true);
-        if (!enabled) return { available: false, reason: "Channel meetings are not configured for this workspace.", channels: [] };
-        if (!await installed(db)) return { available: false, reason: "Channel meeting storage is not installed.", channels: [] };
+        if (!enabled) return { available: false, reason: "Channel meetings are not configured for this workspace.", channels: [], directConversations: [], directConversationsReason: undefined };
+        if (!await installed(db)) return { available: false, reason: "Channel meeting storage is not installed.", channels: [], directConversations: [], directConversationsReason: undefined };
         const channels = await db.query(`SELECT id,name,kind FROM phone11_chat_conversations
           WHERE tenant_id=$1 AND kind IN ('group','channel') ORDER BY name,id LIMIT 51`, [tenantId]);
         if (channels.rows.length > 50)
-          return { available: false, reason: "This workspace has more channels than this management view can safely display.", channels: [] };
+          return { available: false, reason: "This workspace has more channels than this management view can safely display.", channels: [], directConversations: [], directConversationsReason: undefined };
         const parsedChannels = channels.rows.map((row) => channelRow.parse(row));
-        if (parsedChannels.length === 0) return { available: true, channels: [] };
+        const directEnabled = await directInstalled(db);
+        const directs = directEnabled ? await db.query(`SELECT conversation.id,conversation.name,conversation.kind
+          FROM phone11_chat_conversations conversation
+          WHERE conversation.tenant_id=$1 AND conversation.kind='direct'
+            AND (SELECT count(*) FROM phone11_chat_members member
+              WHERE member.tenant_id=conversation.tenant_id AND member.conversation_id=conversation.id)=2
+          ORDER BY conversation.name,conversation.id LIMIT 101`, [tenantId]) : { rows: [] };
+        const directOverflow = directs.rows.length > 100;
+        const parsedDirects = directOverflow ? [] : directs.rows.map((row) =>
+          z.object({ id: z.string().uuid(), name: z.string(), kind: z.literal("direct") }).parse(row));
+        const allConversations = [...parsedChannels, ...parsedDirects];
+        if (allConversations.length === 0) return { available: true, channels: [], directConversations: [],
+          directConversationsReason: directOverflow ? "This workspace has more direct conversations than this management view can safely display." : undefined };
         const members = await db.query(`SELECT member.conversation_id,member.user_id,
             COALESCE(NULLIF(users.name,''),'Team member') AS name,member.can_start_meeting
           FROM phone11_chat_members member
@@ -79,20 +101,28 @@ export function createChannelMeetingAdminRepository(transaction: typeof withTran
               AND extension.status='active' AND extension.deleted_at IS NULL
               WHERE assignment.user_id=member.user_id)
           ORDER BY member.conversation_id,users.name,member.user_id LIMIT 5001`,
-        [tenantId, parsedChannels.map((channel) => channel.id)]);
+        [tenantId, allConversations.map((conversation) => conversation.id)]);
         if (members.rows.length > 5000)
-          return { available: false, reason: "This workspace has more members than this management view can safely display.", channels: [] };
+          return { available: false, reason: "This workspace has more members than this management view can safely display.", channels: [], directConversations: [], directConversationsReason: undefined };
         const parsedMembers = members.rows.map((row) => memberRow.parse(row));
+        const directConversations = parsedDirects.flatMap((conversation) => {
+          const pair = parsedMembers.filter((member) => member.conversation_id === conversation.id);
+          return pair.length === 2 ? [{ ...conversation, members: pair.map((member) => ({
+            userId: member.user_id, name: member.name, canStartMeeting: member.can_start_meeting,
+          })) }] : [];
+        });
         return { available: true, channels: parsedChannels.map((channel) => ({
           ...channel,
           members: parsedMembers.filter((member) => member.conversation_id === channel.id).map((member) => ({
             userId: member.user_id, name: member.name, canStartMeeting: member.can_start_meeting,
           })),
-        })) };
+        })), directConversations,
+        directConversationsReason: directOverflow ? "This workspace has more direct conversations than this management view can safely display." : undefined };
       });
     },
 
-    async setHostPermission(actorId: number, input: z.infer<typeof adminSetHostPermissionSchema>, enabled: boolean) {
+    async setHostPermission(actorId: number, input: z.infer<typeof adminSetHostPermissionSchema>, enabled: boolean,
+      expectedKind: "channel" | "direct" = "channel") {
       return transaction(async (db) => {
         await bound(db);
         // Reject outsiders before they can contend on a channel lock. This
@@ -101,6 +131,8 @@ export function createChannelMeetingAdminRepository(transaction: typeof withTran
         await requireAdminPrecheck(db, actorId, input.tenantId);
         if (!enabled) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Channel meetings are not configured for this workspace." });
         if (!await installed(db)) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Channel meeting storage is not installed." });
+        if (expectedKind === "direct" && !await directInstalled(db))
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Direct meeting storage is not installed." });
         // Meeting start takes this same lock before touching tenant, channel,
         // or member rows. Match that order so an admin permission edit cannot
         // deadlock with a concurrent start in this channel.
@@ -115,9 +147,16 @@ export function createChannelMeetingAdminRepository(transaction: typeof withTran
         if (tenant.rows.length !== 1)
           throw new TRPCError({ code: "FORBIDDEN", message: "Workspace administrator access is required." });
         const channel = await db.query(`SELECT id FROM phone11_chat_conversations
-          WHERE tenant_id=$1 AND id=$2 AND kind IN ('group','channel') FOR SHARE`, [input.tenantId, input.channelId]);
+          WHERE tenant_id=$1 AND id=$2 AND kind ${expectedKind === "direct" ? "='direct' FOR UPDATE" : "IN ('group','channel') FOR SHARE"}`,
+        [input.tenantId, input.channelId]);
         if (channel.rows.length !== 1)
           throw new TRPCError({ code: "FORBIDDEN", message: "Channel is not in this workspace." });
+        if (expectedKind === "direct") {
+          const participants = await db.query(`SELECT user_id FROM phone11_chat_members
+            WHERE tenant_id=$1 AND conversation_id=$2 ORDER BY user_id LIMIT 3 FOR KEY SHARE`, [input.tenantId, input.channelId]);
+          if (participants.rows.length !== 2 || !participants.rows.some((row) => Number(row.user_id) === input.userId))
+            throw new TRPCError({ code: "FORBIDDEN", message: "Direct conversation must have exactly two members." });
+        }
         const member = await db.query(`SELECT user_id FROM phone11_chat_members
           WHERE tenant_id=$1 AND conversation_id=$2 AND user_id=$3 FOR UPDATE`,
         [input.tenantId, input.channelId, input.userId]);

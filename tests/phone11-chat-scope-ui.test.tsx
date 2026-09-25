@@ -5,6 +5,7 @@ vi.mock("../components/chat/peer-call", () => ({ ChatPeerCall: () => null }));
 // Chat scope tests exercise tenant/owner state transitions, not native image
 // modules or meeting availability. Keep those separate boundaries inert here.
 vi.mock("../components/chat/meeting-action", () => ({ ChatMeetingAction: () => null }));
+vi.mock("../components/chat/direct-meeting-action", () => ({ DirectMeetingAction: () => null }));
 vi.mock("../components/profile/profile-avatar", () => ({
   ProfileAvatar: () => null,
   useProfilePhotoCacheScope: () => {},

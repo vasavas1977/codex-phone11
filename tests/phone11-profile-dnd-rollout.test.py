@@ -73,7 +73,7 @@ def manifest(**changes: object) -> dict[str, object]:
         "nginx": {
             "site": "/etc/nginx/sites-enabled/api.phone11.ai", "site_sha256": SHA,
             "dump_sha256": SHA2, "marker": "# PHONE11_PROFILE_DND_INSERT reviewed-123",
-            "route": "candidate", "dnd_exposed": False,
+            "route": "candidate", "profile_gate_committed": False,
         },
         "kamailio": {"config_path": "/etc/kamailio/kamailio.cfg", "config_sha256": SHA, "wake_occurrences": 4},
         "public_origin": rollout.PUBLIC_ORIGIN,
@@ -300,7 +300,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertFalse(any("kill" in command for command in system.commands))
 
     def test_post_exposure_baseline_failure_never_restarts_old_enabled_dispatcher(self) -> None:
-        current = pins(nginx__route="baseline", nginx__dnd_exposed=True)
+        current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
         operator = rollout.Operator(current, FakeSystem())
         operator.prepare = Mock()
         operator.receipt = Mock()
@@ -350,7 +350,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
     def _assert_pre_mutation_intent_survives_up_fault(self, stage: str) -> None:
         normalized = rollout.canonical_hash({"same": True})
         current = pins(
-            nginx__route="baseline", nginx__dnd_exposed=True,
+            nginx__route="baseline", nginx__profile_gate_committed=True,
             migration__receipt_sha256=SHA,
             rollback__normalized_runtime_sha256=normalized,
         )
@@ -389,7 +389,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
 
     def test_disabled_rollback_uses_only_disabled_artifact_and_verifies_gate_off(self) -> None:
         normalized = rollout.canonical_hash({"same": True})
-        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA, rollback__normalized_runtime_sha256=normalized)
+        current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA, rollback__normalized_runtime_sha256=normalized)
         operator = rollout.Operator(current, FakeSystem())
         operator.rollback_preflight = Mock(return_value=({"name": "baseline"}, {"name": "candidate"}, current.baseline, (rollout.BASELINE_CONTAINER, current.baseline.container_id)))
         before_snapshot = guard_snapshot()
@@ -417,7 +417,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
 
     def test_disabled_rollback_recreates_absent_baseline_without_stop(self) -> None:
         normalized = rollout.canonical_hash({"same": True})
-        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA, rollback__normalized_runtime_sha256=normalized)
+        current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA, rollback__normalized_runtime_sha256=normalized)
         operator = rollout.Operator(current, FakeSystem())
         configs = ({"name": "baseline"}, {"name": "candidate"})
         operator.rollback_preflight = Mock(return_value=(*configs, None, None))
@@ -442,7 +442,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertIsNone(operator.save_runtime_receipt.call_args.kwargs["before"])
 
     def test_disabled_rollback_preflight_accepts_absent_baseline(self) -> None:
-        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
         operator = rollout.Operator(current, FakeSystem())
         operator.image = Mock()
         configs = ({"name": "baseline"}, {"name": "candidate"})
@@ -463,7 +463,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         )
 
     def test_disabled_rollback_preflight_does_not_require_candidate_health(self) -> None:
-        document = manifest(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        document = manifest(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
         candidate_shape = {"candidate": "approved"}
         document["current"]["candidate"]["runtime_sha256"] = rollout.canonical_hash(candidate_shape)
         current = rollout.parse_manifest(document)
@@ -495,7 +495,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
     def test_disabled_rollback_accepts_intended_replacement_without_post_receipt(self) -> None:
         normalized = rollout.canonical_hash({"same": True})
         current = pins(
-            nginx__route="baseline", nginx__dnd_exposed=True,
+            nginx__route="baseline", nginx__profile_gate_committed=True,
             migration__receipt_sha256=SHA,
             rollback__normalized_runtime_sha256=normalized,
         )
@@ -516,7 +516,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
     def test_disabled_rollback_rejects_intended_container_with_runtime_mismatch(self) -> None:
         normalized = rollout.canonical_hash({"approved": True})
         current = pins(
-            nginx__route="baseline", nginx__dnd_exposed=True,
+            nginx__route="baseline", nginx__profile_gate_committed=True,
             migration__receipt_sha256=SHA,
             rollback__normalized_runtime_sha256=normalized,
         )
@@ -534,7 +534,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         self.assertEqual(error.exception.stage, "baseline_identity")
 
     def test_disabled_rollback_rejects_replayed_stale_intent(self) -> None:
-        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
         operator = rollout.Operator(current, FakeSystem())
         failed_id = "f" * 64
         operator.named_container_id = Mock(return_value=failed_id)
@@ -549,7 +549,7 @@ class ProfileDndRolloutTests(unittest.TestCase):
         inspect.assert_not_called()
 
     def test_disabled_rollback_rejects_unknown_replacement_container(self) -> None:
-        current = pins(nginx__route="baseline", nginx__dnd_exposed=True, migration__receipt_sha256=SHA)
+        current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
         operator = rollout.Operator(current, FakeSystem())
         operator.named_container_id = Mock(return_value="u" * 64)
         with patch.object(rollout, "pinned_read", side_effect=rollout.GuardError("baseline_intent")), \
@@ -568,6 +568,43 @@ class ProfileDndRolloutTests(unittest.TestCase):
             operator.replace_candidate()
         self.assertEqual(error.exception.stage, "route_state")
         operator._up.assert_not_called()
+
+    def test_candidate_replacement_is_forbidden_after_profile_schema_commit(self) -> None:
+        current = pins(nginx__route="baseline", nginx__profile_gate_committed=True, migration__receipt_sha256=SHA)
+        operator = rollout.Operator(current, FakeSystem())
+        operator.prepare = Mock()
+        operator._up = Mock()
+        with self.assertRaises(rollout.GuardError) as error:
+            operator.replace_candidate()
+        self.assertEqual(error.exception.stage, "route_state")
+        operator._up.assert_not_called()
+
+    def test_profile_migration_is_blocked_until_both_apis_are_upgraded_and_baseline_routed(self) -> None:
+        operator = rollout.Operator(pins(), FakeSystem())
+        with self.assertRaises(rollout.GuardError) as error:
+            operator.apply_migration()
+        self.assertEqual(error.exception.stage, "migration_order")
+
+    def test_profile_migration_requires_receipts_for_both_gated_api_runtimes(self) -> None:
+        operator = rollout.Operator(pins(nginx__route="baseline"), FakeSystem())
+        operator.image = Mock()
+        operator.compose_inputs = Mock(return_value=({"name": "baseline"}, {"name": "candidate"}))
+        operator.current = Mock()
+        operator.validate_replacement_receipt = Mock(
+            side_effect=[None, rollout.GuardError("replacement_receipt")],
+        )
+        with self.assertRaises(rollout.GuardError) as error:
+            operator.apply_migration()
+        self.assertEqual(error.exception.stage, "replacement_receipt")
+        self.assertEqual(
+            [entry.kwargs["action"] for entry in operator.validate_replacement_receipt.call_args_list],
+            ["replace_baseline", "replace_candidate"],
+        )
+
+    def test_manifest_gate_flag_must_match_migration_receipt(self) -> None:
+        with self.assertRaises(rollout.GuardError) as error:
+            rollout.parse_manifest(manifest(migration__receipt_sha256=SHA))
+        self.assertEqual(error.exception.stage, "manifest")
 
     def test_worker_inventory_rejects_unknown_default_container_without_build_marker(self) -> None:
         current = pins()
@@ -807,9 +844,12 @@ class ProfileDndRolloutTests(unittest.TestCase):
         operator.nginx.assert_not_called()
 
     def test_apply_migration_recovers_exact_post_state_after_receipt_failure(self) -> None:
-        current = pins()
+        document = manifest(nginx__route="baseline")
+        for name in ("baseline", "candidate"):
+            document["current"][name].update({"image": DIGEST, "build": "new-build", "replacement_receipt_sha256": SHA})
+        current = rollout.parse_manifest(document)
         operator = rollout.Operator(current, FakeSystem())
-        for name in ("image", "current", "compose_inputs", "receipt", "nginx", "wake", "guard"):
+        for name in ("image", "current", "compose_inputs", "receipt", "nginx", "wake", "guard", "validate_replacement_receipt"):
             setattr(operator, name, Mock())
         operator.compose_inputs.return_value = ({"name": "baseline"}, {"name": "candidate"})
         post = {"database_sha256": current.database_sha256, "catalog_sha256": current.after_catalog_sha256}

@@ -22,6 +22,7 @@ export type WorkspaceProfileStatus = {
 
 export type WorkspaceProfileStatusLookup =
   | { capability: "available"; rows: WorkspaceProfileStatus[] }
+  | { capability: "disabled"; rows: [] }
   | { capability: "unavailable"; rows: [] };
 
 export type ProfileStatusDb = Pick<Pool, "query">;
@@ -58,8 +59,9 @@ export function workspaceProfileStatusFromRow(row: Record<string, unknown>): Wor
 
 /**
  * Reads only the profile fields that an active workspace colleague may see.
- * `capability: unavailable` is deliberate: older servers without the separate
- * migration must fall back to automatic presence rather than fail heartbeats.
+ * `capability: unavailable` means the profile schema is not installed;
+ * `disabled` means this tenant has not enabled the feature. Both cases let
+ * callers retain automatic presence without exposing saved manual status.
  */
 export async function getWorkspaceProfileStatuses(
   db: ProfileStatusDb,
@@ -75,22 +77,20 @@ export async function getWorkspaceProfileStatuses(
   // abort that transaction even if we caught 42P01. Preflight first instead;
   // no cached negative result means a just-applied migration is picked up.
   const capability = await db.query(
-    "SELECT to_regclass('public.phone11_workspace_profile_status') AS relation",
+    `SELECT to_regclass('public.phone11_workspace_profile_status') AS status_relation,
+            to_regclass('public.phone11_workspace_profile_status_settings') AS settings_relation`,
   );
-  if (!capability.rows[0]?.relation) return { capability: "unavailable", rows: [] };
+  if (!capability.rows[0]?.status_relation || !capability.rows[0]?.settings_relation) {
+    return { capability: "unavailable", rows: [] };
+  }
   const result = await db.query(
-      `WITH authorized_viewer AS (
-         SELECT 1
-           FROM tenant_memberships membership
-           JOIN tenants tenant ON tenant.id = membership.tenant_id AND tenant.status = 'active'
-          WHERE membership.tenant_id = $2
-            AND membership.user_id = $1
-            AND membership.status = 'active'
-       ), requested AS (
+      `WITH requested AS (
          SELECT DISTINCT requested_user_id AS user_id
            FROM unnest($3::integer[]) AS requested_user_id
        )
-       SELECT requested.user_id,
+       SELECT gate.viewer_authorized,
+              gate.workspace_enabled,
+              colleague.user_id,
               CASE WHEN profile.manual_availability_expires_at IS NOT NULL
                           AND profile.manual_availability_expires_at <= clock_timestamp()
                    THEN NULL ELSE profile.manual_availability END AS manual_availability,
@@ -104,9 +104,19 @@ export async function getWorkspaceProfileStatuses(
                           AND profile.status_expires_at <= clock_timestamp()
                    THEN NULL ELSE profile.status_expires_at END AS status_expires_at,
               profile.work_location
-         FROM requested
-         CROSS JOIN authorized_viewer
-         JOIN tenant_memberships colleague
+         FROM (
+           SELECT EXISTS (
+                    SELECT 1 FROM tenant_memberships membership
+                    JOIN tenants tenant ON tenant.id = membership.tenant_id AND tenant.status = 'active'
+                    WHERE membership.tenant_id = $2 AND membership.user_id = $1
+                      AND membership.status = 'active'
+                  ) AS viewer_authorized,
+                  COALESCE((SELECT setting.enabled
+                    FROM phone11_workspace_profile_status_settings setting
+                    WHERE setting.tenant_id = $2), FALSE) AS workspace_enabled
+         ) gate
+         LEFT JOIN requested ON gate.viewer_authorized AND gate.workspace_enabled
+         LEFT JOIN tenant_memberships colleague
            ON colleague.tenant_id = $2
           AND colleague.user_id = requested.user_id
           AND colleague.status = 'active'
@@ -116,9 +126,13 @@ export async function getWorkspaceProfileStatuses(
         ORDER BY requested.user_id`,
       [viewerUserId, tenantId, ids],
     );
+  const gate = result.rows[0];
+  if (gate?.viewer_authorized !== true) return { capability: "available", rows: [] };
+  if (gate.workspace_enabled !== true) return { capability: "disabled", rows: [] };
   return {
     capability: "available",
     rows: result.rows
+      .filter((row) => row.user_id !== null && row.user_id !== undefined)
       .map((row) => workspaceProfileStatusFromRow(row as Record<string, unknown>))
       .filter((row): row is WorkspaceProfileStatus => row !== null),
   };
