@@ -48,8 +48,11 @@ function AdminMeetingsContent() {
   const [memberSearch, setMemberSearch] = useState("");
   const [directCursors, setDirectCursors] = useState<(string | undefined)[]>([undefined]);
   const directPage = directCursors.length - 1;
+  const [channelCursors, setChannelCursors] = useState<(string | undefined)[]>([undefined]);
+  const channelPage = channelCursors.length - 1;
   useEffect(() => {
     setDirectCursors([undefined]);
+    setChannelCursors([undefined]);
     setSelectedConversationId(null);
   }, [tenantId]);
   const tenant = trpc.pbx.tenant.get.useQuery(
@@ -86,7 +89,7 @@ function AdminMeetingsContent() {
     user?.id,
   ]);
   const overview = trpc.meetings.adminOverview.useQuery(
-    { tenantId: tenantId ?? 0, directCursor: directCursors[directPage] },
+    { tenantId: tenantId ?? 0, directCursor: directCursors[directPage], channelCursor: channelCursors[channelPage] },
     {
       enabled: Boolean(user) && tenantId !== null && canManage,
       staleTime: 0,
@@ -223,7 +226,8 @@ function AdminMeetingsContent() {
             {overview.data?.reason ||
               "Meeting management is not enabled for this workspace."}
           </Text>
-        ) : conversations.length === 0 && directPage === 0 && !overview.data.directNextCursor ? (
+        ) : conversations.length === 0 && directPage === 0 && channelPage === 0
+          && !overview.data.directNextCursor && !overview.data.channelNextCursor ? (
           <Text style={[styles.stateText, { color: colors.muted }]}>
             No conversations are available for meeting hosting.
           </Text>
@@ -346,6 +350,30 @@ function AdminMeetingsContent() {
               <IconSymbol name="chevron.right" size={18} color={colors.muted} />
             </Pressable>
           ))}
+          {channelPage > 0 || overview.data.channelNextCursor ? (
+            <View style={styles.pageControls}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Previous channels"
+                disabled={channelPage === 0}
+                onPress={() => setChannelCursors((cursors) => cursors.slice(0, -1))}
+              >
+                <Text style={{ color: channelPage === 0 ? colors.muted : colors.primary }}>Previous</Text>
+              </Pressable>
+              <Text style={{ color: colors.muted }}>Channels · page {channelPage + 1}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Next channels"
+                disabled={!overview.data.channelNextCursor}
+                onPress={() => {
+                  if (overview.data.channelNextCursor)
+                    setChannelCursors((cursors) => [...cursors, overview.data!.channelNextCursor]);
+                }}
+              >
+                <Text style={{ color: overview.data.channelNextCursor ? colors.primary : colors.muted }}>Next</Text>
+              </Pressable>
+            </View>
+          ) : null}
           {directPage > 0 || overview.data.directNextCursor ? (
             <View style={styles.pageControls}>
               <Pressable
