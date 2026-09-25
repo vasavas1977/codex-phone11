@@ -188,6 +188,22 @@ def check_added_layer(saved_image: Path, expected_layer: str) -> None:
             raise RuntimeError("candidate layer bundle hash or file count changed")
 
 
+def build_with_classic_builder(context_dir: Path, iidfile: Path) -> None:
+    # The protected VoIP host has Docker's classic builder, but no buildx
+    # plugin. Select it explicitly rather than inheriting a caller setting or
+    # silently allowing a different builder. The post-build layer audit below
+    # remains the authority for accepting the image.
+    build_env = {**os.environ, "DOCKER_BUILDKIT": "0"}
+    try:
+        run("docker", "build", "--pull=false", "--no-cache", "--network=none",
+            "--platform=linux/amd64", "--iidfile", str(iidfile), "--quiet", str(context_dir),
+            env=build_env)
+    except RuntimeError as error:
+        raise RuntimeError(
+            "classic Docker builder is unavailable or failed; candidate image not accepted"
+        ) from error
+
+
 def build(bundle_path: Path) -> str:
     if os.geteuid() != 0:
         raise RuntimeError("root is required for the protected host image build")
@@ -213,9 +229,7 @@ def build(bundle_path: Path) -> str:
         if inspect_image(temporary_tag)["Id"] != PARENT_IMAGE:
             raise RuntimeError("temporary parent tag points at another image")
         iidfile = context_dir / "image-id"
-        build_env = {**os.environ, "DOCKER_BUILDKIT": "1"}
-        run("docker", "build", "--pull=false", "--no-cache", "--network=none",
-            "--platform=linux/amd64", "--iidfile", str(iidfile), "--quiet", str(context_dir), env=build_env)
+        build_with_classic_builder(context_dir, iidfile)
         image_id = iidfile.read_text(encoding="ascii").strip()
         if not IMAGE_ID_RE.fullmatch(image_id):
             raise RuntimeError("Docker did not return a valid image ID")

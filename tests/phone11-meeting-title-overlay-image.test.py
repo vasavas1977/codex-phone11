@@ -22,6 +22,24 @@ spec.loader.exec_module(overlay)
 
 
 class OverlayTests(unittest.TestCase):
+    def test_build_selects_classic_builder_and_preserves_offline_pins(self):
+        with patch.dict(overlay.os.environ, {"DOCKER_BUILDKIT": "1"}):
+            with patch.object(overlay, "run") as command:
+                overlay.build_with_classic_builder(Path("/private/context"), Path("/private/image-id"))
+        args = command.call_args.args
+        self.assertEqual(args[:2], ("docker", "build"))
+        self.assertIn("--pull=false", args)
+        self.assertIn("--network=none", args)
+        self.assertIn("--platform=linux/amd64", args)
+        self.assertEqual(args[args.index("--iidfile") + 1], "/private/image-id")
+        self.assertEqual(args[-1], "/private/context")
+        self.assertEqual(command.call_args.kwargs["env"]["DOCKER_BUILDKIT"], "0")
+
+    def test_unavailable_classic_builder_rejects_candidate(self):
+        with patch.object(overlay, "run", side_effect=RuntimeError("docker build failed with exit 1")):
+            with self.assertRaisesRegex(RuntimeError, "classic Docker builder is unavailable.*not accepted"):
+                overlay.build_with_classic_builder(Path("/private/context"), Path("/private/image-id"))
+
     def test_build_requires_root_before_reading_any_bundle(self):
         with patch.object(overlay.os, "geteuid", return_value=501):
             with self.assertRaisesRegex(RuntimeError, "root is required"):
