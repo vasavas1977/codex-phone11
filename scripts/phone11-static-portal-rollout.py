@@ -36,12 +36,12 @@ EXPORT_SCHEMA = "phone11-static-portal-export/v1"
 # source SHA alone.  These values are from the clean archive built for this
 # controller; the managed predecessor remains generic and is revalidated from
 # its own sealed export before a link is changed or restored.
-RELEASE_SHA = "74582b3b16441f4aedbc48de76789035c75ec86b"
-LIVE_RELEASE_SHA = "da3b0b8b2c0c0e736be8bb863e44ef82e610fc4d"
-RELEASE_EXPORT_MANIFEST_SHA256 = "12353b0f2592a6656ae7911a8954900af5528a89996a193a1c9283960f5a7f44"
-RELEASE_MARKER_SHA256 = "31b60d9dc035f8c3968edd93b79fb78e37a9ab9b3d9036743eaed0ad6e371a39"
-RELEASE_MAIN_JAVASCRIPT = "_expo/static/js/web/entry-265b3d3a03c7859044bf7dc3e8fe5007.js"
-RELEASE_MAIN_JAVASCRIPT_SHA256 = "575fdcbe033385e57d264aedbe66a824d73dc15d31fecd414e2c0cf25444754e"
+RELEASE_SHA = "0d13ddcba981c6a1dd04fae44dd1f11608f296ca"
+LIVE_RELEASE_SHA = "74582b3b16441f4aedbc48de76789035c75ec86b"
+RELEASE_EXPORT_MANIFEST_SHA256 = "b8af6c15dc8ffb7de6a6de1e7c1a5b756396e72fdeb18ac405ee3aa20df2c5b6"
+RELEASE_MARKER_SHA256 = "4844021e47e3c8c83abe4252fd144776a6f7386929ae3d79156053fc8789d6af"
+RELEASE_MAIN_JAVASCRIPT = "_expo/static/js/web/entry-1199509d1048c2b2b9890a2809a40ccd.js"
+RELEASE_MAIN_JAVASCRIPT_SHA256 = "3a555ef115006b014b2ae37748644babc86752132a804b11d0484b1709632240"
 HOSTNAME = "1toall.phone11.ai"
 EDGE_IP = "43.209.112.208"
 API_ORIGIN = "https://api.phone11.ai"
