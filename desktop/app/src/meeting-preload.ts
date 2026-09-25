@@ -477,10 +477,12 @@ async function load(): Promise<void> {
     revision = state.revision;
     const select = el<HTMLSelectElement>('meeting-select');
     select.replaceChildren();
-    for (const id of state.meetingIds) {
+    const meetingIds = [...state.meetingIds].sort();
+    for (const [index, id] of meetingIds.entries()) {
       const option = document.createElement('option');
       option.value = id;
-      option.textContent = id;
+      option.textContent = `Meeting ${index + 1} · …${id.slice(-6).toUpperCase()}`;
+      option.title = `Room ID: ${id}`;
       select.appendChild(option);
     }
     if (!state.meetingIds.length) {
