@@ -12,6 +12,7 @@ export type MeetingGrant = {
   tenantId: number;
   userId: number;
 };
+export type AvailableMeetingGrant = MeetingGrant & { title?: string };
 export type MeetingJoinResult = {
   url: string;
   token: string;
@@ -70,7 +71,7 @@ export interface MeetingRepository {
   listAvailablePlainVideoMeetings?(
     userId: number,
     configuredTenantIds: readonly number[],
-  ): Promise<readonly MeetingGrant[]>;
+  ): Promise<readonly AvailableMeetingGrant[]>;
 }
 export interface MeetingProvider {
   join(grant: MeetingGrant): Promise<MeetingJoinResult>;
@@ -136,7 +137,7 @@ export function createMeetingService(
     async availableMeetingsFor(
       userId: number,
       configuredTenantIds: readonly number[],
-    ): Promise<readonly { meetingId: string }[]> {
+    ): Promise<readonly { meetingId: string; title?: string }[]> {
       if (!provider || !Number.isSafeInteger(userId) || userId < 1) return [];
       const eligibleTenants = [...new Set(configuredTenantIds)].filter(
         (tenantId) => Number.isSafeInteger(tenantId) && tenantId > 0,
@@ -159,7 +160,10 @@ export function createMeetingService(
               joinMeetingSchema.safeParse({ meetingId: grant.meetingId })
                 .success,
           )
-          .map(({ meetingId }) => ({ meetingId }));
+          .map(({ meetingId, title }) => ({
+            meetingId,
+            ...(typeof title === "string" ? { title } : {}),
+          }));
       } catch {
         return [];
       }

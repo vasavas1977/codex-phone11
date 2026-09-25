@@ -187,6 +187,19 @@ describe("mounted plain-video meetings router", () => {
     );
   });
 
+  it("adds server-derived titles only to selected-tenant discovery while preserving legacy discovery", async () => {
+    const listAvailablePlainVideoMeetings = vi.fn().mockResolvedValue([{ ...grant, title: "Test channel" }]);
+    const api = caller(configuration, {
+      repository: { authorize: vi.fn(), listAvailablePlainVideoMeetings },
+      resolver: { prepare: vi.fn(), confirm: vi.fn() },
+    });
+    await expect(api.available()).resolves.toEqual([{ meetingId }]);
+    await expect(api.availableForTenant({ tenantId: 41 })).resolves.toEqual([
+      { meetingId, tenantId: 41, title: "Test channel" },
+    ]);
+    await expect(api.availableForTenant({ tenantId: 42 })).resolves.toEqual([]);
+  });
+
   it("keeps Meet unavailable for a signed-in user without an admitted room in a mapped tenant", async () => {
     const authorize = vi.fn();
     const hasAvailablePlainVideoAdmission = vi.fn().mockResolvedValue(false);
