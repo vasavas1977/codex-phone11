@@ -41,6 +41,8 @@ export default function TeamChatScreen() {
   const directoryRef = useRef<ScopedAction | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [refreshingAction, setRefreshingAction] = useState<ScopedAction | null>(null);
+  const refreshingRef = useRef<ScopedAction | null>(null);
   const ownsWorkspace = Boolean(user && chat.userId === user.id && chat.workspace);
   const ownPhotoDescriptor = useWorkspaceProfile(
     user,
@@ -68,13 +70,25 @@ export default function TeamChatScreen() {
   useEffect(() => {
     setComposing(false); setSelected([]); setName(""); setSearch(""); setSearchOpen(false); setMoreFiltersOpen(false);
     setCreateError(null); setDirectoryLoading(false);
+    refreshingRef.current = null; setRefreshingAction(null);
   }, [user, chat.workspace?.id]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", next => {
+      if (next !== "active") {
+        refreshingRef.current = null;
+        setRefreshingAction(null);
+      }
+    });
+    return () => subscription.remove();
+  }, []);
 
   useFocusEffect(useCallback(() => {
     useChatStore.getState().setUser(user?.id ?? null);
     if (!user) return;
     const refresh = () => { if (getAuthSnapshot().user === user && AppState.currentState === "active") void useChatStore.getState().loadChannels(); };
     refresh();
+    return () => { refreshingRef.current = null; setRefreshingAction(null); };
   }, [user]));
 
   const refreshDirectory = async () => {
@@ -84,6 +98,23 @@ export default function TeamChatScreen() {
     try { await state.loadDirectory(); }
     catch (error) { if (directoryRef.current === action && currentScope()) setCreateError(chatError(error)); }
     finally { if (directoryRef.current === action && currentScope()) setDirectoryLoading(false); }
+  };
+
+  // Background focus/sync requests must not activate the native pull-to-refresh
+  // control: on iOS that moves the already loaded conversations down the screen.
+  const refreshConversations = async () => {
+    const state = currentScope();
+    if (!state?.workspace || state.loading || actionIsCurrent(refreshingRef.current)) return;
+    const action = { owner: user, workspaceId: state.workspace.id };
+    refreshingRef.current = action;
+    setRefreshingAction(action);
+    try { await state.loadChannels(action.workspaceId); }
+    finally {
+      if (refreshingRef.current === action) {
+        refreshingRef.current = null;
+        setRefreshingAction(null);
+      }
+    }
   };
 
   const openComposer = () => {
@@ -170,15 +201,18 @@ export default function TeamChatScreen() {
         </ScrollView>
         {moreFiltersOpen && <View style={[styles.moreMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}>{([ ["group", "Groups"], ["drafts", "Drafts"] ] as [Filter, string][]).map(([value, label]) => <Pressable key={value} accessibilityRole="button" accessibilityLabel={`${label} conversations`} accessibilityState={{ selected: filter === value }} onPress={() => { setFilter(value); setMoreFiltersOpen(false); }} style={styles.menuItem}><Text style={{ color: colors.foreground }}>{label}</Text></Pressable>)}</View>}
         {(chat.error || chat.storageError) && <Pressable accessibilityRole="button" accessibilityLabel="Retry Team Chat" onPress={() => chat.loadChannels()} style={styles.error}><Text style={{ color: colors.error }}>{chat.storageError || chat.error} Tap to retry.</Text></Pressable>}
-        <FlatList data={rows} keyExtractor={item => item.id} refreshing={chat.loading} onRefresh={() => chat.loadChannels()} contentContainerStyle={rows.length === 0 ? styles.listEmpty : undefined} renderItem={({ item }) => <Pressable accessibilityRole="button" accessibilityLabel={`Open ${item.name}`} onPress={() => { const state = currentScope(); if (state?.channels.some(channel => channel.id === item.id)) router.push({ pathname: "/chat/[id]", params: { id: item.id, tenantId: String(state.workspace?.id) } }); }} style={[styles.row, { borderBottomColor: colors.border }]}>
+        <FlatList data={rows} keyExtractor={item => item.id} refreshing={actionIsCurrent(refreshingAction)} onRefresh={refreshConversations} contentContainerStyle={rows.length === 0 ? styles.listEmpty : undefined} renderItem={({ item }) => <Pressable accessibilityRole="button" accessibilityLabel={`Open ${item.name}`} accessibilityHint={[item.unreadCount > 0 ? `${item.unreadCount} unread messages` : "", (item.unreadMentionCount ?? 0) > 0 ? "You were mentioned" : ""].filter(Boolean).join(". ")} onPress={() => { const state = currentScope(); if (state?.channels.some(channel => channel.id === item.id)) router.push({ pathname: "/chat/[id]", params: { id: item.id, tenantId: String(state.workspace?.id) } }); }} style={[styles.row, { borderBottomColor: colors.border }]}>
           {item.kind === "direct" ? (() => {
             const peerId = item.memberIds.find(id => id !== user?.id);
             const peer = chat.people.find(person => person.id === peerId);
             return <ProfileAvatar name={item.name} photoUrl={peer?.photoUrl} tenantId={chat.workspace?.id} userId={peer?.id} size={46} rounded accessibilityLabel={`${item.name} profile photo`} />;
           })() : <View style={[styles.avatar, { backgroundColor: colors.primary + "18" }]}><Text style={[styles.avatarText, { color: colors.primary }]}>{item.kind === "channel" ? "#" : initials(item.name)}</Text></View>}
-          <View style={styles.rowBody}><View style={styles.rowHeading}><Text numberOfLines={1} style={[styles.rowName, fg, item.unreadCount > 0 && { fontWeight: "700" }]}>{item.name}</Text><Text style={[styles.rowTime, { color: colors.muted }]}>{formatChatTime(item.lastMessageAt)}</Text></View>{item.kind === "direct" && <PresenceIndicator tenantId={chat.workspace?.id} userId={item.memberIds.find(id => id !== user?.id)} />}<Text numberOfLines={1} style={[styles.preview, { color: chat.drafts[item.id]?.trim() ? colors.error : colors.muted }]}>{chat.drafts[item.id]?.trim() ? `Draft: ${chat.drafts[item.id]}` : item.lastMessage || "No messages yet"}</Text></View>
-          {item.unreadCount > 0 && <View style={[styles.badge, { backgroundColor: colors.primary }]}><Text style={styles.buttonText}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</Text></View>}
-        </Pressable>} ListEmptyComponent={<View style={styles.empty}>{chat.loading ? <ActivityIndicator color={colors.primary} /> : <><Text style={[styles.emptyTitle, fg]}>{chat.error ? "Chat is unavailable" : search || filter !== "all" ? "No matching conversations" : "Start a conversation"}</Text><Text style={{ color: colors.muted, textAlign: "center" }}>{chat.error ? "Your messages will appear when the connection is restored." : "Choose New message to message someone in your workspace."}</Text></>}</View>} />
+          <View style={styles.rowBody}><View style={styles.rowHeading}><Text numberOfLines={1} style={[styles.rowName, fg, item.unreadCount > 0 && { fontWeight: "700" }]}>{item.name}</Text><Text style={[styles.rowTime, { color: colors.muted }]}>{formatChatTime(item.lastMessageAt)}</Text></View>{item.kind === "direct" && <PresenceIndicator tenantId={chat.workspace?.id} userId={item.memberIds.find(id => id !== user?.id)} />}<Text numberOfLines={1} style={[styles.preview, { color: colors.muted }]}>{chat.drafts[item.id]?.trim() ? <><Text style={{ color: colors.error }}>Draft:</Text>{` ${chat.drafts[item.id]}`}</> : <>{item.lastMessage && item.lastMessageSenderId === user?.id ? "You: " : item.lastMessage && item.kind !== "direct" && item.lastMessageSenderName ? `${item.lastMessageSenderName}: ` : ""}{item.lastMessage || "No messages yet"}</>}</Text></View>
+          {(item.unreadCount > 0 || (item.unreadMentionCount ?? 0) > 0) && <View style={styles.rowIndicators}>
+            {(item.unreadMentionCount ?? 0) > 0 && <Text accessibilityLabel="You were mentioned" style={[styles.mentionBadge, { color: colors.primary }]}>@</Text>}
+            {item.unreadCount > 0 && <View accessibilityLabel={`${item.unreadCount} unread messages`} style={styles.badge}><Text style={styles.buttonText}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</Text></View>}
+          </View>}
+        </Pressable>} ListEmptyComponent={<View style={styles.empty}>{chat.loading && (!ownsWorkspace || chat.channels.length === 0) && !actionIsCurrent(refreshingAction) ? <ActivityIndicator accessibilityLabel="Loading conversations" color={colors.primary} /> : <><Text style={[styles.emptyTitle, fg]}>{chat.error ? "Chat is unavailable" : search || filter !== "all" ? "No matching conversations" : "Start a conversation"}</Text><Text style={{ color: colors.muted, textAlign: "center" }}>{chat.error ? "Your messages will appear when the connection is restored." : search || filter !== "all" ? "Try another filter or search." : "Choose New message to message someone in your workspace."}</Text></>}</View>} />
       </>}
     </View>
     <Modal visible={composerVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => !creating && setComposing(false)}>
@@ -215,7 +249,9 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth },
   rowBody: { flex: 1, minWidth: 0, gap: 3 }, rowHeading: { flexDirection: "row", alignItems: "center", gap: 8 }, rowName: { flex: 1, fontSize: 17, lineHeight: 21 }, rowTime: { fontSize: 12, lineHeight: 16 }, preview: { fontSize: 14.5, lineHeight: 18 },
   avatar: { width: 46, height: 46, borderRadius: 16, justifyContent: "center", alignItems: "center" }, avatarText: { fontSize: 16, fontWeight: "700" },
-  badge: { borderRadius: 12, paddingHorizontal: 7, paddingVertical: 3 }, buttonText: { color: "white", fontWeight: "600" },
+  // A darker red keeps white count text readable in both appearance modes.
+  badge: { backgroundColor: "#C62828", borderRadius: 12, paddingHorizontal: 7, paddingVertical: 3 }, buttonText: { color: "white", fontWeight: "600" },
+  rowIndicators: { alignItems: "center", gap: 4 }, mentionBadge: { fontSize: 17, fontWeight: "700" },
   empty: { padding: 28, paddingTop: 70, alignItems: "center", gap: 10 }, listEmpty: { flexGrow: 1 }, emptyTitle: { fontSize: 19, fontWeight: "600" }, error: { padding: 16 },
   keyboardSheet: { flex: 1 }, sheet: { flex: 1, width: "100%", maxWidth: 720, alignSelf: "center" }, peopleList: { flex: 1, minHeight: 0 }, sheetHeader: { paddingHorizontal: 20, paddingVertical: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, sheetTitle: { fontSize: 18, fontWeight: "700" },
   composerOptions: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingBottom: 8 }, modeButton: { flexGrow: 1, flexShrink: 1, minWidth: 80, minHeight: 44, justifyContent: "center", borderWidth: 1, borderRadius: 18, paddingHorizontal: 12 }, helperRow: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8 }, helper: { flex: 1, paddingHorizontal: 20, paddingVertical: 8 },

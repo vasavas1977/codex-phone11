@@ -7,7 +7,8 @@ vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: state.user }) }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "blue" }) }));
 vi.mock("../lib/trpc", () => ({ trpc: { meetings: { capabilities: { useQuery: () => state.result } } } }));
 vi.mock("expo-router", () => ({ router: { push: vi.fn() } }));
-vi.mock("react-native", () => ({ Pressable: ({ children }: any) => createElement("button", null, children), Text: ({ children }: any) => children }));
+vi.mock("react-native", () => ({ Pressable: ({ children, accessibilityLabel }: any) => createElement("button", { "aria-label": accessibilityLabel }, children) }));
+vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: ({ name }: any) => createElement("span", { "data-icon": name }) }));
 import { MeetAction } from "../components/meet-action";
 it.each([{ isLoading: true }, { error: new Error() }, { data: { available: false } }, { isFetching: true, data: { available: true } }])("hides Meet until availability is confirmed: %j", result => {
  state.user = { id: 1 }; state.result = result; expect(renderToStaticMarkup(<MeetAction />)).toBe("");
@@ -15,5 +16,7 @@ it.each([{ isLoading: true }, { error: new Error() }, { data: { available: false
 it("shows a separate Meet action only for an authenticated available service", () => {
  state.result = { data: { available: true } }; state.user = { id: 1 };
  expect(renderToStaticMarkup(<MeetAction />)).toContain("Meet");
+ expect(renderToStaticMarkup(<MeetAction />)).toContain('data-icon="video.fill"');
+ expect(renderToStaticMarkup(<MeetAction />)).not.toContain(">Meet<");
  state.user = null; expect(renderToStaticMarkup(<MeetAction />)).toBe("");
 });

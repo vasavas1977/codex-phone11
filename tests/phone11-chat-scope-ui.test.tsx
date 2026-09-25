@@ -142,9 +142,9 @@ it("hides an old search immediately when the route points at another workspace",
 });
 it("filters drafts without exposing a replacement workspace draft", () => {
   render(TeamChat); m.buttons.get("More filters").onPress(); render(TeamChat); m.buttons.get("Drafts conversations").onPress();
-  expect(render(TeamChat)).toContain("Draft: Hello");
+  expect(render(TeamChat)).toContain("Draft:</div> Hello");
   m.state = { ...m.state, userId: 2 };
-  expect(render(TeamChat)).not.toContain("Draft: Hello");
+  expect(render(TeamChat)).not.toContain("Draft:</div> Hello");
 });
 it("finds a teammate by extension when starting a conversation", async () => {
   m.state.people = [{ id: 2, name: "Bob", extension: "3002" }, { id: 3, name: "Alice", extension: "3003" }];

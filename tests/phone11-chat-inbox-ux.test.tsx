@@ -6,29 +6,33 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/serve
 const m = vi.hoisted(() => ({
   user: { id: 1 }, state: {} as any, frame: { values: [] as any[], index: 0 }, buttons: new Map<string, any>(), inputs: new Map<string, any>(),
   ownPhotoDescriptor: { userId: 1, photoUrl: "/api/profile/photo/10/1?v=22222222-2222-4222-8222-222222222222", photoVersion: "22222222-2222-4222-8222-222222222222" },
-  create: vi.fn(), directory: vi.fn(), push: vi.fn(),
+  create: vi.fn(), directory: vi.fn(), push: vi.fn(), list: {} as any, effects: [] as (() => any)[], appStateListener: null as null | ((state: string) => void),
 }));
 
 vi.mock("react", async () => {
   const actual = await vi.importActual<typeof import("react")>("react");
   return { ...actual,
+    useEffect: (effect: () => any) => { m.effects.push(effect); },
     useState: (initial: any) => { const frame = m.frame, i = frame.index++; if (i >= frame.values.length) frame.values[i] = typeof initial === "function" ? initial() : initial; return [frame.values[i], (value: any) => { frame.values[i] = typeof value === "function" ? value(frame.values[i]) : value; }]; },
     useRef: (initial: any) => { const frame = m.frame, i = frame.index++; if (i >= frame.values.length) frame.values[i] = { current: initial }; return frame.values[i]; },
   };
 });
 function element({ children }: any) { return createElement("div", null, children); }
 vi.mock("react-native", () => ({
-  View: element, Text: element, ActivityIndicator: element, ScrollView: element, KeyboardAvoidingView: element,
+  View: element, Text: ({ children, accessibilityLabel, style }: any) => createElement("span", { "aria-label": accessibilityLabel, "data-color": Array.isArray(style) ? style.at(-1)?.color : style?.color }, children), ActivityIndicator: element, ScrollView: element, KeyboardAvoidingView: element,
   Modal: ({ visible, children }: any) => visible ? children : null,
-  FlatList: ({ data, renderItem }: any) => createElement("div", null, ...data.map((item: any, index: number) => createElement("section", { key: index }, renderItem({ item, index })))),
+  FlatList: (props: any) => { if (props.onRefresh) m.list = props; return createElement("div", null, ...props.data.map((item: any, index: number) => createElement("section", { key: index }, props.renderItem({ item, index })))); },
   TextInput: (props: any) => { m.inputs.set(props.accessibilityLabel, props); return createElement("input", { value: props.value, readOnly: true }); },
   Pressable: (props: any) => { if (props.accessibilityLabel) m.buttons.set(props.accessibilityLabel, props); return createElement("button", { disabled: props.disabled }, props.children); },
-  AppState: { currentState: "active" }, StyleSheet: { create: (styles: any) => styles, hairlineWidth: 1 },
+  AppState: { currentState: "active", addEventListener: (_event: string, listener: (state: string) => void) => { m.appStateListener = listener; return { remove: vi.fn() }; } }, StyleSheet: { create: (styles: any) => styles, hairlineWidth: 1 },
 }));
 vi.mock("expo-router", () => ({ router: { push: m.push }, useFocusEffect: vi.fn() }));
 vi.mock("../components/screen-container", () => ({ ScreenContainer: element }));
 vi.mock("../components/meet-action", () => ({ MeetAction: () => null }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("../components/chat/presence-indicator", () => ({ PresenceIndicator: () => null }));
+vi.mock("../lib/chat/presence-store", () => ({ usePresencePolling: vi.fn() }));
+vi.mock("../components/chat/notification-enrollment-prompt", () => ({ NotificationEnrollmentPrompt: () => null }));
 vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: m.user }) }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.user }) }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "green", foreground: "black", muted: "gray", surface: "white", border: "silver", error: "red" }) }));
@@ -47,7 +51,7 @@ vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: ()
 import TeamChat from "../app/(tabs)/teamchat";
 
 function render() {
-  m.frame.index = 0; m.buttons.clear(); m.inputs.clear();
+  m.frame.index = 0; m.buttons.clear(); m.inputs.clear(); m.effects = [];
   return renderToStaticMarkup(createElement(TeamChat));
 }
 function deferred() { let resolve!: (value?: any) => void; const promise = new Promise<any>(yes => { resolve = yes; }); return { promise, resolve }; }
@@ -73,7 +77,7 @@ it("keeps Chats inclusive of direct and group rooms while More owns Groups and D
   m.buttons.get("Chats conversations").onPress(); html = render();
   expect(html).toContain("Alice Adams"); expect(html).toContain("Launch team"); expect(html).not.toContain("Announcements");
   m.buttons.get("More filters").onPress(); render(); m.buttons.get("Drafts conversations").onPress(); html = render();
-  expect(html).toContain(">Drafts<"); expect(html).toContain("Draft: Draft reply"); expect(html).not.toContain("Launch team");
+  expect(html).toContain(">Drafts<"); expect(html).toContain('data-color="red">Draft:</span> Draft reply'); expect(html).not.toContain("Launch team");
 });
 
 it("uses the authorized teammate photo for direct rows and directory entries", async () => {
@@ -119,4 +123,53 @@ it("shows a bounded error after a direct message create failure", async () => {
   await m.buttons.get("Select teammate Alice Adams").onPress(); await Promise.resolve(); await Promise.resolve();
   expect(render()).toContain("Could not connect to Team Chat");
   expect(m.buttons.get("Select teammate Alice Adams").disabled).toBe(false);
+});
+
+it("keeps background refresh quiet while retaining loaded conversations", () => {
+  m.state.loading = true;
+  expect(render()).toContain("Launch team");
+  expect(m.list.refreshing).toBe(false);
+  m.list.onRefresh();
+  expect(m.state.loadChannels).not.toHaveBeenCalled();
+});
+
+it("shows refresh feedback only for a manual refresh and clears it when complete", async () => {
+  const request = deferred(); m.state.loadChannels.mockReturnValueOnce(request.promise);
+  render(); const refresh = m.list.onRefresh();
+  expect(render()).toContain("Launch team"); expect(m.list.refreshing).toBe(true);
+  await m.list.onRefresh(); expect(m.state.loadChannels).toHaveBeenCalledTimes(1);
+  expect(m.state.loadChannels).toHaveBeenCalledWith(10);
+  request.resolve(); await refresh; render(); expect(m.list.refreshing).toBe(false);
+});
+
+it("does not let an old workspace refresh clear the new workspace refresh", async () => {
+  const old = deferred(), next = deferred(); m.state.loadChannels.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+  render(); const oldRefresh = m.list.onRefresh();
+  m.state = { ...m.state, workspace: { id: 20, name: "Other" } };
+  render(); expect(m.list.refreshing).toBe(false);
+  const newRefresh = m.list.onRefresh(); render(); expect(m.list.refreshing).toBe(true);
+  old.resolve(); await oldRefresh; render(); expect(m.list.refreshing).toBe(true);
+  next.resolve(); await newRefresh; render(); expect(m.list.refreshing).toBe(false);
+});
+
+it("clears manual feedback on background and permits a fresh pull after resume", async () => {
+  const old = deferred(), next = deferred(); m.state.loadChannels.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+  render(); m.effects.forEach(effect => effect()); render();
+  const oldRefresh = m.list.onRefresh(); render(); expect(m.list.refreshing).toBe(true);
+  m.appStateListener!("background"); render(); expect(m.list.refreshing).toBe(false);
+  const newRefresh = m.list.onRefresh(); render(); expect(m.list.refreshing).toBe(true);
+  old.resolve(); await oldRefresh; render(); expect(m.list.refreshing).toBe(true);
+  next.resolve(); await newRefresh; render(); expect(m.list.refreshing).toBe(false);
+});
+
+it("uses authoritative mention counts and sender details with legacy fallbacks", () => {
+  m.state.channels[1] = { ...m.state.channels[1], unreadMentionCount: 1, lastMessageSenderId: 3, lastMessageSenderName: "Cara Chen" };
+  m.state.channels[2].lastMessage = "@Owner typed text is not a verified mention";
+  const html = render();
+  expect(html).toContain("Cara Chen: Ready");
+  expect(html.match(/aria-label="You were mentioned"/g)).toHaveLength(1);
+  expect(m.buttons.get("Open Launch team").accessibilityHint).toContain("2 unread messages. You were mentioned");
+  expect(m.buttons.get("Open Announcements").accessibilityHint).not.toContain("mentioned");
+  m.state.channels[1].lastMessageSenderId = 1;
+  expect(render()).toContain("You: Ready");
 });
