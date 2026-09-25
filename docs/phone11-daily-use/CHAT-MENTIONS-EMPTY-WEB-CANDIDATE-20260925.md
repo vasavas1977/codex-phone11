@@ -2,9 +2,8 @@
 
 The live static web client displays **No unread mentions** when the Mentions
 filter is selected without unread mentions. The matching signed iOS build is
-installed on both paired test iPhones. Native visual verification of this
-specific copy remains pending because iPhone Mirroring stopped at the Mac's
-protected login prompt after installation.
+installed on both paired test iPhones. The same empty state was visually
+verified in Team Chat on the mirrored iPhone 17 Pro Max running Build 102.
 
 ## Sealed candidate
 
@@ -87,6 +86,7 @@ and rollback. The earlier Mentions wrapper remains unchanged.
   passed.
 - On the preceding installed Build 101, the native channel composer displayed
   `@all` and member suggestions when `@` was typed; the unsent draft was
-  restored. This is a Build 101 observation only. Build 102's new Mentions
-  empty copy has not yet been visually checked on device. No message was sent,
-  and no two-handset notification or audio claim follows from these checks.
+  restored. This is a Build 101 observation only. On Build 102, iPhone
+  Mirroring showed the Team Chat inbox; selecting Mentions displayed **No
+  unread mentions**. No message was sent, and no two-handset notification or
+  audio claim follows from these checks.
