@@ -43,7 +43,7 @@ server {
     }
 }
 """
-MARKER = b'{"api_origin":"https://api.phone11.ai","public_origin":"https://1toall.phone11.ai","schema":"phone11-static-portal-release/v1","source_sha":"1de803b476f35659a45af77ba4b02a7a7d525f66"}'
+MARKER = b'{"api_origin":"https://api.phone11.ai","public_origin":"https://1toall.phone11.ai","schema":"phone11-static-portal-release/v1","source_sha":"47110c55d148602b3c64c6d98b73839af734144d"}'
 
 
 class FakeSystem(portal.System):
@@ -319,12 +319,12 @@ class StaticPortalRolloutTests(unittest.TestCase):
         return replace(release, export_manifest_sha256=digest(export_raw))
 
     def test_candidate_exact_export_pins_match_the_clean_archive_evidence(self):
-        self.assertEqual(portal.RELEASE_SHA, "1de803b476f35659a45af77ba4b02a7a7d525f66")
-        self.assertEqual(portal.LIVE_RELEASE_SHA, "076ddac068dd6efbca91a152f75886127a22c0b2")
-        self.assertEqual(portal.RELEASE_EXPORT_MANIFEST_SHA256, "a7e918e791abdea2a008b5ac9b5e6a766a0cddd25937219d852dd142f21d3aa5")
+        self.assertEqual(portal.RELEASE_SHA, "47110c55d148602b3c64c6d98b73839af734144d")
+        self.assertEqual(portal.LIVE_RELEASE_SHA, "1de803b476f35659a45af77ba4b02a7a7d525f66")
+        self.assertEqual(portal.RELEASE_EXPORT_MANIFEST_SHA256, "41bd1fddca0f3622a8b553f21a3e235ef4aac96edad2e314552f526f170cd3c0")
         self.assertEqual(digest(MARKER), portal.RELEASE_MARKER_SHA256)
-        self.assertEqual(portal.RELEASE_MAIN_JAVASCRIPT, "_expo/static/js/web/entry-6a39610a85e778790e8633a3c4be57d4.js")
-        self.assertEqual(portal.RELEASE_MAIN_JAVASCRIPT_SHA256, "c8fc050f716e8fd3f4de5a665c1e9b7ec32bbe3466c69ad7174cac0ed740c6c8")
+        self.assertEqual(portal.RELEASE_MAIN_JAVASCRIPT, "_expo/static/js/web/entry-64d9ab648361e65b1d9c29247f2e82d7.js")
+        self.assertEqual(portal.RELEASE_MAIN_JAVASCRIPT_SHA256, "df24bc5f3ca427935e2109d4fbd51d3155a77530533aae8422380f10c25933ca")
 
     def test_target_rejects_a_resealed_marker_or_entry_bundle_that_is_not_the_reviewed_export(self):
         with tempfile.TemporaryDirectory() as directory:
