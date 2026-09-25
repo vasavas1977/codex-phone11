@@ -1,8 +1,10 @@
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 import { router, useLocalSearchParams } from "expo-router";
 import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
+import { Platform } from "react-native";
 import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
 import {
   MeetingJoinFailure,
@@ -29,7 +31,25 @@ function EnabledMeetingPrejoin({
       initialMeetingCode={initialMeetingCode}
       onJoin={async (preferences) => {
         let stage: MeetingJoinStage = "bindings";
+        const joiningOwnerId = user.id;
         try {
+          if (getAuthSnapshot().user?.id !== joiningOwnerId)
+            throw new MeetingJoinFailure("admission");
+          if (Platform.OS === "web") {
+            stage = "admission";
+            const admission = await join.mutateAsync({ meetingId: preferences.meetingCode });
+            if (getAuthSnapshot().user?.id !== joiningOwnerId)
+              throw new MeetingJoinFailure("admission");
+            stage = "bindings";
+            const { WebMeetingLifecycle } = await import("@/lib/meetings/web-session");
+            await WebMeetingLifecycle.join(joiningOwnerId, preferences.meetingCode, admission, {
+              microphone: preferences.microphoneEnabled,
+              camera: preferences.cameraEnabled,
+            });
+            stage = "connected";
+            router.push("/conference/room");
+            return;
+          }
           // Default-off builds never load a native meeting/SIP implementation
           // until the authenticated server has made joining available.
           const [{ useSipCallStore }, { NativeMeetingLifecycle }] =
@@ -52,6 +72,8 @@ function EnabledMeetingPrejoin({
           const admission = await join.mutateAsync({
             meetingId: preferences.meetingCode,
           });
+          if (getAuthSnapshot().user?.id !== joiningOwnerId)
+            throw new MeetingJoinFailure("admission");
           await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
             microphone: preferences.microphoneEnabled,
             camera: preferences.cameraEnabled,

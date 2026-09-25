@@ -240,7 +240,7 @@ export function MeetingPrejoin({
                           <Pressable
                             key={meeting.meetingId}
                             accessibilityRole="button"
-                            accessibilityLabel={`Select admitted meeting ${index + 1}`}
+                            accessibilityLabel={`Select admitted meeting ${index + 1}, ID ${meeting.meetingId}`}
                             accessibilityState={{ selected }}
                             disabled={joining}
                             onPress={() => setMeetingCode(meeting.meetingId)}
@@ -257,7 +257,7 @@ export function MeetingPrejoin({
                             ]}
                           >
                             <Text style={{ color: colors.foreground }}>
-                              Meeting {index + 1}
+                              Meeting {index + 1} · {meeting.meetingId.slice(0, 8)}…{meeting.meetingId.slice(-5)}{selected ? " · Selected" : ""}
                             </Text>
                           </Pressable>
                         );

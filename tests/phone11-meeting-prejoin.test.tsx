@@ -53,7 +53,7 @@ vi.mock("react-native", () => ({
   Pressable: ({ children, onPress, disabled, accessibilityLabel }: any) => {
     if (!accessibilityLabel)
       mocks.joinButton = { onPress, disabled: Boolean(disabled) };
-    return createElement("button", { disabled }, children);
+    return createElement("button", { disabled, "aria-label": accessibilityLabel }, children);
   },
   ScrollView: element,
   StyleSheet: { create: (styles: unknown) => styles },
@@ -150,6 +150,30 @@ it("keeps capture off during prejoin and passes explicit media choices to join",
     meetingCode: "12345678-1234-4234-8234-123456789012",
     microphoneEnabled: true,
     cameraEnabled: true,
+  });
+});
+
+it("preselects the admitted meeting from the URL and identifies it in a multi-meeting picker", async () => {
+  const onJoin = vi.fn().mockResolvedValue(undefined);
+  const requested = "8407bc84-63ef-48a0-bceb-b29b16043555";
+  const html = renderToStaticMarkup(createElement(MeetingPrejoin, {
+    authenticatedDisplayName: "Pilot",
+    admittedMeetings: [
+      { meetingId: "11111111-1111-4111-8111-111111111111" },
+      { meetingId: requested },
+    ],
+    initialMeetingCode: requested,
+    onJoin,
+    onBack: () => undefined,
+  }));
+  expect(html).toContain("Meeting 2 · 8407bc84…43555 · Selected");
+  expect(html).toContain(`Select admitted meeting 2, ID ${requested}`);
+  expect(mocks.joinButton?.disabled).toBe(false);
+  await mocks.joinButton?.onPress();
+  expect(onJoin).toHaveBeenCalledWith({
+    meetingCode: requested,
+    microphoneEnabled: false,
+    cameraEnabled: false,
   });
 });
 

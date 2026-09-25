@@ -7,6 +7,7 @@ import {
   StyleSheet,
   Text,
   View,
+  Platform,
 } from "react-native";
 
 import { useColors } from "@/hooks/use-colors";
@@ -227,7 +228,7 @@ export function MeetingRoomState({
       }
     } catch {
       setFeedback(
-        `Could not update ${kind}. If access was denied, enable it in iOS Settings, then check your meeting connection and retry.`,
+        `Could not update ${kind}. If access was denied, enable it in ${Platform.OS === "web" ? "your browser settings" : "iOS Settings"}, then check your meeting connection and retry.`,
       );
     } finally {
       setBusyControl(null);
