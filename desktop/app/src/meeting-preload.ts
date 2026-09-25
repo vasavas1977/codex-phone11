@@ -76,8 +76,17 @@ function participantKey(participant: Participant): string {
   return participant.sid || participant.identity;
 }
 
-function participantName(participant: Participant): string {
-  return participant.isLocal ? 'You' : participant.name?.trim() || 'Participant';
+export function participantName(participant: Participant): string {
+  if (participant.isLocal) return 'You';
+  const name = participant.name?.trim();
+  const identity = participant.identity.trim();
+  if (!name || name.toLowerCase() === identity.toLowerCase()) return 'Participant';
+  // Provider identities can be copied into `name` when no display name exists.
+  if (/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(name) ||
+      /^[0-9a-f]{16,}(?:::|$)/i.test(name) || /^p11-t\d+-u\d+$/i.test(name)) {
+    return 'Participant';
+  }
+  return name;
 }
 
 function initials(name: string): string {
