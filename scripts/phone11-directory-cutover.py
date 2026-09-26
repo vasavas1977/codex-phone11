@@ -26,6 +26,9 @@ API_ID = '57ff451131c00a5db21c87292ff49acd47f6c6887c162c77fb390d6e1472e74b'
 API_IMAGE = 'sha256:0b1d80755c400eb59fa7fd75493b3a78cf4b39ea2cc65732aaf17231ca93ca75'
 OLD_HASH = '6de7e691e237bb9bc9d29c3c1f539c6f593fffee56df4a3cd79f2e9cf729473b'
 NEW_HASH = '404d486fc46aa44d100d43a4c30507b8231d6ae2d45540cc3225b224043599ce'
+# 1.10.12 destroys XML-curl parameter maps before unbinding the lookup callback.
+# A safe replacement lifecycle must be implemented and reviewed before mutation.
+MUTATION_READY = False
 
 
 class Refused(Exception):
@@ -149,6 +152,7 @@ def reload_directory(esl):
 
 
 def run(action):
+    need(action == 'verify' or MUTATION_READY, 'directory_reload_uncommissioned')
     previous = read_file(STATE / 'previous.xml', private=True)
     candidate = read_file(STATE / 'candidate.xml', private=True)
     need(digest(previous) == OLD_HASH and digest(candidate) == NEW_HASH, 'prepared_bytes')
@@ -169,8 +173,9 @@ def run(action):
         wanted = digest(target)
         if initial != wanted:
             need(initial == expected, 'active_config_changed')
-            replace(target, expected)
+            # rename may succeed even when the following fsync raises.
             changed = True
+            replace(target, expected)
         reload_directory(esl)
         if action == 'apply':
             for user in ('3001', '1020'):
@@ -184,8 +189,12 @@ def run(action):
     except Exception:
         if action == 'apply' and changed:
             # Do not overwrite an unrelated operator's intervening config.
-            replace(previous, NEW_HASH)
-            reload_directory(esl)
+            current = digest(read_file(TARGET))
+            if current == NEW_HASH:
+                replace(previous, NEW_HASH)
+                reload_directory(esl)
+            else:
+                need(current == OLD_HASH, 'rollback_config_changed')
         raise
     finally:
         esl.close()
