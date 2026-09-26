@@ -5,15 +5,17 @@ identities, an in-process HTTP responder, and no production config or service.
 It tests whether Kamailio 5.8 can suspend the **original transaction** from a
 final failure route and add exactly one fallback branch after bounded HTTP.
 
-The local Codex Mac had no Docker daemon and no Kamailio binary on 27 September,
-so the checked-in fixture is not a runtime pass. On an isolated host with the
-already-present `phone11-async-fixture:5.8.4` image, review the image and port
-scope, then run from repository root:
+The local Codex Mac had no Docker daemon and no Kamailio binary on 27 September.
+An isolated host run of source commit `aba128b` against a pinned 5.8.4 image
+passed all six scenarios; see `RUNTIME-EVIDENCE-20260927.md`. To reproduce on
+an isolated host with the pinned 5.8.4 image already present, review the image
+and port scope, then run from repository root:
 
 ```sh
-docker run --rm --network none --platform linux/amd64 \
-  -v "$PWD:/work:ro" phone11-async-fixture:5.8.4 \
-  python3 /work/tests/fixtures/phone11-voicemail-fallback-tm/run.py
+docker run --rm --network none --memory 256m --pids-limit 96 \
+  --entrypoint /usr/bin/python3 -v "$PWD:/work:ro" \
+  sha256:f7c3a2412b49f1372c70b2ad06da6f28cb34a044ee3ae408c7b960ef484bb5b7 \
+  /work/tests/fixtures/phone11-voicemail-fallback-tm/run.py
 ```
 
 The Python runner calls `kamailio -c` first, then starts it in the container.
