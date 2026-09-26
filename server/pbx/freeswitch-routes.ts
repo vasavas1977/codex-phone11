@@ -51,10 +51,9 @@ router.post("/directory", requireXmlCurlAuth, async (req: Request, res: Response
     const xmlResponse = await cacheGetOrSet(cacheKey, 30, async () => {
       // Look up SIP account from database
       const result = await query(
-        `SELECT sa.*, e.extension_number, e.display_name, e.voicemail_enabled,
-                e.call_forwarding_enabled, e.cfu_destination, e.cfb_destination,
-                e.cfna_destination, e.cfna_timeout_seconds, e.dnd_enabled,
-                t.slug as tenant_slug
+        `SELECT sa.sip_username, sa.sip_domain, sa.ha1, sa.tenant_id,
+                e.extension_number, e.display_name, e.voicemail_enabled,
+                NULL::text AS tenant_slug
          FROM sip_accounts sa
          JOIN extensions e ON sa.extension_id = e.id
          JOIN tenants t ON sa.tenant_id = t.id
@@ -284,27 +283,36 @@ router.post("/event", verifyFsAuth, async (req: Request, res: Response) => {
 // XML Generators
 // ============================================================================
 
+function xmlAttribute(value: unknown): string {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]!);
+}
+
 function directoryXml(account: any): string {
+  const domain = xmlAttribute(account.sip_domain);
+  const username = xmlAttribute(account.sip_username);
+  const tenantSlug = xmlAttribute(account.tenant_slug || "default");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <document type="freeswitch/xml">
   <section name="directory">
-    <domain name="${account.sip_domain}">
+    <domain name="${domain}">
       <params>
-        <param name="dial-string" value="{^^:sip_invite_domain=\${dialed_domain}:presence_id=\${dialed_user}@\${dialed_domain}}$\{sofia_contact(*/${account.sip_username}@${account.sip_domain})}"/>
+        <param name="dial-string" value="{^^:sip_invite_domain=\${dialed_domain}:presence_id=\${dialed_user}@\${dialed_domain}}$\{sofia_contact(*/${username}@${domain})}"/>
       </params>
-      <user id="${account.sip_username}">
+      <user id="${username}">
         <params>
-          <param name="a1-hash" value="${account.ha1}"/>
+          <param name="a1-hash" value="${xmlAttribute(account.ha1)}"/>
           <param name="vm-enabled" value="${account.voicemail_enabled ? 'true' : 'false'}"/>
         </params>
         <variables>
           <variable name="toll_allow" value="domestic,local"/>
-          <variable name="accountcode" value="${account.tenant_slug || 'default'}"/>
+          <variable name="accountcode" value="${tenantSlug}"/>
           <variable name="user_context" value="default"/>
-          <variable name="effective_caller_id_name" value="${account.display_name || account.sip_username}"/>
-          <variable name="effective_caller_id_number" value="${account.extension_number}"/>
-          <variable name="callgroup" value="${account.tenant_slug || 'default'}"/>
-          <variable name="tenant_id" value="${account.tenant_id}"/>
+          <variable name="effective_caller_id_name" value="${xmlAttribute(account.display_name || account.sip_username)}"/>
+          <variable name="effective_caller_id_number" value="${xmlAttribute(account.extension_number)}"/>
+          <variable name="callgroup" value="${tenantSlug}"/>
+          <variable name="tenant_id" value="${xmlAttribute(account.tenant_id)}"/>
         </variables>
       </user>
     </domain>
