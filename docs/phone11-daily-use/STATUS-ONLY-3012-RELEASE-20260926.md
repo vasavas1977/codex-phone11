@@ -1,9 +1,11 @@
 # Phone11 workspace status-only 3012 release
 
-This is a **source and operator handoff**, not evidence that the 3012 candidate
-is serving traffic. The v2 status migration was reported applied and its
-`--recover` check passed; the route still requires the independent bridge
-proof and all candidate gates. The first apply attempt left an intent at
+**Live as of 2026-09-26 UTC:** the reviewed 3012 status API is serving tRPC
+traffic, and tenant `1` workspace profile status is enabled. DND remains off.
+The v2 migration, catalog bridge, route gates, authenticated canary checks,
+and independent runtime postcheck passed. The live evidence is recorded below;
+the execution instructions are retained for audit and recovery.
+The first apply attempt left an intent at
 `/var/lib/phone11-profile-status/receipt.json` with the live catalog unchanged.
 Preserve that receipt for audit. Its rehearsal ran as `postgres`, producing an
 after-catalog owner fingerprint that cannot match tables created by the live
@@ -177,7 +179,7 @@ Unauthenticated GET returned `401`; POST and HEAD returned `405`. The in-app
 browser refused top-level navigation with `net::ERR_BLOCKED_BY_CLIENT`, so
 no authenticated result was obtained. Manual rollback completed: exact
 original site SHA restored, canary URL `404`, sentinel absent, expiry timer
-inactive and disabled. The main 3012 route remains unactivated. Portal
+inactive and disabled. The main 3012 route was still unactivated at that point. Portal
 sign-in as extension 3001, workspace administration, Team Chat, and the
 direct-contact meeting button were observed working on the existing route;
 these are not candidate or handset-media acceptance.
@@ -185,9 +187,45 @@ these are not candidate or handset-media acceptance.
 A second, identical ten-minute canary was installed at `2026-09-26 19:48:10
 UTC` for the owner to open the two read-only links manually. Receipt:
 `/var/lib/phone11-status-cookie-canary/20260926T194810Z-50691cb9c2770177`.
-Authenticated responses are pending; do not activate the main route based
-on this installation. Confirm expiry/rollback and original bytes before
-the next route action.
+At approximately `2026-09-26 19:51 UTC`, the agent read both authenticated
+responses from the owner's open browser tabs. Tenant `1` returned
+`enabled=false`, `dndEnabled=false`, with null update metadata. Nonexistent
+tenant `2147483647` returned `FORBIDDEN` / HTTP `403` from
+`profile.adminSettings`. No cookie or password was extracted. This is live
+nonexistent-tenant denial; the real foreign-tenant evidence remains the isolated
+PostgreSQL suite described above.
+
+The second canary was then rolled back using its exact receipt. The original
+site SHA `2f744bb0df277cd4cbe7a50c2a6f9122530821d7bfa56f32d1fdb2ac64c59520`
+was restored before main activation. Canary timers were inactive and disabled,
+and the sentinel was absent.
+
+### Live activation and acceptance
+
+The guarded route operator activated the prepared receipt
+`/var/lib/phone11-status-only-release-route/20260926T164430Z-3314adbde8a92bbf`.
+Its state is `active`, with sealed active site SHA-256
+`4cc288894e662117cf3150bc00755cd27f2baf20d159d66e128857392193cf45`.
+Only the two tRPC proxy directives moved from 3011 to 3012; other routes retain
+their preceding targets. The signed-in owner enabled workspace profile status
+through `/admin/profile-status`; the UI confirmed success.
+
+Independent read-only postcheck returned `APPROVE_RUNTIME_POSTCHECK`: exact
+route operator and site pins matched, candidate and predecessor were healthy,
+the canary was rolled back, and tenant `1` had exactly one settings row with
+`enabled=true` and `dnd_enabled=false`. The global DND-enabled count was zero.
+
+Authenticated web checks verified Availability choices, the custom-status
+editor and presets, and Office / Remote / Turn off work-location choices.
+Editors were dismissed without entering a new status or location. Existing
+Team Chat and the Test channel loaded; the direct conversation with 1020
+showed Available on mobile and an enabled Meet with contact button. No new
+meeting invitation was sent as part of these read-only regression checks.
+
+This is API deployment, database, and web-UI evidence. It does not establish
+new physical-device audio/video, SIP, push, or voicemail acceptance. Voicemail
+storage and its deposit hook remain outside this release and disabled. DND's
+separate notification-worker rollout remains outstanding.
 
 On the VoIP host, keep the original SQL in place; use the reviewed v2 operator
 from a temporary root-only path for the guarded archive step below. After
