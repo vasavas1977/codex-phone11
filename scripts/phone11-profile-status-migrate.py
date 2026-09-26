@@ -815,7 +815,12 @@ def failed_v1_file(name: str, *, archived: bool) -> Path:
     guarded(not (source_exists and destination_exists), "failed_v1")
     guarded(destination_exists if archived else source_exists or destination_exists, "failed_v1")
     path = destination if destination_exists else source
-    guarded(sha256_bytes(secure_read(path)) == FAILED_V1_PINS[name], "failed_v1")
+    if name == "backup.dump":
+        proof = failed_v1_file("backup-proof.json", archived=archived)
+        guarded(verify_backup_archive(proof, FAILED_V1_PINS["backup-proof.json"],
+                                      archive_path=path) == FAILED_V1_PINS[name], "failed_v1")
+    else:
+        guarded(sha256_bytes(secure_read(path)) == FAILED_V1_PINS[name], "failed_v1")
     return path
 
 
@@ -953,7 +958,7 @@ def archive_failed_v1() -> None:
                             os.fsync(descriptor)
                         finally:
                             os.close(descriptor)
-                guarded(sha256_bytes(secure_read(destination)) == FAILED_V1_PINS[name], "failed_v1")
+                guarded(failed_v1_file(name, archived=True) == destination, "failed_v1")
             guarded(holder.poll() is None, "retry_guard")
             failed_v1_evidence(archived=True)
 

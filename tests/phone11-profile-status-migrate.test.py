@@ -448,13 +448,19 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
             archive = root / "failed-status-apply-v1"
             receipt = root / "receipt.json"
             receipt.write_bytes(b"original intent")
-            samples = {name: b"PGDMPtest" if name == "backup.dump" else name.encode()
-                       for name in operator.FAILED_V1_PINS if name != "receipt.json"}
+            samples = {name: name.encode() for name in operator.FAILED_V1_PINS
+                       if name != "receipt.json"}
+            samples["backup.dump"] = b"PGDMP" + b"x" * operator.MAX_ARTIFACT_BYTES
+            self.assertGreater(len(samples["backup.dump"]), operator.MAX_ARTIFACT_BYTES)
+            samples["backup-proof.json"] = operator.canonical_bytes({
+                "backup_sha256": operator.sha256_bytes(samples["backup.dump"]),
+            })
             for name, value in samples.items():
                 write_protected(migration / name, value)
             pins = {name: operator.sha256_bytes(value) for name, value in samples.items()}
             pins["receipt.json"] = operator.sha256_bytes(receipt.read_bytes())
             real_lstat = Path.lstat
+            real_verify = operator.verify_backup_archive
 
             def root_lstat(path: Path):
                 info = real_lstat(path)
@@ -465,6 +471,15 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
             @contextlib.contextmanager
             def hold(_manifest: dict):
                 yield Holder()
+
+            def read_small(path: Path, **_kwargs: object) -> bytes:
+                if path.name == "backup.dump":
+                    raise AssertionError("large backup reached bounded secure_read")
+                return path.read_bytes()
+
+            def verify_local(proof: Path, proof_sha: str, *, archive_path: Path) -> str:
+                return real_verify(proof, proof_sha, archive_path=archive_path,
+                                   uid=os.getuid(), gid=os.getgid())
 
             with (
                 patch.object(operator.os, "geteuid", return_value=0),
@@ -477,9 +492,12 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
                 patch.object(operator, "failed_v1_evidence", return_value=manifest_document()),
                 patch.object(operator, "no_old_status_worker"),
                 patch.object(operator, "held_retry_guard", side_effect=hold),
-                patch.object(operator, "secure_read", side_effect=lambda path: path.read_bytes()),
+                patch.object(operator, "secure_read", side_effect=read_small),
+                patch.object(operator, "verify_backup_archive", side_effect=verify_local),
                 patch.object(Path, "lstat", root_lstat),
             ):
+                self.assertEqual(operator.failed_v1_file("backup.dump", archived=False),
+                                 migration / "backup.dump")
                 operator.archive_failed_v1()
                 operator.archive_failed_v1()  # A completed move is safe to resume.
             self.assertEqual(receipt.read_bytes(), b"original intent")
