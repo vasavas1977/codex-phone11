@@ -27,8 +27,9 @@ test('TM runtime fixture is loopback-only and absent from deployed routing', () 
 test('Kamailio TM final-failure runtime matrix', { skip: !process.env.PHONE11_VM_TM_IMAGE }, () => {
   const output = execFileSync('docker', [
     'run', '--rm', '--network', 'none', '--platform', 'linux/amd64',
+    '--entrypoint', 'python3',
     '-v', `${root}:/work:ro`, process.env.PHONE11_VM_TM_IMAGE,
-    'python3', '/work/' + fixture + 'run.py',
+    '/work/' + fixture + 'run.py',
   ], { encoding: 'utf8', timeout: 60000 });
   assert.match(output, /"kamailio_parser": "pass"/);
   assert.equal((output.match(/"result": "pass"/g) ?? []).length, 6, output);
