@@ -71,6 +71,9 @@ compared directly. After the status migration is applied, the reviewed
 `phone11-status-catalog-bridge.py` restores the retained exact pre-status
 `backup.dump` in a separate network-isolated PostgreSQL 16 clone. It runs the
 pinned direct and status read-only catalog programs on that same clone and
+injects the already verified status operator bytes into the pinned restore
+helper in memory, so the helper cannot reload an unverified source file or
+stale bytecode from the staged pathname. It
 requires the direct result to equal the direct receipt's after-catalog hash and
 the status result to equal the status manifest's before-catalog hash. The
 helper writes `catalog-bridge-proof.json` only after checking the retained

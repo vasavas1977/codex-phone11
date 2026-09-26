@@ -39,6 +39,12 @@ RESTORE_HELPER_SHA = "ee8be9cdf0acb6c8516b2122f3d16ff83087479ac7c3668b711067548d
 CURRENT_CONTAINER_ID = "bd3b5acf2647d239b5d5298c23a0b1bf60699379b25e4e8023b67e27fd6a6195"
 CURRENT_IMAGE = "sha256:c32a2a3a72061f2d4dbb8a54a1528666fd25003cd9782ae9de4ffa60c0e7d1b3"
 SCHEMA = "phone11.status-catalog-bridge-proof/v1"
+RESTORE_OPERATOR_IMPORT = b'''OPERATOR_PATH = Path(__file__).with_name("phone11-profile-status-migrate.py")
+spec = importlib.util.spec_from_file_location("phone11_status_migration", OPERATOR_PATH)
+assert spec and spec.loader
+migration = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(migration)
+'''
 
 
 class BridgeError(RuntimeError):
@@ -59,6 +65,25 @@ def load_reviewed(path: Path, expected_sha: str, name: str) -> tuple[types.Modul
     module.__file__ = str(path)
     exec(compile(raw, str(path), "exec"), module.__dict__)
     return module, raw
+
+
+def load_restore_helper(verified_status: types.ModuleType) -> types.ModuleType:
+    """Execute the pinned helper with its dependency injected from verified bytes.
+
+    Its normal top-level import would reopen a mutable pathname and may accept
+    stale bytecode. Replace only that exact block in the already-hashed source;
+    the production helper file and its ordinary behavior remain unchanged.
+    """
+    raw = secure_read(RESTORE_HELPER)
+    require(sha(raw) == RESTORE_HELPER_SHA and raw.count(RESTORE_OPERATOR_IMPORT) == 1,
+            "restore_artifact")
+    module = types.ModuleType("status_restore")
+    module.__file__ = str(RESTORE_HELPER)
+    module.__dict__["_verified_migration"] = verified_status
+    source = raw.replace(RESTORE_OPERATOR_IMPORT, b"migration = _verified_migration\n", 1)
+    exec(compile(source, str(RESTORE_HELPER), "exec"), module.__dict__)
+    require(module.migration is verified_status, "restore_dependency")
+    return module
 
 
 def sha(raw: bytes) -> str:
@@ -207,10 +232,7 @@ def create(data_mib: int) -> dict[str, Any]:
             "proof_exists")
     status, _ = load_reviewed(STATUS_OPERATOR, STATUS_OPERATOR_SHA, "status_migration")
     direct, _ = load_reviewed(DIRECT_OPERATOR, DIRECT_OPERATOR_SHA, "direct_migration")
-    restore, _ = load_reviewed(RESTORE_HELPER, RESTORE_HELPER_SHA, "status_restore")
-    # The restored helper imports its sibling by path during module load. Use
-    # the bytes already verified above for every subsequent snapshot call.
-    restore.migration = status
+    restore = load_restore_helper(status)
     status_manifest_raw = secure_read(STATUS_MANIFEST)
     direct_manifest_raw = secure_read(DIRECT_MANIFEST)
     status_manifest = checked_json(status_manifest_raw, {"schema", "target", "release",

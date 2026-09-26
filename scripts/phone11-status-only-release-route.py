@@ -62,7 +62,7 @@ STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt-role-rehearsal-v2
 BRIDGE_HELPER = STATUS_ROOT / "phone11-status-catalog-bridge.py"
 BRIDGE_PROOF = STATUS_ROOT / "catalog-bridge-proof.json"
 BRIDGE_SCHEMA = "phone11.status-catalog-bridge-proof/v1"
-BRIDGE_HELPER_SHA = "1143a1c203b4f699fabad9829a64608b7a310ba1115cd1e63d1c7e91b268996a"
+BRIDGE_HELPER_SHA = "692a487e40a55f6d822dfdd05cb2b86055deedaf5d00aa7274fdb219fe71664a"
 STATUS_OPERATOR_SHA = "eb6b9faa19b15d62a15b87dc3f441c25eff24a1f18a6a35bbe212a6744897d7f"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import py_compile
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import sys
@@ -96,6 +98,38 @@ class CatalogBridgeTest(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, "artifact"):
                 bridge.load_reviewed(Path("/not-executed.py"), "0" * 64, "wrong")
 
+    def test_restore_helper_uses_injected_status_despite_replaced_path_and_valid_stale_pyc(self):
+        reviewed = (SCRIPT.parent / "phone11-profile-status-restore-proof.py").read_bytes()
+        with TemporaryDirectory() as root:
+            helper = Path(root) / "phone11-profile-status-restore-proof.py"
+            status_path = Path(root) / "phone11-profile-status-migrate.py"
+            marker = Path(root) / "unverified-executed"
+            helper.write_bytes(reviewed)
+            malicious = f"with open({str(marker)!r}, 'w') as evidence: evidence.write('unverified')\n"
+            status_path.write_text(malicious)
+            observed = status_path.stat()
+            py_compile.compile(str(status_path), doraise=True,
+                               invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+            status_path.write_text("#" + " " * (len(malicious) - 2) + "\n")
+            os.utime(status_path, ns=(observed.st_atime_ns, observed.st_mtime_ns))
+            # Confirm this is a valid stale pyc; a normal pathname import runs it.
+            stale = importlib.util.spec_from_file_location("stale_status", status_path)
+            assert stale and stale.loader
+            stale.loader.exec_module(importlib.util.module_from_spec(stale))
+            self.assertEqual(marker.read_text(), "unverified")
+            marker.unlink()
+            verified_status = SimpleNamespace(NODE_PROGRAM="async function identity(client) {")
+            with patch.object(bridge, "RESTORE_HELPER", helper), \
+                 patch.object(bridge, "secure_read", return_value=reviewed):
+                restored = bridge.load_restore_helper(verified_status)
+            self.assertIs(restored.migration, verified_status)
+            self.assertFalse(marker.exists())
+            with patch.object(bridge, "RESTORE_HELPER", helper), \
+                 patch.object(bridge, "secure_read", return_value=reviewed.replace(
+                     bridge.RESTORE_OPERATOR_IMPORT, b"migration = None\n")):
+                with self.assertRaisesRegex(bridge.BridgeError, "restore_artifact"):
+                    bridge.load_restore_helper(verified_status)
+
     def test_proof_requires_both_catalogs_same_backup_and_current_identity(self):
         identity, direct_after = "1" * 64, "2" * 64
         status_before, status_after, archive_sha = "3" * 64, "4" * 64, "5" * 64
@@ -143,6 +177,7 @@ class CatalogBridgeTest(unittest.TestCase):
              patch.object(bridge.os.path, "lexists", return_value=False), \
              patch.object(bridge, "secure_read", side_effect=lambda path: data[path]), \
              patch.object(bridge, "load_reviewed", side_effect=lambda path, *_: (modules[path], b"bytes")), \
+             patch.object(bridge, "load_restore_helper", return_value=restore), \
              patch.object(bridge, "clone_fingerprints", return_value=(direct_after, status_before)) as clone:
             proof = bridge.create(4096)
             self.assertEqual(proof["direct_after_catalog_sha256"], direct_after)
