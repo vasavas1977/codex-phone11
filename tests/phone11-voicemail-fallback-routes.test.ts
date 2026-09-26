@@ -113,8 +113,7 @@ describe("local voicemail fallback route boundary", () => {
     const body = { reference, callId: mintBody.callId, fromTag: mintBody.fromTag };
     const redeemed = await post("/redeem", body, fsSecret, "x-fs-secret");
     expect(redeemed.status).toBe(200);
-    expect(redeemed.body).toMatchObject({ tenantId: 12, targetExtensionId: 42,
-      expectedOwnerEpoch: identity.target.ownerEpoch });
+    expect(redeemed.body).toEqual({ identity, expectedOwnerEpoch: identity.target.ownerEpoch });
     expect(JSON.stringify(redeemed.body)).not.toContain("ha1");
     expect((await post("/redeem", body, fsSecret, "x-fs-secret")).status).toBe(404);
   });

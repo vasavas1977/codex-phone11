@@ -154,14 +154,7 @@ export function createVoicemailFallbackRouter(options: {
         if (!current.allowed || !sameIdentity(snapshot.identity, current.identity)) {
           res.status(404).json({ error: "Not found" }); return;
         }
-        const { tenantId, caller, target } = current.identity;
-        res.json({ tenantId,
-          callerExtensionId: caller.extensionId, callerUserId: caller.userId,
-          targetExtensionId: target.extensionId, targetOwnerUserId: target.ownerUserId,
-          targetExtensionNumber: target.extensionNumber,
-          targetSipUsername: target.sipUsername, targetSipDomain: target.sipDomain,
-          expectedOwnerEpoch: target.ownerEpoch,
-        });
+        res.json({ identity: current.identity, expectedOwnerEpoch: current.identity.target.ownerEpoch });
       } catch {
         res.status(503).json({ error: "Fallback unavailable" });
       }
