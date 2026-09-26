@@ -151,7 +151,8 @@ def inspect(name: str) -> dict[str, Any] | None:
         absent = re.fullmatch(
             r"(?:error(?::| response from daemon:)\s*)?no such (?:object|container):\s*" +
             re.escape(name), error, re.IGNORECASE)
-        need(result.stdout == b"" and len(result.stderr) <= MAX_OUTPUT and absent is not None,
+        need(result.stdout.strip() in (b"", b"[]") and len(result.stderr) <= MAX_OUTPUT and
+             absent is not None,
              "inspect_failed")
         return None
     need(len(result.stdout) <= MAX_OUTPUT and len(result.stderr) <= MAX_OUTPUT, "inspect_size")

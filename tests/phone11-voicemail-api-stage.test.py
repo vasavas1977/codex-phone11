@@ -50,6 +50,10 @@ MANIFEST = {
 
 class StageTests(unittest.TestCase):
     def test_inspect_accepts_only_exact_absent_candidate_error(self):
+        with patch.object(stage.subprocess, "run", return_value=SimpleNamespace(
+                returncode=1, stdout=b"[]\n",
+                stderr=b"error: no such object: cp11-api-candidate-voicemail\n")):
+            self.assertIsNone(stage.inspect(stage.NAME))
         for stderr in (
             b"error: no such object: cp11-api-candidate-voicemail\n",
             b"Error: No such container: cp11-api-candidate-voicemail\n",
@@ -62,6 +66,7 @@ class StageTests(unittest.TestCase):
             (b"", b"error: no such object: unrelated\n"),
             (b"", b"permission denied: no such object: cp11-api-candidate-voicemail\n"),
             (b"secret", b"error: no such object: cp11-api-candidate-voicemail\n"),
+            (b"[{\"Id\":\"unexpected\"}]\n", b"error: no such object: cp11-api-candidate-voicemail\n"),
         ):
             with patch.object(stage.subprocess, "run", return_value=SimpleNamespace(
                     returncode=1, stdout=stdout, stderr=stderr)):
