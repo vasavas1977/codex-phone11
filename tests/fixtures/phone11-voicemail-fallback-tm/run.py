@@ -119,6 +119,11 @@ def branch_count(callid):
         return len(seen[15063].get(callid, set()))
 
 
+def callee_count(callid, port):
+    with lock:
+        return len(seen[port].get(callid, set()))
+
+
 def scenario(name, callees, *, fork=False, cancel=None, late=False):
     callid = name + '-' + uuid.uuid4().hex[:10] + '@fixture.invalid'
     case = dict(callees=callees, http=threading.Event(), release=threading.Event(),
@@ -130,6 +135,16 @@ def scenario(name, callees, *, fork=False, cancel=None, late=False):
     caller.settimeout(0.1)
     try:
         caller.sendto(request(callid, fork=fork), ('127.0.0.1', 15060))
+        wait_for(lambda: callee_count(callid, 15061) == 1, 2,
+                 f'{name}: primary callee 15061 did not receive its own branch')
+        if fork:
+            wait_for(lambda: callee_count(callid, 15062) == 1, 2,
+                     f'{name}: forked callee 15062 did not receive its own branch')
+            with lock:
+                assert seen[15061][callid].isdisjoint(seen[15062][callid]), \
+                    f'{name}: both destinations received the same TM branch'
+        else:
+            assert callee_count(callid, 15062) == 0, f'{name}: unexpected second callee'
         if cancel == 'before-http':
             time.sleep(0.1)
             caller.sendto(request(callid, 'CANCEL'), ('127.0.0.1', 15060))
@@ -160,6 +175,8 @@ def scenario(name, callees, *, fork=False, cancel=None, late=False):
     finally:
         caller.close()
     return {'scenario': name, 'result': 'pass', 'http_requests': case['http_count'],
+            'primary_branches': callee_count(callid, 15061),
+            'fork_branches': callee_count(callid, 15062),
             'fs_branches': branch_count(callid)}
 
 
