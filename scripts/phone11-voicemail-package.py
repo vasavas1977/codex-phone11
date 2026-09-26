@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = {
     "producer.mjs": ("dist/voicemail/producer.mjs", 0o600),
     "relay.mjs": ("dist/voicemail/relay.mjs", 0o600),
+    "local-fallback-ingress.mjs": ("dist/voicemail/local-fallback-ingress.mjs", 0o600),
+    "phone11_voicemail_local_fallback.lua": ("infra/configs/freeswitch/scripts/phone11_voicemail_local_fallback.lua", 0o600),
     "runner.sh": ("scripts/phone11-voicemail-runner.sh", 0o700),
     "runtime-check.mjs": ("scripts/phone11-voicemail-runtime-check.mjs", 0o600),
     "fs-entrypoint.sh": ("scripts/phone11-voicemail-fs-entrypoint.sh", 0o700),
@@ -45,13 +47,14 @@ def git_state(root: Path, expected_sha: str) -> None:
 
 
 def verify_built_workers(root: Path) -> None:
-    """Reject a stale or substituted dist artifact by rebuilding both workers."""
+    """Reject a stale or substituted dist artifact by rebuilding all workers."""
     esbuild = root / "node_modules/.bin/esbuild"
     if not esbuild.is_file():
         raise ValueError("esbuild_missing")
     with tempfile.TemporaryDirectory(prefix="phone11-vm-verify-") as temporary:
         for name, source in (("producer", "phone11-voicemail-producer.ts"),
-                             ("relay", "phone11-voicemail-relay.ts")):
+                             ("relay", "phone11-voicemail-relay.ts"),
+                             ("local-fallback-ingress", "phone11-voicemail-local-fallback-ingress.ts")):
             rebuilt = Path(temporary) / f"{name}.mjs"
             subprocess.run([str(esbuild), f"scripts/{source}", "--platform=node",
                             "--packages=external", "--bundle", "--format=esm",

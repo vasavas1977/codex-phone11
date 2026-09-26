@@ -15,7 +15,7 @@
     "meetings:plain-video:preflight": "tsx scripts/phone11-plain-video-admission-preflight.ts",
     "meetings:plain-video:fixture": "tsx scripts/phone11-plain-video-admission-fixture.ts",
     "build:conference-readiness": "esbuild scripts/phone11-conference-readiness.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/conference-readiness.mjs",
-    "build:voicemail-workers": "esbuild scripts/phone11-voicemail-producer.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/voicemail/producer.mjs && esbuild scripts/phone11-voicemail-relay.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/voicemail/relay.mjs",
+    "build:voicemail-workers": "esbuild scripts/phone11-voicemail-producer.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/voicemail/producer.mjs && esbuild scripts/phone11-voicemail-relay.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/voicemail/relay.mjs && esbuild scripts/phone11-voicemail-local-fallback-ingress.ts --platform=node --packages=external --bundle --format=esm --outfile=dist/voicemail/local-fallback-ingress.mjs",
     "meetings:readiness": "tsx scripts/phone11-conference-readiness.ts",
     "meetings:readiness:container": "node dist/conference-readiness.mjs",
     "test:auth": "node scripts/test-phone11-auth.mjs",

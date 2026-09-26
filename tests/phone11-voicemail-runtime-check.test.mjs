@@ -7,7 +7,8 @@ import path from "node:path";
 import { checkRuntime } from "../scripts/phone11-voicemail-runtime-check.mjs";
 
 const SHA = bytes => createHash("sha256").update(bytes).digest("hex");
-const names = ["producer.mjs", "relay.mjs", "runner.sh", "runtime-check.mjs",
+const names = ["producer.mjs", "relay.mjs", "local-fallback-ingress.mjs",
+  "phone11_voicemail_local_fallback.lua", "runner.sh", "runtime-check.mjs",
   "fs-entrypoint.sh", "relay-entrypoint.sh", "phone11_voicemail_deposit.lua", "voicemail.conf.xml"];
 const roots = [];
 

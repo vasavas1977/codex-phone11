@@ -11,7 +11,8 @@ const RELEASE = "/opt/phone11ai/voicemail";
 const SOURCE = "/var/lib/freeswitch/voicemail";
 const OUTBOX = "/var/lib/phone11-voicemail/outbox";
 const UPLOAD = "https://api.phone11.ai/api/recordings/voicemail";
-const FILES = ["producer.mjs", "relay.mjs", "runner.sh", "runtime-check.mjs",
+const FILES = ["producer.mjs", "relay.mjs", "local-fallback-ingress.mjs",
+  "phone11_voicemail_local_fallback.lua", "runner.sh", "runtime-check.mjs",
   "fs-entrypoint.sh", "relay-entrypoint.sh",
   "phone11_voicemail_deposit.lua", "voicemail.conf.xml"];
 const SHA256 = /^[0-9a-f]{64}$/;
