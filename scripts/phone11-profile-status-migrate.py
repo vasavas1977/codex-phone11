@@ -357,14 +357,14 @@ async function identity(client) {
   return (await client.query("SELECT current_database() database,current_schema() schema,current_setting('server_version_num') server_version_num,(SELECT oid::text FROM pg_database WHERE datname=current_database()) database_oid")).rows[0];
 }
 async function catalog(client) {
-  const relations = (await client.query("SELECT n.nspname schema,c.relname name,c.relkind kind,c.relowner::text owner_oid,c.relacl::text acl,c.relrowsecurity row_security,c.relforcerowsecurity force_row_security FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY n.nspname,c.relname")).rows;
+  const relations = (await client.query("SELECT n.nspname schema,c.relname name,c.relkind kind,pg_get_userbyid(c.relowner) owner_name,c.relacl::text acl,c.relrowsecurity row_security,c.relforcerowsecurity force_row_security FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY n.nspname,c.relname")).rows;
   const columns = (await client.query("SELECT n.nspname schema,c.relname table_name,a.attname name,a.attacl::text acl,pg_catalog.format_type(a.atttypid,a.atttypmod) type,a.attnotnull not_null,a.attidentity identity,a.attgenerated generated,pg_get_expr(d.adbin,d.adrelid,true) default_expression FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum")).rows;
   const constraints = (await client.query("SELECT n.nspname schema,c.relname table_name,con.conname name,con.contype type,con.convalidated validated,pg_get_constraintdef(con.oid,true) definition FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY n.nspname,c.relname,con.conname")).rows;
   const indexes = (await client.query("SELECT ns.nspname schema,t.relname table_name,i.relname name,pg_get_indexdef(i.oid) definition FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_class t ON t.oid=x.indrelid JOIN pg_namespace ns ON ns.oid=t.relnamespace WHERE ns.nspname='public' ORDER BY ns.nspname,t.relname,i.relname")).rows;
   const triggers = (await client.query("SELECT n.nspname schema,c.relname table_name,t.tgname name,pg_get_triggerdef(t.oid,true) definition FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal ORDER BY n.nspname,c.relname,t.tgname")).rows;
   const functions = (await client.query("SELECT n.nspname schema,p.proname name,p.prokind kind,pg_get_function_identity_arguments(p.oid) arguments,pg_get_function_result(p.oid) result,l.lanname language,p.provolatile volatility,p.prosecdef security_definer,CASE WHEN p.prokind IN ('f','p') THEN pg_get_functiondef(p.oid) ELSE NULL END definition FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang WHERE n.nspname='public' ORDER BY n.nspname,p.proname,arguments")).rows;
-  const policies = (await client.query("SELECT n.nspname schema,c.relname table_name,p.polname name,p.polcmd command,p.polpermissive permissive,p.polroles::text roles,pg_get_expr(p.polqual,p.polrelid,true) using_expression,pg_get_expr(p.polwithcheck,p.polrelid,true) check_expression FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY n.nspname,c.relname,p.polname")).rows;
-  const defaultAcl = (await client.query("SELECT COALESCE(n.nspname,'') schema,d.defaclrole::text role_oid,d.defaclobjtype object_type,d.defaclacl::text acl FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace ORDER BY schema,role_oid,object_type,acl")).rows;
+  const policies = (await client.query("SELECT n.nspname schema,c.relname table_name,p.polname name,p.polcmd command,p.polpermissive permissive,ARRAY(SELECT CASE WHEN role_oid=0 THEN 'PUBLIC' ELSE pg_get_userbyid(role_oid) END FROM unnest(p.polroles) role_oid ORDER BY 1) roles,pg_get_expr(p.polqual,p.polrelid,true) using_expression,pg_get_expr(p.polwithcheck,p.polrelid,true) check_expression FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY n.nspname,c.relname,p.polname")).rows;
+  const defaultAcl = (await client.query("SELECT COALESCE(n.nspname,'') schema,pg_get_userbyid(d.defaclrole) role_name,d.defaclobjtype object_type,d.defaclacl::text acl FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace ORDER BY schema,role_name,object_type,acl")).rows;
   return {relations,columns,constraints,indexes,triggers,functions,policies,defaultAcl};
 }
 async function assertStatusTablesSafe(client) {
@@ -381,11 +381,11 @@ async function snapshot(client) {
   return {identity_fingerprint:sha(currentIdentity),catalog_fingerprint:sha(currentCatalog)};
 }
 (async()=>{
-  if (!["snapshot","recover","apply"].includes(action)) throw new Error("action");
+  if (!["snapshot","recover","apply","rehearsal","details"].includes(action)) throw new Error("action");
   const pool = new pg.Pool(config()); let client;
   try {
     client = await pool.connect();
-    if (action === "apply") {
+    if (action === "apply" || action === "rehearsal") {
       const sql = fs.readFileSync(0);
       if (sha(sql) !== contract.sql_sha256) throw new Error("artifact");
       await client.query("BEGIN");
@@ -394,11 +394,14 @@ async function snapshot(client) {
       const locked = (await client.query("SELECT pg_try_advisory_xact_lock(hashtextextended('phone11-profile-status-live-delta-v1',0)) locked")).rows[0]?.locked;
       if (locked !== true) throw new Error("advisory_lock");
       const before = await snapshot(client);
-      if (before.identity_fingerprint !== contract.database_identity_sha256 || before.catalog_fingerprint !== contract.before_catalog_sha256) throw new Error("precondition");
+      if ((action === "apply" && before.identity_fingerprint !== contract.database_identity_sha256) || before.catalog_fingerprint !== contract.before_catalog_sha256) throw new Error("precondition");
+      if (action === "rehearsal" && (await identity(client)).server_version_num !== "160013") throw new Error("postgres_version");
       await client.query(migrationBody(sql.toString("utf8")));
       await assertStatusTablesSafe(client);
       const after = await snapshot(client);
-      if (after.identity_fingerprint !== before.identity_fingerprint || after.catalog_fingerprint !== contract.after_catalog_sha256) throw new Error("postcondition");
+      if (after.identity_fingerprint !== before.identity_fingerprint ||
+          (action === "apply" && after.catalog_fingerprint !== contract.after_catalog_sha256) ||
+          after.catalog_fingerprint === before.catalog_fingerprint) throw new Error("postcondition");
       await client.query("COMMIT");
       process.stdout.write(JSON.stringify({before,after})+"\n");
     } else {
@@ -409,8 +412,13 @@ async function snapshot(client) {
         if (locked !== true) throw new Error("advisory_lock");
       }
       const before = await snapshot(client);
+      const details = action === "details" ? {
+        database:(await identity(client)).database,
+        server_version_num:(await identity(client)).server_version_num,
+        roles:(await client.query("SELECT rolname FROM pg_roles WHERE left(rolname,3)<>'pg_' ORDER BY rolname")).rows.map(row=>row.rolname),
+      } : undefined;
       await client.query("ROLLBACK");
-      process.stdout.write(JSON.stringify({before})+"\n");
+      process.stdout.write(JSON.stringify({before,...(details ? {details} : {})})+"\n");
     }
   } catch (_error) {
     try { if (client) await client.query("ROLLBACK"); } catch (_ignored) {}

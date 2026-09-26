@@ -57,7 +57,7 @@ STATUS_OPERATOR = STATUS_ROOT / "phone11-profile-status-migrate.py"
 STATUS_SQL = STATUS_ROOT / "profile-status-migration.sql"
 STATUS_MANIFEST = STATUS_ROOT / "manifest.json"
 STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt.json")
-STATUS_OPERATOR_SHA = "4be422d4abeb05d2fcedbc9de47f5784e973560f69af4d1e5102285ba23e52b1"
+STATUS_OPERATOR_SHA = "376a0b45dd534d58b6019b91257373961f48f2275d822f5f23a56e9bf4a7a6c1"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010
 # target; the database identity is compared with the new gate inventories.

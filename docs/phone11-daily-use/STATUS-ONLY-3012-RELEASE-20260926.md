@@ -28,10 +28,15 @@ profile/DND rollout script: it targets an older API layout.
 
 The migration operator requires a root-only manifest binding the healthy 3011
 container, image and release labels, exact SQL SHA-256, database identity, and
-before/after full catalog fingerprints. It also requires a fresh protected
-`pg_dump` backup proof and an isolated PostgreSQL restore rehearsal proof for
-that exact database and SQL. It refuses a stale catalog, mismatched proof, or
-missing receipt. Its `--prepare` phase is read-only; `--apply` records an intent,
+before/after full catalog fingerprints. The database identity separately pins
+the live database OID and PostgreSQL version. Catalog fingerprints use role
+names for relation owners, policy roles, and default-ACL owners, so a fresh
+PostgreSQL 16 cluster with different role OIDs can be compared structurally.
+They still include grants, column grants, row-level security, policies, and
+default privileges. It also requires a fresh protected `pg_dump` backup proof
+and an isolated PostgreSQL restore rehearsal proof for that exact database and
+SQL. It refuses a stale catalog, mismatched proof, or missing receipt. Its
+`--prepare` phase is read-only; `--apply` records an intent,
 applies only the pinned SQL inside one transaction with an advisory lock, and
 rejects any new status table with non-owner table or column grants, row-level
 security, or policies before commit. Catalog fingerprints also include table
@@ -113,12 +118,30 @@ python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-st
   --container-port 3011 --host-port 3011
 ```
 
-Use that inventory to seal the migration manifest. Make a fresh protected
-`cp11-postgres:pg_dump` backup, restore the same backup into a **separate**
-PostgreSQL cluster, apply the reviewed SQL there, and verify its resulting
-catalog against the manifest. Create matching root-only mode-0600 backup and
-restore proofs with the schemas checked by `read_proofs` in the reviewed
-operator. These proofs expire after 30 minutes; a scheduled backup alone is
+Create the root-owned mode-0700 migration directory first, with no existing
+`backup.dump`, manifest, or proof files. The reviewed restore helper creates a
+fresh root-only mode-0600 `pg_dump -Fc` archive from the immutable
+`cp11-postgres` container, verifies the source database identity and catalog
+again, then restores into a short-lived PostgreSQL **16.13** container using
+the same pinned database image. The helper rejects other source, dump, restore,
+or clone versions. Its network is `none`, with no host port and only
+tmpfs data. A Node sidecar shares only that isolated loopback network. It runs
+the **same migration operator code** against the restored catalog and exact
+SQL, checks ACL safety, and deletes only its privately labeled clone. It
+creates the manifest and linked proofs only after the complete rehearsal:
+
+```sh
+python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-restore-proof.py \
+  --sql /opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql \
+  --out-dir /opt/phone11ai/status-only-release-20260926/migration \
+  --api-container-id bd3b5acf2647d239b5d5298c23a0b1bf60699379b25e4e8023b67e27fd6a6195 \
+  --api-container-name cp11-api-candidate-direct-meeting --api-port 3011 \
+  --postgres-container-id <current full immutable ID of cp11-postgres>
+```
+
+The helper does not print credentials or customer rows. Its backup remains at
+`backup.dump` for recovery; retain it under root-only access. The proofs expire
+after 30 minutes, so prepare and apply promptly. A scheduled backup alone is
 insufficient. With the exact protected manifest and proofs in place, execute:
 
 ```sh
