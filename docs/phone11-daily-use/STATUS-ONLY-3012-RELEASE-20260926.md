@@ -140,6 +140,48 @@ source, bundle, lockfile, and build labels in the gate manifest above. A
 successful `/api/health` response and authenticated tenant-positive and
 cross-tenant-denial status regressions are required before routing.
 
+### Single-tenant production validation (2026-09-27)
+
+Read-only inspection of the pinned 3012 database found exactly one tenant,
+active tenant `1`. Do not create a production tenant merely for a test. For
+this release, the foreign-tenant gate uses the disposable PostgreSQL 17
+suite `tests/phone11-profile-postgres.test.ts`: its two real tenant fixtures
+include a foreign owner denied both `adminSettings` and `setAdminEnabled`
+for the other tenant. All 12 tests passed, with no skips. This is isolated
+database evidence, not a live foreign-tenant test.
+
+Before routing, still require the signed-in production owner's actual 3012
+`adminSettings` response for tenant `1` (both `enabled` and `dndEnabled`
+false), plus a `FORBIDDEN` response for a nonexistent tenant. Record the
+latter as nonexistent-tenant denial only. A separately reviewed temporary,
+exact GET-only API-domain canary may carry the existing browser cookie to
+this one protected query; never extract or log credentials. Restore and
+verify the original Nginx bytes before the prepared route operator runs.
+The canary does not permit mutations or replace post-switch regression
+checks. A failed or missing authenticated probe still blocks the switch.
+
+Canary operator: `scripts/phone11-status-cookie-canary.py`, reviewed SHA-256
+`25c6f81106128f2043229de2cd11555c5e437e8e5c00c283410ea7db777809ec`.
+Install it as root-owned mode `0700` at
+`/var/lib/phone11-status-cookie-canary-operator.py` and execute that exact
+installed path. The `/opt/phone11ai` parent is owned by the deployment user,
+so it does not meet this operator's root-owned-ancestor requirement. Do not
+relax the guard. The operator arms a persistent ten-minute UTC calendar timer
+before changing Nginx and requires a reboot-cleared `/run` sentinel. Run
+`rollback --receipt-dir <returned directory>` immediately after the probes.
+The five focused tests are `scripts/test_phone11_status_cookie_canary.py`.
+
+First live canary receipt:
+`/var/lib/phone11-status-cookie-canary/20260926T194352Z-f61a27ee0ff625f2`.
+Unauthenticated GET returned `401`; POST and HEAD returned `405`. The in-app
+browser refused top-level navigation with `net::ERR_BLOCKED_BY_CLIENT`, so
+no authenticated result was obtained. Manual rollback completed: exact
+original site SHA restored, canary URL `404`, sentinel absent, expiry timer
+inactive and disabled. The main 3012 route remains unactivated. Portal
+sign-in as extension 3001, workspace administration, Team Chat, and the
+direct-contact meeting button were observed working on the existing route;
+these are not candidate or handset-media acceptance.
+
 On the VoIP host, keep the original SQL in place; use the reviewed v2 operator
 from a temporary root-only path for the guarded archive step below. After
 that step, stage the v2 operator at the protected path above and capture a
