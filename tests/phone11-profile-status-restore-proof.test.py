@@ -95,6 +95,74 @@ class ProofUnitTests(unittest.TestCase):
             with self.assertRaisesRegex(helper.ProofError, "clone_inspect"):
                 helper.inspect_owned("p11status-random", "expected")
 
+    def test_nonpostgres_source_bootstrap_role_is_bound_to_api_roles_and_used_for_backup(self) -> None:
+        role = "phone11_bootstrap"
+        pg = {"Id": "b" * 64, "Name": "/cp11-postgres", "Image": helper.POSTGRES_IMAGE,
+              "State": {"Running": True},
+              "Config": {"Env": ["PGDATA=/var/lib/postgresql/data", "POSTGRES_USER=" + role]}}
+        for invalid in ([], ["phone11_app"]):
+            with self.assertRaisesRegex(helper.ProofError, "bootstrap_role"):
+                helper.source_bootstrap_role(pg, invalid)
+        with self.assertRaisesRegex(helper.ProofError, "bootstrap_role"):
+            helper.source_bootstrap_role({**pg, "Config": {"Env": ["POSTGRES_USER=" + role] * 2}},
+                                         [role])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            sql_path = root / "migration.sql"
+            sql = b"reviewed SQL"
+            sql_path.write_bytes(sql)
+            identity = {"database": "phone11ai", "schema": "public",
+                        "server_version_num": "160013", "database_oid": "12345"}
+            identity_sha = helper.migration.sha256_bytes(helper.migration.canonical_bytes(identity))
+            inventory = {"target": {"image": "sha256:" + "a" * 64},
+                         "release": {"source_sha": "a" * 40},
+                         "database_identity_sha256": identity_sha,
+                         "before_catalog_sha256": "c" * 64,
+                         "sql_sha256": helper.migration.sha256_bytes(sql)}
+            before = {"identity_fingerprint": identity_sha, "catalog_fingerprint": "c" * 64}
+            source = {"before": before, "details": {"database": "phone11ai",
+                      "server_version_num": "160013", "roles": [role, "phone11_app"]}}
+            commands = []
+            def fake_command(args, **_kwargs):
+                commands.append(args)
+                if "pg_dump" in args and "--version" in args:
+                    return b"pg_dump (PostgreSQL) 16.13\n"
+                if "pg_restore" in args and "--version" in args:
+                    return b"pg_restore (PostgreSQL) 16.13\n"
+                if "psql" in args:
+                    return json.dumps(identity).encode()
+                raise AssertionError("unexpected source command")
+            def fake_dump(args, **kwargs):
+                commands.append(args)
+                os.write(kwargs["stdout"], b"PGDMPproduction-shaped-test")
+                return subprocess.CompletedProcess(args, 0)
+            def check_written_manifest(path):
+                raw = path.read_bytes()
+                return json.loads(raw), helper.migration.sha256_bytes(raw)
+            with patch.object(helper.os, "geteuid", return_value=0), \
+                 patch.object(helper, "private_directory"), \
+                 patch.object(helper.migration, "secure_read", return_value=sql), \
+                 patch.object(helper.migration, "collect_inventory", return_value=inventory), \
+                 patch.object(helper, "source_action", side_effect=[source, {"before": before}]), \
+                 patch.object(helper, "docker_inspect", return_value=pg), \
+                 patch.object(helper, "command", side_effect=fake_command), \
+                 patch.object(helper, "check_same_cluster") as cluster, \
+                 patch.object(helper.subprocess, "run", side_effect=fake_dump), \
+                 patch.object(helper, "clone_rehearsal", return_value="d" * 64) as clone, \
+                 patch.object(helper, "archive_digest",
+                              side_effect=lambda path: helper.migration.sha256_bytes(path.read_bytes())), \
+                 patch.object(helper.migration, "read_manifest", side_effect=check_written_manifest), \
+                 patch.object(helper.migration, "read_proofs"):
+                helper.create_proof(sql_path, root, "a" * 64, "candidate", 3011,
+                                    "b" * 64, 4096)
+            cluster.assert_called_once_with("a" * 64, "b" * 64, "phone11ai", role)
+            self.assertEqual(clone.call_args.args[3], [role, "phone11_app"])
+            source_commands = [args for args in commands if "psql" in args or
+                               ("pg_dump" in args and "-Fc" in args)]
+            self.assertEqual(len(source_commands), 2)
+            self.assertTrue(all(args[args.index("-U") + 1] == role for args in source_commands))
+
     def test_failed_clone_restore_still_runs_owned_cleanup(self) -> None:
         calls = []
         def fake_command(args, **_kwargs):

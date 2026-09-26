@@ -130,7 +130,11 @@ fresh root-only mode-0600 `pg_dump -Fc` archive from the immutable
 `cp11-postgres` container, verifies the source database identity and catalog
 again, then restores into a short-lived PostgreSQL **16.13** container using
 the same pinned database image. The helper rejects other source, dump, restore,
-or clone versions. Its network is `none`, with no host port and only
+or clone versions. Source-side `psql` and `pg_dump` use the immutable
+`cp11-postgres` container's single `POSTGRES_USER` bootstrap role only after
+checking that it exists in the API-verified source role inventory; the source
+cluster need not have a database role named `postgres`. The disposable clone
+still initializes its own `postgres` role. Its network is `none`, with no host port and only
 tmpfs data. A Node sidecar shares only that isolated loopback network. It runs
 the **same migration operator code** against the restored catalog and exact
 SQL, checks ACL safety, and deletes only its privately labeled clone. It

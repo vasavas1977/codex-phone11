@@ -223,7 +223,35 @@ try {client=await pool.connect();await client.query("SET statement_timeout='5000
 '''
 
 
-def check_same_cluster(api_id: str, postgres_id: str, database: str) -> None:
+def source_bootstrap_role(postgres: dict[str, Any], source_roles: list[str]) -> str:
+    """Use the immutable container's configured bootstrap role, verified by API SQL."""
+    config = postgres.get("Config")
+    require(isinstance(config, dict), "bootstrap_role")
+    environment = config.get("Env")
+    require(isinstance(environment, list)
+            and all(isinstance(item, str) for item in environment), "bootstrap_role")
+    configured = [item.split("=", 1)[1] for item in environment
+                  if item.startswith("POSTGRES_USER=")]
+    require(len(configured) == 1, "bootstrap_role")
+    role = configured[0]
+    require(bool(role) and not role.startswith("pg_") and "\x00" not in role
+            and len(role.encode("utf-8")) <= 63
+            and role in source_roles, "bootstrap_role")
+    return role
+
+
+def source_psql_args(postgres_id: str, database: str, role: str, statement: str) -> list[str]:
+    return [DOCKER, "exec", "--user", "postgres", postgres_id,
+            "psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
+            "-U", role, "-d", database, "-c", statement]
+
+
+def source_dump_args(postgres_id: str, database: str, role: str) -> list[str]:
+    return [DOCKER, "exec", "--user", "postgres", postgres_id,
+            "pg_dump", "-Fc", "-U", role, "-d", database]
+
+
+def check_same_cluster(api_id: str, postgres_id: str, database: str, role: str) -> None:
     key = str(secrets.randbits(63) + 1)
     try:
         holder = subprocess.Popen([DOCKER, "exec", "--interactive", "--workdir", "/app",
@@ -237,10 +265,8 @@ def check_same_cluster(api_id: str, postgres_id: str, database: str) -> None:
         readable, _, _ = select.select([holder.stdout], [], [], 10)
         require(bool(readable) and holder.stdout.readline() == b"held\n"
                 and holder.poll() is None, "source_cluster")
-        result = command([DOCKER, "exec", "--user", "postgres", postgres_id,
-                          "psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
-                          "-U", "postgres", "-d", database, "-c",
-                          "SELECT pg_try_advisory_lock(" + key + "::bigint)"], timeout=15)
+        result = command(source_psql_args(postgres_id, database, role,
+                         "SELECT pg_try_advisory_lock(" + key + "::bigint)"), timeout=15)
         require(holder.poll() is None and result.strip() == b"f", "source_cluster")
     except (OSError, ValueError) as error:
         raise ProofError("source_cluster") from error
@@ -402,6 +428,7 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
     require(pg.get("Id") == postgres_id and pg.get("Name") == "/cp11-postgres"
             and pg.get("Image") == POSTGRES_IMAGE
             and pg.get("State", {}).get("Running") is True, "postgres_container")
+    bootstrap_role = source_bootstrap_role(pg, details["roles"])
     require(command([DOCKER, "exec", "--user", "postgres", postgres_id,
                      "pg_dump", "--version"], timeout=10).strip() ==
             b"pg_dump (PostgreSQL) 16.13", "pg_dump_version")
@@ -412,19 +439,17 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
     identity_sql = ("SELECT row_to_json(t)::text FROM (SELECT current_database() database,"
                     "current_schema() schema,current_setting('server_version_num') server_version_num,"
                     "(SELECT oid::text FROM pg_database WHERE datname=current_database()) database_oid) t")
-    identity = json_result(command([DOCKER, "exec", "--user", "postgres", postgres_id,
-                  "psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1",
-                  "-U", "postgres", "-d", database, "-c", identity_sql], timeout=20),
+    identity = json_result(command(source_psql_args(postgres_id, database,
+                                   bootstrap_role, identity_sql), timeout=20),
                   "database_identity")
     require(migration.sha256_bytes(migration.canonical_bytes(identity)) ==
             inventory["database_identity_sha256"], "database_identity")
-    check_same_cluster(api_id, postgres_id, database)
+    check_same_cluster(api_id, postgres_id, database, bootstrap_role)
     backup_path = out_dir / "backup.dump"
     fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         try:
-            result = subprocess.run([DOCKER, "exec", "--user", "postgres", postgres_id,
-                                     "pg_dump", "-Fc", "-U", "postgres", "-d", database],
+            result = subprocess.run(source_dump_args(postgres_id, database, bootstrap_role),
                                     stdin=subprocess.DEVNULL, stdout=fd, stderr=subprocess.DEVNULL,
                                     timeout=600, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
