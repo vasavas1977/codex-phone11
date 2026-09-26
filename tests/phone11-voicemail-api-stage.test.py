@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -48,6 +49,25 @@ MANIFEST = {
 
 
 class StageTests(unittest.TestCase):
+    def test_inspect_accepts_only_exact_absent_candidate_error(self):
+        for stderr in (
+            b"error: no such object: cp11-api-candidate-voicemail\n",
+            b"Error: No such container: cp11-api-candidate-voicemail\n",
+            b"Error response from daemon: No such object: cp11-api-candidate-voicemail\n",
+        ):
+            with patch.object(stage.subprocess, "run", return_value=SimpleNamespace(
+                    returncode=1, stdout=b"", stderr=stderr)):
+                self.assertIsNone(stage.inspect(stage.NAME))
+        for stdout, stderr in (
+            (b"", b"error: no such object: unrelated\n"),
+            (b"", b"permission denied: no such object: cp11-api-candidate-voicemail\n"),
+            (b"secret", b"error: no such object: cp11-api-candidate-voicemail\n"),
+        ):
+            with patch.object(stage.subprocess, "run", return_value=SimpleNamespace(
+                    returncode=1, stdout=stdout, stderr=stderr)):
+                with self.assertRaisesRegex(stage.Refused, "inspect_failed"):
+                    stage.inspect(stage.NAME)
+
     def test_manifest_rejects_pin_or_shape_drift(self):
         with patch.object(stage, "private_read", return_value=stage.canonical(MANIFEST)):
             self.assertEqual(stage.manifest(Path("/private/manifest"))[0], MANIFEST)

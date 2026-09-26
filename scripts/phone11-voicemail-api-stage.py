@@ -147,7 +147,11 @@ def inspect(name: str) -> dict[str, Any] | None:
                             timeout=15, check=False,
                             env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
     if result.returncode != 0:
-        need(b"No such object" in result.stderr or b"No such container" in result.stderr,
+        error = result.stderr.decode("utf-8", "replace").strip()
+        absent = re.fullmatch(
+            r"(?:error(?::| response from daemon:)\s*)?no such (?:object|container):\s*" +
+            re.escape(name), error, re.IGNORECASE)
+        need(result.stdout == b"" and len(result.stderr) <= MAX_OUTPUT and absent is not None,
              "inspect_failed")
         return None
     need(len(result.stdout) <= MAX_OUTPUT and len(result.stderr) <= MAX_OUTPUT, "inspect_size")
