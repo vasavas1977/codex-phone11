@@ -405,7 +405,22 @@ async function identity(client) {
   return (await client.query("SELECT current_database() database,current_schema() schema,current_setting('server_version_num') server_version_num,(SELECT oid::text FROM pg_database WHERE datname=current_database()) database_oid")).rows[0];
 }
 async function catalog(client) {
-  const relations = (await client.query("SELECT n.nspname schema,c.relname name,c.relkind kind,pg_get_userbyid(c.relowner) owner_name,c.relacl::text acl,c.relrowsecurity row_security,c.relforcerowsecurity force_row_security FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY n.nspname,c.relname")).rows;
+  // pg_dump omits explicit owner-only ACLs because they equal built-in defaults.
+  // Fingerprint effective grants rather than NULL-versus-explicit storage, and
+  // resolve role OIDs so a faithful restore in a fresh cluster compares equal.
+  const relations = (await client.query(`SELECT n.nspname schema,c.relname name,c.relkind kind,
+    pg_get_userbyid(c.relowner) owner_name,
+    COALESCE((SELECT jsonb_agg(jsonb_build_array(
+      CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END,
+      pg_get_userbyid(x.grantor),x.privilege_type,x.is_grantable)
+      ORDER BY CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END,
+               pg_get_userbyid(x.grantor),x.privilege_type,x.is_grantable)
+      FROM aclexplode(COALESCE(c.relacl,acldefault(
+        (CASE WHEN c.relkind='S' THEN 's' ELSE 'r' END)::"char",c.relowner))) x),'[]'::jsonb) acl,
+    c.relrowsecurity row_security,c.relforcerowsecurity force_row_security
+    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f')
+    ORDER BY n.nspname,c.relname`)).rows;
   const columns = (await client.query("SELECT n.nspname schema,c.relname table_name,a.attname name,a.attacl::text acl,pg_catalog.format_type(a.atttypid,a.atttypmod) type,a.attnotnull not_null,a.attidentity identity,a.attgenerated generated,pg_get_expr(d.adbin,d.adrelid,true) default_expression FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum")).rows;
   const constraints = (await client.query("SELECT n.nspname schema,c.relname table_name,con.conname name,con.contype type,con.convalidated validated,pg_get_constraintdef(con.oid,true) definition FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY n.nspname,c.relname,con.conname")).rows;
   const indexes = (await client.query("SELECT ns.nspname schema,t.relname table_name,i.relname name,pg_get_indexdef(i.oid) definition FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_class t ON t.oid=x.indrelid JOIN pg_namespace ns ON ns.oid=t.relnamespace WHERE ns.nspname='public' ORDER BY ns.nspname,t.relname,i.relname")).rows;

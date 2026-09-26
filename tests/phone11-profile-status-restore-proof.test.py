@@ -379,6 +379,16 @@ class CrossClusterCatalogTests(unittest.TestCase):
                 CREATE TABLE public.p11_equivalent (id integer, value text);
                 ALTER TABLE public.p11_equivalent OWNER TO p11owner;
                 GRANT SELECT(value) ON public.p11_equivalent TO p11reader;
+                CREATE TABLE public.p11_owner_default (id integer);
+                ALTER TABLE public.p11_owner_default OWNER TO p11owner;
+                SET ROLE p11owner;
+                GRANT ALL PRIVILEGES ON public.p11_owner_default TO p11owner;
+                RESET ROLE;
+                CREATE SEQUENCE public.p11_owner_default_seq;
+                ALTER SEQUENCE public.p11_owner_default_seq OWNER TO p11owner;
+                SET ROLE p11owner;
+                GRANT ALL PRIVILEGES ON SEQUENCE public.p11_owner_default_seq TO p11owner;
+                RESET ROLE;
                 ALTER TABLE public.p11_equivalent ENABLE ROW LEVEL SECURITY;
                 CREATE POLICY p11_read ON public.p11_equivalent TO p11reader USING (true);
                 ALTER DEFAULT PRIVILEGES FOR ROLE p11owner IN SCHEMA public
@@ -428,7 +438,9 @@ class CrossClusterCatalogTests(unittest.TestCase):
         result = subprocess.run([cls.node, "-e", helper.migration.NODE_PROGRAM,
                                  "snapshot", "{}"], cwd=ROOT, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, check=True, timeout=30)
+                                text=True, check=False, timeout=30)
+        if result.returncode != 0:
+            raise AssertionError("snapshot failed: " + result.stderr[:1000])
         return json.loads(result.stdout)["before"]
 
     def test_pg_dump_restore_matches_structural_catalog_despite_role_oid_drift(self) -> None:
@@ -439,6 +451,29 @@ class CrossClusterCatalogTests(unittest.TestCase):
         second = self.snapshot(1)
         self.assertEqual(first["catalog_fingerprint"], second["catalog_fingerprint"])
         self.assertNotEqual(first["identity_fingerprint"], second["identity_fingerprint"])
+
+    def test_explicit_owner_only_acl_matches_restored_default_but_grant_drift_does_not(self) -> None:
+        for relation in ("p11_owner_default", "p11_owner_default_seq"):
+            source_acl = self.psql_run(0, "SELECT relacl::text FROM pg_class WHERE oid="
+                                       f"'public.{relation}'::regclass")
+            restored_acl = self.psql_run(1, "SELECT relacl::text FROM pg_class WHERE oid="
+                                         f"'public.{relation}'::regclass")
+            default_acl = self.psql_run(0, "SELECT acldefault((CASE WHEN relkind='S' "
+                                        "THEN 's' ELSE 'r' END)::\"char\",relowner)::text "
+                                        f"FROM pg_class WHERE oid='public.{relation}'::regclass")
+            self.assertNotEqual(source_acl, "")
+            self.assertEqual(source_acl, default_acl)
+            self.assertEqual(restored_acl, "")
+        baseline = self.snapshot(0)["catalog_fingerprint"]
+        self.assertEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+        self.psql_run(1, "GRANT SELECT ON public.p11_owner_default TO p11reader")
+        self.assertNotEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+        self.psql_run(1, "REVOKE SELECT ON public.p11_owner_default FROM p11reader")
+        self.assertEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+        self.psql_run(1, "GRANT USAGE ON SEQUENCE public.p11_owner_default_seq TO p11reader")
+        self.assertNotEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+        self.psql_run(1, "REVOKE USAGE ON SEQUENCE public.p11_owner_default_seq FROM p11reader")
+        self.assertEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
 
     def test_column_acl_and_default_acl_drift_are_detected(self) -> None:
         base = self.snapshot(1)["catalog_fingerprint"]

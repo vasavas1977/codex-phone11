@@ -140,6 +140,13 @@ the **same migration operator code** against the restored catalog and exact
 SQL, checks ACL safety, and deletes only its privately labeled clone. It
 creates the manifest and linked proofs only after the complete rehearsal:
 
+The catalog compares **effective** relation grants. PostgreSQL may restore an
+explicit owner-only table or sequence ACL as a NULL ACL with identical default
+privileges. The operator expands the effective grants and resolves role IDs to
+names, so that representation change does not reject a faithful restore;
+additional or missing grants still change the fingerprint. The database's own
+identity, including its OID, is pinned separately for the live apply.
+
 ```sh
 python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-restore-proof.py \
   --sql /opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql \
@@ -153,6 +160,66 @@ The helper does not print credentials or customer rows. Its backup remains at
 `backup.dump` for recovery; retain it under root-only access. The proofs expire
 after 30 minutes, so prepare and apply promptly. A scheduled backup alone is
 insufficient.
+
+The first live rehearsal on 26 September stopped at `restore_catalog` before
+status SQL or proof creation. Its protected 232222-byte `backup.dump` has SHA-256
+`3e4265e9cb25c841493cd16d3dfdd3172090387ebb8712fceb17f5c070ed3956`.
+Read-only diagnostics showed 14 Kamailio table/sequence owner-only ACLs were
+represented as NULL defaults in the disposable restore. A separately staged
+candidate of the corrected operator matched the complete source and restored
+PostgreSQL 16.13 catalog. That diagnostic did **not** execute the migration SQL
+or create production proofs.
+
+Before a reviewed retry, preserve that failed archive; do not overwrite or
+delete it. As root, first check that `manifest.json`, `backup-proof.json`,
+`restore-proof.json`, `cleanup-pending`, and the status migration receipt are
+absent, and confirm there is no privately labelled disposable clone. If any
+exists, stop for recovery review. Then run this one-time, fail-closed archive
+move on the same filesystem (the source path and digest are exact):
+
+```sh
+python3 - <<'PY'
+import hashlib, os, secrets, stat
+from pathlib import Path
+
+root = Path('/opt/phone11ai/status-only-release-20260926')
+work = root / 'migration'
+source = work / 'backup.dump'
+expected = '3e4265e9cb25c841493cd16d3dfdd3172090387ebb8712fceb17f5c070ed3956'
+assert os.geteuid() == 0
+assert not any((work / name).exists() for name in (
+    'manifest.json', 'backup-proof.json', 'restore-proof.json', 'cleanup-pending'))
+assert not Path('/var/lib/phone11-profile-status/receipt.json').exists()
+st = source.lstat()
+assert stat.S_ISREG(st.st_mode) and st.st_uid == 0 and stat.S_IMODE(st.st_mode) == 0o600 and st.st_nlink == 1
+assert st.st_size == 232222
+fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    assert os.fstat(fd) == st
+    with os.fdopen(os.dup(fd), 'rb') as archive:
+        digest = hashlib.file_digest(archive, 'sha256').hexdigest()
+finally:
+    os.close(fd)
+assert digest == expected
+evidence = root / ('failed-status-rehearsal-' + secrets.token_hex(8))
+evidence.mkdir(mode=0o700)
+destination = evidence / 'backup.dump'
+assert not destination.exists()
+os.rename(source, destination)
+for directory in (work, evidence, root):
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    try: os.fsync(directory_fd)
+    finally: os.close(directory_fd)
+with destination.open('rb') as archive:
+    assert hashlib.file_digest(archive, 'sha256').hexdigest() == expected
+print('Preserved failed archive in', evidence)
+PY
+```
+
+Only after the move and exact artifact staging should the helper run again at
+its pinned `--out-dir` path. That retry takes a **new** source backup, completes
+the full isolated restore and SQL rehearsal, and writes fresh linked proofs.
+Retain the failed archive and diagnostic reports for review.
 
 If Docker create, start, or sidecar run fails or times out, the helper retains a
 root-private `cleanup-pending/<container-name>.json` marker. Treat that as a
