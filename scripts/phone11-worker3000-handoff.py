@@ -130,6 +130,39 @@ def env_map(info: dict[str, Any]) -> dict[str, str]:
     return result
 
 
+def backend_execution(info: dict[str, Any], known_images: set[str]) -> bool:
+    """Recognize a backend by image or executable shape, independent of name.
+
+    The broad Node-in-/app case deliberately treats an unknown backend-like
+    service as a potential worker. Redis, Kamailio, and FreeSWITCH do not run
+    this command shape and need not set PHONE11_RUNTIME_ROLE.
+    """
+    if info.get("Image") in known_images:
+        return True
+    cfg = info.get("Config")
+    need(isinstance(cfg, dict), "inventory_shape")
+    cmd = cfg.get("Cmd") or []
+    entry = cfg.get("Entrypoint") or []
+    need(isinstance(cmd, list) and all(isinstance(part, str) for part in cmd) and
+         isinstance(entry, list) and all(isinstance(part, str) for part in entry),
+         "inventory_shape")
+    argv = entry + cmd
+    if any("dist/index.mjs" in part for part in argv):
+        return True
+    return cfg.get("WorkingDir") == "/app" and any(
+        re.search(r"(?:^|[\s/])(?:node|npm|pnpm|yarn|bun|npx|tsx)(?:$|\s)", part)
+        for part in argv)
+
+
+def no_other_default_worker(peers: list[dict[str, Any]], active_id: str,
+                            known_images: set[str]) -> None:
+    for peer in peers:
+        if peer.get("Id") == active_id or peer.get("State", {}).get("Running") is not True:
+            continue
+        if backend_execution(peer, known_images):
+            need(env_map(peer).get("PHONE11_RUNTIME_ROLE", "default") != "default", "double_worker")
+
+
 def snapshot(info: dict[str, Any]) -> dict[str, Any]:
     """Pin the exact configuration that a later reviewed run must preserve."""
     cfg, host, network = info.get("Config"), info.get("HostConfig"), info.get("NetworkSettings")
@@ -173,13 +206,10 @@ def verify(value: dict[str, Any], old: dict[str, Any], old_image: dict[str, Any]
     parent_config = old_image.get("Config") or {}
     for field in ("User", "WorkingDir", "Entrypoint", "Cmd", "Env", "Healthcheck", "ExposedPorts"):
         need(image_config.get(field) == parent_config.get(field), "new_image_config_drift")
-    # Peer inventory is deliberately required from a separate live docker ps,
-    # not a caller-supplied assertion. A second default-role worker blocks.
-    for peer in peers:
-        if peer.get("Id") == old.get("Id") or peer.get("State", {}).get("Running") is not True:
-            continue
-        role = env_map(peer).get("PHONE11_RUNTIME_ROLE", "default")
-        need(role != "default", "double_worker")
+    # Peer inventory comes from live docker ps; unrelated infrastructure is
+    # excluded by execution shape, while a renamed backend still blocks.
+    no_other_default_worker(peers, old["Id"],
+                            {value["old"]["image"], value["release"]["image"]})
 
 
 def verify_exclusive_phase(old: dict[str, Any], replacement: dict[str, Any] | None,
@@ -212,9 +242,8 @@ def verify_exclusive_phase(old: dict[str, Any], replacement: dict[str, Any] | No
         old_env.pop("PHONE11_BUILD_SHA", None)
         new_env.pop("PHONE11_BUILD_SHA", None)
         need(new_env == old_env, "replacement_env_drift")
-    for peer in peers:
-        if peer.get("Id") != active.get("Id") and peer.get("State", {}).get("Running") is True:
-            need(env_map(peer).get("PHONE11_RUNTIME_ROLE", "default") != "default", "double_worker")
+    no_other_default_worker(peers, active["Id"],
+                            {old.get("Image"), replacement.get("Image") if replacement else ""})
 
 
 def live_inventory() -> list[dict[str, Any]]:

@@ -42,6 +42,14 @@ PIN = {"schema": op.SCHEMA,
        "snapshot_sha256": op.digest(op.canonical(op.snapshot(OLD)))}
 
 
+def infra(name, command):
+    return {"Id": ("1" if name == "redis" else "2" if name == "kamailio" else "3") * 64,
+            "Name": "/" + name, "Image": "sha256:" + "9" * 64,
+            "State": {"Running": True},
+            "Config": {"WorkingDir": "/var/lib/" + name, "Entrypoint": None,
+                       "Cmd": command, "Env": ["SERVICE=infra"]}}
+
+
 class Worker3000Tests(unittest.TestCase):
     def test_exact_live_and_overlay_pins_pass(self):
         op.verify(PIN, OLD, PARENT, CHILD, [OLD], OLD_BUNDLE)
@@ -97,6 +105,36 @@ class Worker3000Tests(unittest.TestCase):
             op.verify(PIN, OLD, PARENT, CHILD, [OLD, peer], OLD_BUNDLE)
         peer["Config"]["Env"] = ["PHONE11_RUNTIME_ROLE=api-candidate"]
         op.verify(PIN, OLD, PARENT, CHILD, [OLD, peer], OLD_BUNDLE)
+
+    def test_mixed_infrastructure_does_not_claim_default_role(self):
+        peers = [OLD, infra("redis", ["redis-server"]),
+                 infra("kamailio", ["kamailio", "-DD"]),
+                 infra("freeswitch", ["freeswitch", "-nc"])]
+        op.verify(PIN, OLD, PARENT, CHILD, peers, OLD_BUNDLE)
+        stopped = copy.deepcopy(OLD)
+        stopped["State"]["Running"] = False
+        replacement = copy.deepcopy(OLD)
+        replacement["Id"] = "f" * 64
+        replacement["Image"] = NEW_IMAGE
+        op.verify_exclusive_phase(stopped, replacement, [stopped] + peers[1:] + [replacement], rollback=False)
+
+    def test_renamed_backend_and_unknown_node_app_fail_closed(self):
+        peer = copy.deepcopy(OLD)
+        peer["Id"] = "f" * 64
+        peer["Name"] = "/renamed-and-unlabelled"
+        peer["Image"] = "sha256:" + "8" * 64
+        peer["Config"]["Env"] = ["PORT=3009"]
+        with self.assertRaisesRegex(op.Refused, "double_worker"):
+            op.verify(PIN, OLD, PARENT, CHILD, [OLD, peer], OLD_BUNDLE)
+        unknown = infra("unknown", ["node", "server.js"])
+        unknown["Config"]["WorkingDir"] = "/app"
+        with self.assertRaisesRegex(op.Refused, "double_worker"):
+            op.verify(PIN, OLD, PARENT, CHILD, [OLD, unknown], OLD_BUNDLE)
+        unknown["Config"]["Cmd"] = ["/bin/sh", "-c", "node /app/server.js"]
+        with self.assertRaisesRegex(op.Refused, "double_worker"):
+            op.verify(PIN, OLD, PARENT, CHILD, [OLD, unknown], OLD_BUNDLE)
+        unknown["Config"]["Env"] = ["PHONE11_RUNTIME_ROLE=api-candidate"]
+        op.verify(PIN, OLD, PARENT, CHILD, [OLD, unknown], OLD_BUNDLE)
 
     def test_exclusive_new_worker_and_rollback_order(self):
         stopped = copy.deepcopy(OLD)
