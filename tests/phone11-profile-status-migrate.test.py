@@ -390,6 +390,67 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
                 with self.assertRaisesRegex(operator.MigrationError, "failed_v1"):
                     operator.failed_v1_evidence(archived=False)
 
+    def test_archived_v1_evidence_allows_distinct_protected_v2_canonical_files(self) -> None:
+        old = manifest_document(operator.FAILED_V1_SQL)
+        old["target"]["container_id"] = operator.FAILED_V1_API_CONTAINER
+        old["database_identity_sha256"] = operator.FAILED_V1_IDENTITY
+        old["before_catalog_sha256"] = operator.FAILED_V1_BEFORE
+        old["after_catalog_sha256"] = operator.FAILED_V1_AFTER
+        old_files = {name: ("old " + name).encode() for name in operator.FAILED_V1_PINS
+                     if name != "receipt.json"}
+        old_files["backup.dump"] = b"PGDMPold"
+        old_files["backup-proof.json"] = operator.canonical_bytes({
+            "backup_sha256": operator.sha256_bytes(old_files["backup.dump"]),
+        })
+        new_files = {name: ("new " + name).encode() for name in old_files}
+        new_files["backup.dump"] = b"PGDMPnew"
+        new_files["backup-proof.json"] = operator.canonical_bytes({
+            "backup_sha256": operator.sha256_bytes(new_files["backup.dump"]),
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archived = root / "failed-status-apply-v1"
+            canonical = root / "migration"
+            archived.mkdir(mode=0o700)
+            canonical.mkdir(mode=0o700)
+            receipt = root / "receipt.json"
+            write_protected(receipt, b"original intent")
+            pins = {name: operator.sha256_bytes(value) for name, value in old_files.items()}
+            pins["receipt.json"] = operator.sha256_bytes(receipt.read_bytes())
+            for name, value in old_files.items():
+                write_protected(archived / name, value)
+            for name, value in new_files.items():
+                write_protected(canonical / name, value)
+            real_read = operator.secure_read
+            real_verify = operator.verify_backup_archive
+
+            def read_local(path: Path, **_kwargs: object) -> bytes:
+                return real_read(path, uid=os.getuid(), gid=os.getgid())
+
+            def verify_local(proof: Path, proof_sha: str, *, archive_path: Path) -> str:
+                return real_verify(proof, proof_sha, archive_path=archive_path,
+                                   uid=os.getuid(), gid=os.getgid())
+
+            with (
+                patch.object(operator, "FAILED_V1_RECEIPT", receipt),
+                patch.object(operator, "BACKUP_ARCHIVE_PATH", canonical / "backup.dump"),
+                patch.object(operator, "FAILED_V1_ARCHIVE", archived),
+                patch.object(operator, "FAILED_V1_PINS", pins),
+                patch.object(operator, "secure_read", side_effect=read_local),
+                patch.object(operator, "verify_backup_archive", side_effect=verify_local),
+                patch.object(operator, "read_manifest", return_value=(old, pins["manifest.json"])),
+                patch.object(operator, "read_proofs", return_value=(pins["backup-proof.json"], pins["restore-proof.json"])),
+                patch.object(operator, "receipt_base", return_value={}),
+                patch.object(operator, "read_receipt", return_value={"status": "intent"}),
+            ):
+                self.assertEqual(operator.failed_v1_evidence(archived=True), old)
+                with self.assertRaisesRegex(operator.MigrationError, "failed_v1"):
+                    operator.failed_v1_evidence(archived=False)
+                write_protected(canonical / "phone11-profile-status-restore-proof.py",
+                                old_files["phone11-profile-status-restore-proof.py"])
+                with self.assertRaisesRegex(operator.MigrationError, "failed_v1"):
+                    operator.failed_v1_evidence(archived=True)
+
     def test_retry_requires_old_target_release_and_distinct_after_catalog(self) -> None:
         old = manifest_document(operator.FAILED_V1_SQL)
         old["database_identity_sha256"] = operator.FAILED_V1_IDENTITY

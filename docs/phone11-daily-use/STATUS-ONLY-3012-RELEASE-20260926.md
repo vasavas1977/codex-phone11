@@ -206,6 +206,22 @@ postgres-owned after-catalog hash differs from the live API role's result;
 the v1 transaction checks that hash before COMMIT. If any guard blocks, stop
 for review rather than editing receipts or proof files.
 
+If an unconsumed role-matched rehearsal already populated the migration
+directory before the reviewed operator bytes change, preserve exactly its
+`manifest.json`, `backup-proof.json`, `restore-proof.json`, and `backup.dump`
+before generating another proof. First require the v2 receipt and
+`cleanup-pending` to be absent, with no helper or disposable clone still
+running. Verify the four root-owned mode-0600 regular, one-link files; record
+each SHA-256 and verify the manifest/proof linkage and backup digest. Move
+those four files to a newly created root-owned mode-0700 sibling directory on
+the same filesystem, refusing any existing destination; fsync both directories
+and verify the four digests after the move. Keep the archived v1 evidence and
+original pending receipt untouched. Stage the newly reviewed operator at its
+canonical path, rerun the restore helper into the now-empty migration output
+directory, and use only its fresh linked manifest, proofs, and backup for
+`--prepare` and `--apply`. Never reuse the preserved rehearsal's expiring
+proofs with changed operator bytes.
+
 If Docker create, start, or sidecar run fails or times out, the helper retains a
 root-private `cleanup-pending/<container-name>.json` marker. Treat that as a
 hard hold: do not retry the rehearsal or run migration/route preparation.

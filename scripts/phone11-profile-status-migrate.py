@@ -812,7 +812,11 @@ def failed_v1_file(name: str, *, archived: bool) -> Path:
     destination = FAILED_V1_ARCHIVE / name
     source_exists = os.path.lexists(source)
     destination_exists = os.path.lexists(destination)
-    guarded(not (source_exists and destination_exists), "failed_v1")
+    # During an interrupted v1 archive, a duplicate canonical file is
+    # ambiguous and blocks. Once fully archived, the fresh v2 rehearsal
+    # legitimately recreates the same names; those files must be protected
+    # and byte-distinct from the pinned failed attempt.
+    guarded(archived or not (source_exists and destination_exists), "failed_v1")
     guarded(destination_exists if archived else source_exists or destination_exists, "failed_v1")
     path = destination if destination_exists else source
     if name == "backup.dump":
@@ -821,6 +825,15 @@ def failed_v1_file(name: str, *, archived: bool) -> Path:
                                       archive_path=path) == FAILED_V1_PINS[name], "failed_v1")
     else:
         guarded(sha256_bytes(secure_read(path)) == FAILED_V1_PINS[name], "failed_v1")
+    if archived and source_exists:
+        if name == "backup.dump":
+            new_proof = source.parent / "backup-proof.json"
+            new_proof_sha = sha256_bytes(secure_read(new_proof))
+            guarded(new_proof_sha != FAILED_V1_PINS["backup-proof.json"], "failed_v1")
+            new_sha = verify_backup_archive(new_proof, new_proof_sha, archive_path=source)
+        else:
+            new_sha = sha256_bytes(secure_read(source))
+        guarded(new_sha != FAILED_V1_PINS[name], "failed_v1")
     return path
 
 
