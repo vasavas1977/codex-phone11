@@ -1,0 +1,12 @@
+[Unit]
+Description=Phone11 voicemail pending-admission maintenance
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/docker exec p11-freeswitch /opt/phone11ai/voicemail/runner.sh sweep
+ExecStart=/usr/bin/docker exec p11-freeswitch /opt/phone11ai/voicemail/runner.sh reconcile
+TimeoutStartSec=300
+User=root
+Group=root

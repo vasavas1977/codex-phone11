@@ -20,6 +20,7 @@ import { cacheGetOrSet, rateLimitCheck, invalidateCache } from "./redis";
 import { normalizeToE164, THAI_EMERGENCY_NUMBERS } from "./e164";
 import { processCdr } from "./cdr-processor";
 import { generateIvrDialplan, generateRingGroupDialplan, generateQueueDialplan, evaluateTimeCondition } from "./dialplan-generators";
+import { voicemailDialplanActions } from "./voicemail-dialplan";
 
 const router = Router();
 
@@ -319,6 +320,7 @@ function notFoundXml(): string {
 }
 
 function extensionDialplanXml(ext: any, callerIdNumber: string): string {
+  const voicemail = voicemailDialplanActions(ext, process.env.PHONE11_VOICEMAIL_HOOK_READY === "true");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <document type="freeswitch/xml">
   <section name="dialplan">
@@ -328,8 +330,9 @@ function extensionDialplanXml(ext: any, callerIdNumber: string): string {
           <action application="set" data="call_direction=internal"/>
           <action application="set" data="hangup_after_bridge=true"/>
           <action application="set" data="call_timeout=${ext.cfna_timeout_seconds || 30}"/>
+          ${voicemail.beforeBridge}
           <action application="bridge" data="user/${ext.sip_username}@${ext.sip_domain}"/>
-          ${ext.voicemail_enabled ? `<action application="voicemail" data="default ${ext.sip_domain} ${ext.sip_username}"/>` : ''}
+          ${voicemail.afterBridge}
         </condition>
       </extension>
     </context>

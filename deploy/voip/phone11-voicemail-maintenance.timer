@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile old Phone11 voicemail admissions
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=phone11-voicemail-maintenance.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,44 @@
+# Merge with the active /opt/phone11ai/deploy/voip/docker-compose.yml only after
+# the feature-off preflight. Never run this overlay by itself. Image variables
+# must be immutable sha256 references; stage them in the protected Compose env.
+services:
+  freeswitch:
+    image: ${PHONE11_VM_FS_IMAGE:?pinned FreeSWITCH runtime image required}
+    pull_policy: never
+    entrypoint: ["/opt/phone11ai/voicemail/fs-entrypoint.sh"]
+    env_file:
+      - /var/lib/phone11-voicemail/runtime.env
+    volumes:
+      - /var/lib/phone11-voicemail/release:/opt/phone11ai/voicemail:ro
+      - /var/lib/phone11-voicemail/outbox:/var/lib/phone11-voicemail/outbox
+      - /var/lib/phone11-voicemail/release/phone11_voicemail_deposit.lua:/etc/freeswitch/scripts/phone11_voicemail_deposit.lua:ro
+      - /var/lib/phone11-voicemail/release/voicemail.conf.xml:/etc/freeswitch/autoload_configs/voicemail.conf.xml:ro
+
+  voicemail-relay:
+    image: ${PHONE11_VM_NODE_IMAGE:?pinned Node runtime image required}
+    pull_policy: never
+    container_name: p11-voicemail-relay
+    restart: unless-stopped
+    network_mode: host
+    read_only: true
+    user: "0:0"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 256m
+    env_file:
+      - /var/lib/phone11-voicemail/runtime.env
+    volumes:
+      - /var/lib/phone11-voicemail/release:/opt/phone11ai/voicemail:ro
+      - /var/lib/phone11-voicemail/outbox:/var/lib/phone11-voicemail/outbox
+      - fs_voicemail:/var/lib/freeswitch/voicemail:ro
+    entrypoint: ["/opt/phone11ai/voicemail/relay-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "node", "/opt/phone11ai/voicemail/runtime-check.mjs", "relay"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      freeswitch:
+        condition: service_started

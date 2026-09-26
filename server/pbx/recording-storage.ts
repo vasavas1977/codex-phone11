@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ingestStoredRecording } from "../cloud-recordings/ingestion";
 /** Authenticated recording storage. Unsupported voicemail storage fails closed. */
 import { Router, raw, type Request, type Response } from "express";
-import { query } from "./db";
+import { query, withTransaction } from "./db";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { sdk } from "../_core/sdk";
@@ -14,6 +14,8 @@ const VOICEMAIL_BASE = process.env.VOICEMAIL_PATH || "/opt/phone11ai/voicemail";
 const MAX_RECORDING_SIZE = 100 * 1024 * 1024;
 const MAX_VOICEMAIL_SIZE = 25 * 1024 * 1024;
 const validUuid = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
+const validDepositUuid = (value: unknown): value is string => typeof value === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const validTenant = (value: number) => Number.isSafeInteger(value) && value > 0;
 const validVoicemailId = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -24,6 +26,15 @@ const safeText = (value: unknown, maximum: number): string | null => {
     return null;
   return value;
 };
+
+const ACTIVE_VOICEMAIL_MAILBOX = `SELECT e.id, e.user_id, e.voicemail_owner_epoch FROM extensions e
+  JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
+  JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = e.user_id
+  JOIN tenant_memberships tm ON tm.user_id = ue.user_id
+    AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
+  WHERE e.tenant_id = $1 AND e.extension_number = $2
+    AND e.type = 'user' AND e.status = 'active' AND e.deleted_at IS NULL
+    AND e.voicemail_enabled = true`;
 
 export async function storeRecording(tenantId: number, callUuid: string, fileBuffer: Buffer, format = "wav", idempotent = false) {
   if (!validTenant(tenantId) || !validUuid(callUuid) || format !== "wav" || !fileBuffer.length || fileBuffer.length > MAX_RECORDING_SIZE) {
@@ -179,6 +190,97 @@ storageRouter.post("/upload", verifyFsAuth, raw({ type: ["audio/wav", "audio/x-w
   }
 });
 
+/** Obtain and persist mailbox ownership before FreeSWITCH begins recording. */
+storageRouter.post("/voicemail/admission", verifyFsAuth, async (req, res) => {
+  const tenantId = typeof req.query.tenant_id === "string" ? Number(req.query.tenant_id) : NaN;
+  const extension = req.query.extension;
+  if (!validTenant(tenantId) || !validExtension(extension)) {
+    res.status(400).json({ error: "Provide a valid tenant and personal mailbox" });
+    return;
+  }
+  try {
+    const messageUuid = await withTransaction(async client => {
+      // The row lock serializes this admission with an admin reassignment.
+      const mailbox = await client.query(`${ACTIVE_VOICEMAIL_MAILBOX} FOR SHARE OF e`, [tenantId, extension]);
+      if (mailbox.rows.length !== 1) return null;
+      const id = randomUUID();
+      await client.query(
+        `INSERT INTO voicemail_deposit_admissions
+         (message_uuid, tenant_id, extension_id, owner_user_id, owner_epoch)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [id, tenantId, mailbox.rows[0].id, mailbox.rows[0].user_id, mailbox.rows[0].voicemail_owner_epoch],
+      );
+      return id;
+    });
+    if (!messageUuid) {
+      res.status(404).json({ error: "Voicemail mailbox not found" });
+      return;
+    }
+    res.status(201).json({ message_uuid: messageUuid });
+  } catch {
+    res.status(503).json({ error: "Voicemail admission is unavailable" });
+  }
+});
+
+/** Retire one expired pre-record admission without inferring its present owner. */
+storageRouter.post("/voicemail/admission/expire", verifyFsAuth, async (req, res) => {
+  const tenantId = typeof req.query.tenant_id === "string" ? Number(req.query.tenant_id) : NaN;
+  const extension = req.query.extension;
+  const messageUuid = req.query.message_uuid;
+  if (!validTenant(tenantId) || !validExtension(extension) || !validDepositUuid(messageUuid)) {
+    res.status(400).json({ error: "Provide an exact voicemail admission identity" });
+    return;
+  }
+  try {
+    const retired = await query(
+      `DELETE FROM voicemail_deposit_admissions a USING extensions e
+       WHERE a.message_uuid = $1 AND a.tenant_id = $2
+         AND a.extension_id = e.id AND e.tenant_id = a.tenant_id
+         AND e.extension_number = $3
+         AND a.created_at <= clock_timestamp() - INTERVAL '7 days'
+       RETURNING a.message_uuid`,
+      [messageUuid, tenantId, extension],
+    );
+    if (retired.rows.length === 1) {
+      res.json({ retired: true });
+      return;
+    }
+    const stillActive = await query(
+      `SELECT 1 FROM voicemail_deposit_admissions a JOIN extensions e
+         ON e.id = a.extension_id AND e.tenant_id = a.tenant_id
+       WHERE a.message_uuid = $1 AND a.tenant_id = $2 AND e.extension_number = $3
+         AND a.created_at > clock_timestamp() - INTERVAL '7 days'`,
+      [messageUuid, tenantId, extension],
+    );
+    if (stillActive.rows.length) {
+      res.status(409).json({ error: "Voicemail admission has not expired" });
+      return;
+    }
+    // An already-pruned exact admission is an idempotent retirement result.
+    res.json({ retired: true });
+  } catch {
+    res.status(503).json({ error: "Voicemail admission retirement is unavailable" });
+  }
+});
+
+/** Bound database retention even when a completed deposit had no pending file. */
+storageRouter.post("/voicemail/admission/prune", verifyFsAuth, async (_req, res) => {
+  try {
+    const removed = await query(
+      `WITH expired AS (
+         SELECT message_uuid FROM voicemail_deposit_admissions
+         WHERE created_at <= clock_timestamp() - INTERVAL '7 days'
+         ORDER BY created_at, message_uuid LIMIT 500 FOR UPDATE SKIP LOCKED
+       )
+       DELETE FROM voicemail_deposit_admissions a USING expired
+       WHERE a.message_uuid = expired.message_uuid RETURNING a.message_uuid`,
+    );
+    res.json({ retired: removed.rows.length });
+  } catch {
+    res.status(503).json({ error: "Voicemail admission pruning is unavailable" });
+  }
+});
+
 storageRouter.post("/voicemail", verifyFsAuth, raw({ type: ["audio/wav", "audio/x-wav", "application/octet-stream"], limit: MAX_VOICEMAIL_SIZE }), async (req, res) => {
   const messageUuid = req.query.message_uuid;
   const tenantId = typeof req.query.tenant_id === "string" ? Number(req.query.tenant_id) : NaN;
@@ -207,27 +309,36 @@ storageRouter.post("/voicemail", verifyFsAuth, raw({ type: ["audio/wav", "audio/
   try {
     // The integration credential establishes the caller, but mailbox ownership
     // and tenant membership are still verified from local PBX data.
-    const mailbox = await query(
-      `SELECT id FROM extensions
-       WHERE tenant_id = $1 AND extension_number = $2
-         AND status = 'active' AND deleted_at IS NULL
-         AND voicemail_enabled = true
-       LIMIT 1`,
-      [tenantId, extension],
-    );
+    const mailbox = await query(ACTIVE_VOICEMAIL_MAILBOX, [tenantId, extension]);
     if (mailbox.rows.length !== 1) {
       res.status(404).json({ error: "Voicemail mailbox not found" });
       return;
     }
+    const admission = await query(
+      `SELECT extension_id, owner_user_id, owner_epoch FROM voicemail_deposit_admissions
+       WHERE tenant_id = $1 AND message_uuid = $2
+         AND created_at > clock_timestamp() - INTERVAL '7 days'`,
+      [tenantId, messageUuid],
+    );
+    const admitted = admission.rows[0];
+    if (!admitted || Number(admitted.extension_id) !== Number(mailbox.rows[0].id) ||
+        Number(admitted.owner_user_id) !== Number(mailbox.rows[0].user_id) ||
+        admitted.owner_epoch !== mailbox.rows[0].voicemail_owner_epoch) {
+      res.status(409).json({ error: "Voicemail admission is missing or stale" });
+      return;
+    }
     const existing = await query(
-      `SELECT id, storage_path, storage_size_bytes
+      `SELECT id, extension_id, owner_user_id, owner_epoch, storage_path, storage_size_bytes
        FROM voicemail_messages WHERE tenant_id = $1 AND message_uuid = $2`,
       [tenantId, messageUuid],
     );
     if (existing.rows.length) {
       const row = existing.rows[0];
       const verified = await verifyStoredVoicemail(tenantId, row.storage_path, req.body);
-      if (Number(row.storage_size_bytes) !== verified.fileSize)
+      if (Number(row.extension_id) !== Number(mailbox.rows[0].id) ||
+          Number(row.owner_user_id) !== Number(mailbox.rows[0].user_id) ||
+          row.owner_epoch !== mailbox.rows[0].voicemail_owner_epoch ||
+          Number(row.storage_size_bytes) !== verified.fileSize)
         throw new Error("Voicemail identity mismatch");
       res.json({ ok: true, id: row.id, size: verified.fileSize, duplicate: true });
       return;
@@ -236,23 +347,26 @@ storageRouter.post("/voicemail", verifyFsAuth, raw({ type: ["audio/wav", "audio/
     if (stored.created) createdFilePath = stored.filePath;
     const inserted = await query(
       `INSERT INTO voicemail_messages
-       (tenant_id, extension_id, message_uuid, caller_number, caller_name, duration_seconds, storage_path, storage_size_bytes)
-       VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, $8)
+       (tenant_id, extension_id, owner_user_id, owner_epoch, message_uuid, caller_number, caller_name, duration_seconds, storage_path, storage_size_bytes)
+       VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10)
        ON CONFLICT (tenant_id, message_uuid) DO NOTHING
-       RETURNING id, storage_path, storage_size_bytes`,
-      [tenantId, mailbox.rows[0].id, messageUuid, callerNumber, callerName, duration, stored.filePath, stored.fileSize],
+       RETURNING id, owner_user_id, owner_epoch, storage_path, storage_size_bytes`,
+      [tenantId, mailbox.rows[0].id, mailbox.rows[0].user_id, mailbox.rows[0].voicemail_owner_epoch, messageUuid, callerNumber, callerName, duration, stored.filePath, stored.fileSize],
     );
     const row = inserted.rows[0];
     if (!row) {
       const duplicate = await query(
-        `SELECT id, storage_path, storage_size_bytes FROM voicemail_messages
+        `SELECT id, extension_id, owner_user_id, owner_epoch, storage_path, storage_size_bytes FROM voicemail_messages
          WHERE tenant_id = $1 AND message_uuid = $2`,
         [tenantId, messageUuid],
       );
       const existingRow = duplicate.rows[0];
       if (!existingRow) throw new Error("Voicemail identity mismatch");
       const verified = await verifyStoredVoicemail(tenantId, existingRow.storage_path, req.body);
-      if (Number(existingRow.storage_size_bytes) !== verified.fileSize)
+      if (Number(existingRow.extension_id) !== Number(mailbox.rows[0].id) ||
+          Number(existingRow.owner_user_id) !== Number(mailbox.rows[0].user_id) ||
+          existingRow.owner_epoch !== mailbox.rows[0].voicemail_owner_epoch ||
+          Number(existingRow.storage_size_bytes) !== verified.fileSize)
         throw new Error("Voicemail identity mismatch");
       // Another delivery won the database race. Keep its verified object and
       // remove only the new object this request created.
@@ -265,9 +379,9 @@ storageRouter.post("/voicemail", verifyFsAuth, raw({ type: ["audio/wav", "audio/
     }
     res.status(201).json({ ok: true, id: row.id, size: stored.fileSize, duplicate: false });
   } catch {
-    // A newly written orphan is safe to remove. Existing data is never removed
-    // on an idempotency conflict or a later database failure.
-    if (createdFilePath) await fs.promises.unlink(createdFilePath).catch(() => {});
+    // Leave an unindexed object for reconciliation. Another concurrent upload
+    // may have committed the same UUID and path after this request wrote it;
+    // deleting here could remove a live voicemail.
     res.status(503).json({ error: "Voicemail storage is unavailable" });
   }
 });

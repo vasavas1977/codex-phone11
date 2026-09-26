@@ -421,8 +421,21 @@ export class VoicemailStorageUnavailableError extends Error {
 
 /** Do not treat an absent migration as an empty inbox. */
 export async function requireVoicemailStorage() {
-  const result = await query("SELECT to_regclass('voicemail_messages') AS name");
-  if (!result.rows[0]?.name) throw new VoicemailStorageUnavailableError();
+  const result = await query(`SELECT to_regclass('voicemail_messages') AS name,
+    to_regclass('voicemail_deposit_admissions') AS admissions,
+    (SELECT COUNT(*) FROM pg_attribute
+      WHERE attrelid = to_regclass('voicemail_messages')
+        AND attname IN ('owner_user_id', 'owner_epoch')
+        AND attnotnull AND NOT attisdropped) AS owner_columns,
+    EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('voicemail_messages')
+      AND tgname='phone11_voicemail_extension_tenant_guard' AND tgenabled='O'
+      AND tgfoid=to_regprocedure('phone11_voicemail_extension_tenant_guard()')) AS guard_trigger,
+    EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('extensions')
+      AND tgname='phone11_voicemail_owner_epoch_rotate' AND tgenabled='O'
+      AND tgfoid=to_regprocedure('phone11_voicemail_owner_epoch_rotate()')) AS epoch_trigger`);
+  if (!result.rows[0]?.name || !result.rows[0]?.admissions || Number(result.rows[0].owner_columns) !== 2
+    || result.rows[0].guard_trigger !== true || result.rows[0].epoch_trigger !== true)
+    throw new VoicemailStorageUnavailableError();
 }
 
 export async function getVoicemails(
@@ -431,7 +444,7 @@ export async function getVoicemails(
   extension?: string,
 ) {
   await requireVoicemailStorage();
-  const conditions = ["vm.tenant_id = $1", "vm.status != 'deleted'"];
+  const conditions = ["vm.tenant_id = $1", "vm.owner_user_id = $2", "vm.status != 'deleted'"];
   const vals: Array<number | string> = [tenantId, userId];
 
   if (extension) {
@@ -444,14 +457,12 @@ export async function getVoicemails(
             vm.caller_name, vm.duration_seconds, vm.status, vm.created_at,
             vm.read_at
      FROM voicemail_messages vm
-     JOIN extensions e
+     LEFT JOIN extensions e
        ON e.id = vm.extension_id AND e.tenant_id = vm.tenant_id
-     JOIN user_extensions ue
-       ON ue.extension_id = e.id AND ue.user_id = $2
      JOIN tenant_memberships tm
-       ON tm.user_id = ue.user_id AND tm.tenant_id = vm.tenant_id AND tm.status = 'active'
+       ON tm.user_id = vm.owner_user_id AND tm.tenant_id = vm.tenant_id AND tm.status = 'active'
+     JOIN tenants t ON t.id = vm.tenant_id AND t.status = 'active'
      WHERE ${conditions.join(" AND ")}
-       AND e.status = 'active' AND e.deleted_at IS NULL
      ORDER BY vm.created_at DESC
      LIMIT 100`,
     vals

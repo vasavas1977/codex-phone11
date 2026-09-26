@@ -64,7 +64,8 @@
         <param name="date-fmt" value="%A, %B %d %Y, %I %M %p"/>
         <param name="email-from" value="${voicemail_account}@${voicemail_domain}"/>
       </email>
-      <!--<param name="storage-dir" value="$${storage_dir}"/>-->
+      <!-- Match the persistent fs_voicemail volume and the producer's private source root. -->
+      <param name="storage-dir" value="/var/lib/freeswitch/voicemail"/>
       <!--<param name="odbc-dsn" value="dsn:user:pass"/>-->
       <!--<param name="record-comment" value="Your Comment"/>-->
       <!--<param name="record-title" value="Your Title"/>-->
