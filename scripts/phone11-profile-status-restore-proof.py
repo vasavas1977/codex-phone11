@@ -326,7 +326,8 @@ def clone_sql(clone_id: str, statement: str) -> None:
              "-d", "postgres", "-c", statement], timeout=30)
 
 
-def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list[str],
+def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list[str], rehearsal_role: str,
+                    database_owner: str,
                     before_catalog: str, sql_sha: str, data_mib: int, out_dir: Path) -> str:
     require(256 <= data_mib <= 32768, "clone_limit")
     token = uuid.uuid4().hex
@@ -382,7 +383,7 @@ def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list
         for role in roles:
             if role != "postgres":
                 clone_sql(clone_id, "CREATE ROLE " + quote_identifier(role) + " NOLOGIN;")
-        clone_sql(clone_id, "CREATE DATABASE phone11_clone;")
+        clone_sql(clone_id, "CREATE DATABASE phone11_clone OWNER " + quote_identifier(database_owner) + ";")
         command([DOCKER, "exec", "--user", "0", clone_id, "pg_restore",
                  "--clean", "--if-exists", "--exit-on-error", "-h", "127.0.0.1", "-U", "postgres",
                  "-d", "phone11_clone", "/tmp/backup.dump"], timeout=600)
@@ -392,6 +393,7 @@ def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list
         result = clone_node(source_image, clone_id, "rehearsal", {
             "before_catalog_sha256": before_catalog,
             "sql_sha256": sql_sha,
+            "rehearsal_role": rehearsal_role,
         }, out_dir, sql=migration.secure_read(sql_path))
         require(result.get("before", {}).get("catalog_fingerprint") == before_catalog
                 and result.get("after", {}).get("catalog_fingerprint") != before_catalog,
@@ -422,8 +424,14 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
     require(isinstance(details, dict) and isinstance(details.get("database"), str)
             and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,62}", details["database"]) is not None
             and details.get("server_version_num") == "160013"
+            and isinstance(details.get("current_user"), str)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,62}", details["current_user"]) is not None
+            and isinstance(details.get("database_owner"), str)
+            and re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,62}", details["database_owner"]) is not None
             and isinstance(details.get("roles"), list)
-            and all(isinstance(role, str) for role in details["roles"]), "source_details")
+            and all(isinstance(role, str) for role in details["roles"])
+            and details["current_user"] in details["roles"]
+            and details["database_owner"] in details["roles"], "source_details")
     pg = docker_inspect(postgres_id)
     require(pg.get("Id") == postgres_id and pg.get("Name") == "/cp11-postgres"
             and pg.get("Image") == POSTGRES_IMAGE
@@ -463,7 +471,8 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
     require(source_action(api_id, "snapshot").get("before") == source["before"],
             "source_changed_after_backup")
     after_catalog = clone_rehearsal(backup_path, sql_path, inventory["target"]["image"],
-                                    details["roles"], inventory["before_catalog_sha256"],
+                                    details["roles"], details["current_user"], details["database_owner"],
+                                    inventory["before_catalog_sha256"],
                                     inventory["sql_sha256"], data_mib, out_dir)
     require(archive_digest(backup_path) == backup_sha, "backup_changed")
     manifest = {key: inventory[key] for key in (

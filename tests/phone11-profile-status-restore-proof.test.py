@@ -122,7 +122,9 @@ class ProofUnitTests(unittest.TestCase):
                          "sql_sha256": helper.migration.sha256_bytes(sql)}
             before = {"identity_fingerprint": identity_sha, "catalog_fingerprint": "c" * 64}
             source = {"before": before, "details": {"database": "phone11ai",
-                      "server_version_num": "160013", "roles": [role, "phone11_app"]}}
+                      "server_version_num": "160013", "current_user": role,
+                      "database_owner": role,
+                      "roles": [role, "phone11_app"]}}
             commands = []
             def fake_command(args, **_kwargs):
                 commands.append(args)
@@ -158,6 +160,8 @@ class ProofUnitTests(unittest.TestCase):
                                     "b" * 64, 4096)
             cluster.assert_called_once_with("a" * 64, "b" * 64, "phone11ai", role)
             self.assertEqual(clone.call_args.args[3], [role, "phone11_app"])
+            self.assertEqual(clone.call_args.args[4], role)
+            self.assertEqual(clone.call_args.args[5], role)
             source_commands = [args for args in commands if "psql" in args or
                                ("pg_dump" in args and "-Fc" in args)]
             self.assertEqual(len(source_commands), 2)
@@ -179,7 +183,7 @@ class ProofUnitTests(unittest.TestCase):
                         with self.assertRaisesRegex(helper.ProofError, "restore_failed"):
                             helper.clone_rehearsal(Path("/private/backup.dump"),
                                 Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                                ["postgres"], "c" * 64, "d" * 64, 4096, Path("/ignored"))
+                                ["postgres"], "postgres", "postgres", "c" * 64, "d" * 64, 4096, Path("/ignored"))
                         cleanup.assert_called_once()
 
     def test_wrong_restored_catalog_and_failed_migration_block_and_cleanup(self) -> None:
@@ -203,7 +207,7 @@ class ProofUnitTests(unittest.TestCase):
                                             with self.assertRaises(helper.ProofError):
                                                 helper.clone_rehearsal(Path("/private/backup.dump"),
                                                     Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                                                    ["postgres"], "c" * 64, "d" * 64, 4096, Path("/ignored"))
+                                                    ["postgres"], "postgres", "postgres", "c" * 64, "d" * 64, 4096, Path("/ignored"))
                                         cleanup.assert_called_once()
 
     def test_late_clone_create_or_start_keeps_manual_cleanup_gate(self) -> None:
@@ -222,7 +226,7 @@ class ProofUnitTests(unittest.TestCase):
                         with self.assertRaisesRegex(helper.ProofError, failure):
                             helper.clone_rehearsal(Path("/private/backup.dump"),
                                 Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                                ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+                                ["postgres"], "postgres", "postgres", "c" * 64, "d" * 64, 4096, out_dir)
                         cleanup.assert_called_once()
                     markers = list((out_dir / "cleanup-pending").glob("*.json"))
                     self.assertEqual(len(markers), 1)
@@ -267,7 +271,7 @@ class ProofUnitTests(unittest.TestCase):
                 with self.assertRaisesRegex(helper.ProofError, "command_exit"):
                     helper.clone_rehearsal(Path("/private/backup.dump"),
                         Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                        ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+                        ["postgres"], "postgres", "postgres", "c" * 64, "d" * 64, 4096, out_dir)
             self.assertEqual(events, ["parent_fsync", "docker_create"])
             self.assertEqual(len(list((out_dir / "cleanup-pending").glob("*.json"))), 1)
 
@@ -287,7 +291,7 @@ class ProofUnitTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     helper.clone_rehearsal(Path("/private/backup.dump"),
                         Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                        ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+                        ["postgres"], "postgres", "postgres", "c" * 64, "d" * 64, 4096, out_dir)
             command.assert_not_called()
 
     def test_pending_cleanup_blocks_new_proof_even_without_prior_outputs(self) -> None:

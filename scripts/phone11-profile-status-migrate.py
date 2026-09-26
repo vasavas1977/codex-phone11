@@ -453,6 +453,11 @@ async function snapshot(client) {
   const pool = new pg.Pool(config()); let client;
   try {
     client = await pool.connect();
+    if (action === "rehearsal") {
+      const role = contract.rehearsal_role;
+      if (typeof role !== "string" || !/^[A-Za-z_][A-Za-z_0-9]{0,62}$/.test(role)) throw new Error("rehearsal_role");
+      await client.query('SET ROLE "' + role + '"');
+    }
     if (action === "apply" || action === "rehearsal") {
       const sql = fs.readFileSync(0);
       if (sha(sql) !== contract.sql_sha256) throw new Error("artifact");
@@ -483,6 +488,8 @@ async function snapshot(client) {
       const details = action === "details" ? {
         database:(await identity(client)).database,
         server_version_num:(await identity(client)).server_version_num,
+        current_user:(await client.query("SELECT current_user")).rows[0].current_user,
+        database_owner:(await client.query("SELECT pg_get_userbyid(datdba) owner FROM pg_database WHERE datname=current_database()")).rows[0].owner,
         roles:(await client.query("SELECT rolname FROM pg_roles WHERE left(rolname,3)<>'pg_' ORDER BY rolname")).rows.map(row=>row.rolname),
       } : undefined;
       await client.query("ROLLBACK");
