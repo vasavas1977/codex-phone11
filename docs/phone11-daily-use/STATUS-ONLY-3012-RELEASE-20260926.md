@@ -44,10 +44,11 @@ The migration is additive: rollback of the API route does not undo its tables.
 The route operator independently checks the applied status receipt, the exact
 migration bytes, and a fresh catalog inventory using the already verified
 operator bytes. It also rechecks the existing direct-meeting migration receipt
-and current database identity. Every database probe follows the application’s
-`server/db.ts` connection precedence: `DATABASE_URL` first, then complete
-`DB_*` settings. A conflicting auxiliary PostgreSQL variable cannot make the
-probe verify a different database than the application uses. The status settings table defaults to
+and current database identity. The status, DND, and cluster probes follow the profile router’s
+`server/pbx/db.ts` connection precedence: `PG_CONNECTION_STRING` first; otherwise
+complete `PG_*`/`DB_*`/`POSTGRES_*` discrete settings; otherwise `DATABASE_URL`.
+Conflicting alternate settings must not make the probe verify a different database
+from the status application path. The status settings table defaults to
 `enabled=false` and `dnd_enabled=false`; enabling status per workspace is a
 separate admin action after the release passes acceptance.
 

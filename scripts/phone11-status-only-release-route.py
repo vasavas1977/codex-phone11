@@ -57,7 +57,7 @@ STATUS_OPERATOR = STATUS_ROOT / "phone11-profile-status-migrate.py"
 STATUS_SQL = STATUS_ROOT / "profile-status-migration.sql"
 STATUS_MANIFEST = STATUS_ROOT / "manifest.json"
 STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt.json")
-STATUS_OPERATOR_SHA = "c1658b1ba36a479f1b3de80cda85bac381d33e0dc72395eefd91241227aebf52"
+STATUS_OPERATOR_SHA = "4be422d4abeb05d2fcedbc9de47f5784e973560f69af4d1e5102285ba23e52b1"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010
 # target; the database identity is compared with the new gate inventories.
@@ -473,16 +473,34 @@ def check_status_migration_applied(direct_identity: str) -> tuple[str, str, byte
     return direct_identity, manifest["after_catalog_sha256"], operator
 
 
-DND_COUNT_PROGRAM = r'''
+PBX_DB_CONFIG_PROGRAM = r'''
 const pg = require("pg");
-const env = process.env;
-const connectionString = env.DATABASE_URL;
-const mode = env.DB_SSL ?? "true";
-const ssl = mode.length > 0 && mode.toLowerCase() !== "false" ? {rejectUnauthorized:false} : undefined;
-const discrete = {host:env.DB_HOST,database:env.DB_NAME,user:env.DB_USER,password:env.DB_PASSWORD};
-if (!connectionString && ![discrete.host,discrete.database,discrete.user,discrete.password].every(Boolean)) process.exit(2);
-const port = parseInt(env.DB_PORT ?? "5432",10);
-(async()=>{const pool=new pg.Pool(connectionString ? {connectionString,ssl,connectionTimeoutMillis:5000,max:1} : {...discrete,port:Number.isFinite(port)?port:5432,ssl,connectionTimeoutMillis:5000,max:1});let client;
+function firstEnv(...keys) { for (const key of keys) { const value = process.env[key]; if (value) return value; } return undefined; }
+function sslConfig(connectionString) {
+  const mode = firstEnv("PG_SSL", "DB_SSL", "POSTGRES_SSL", "DATABASE_SSL")?.toLowerCase();
+  if (mode === "false" || mode === "0" || mode === "disable" || connectionString?.includes("sslmode=disable")) return false;
+  return {rejectUnauthorized:firstEnv("PG_SSL_REJECT_UNAUTHORIZED", "DB_SSL_REJECT_UNAUTHORIZED") === "true"};
+}
+function pbxConfig() {
+  // Match the status router's server/pbx/db.ts buildPgConfig.
+  const discrete = {
+    host:firstEnv("PG_HOST", "DB_HOST", "POSTGRES_HOST"),
+    port:firstEnv("PG_PORT", "DB_PORT", "POSTGRES_PORT"),
+    user:firstEnv("PG_USER", "DB_USER", "POSTGRES_USER"),
+    password:firstEnv("PG_PASSWORD", "DB_PASSWORD", "POSTGRES_PASSWORD"),
+    database:firstEnv("PG_DATABASE", "DB_NAME", "DB_DATABASE", "POSTGRES_DB"),
+  };
+  const complete = [discrete.host,discrete.user,discrete.password,discrete.database].every(Boolean);
+  const connectionString = process.env.PG_CONNECTION_STRING ?? (complete ? undefined : process.env.DATABASE_URL);
+  if (connectionString) return {connectionString,ssl:sslConfig(connectionString),connectionTimeoutMillis:5000,max:1};
+  if (!complete) throw new Error("configuration");
+  return {host:discrete.host,port:parseInt(discrete.port ?? "5432",10),user:discrete.user,
+    password:discrete.password,database:discrete.database,ssl:sslConfig(),connectionTimeoutMillis:5000,max:1};
+}
+'''
+
+DND_COUNT_PROGRAM = PBX_DB_CONFIG_PROGRAM + r'''
+(async()=>{const pool=new pg.Pool(pbxConfig());let client;
 try {client=await pool.connect();await client.query("BEGIN TRANSACTION READ ONLY");await client.query("SET LOCAL statement_timeout='5000ms'");const result=await client.query("SELECT COUNT(*)::int AS count FROM phone11_workspace_profile_status_settings WHERE dnd_enabled IS TRUE");await client.query("ROLLBACK");process.stdout.write(String(result.rows[0]?.count));}
 catch (_) {process.exitCode=2;} finally {client?.release();await pool.end().catch(()=>undefined);}})();
 '''
@@ -491,17 +509,10 @@ catch (_) {process.exitCode=2;} finally {client?.release();await pool.end().catc
 # A clone can have the same database OID and schema fingerprint as production.
 # A held advisory lock proves both containers reached the same PostgreSQL lock
 # manager at the instant of the route gate, without privileged cluster APIs.
-CLUSTER_LOCK_PROGRAM = r'''
-const pg = require("pg");
-const env = process.env;
+CLUSTER_LOCK_PROGRAM = PBX_DB_CONFIG_PROGRAM + r'''
 const mode = process.argv[1], key = process.argv[2];
-const connectionString = env.DATABASE_URL;
-const sslMode = env.DB_SSL ?? "true";
-const ssl = sslMode.length > 0 && sslMode.toLowerCase() !== "false" ? {rejectUnauthorized:false} : undefined;
-const discrete = {host:env.DB_HOST,database:env.DB_NAME,user:env.DB_USER,password:env.DB_PASSWORD};
-if ((!connectionString && ![discrete.host,discrete.database,discrete.user,discrete.password].every(Boolean)) || !["hold","probe"].includes(mode) || !/^[0-9]{1,19}$/.test(key)) process.exit(2);
-const port = parseInt(env.DB_PORT ?? "5432",10);
-(async()=>{const pool=new pg.Pool(connectionString ? {connectionString,ssl,connectionTimeoutMillis:5000,max:1} : {...discrete,port:Number.isFinite(port)?port:5432,ssl,connectionTimeoutMillis:5000,max:1});let client;
+if (!["hold","probe"].includes(mode) || !/^[0-9]{1,19}$/.test(key)) process.exit(2);
+(async()=>{const pool=new pg.Pool(pbxConfig());let client;
 try {client=await pool.connect();await client.query("BEGIN TRANSACTION READ ONLY");await client.query("SET LOCAL statement_timeout='5000ms'");
   if(mode === "hold") {await client.query("SELECT pg_advisory_lock($1::bigint)",[key]);process.stdout.write("held\n");await new Promise(resolve=>{process.stdin.resume();process.stdin.once("end",resolve)});await client.query("SELECT pg_advisory_unlock($1::bigint)",[key]);}
   else {const acquired=(await client.query("SELECT pg_try_advisory_lock($1::bigint) acquired",[key])).rows[0]?.acquired;if(acquired) await client.query("SELECT pg_advisory_unlock($1::bigint)",[key]);process.stdout.write(acquired === false ? "blocked" : "free");}

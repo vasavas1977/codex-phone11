@@ -457,10 +457,35 @@ class PostgreSQLAdvisoryRecoveryOverlapTests(unittest.TestCase):
         self.psql_command("ALTER TABLE phone11_workspace_profile_status DISABLE ROW LEVEL SECURITY;")
         self.assertEqual(self.snapshot()["catalog_fingerprint"], before)
 
-    def test_probe_uses_application_database_url_over_discrete_db_variables(self) -> None:
+    def test_probe_uses_pbx_discrete_settings_before_database_url(self) -> None:
         production = self.snapshot()["identity_fingerprint"]
         alternate = self.environment()
         alternate["DATABASE_URL"] = f"postgresql://phone11ai@127.0.0.1:{self.port}/template1"
+        result = subprocess.run(
+            [self.node, "-e", operator.NODE_PROGRAM, "snapshot", "{}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=ROOT, env=alternate, check=False, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["before"]["identity_fingerprint"], production)
+
+    def test_probe_uses_pbx_connection_string_before_discrete_settings(self) -> None:
+        production = self.snapshot()["identity_fingerprint"]
+        alternate = self.environment()
+        alternate["PG_CONNECTION_STRING"] = f"postgresql://phone11ai@127.0.0.1:{self.port}/template1?sslmode=disable"
+        result = subprocess.run(
+            [self.node, "-e", operator.NODE_PROGRAM, "snapshot", "{}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=ROOT, env=alternate, check=False, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(json.loads(result.stdout)["before"]["identity_fingerprint"], production)
+
+    def test_probe_uses_pbx_partial_pg_override_of_db_settings(self) -> None:
+        production = self.snapshot()["identity_fingerprint"]
+        alternate = self.environment()
+        alternate["PG_DATABASE"] = "template1"
+        alternate["DATABASE_URL"] = f"postgresql://phone11ai@127.0.0.1:{self.port}/postgres"
         result = subprocess.run(
             [self.node, "-e", operator.NODE_PROGRAM, "snapshot", "{}"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

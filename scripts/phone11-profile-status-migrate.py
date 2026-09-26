@@ -331,16 +331,27 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 function sha(value) { return crypto.createHash("sha256").update(typeof value === "string" || Buffer.isBuffer(value) ? value : canonical(value)).digest("hex"); }
+function firstEnv(...keys) { for (const key of keys) { const value = process.env[key]; if (value) return value; } return undefined; }
+function sslConfig(connectionString) {
+  const mode = firstEnv("PG_SSL", "DB_SSL", "POSTGRES_SSL", "DATABASE_SSL")?.toLowerCase();
+  if (mode === "false" || mode === "0" || mode === "disable" || connectionString?.includes("sslmode=disable")) return false;
+  return {rejectUnauthorized:firstEnv("PG_SSL_REJECT_UNAUTHORIZED", "DB_SSL_REJECT_UNAUTHORIZED") === "true"};
+}
 function config() {
-  // Match server/db.ts buildPoolConfig exactly: DATABASE_URL wins over DB_*.
-  const connectionString = process.env.DATABASE_URL;
-  const mode = process.env.DB_SSL ?? "true";
-  const ssl = mode.length > 0 && mode.toLowerCase() !== "false" ? {rejectUnauthorized:false} : undefined;
-  if (connectionString) return {connectionString,ssl,connectionTimeoutMillis:5000,max:1};
-  const discrete = {host:process.env.DB_HOST,database:process.env.DB_NAME,user:process.env.DB_USER,password:process.env.DB_PASSWORD};
-  if (![discrete.host,discrete.database,discrete.user,discrete.password].every(Boolean)) throw new Error("configuration");
-  const parsedPort = parseInt(process.env.DB_PORT ?? "5432",10);
-  return {...discrete,port:Number.isFinite(parsedPort) ? parsedPort : 5432,ssl,connectionTimeoutMillis:5000,max:1};
+  // Match the profile router's server/pbx/db.ts buildPgConfig, not server/db.ts.
+  const discrete = {
+    host:firstEnv("PG_HOST", "DB_HOST", "POSTGRES_HOST"),
+    port:firstEnv("PG_PORT", "DB_PORT", "POSTGRES_PORT"),
+    user:firstEnv("PG_USER", "DB_USER", "POSTGRES_USER"),
+    password:firstEnv("PG_PASSWORD", "DB_PASSWORD", "POSTGRES_PASSWORD"),
+    database:firstEnv("PG_DATABASE", "DB_NAME", "DB_DATABASE", "POSTGRES_DB"),
+  };
+  const complete = [discrete.host,discrete.user,discrete.password,discrete.database].every(Boolean);
+  const connectionString = process.env.PG_CONNECTION_STRING ?? (complete ? undefined : process.env.DATABASE_URL);
+  if (connectionString) return {connectionString,ssl:sslConfig(connectionString),connectionTimeoutMillis:5000,max:1};
+  if (!complete) throw new Error("configuration");
+  return {host:discrete.host,port:parseInt(discrete.port ?? "5432",10),user:discrete.user,
+    password:discrete.password,database:discrete.database,ssl:sslConfig(),connectionTimeoutMillis:5000,max:1};
 }
 async function identity(client) {
   return (await client.query("SELECT current_database() database,current_schema() schema,current_setting('server_version_num') server_version_num,(SELECT oid::text FROM pg_database WHERE datname=current_database()) database_oid")).rows[0];

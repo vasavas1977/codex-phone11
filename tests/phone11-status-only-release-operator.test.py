@@ -129,16 +129,20 @@ class StatusOnlyRouteTest(unittest.TestCase):
                     first_url = f"postgresql://phone11_test@127.0.0.1:{first['DB_PORT']}/postgres"
                     clone_url = f"postgresql://phone11_test@127.0.0.1:{clone['DB_PORT']}/postgres"
                     cases = ((first, b"blocked"), (clone, b"free"),
-                             ({**first, "DATABASE_URL": clone_url}, b"free"),
-                             ({**clone, "DATABASE_URL": first_url}, b"blocked"))
+                             ({**first, "DATABASE_URL": clone_url}, b"blocked"),
+                             ({**clone, "DATABASE_URL": first_url}, b"free"),
+                             ({**first, "PG_CONNECTION_STRING": clone_url}, b"free"),
+                             ({**clone, "PG_CONNECTION_STRING": first_url}, b"blocked"))
                     for environment, expected in cases:
                         result = subprocess.run(["node", "-e", route.CLUSTER_LOCK_PROGRAM, "probe", key],
                                                 capture_output=True, cwd=SCRIPT.parents[1],
                                                 env=environment, timeout=15)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual(result.stdout, expected)
-                    for environment, expected in (({**first, "DATABASE_URL": clone_url}, b"1"),
-                                                  ({**clone, "DATABASE_URL": first_url}, b"0")):
+                    for environment, expected in (({**first, "DATABASE_URL": clone_url}, b"0"),
+                                                  ({**clone, "DATABASE_URL": first_url}, b"1"),
+                                                  ({**first, "PG_CONNECTION_STRING": clone_url}, b"1"),
+                                                  ({**clone, "PG_CONNECTION_STRING": first_url}, b"0")):
                         result = subprocess.run(["node", "-e", route.DND_COUNT_PROGRAM],
                                                 capture_output=True, cwd=SCRIPT.parents[1],
                                                 env=environment, timeout=15)
