@@ -373,6 +373,7 @@ class PostgreSQLAdvisoryRecoveryOverlapTests(unittest.TestCase):
     def environment(cls) -> dict[str, str]:
         return {
             "PATH": os.environ.get("PATH", ""),
+            "NODE_PATH": os.environ.get("NODE_PATH", ""),
             "PG_HOST": "127.0.0.1",
             "PG_PORT": str(cls.port),
             "PG_USER": "phone11ai",
