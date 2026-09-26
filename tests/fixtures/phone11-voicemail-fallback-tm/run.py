@@ -54,6 +54,9 @@ def endpoint(port):
             seen[port].setdefault(callid, set()).add(branch)
             mode = case['callees'].get(port, 'timeout')
         if port == 15063:
+            case['binding_valid'] = (packet.split('\r\n', 1)[0] ==
+                'INVITE sip:phone11-vm-' + case['reference'] + '@127.0.0.1:15063 SIP/2.0' and
+                header(packet, 'From') == '<sip:synthetic-caller@fixture.invalid>;tag=caller')
             case['fs'].set()
             mode = 'answer'
         if mode == 'timeout':
@@ -86,10 +89,12 @@ class Authority(BaseHTTPRequestHandler):
             self.send_error(503)
             return
         try:
-            self.send_response(200)
-            self.send_header('Content-Length', '2')
+            body = json.dumps({'reference': case['reference']}).encode()
+            self.send_response(201)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(b'ok')
+            self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -127,7 +132,8 @@ def callee_count(callid, port):
 def scenario(name, callees, *, fork=False, cancel=None, late=False):
     callid = name + '-' + uuid.uuid4().hex[:10] + '@fixture.invalid'
     case = dict(callees=callees, http=threading.Event(), release=threading.Event(),
-                fs=threading.Event(), http_count=0)
+                fs=threading.Event(), http_count=0, reference=uuid.uuid4().hex + uuid.uuid4().hex,
+                binding_valid=False)
     with lock:
         cases[callid] = case
     caller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -165,6 +171,7 @@ def scenario(name, callees, *, fork=False, cancel=None, late=False):
             assert case['fs'].wait(2), 'HTTP resume did not add FS branch'
             wait_for(lambda: branch_count(callid) == 1, 1, 'expected exactly one FS branch')
             assert case['http_count'] == 1, 'duplicate authorization request'
+            assert case['binding_valid'], 'fallback R-URI or original From binding changed'
         else:
             time.sleep(0.6 if not late else 0.8)
             assert branch_count(callid) == 0, f'{name} unexpectedly reached FS'
@@ -177,7 +184,8 @@ def scenario(name, callees, *, fork=False, cancel=None, late=False):
     return {'scenario': name, 'result': 'pass', 'http_requests': case['http_count'],
             'primary_branches': callee_count(callid, 15061),
             'fork_branches': callee_count(callid, 15062),
-            'fs_branches': branch_count(callid)}
+            'fs_branches': branch_count(callid),
+            'fallback_binding': 'pass' if case['binding_valid'] else 'not-routed'}
 
 
 def main():
