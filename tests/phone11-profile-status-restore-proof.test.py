@@ -140,41 +140,87 @@ class ProofUnitTests(unittest.TestCase):
 
     def test_late_clone_create_or_start_keeps_manual_cleanup_gate(self) -> None:
         for phase in ("create", "start"):
-            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+            for failure in ("command_timeout", "command_exit"):
+                with self.subTest(phase=phase, failure=failure), tempfile.TemporaryDirectory() as directory:
+                    out_dir = Path(directory)
+                    os.chmod(out_dir, 0o700)
+                    def late_command(args, **_kwargs):
+                        if args[1] == phase:
+                            raise helper.ProofError(failure)
+                        return self.fake_clone_command(args)
+                    with patch.object(helper, "command", side_effect=late_command), \
+                         patch.object(helper, "inspect_owned", return_value=self.clone_identity()), \
+                         patch.object(helper, "cleanup_owned") as cleanup:
+                        with self.assertRaisesRegex(helper.ProofError, failure):
+                            helper.clone_rehearsal(Path("/private/backup.dump"),
+                                Path("/private/migration.sql"), "sha256:" + "b" * 64,
+                                ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+                        cleanup.assert_called_once()
+                    markers = list((out_dir / "cleanup-pending").glob("*.json"))
+                    self.assertEqual(len(markers), 1)
+                    self.assertEqual(markers[0].stat().st_mode & 0o777, 0o600)
+                    marker = json.loads(markers[0].read_text())
+                    self.assertEqual(marker["schema"], "phone11.status-restore-cleanup-pending/v1")
+                    self.assertTrue(marker["container_name"].startswith("p11status-"))
+
+    def test_late_sidecar_run_keeps_manual_cleanup_gate(self) -> None:
+        for failure in ("command_timeout", "command_exit"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 out_dir = Path(directory)
                 os.chmod(out_dir, 0o700)
-                def late_command(args, **_kwargs):
-                    if args[1] == phase:
-                        raise helper.ProofError("command_timeout")
-                    return self.fake_clone_command(args)
-                with patch.object(helper, "command", side_effect=late_command), \
-                     patch.object(helper, "inspect_owned", return_value=self.clone_identity()), \
+                with patch.object(helper, "command", side_effect=helper.ProofError(failure)), \
                      patch.object(helper, "cleanup_owned") as cleanup:
-                    with self.assertRaisesRegex(helper.ProofError, "command_timeout"):
-                        helper.clone_rehearsal(Path("/private/backup.dump"),
-                            Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                            ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+                    with self.assertRaisesRegex(helper.ProofError, failure):
+                        helper.clone_node("sha256:" + "b" * 64, "a" * 64,
+                                          "snapshot", {}, out_dir)
                     cleanup.assert_called_once()
                 markers = list((out_dir / "cleanup-pending").glob("*.json"))
                 self.assertEqual(len(markers), 1)
-                self.assertEqual(markers[0].stat().st_mode & 0o777, 0o600)
-                marker = json.loads(markers[0].read_text())
-                self.assertEqual(marker["schema"], "phone11.status-restore-cleanup-pending/v1")
-                self.assertTrue(marker["container_name"].startswith("p11status-"))
+                self.assertIn("p11status-node-", markers[0].name)
 
-    def test_late_sidecar_run_keeps_manual_cleanup_gate(self) -> None:
+    def test_cleanup_directory_entry_is_synced_before_docker_create(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             out_dir = Path(directory)
             os.chmod(out_dir, 0o700)
-            with patch.object(helper, "command", side_effect=helper.ProofError("command_timeout")), \
-                 patch.object(helper, "cleanup_owned") as cleanup:
-                with self.assertRaisesRegex(helper.ProofError, "command_timeout"):
-                    helper.clone_node("sha256:" + "b" * 64, "a" * 64,
-                                      "snapshot", {}, out_dir)
-                cleanup.assert_called_once()
-            markers = list((out_dir / "cleanup-pending").glob("*.json"))
-            self.assertEqual(len(markers), 1)
-            self.assertIn("p11status-node-", markers[0].name)
+            parent = out_dir.stat()
+            events = []
+            original_fsync = os.fsync
+            def trace_fsync(fd):
+                opened = os.fstat(fd)
+                if (opened.st_dev, opened.st_ino) == (parent.st_dev, parent.st_ino):
+                    events.append("parent_fsync")
+                return original_fsync(fd)
+            def failed_create(args, **_kwargs):
+                events.append("docker_create")
+                raise helper.ProofError("command_exit")
+            with patch.object(helper.os, "fsync", side_effect=trace_fsync), \
+                 patch.object(helper, "command", side_effect=failed_create), \
+                 patch.object(helper, "cleanup_owned"):
+                with self.assertRaisesRegex(helper.ProofError, "command_exit"):
+                    helper.clone_rehearsal(Path("/private/backup.dump"),
+                        Path("/private/migration.sql"), "sha256:" + "b" * 64,
+                        ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+            self.assertEqual(events, ["parent_fsync", "docker_create"])
+            self.assertEqual(len(list((out_dir / "cleanup-pending").glob("*.json"))), 1)
+
+    def test_parent_sync_failure_prevents_any_docker_request(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            os.chmod(out_dir, 0o700)
+            parent = out_dir.stat()
+            original_fsync = os.fsync
+            def failed_parent_sync(fd):
+                opened = os.fstat(fd)
+                if (opened.st_dev, opened.st_ino) == (parent.st_dev, parent.st_ino):
+                    raise OSError("synthetic parent fsync failure")
+                return original_fsync(fd)
+            with patch.object(helper.os, "fsync", side_effect=failed_parent_sync), \
+                 patch.object(helper, "command") as command:
+                with self.assertRaises(OSError):
+                    helper.clone_rehearsal(Path("/private/backup.dump"),
+                        Path("/private/migration.sql"), "sha256:" + "b" * 64,
+                        ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+            command.assert_not_called()
 
     def test_pending_cleanup_blocks_new_proof_even_without_prior_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

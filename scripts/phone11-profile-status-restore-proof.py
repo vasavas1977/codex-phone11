@@ -91,11 +91,20 @@ def pending_marker(out_dir: Path, name: str, token: str) -> Path:
         "container_name": name, "owner_token": token,
         "created_at_unix": int(time.time()),
     }))
-    fd = os.open(pending, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    fd = os.open(pending, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                 | getattr(os, "O_NOFOLLOW", 0))
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+    # Persist the newly created cleanup-pending directory entry itself before
+    # any Docker daemon request can create a container with the backup mounted.
+    parent_fd = os.open(out_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                        | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
     return marker
 
 
@@ -267,8 +276,10 @@ def clone_node(image: str, clone_id: str, action: str, contract: dict[str, Any],
     try:
         try:
             raw = command(args, payload=sql, timeout=90)
-        except ProofError as error:
-            uncertain = str(error) in ("command_timeout", "command_os")
+        except ProofError:
+            # Even a CLI nonzero exit may follow daemon acceptance. Keep the
+            # hold until an operator verifies no object can appear late.
+            uncertain = True
             raise
         return json_result(raw, "clone_node")
     finally:
@@ -310,8 +321,8 @@ def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list
             "-e", "POSTGRES_HOST_AUTH_METHOD=trust", POSTGRES_IMAGE,
             "postgres", "-c", "listen_addresses=127.0.0.1",
             ], timeout=40).decode().strip()
-        except ProofError as error:
-            uncertain = str(error) in ("command_timeout", "command_os")
+        except ProofError:
+            uncertain = True
             raise
         require(re.fullmatch(r"[0-9a-f]{64}", clone_id) is not None, "clone_id")
         item = inspect_owned(name, token)
@@ -329,8 +340,8 @@ def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list
         try:
             require(command([DOCKER, "start", clone_id], timeout=40).decode().strip() == clone_id,
                     "clone_start")
-        except ProofError as error:
-            uncertain = str(error) in ("command_timeout", "command_os")
+        except ProofError:
+            uncertain = True
             raise
         ready = False
         for _ in range(30):

@@ -150,7 +150,7 @@ The helper does not print credentials or customer rows. Its backup remains at
 after 30 minutes, so prepare and apply promptly. A scheduled backup alone is
 insufficient.
 
-If Docker create, start, or sidecar run times out, the helper retains a
+If Docker create, start, or sidecar run fails or times out, the helper retains a
 root-private `cleanup-pending/<container-name>.json` marker. Treat that as a
 hard hold: do not retry the rehearsal or run migration/route preparation.
 Inspect the marker's random container name and owner token, establish that the
