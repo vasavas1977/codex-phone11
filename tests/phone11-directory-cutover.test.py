@@ -37,6 +37,7 @@ class CutoverTests(unittest.TestCase):
             patch.object(cutover, 'read_file', side_effect=self.read),
             patch.object(cutover, 'inspect', return_value={'State': {'Pid': 100}}),
             patch.object(cutover, 'Esl', return_value=self.esl),
+            patch.object(cutover, 'verify_mounted_config'),
             patch.object(cutover, 'replace', side_effect=self.replace),
         ]
         for p in self.patches: p.start()
@@ -53,7 +54,7 @@ class CutoverTests(unittest.TestCase):
         self.state = value
 
     def test_verify_never_reloads_or_changes(self):
-        self.assertEqual(cutover.run('verify')['state'], 'ready')
+        self.assertEqual(cutover.run('verify')['state'], 'prepared')
         self.assertEqual(self.replacements, [])
         self.assertNotIn('reloadxml', self.esl.calls)
         self.assertTrue(self.esl.closed)
@@ -116,5 +117,22 @@ class CutoverTests(unittest.TestCase):
         self.assertEqual(self.replacements, [])
         self.assertIn('reload mod_xml_curl', self.esl.calls)
 
+
+class MountTests(unittest.TestCase):
+    def test_directory_bind_and_exact_container_bytes_required(self):
+        from types import SimpleNamespace
+        mount = {'Type': 'bind', 'Source': str(cutover.TARGET.parent.parent),
+                 'Destination': '/etc/freeswitch', 'RW': True}
+        result = SimpleNamespace(returncode=0, stdout=(cutover.OLD_HASH +
+            '  /etc/freeswitch/autoload_configs/xml_curl.conf.xml\n').encode())
+        with patch.object(cutover.subprocess, 'run', return_value=result):
+            cutover.verify_mounted_config({'Mounts': [mount]}, cutover.OLD_HASH)
+            with self.assertRaisesRegex(cutover.Refused, 'mounted_config_bytes'):
+                cutover.verify_mounted_config({'Mounts': [mount]}, cutover.NEW_HASH)
+            for mounts in ([], [dict(mount, Type='volume')],
+                           [dict(mount, Source='/other')],
+                           [mount, dict(mount, Destination='/etc/freeswitch/autoload_configs')]):
+                with self.assertRaisesRegex(cutover.Refused, 'config_mount'):
+                    cutover.verify_mounted_config({'Mounts': mounts}, cutover.OLD_HASH)
 
 if __name__ == '__main__': unittest.main()

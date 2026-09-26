@@ -39,15 +39,16 @@ const store: VoicemailFallbackReferenceStore = {
 
 function start() {
   const app = express();
-  app.use("/fallback", createVoicemailFallbackRouter({ store, resolve: async () => {
+  app.use("/api/voicemail/local-fallback", createVoicemailFallbackRouter({ store, resolve: async () => {
     resolveCalls++;
     return resolution;
   } }));
+  app.use(express.json({ limit: "50mb" }));
   server = createServer(app);
   return new Promise<void>(done => server.listen(0, "127.0.0.1", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw Error("No port");
-    baseUrl = `http://127.0.0.1:${address.port}/fallback`;
+    baseUrl = `http://127.0.0.1:${address.port}/api/voicemail/local-fallback`;
     done();
   }));
 }

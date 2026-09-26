@@ -81,6 +81,26 @@ def inspect(identity, image, healthy=False):
     return item
 
 
+def verify_mounted_config(fs, expected_hash):
+    """Atomic host replacement must be visible through the directory bind."""
+    destination = '/etc/freeswitch/autoload_configs/xml_curl.conf.xml'
+    mounts = fs.get('Mounts')
+    need(isinstance(mounts, list), 'config_mount')
+    covering = [m for m in mounts if isinstance(m, dict) and
+                isinstance(m.get('Destination'), str) and
+                (destination == m['Destination'] or
+                 destination.startswith(m['Destination'].rstrip('/') + '/'))]
+    need(len(covering) == 1, 'config_mount')
+    mount = covering[0]
+    need(mount.get('Type') == 'bind' and mount.get('Destination') == '/etc/freeswitch' and
+         mount.get('Source') == str(TARGET.parent.parent) and mount.get('RW') is True,
+         'config_mount')
+    result = subprocess.run(['docker', 'exec', FS_ID, 'sha256sum', destination],
+                            capture_output=True, timeout=10)
+    need(result.returncode == 0 and result.stdout.split() ==
+         [expected_hash.encode('ascii'), destination.encode('ascii')], 'mounted_config_bytes')
+
+
 class Esl:
     def __init__(self):
         values = {p.get('name'): p.get('value') for p in ET.fromstring(read_file(ESL_CONFIG)).findall('.//param')}
@@ -161,6 +181,7 @@ def run(action):
         inspect(API_ID, API_IMAGE, healthy=True)
     initial = digest(read_file(TARGET))
     need(initial in {OLD_HASH, NEW_HASH}, 'active_config_changed')
+    verify_mounted_config(fs, initial)
     esl = Esl()
     changed = False
     try:
@@ -168,7 +189,8 @@ def run(action):
         need(re.fullmatch(r'0 total\.', count) is not None, 'active_calls')
         need(esl.api('module_exists mod_xml_curl') == 'true', 'module_missing')
         if action == 'verify':
-            return {'state': 'ready' if initial == OLD_HASH else 'installed', 'active_sha256': initial}
+            return {'state': 'prepared' if initial == OLD_HASH else 'installed', 'active_sha256': initial,
+                    'mutation_enabled': MUTATION_READY}
         target, expected = (candidate, OLD_HASH) if action == 'apply' else (previous, NEW_HASH)
         wanted = digest(target)
         if initial != wanted:
@@ -184,6 +206,7 @@ def run(action):
         after = inspect(FS_ID, FS_IMAGE)
         need(after['State']['Pid'] == fs['State']['Pid'], 'fs_process_changed')
         need(digest(read_file(TARGET)) == wanted, 'installed_bytes')
+        verify_mounted_config(after, wanted)
         return {'state': 'applied' if action == 'apply' else 'rolled_back', 'active_sha256': wanted,
                 'fs_process_preserved': True, 'dialplan_changed': False}
     except Exception:

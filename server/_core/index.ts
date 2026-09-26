@@ -15,6 +15,7 @@ import { createContext } from "./context";
 import { freeswitchRouter, freeswitchCdrRouter } from "../pbx/freeswitch-routes";
 import { kamailioRouter } from "../pbx/kamailio-routes";
 import { storageRouter } from "../pbx/recording-storage";
+import { createVoicemailFallbackRouter } from "../pbx/voicemail-fallback-routes";
 import { wsManager } from "../pbx/websocket";
 import { fsEventListener } from "../pbx/fs-event-listener";
 import { registerWakeRoutes } from "../push/wake-routes";
@@ -80,6 +81,8 @@ export async function startServer() {
   app.use("/api/chat/media", chatMediaRouter);
   app.use("/api/profile", profilePhotoRouter);
   app.use("/api/freeswitch/cdr", freeswitchCdrRouter);
+  // This default-off integration owns its strict 2 KiB parser.
+  app.use("/api/voicemail/local-fallback", createVoicemailFallbackRouter());
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 

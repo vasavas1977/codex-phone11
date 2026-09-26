@@ -107,7 +107,7 @@ const bodyError: ErrorRequestHandler = (_error, _req, res, _next) => {
   res.status(400).json({ error: "Invalid request" });
 };
 
-/** Unmounted until a separate reviewed routing change. The authenticated
+/** Mounted before the general body parser; default-off until commissioned. The authenticated
  * proxy must supply caller identity, canonical target, terminal cause and
  * SIP call binding from its own transaction, never from a caller's headers.
  * The FS consumer must pass expectedOwnerEpoch into the deposit admission
