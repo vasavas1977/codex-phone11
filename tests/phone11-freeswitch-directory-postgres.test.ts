@@ -98,6 +98,35 @@ describe.skipIf(!socket)("FreeSWITCH directory against maintained PostgreSQL sha
     } });
   });
 
+  it("rejects a SIP URI shared by two active tenants and ignores inactive or deleted duplicates", async () => {
+    await state.pool!.query(`
+      INSERT INTO tenants VALUES(3,'active');
+      INSERT INTO extensions VALUES(31,3,'3001','Other tenant',true,'active',NULL);
+      INSERT INTO sip_accounts VALUES(31,3,'3001','sip.phone11.test','other-hash','active',NULL);
+    `);
+    expect(await lookup("3001")).toEqual([]);
+
+    await state.pool!.query("UPDATE tenants SET status='inactive' WHERE id=3");
+    expect((await lookup("3001"))[0]?.attributes["a1-hash"]).toBe("hash3001");
+
+    await state.pool!.query("UPDATE tenants SET status='active' WHERE id=3");
+    await state.pool!.query("UPDATE extensions SET deleted_at=now() WHERE id=31");
+    expect((await lookup("3001"))[0]?.attributes["a1-hash"]).toBe("hash3001");
+
+    await state.pool!.query("UPDATE extensions SET deleted_at=NULL WHERE id=31");
+    await state.pool!.query("UPDATE sip_accounts SET deleted_at=now() WHERE extension_id=31");
+    expect((await lookup("3001"))[0]?.attributes["a1-hash"]).toBe("hash3001");
+
+    // Even a second matching account inside the original tenant is ambiguous.
+    await state.pool!.query(`
+      INSERT INTO extensions VALUES(32,1,'3001','Same tenant',true,'active',NULL);
+      INSERT INTO sip_accounts VALUES(32,1,'3001','sip.phone11.test','same-tenant-hash','active',NULL);
+    `);
+    expect(await lookup("3001")).toEqual([]);
+    await state.pool!.query("UPDATE sip_accounts SET deleted_at=now() WHERE extension_id=32");
+    expect((await lookup("3001"))[0]?.attributes["a1-hash"]).toBe("hash3001");
+  });
+
   it("keeps account, extension, domain and tenant active gates", async () => {
     expect(await lookup("4001")).toEqual([]);
     expect(await lookup("3001", "other.test")).toEqual([]);

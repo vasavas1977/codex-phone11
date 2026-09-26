@@ -59,11 +59,14 @@ router.post("/directory", requireXmlCurlAuth, async (req: Request, res: Response
          JOIN tenants t ON sa.tenant_id = t.id
          WHERE sa.sip_username = $1 AND sa.sip_domain = $2 
                AND sa.status = 'active' AND sa.deleted_at IS NULL
-               AND e.tenant_id = sa.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL AND t.status = 'active'`,
+               AND e.tenant_id = sa.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL AND t.status = 'active'
+         LIMIT 2`,
         [user, domain]
       );
 
-      if (result.rows.length === 0) {
+      // A SIP URI must resolve to exactly one active account. The schema does not
+      // enforce global uniqueness across tenants, so ambiguous matches fail closed.
+      if (result.rows.length !== 1) {
         return notFoundXml();
       }
 
