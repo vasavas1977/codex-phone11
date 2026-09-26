@@ -182,6 +182,13 @@ sign-in as extension 3001, workspace administration, Team Chat, and the
 direct-contact meeting button were observed working on the existing route;
 these are not candidate or handset-media acceptance.
 
+A second, identical ten-minute canary was installed at `2026-09-26 19:48:10
+UTC` for the owner to open the two read-only links manually. Receipt:
+`/var/lib/phone11-status-cookie-canary/20260926T194810Z-50691cb9c2770177`.
+Authenticated responses are pending; do not activate the main route based
+on this installation. Confirm expiry/rollback and original bytes before
+the next route action.
+
 On the VoIP host, keep the original SQL in place; use the reviewed v2 operator
 from a temporary root-only path for the guarded archive step below. After
 that step, stage the v2 operator at the protected path above and capture a
