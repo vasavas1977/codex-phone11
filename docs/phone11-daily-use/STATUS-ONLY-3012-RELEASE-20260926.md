@@ -1,7 +1,13 @@
 # Phone11 workspace status-only 3012 release
 
 This is a **source and operator handoff**, not evidence that the 3012 candidate or
-status migration is live. It keeps voicemail storage and its FreeSWITCH deposit
+status migration is live. The first apply attempt left an intent at
+`/var/lib/phone11-profile-status/receipt.json` with the live catalog unchanged.
+Preserve that receipt for audit. Its rehearsal ran as `postgres`, producing an
+after-catalog owner fingerprint that cannot match tables created by the live
+`phone11ai` API role. The corrected rehearsal must use the API role and database
+owner, produce fresh linked backup/restore proofs, and write a separate receipt.
+It keeps voicemail storage and its FreeSWITCH deposit
 hook outside this release. DND remains disabled in every tenant; the route
 operator counts live `dnd_enabled` rows before either preparing or activating.
 
@@ -21,9 +27,10 @@ operator. A changed predecessor, site, or receipt blocks the operation.
 Stage the exact reviewed `server/profile/migration.sql` as root-owned mode
 `0600` at
 `/opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql`.
-Stage the matching reviewed `scripts/phone11-profile-status-migrate.py` beside
-it with the same ownership and mode. The containing directory must be root-owned
-`0700`. The route operator pins both artifact hashes. Do not use the earlier
+After the guarded v1 archive step below, stage the matching reviewed
+`scripts/phone11-profile-status-migrate.py` beside it with the same ownership
+and mode. The containing directory must be root-owned `0700`. The route
+operator pins both artifact hashes. Do not use the earlier
 profile/DND rollout script: it targets an older API layout.
 
 The migration operator requires a root-only manifest binding the healthy 3011
@@ -48,7 +55,7 @@ rejects any new status table with non-owner table or column grants, row-level
 security, or policies before commit. Catalog fingerprints also include table
 and column ACLs, row-level security, policies, and default privileges, so a
 changed grant or default grant blocks a stale migration plan. It then records an applied receipt
-at `/var/lib/phone11-profile-status/receipt.json`.
+at `/var/lib/phone11-profile-status/receipt-role-rehearsal-v2.json`.
 `--recover` settles an interrupted intent only after rechecking the catalog.
 The migration is additive: rollback of the API route does not undo its tables.
 
@@ -111,9 +118,10 @@ source, bundle, lockfile, and build labels in the gate manifest above. A
 successful `/api/health` response and authenticated tenant-positive and
 cross-tenant-denial status regressions are required before routing.
 
-On the VoIP host, stage the reviewed SQL and operator at the protected paths
-above and capture a fresh read-only inventory through the immutable 3011
-container ID:
+On the VoIP host, keep the original SQL in place; use the reviewed v2 operator
+from a temporary root-only path for the guarded archive step below. After
+that step, stage the v2 operator at the protected path above and capture a
+fresh read-only inventory through the immutable 3011 container ID:
 
 ```sh
 python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-migrate.py \
@@ -124,7 +132,7 @@ python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-st
   --container-port 3011 --host-port 3011
 ```
 
-Create the root-owned mode-0700 migration directory first, with no existing
+After the guarded archive, the original migration directory must have no
 `backup.dump`, manifest, or proof files. The reviewed restore helper creates a
 fresh root-only mode-0600 `pg_dump -Fc` archive from the immutable
 `cp11-postgres` container, verifies the source database identity and catalog
@@ -164,65 +172,39 @@ The helper does not print credentials or customer rows. Its backup remains at
 after 30 minutes, so prepare and apply promptly. A scheduled backup alone is
 insufficient.
 
-The first live rehearsal on 26 September stopped at `restore_catalog` before
-status SQL or proof creation. Its protected 232222-byte `backup.dump` has SHA-256
-`3e4265e9cb25c841493cd16d3dfdd3172090387ebb8712fceb17f5c070ed3956`.
-Read-only diagnostics showed 14 Kamailio table/sequence owner-only ACLs were
-represented as NULL defaults in the disposable restore. A separately staged
-candidate of the corrected operator matched the complete source and restored
-PostgreSQL 16.13 catalog. That diagnostic did **not** execute the migration SQL
-or create production proofs.
-
-Before a reviewed retry, preserve that failed archive; do not overwrite or
-delete it. As root, first check that `manifest.json`, `backup-proof.json`,
-`restore-proof.json`, `cleanup-pending`, and the status migration receipt are
-absent, and confirm there is no privately labelled disposable clone. If any
-exists, stop for recovery review. Then run this one-time, fail-closed archive
-move on the same filesystem (the source path and digest are exact):
+The first live `--apply` left an immutable pending receipt at
+`/var/lib/phone11-profile-status/receipt.json`. The v2 operator pins that
+receipt, its failed manifest and proofs, the backed-up archive, the original
+operator and helper, the original SQL, and the original before/after catalog
+hashes. Stage the reviewed v2 operator temporarily outside the migration
+directory in a root-only directory. **Before replacing the original operator
+or helper**, use the v2 operator's guarded archive mode:
 
 ```sh
-python3 - <<'PY'
-import hashlib, os, secrets, stat
-from pathlib import Path
-
-root = Path('/opt/phone11ai/status-only-release-20260926')
-work = root / 'migration'
-source = work / 'backup.dump'
-expected = '3e4265e9cb25c841493cd16d3dfdd3172090387ebb8712fceb17f5c070ed3956'
-assert os.geteuid() == 0
-assert not any((work / name).exists() for name in (
-    'manifest.json', 'backup-proof.json', 'restore-proof.json', 'cleanup-pending'))
-assert not Path('/var/lib/phone11-profile-status/receipt.json').exists()
-st = source.lstat()
-assert stat.S_ISREG(st.st_mode) and st.st_uid == 0 and stat.S_IMODE(st.st_mode) == 0o600 and st.st_nlink == 1
-assert st.st_size == 232222
-fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-try:
-    assert os.fstat(fd) == st
-    with os.fdopen(os.dup(fd), 'rb') as archive:
-        digest = hashlib.file_digest(archive, 'sha256').hexdigest()
-finally:
-    os.close(fd)
-assert digest == expected
-evidence = root / ('failed-status-rehearsal-' + secrets.token_hex(8))
-evidence.mkdir(mode=0o700)
-destination = evidence / 'backup.dump'
-assert not destination.exists()
-os.rename(source, destination)
-for directory in (work, evidence, root):
-    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-    try: os.fsync(directory_fd)
-    finally: os.close(directory_fd)
-with destination.open('rb') as archive:
-    assert hashlib.file_digest(archive, 'sha256').hexdigest() == expected
-print('Preserved failed archive in', evidence)
-PY
+python3 <root-only-path-to-reviewed-v2-operator> --archive-failed-v1 \
+  --sql /opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql
 ```
 
-Only after the move and exact artifact staging should the helper run again at
-its pinned `--out-dir` path. That retry takes a **new** source backup, completes
-the full isolated restore and SQL rehearsal, and writes fresh linked proofs.
-Retain the failed archive and diagnostic reports for review.
+This operation requires the original receipt to remain `intent`, rejects a
+v2 receipt or an old API exec worker, and obtains the same database advisory
+lock used by the old apply. While holding it, it checks the unchanged database
+identity, before-catalog fingerprint, `phone11ai` role and owner, and absent
+status tables. It moves the original manifest, proofs, backup, operator, and
+helper into the root-only `failed-status-apply-v1` directory on the same
+filesystem. The original receipt is never moved or rewritten. A partial move
+can only be resumed with the same exact pinned bytes; changed or duplicate
+files block. Do not manually clear the old intent or delete the archived files.
+
+After that succeeds, stage the exact reviewed v2 operator and role-matched
+restore helper at the canonical migration paths. Run the helper again at its
+existing `--out-dir`: it takes a new source backup, rehearses the same SQL as
+the live API role, and writes fresh linked manifest and proofs. The v2 apply
+requires the archived v1 evidence and a changed after-catalog hash, then
+rechecks live state while holding the advisory lock through reservation of its
+separate intent. A late old worker cannot commit with the v1 proof because its
+postgres-owned after-catalog hash differs from the live API role's result;
+the v1 transaction checks that hash before COMMIT. If any guard blocks, stop
+for review rather than editing receipts or proof files.
 
 If Docker create, start, or sidecar run fails or times out, the helper retains a
 root-private `cleanup-pending/<container-name>.json` marker. Treat that as a
@@ -248,7 +230,7 @@ python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-st
   --sql /opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql \
   --backup-proof /opt/phone11ai/status-only-release-20260926/migration/backup-proof.json \
   --restore-proof /opt/phone11ai/status-only-release-20260926/migration/restore-proof.json \
-  --receipt /var/lib/phone11-profile-status/receipt.json
+  --receipt /var/lib/phone11-profile-status/receipt-role-rehearsal-v2.json
 ```
 
 If apply is interrupted, run the same command with `--recover` in place of

@@ -11,12 +11,14 @@ printed.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import select
 import stat
 import subprocess
 import tempfile
@@ -30,9 +32,29 @@ BACKUP_PROOF_SCHEMA = "phone11.profile-status-backup-proof/v1"
 RESTORE_PROOF_SCHEMA = "phone11.profile-status-restore-proof/v1"
 RECEIPT_SCHEMA = "phone11.profile-status-migration-journal/v1"
 LOCK_PATH = Path("/run/lock/phone11-profile-status-migrate.lock")
-RECEIPT_PATH = Path("/var/lib/phone11-profile-status/receipt.json")
+# The first attempt's intent is preserved for audit. Its superuser-owned
+# rehearsal fingerprint could not match the live API role's table ownership,
+# so use a separate journal for the corrected role-matched proof.
+RECEIPT_PATH = Path("/var/lib/phone11-profile-status/receipt-role-rehearsal-v2.json")
+FAILED_V1_RECEIPT = Path("/var/lib/phone11-profile-status/receipt.json")
 BACKUP_ARCHIVE_PATH = Path("/opt/phone11ai/status-only-release-20260926/migration/backup.dump")
+FAILED_V1_ARCHIVE = BACKUP_ARCHIVE_PATH.parent.parent / "failed-status-apply-v1"
 PENDING_CLEANUP_DIR = BACKUP_ARCHIVE_PATH.parent / "cleanup-pending"
+FAILED_V1_PINS = {
+    "receipt.json": "ac3388d3cde9c52fc7d56e18bc605e33dcc154b7596700a75dcca94fba6e4c00",
+    "manifest.json": "861ee275a8f7f370f6f589f3fad3946339294bce3640e20877893c192fa84c2b",
+    "backup-proof.json": "30fb1310a14267b6c55faf1925c0f185e037a5000ac98f4ac6861698d13b999a",
+    "restore-proof.json": "77df2d521d7c0cc6141d863031d1af94421e03332b973299174366202b09975f",
+    "backup.dump": "20b699a348a2491c46149b0307917b646110956bec172079d6ea03d9c6ab956c",
+    "phone11-profile-status-migrate.py": "f6b2d09d00f77c6c59d943ba5507b994da89654c9a8034a76f9aa2df2cc41e67",
+    "phone11-profile-status-restore-proof.py": "4c577cff6b1d4ee1de426af9c037a64bd2cf832d5b3050b2747a8d1dd0925d0a",
+}
+FAILED_V1_IDENTITY = "4a7172827511ecb9430342de97d66a94b704c67d5d705147e3d42febb6c28fbe"
+FAILED_V1_BEFORE = "b943cf0156fba54bcdd4260fd8be7eda684d1fe1b957702234fc65681185236d"
+FAILED_V1_AFTER = "bfe1505255aeb922384969b4f586f7136bb0ac83585863f66ff5d849079315e9"
+FAILED_V1_SQL = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
+FAILED_V1_API_CONTAINER = "bd3b5acf2647d239b5d5298c23a0b1bf60699379b25e4e8023b67e27fd6a6195"
+FAILED_V1_API_ROLE = "phone11ai"
 MAX_ARTIFACT_BYTES = 512 * 1024
 MAX_BACKUP_BYTES = 1024 * 1024 * 1024 * 1024
 MAX_OUTPUT_BYTES = 128 * 1024
@@ -449,7 +471,7 @@ async function snapshot(client) {
   return {identity_fingerprint:sha(currentIdentity),catalog_fingerprint:sha(currentCatalog)};
 }
 (async()=>{
-  if (!["snapshot","recover","apply","rehearsal","details"].includes(action)) throw new Error("action");
+  if (!["snapshot","recover","apply","rehearsal","details","retry_guard"].includes(action)) throw new Error("action");
   const pool = new pg.Pool(config()); let client;
   try {
     client = await pool.connect();
@@ -480,11 +502,24 @@ async function snapshot(client) {
     } else {
       await client.query("BEGIN TRANSACTION READ ONLY");
       await client.query("SET LOCAL statement_timeout='10000ms'");
-      if (action === "recover") {
+      if (action === "recover" || action === "retry_guard") {
         const locked = (await client.query("SELECT pg_try_advisory_xact_lock(hashtextextended('phone11-profile-status-live-delta-v1',0)) locked")).rows[0]?.locked;
         if (locked !== true) throw new Error("advisory_lock");
       }
       const before = await snapshot(client);
+      if (action === "retry_guard") {
+        const currentRole = (await client.query("SELECT current_user AS role_name,pg_get_userbyid(datdba) AS database_owner FROM pg_database WHERE datname=current_database()")).rows[0];
+        const tables = (await client.query("SELECT to_regclass('public.phone11_workspace_profile_status') status_table,to_regclass('public.phone11_workspace_profile_status_settings') settings_table")).rows[0];
+        if (before.identity_fingerprint !== contract.database_identity_sha256 ||
+            before.catalog_fingerprint !== contract.before_catalog_sha256 ||
+            currentRole.role_name !== contract.current_user ||
+            currentRole.database_owner !== contract.database_owner ||
+            tables.status_table !== null || tables.settings_table !== null) throw new Error("retry_precondition");
+        process.stdout.write(JSON.stringify({retry_guard:"held",before})+"\n");
+        await new Promise(resolve => { process.stdin.once("end",resolve); process.stdin.resume(); });
+        await client.query("ROLLBACK");
+        return;
+      }
       const details = action === "details" ? {
         database:(await identity(client)).database,
         server_version_num:(await identity(client)).server_version_num,
@@ -771,6 +806,169 @@ def operator_lock(path: Path = LOCK_PATH):
     return Lock()
 
 
+def failed_v1_file(name: str, *, archived: bool) -> Path:
+    guarded(name in FAILED_V1_PINS and name != "receipt.json", "failed_v1")
+    source = BACKUP_ARCHIVE_PATH.parent / name
+    destination = FAILED_V1_ARCHIVE / name
+    source_exists = os.path.lexists(source)
+    destination_exists = os.path.lexists(destination)
+    guarded(not (source_exists and destination_exists), "failed_v1")
+    guarded(destination_exists if archived else source_exists or destination_exists, "failed_v1")
+    path = destination if destination_exists else source
+    guarded(sha256_bytes(secure_read(path)) == FAILED_V1_PINS[name], "failed_v1")
+    return path
+
+
+def failed_v1_evidence(*, archived: bool) -> Mapping[str, Any]:
+    guarded(sha256_bytes(secure_read(FAILED_V1_RECEIPT)) == FAILED_V1_PINS["receipt.json"], "failed_v1")
+    files = {name: failed_v1_file(name, archived=archived)
+             for name in FAILED_V1_PINS if name != "receipt.json"}
+    manifest, manifest_sha = read_manifest(files["manifest.json"])
+    guarded(manifest_sha == FAILED_V1_PINS["manifest.json"]
+            and manifest["target"]["container_id"] == FAILED_V1_API_CONTAINER
+            and manifest["database_identity_sha256"] == FAILED_V1_IDENTITY
+            and manifest["before_catalog_sha256"] == FAILED_V1_BEFORE
+            and manifest["after_catalog_sha256"] == FAILED_V1_AFTER
+            and manifest["sql_sha256"] == FAILED_V1_SQL, "failed_v1")
+    backup_sha, restore_sha = read_proofs(files["backup-proof.json"],
+                                           files["restore-proof.json"],
+                                           manifest, manifest_sha, require_fresh=False)
+    guarded(backup_sha == FAILED_V1_PINS["backup-proof.json"]
+            and restore_sha == FAILED_V1_PINS["restore-proof.json"], "failed_v1")
+    guarded(verify_backup_archive(files["backup-proof.json"], backup_sha,
+                                  archive_path=files["backup.dump"])
+            == FAILED_V1_PINS["backup.dump"], "failed_v1")
+    old_base = receipt_base(manifest, manifest_sha, backup_sha, restore_sha)
+    guarded(read_receipt(FAILED_V1_RECEIPT, old_base)["status"] == "intent", "failed_v1")
+    return manifest
+
+
+def no_old_status_worker(container_id: str, *, expected_holders: int = 0) -> None:
+    try:
+        result = subprocess.run(
+            ["/usr/bin/docker", "top", container_id, "-eo", "pid,args"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=15, check=False,
+        )
+        guarded(result.returncode == 0 and len(result.stdout) <= 2 * 1024 * 1024, "old_worker")
+        lines = result.stdout.decode("utf-8").splitlines()
+        guarded(len(lines) >= 1 and "PID" in lines[0].upper(), "old_worker")
+        # docker top may wrap or truncate the long `node -e` program. Count
+        # the short, unambiguous exec prefix rather than inspecting SQL text.
+        workers = [line for line in lines[1:] if re.search(r"(?:^|[\s/])node\s+-e(?:\s|$)", line)]
+        guarded(len(workers) == expected_holders, "old_worker")
+    except MigrationError:
+        raise
+    except (OSError, subprocess.TimeoutExpired, UnicodeDecodeError) as error:
+        raise MigrationError("old_worker") from error
+
+
+@contextmanager
+def held_retry_guard(manifest: Mapping[str, Any]):
+    """Hold the old transaction advisory key while archiving or reserving v2."""
+    guarded(manifest["target"]["container_id"] == FAILED_V1_API_CONTAINER, "retry_guard")
+    guarded(inspect_target(manifest["target"], manifest["release"])
+            == FAILED_V1_API_CONTAINER, "retry_guard")
+    contract = canonical_bytes({
+        "database_identity_sha256": FAILED_V1_IDENTITY,
+        "before_catalog_sha256": FAILED_V1_BEFORE,
+        "current_user": FAILED_V1_API_ROLE,
+        "database_owner": FAILED_V1_API_ROLE,
+    }).decode("utf-8")
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = subprocess.Popen(
+            database_command(FAILED_V1_API_CONTAINER, "retry_guard", contract),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        guarded(process.stdin is not None and process.stdout is not None, "retry_guard")
+        deadline = time.monotonic() + 20
+        response = bytearray()
+        while b"\n" not in response and time.monotonic() < deadline:
+            ready, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
+            guarded(bool(ready), "retry_guard")
+            chunk = os.read(process.stdout.fileno(), 4096)
+            guarded(bool(chunk) and len(response) + len(chunk) <= MAX_OUTPUT_BYTES, "retry_guard")
+            response.extend(chunk)
+        guarded(response.count(b"\n") == 1, "retry_guard")
+        result = strict_json(bytes(response).strip(), "retry_guard")
+        guarded(result.get("retry_guard") == "held"
+                and result.get("before") == {
+                    "identity_fingerprint": FAILED_V1_IDENTITY,
+                    "catalog_fingerprint": FAILED_V1_BEFORE,
+                }
+                and process.poll() is None, "retry_guard")
+        yield process
+        guarded(process.poll() is None, "retry_guard")
+    except MigrationError:
+        raise
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise MigrationError("retry_guard") from error
+    finally:
+        if process is not None:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            try:
+                exit_code = process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+                raise MigrationError("retry_guard")
+            if process.stdout is not None:
+                process.stdout.close()
+            guarded(exit_code == 0, "retry_guard")
+
+
+def archive_failed_v1() -> None:
+    guarded(os.geteuid() == 0 and not os.path.lexists(RECEIPT_PATH)
+            and not os.path.lexists(PENDING_CLEANUP_DIR), "failed_v1")
+    with operator_lock():
+        old_manifest = failed_v1_evidence(archived=False)
+        no_old_status_worker(FAILED_V1_API_CONTAINER)
+        with held_retry_guard(old_manifest) as holder:
+            no_old_status_worker(FAILED_V1_API_CONTAINER, expected_holders=1)
+            failed_v1_evidence(archived=False)
+            parent = FAILED_V1_ARCHIVE.parent.lstat()
+            guarded(stat.S_ISDIR(parent.st_mode) and parent.st_uid == 0
+                    and parent.st_gid == 0 and stat.S_IMODE(parent.st_mode) == 0o700,
+                    "failed_v1")
+            if not os.path.lexists(FAILED_V1_ARCHIVE):
+                FAILED_V1_ARCHIVE.mkdir(mode=0o700)
+            directory = FAILED_V1_ARCHIVE.lstat()
+            guarded(stat.S_ISDIR(directory.st_mode) and directory.st_uid == 0
+                    and directory.st_gid == 0 and stat.S_IMODE(directory.st_mode) == 0o700,
+                    "failed_v1")
+            for name in FAILED_V1_PINS:
+                if name == "receipt.json":
+                    continue
+                source = BACKUP_ARCHIVE_PATH.parent / name
+                destination = FAILED_V1_ARCHIVE / name
+                if os.path.lexists(source):
+                    guarded(not os.path.lexists(destination), "failed_v1")
+                    os.replace(source, destination)
+                    for directory_path in (source.parent, destination.parent):
+                        descriptor = os.open(directory_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                        try:
+                            os.fsync(descriptor)
+                        finally:
+                            os.close(descriptor)
+                guarded(sha256_bytes(secure_read(destination)) == FAILED_V1_PINS[name], "failed_v1")
+            guarded(holder.poll() is None, "retry_guard")
+            failed_v1_evidence(archived=True)
+
+
+def validate_v2_retry(manifest: Mapping[str, Any]) -> None:
+    old = failed_v1_evidence(archived=True)
+    guarded(manifest["target"] == old["target"]
+            and manifest["release"] == old["release"]
+            and manifest["database_identity_sha256"] == FAILED_V1_IDENTITY
+            and manifest["before_catalog_sha256"] == FAILED_V1_BEFORE
+            and manifest["sql_sha256"] == FAILED_V1_SQL
+            and manifest["after_catalog_sha256"] != FAILED_V1_AFTER
+            and not os.path.lexists(RECEIPT_PATH), "retry_precondition")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     modes = parser.add_mutually_exclusive_group(required=True)
@@ -778,6 +976,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--apply", action="store_true")
     modes.add_argument("--recover", action="store_true")
     modes.add_argument("--inventory", action="store_true")
+    modes.add_argument("--archive-failed-v1", action="store_true")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--sql", type=Path, required=True)
     parser.add_argument("--backup-proof", type=Path)
@@ -793,6 +992,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def run(arguments: argparse.Namespace) -> int:
     try:
         guarded(os.geteuid() == 0, "root")
+        if getattr(arguments, "archive_failed_v1", False):
+            guarded(arguments.manifest is None and arguments.backup_proof is None
+                    and arguments.restore_proof is None and arguments.receipt is None
+                    and all(getattr(arguments, key, None) is None for key in (
+                        "container_id", "container_name", "container_port", "host_port"))
+                    and arguments.sql == BACKUP_ARCHIVE_PATH.parent / "profile-status-migration.sql"
+                    and sha256_bytes(secure_read(arguments.sql)) == FAILED_V1_SQL,
+                    "arguments")
+            archive_failed_v1()
+            print("profile_status=FAILED_V1_ARCHIVED apply=NOT_RUN")
+            return 0
         if getattr(arguments, "inventory", False):
             guarded(
                 arguments.manifest is None
@@ -840,6 +1050,7 @@ def run(arguments: argparse.Namespace) -> int:
             verify_backup_archive(arguments.backup_proof, backup_sha256)
             if arguments.prepare:
                 guarded(arguments.receipt is None, "arguments")
+                validate_v2_retry(manifest)
                 assert_snapshot(run_database(manifest, "snapshot"), manifest, "before_catalog_sha256")
                 print("profile_status=PREPARE_READY apply=NOT_RUN")
                 return 0
@@ -861,9 +1072,21 @@ def run(arguments: argparse.Namespace) -> int:
             # Refuse a stale/wrong database before creating an intent.  The
             # apply transaction repeats this exact check after acquiring its
             # advisory lock, so no mutation can race this read-only preflight.
+            validate_v2_retry(manifest)
             assert_snapshot(run_database(manifest, "snapshot"), manifest, "before_catalog_sha256")
             verify_backup_archive(arguments.backup_proof, backup_sha256)
-            intent = reserve_receipt(arguments.receipt, base)
+            no_old_status_worker(FAILED_V1_API_CONTAINER)
+            with held_retry_guard(manifest) as holder:
+                no_old_status_worker(FAILED_V1_API_CONTAINER, expected_holders=1)
+                validate_v2_retry(manifest)
+                verify_backup_archive(arguments.backup_proof, backup_sha256)
+                guarded(holder.poll() is None, "retry_guard")
+                intent = reserve_receipt(arguments.receipt, base)
+                guarded(holder.poll() is None, "retry_guard")
+            # The pinned v1 operator checks its postgres-owned after hash
+            # before COMMIT. This API's pinned current_user is phone11ai, so
+            # a late v1 worker can only roll back after the holder releases.
+            # The v2 apply repeats the before check under the same SQL lock.
             verification_sha256 = assert_applied(run_database(manifest, "apply", sql), manifest)
             verify_backup_archive(arguments.backup_proof, backup_sha256)
             write_receipt(

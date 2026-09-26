@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -82,7 +83,7 @@ def proof_documents(manifest: dict, manifest_sha256: str, *, now: int) -> tuple[
 
 class ProfileStatusMigrationOperatorTests(unittest.TestCase):
     def test_distinct_receipt_and_shared_schema_advisory_key(self) -> None:
-        self.assertEqual(operator.RECEIPT_PATH, Path("/var/lib/phone11-profile-status/receipt.json"))
+        self.assertEqual(operator.RECEIPT_PATH, Path("/var/lib/phone11-profile-status/receipt-role-rehearsal-v2.json"))
         self.assertEqual(operator.LOCK_PATH, Path("/run/lock/phone11-profile-status-migrate.lock"))
         self.assertIn("phone11-profile-status-live-delta-v1", operator.NODE_PROGRAM)
         self.assertEqual(operator.MANIFEST_SCHEMA, "phone11.profile-status-migration-manifest/v1")
@@ -311,11 +312,22 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
     def test_apply_prevalidates_then_reserves_intent_before_database_mutation(self) -> None:
         events: list[str] = []
         manifest = manifest_document("d" * 64)
+        class Holder:
+            def poll(self) -> None:
+                return None
+
+        @contextlib.contextmanager
+        def hold(_manifest: dict):
+            events.append("lock_held")
+            yield Holder()
+            events.append("lock_released")
+
         arguments = argparse.Namespace(
-            prepare=False, apply=True, recover=False,
+            prepare=False, apply=True, recover=False, inventory=False,
             manifest=Path("/manifest"), sql=Path("/sql"),
             backup_proof=Path("/backup"), restore_proof=Path("/restore"),
             receipt=operator.RECEIPT_PATH,
+            container_id=None, container_name=None, container_port=None, host_port=None,
         )
         with (
             patch.object(operator.os, "geteuid", return_value=0),
@@ -325,6 +337,10 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
             patch.object(operator, "read_proofs", return_value=("7" * 64, "8" * 64)),
             patch.object(operator, "verify_backup_archive", return_value="e" * 64),
             patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
+            patch.object(operator, "PENDING_CLEANUP_DIR", Path("/nonexistent-phone11-test-cleanup-pending")),
+            patch.object(operator, "validate_v2_retry", side_effect=lambda *_: events.append("v1_bound")),
+            patch.object(operator, "no_old_status_worker", side_effect=lambda *_, **_kwargs: events.append("no_old_worker")),
+            patch.object(operator, "held_retry_guard", side_effect=hold),
             patch.object(operator, "reserve_receipt", side_effect=lambda *_args: events.append("intent") or {"status": "intent"}),
             patch.object(operator, "run_database", side_effect=[
                 {"before": {
@@ -335,8 +351,140 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
             ]) as database,
         ):
             self.assertEqual(operator.run(arguments), 1)
-        self.assertEqual(events, ["intent"])
+        self.assertEqual(events, ["v1_bound", "no_old_worker", "lock_held",
+                                  "no_old_worker", "v1_bound", "intent", "lock_released"])
         self.assertEqual([call.args[1] for call in database.call_args_list], ["snapshot", "apply"])
+
+    def test_pending_v1_evidence_must_be_exact_and_immutable(self) -> None:
+        old = manifest_document(operator.FAILED_V1_SQL)
+        old["target"]["container_id"] = operator.FAILED_V1_API_CONTAINER
+        old["database_identity_sha256"] = operator.FAILED_V1_IDENTITY
+        old["before_catalog_sha256"] = operator.FAILED_V1_BEFORE
+        old["after_catalog_sha256"] = operator.FAILED_V1_AFTER
+        raw = {name: name.encode() for name in operator.FAILED_V1_PINS}
+        raw["backup.dump"] = b"PGDMPtest"
+        pins = {name: operator.sha256_bytes(value) for name, value in raw.items()}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            migration = root / "migration"
+            migration.mkdir()
+            receipt = root / "receipt.json"
+            receipt.write_bytes(raw["receipt.json"])
+            for name, value in raw.items():
+                if name != "receipt.json":
+                    (migration / name).write_bytes(value)
+            with (
+                patch.object(operator, "FAILED_V1_RECEIPT", receipt),
+                patch.object(operator, "BACKUP_ARCHIVE_PATH", migration / "backup.dump"),
+                patch.object(operator, "FAILED_V1_ARCHIVE", root / "archived"),
+                patch.object(operator, "FAILED_V1_PINS", pins),
+                patch.object(operator, "secure_read", side_effect=lambda path: path.read_bytes()),
+                patch.object(operator, "read_manifest", return_value=(old, pins["manifest.json"])),
+                patch.object(operator, "read_proofs", return_value=(pins["backup-proof.json"], pins["restore-proof.json"])),
+                patch.object(operator, "verify_backup_archive", return_value=pins["backup.dump"]),
+                patch.object(operator, "receipt_base", return_value={}),
+                patch.object(operator, "read_receipt", return_value={"status": "intent"}),
+            ):
+                self.assertEqual(operator.failed_v1_evidence(archived=False), old)
+                receipt.write_bytes(b"changed")
+                with self.assertRaisesRegex(operator.MigrationError, "failed_v1"):
+                    operator.failed_v1_evidence(archived=False)
+
+    def test_retry_requires_old_target_release_and_distinct_after_catalog(self) -> None:
+        old = manifest_document(operator.FAILED_V1_SQL)
+        old["database_identity_sha256"] = operator.FAILED_V1_IDENTITY
+        old["before_catalog_sha256"] = operator.FAILED_V1_BEFORE
+        old["after_catalog_sha256"] = operator.FAILED_V1_AFTER
+        new = json.loads(json.dumps(old))
+        new["after_catalog_sha256"] = "f" * 64
+        with (
+            patch.object(operator, "failed_v1_evidence", return_value=old),
+            patch.object(operator.os.path, "lexists", return_value=False),
+        ):
+            operator.validate_v2_retry(new)
+            new["release"]["source_sha"] = "e" * 40
+            with self.assertRaisesRegex(operator.MigrationError, "retry_precondition"):
+                operator.validate_v2_retry(new)
+            new["release"] = old["release"]
+            new["after_catalog_sha256"] = old["after_catalog_sha256"]
+            with self.assertRaisesRegex(operator.MigrationError, "retry_precondition"):
+                operator.validate_v2_retry(new)
+
+    def test_old_api_worker_blocks_before_archive_or_retry_reservation(self) -> None:
+        active = subprocess.CompletedProcess([], 0, b"PID ARGS\n123 node -e phone11-profile-status-live-delta-v1 apply\n", b"")
+        holder = subprocess.CompletedProcess([], 0, b"PID ARGS\n123 node -e retry_guard\n", b"")
+        with patch.object(operator.subprocess, "run", return_value=active):
+            with self.assertRaisesRegex(operator.MigrationError, "old_worker"):
+                operator.no_old_status_worker(operator.FAILED_V1_API_CONTAINER)
+        with patch.object(operator.subprocess, "run", return_value=holder):
+            operator.no_old_status_worker(operator.FAILED_V1_API_CONTAINER, expected_holders=1)
+        both = subprocess.CompletedProcess([], 0, holder.stdout + b"124 node -e apply\n", b"")
+        with patch.object(operator.subprocess, "run", return_value=both):
+            with self.assertRaisesRegex(operator.MigrationError, "old_worker"):
+                operator.no_old_status_worker(operator.FAILED_V1_API_CONTAINER, expected_holders=1)
+
+        with (
+            patch.object(operator.os, "geteuid", return_value=0),
+            patch.object(operator.os.path, "lexists", return_value=False),
+            patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
+            patch.object(operator, "failed_v1_evidence", return_value=manifest_document()),
+            patch.object(operator, "no_old_status_worker", side_effect=operator.MigrationError("old_worker")),
+            patch.object(operator, "held_retry_guard") as hold,
+        ):
+            with self.assertRaisesRegex(operator.MigrationError, "old_worker"):
+                operator.archive_failed_v1()
+        hold.assert_not_called()
+
+    def test_failed_archive_moves_only_pinned_files_and_preserves_v1_receipt(self) -> None:
+        class Holder:
+            def poll(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            os.chmod(root, 0o700)
+            migration = root / "migration"
+            migration.mkdir(mode=0o700)
+            archive = root / "failed-status-apply-v1"
+            receipt = root / "receipt.json"
+            receipt.write_bytes(b"original intent")
+            samples = {name: b"PGDMPtest" if name == "backup.dump" else name.encode()
+                       for name in operator.FAILED_V1_PINS if name != "receipt.json"}
+            for name, value in samples.items():
+                write_protected(migration / name, value)
+            pins = {name: operator.sha256_bytes(value) for name, value in samples.items()}
+            pins["receipt.json"] = operator.sha256_bytes(receipt.read_bytes())
+            real_lstat = Path.lstat
+
+            def root_lstat(path: Path):
+                info = real_lstat(path)
+                if path in (root, archive):
+                    return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_gid=0)
+                return info
+
+            @contextlib.contextmanager
+            def hold(_manifest: dict):
+                yield Holder()
+
+            with (
+                patch.object(operator.os, "geteuid", return_value=0),
+                patch.object(operator, "RECEIPT_PATH", root / "v2-receipt.json"),
+                patch.object(operator, "PENDING_CLEANUP_DIR", root / "cleanup-pending"),
+                patch.object(operator, "BACKUP_ARCHIVE_PATH", migration / "backup.dump"),
+                patch.object(operator, "FAILED_V1_ARCHIVE", archive),
+                patch.object(operator, "FAILED_V1_PINS", pins),
+                patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
+                patch.object(operator, "failed_v1_evidence", return_value=manifest_document()),
+                patch.object(operator, "no_old_status_worker"),
+                patch.object(operator, "held_retry_guard", side_effect=hold),
+                patch.object(operator, "secure_read", side_effect=lambda path: path.read_bytes()),
+                patch.object(Path, "lstat", root_lstat),
+            ):
+                operator.archive_failed_v1()
+                operator.archive_failed_v1()  # A completed move is safe to resume.
+            self.assertEqual(receipt.read_bytes(), b"original intent")
+            self.assertEqual({item.name for item in archive.iterdir()}, set(samples))
+            self.assertEqual(list(migration.iterdir()), [])
 
     def test_recovery_only_reads_snapshot_and_classifies_exact_before_or_after(self) -> None:
         manifest = manifest_document()
