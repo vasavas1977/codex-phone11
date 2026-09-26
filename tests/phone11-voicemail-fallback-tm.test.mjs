@@ -13,7 +13,7 @@ test('TM runtime fixture is loopback-only and absent from deployed routing', () 
   for (const uri of config.matchAll(/https?:\/\/[^"\s]+|sip:[^"\s]+/g)) {
     if (uri[0] === 'sip:phone11-vm-') {
       assert.ok(config.includes('$ru = "sip:phone11-vm-" + $var(vm_reference) + "@127.0.0.1:15063";'));
-      assert.ok(config.includes('$var(vm_reference) !~ "^[a-f0-9]{64}$"'));
+      assert.ok(config.includes('!($var(vm_reference) =~ "^[a-f0-9]{64}$")'));
       continue;
     }
     assert.match(uri[0], /127\.0\.0\.1/, `non-loopback fixture URI: ${uri[0]}`);
