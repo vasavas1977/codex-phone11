@@ -376,12 +376,12 @@ class PostgreSQLAdvisoryRecoveryOverlapTests(unittest.TestCase):
         return {
             "PATH": os.environ.get("PATH", ""),
             "NODE_PATH": os.environ.get("NODE_PATH", ""),
-            "PG_HOST": "127.0.0.1",
-            "PG_PORT": str(cls.port),
-            "PG_USER": "phone11ai",
-            "PG_PASSWORD": "test-only",
-            "PG_DATABASE": "postgres",
-            "PG_SSL": "false",
+            "DB_HOST": "127.0.0.1",
+            "DB_PORT": str(cls.port),
+            "DB_USER": "phone11ai",
+            "DB_PASSWORD": "test-only",
+            "DB_NAME": "postgres",
+            "DB_SSL": "false",
         }
 
     @classmethod
@@ -456,6 +456,52 @@ class PostgreSQLAdvisoryRecoveryOverlapTests(unittest.TestCase):
         self.assertNotEqual(self.snapshot()["catalog_fingerprint"], before)
         self.psql_command("ALTER TABLE phone11_workspace_profile_status DISABLE ROW LEVEL SECURITY;")
         self.assertEqual(self.snapshot()["catalog_fingerprint"], before)
+
+    def test_probe_uses_application_database_url_over_discrete_db_variables(self) -> None:
+        production = self.snapshot()["identity_fingerprint"]
+        alternate = self.environment()
+        alternate["DATABASE_URL"] = f"postgresql://phone11ai@127.0.0.1:{self.port}/template1"
+        result = subprocess.run(
+            [self.node, "-e", operator.NODE_PROGRAM, "snapshot", "{}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            cwd=ROOT, env=alternate, check=False, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(json.loads(result.stdout)["before"]["identity_fingerprint"], production)
+
+    def test_column_select_grant_changes_fingerprint_and_rolls_back(self) -> None:
+        self.psql_command("DROP TABLE phone11_workspace_profile_status, phone11_workspace_profile_status_settings;"
+                          "CREATE ROLE phone11_status_column_reader;")
+        sql = ("BEGIN;\nCREATE TABLE phone11_workspace_profile_status(status_text text);\n"
+               "CREATE TABLE phone11_workspace_profile_status_settings(id integer);\n"
+               "GRANT SELECT(status_text) ON phone11_workspace_profile_status TO phone11_status_column_reader;\nCOMMIT;\n")
+        try:
+            before = self.snapshot()
+            self.psql_command(sql)
+            after = self.snapshot()
+            column_access = self.psql_command(
+                "SELECT has_column_privilege('phone11_status_column_reader', "
+                "'phone11_workspace_profile_status', 'status_text', 'SELECT');")
+            self.assertEqual(column_access.stdout.strip(), "t")
+            self.assertNotEqual(before["catalog_fingerprint"], after["catalog_fingerprint"])
+            self.psql_command("DROP TABLE phone11_workspace_profile_status, phone11_workspace_profile_status_settings;")
+            self.assertEqual(self.snapshot()["catalog_fingerprint"], before["catalog_fingerprint"])
+            contract = {
+                "database_identity_sha256": before["identity_fingerprint"],
+                "before_catalog_sha256": before["catalog_fingerprint"],
+                "after_catalog_sha256": after["catalog_fingerprint"],
+                "sql_sha256": operator.sha256_bytes(sql.encode()),
+            }
+            result = self.node_action("apply", contract, sql)
+            self.assertNotEqual(result.returncode, 0, "unsafe column SELECT grant was committed")
+            absent = self.psql_command("SELECT to_regclass('public.phone11_workspace_profile_status') IS NULL"
+                                       " AND to_regclass('public.phone11_workspace_profile_status_settings') IS NULL;")
+            self.assertEqual(absent.stdout.strip(), "t")
+        finally:
+            self.psql_command("DROP TABLE IF EXISTS phone11_workspace_profile_status, phone11_workspace_profile_status_settings;"
+                              "DROP ROLE phone11_status_column_reader;"
+                              "CREATE TABLE phone11_workspace_profile_status(id integer);"
+                              "CREATE TABLE phone11_workspace_profile_status_settings(id integer);")
 
     def test_recovery_cannot_classify_until_overlapping_apply_commits_or_rolls_back(self) -> None:
         before = self.snapshot()

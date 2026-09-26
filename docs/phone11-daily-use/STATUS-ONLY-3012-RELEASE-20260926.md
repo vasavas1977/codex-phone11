@@ -33,10 +33,10 @@ before/after full catalog fingerprints. It also requires a fresh protected
 that exact database and SQL. It refuses a stale catalog, mismatched proof, or
 missing receipt. Its `--prepare` phase is read-only; `--apply` records an intent,
 applies only the pinned SQL inside one transaction with an advisory lock, and
-rejects any new status table with non-owner grants, row-level security, or
-policies before commit. Catalog fingerprints also include relation ACLs,
-row-level security, policies, and default privileges, so a changed grant or
-default grant blocks a stale migration plan. It then records an applied receipt
+rejects any new status table with non-owner table or column grants, row-level
+security, or policies before commit. Catalog fingerprints also include table
+and column ACLs, row-level security, policies, and default privileges, so a
+changed grant or default grant blocks a stale migration plan. It then records an applied receipt
 at `/var/lib/phone11-profile-status/receipt.json`.
 `--recover` settles an interrupted intent only after rechecking the catalog.
 The migration is additive: rollback of the API route does not undo its tables.
@@ -44,7 +44,10 @@ The migration is additive: rollback of the API route does not undo its tables.
 The route operator independently checks the applied status receipt, the exact
 migration bytes, and a fresh catalog inventory using the already verified
 operator bytes. It also rechecks the existing direct-meeting migration receipt
-and current database identity. The status settings table defaults to
+and current database identity. Every database probe follows the application’s
+`server/db.ts` connection precedence: `DATABASE_URL` first, then complete
+`DB_*` settings. A conflicting auxiliary PostgreSQL variable cannot make the
+probe verify a different database than the application uses. The status settings table defaults to
 `enabled=false` and `dnd_enabled=false`; enabling status per workspace is a
 separate admin action after the release passes acceptance.
 
@@ -79,8 +82,61 @@ PostgreSQL identity and the full post-migration catalog through the immutable
 3012 candidate container ID; both must match the applied status migration
 receipt. It runs a read-only live PostgreSQL count through the immutable 3011
 and 3012 container IDs and requires **zero** DND-enabled tenants on each.
+A bounded, read-only advisory-lock contention check proves both containers
+reach the same PostgreSQL cluster, even when a clone has identical schema and
+database metadata. A holder that exits, a timed-out query, or a clone blocks.
 A wrong candidate database or unavailable query blocks the route before any
 site write. It never takes a shell command from the manifest.
+
+## Execution sequence for the reviewed operator
+
+On the reviewed source commit, run `corepack pnpm build:backend`, record
+`git rev-parse HEAD`, `shasum -a 256 dist/index.mjs`, and the lockfile SHA-256.
+Create the 3012 bundle-only overlay from the pinned 3011 image and runtime
+configuration, exposing only `127.0.0.1:3012`; preserve the application’s
+database configuration. Pin the **immutable** candidate container ID, image,
+source, bundle, lockfile, and build labels in the gate manifest above. A
+successful `/api/health` response and authenticated tenant-positive and
+cross-tenant-denial status regressions are required before routing.
+
+On the VoIP host, stage the reviewed SQL and operator at the protected paths
+above and capture a fresh read-only inventory through the immutable 3011
+container ID:
+
+```sh
+python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-migrate.py \
+  --inventory \
+  --sql /opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql \
+  --container-id bd3b5acf2647d239b5d5298c23a0b1bf60699379b25e4e8023b67e27fd6a6195 \
+  --container-name cp11-api-candidate-direct-meeting \
+  --container-port 3011 --host-port 3011
+```
+
+Use that inventory to seal the migration manifest. Make a fresh protected
+`cp11-postgres:pg_dump` backup, restore the same backup into a **separate**
+PostgreSQL cluster, apply the reviewed SQL there, and verify its resulting
+catalog against the manifest. Create matching root-only mode-0600 backup and
+restore proofs with the schemas checked by `read_proofs` in the reviewed
+operator. These proofs expire after 30 minutes; a scheduled backup alone is
+insufficient. With the exact protected manifest and proofs in place, execute:
+
+```sh
+python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-migrate.py \
+  --prepare --manifest /opt/phone11ai/status-only-release-20260926/migration/manifest.json \
+  --sql /opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql \
+  --backup-proof /opt/phone11ai/status-only-release-20260926/migration/backup-proof.json \
+  --restore-proof /opt/phone11ai/status-only-release-20260926/migration/restore-proof.json
+python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-migrate.py \
+  --apply --manifest /opt/phone11ai/status-only-release-20260926/migration/manifest.json \
+  --sql /opt/phone11ai/status-only-release-20260926/migration/profile-status-migration.sql \
+  --backup-proof /opt/phone11ai/status-only-release-20260926/migration/backup-proof.json \
+  --restore-proof /opt/phone11ai/status-only-release-20260926/migration/restore-proof.json \
+  --receipt /var/lib/phone11-profile-status/receipt.json
+```
+
+If apply is interrupted, run the same command with `--recover` in place of
+`--apply` against the **same** manifest, proof paths, and receipt. Do not
+reissue `--apply` until the receipt is settled.
 
 After independent review of the exact head, backup and isolated restore,
 receipt, candidate, and authenticated 3012 regressions, run as root on the VoIP

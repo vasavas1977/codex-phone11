@@ -3,9 +3,13 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import select
+import shutil
+import socket
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -41,6 +45,118 @@ def manifest():
     return {"schema": route.GATE_SCHEMA, "candidate": dict(PINS)}
 
 class StatusOnlyRouteTest(unittest.TestCase):
+    def test_cluster_probe_fails_closed_on_clone_holder_exit_and_timeout(self):
+        class Holder:
+            def __init__(self, exit_early=False):
+                self.stdin = io.BytesIO()
+                self.stdout = io.BytesIO(b"held\n")
+                self.returncode = 0
+                self.exit_early = exit_early
+            def poll(self):
+                return 1 if self.exit_early else None
+            def wait(self, timeout):
+                return self.returncode
+            def kill(self):
+                self.returncode = -9
+
+        with patch.object(route.subprocess, "Popen", side_effect=lambda *a, **k: Holder()), \
+             patch.object(route.select, "select", return_value=([object()], [], [])), \
+             patch.object(route.secrets, "randbits", return_value=17), \
+             patch.object(route, "command", return_value=b"blocked") as probe:
+            route.check_same_database_cluster(PINS["container_id"])
+            self.assertEqual(probe.call_args.args[0][4], PINS["container_id"])
+            self.assertEqual(probe.call_args.args[0][-1], "18")
+        for response, exited, ready in ((b"free", False, True), (b"blocked", True, True),
+                                        (b"blocked", False, False)):
+            with self.subTest(response=response, exited=exited, ready=ready), \
+                 patch.object(route.subprocess, "Popen", side_effect=lambda *a, **k: Holder(exited)), \
+                 patch.object(route.select, "select", return_value=([object()] if ready else [], [], [])), \
+                 patch.object(route, "command", return_value=response) as probe:
+                with self.assertRaisesRegex(route.GuardError, "candidate_database_cluster"):
+                    route.check_same_database_cluster(PINS["container_id"])
+                if exited or not ready:
+                    probe.assert_not_called()
+        with patch.object(route.subprocess, "Popen", side_effect=lambda *a, **k: Holder()), \
+             patch.object(route.select, "select", return_value=([object()], [], [])), \
+             patch.object(route, "command", side_effect=subprocess.TimeoutExpired("probe", 15)):
+            with self.assertRaisesRegex(route.GuardError, "candidate_database_cluster"):
+                route.check_same_database_cluster(PINS["container_id"])
+
+    def test_cluster_lock_program_rejects_separate_identical_postgres_cluster(self):
+        if not all(shutil.which(name) for name in ("initdb", "pg_ctl", "node", "psql")):
+            self.skipTest("local PostgreSQL and Node binaries are required")
+        try:
+            subprocess.run(["node", "-e", "require('pg')"], cwd=SCRIPT.parents[1],
+                           capture_output=True, check=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            self.skipTest("Node pg module is unavailable")
+        with TemporaryDirectory(prefix="phone11-cluster-proof-") as root:
+            clusters = []
+            def start(name):
+                data = Path(root) / name
+                with socket.socket() as probe:
+                    probe.bind(("127.0.0.1", 0))
+                    port = probe.getsockname()[1]
+                subprocess.run(["initdb", "-D", str(data), "-A", "trust", "-U", "phone11_test"],
+                               capture_output=True, check=True, timeout=30)
+                subprocess.run(["pg_ctl", "-D", str(data), "-o", f"-h 127.0.0.1 -p {port}", "-w", "start"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               check=True, timeout=30)
+                clusters.append(data)
+                environment = dict(os.environ)
+                environment.pop("DATABASE_URL", None)
+                environment.pop("PGOPTIONS", None)
+                return {**environment, "DB_HOST": "127.0.0.1", "DB_PORT": str(port),
+                        "DB_USER": "phone11_test", "DB_PASSWORD": "test-only", "DB_NAME": "postgres",
+                        "DB_SSL": "false"}
+            try:
+                first, clone = start("first"), start("clone")
+                for environment, enabled in ((first, "FALSE"), (clone, "TRUE")):
+                    subprocess.run(["psql", "-h", "127.0.0.1", "-p", environment["DB_PORT"],
+                                    "-U", "phone11_test", "-d", "postgres", "-X", "-v", "ON_ERROR_STOP=1",
+                                    "-c", "CREATE TABLE phone11_workspace_profile_status_settings(dnd_enabled BOOLEAN);"
+                                          f"INSERT INTO phone11_workspace_profile_status_settings VALUES ({enabled});"],
+                                   capture_output=True, check=True, timeout=10)
+                key = "704212333"
+                holder = subprocess.Popen(["node", "-e", route.CLUSTER_LOCK_PROGRAM, "hold", key],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, cwd=SCRIPT.parents[1], env=first)
+                try:
+                    assert holder.stdout is not None and holder.stdin is not None
+                    readable, _, _ = select.select([holder.stdout], [], [], 10)
+                    self.assertTrue(readable, "holder did not become ready")
+                    self.assertEqual(holder.stdout.readline(), b"held\n")
+                    first_url = f"postgresql://phone11_test@127.0.0.1:{first['DB_PORT']}/postgres"
+                    clone_url = f"postgresql://phone11_test@127.0.0.1:{clone['DB_PORT']}/postgres"
+                    cases = ((first, b"blocked"), (clone, b"free"),
+                             ({**first, "DATABASE_URL": clone_url}, b"free"),
+                             ({**clone, "DATABASE_URL": first_url}, b"blocked"))
+                    for environment, expected in cases:
+                        result = subprocess.run(["node", "-e", route.CLUSTER_LOCK_PROGRAM, "probe", key],
+                                                capture_output=True, cwd=SCRIPT.parents[1],
+                                                env=environment, timeout=15)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, expected)
+                    for environment, expected in (({**first, "DATABASE_URL": clone_url}, b"1"),
+                                                  ({**clone, "DATABASE_URL": first_url}, b"0")):
+                        result = subprocess.run(["node", "-e", route.DND_COUNT_PROGRAM],
+                                                capture_output=True, cwd=SCRIPT.parents[1],
+                                                env=environment, timeout=15)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, expected)
+                finally:
+                    holder.stdin.close()
+                    holder.wait(timeout=10)
+                    if holder.stdout:
+                        holder.stdout.close()
+                    if holder.stderr:
+                        holder.stderr.close()
+                self.assertEqual(holder.returncode, 0)
+            finally:
+                for data in reversed(clusters):
+                    subprocess.run(["pg_ctl", "-D", str(data), "-m", "immediate", "-w", "stop"],
+                                   capture_output=True, check=False, timeout=15)
+
     def test_verified_python_executes_reviewed_bytes_after_path_replacement(self):
         with TemporaryDirectory() as root:
             probe_path = Path(root) / "probe.py"
@@ -251,12 +367,14 @@ class StatusOnlyRouteTest(unittest.TestCase):
                           return_value=("1" * 64, "3" * 64, b"verified operator")) as status, \
              patch.object(route, "run_verified_python",
                           return_value=json.dumps(candidate).encode()) as inventory, \
+             patch.object(route, "check_same_database_cluster") as cluster, \
              patch.object(route, "command", return_value=b"0") as command:
             route.check_gate_manifest(value)
             direct.assert_called_once_with()
             status.assert_called_once_with("1" * 64)
             self.assertEqual(inventory.call_args.args[0], b"verified operator")
             self.assertIn(PINS["container_id"], inventory.call_args.args[1])
+            cluster.assert_called_once_with(PINS["container_id"])
             self.assertEqual([call.args[0][4] for call in command.call_args_list],
                              [route.CURRENT_CONTAINER_ID, PINS["container_id"]])
             for response in (b"1", b"", b"0\n"):
@@ -325,9 +443,44 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "check_status_migration_applied",
                           return_value=("1" * 64, "3" * 64, b"verified operator")), \
              patch.object(route, "run_verified_python", return_value=json.dumps(candidate).encode()), \
+             patch.object(route, "check_same_database_cluster") as cluster, \
              patch.object(route, "command") as command, \
              patch.object(route, "atomic_write") as write:
             with self.assertRaisesRegex(route.GuardError, "candidate_database"):
+                route.prepare(route.GATE_ROOT / "manifest.json")
+            command.assert_not_called()
+            cluster.assert_not_called()
+            write.assert_not_called()
+
+    def test_prepare_rejects_identical_catalog_clone_before_site_write(self):
+        candidate = {"schema": "phone11.profile-status-migration-inventory/v1",
+                     "target": {"container_id": PINS["container_id"],
+                                "container_name": route.TARGET_CONTAINER,
+                                "image": PINS["image"],
+                                "container_port": route.TARGET_PORT,
+                                "host_port": route.TARGET_PORT},
+                     "release": {"source_sha": PINS["source_sha"],
+                                 "bundle_sha256": PINS["bundle_sha256"],
+                                 "lock_sha256": PINS["lock_sha256"]},
+                     "sql_sha256": route.STATUS_SQL_SHA,
+                     "database_identity_sha256": "1" * 64,
+                     "before_catalog_sha256": "3" * 64}
+        with patch.object(route.os, "geteuid", return_value=0), \
+             patch.object(route, "lock", return_value=nullcontext()), \
+             patch.object(route, "read_regular", return_value=(SITE, INFO)), \
+             patch.object(route, "ORIGINAL_SHA256", route.digest(SITE)), \
+             patch.object(route, "load_gate_manifest", return_value=(manifest(), b"manifest")), \
+             patch.object(route, "check_predecessor"), \
+             patch.object(route, "check_current_route_receipt"), \
+             patch.object(route, "check_migration_applied", return_value="1" * 64), \
+             patch.object(route, "check_status_migration_applied",
+                          return_value=("1" * 64, "3" * 64, b"verified operator")), \
+             patch.object(route, "run_verified_python", return_value=json.dumps(candidate).encode()), \
+             patch.object(route, "check_same_database_cluster",
+                          side_effect=route.GuardError("candidate_database_cluster")), \
+             patch.object(route, "command") as command, \
+             patch.object(route, "atomic_write") as write:
+            with self.assertRaisesRegex(route.GuardError, "candidate_database_cluster"):
                 route.prepare(route.GATE_ROOT / "manifest.json")
             command.assert_not_called()
             write.assert_not_called()

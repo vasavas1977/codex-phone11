@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import select
 import stat
 import subprocess
 import sys
@@ -56,7 +57,7 @@ STATUS_OPERATOR = STATUS_ROOT / "phone11-profile-status-migrate.py"
 STATUS_SQL = STATUS_ROOT / "profile-status-migration.sql"
 STATUS_MANIFEST = STATUS_ROOT / "manifest.json"
 STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt.json")
-STATUS_OPERATOR_SHA = "faf5ab4bc67126a8f87adc22bf394bdcdb34cee196b5084424a4b6b860c12a42"
+STATUS_OPERATOR_SHA = "c1658b1ba36a479f1b3de80cda85bac381d33e0dc72395eefd91241227aebf52"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010
 # target; the database identity is compared with the new gate inventories.
@@ -475,17 +476,70 @@ def check_status_migration_applied(direct_identity: str) -> tuple[str, str, byte
 DND_COUNT_PROGRAM = r'''
 const pg = require("pg");
 const env = process.env;
-function first(...keys) { for (const key of keys) if (env[key]) return env[key]; }
-const discrete = {host:first("PG_HOST","DB_HOST","POSTGRES_HOST"),port:first("PG_PORT","DB_PORT","POSTGRES_PORT"),user:first("PG_USER","DB_USER","POSTGRES_USER"),password:first("PG_PASSWORD","DB_PASSWORD","POSTGRES_PASSWORD"),database:first("PG_DATABASE","DB_NAME","DB_DATABASE","POSTGRES_DB")};
-const complete = [discrete.host,discrete.user,discrete.password,discrete.database].every(Boolean);
-const connectionString = env.PG_CONNECTION_STRING ?? (complete ? undefined : env.DATABASE_URL);
-const mode = first("PG_SSL","DB_SSL","POSTGRES_SSL","DATABASE_SSL")?.toLowerCase();
-const ssl = mode === "false" || mode === "0" || mode === "disable" || connectionString?.includes("sslmode=disable") ? false : {rejectUnauthorized:first("PG_SSL_REJECT_UNAUTHORIZED","DB_SSL_REJECT_UNAUTHORIZED") === "true"};
-if (!connectionString && !complete) process.exit(2);
-(async()=>{const pool=new pg.Pool(connectionString ? {connectionString,ssl,connectionTimeoutMillis:5000,max:1} : {...discrete,port:parseInt(discrete.port ?? "5432",10),ssl,connectionTimeoutMillis:5000,max:1});let client;
+const connectionString = env.DATABASE_URL;
+const mode = env.DB_SSL ?? "true";
+const ssl = mode.length > 0 && mode.toLowerCase() !== "false" ? {rejectUnauthorized:false} : undefined;
+const discrete = {host:env.DB_HOST,database:env.DB_NAME,user:env.DB_USER,password:env.DB_PASSWORD};
+if (!connectionString && ![discrete.host,discrete.database,discrete.user,discrete.password].every(Boolean)) process.exit(2);
+const port = parseInt(env.DB_PORT ?? "5432",10);
+(async()=>{const pool=new pg.Pool(connectionString ? {connectionString,ssl,connectionTimeoutMillis:5000,max:1} : {...discrete,port:Number.isFinite(port)?port:5432,ssl,connectionTimeoutMillis:5000,max:1});let client;
 try {client=await pool.connect();await client.query("BEGIN TRANSACTION READ ONLY");await client.query("SET LOCAL statement_timeout='5000ms'");const result=await client.query("SELECT COUNT(*)::int AS count FROM phone11_workspace_profile_status_settings WHERE dnd_enabled IS TRUE");await client.query("ROLLBACK");process.stdout.write(String(result.rows[0]?.count));}
 catch (_) {process.exitCode=2;} finally {client?.release();await pool.end().catch(()=>undefined);}})();
 '''
+
+
+# A clone can have the same database OID and schema fingerprint as production.
+# A held advisory lock proves both containers reached the same PostgreSQL lock
+# manager at the instant of the route gate, without privileged cluster APIs.
+CLUSTER_LOCK_PROGRAM = r'''
+const pg = require("pg");
+const env = process.env;
+const mode = process.argv[1], key = process.argv[2];
+const connectionString = env.DATABASE_URL;
+const sslMode = env.DB_SSL ?? "true";
+const ssl = sslMode.length > 0 && sslMode.toLowerCase() !== "false" ? {rejectUnauthorized:false} : undefined;
+const discrete = {host:env.DB_HOST,database:env.DB_NAME,user:env.DB_USER,password:env.DB_PASSWORD};
+if ((!connectionString && ![discrete.host,discrete.database,discrete.user,discrete.password].every(Boolean)) || !["hold","probe"].includes(mode) || !/^[0-9]{1,19}$/.test(key)) process.exit(2);
+const port = parseInt(env.DB_PORT ?? "5432",10);
+(async()=>{const pool=new pg.Pool(connectionString ? {connectionString,ssl,connectionTimeoutMillis:5000,max:1} : {...discrete,port:Number.isFinite(port)?port:5432,ssl,connectionTimeoutMillis:5000,max:1});let client;
+try {client=await pool.connect();await client.query("BEGIN TRANSACTION READ ONLY");await client.query("SET LOCAL statement_timeout='5000ms'");
+  if(mode === "hold") {await client.query("SELECT pg_advisory_lock($1::bigint)",[key]);process.stdout.write("held\n");await new Promise(resolve=>{process.stdin.resume();process.stdin.once("end",resolve)});await client.query("SELECT pg_advisory_unlock($1::bigint)",[key]);}
+  else {const acquired=(await client.query("SELECT pg_try_advisory_lock($1::bigint) acquired",[key])).rows[0]?.acquired;if(acquired) await client.query("SELECT pg_advisory_unlock($1::bigint)",[key]);process.stdout.write(acquired === false ? "blocked" : "free");}
+  await client.query("ROLLBACK");
+} catch (_) {process.exitCode=2;} finally {client?.release();await pool.end().catch(()=>undefined);}})();
+'''
+
+
+def check_same_database_cluster(candidate_container_id: str) -> None:
+    key = str(secrets.randbits(63) + 1)
+    holder_args = ["docker", "exec", "--interactive", "--workdir", "/app",
+                   CURRENT_CONTAINER_ID, "node", "-e", CLUSTER_LOCK_PROGRAM, "hold", key]
+    try:
+        holder = subprocess.Popen(holder_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL)
+    except OSError as error:
+        raise GuardError("candidate_database_cluster") from error
+    try:
+        require(holder.stdout is not None and holder.stdin is not None, "candidate_database_cluster")
+        readable, _, _ = select.select([holder.stdout], [], [], 10)
+        require(bool(readable) and holder.stdout.readline() == b"held\n"
+                and holder.poll() is None, "candidate_database_cluster")
+        result = command(["docker", "exec", "--workdir", "/app", candidate_container_id,
+                          "node", "-e", CLUSTER_LOCK_PROGRAM, "probe", key], timeout=15)
+        require(holder.poll() is None and result == b"blocked", "candidate_database_cluster")
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise GuardError("candidate_database_cluster") from error
+    finally:
+        if holder.stdin is not None:
+            holder.stdin.close()
+        try:
+            holder.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+            holder.wait(timeout=5)
+        if holder.stdout is not None:
+            holder.stdout.close()
+    require(holder.returncode == 0, "candidate_database_cluster")
 
 
 def check_gate_manifest(value: dict[str, Any]) -> None:
@@ -510,6 +564,7 @@ def check_gate_manifest(value: dict[str, Any]) -> None:
             and inventory.get("database_identity_sha256") == status_identity
             and inventory.get("before_catalog_sha256") == status_catalog,
             "candidate_database")
+    check_same_database_cluster(pins["container_id"])
     for container_id in (CURRENT_CONTAINER_ID, pins["container_id"]):
         count = command(["docker", "exec", "--workdir", "/app", container_id,
                          "node", "-e", DND_COUNT_PROGRAM], timeout=15)

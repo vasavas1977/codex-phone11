@@ -325,7 +325,6 @@ const fs = require("node:fs");
 const pg = require("pg");
 const action = process.argv[1];
 const contract = JSON.parse(process.argv[2]);
-function first(...keys) { for (const key of keys) if (process.env[key]) return process.env[key]; }
 function canonical(value) {
   if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
   if (value !== null && typeof value === "object") return "{" + Object.keys(value).sort().map(key => JSON.stringify(key) + ":" + canonical(value[key])).join(",") + "}";
@@ -333,20 +332,22 @@ function canonical(value) {
 }
 function sha(value) { return crypto.createHash("sha256").update(typeof value === "string" || Buffer.isBuffer(value) ? value : canonical(value)).digest("hex"); }
 function config() {
-  const discrete = {host:first("PG_HOST","DB_HOST","POSTGRES_HOST"),port:first("PG_PORT","DB_PORT","POSTGRES_PORT"),user:first("PG_USER","DB_USER","POSTGRES_USER"),password:first("PG_PASSWORD","DB_PASSWORD","POSTGRES_PASSWORD"),database:first("PG_DATABASE","DB_NAME","DB_DATABASE","POSTGRES_DB")};
-  const complete = [discrete.host,discrete.user,discrete.password,discrete.database].every(Boolean);
-  const connectionString = process.env.PG_CONNECTION_STRING ?? (complete ? undefined : process.env.DATABASE_URL);
-  const mode = first("PG_SSL","DB_SSL","POSTGRES_SSL","DATABASE_SSL")?.toLowerCase();
-  const ssl = mode === "false" || mode === "0" || mode === "disable" || connectionString?.includes("sslmode=disable") ? false : {rejectUnauthorized:first("PG_SSL_REJECT_UNAUTHORIZED","DB_SSL_REJECT_UNAUTHORIZED") === "true"};
-  if (!connectionString && !complete) throw new Error("configuration");
-  return connectionString ? {connectionString,ssl,connectionTimeoutMillis:5000,max:1} : {...discrete,port:parseInt(discrete.port ?? "5432",10),ssl,connectionTimeoutMillis:5000,max:1};
+  // Match server/db.ts buildPoolConfig exactly: DATABASE_URL wins over DB_*.
+  const connectionString = process.env.DATABASE_URL;
+  const mode = process.env.DB_SSL ?? "true";
+  const ssl = mode.length > 0 && mode.toLowerCase() !== "false" ? {rejectUnauthorized:false} : undefined;
+  if (connectionString) return {connectionString,ssl,connectionTimeoutMillis:5000,max:1};
+  const discrete = {host:process.env.DB_HOST,database:process.env.DB_NAME,user:process.env.DB_USER,password:process.env.DB_PASSWORD};
+  if (![discrete.host,discrete.database,discrete.user,discrete.password].every(Boolean)) throw new Error("configuration");
+  const parsedPort = parseInt(process.env.DB_PORT ?? "5432",10);
+  return {...discrete,port:Number.isFinite(parsedPort) ? parsedPort : 5432,ssl,connectionTimeoutMillis:5000,max:1};
 }
 async function identity(client) {
   return (await client.query("SELECT current_database() database,current_schema() schema,current_setting('server_version_num') server_version_num,(SELECT oid::text FROM pg_database WHERE datname=current_database()) database_oid")).rows[0];
 }
 async function catalog(client) {
   const relations = (await client.query("SELECT n.nspname schema,c.relname name,c.relkind kind,c.relowner::text owner_oid,c.relacl::text acl,c.relrowsecurity row_security,c.relforcerowsecurity force_row_security FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f') ORDER BY n.nspname,c.relname")).rows;
-  const columns = (await client.query("SELECT n.nspname schema,c.relname table_name,a.attname name,pg_catalog.format_type(a.atttypid,a.atttypmod) type,a.attnotnull not_null,a.attidentity identity,a.attgenerated generated,pg_get_expr(d.adbin,d.adrelid,true) default_expression FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum")).rows;
+  const columns = (await client.query("SELECT n.nspname schema,c.relname table_name,a.attname name,a.attacl::text acl,pg_catalog.format_type(a.atttypid,a.atttypmod) type,a.attnotnull not_null,a.attidentity identity,a.attgenerated generated,pg_get_expr(d.adbin,d.adrelid,true) default_expression FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped ORDER BY n.nspname,c.relname,a.attnum")).rows;
   const constraints = (await client.query("SELECT n.nspname schema,c.relname table_name,con.conname name,con.contype type,con.convalidated validated,pg_get_constraintdef(con.oid,true) definition FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY n.nspname,c.relname,con.conname")).rows;
   const indexes = (await client.query("SELECT ns.nspname schema,t.relname table_name,i.relname name,pg_get_indexdef(i.oid) definition FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_class t ON t.oid=x.indrelid JOIN pg_namespace ns ON ns.oid=t.relnamespace WHERE ns.nspname='public' ORDER BY ns.nspname,t.relname,i.relname")).rows;
   const triggers = (await client.query("SELECT n.nspname schema,c.relname table_name,t.tgname name,pg_get_triggerdef(t.oid,true) definition FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal ORDER BY n.nspname,c.relname,t.tgname")).rows;
@@ -356,8 +357,8 @@ async function catalog(client) {
   return {relations,columns,constraints,indexes,triggers,functions,policies,defaultAcl};
 }
 async function assertStatusTablesSafe(client) {
-  const rows = (await client.query("SELECT c.relname name,c.relkind kind,c.relrowsecurity row_security,c.relforcerowsecurity force_row_security,EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) acl WHERE acl.grantee<>c.relowner) non_owner_grant,EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid) has_policy FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('phone11_workspace_profile_status','phone11_workspace_profile_status_settings') ORDER BY c.relname")).rows;
-  if (rows.length !== 2 || rows.some(row => row.kind !== 'r' || row.row_security || row.force_row_security || row.non_owner_grant || row.has_policy)) throw new Error('status_acl');
+  const rows = (await client.query("SELECT c.relname name,c.relkind kind,c.relrowsecurity row_security,c.relforcerowsecurity force_row_security,EXISTS (SELECT 1 FROM aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) acl WHERE acl.grantee<>c.relowner) non_owner_grant,EXISTS (SELECT 1 FROM pg_attribute a CROSS JOIN LATERAL aclexplode(a.attacl) acl WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped AND acl.grantee<>c.relowner) non_owner_column_grant,EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid) has_policy FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('phone11_workspace_profile_status','phone11_workspace_profile_status_settings') ORDER BY c.relname")).rows;
+  if (rows.length !== 2 || rows.some(row => row.kind !== 'r' || row.row_security || row.force_row_security || row.non_owner_grant || row.non_owner_column_grant || row.has_policy)) throw new Error('status_acl');
 }
 function migrationBody(raw) {
   const begin = raw.indexOf("BEGIN;\n");
