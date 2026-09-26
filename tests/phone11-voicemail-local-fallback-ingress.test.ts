@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +24,7 @@ describe("local fallback ingress", () => {
     const send = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       expect(url.toString()).toBe("http://127.0.0.1:3013/api/voicemail/local-fallback/redeem");
       expect(init?.method).toBe("POST");
+      expect(init?.redirect).toBe("error");
       expect(JSON.parse(init?.body as string)).toEqual({ reference, callId: input.callId, fromTag: input.fromTag });
       expect((init?.headers as Record<string, string>)["x-fs-secret"]).toBe(config.integrationSecret);
       return Response.json(valid);
@@ -57,6 +58,7 @@ describe("local fallback ingress", () => {
   it("denies expired, replayed, mismatched and malformed redemption responses", async () => {
     for (const response of [
       new Response("", { status: 404 }), new Response("", { status: 503 }),
+      new Response("", { status: 302, headers: { Location: "https://evil.example" } }),
       Response.json({ ...valid, expectedOwnerEpoch: channelUuid }),
       Response.json({ ...valid, identity: { ...valid.identity, target: { ...valid.identity.target, sipUsername: "other" } } }),
       Response.json({ ...valid, identity: { ...valid.identity, tenantId: 0 } }),
@@ -65,7 +67,7 @@ describe("local fallback ingress", () => {
   });
 
   it("publishes one private handoff file and never overwrites it", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "phone11-fallback-ingress-"));
+    const root = await mkdtemp(path.join(await realpath(os.tmpdir()), "phone11-fallback-ingress-"));
     roots.push(root);
     const canonical = await redeemLocalFallback(config, input, async () => Response.json(valid));
     await publishHandoff(root, canonical);
@@ -74,5 +76,17 @@ describe("local fallback ingress", () => {
     await expect(publishHandoff(root, canonical)).rejects.toThrow();
     expect(await readFile(file, "utf8")).toContain(epoch);
     await expect(publishHandoff(root, { ...canonical, channelUuid: "../escape" })).rejects.toThrow();
+  });
+
+  it("rejects a symlinked ancestor or readable handoff directory", async () => {
+    const parent = await mkdtemp(path.join(await realpath(os.tmpdir()), "phone11-fallback-private-"));
+    roots.push(parent);
+    const root = path.join(parent, "real", "handoff");
+    await mkdir(root, { recursive: true, mode: 0o700 });
+    const canonical = await redeemLocalFallback(config, input, async () => Response.json(valid));
+    await symlink(path.join(parent, "real"), path.join(parent, "alias"));
+    await expect(publishHandoff(path.join(parent, "alias", "handoff"), canonical)).rejects.toThrow("private");
+    await chmod(root, 0o755);
+    await expect(publishHandoff(root, canonical)).rejects.toThrow("private");
   });
 });

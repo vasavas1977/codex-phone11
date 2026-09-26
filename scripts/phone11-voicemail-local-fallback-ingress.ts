@@ -5,7 +5,7 @@
  * channel-UUID file; the existing producer owns admission and completion.
  */
 import { constants } from "node:fs";
-import { lstat, mkdir, open } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -107,7 +107,7 @@ export async function redeemLocalFallback(config: IngressConfig, input: unknown,
   const response = await send(url, {
     method: "POST", headers: { "content-type": "application/json", "x-fs-secret": config.integrationSecret },
     body: JSON.stringify({ reference: input.reference, callId: input.callId, fromTag: input.fromTag }),
-    signal: AbortSignal.timeout(3000),
+    signal: AbortSignal.timeout(3000), redirect: "error",
   });
   if (response.status !== 200) throw new Error("Fallback redemption denied");
   return mailbox(await boundedJson(response), input.channelUuid);
@@ -116,7 +116,9 @@ export async function redeemLocalFallback(config: IngressConfig, input: unknown,
 async function privateRoot(root: string): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const st = await lstat(root);
-  if (!st.isDirectory() || (st.mode & 0o077) !== 0) throw new Error("Fallback handoff is not private");
+  if (!st.isDirectory() || st.uid !== process.getuid?.() || (st.mode & 0o077) !== 0 ||
+      await realpath(root) !== path.resolve(root))
+    throw new Error("Fallback handoff is not private");
 }
 
 /** One handoff per FS channel, with no replacement or following symlinks. */
@@ -130,9 +132,14 @@ export async function publishHandoff(root: string, canonical: CanonicalMailbox):
   const data = [canonical.tenantId, canonical.extension, canonical.account,
     canonical.domain, canonical.expectedOwnerEpoch].join("\n") + "\n";
   const handle = await open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
-  const directory = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { await directory.sync(); } finally { await directory.close(); }
+  try {
+    try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
+    const directory = await open(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { await directory.sync(); } finally { await directory.close(); }
+  } catch (error) {
+    await unlink(file).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function readStdin(): Promise<unknown> {
