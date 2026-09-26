@@ -358,6 +358,8 @@ class PostgreSQLAdvisoryRecoveryOverlapTests(unittest.TestCase):
             [cls.pg_ctl, "-D", str(cls.data), "-o", f"-h 127.0.0.1 -p {cls.port}", "-w", "start"],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True, timeout=30,
         )
+        cls.psql_command("CREATE TABLE phone11_workspace_profile_status(id integer);"
+                         "CREATE TABLE phone11_workspace_profile_status_settings(id integer);")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -415,6 +417,45 @@ class PostgreSQLAdvisoryRecoveryOverlapTests(unittest.TestCase):
                 return
             __import__("time").sleep(0.05)
         raise AssertionError("apply transaction did not acquire its advisory lock")
+
+    def test_default_select_grant_rolls_back_status_tables(self) -> None:
+        self.psql_command("DROP TABLE phone11_workspace_profile_status, phone11_workspace_profile_status_settings;"
+                          "CREATE ROLE phone11_status_reader;"
+                          "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO phone11_status_reader;")
+        sql = ("BEGIN;\nCREATE TABLE phone11_workspace_profile_status(id integer);\n"
+               "CREATE TABLE phone11_workspace_profile_status_settings(id integer);\nCOMMIT;\n")
+        try:
+            before = self.snapshot()
+            self.psql_command(sql)
+            after = self.snapshot()
+            grants = self.psql_command("SELECT has_table_privilege('phone11_status_reader', 'phone11_workspace_profile_status', 'SELECT');")
+            self.assertEqual(grants.stdout.strip(), "t")
+            self.psql_command("DROP TABLE phone11_workspace_profile_status, phone11_workspace_profile_status_settings;")
+            self.assertEqual(self.snapshot()["catalog_fingerprint"], before["catalog_fingerprint"])
+            contract = {
+                "database_identity_sha256": before["identity_fingerprint"],
+                "before_catalog_sha256": before["catalog_fingerprint"],
+                "after_catalog_sha256": after["catalog_fingerprint"],
+                "sql_sha256": operator.sha256_bytes(sql.encode()),
+            }
+            result = self.node_action("apply", contract, sql)
+            self.assertNotEqual(result.returncode, 0, "unsafe default SELECT grant was committed")
+            absent = self.psql_command("SELECT to_regclass('public.phone11_workspace_profile_status') IS NULL"
+                                       " AND to_regclass('public.phone11_workspace_profile_status_settings') IS NULL;")
+            self.assertEqual(absent.stdout.strip(), "t")
+        finally:
+            self.psql_command("DROP TABLE IF EXISTS phone11_workspace_profile_status, phone11_workspace_profile_status_settings;"
+                              "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM phone11_status_reader;"
+                              "DROP ROLE phone11_status_reader;"
+                              "CREATE TABLE phone11_workspace_profile_status(id integer);"
+                              "CREATE TABLE phone11_workspace_profile_status_settings(id integer);")
+
+    def test_acl_and_row_security_changes_affect_catalog_fingerprint(self) -> None:
+        before = self.snapshot()["catalog_fingerprint"]
+        self.psql_command("ALTER TABLE phone11_workspace_profile_status ENABLE ROW LEVEL SECURITY;")
+        self.assertNotEqual(self.snapshot()["catalog_fingerprint"], before)
+        self.psql_command("ALTER TABLE phone11_workspace_profile_status DISABLE ROW LEVEL SECURITY;")
+        self.assertEqual(self.snapshot()["catalog_fingerprint"], before)
 
     def test_recovery_cannot_classify_until_overlapping_apply_commits_or_rolls_back(self) -> None:
         before = self.snapshot()

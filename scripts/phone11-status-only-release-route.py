@@ -56,7 +56,7 @@ STATUS_OPERATOR = STATUS_ROOT / "phone11-profile-status-migrate.py"
 STATUS_SQL = STATUS_ROOT / "profile-status-migration.sql"
 STATUS_MANIFEST = STATUS_ROOT / "manifest.json"
 STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt.json")
-STATUS_OPERATOR_SHA = "026774ba4fdff136b2a95b5898f82eef0b8b4412885ef7d80223383998f54179"
+STATUS_OPERATOR_SHA = "faf5ab4bc67126a8f87adc22bf394bdcdb34cee196b5084424a4b6b860c12a42"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010
 # target; the database identity is compared with the new gate inventories.
@@ -412,7 +412,7 @@ def load_gate_manifest(path: Path) -> tuple[dict[str, Any], bytes]:
     return value, raw
 
 
-def check_status_migration_applied(direct_identity: str) -> None:
+def check_status_migration_applied(direct_identity: str) -> tuple[str, str, bytes]:
     _protected_directory(STATUS_ROOT)
     _protected_directory(STATUS_RECEIPT.parent)
     operator, _ = read_regular(STATUS_OPERATOR, root_only=True)
@@ -469,6 +469,7 @@ def check_status_migration_applied(direct_identity: str) -> None:
             and inventory.get("database_identity_sha256") == direct_identity
             and inventory.get("before_catalog_sha256") == manifest["after_catalog_sha256"],
             "status_catalog")
+    return direct_identity, manifest["after_catalog_sha256"], operator
 
 
 DND_COUNT_PROGRAM = r'''
@@ -490,10 +491,29 @@ catch (_) {process.exitCode=2;} finally {client?.release();await pool.end().catc
 def check_gate_manifest(value: dict[str, Any]) -> None:
     require(set(value) == {"schema", "candidate"}, "gate_manifest")
     direct_identity = check_migration_applied()
-    check_status_migration_applied(direct_identity)
-    count = command(["docker", "exec", "--workdir", "/app", CURRENT_CONTAINER,
-                     "node", "-e", DND_COUNT_PROGRAM], timeout=15)
-    require(count == b"0", "dnd_off")
+    status_identity, status_catalog, operator = check_status_migration_applied(direct_identity)
+    pins = value["candidate"]
+    raw = run_verified_python(operator, ["--inventory", "--sql", str(STATUS_SQL),
+                                         "--container-id", pins["container_id"],
+                                         "--container-name", TARGET_CONTAINER,
+                                         "--container-port", str(TARGET_PORT),
+                                         "--host-port", str(TARGET_PORT)], timeout=30)
+    inventory = json.loads(raw)
+    target = {"container_id": pins["container_id"], "container_name": TARGET_CONTAINER,
+              "image": pins["image"], "container_port": TARGET_PORT, "host_port": TARGET_PORT}
+    release = {"source_sha": pins["source_sha"], "bundle_sha256": pins["bundle_sha256"],
+               "lock_sha256": pins["lock_sha256"]}
+    require(isinstance(inventory, dict)
+            and inventory.get("schema") == "phone11.profile-status-migration-inventory/v1"
+            and inventory.get("target") == target and inventory.get("release") == release
+            and inventory.get("sql_sha256") == STATUS_SQL_SHA
+            and inventory.get("database_identity_sha256") == status_identity
+            and inventory.get("before_catalog_sha256") == status_catalog,
+            "candidate_database")
+    for container_id in (CURRENT_CONTAINER_ID, pins["container_id"]):
+        count = command(["docker", "exec", "--workdir", "/app", container_id,
+                         "node", "-e", DND_COUNT_PROGRAM], timeout=15)
+        require(count == b"0", "dnd_off")
 
 
 def inventory() -> None:

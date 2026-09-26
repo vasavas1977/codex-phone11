@@ -184,7 +184,8 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "STATUS_OPERATOR_SHA", route.digest(operator)), \
              patch.object(route, "STATUS_SQL_SHA", route.digest(sql)), \
              patch.object(route, "run_verified_python", return_value=json.dumps(inventory).encode()) as run:
-            self.assertIsNone(route.check_status_migration_applied("1" * 64))
+            self.assertEqual(route.check_status_migration_applied("1" * 64),
+                             ("1" * 64, "3" * 64, operator))
             self.assertEqual(run.call_args.args[0], operator)
             self.assertEqual(run.call_args.args[1][0], "--inventory")
             self.assertNotIn(str(route.STATUS_OPERATOR), run.call_args.args[1])
@@ -233,18 +234,42 @@ class StatusOnlyRouteTest(unittest.TestCase):
 
     def test_gate_rechecks_direct_and_status_catalogs_and_dnd_off(self):
         value = manifest()
+        candidate = {"schema": "phone11.profile-status-migration-inventory/v1",
+                     "target": {"container_id": PINS["container_id"],
+                                "container_name": route.TARGET_CONTAINER,
+                                "image": PINS["image"],
+                                "container_port": route.TARGET_PORT,
+                                "host_port": route.TARGET_PORT},
+                     "release": {"source_sha": PINS["source_sha"],
+                                 "bundle_sha256": PINS["bundle_sha256"],
+                                 "lock_sha256": PINS["lock_sha256"]},
+                     "sql_sha256": route.STATUS_SQL_SHA,
+                     "database_identity_sha256": "1" * 64,
+                     "before_catalog_sha256": "3" * 64}
         with patch.object(route, "check_migration_applied", return_value="1" * 64) as direct, \
-             patch.object(route, "check_status_migration_applied") as status, \
+             patch.object(route, "check_status_migration_applied",
+                          return_value=("1" * 64, "3" * 64, b"verified operator")) as status, \
+             patch.object(route, "run_verified_python",
+                          return_value=json.dumps(candidate).encode()) as inventory, \
              patch.object(route, "command", return_value=b"0") as command:
             route.check_gate_manifest(value)
             direct.assert_called_once_with()
             status.assert_called_once_with("1" * 64)
-            self.assertEqual(command.call_args.args[0][0:2], ["docker", "exec"])
-            self.assertIn(route.CURRENT_CONTAINER, command.call_args.args[0])
+            self.assertEqual(inventory.call_args.args[0], b"verified operator")
+            self.assertIn(PINS["container_id"], inventory.call_args.args[1])
+            self.assertEqual([call.args[0][4] for call in command.call_args_list],
+                             [route.CURRENT_CONTAINER_ID, PINS["container_id"]])
             for response in (b"1", b"", b"0\n"):
                 with patch.object(route, "command", return_value=response):
                     with self.assertRaisesRegex(route.GuardError, "dnd_off"):
                         route.check_gate_manifest(value)
+            for drift in (dict(candidate, database_identity_sha256="9" * 64),
+                          dict(candidate, before_catalog_sha256="9" * 64)):
+                with patch.object(route, "run_verified_python", return_value=json.dumps(drift).encode()), \
+                     patch.object(route, "command", return_value=b"0") as blocked_count:
+                    with self.assertRaisesRegex(route.GuardError, "candidate_database"):
+                        route.check_gate_manifest(value)
+                    blocked_count.assert_not_called()
 
     def test_candidate_rejects_hook_enabled_before_health(self):
         info = {"Id": PINS["container_id"], "Image": PINS["image"],
@@ -274,6 +299,37 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "atomic_write") as write:
             with self.assertRaisesRegex(route.GuardError, "gate_artifact"):
                 route.prepare(route.GATE_ROOT / "manifest.json")
+            write.assert_not_called()
+
+    def test_prepare_rejects_candidate_on_wrong_database_before_site_write(self):
+        candidate = {"schema": "phone11.profile-status-migration-inventory/v1",
+                     "target": {"container_id": PINS["container_id"],
+                                "container_name": route.TARGET_CONTAINER,
+                                "image": PINS["image"],
+                                "container_port": route.TARGET_PORT,
+                                "host_port": route.TARGET_PORT},
+                     "release": {"source_sha": PINS["source_sha"],
+                                 "bundle_sha256": PINS["bundle_sha256"],
+                                 "lock_sha256": PINS["lock_sha256"]},
+                     "sql_sha256": route.STATUS_SQL_SHA,
+                     "database_identity_sha256": "9" * 64,
+                     "before_catalog_sha256": "3" * 64}
+        with patch.object(route.os, "geteuid", return_value=0), \
+             patch.object(route, "lock", return_value=nullcontext()), \
+             patch.object(route, "read_regular", return_value=(SITE, INFO)), \
+             patch.object(route, "ORIGINAL_SHA256", route.digest(SITE)), \
+             patch.object(route, "load_gate_manifest", return_value=(manifest(), b"manifest")), \
+             patch.object(route, "check_predecessor"), \
+             patch.object(route, "check_current_route_receipt"), \
+             patch.object(route, "check_migration_applied", return_value="1" * 64), \
+             patch.object(route, "check_status_migration_applied",
+                          return_value=("1" * 64, "3" * 64, b"verified operator")), \
+             patch.object(route, "run_verified_python", return_value=json.dumps(candidate).encode()), \
+             patch.object(route, "command") as command, \
+             patch.object(route, "atomic_write") as write:
+            with self.assertRaisesRegex(route.GuardError, "candidate_database"):
+                route.prepare(route.GATE_ROOT / "manifest.json")
+            command.assert_not_called()
             write.assert_not_called()
 
     def test_activation_failure_restores_3011_and_keeps_prepared_receipt(self):

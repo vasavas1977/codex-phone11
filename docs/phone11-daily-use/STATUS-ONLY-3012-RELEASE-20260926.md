@@ -33,7 +33,11 @@ before/after full catalog fingerprints. It also requires a fresh protected
 that exact database and SQL. It refuses a stale catalog, mismatched proof, or
 missing receipt. Its `--prepare` phase is read-only; `--apply` records an intent,
 applies only the pinned SQL inside one transaction with an advisory lock, and
-records an applied receipt at `/var/lib/phone11-profile-status/receipt.json`.
+rejects any new status table with non-owner grants, row-level security, or
+policies before commit. Catalog fingerprints also include relation ACLs,
+row-level security, policies, and default privileges, so a changed grant or
+default grant blocks a stale migration plan. It then records an applied receipt
+at `/var/lib/phone11-profile-status/receipt.json`.
 `--recover` settles an interrupted intent only after rechecking the catalog.
 The migration is additive: rollback of the API route does not undo its tables.
 
@@ -70,10 +74,13 @@ root-owned `0700` directory:
 ```
 
 The operator verifies the candidate's health, loopback-only binding, labels,
-running bundle, and voicemail-hook-off environment. It runs a read-only live
-PostgreSQL count through the 3011 container and requires **zero** DND-enabled
-tenants. An unavailable query blocks the route. It never takes a shell command
-from the manifest.
+running bundle, and voicemail-hook-off environment. It independently reads
+PostgreSQL identity and the full post-migration catalog through the immutable
+3012 candidate container ID; both must match the applied status migration
+receipt. It runs a read-only live PostgreSQL count through the immutable 3011
+and 3012 container IDs and requires **zero** DND-enabled tenants on each.
+A wrong candidate database or unavailable query blocks the route before any
+site write. It never takes a shell command from the manifest.
 
 After independent review of the exact head, backup and isolated restore,
 receipt, candidate, and authenticated 3012 regressions, run as root on the VoIP
