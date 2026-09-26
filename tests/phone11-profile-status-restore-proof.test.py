@@ -72,6 +72,16 @@ class ProofUnitTests(unittest.TestCase):
                     helper.create_proof(path / "migration.sql", path, "a" * 64,
                                         "candidate", 3011, "b" * 64, 4096)
 
+    def test_new_artifact_is_private_and_does_not_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "receipt.json"
+            helper.private_new(path, b"{}")
+            self.assertEqual(path.read_bytes(), b"{}")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError):
+                helper.private_new(path, b"changed")
+            self.assertEqual(path.read_bytes(), b"{}")
+
     def test_cleanup_never_removes_a_container_without_its_private_label(self) -> None:
         with patch.object(helper, "inspect_owned", side_effect=helper.ProofError("clone_identity")):
             with patch.object(helper, "command") as command:

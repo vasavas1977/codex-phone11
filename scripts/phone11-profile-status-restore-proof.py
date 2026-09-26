@@ -47,7 +47,8 @@ def require(ok: bool, stage: str) -> None:
 def command(args: list[str], *, payload: bytes | None = None, timeout: int = 120,
             max_output: int = 128 * 1024) -> bytes:
     try:
-        result = subprocess.run(args, input=payload, stdout=subprocess.PIPE,
+        stdin_args = {"stdin": subprocess.DEVNULL} if payload is None else {"input": payload}
+        result = subprocess.run(args, **stdin_args, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ProofError("command") from error
@@ -372,6 +373,7 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
     after_catalog = clone_rehearsal(backup_path, sql_path, inventory["target"]["image"],
                                     details["roles"], inventory["before_catalog_sha256"],
                                     inventory["sql_sha256"], data_mib)
+    require(archive_digest(backup_path) == backup_sha, "backup_changed")
     manifest = {key: inventory[key] for key in (
         "target", "release", "database_identity_sha256", "before_catalog_sha256", "sql_sha256")}
     manifest.update(schema=migration.MANIFEST_SCHEMA, after_catalog_sha256=after_catalog)
@@ -404,6 +406,8 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
     private_new(out_dir / "manifest.json", manifest_raw)
     private_new(out_dir / "backup-proof.json", migration.canonical_bytes(backup_proof))
     private_new(out_dir / "restore-proof.json", migration.canonical_bytes(restore_proof))
+    actual_manifest, actual_sha = migration.read_manifest(out_dir / "manifest.json")
+    require(actual_manifest == manifest and actual_sha == manifest_sha, "manifest_written")
     migration.read_proofs(out_dir / "backup-proof.json", out_dir / "restore-proof.json",
                           manifest, manifest_sha)
     directory_fd = os.open(out_dir, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
