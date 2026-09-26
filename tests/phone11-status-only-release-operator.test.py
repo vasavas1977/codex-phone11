@@ -45,6 +45,10 @@ def manifest():
     return {"schema": route.GATE_SCHEMA, "candidate": dict(PINS)}
 
 class StatusOnlyRouteTest(unittest.TestCase):
+    def test_bridge_helper_pin_matches_reviewed_source(self):
+        self.assertEqual(route.BRIDGE_HELPER_SHA,
+                         route.digest((SCRIPT.parent / "phone11-status-catalog-bridge.py").read_bytes()))
+
     def test_cluster_probe_fails_closed_on_clone_holder_exit_and_timeout(self):
         class Holder:
             def __init__(self, exit_early=False):
@@ -243,13 +247,14 @@ class StatusOnlyRouteTest(unittest.TestCase):
                      "target": manifest_value["target"], "release": manifest_value["release"],
                      "sql_sha256": route.digest(sql),
                      "database_identity_sha256": "1" * 64,
-                     "before_catalog_sha256": "3" * 64}
+                     "before_catalog_sha256": "9" * 64}  # Additive status tables changed the live catalog.
         with patch.object(route, "_protected_directory"), \
              patch.object(route, "read_regular", side_effect=lambda path, **_: (data[path], INFO)), \
              patch.object(route, "MIGRATION_OPERATOR_SHA256", route.digest(operator)), \
              patch.object(route, "MIGRATION_SQL_SHA256", route.digest(sql)), \
              patch.object(route, "run_verified_python", return_value=json.dumps(inventory).encode()) as run:
-            self.assertEqual(route.check_migration_applied(), "1" * 64)
+            self.assertEqual(route.check_migration_applied(),
+                             ("1" * 64, "3" * 64, route.digest(manifest_raw)))
             self.assertEqual(run.call_args.args[0], operator)
             self.assertEqual(run.call_args.args[1][0], "--inventory")
             self.assertNotIn(str(route.MIGRATION_OPERATOR), run.call_args.args[1])
@@ -303,12 +308,15 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "read_regular", side_effect=lambda path, **_: (data[path], INFO)), \
              patch.object(route, "STATUS_OPERATOR_SHA", route.digest(operator)), \
              patch.object(route, "STATUS_SQL_SHA", route.digest(sql)), \
+             patch.object(route, "check_catalog_bridge") as bridge, \
              patch.object(route, "run_verified_python", side_effect=[
                  b"profile_status=RECOVERY_VALID status=APPLIED",
                  json.dumps(inventory).encode(),
              ]) as run:
-            self.assertEqual(route.check_status_migration_applied("1" * 64),
+            self.assertEqual(route.check_status_migration_applied("1" * 64, "4" * 64, "5" * 64),
                              ("1" * 64, "3" * 64, operator))
+            bridge.assert_called_with("1" * 64, "4" * 64, "5" * 64,
+                                      manifest_value, manifest_raw, receipt_value)
             self.assertEqual(run.call_args_list[0].args[0], operator)
             self.assertEqual(run.call_args_list[0].args[1][0], "--recover")
             self.assertEqual(run.call_args_list[1].args[1][0], "--inventory")
@@ -319,14 +327,67 @@ class StatusOnlyRouteTest(unittest.TestCase):
                 json.dumps(drifted).encode(),
             ]):
                 with self.assertRaisesRegex(route.GuardError, "status_catalog"):
-                    route.check_status_migration_applied("1" * 64)
+                    route.check_status_migration_applied("1" * 64, "4" * 64, "5" * 64)
             with patch.object(route, "run_verified_python", return_value=b"profile_status=BLOCKED stage=backup_archive"):
                 with self.assertRaisesRegex(route.GuardError, "status_retained_backup"):
-                    route.check_status_migration_applied("1" * 64)
+                    route.check_status_migration_applied("1" * 64, "4" * 64, "5" * 64)
             receipt_value["status"] = "intent"
             data[route.STATUS_RECEIPT] = json.dumps(receipt_value).encode()
             with self.assertRaisesRegex(route.GuardError, "status_receipt"):
-                route.check_status_migration_applied("1" * 64)
+                route.check_status_migration_applied("1" * 64, "4" * 64, "5" * 64)
+
+    def test_catalog_bridge_refuses_wrong_prestate_backup_identity_and_archived_v1(self):
+        direct_after, status_before, identity = "3" * 64, "4" * 64, "1" * 64
+        direct_manifest_sha, status_manifest_raw = "5" * 64, b"status-manifest"
+        backup = {"schema": "phone11.profile-status-backup-proof/v1",
+                  "manifest_sha256": route.digest(status_manifest_raw),
+                  "database_identity_sha256": identity,
+                  "before_catalog_sha256": status_before,
+                  "backup_sha256": "6" * 64,
+                  "created_at_unix": 1, "mechanism": "cp11-postgres:pg_dump"}
+        backup_raw = json.dumps(backup).encode()
+        status_receipt = {"backup_proof_sha256": route.digest(backup_raw)}
+        status_manifest = {"before_catalog_sha256": status_before}
+        proof = {"schema": route.BRIDGE_SCHEMA,
+                 "database_identity_sha256": identity,
+                 "direct_manifest_sha256": direct_manifest_sha,
+                 "status_manifest_sha256": route.digest(status_manifest_raw),
+                 "backup_proof_sha256": route.digest(backup_raw),
+                 "backup_sha256": backup["backup_sha256"],
+                 "direct_operator_sha256": route.MIGRATION_OPERATOR_SHA256,
+                 "status_operator_sha256": route.STATUS_OPERATOR_SHA,
+                 "restore_helper_sha256": "ee8be9cdf0acb6c8516b2122f3d16ff83087479ac7c3668b711067548dc4f02f",
+                 "direct_after_catalog_sha256": direct_after,
+                 "status_before_catalog_sha256": status_before,
+                 "isolation": "separate_postgres_cluster", "mechanism": "cp11-postgres:pg_restore"}
+        helper = b"reviewed bridge helper"
+        data = {route.BRIDGE_HELPER: helper,
+                route.BRIDGE_PROOF: json.dumps(proof).encode(),
+                route.STATUS_BACKUP_PROOF: backup_raw}
+        def check():
+            route.check_catalog_bridge(identity, direct_after, direct_manifest_sha,
+                                       status_manifest, status_manifest_raw, status_receipt)
+        with patch.object(route, "read_regular", side_effect=lambda path, **_: (data[path], INFO)), \
+             patch.object(route, "BRIDGE_HELPER_SHA", route.digest(helper)):
+            check()
+            for key, wrong in (("direct_after_catalog_sha256", "9" * 64),
+                               ("status_before_catalog_sha256", "9" * 64),
+                               ("database_identity_sha256", "9" * 64),
+                               ("direct_manifest_sha256", "9" * 64),
+                               ("schema", "phone11.status-catalog-bridge-proof/archived-v1")):
+                with self.subTest(key=key):
+                    data[route.BRIDGE_PROOF] = json.dumps({**proof, key: wrong}).encode()
+                    with self.assertRaisesRegex(route.GuardError, "bridge_proof"):
+                        check()
+            data[route.BRIDGE_PROOF] = json.dumps(proof).encode()
+            data[route.STATUS_BACKUP_PROOF] = json.dumps({**backup,
+                "before_catalog_sha256": "9" * 64}).encode()
+            with self.assertRaisesRegex(route.GuardError, "bridge_backup"):
+                check()
+            data[route.STATUS_BACKUP_PROOF] = backup_raw
+            with patch.object(route, "BRIDGE_HELPER_SHA", "0" * 64):
+                with self.assertRaisesRegex(route.GuardError, "bridge_artifact"):
+                    check()
 
     def test_live_pins_and_exact_two_location_roundtrip(self):
         self.assertEqual((route.CURRENT_PORT, route.TARGET_PORT), (3011, 3012))
@@ -376,7 +437,7 @@ class StatusOnlyRouteTest(unittest.TestCase):
                      "sql_sha256": route.STATUS_SQL_SHA,
                      "database_identity_sha256": "1" * 64,
                      "before_catalog_sha256": "3" * 64}
-        with patch.object(route, "check_migration_applied", return_value="1" * 64) as direct, \
+        with patch.object(route, "check_migration_applied", return_value=("1" * 64, "4" * 64, "5" * 64)) as direct, \
              patch.object(route, "check_status_migration_applied",
                           return_value=("1" * 64, "3" * 64, b"verified operator")) as status, \
              patch.object(route, "run_verified_python",
@@ -385,7 +446,7 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "command", return_value=b"0") as command:
             route.check_gate_manifest(value)
             direct.assert_called_once_with()
-            status.assert_called_once_with("1" * 64)
+            status.assert_called_once_with("1" * 64, "4" * 64, "5" * 64)
             self.assertEqual(inventory.call_args.args[0], b"verified operator")
             self.assertIn(PINS["container_id"], inventory.call_args.args[1])
             cluster.assert_called_once_with(PINS["container_id"])
@@ -453,7 +514,7 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "load_gate_manifest", return_value=(manifest(), b"manifest")), \
              patch.object(route, "check_predecessor"), \
              patch.object(route, "check_current_route_receipt"), \
-             patch.object(route, "check_migration_applied", return_value="1" * 64), \
+             patch.object(route, "check_migration_applied", return_value=("1" * 64, "4" * 64, "5" * 64)), \
              patch.object(route, "check_status_migration_applied",
                           return_value=("1" * 64, "3" * 64, b"verified operator")), \
              patch.object(route, "run_verified_python", return_value=json.dumps(candidate).encode()), \
@@ -486,7 +547,7 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "load_gate_manifest", return_value=(manifest(), b"manifest")), \
              patch.object(route, "check_predecessor"), \
              patch.object(route, "check_current_route_receipt"), \
-             patch.object(route, "check_migration_applied", return_value="1" * 64), \
+             patch.object(route, "check_migration_applied", return_value=("1" * 64, "4" * 64, "5" * 64)), \
              patch.object(route, "check_status_migration_applied",
                           return_value=("1" * 64, "3" * 64, b"verified operator")), \
              patch.object(route, "run_verified_python", return_value=json.dumps(candidate).encode()), \

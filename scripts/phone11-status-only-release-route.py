@@ -59,6 +59,10 @@ STATUS_MANIFEST = STATUS_ROOT / "manifest.json"
 STATUS_BACKUP_PROOF = STATUS_ROOT / "backup-proof.json"
 STATUS_RESTORE_PROOF = STATUS_ROOT / "restore-proof.json"
 STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt-role-rehearsal-v2.json")
+BRIDGE_HELPER = STATUS_ROOT / "phone11-status-catalog-bridge.py"
+BRIDGE_PROOF = STATUS_ROOT / "catalog-bridge-proof.json"
+BRIDGE_SCHEMA = "phone11.status-catalog-bridge-proof/v1"
+BRIDGE_HELPER_SHA = "1143a1c203b4f699fabad9829a64608b7a310ba1115cd1e63d1c7e91b268996a"
 STATUS_OPERATOR_SHA = "eb6b9faa19b15d62a15b87dc3f441c25eff24a1f18a6a35bbe212a6744897d7f"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010
@@ -323,8 +327,8 @@ def check_current_route_receipt() -> None:
     }, "current_route_receipt")
 
 
-def check_migration_applied() -> str:
-    """Bind an applied migration receipt to the current protected PostgreSQL catalog.
+def check_migration_applied() -> tuple[str, str, str]:
+    """Verify the direct migration's immutable applied proof and DB identity.
 
     The reviewed migration operator's inventory mode is read-only. Its exact
     bytes and SQL are pinned before execution; it emits fingerprints only.
@@ -390,9 +394,13 @@ def check_migration_applied() -> str:
             and inventory.get("release") == expected_release
             and inventory.get("sql_sha256") == MIGRATION_SQL_SHA256
             and inventory.get("database_identity_sha256") == manifest["database_identity_sha256"]
-            and inventory.get("before_catalog_sha256") == manifest["after_catalog_sha256"],
+            and _sha(inventory.get("before_catalog_sha256")),
             "migration_catalog")
-    return manifest["database_identity_sha256"]
+    # The direct operator's live catalog includes the later additive status
+    # tables. Its historical after fingerprint must instead be checked against
+    # a restored pre-status backup by the protected bridge proof.
+    return (manifest["database_identity_sha256"], manifest["after_catalog_sha256"],
+            digest(manifest_raw))
 
 
 PIN_FIELDS = {"container_id", "image", "source_sha", "bundle_sha256", "lock_sha256", "build"}
@@ -415,7 +423,42 @@ def load_gate_manifest(path: Path) -> tuple[dict[str, Any], bytes]:
     return value, raw
 
 
-def check_status_migration_applied(direct_identity: str) -> tuple[str, str, bytes]:
+def check_catalog_bridge(direct_identity: str, direct_after: str, direct_manifest_sha: str,
+                         status_manifest: dict[str, Any], status_manifest_raw: bytes,
+                         status_receipt: dict[str, Any]) -> None:
+    helper, _ = read_regular(BRIDGE_HELPER, root_only=True)
+    require(digest(helper) == BRIDGE_HELPER_SHA, "bridge_artifact")
+    proof_raw, _ = read_regular(BRIDGE_PROOF, root_only=True)
+    backup_raw, _ = read_regular(STATUS_BACKUP_PROOF, root_only=True)
+    proof = json.loads(proof_raw)
+    backup = json.loads(backup_raw)
+    require(isinstance(backup, dict) and backup.get("schema") ==
+            "phone11.profile-status-backup-proof/v1"
+            and backup.get("manifest_sha256") == digest(status_manifest_raw)
+            and backup.get("database_identity_sha256") == direct_identity
+            and backup.get("before_catalog_sha256") == status_manifest["before_catalog_sha256"]
+            and _sha(backup.get("backup_sha256"))
+            and digest(backup_raw) == status_receipt["backup_proof_sha256"],
+            "bridge_backup")
+    require(isinstance(proof, dict) and proof == {
+        "schema": BRIDGE_SCHEMA,
+        "database_identity_sha256": direct_identity,
+        "direct_manifest_sha256": direct_manifest_sha,
+        "status_manifest_sha256": digest(status_manifest_raw),
+        "backup_proof_sha256": digest(backup_raw),
+        "backup_sha256": backup["backup_sha256"],
+        "direct_operator_sha256": MIGRATION_OPERATOR_SHA256,
+        "status_operator_sha256": STATUS_OPERATOR_SHA,
+        "restore_helper_sha256": "ee8be9cdf0acb6c8516b2122f3d16ff83087479ac7c3668b711067548dc4f02f",
+        "direct_after_catalog_sha256": direct_after,
+        "status_before_catalog_sha256": status_manifest["before_catalog_sha256"],
+        "isolation": "separate_postgres_cluster",
+        "mechanism": "cp11-postgres:pg_restore",
+    }, "bridge_proof")
+
+
+def check_status_migration_applied(direct_identity: str, direct_after: str,
+                                   direct_manifest_sha: str) -> tuple[str, str, bytes]:
     _protected_directory(STATUS_ROOT)
     _protected_directory(STATUS_RECEIPT.parent)
     operator, _ = read_regular(STATUS_OPERATOR, root_only=True)
@@ -459,6 +502,8 @@ def check_status_migration_applied(direct_identity: str) -> tuple[str, str, byte
                                        "after_catalog_sha256", "sql_sha256")}
     require(receipt["verification_sha256"] == digest(json.dumps(
         verified, sort_keys=True, separators=(",", ":")).encode()), "status_receipt")
+    check_catalog_bridge(direct_identity, direct_after, direct_manifest_sha,
+                         manifest, manifest_raw, receipt)
     # Recheck the retained recovery archive via the exact reviewed operator.
     # An applied receipt alone must not authorize routing if backup bytes were
     # deleted or replaced after the migration committed.
@@ -567,8 +612,9 @@ def check_same_database_cluster(candidate_container_id: str) -> None:
 
 def check_gate_manifest(value: dict[str, Any]) -> None:
     require(set(value) == {"schema", "candidate"}, "gate_manifest")
-    direct_identity = check_migration_applied()
-    status_identity, status_catalog, operator = check_status_migration_applied(direct_identity)
+    direct_identity, direct_after, direct_manifest_sha = check_migration_applied()
+    status_identity, status_catalog, operator = check_status_migration_applied(
+        direct_identity, direct_after, direct_manifest_sha)
     pins = value["candidate"]
     raw = run_verified_python(operator, ["--inventory", "--sql", str(STATUS_SQL),
                                          "--container-id", pins["container_id"],

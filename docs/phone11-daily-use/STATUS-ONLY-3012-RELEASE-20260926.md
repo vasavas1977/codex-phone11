@@ -1,7 +1,9 @@
 # Phone11 workspace status-only 3012 release
 
-This is a **source and operator handoff**, not evidence that the 3012 candidate or
-status migration is live. The first apply attempt left an intent at
+This is a **source and operator handoff**, not evidence that the 3012 candidate
+is serving traffic. The v2 status migration was reported applied and its
+`--recover` check passed; the route still requires the independent bridge
+proof and all candidate gates. The first apply attempt left an intent at
 `/var/lib/phone11-profile-status/receipt.json` with the live catalog unchanged.
 Preserve that receipt for audit. Its rehearsal ran as `postgres`, producing an
 after-catalog owner fingerprint that cannot match tables created by the live
@@ -62,7 +64,24 @@ The migration is additive: rollback of the API route does not undo its tables.
 The route operator independently checks the applied status receipt, the exact
 migration bytes, and a fresh catalog inventory using the already verified
 operator bytes. It also rechecks the existing direct-meeting migration receipt
-and current database identity. The status, DND, and cluster probes follow the profile router’s
+and current database identity. The direct migration's catalog fingerprint used
+an earlier six-section definition; the status migration's definition also
+includes owners, ACLs, policies, and default ACLs. Their hashes cannot be
+compared directly. After the status migration is applied, the reviewed
+`phone11-status-catalog-bridge.py` restores the retained exact pre-status
+`backup.dump` in a separate network-isolated PostgreSQL 16 clone. It runs the
+pinned direct and status read-only catalog programs on that same clone and
+requires the direct result to equal the direct receipt's after-catalog hash and
+the status result to equal the status manifest's before-catalog hash. The
+helper writes `catalog-bridge-proof.json` only after checking the retained
+backup digest, original database identity, and live status after-catalog.
+The route checks the protected bridge helper's exact source hash and the proof's
+exact manifest, operator, backup, identity, and two catalog pins. A changed or
+missing bridge proof blocks both prepare and activation. Review the exact
+helper source, clone evidence, and protected proof independently before routing;
+the route's protected proof check relies on the reviewed helper having generated
+the proof and does not repeat the costly isolated restore at every switch.
+The status, DND, and cluster probes follow the profile router’s
 `server/pbx/db.ts` connection precedence: `PG_CONNECTION_STRING` first; otherwise
 complete `PG_*`/`DB_*`/`POSTGRES_*` discrete settings; otherwise `DATABASE_URL`.
 Conflicting alternate settings must not make the probe verify a different database
@@ -256,6 +275,21 @@ reissue `--apply` until the receipt is settled.
 After independent review of the exact head, backup and isolated restore,
 receipt, candidate, and authenticated 3012 regressions, run as root on the VoIP
 host:
+
+```sh
+python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-status-catalog-bridge.py --create
+```
+
+Stage that helper as root-owned mode `0600` at the exact path above. It requires
+the unchanged protected direct operator and manifest, status operator and
+manifest, status backup and restore proofs, and original `backup.dump`. Its
+`catalog-bridge-proof.json` is created once as root-owned mode `0600`; a
+preexisting proof or an unsettled clone cleanup marker blocks it. Independently
+inspect the result and retain the proof. Do not rewrite a failed proof or its
+source pins to force a match. The archived failed v1 files are not input to
+this helper or the route gate.
+
+Then execute:
 
 ```sh
 python3 phone11-status-only-release-route.py inventory
