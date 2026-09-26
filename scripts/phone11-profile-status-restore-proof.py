@@ -50,9 +50,11 @@ def command(args: list[str], *, payload: bytes | None = None, timeout: int = 120
         stdin_args = {"stdin": subprocess.DEVNULL} if payload is None else {"input": payload}
         result = subprocess.run(args, **stdin_args, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, timeout=timeout, check=False)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ProofError("command") from error
-    require(result.returncode == 0 and len(result.stdout) <= max_output, "command")
+    except subprocess.TimeoutExpired as error:
+        raise ProofError("command_timeout") from error
+    except OSError as error:
+        raise ProofError("command_os") from error
+    require(result.returncode == 0 and len(result.stdout) <= max_output, "command_exit")
     return result.stdout
 
 
@@ -74,6 +76,39 @@ def private_directory(path: Path) -> None:
     require(stat.S_ISDIR(entry.st_mode) and not stat.S_ISLNK(entry.st_mode)
             and entry.st_uid == 0 and entry.st_gid == 0
             and stat.S_IMODE(entry.st_mode) == 0o700, "output_directory")
+
+
+def pending_marker(out_dir: Path, name: str, token: str) -> Path:
+    pending = out_dir / "cleanup-pending"
+    pending.mkdir(mode=0o700, exist_ok=True)
+    entry = pending.lstat()
+    require(stat.S_ISDIR(entry.st_mode) and not stat.S_ISLNK(entry.st_mode)
+            and entry.st_uid == os.geteuid() and stat.S_IMODE(entry.st_mode) == 0o700,
+            "cleanup_pending")
+    marker = pending / (name + ".json")
+    private_new(marker, migration.canonical_bytes({
+        "schema": "phone11.status-restore-cleanup-pending/v1",
+        "container_name": name, "owner_token": token,
+        "created_at_unix": int(time.time()),
+    }))
+    fd = os.open(pending, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return marker
+
+
+def clear_pending_marker(marker: Path) -> None:
+    marker.unlink()
+    directory = marker.parent
+    fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if not any(directory.iterdir()):
+        directory.rmdir()
 
 
 def archive_digest(path: Path, *, uid: int = 0, gid: int = 0) -> str:
@@ -213,12 +248,14 @@ def check_same_cluster(api_id: str, postgres_id: str, database: str) -> None:
     require(holder.returncode == 0, "source_cluster")
 
 
-def clone_node(image: str, clone_id: str, action: str, contract: dict[str, Any],
+def clone_node(image: str, clone_id: str, action: str, contract: dict[str, Any], out_dir: Path,
                *, sql: bytes = b"") -> dict[str, Any]:
     # The clone has NetworkMode=none; this sidecar shares only its isolated
     # loopback namespace. No host port or external network exists.
     token = uuid.uuid4().hex
     name = "p11status-node-" + token
+    marker = pending_marker(out_dir, name, token)
+    uncertain = False
     args = [DOCKER, "run", "--rm", "--name", name,
             "--label", "phone11.status-restore-token=" + token,
             "--interactive", "--network", "container:" + clone_id,
@@ -228,10 +265,16 @@ def clone_node(image: str, clone_id: str, action: str, contract: dict[str, Any],
             image, "-e", migration.NODE_PROGRAM, action,
             migration.canonical_bytes(contract).decode()]
     try:
-        raw = command(args, payload=sql, timeout=90)
+        try:
+            raw = command(args, payload=sql, timeout=90)
+        except ProofError as error:
+            uncertain = str(error) in ("command_timeout", "command_os")
+            raise
         return json_result(raw, "clone_node")
     finally:
         cleanup_owned(name, token)
+        if not uncertain:
+            clear_pending_marker(marker)
 
 
 def quote_identifier(value: str) -> str:
@@ -247,13 +290,16 @@ def clone_sql(clone_id: str, statement: str) -> None:
 
 
 def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list[str],
-                    before_catalog: str, sql_sha: str, data_mib: int) -> str:
+                    before_catalog: str, sql_sha: str, data_mib: int, out_dir: Path) -> str:
     require(256 <= data_mib <= 32768, "clone_limit")
     token = uuid.uuid4().hex
     name = "p11status-" + token
+    marker = pending_marker(out_dir, name, token)
     clone_id = ""
+    uncertain = False
     try:
-        clone_id = command([
+        try:
+            clone_id = command([
             DOCKER, "create", "--name", name, "--label", "phone11.status-restore-token=" + token,
             "--network", "none", "--read-only",
             "--tmpfs", f"/var/lib/postgresql/data:rw,nosuid,nodev,size={data_mib}m",
@@ -263,7 +309,10 @@ def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list
             "--mount", f"type=bind,source={sql_path},target=/tmp/migration.sql,readonly",
             "-e", "POSTGRES_HOST_AUTH_METHOD=trust", POSTGRES_IMAGE,
             "postgres", "-c", "listen_addresses=127.0.0.1",
-        ], timeout=40).decode().strip()
+            ], timeout=40).decode().strip()
+        except ProofError as error:
+            uncertain = str(error) in ("command_timeout", "command_os")
+            raise
         require(re.fullmatch(r"[0-9a-f]{64}", clone_id) is not None, "clone_id")
         item = inspect_owned(name, token)
         require(item is not None and item.get("Id") == clone_id
@@ -277,8 +326,12 @@ def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list
                      if m.get("Type") == "bind" and m.get("RW") is False} ==
                 {"/tmp/backup.dump": str(backup), "/tmp/migration.sql": str(sql_path)}
                 and len(item.get("Mounts", [])) == 2, "clone_isolation")
-        require(command([DOCKER, "start", clone_id], timeout=40).decode().strip() == clone_id,
-                "clone_start")
+        try:
+            require(command([DOCKER, "start", clone_id], timeout=40).decode().strip() == clone_id,
+                    "clone_start")
+        except ProofError as error:
+            uncertain = str(error) in ("command_timeout", "command_os")
+            raise
         ready = False
         for _ in range(30):
             try:
@@ -296,19 +349,21 @@ def clone_rehearsal(backup: Path, sql_path: Path, source_image: str, roles: list
         command([DOCKER, "exec", "--user", "0", clone_id, "pg_restore",
                  "--clean", "--if-exists", "--exit-on-error", "-h", "127.0.0.1", "-U", "postgres",
                  "-d", "phone11_clone", "/tmp/backup.dump"], timeout=600)
-        before = clone_node(source_image, clone_id, "snapshot", {})["before"]
+        before = clone_node(source_image, clone_id, "snapshot", {}, out_dir)["before"]
         require(before.get("catalog_fingerprint") == before_catalog, "restore_catalog")
         # Rehearsal runs the exact migration operator's SQL/ACL/catalog logic.
         result = clone_node(source_image, clone_id, "rehearsal", {
             "before_catalog_sha256": before_catalog,
             "sql_sha256": sql_sha,
-        }, sql=migration.secure_read(sql_path))
+        }, out_dir, sql=migration.secure_read(sql_path))
         require(result.get("before", {}).get("catalog_fingerprint") == before_catalog
                 and result.get("after", {}).get("catalog_fingerprint") != before_catalog,
                 "clone_migration")
         return result["after"]["catalog_fingerprint"]
     finally:
         cleanup_owned(name, token)
+        if not uncertain:
+            clear_pending_marker(marker)
 
 
 def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
@@ -318,6 +373,7 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
     private_directory(out_dir)
     for name in ("backup.dump", "manifest.json", "backup-proof.json", "restore-proof.json"):
         require(not (out_dir / name).exists(), "output_exists")
+    require(not (out_dir / "cleanup-pending").exists(), "cleanup_pending")
     sql = migration.secure_read(sql_path)
     inventory = migration.collect_inventory(sql, api_id, api_name, api_port, api_port)
     source = source_action(api_id, "details")
@@ -372,7 +428,7 @@ def create_proof(sql_path: Path, out_dir: Path, api_id: str, api_name: str,
             "source_changed_after_backup")
     after_catalog = clone_rehearsal(backup_path, sql_path, inventory["target"]["image"],
                                     details["roles"], inventory["before_catalog_sha256"],
-                                    inventory["sql_sha256"], data_mib)
+                                    inventory["sql_sha256"], data_mib, out_dir)
     require(archive_digest(backup_path) == backup_sha, "backup_changed")
     manifest = {key: inventory[key] for key in (
         "target", "release", "database_identity_sha256", "before_catalog_sha256", "sql_sha256")}

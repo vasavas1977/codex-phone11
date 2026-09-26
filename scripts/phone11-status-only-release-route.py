@@ -56,8 +56,10 @@ STATUS_ROOT = Path("/opt/phone11ai/status-only-release-20260926/migration")
 STATUS_OPERATOR = STATUS_ROOT / "phone11-profile-status-migrate.py"
 STATUS_SQL = STATUS_ROOT / "profile-status-migration.sql"
 STATUS_MANIFEST = STATUS_ROOT / "manifest.json"
+STATUS_BACKUP_PROOF = STATUS_ROOT / "backup-proof.json"
+STATUS_RESTORE_PROOF = STATUS_ROOT / "restore-proof.json"
 STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt.json")
-STATUS_OPERATOR_SHA = "376a0b45dd534d58b6019b91257373961f48f2275d822f5f23a56e9bf4a7a6c1"
+STATUS_OPERATOR_SHA = "2572eed6fd9ccbbd9941a8bc8fbfccd4ca5bfbee77a7ccfc38718f4cdc5af270"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010
 # target; the database identity is compared with the new gate inventories.
@@ -457,6 +459,16 @@ def check_status_migration_applied(direct_identity: str) -> tuple[str, str, byte
                                        "after_catalog_sha256", "sql_sha256")}
     require(receipt["verification_sha256"] == digest(json.dumps(
         verified, sort_keys=True, separators=(",", ":")).encode()), "status_receipt")
+    # Recheck the retained recovery archive via the exact reviewed operator.
+    # An applied receipt alone must not authorize routing if backup bytes were
+    # deleted or replaced after the migration committed.
+    recovery = run_verified_python(operator, ["--recover", "--manifest", str(STATUS_MANIFEST),
+                                              "--sql", str(STATUS_SQL),
+                                              "--backup-proof", str(STATUS_BACKUP_PROOF),
+                                              "--restore-proof", str(STATUS_RESTORE_PROOF),
+                                              "--receipt", str(STATUS_RECEIPT)], timeout=60)
+    require(recovery.strip() == b"profile_status=RECOVERY_VALID status=APPLIED",
+            "status_retained_backup")
     raw = run_verified_python(operator, ["--inventory", "--sql", str(STATUS_SQL),
                                          "--container-id", CURRENT_CONTAINER_ID,
                                          "--container-name", CURRENT_CONTAINER,

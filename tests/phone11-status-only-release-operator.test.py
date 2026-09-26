@@ -303,15 +303,25 @@ class StatusOnlyRouteTest(unittest.TestCase):
              patch.object(route, "read_regular", side_effect=lambda path, **_: (data[path], INFO)), \
              patch.object(route, "STATUS_OPERATOR_SHA", route.digest(operator)), \
              patch.object(route, "STATUS_SQL_SHA", route.digest(sql)), \
-             patch.object(route, "run_verified_python", return_value=json.dumps(inventory).encode()) as run:
+             patch.object(route, "run_verified_python", side_effect=[
+                 b"profile_status=RECOVERY_VALID status=APPLIED",
+                 json.dumps(inventory).encode(),
+             ]) as run:
             self.assertEqual(route.check_status_migration_applied("1" * 64),
                              ("1" * 64, "3" * 64, operator))
-            self.assertEqual(run.call_args.args[0], operator)
-            self.assertEqual(run.call_args.args[1][0], "--inventory")
-            self.assertNotIn(str(route.STATUS_OPERATOR), run.call_args.args[1])
+            self.assertEqual(run.call_args_list[0].args[0], operator)
+            self.assertEqual(run.call_args_list[0].args[1][0], "--recover")
+            self.assertEqual(run.call_args_list[1].args[1][0], "--inventory")
+            self.assertNotIn(str(route.STATUS_OPERATOR), run.call_args_list[1].args[1])
             drifted = dict(inventory, before_catalog_sha256="9" * 64)
-            with patch.object(route, "run_verified_python", return_value=json.dumps(drifted).encode()):
+            with patch.object(route, "run_verified_python", side_effect=[
+                b"profile_status=RECOVERY_VALID status=APPLIED",
+                json.dumps(drifted).encode(),
+            ]):
                 with self.assertRaisesRegex(route.GuardError, "status_catalog"):
+                    route.check_status_migration_applied("1" * 64)
+            with patch.object(route, "run_verified_python", return_value=b"profile_status=BLOCKED stage=backup_archive"):
+                with self.assertRaisesRegex(route.GuardError, "status_retained_backup"):
                     route.check_status_migration_applied("1" * 64)
             receipt_value["status"] = "intent"
             data[route.STATUS_RECEIPT] = json.dumps(receipt_value).encode()

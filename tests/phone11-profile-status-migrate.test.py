@@ -125,6 +125,89 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
                     now=1_000_010, uid=os.getuid(), gid=os.getgid(),
                 )
 
+    def test_proved_backup_archive_must_exist_and_match_private_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "backup.dump"
+            proof = root / "backup-proof.json"
+            original = b"PGDMPvalid-private-archive"
+            expected = operator.sha256_bytes(original)
+            proof_raw = operator.canonical_bytes({"backup_sha256": expected})
+            proof.write_bytes(proof_raw)
+            os.chmod(proof, 0o600)
+            proof_hash = operator.sha256_bytes(proof_raw)
+            with self.assertRaisesRegex(operator.MigrationError, "backup_archive"):
+                operator.verify_backup_archive(proof, proof_hash, archive_path=archive,
+                                               uid=os.getuid(), gid=os.getgid())
+            archive.write_bytes(original)
+            os.chmod(archive, 0o600)
+            self.assertEqual(operator.verify_backup_archive(
+                proof, proof_hash, archive_path=archive,
+                uid=os.getuid(), gid=os.getgid()), expected)
+            archive.write_bytes(b"PGDMPcorrupt-private-archive")
+            with self.assertRaisesRegex(operator.MigrationError, "backup_archive"):
+                operator.verify_backup_archive(proof, proof_hash, archive_path=archive,
+                                               uid=os.getuid(), gid=os.getgid())
+            archive.write_bytes(original)
+            os.chmod(archive, 0o644)
+            with self.assertRaisesRegex(operator.MigrationError, "backup_archive"):
+                operator.verify_backup_archive(proof, proof_hash, archive_path=archive,
+                                               uid=os.getuid(), gid=os.getgid())
+
+    def test_missing_archive_blocks_before_intent_or_database_call(self) -> None:
+        sql = b"reviewed sql"
+        manifest = manifest_document(operator.sha256_bytes(sql))
+        arguments = argparse.Namespace(
+            prepare=False, apply=True, recover=False, inventory=False,
+            manifest=Path("/manifest"), sql=Path("/sql"),
+            backup_proof=Path("/backup"), restore_proof=Path("/restore"),
+            receipt=operator.RECEIPT_PATH,
+            container_id=None, container_name=None, container_port=None, host_port=None,
+        )
+        with (
+            patch.object(operator.os, "geteuid", return_value=0),
+            patch.object(operator, "read_manifest", return_value=(manifest, "6" * 64)),
+            patch.object(operator, "secure_read", return_value=sql),
+            patch.object(operator, "read_proofs", return_value=("7" * 64, "8" * 64)),
+            patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
+            patch.object(operator, "verify_backup_archive",
+                         side_effect=operator.MigrationError("backup_archive")),
+            patch.object(operator, "reserve_receipt") as intent,
+            patch.object(operator, "run_database") as database,
+        ):
+            self.assertEqual(operator.run(arguments), 1)
+        intent.assert_not_called()
+        database.assert_not_called()
+
+    def test_pending_clone_cleanup_blocks_before_archive_or_database_call(self) -> None:
+        sql = b"reviewed sql"
+        manifest = manifest_document(operator.sha256_bytes(sql))
+        arguments = argparse.Namespace(
+            prepare=False, apply=True, recover=False, inventory=False,
+            manifest=Path("/manifest"), sql=Path("/sql"),
+            backup_proof=Path("/backup"), restore_proof=Path("/restore"),
+            receipt=operator.RECEIPT_PATH,
+            container_id=None, container_name=None, container_port=None, host_port=None,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            pending = Path(directory) / "cleanup-pending"
+            pending.mkdir(mode=0o700)
+            with (
+                patch.object(operator.os, "geteuid", return_value=0),
+                patch.object(operator, "read_manifest", return_value=(manifest, "6" * 64)),
+                patch.object(operator, "secure_read", return_value=sql),
+                patch.object(operator, "read_proofs", return_value=("7" * 64, "8" * 64)),
+                patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
+                patch.object(operator, "PENDING_CLEANUP_DIR", pending),
+                patch.object(operator, "verify_backup_archive") as archive,
+                patch.object(operator, "reserve_receipt") as intent,
+                patch.object(operator, "run_database") as database,
+            ):
+                self.assertEqual(operator.run(arguments), 1)
+            archive.assert_not_called()
+            intent.assert_not_called()
+            database.assert_not_called()
+
     def test_target_inspection_uses_immutable_id_and_exact_release_labels(self) -> None:
         manifest = manifest_document()
         target, release = manifest["target"], manifest["release"]
@@ -240,6 +323,7 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
             patch.object(operator, "secure_read", return_value=b"sql"),
             patch.object(operator, "sha256_bytes", side_effect=lambda value: "d" * 64 if value == b"sql" else __import__("hashlib").sha256(value).hexdigest()),
             patch.object(operator, "read_proofs", return_value=("7" * 64, "8" * 64)),
+            patch.object(operator, "verify_backup_archive", return_value="e" * 64),
             patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
             patch.object(operator, "reserve_receipt", side_effect=lambda *_args: events.append("intent") or {"status": "intent"}),
             patch.object(operator, "run_database", side_effect=[
@@ -289,6 +373,7 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
             patch.object(operator, "read_manifest", return_value=(manifest, "6" * 64)),
             patch.object(operator, "secure_read", return_value=sql),
             patch.object(operator, "read_proofs", return_value=("7" * 64, "8" * 64)),
+            patch.object(operator, "verify_backup_archive", return_value="e" * 64),
             patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
             patch.object(operator, "read_receipt", return_value=intent),
             patch.object(operator, "run_database", side_effect=operator.MigrationError("database")) as database,
@@ -319,6 +404,7 @@ class ProfileStatusMigrationOperatorTests(unittest.TestCase):
             patch.object(operator, "read_manifest", return_value=(manifest, "6" * 64)),
             patch.object(operator, "secure_read", return_value=sql),
             patch.object(operator, "read_proofs", return_value=("7" * 64, "8" * 64)),
+            patch.object(operator, "verify_backup_archive", return_value="e" * 64),
             patch.object(operator, "operator_lock", return_value=contextlib.nullcontext()),
             patch.object(operator, "read_receipt", return_value=intent),
             patch.object(operator, "run_database", return_value=before),

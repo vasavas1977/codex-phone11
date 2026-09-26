@@ -36,6 +36,12 @@ They still include grants, column grants, row-level security, policies, and
 default privileges. It also requires a fresh protected `pg_dump` backup proof
 and an isolated PostgreSQL restore rehearsal proof for that exact database and
 SQL. It refuses a stale catalog, mismatched proof, or missing receipt. Its
+operator also requires the protected `backup.dump` to remain root-owned mode
+`0600` and byte-identical to the backup proof before prepare, immediately
+before apply, and after the SQL transaction. If the archive disappears or
+changes after commit, the intent remains unsettled until the proved archive is
+restored and recovery succeeds. The route gate rechecks this retained archive
+through the pinned migration operator before switching traffic. Its
 `--prepare` phase is read-only; `--apply` records an intent,
 applies only the pinned SQL inside one transaction with an advisory lock, and
 rejects any new status table with non-owner table or column grants, row-level
@@ -142,7 +148,20 @@ python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-st
 The helper does not print credentials or customer rows. Its backup remains at
 `backup.dump` for recovery; retain it under root-only access. The proofs expire
 after 30 minutes, so prepare and apply promptly. A scheduled backup alone is
-insufficient. With the exact protected manifest and proofs in place, execute:
+insufficient.
+
+If Docker create, start, or sidecar run times out, the helper retains a
+root-private `cleanup-pending/<container-name>.json` marker. Treat that as a
+hard hold: do not retry the rehearsal or run migration/route preparation.
+Inspect the marker's random container name and owner token, establish that the
+Docker operation has terminated, and inspect that exact name and matching
+`phone11.status-restore-token` label. Remove only that matching disposable
+container, then independently confirm it cannot appear late before manually
+clearing the marker. A missing container immediately after timeout alone is
+insufficient. Review the incomplete archive/output directory before a fresh
+rehearsal. Never clear a marker merely to pass the gate.
+
+With the exact protected manifest and proofs in place, execute:
 
 ```sh
 python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-migrate.py \

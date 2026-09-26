@@ -31,7 +31,10 @@ RESTORE_PROOF_SCHEMA = "phone11.profile-status-restore-proof/v1"
 RECEIPT_SCHEMA = "phone11.profile-status-migration-journal/v1"
 LOCK_PATH = Path("/run/lock/phone11-profile-status-migrate.lock")
 RECEIPT_PATH = Path("/var/lib/phone11-profile-status/receipt.json")
+BACKUP_ARCHIVE_PATH = Path("/opt/phone11ai/status-only-release-20260926/migration/backup.dump")
+PENDING_CLEANUP_DIR = BACKUP_ARCHIVE_PATH.parent / "cleanup-pending"
 MAX_ARTIFACT_BYTES = 512 * 1024
+MAX_BACKUP_BYTES = 1024 * 1024 * 1024 * 1024
 MAX_OUTPUT_BYTES = 128 * 1024
 MAX_PROOF_AGE_SECONDS = 30 * 60
 
@@ -210,6 +213,51 @@ def read_proofs(
         "restore_proof",
     )
     return sha256_bytes(backup_raw), sha256_bytes(restore_raw)
+
+
+def verify_backup_archive(proof_path: Path, proof_sha256: str,
+                          *, archive_path: Path = BACKUP_ARCHIVE_PATH,
+                          uid: int = 0, gid: int = 0) -> str:
+    """Keep the proved recovery archive present and byte-identical at action time."""
+    proof_raw = secure_read(proof_path, uid=uid, gid=gid)
+    guarded(sha256_bytes(proof_raw) == proof_sha256, "backup_proof_changed")
+    proof = strict_json(proof_raw, "backup_proof")
+    expected = proof.get("backup_sha256")
+    guarded(is_sha256(expected), "backup_proof")
+    descriptor: int | None = None
+    try:
+        before = archive_path.lstat()
+        guarded(stat.S_ISREG(before.st_mode) and not stat.S_ISLNK(before.st_mode)
+                and before.st_uid == uid and before.st_gid == gid
+                and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1
+                and 5 < before.st_size < MAX_BACKUP_BYTES, "backup_archive")
+        descriptor = os.open(archive_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        guarded((opened.st_dev, opened.st_ino, opened.st_size) ==
+                (before.st_dev, before.st_ino, before.st_size), "backup_archive")
+        digest = hashlib.sha256()
+        first = True
+        while chunk := os.read(descriptor, 1024 * 1024):
+            if first:
+                guarded(chunk.startswith(b"PGDMP"), "backup_archive")
+                first = False
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        guarded((after.st_size, after.st_mtime_ns) ==
+                (before.st_size, before.st_mtime_ns), "backup_archive")
+        retained = archive_path.lstat()
+        guarded((retained.st_dev, retained.st_ino, retained.st_size, retained.st_mtime_ns) ==
+                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns),
+                "backup_archive")
+        guarded(digest.hexdigest() == expected, "backup_archive")
+        return expected
+    except MigrationError:
+        raise
+    except OSError as error:
+        raise MigrationError("backup_archive") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def inspect_target(target: Mapping[str, Any], release: Mapping[str, Any]) -> str:
@@ -761,6 +809,8 @@ def run(arguments: argparse.Namespace) -> int:
         )
         base = receipt_base(manifest, manifest_sha256, backup_sha256, restore_sha256)
         with operator_lock():
+            guarded(not os.path.lexists(PENDING_CLEANUP_DIR), "cleanup_pending")
+            verify_backup_archive(arguments.backup_proof, backup_sha256)
             if arguments.prepare:
                 guarded(arguments.receipt is None, "arguments")
                 assert_snapshot(run_database(manifest, "snapshot"), manifest, "before_catalog_sha256")
@@ -785,8 +835,10 @@ def run(arguments: argparse.Namespace) -> int:
             # apply transaction repeats this exact check after acquiring its
             # advisory lock, so no mutation can race this read-only preflight.
             assert_snapshot(run_database(manifest, "snapshot"), manifest, "before_catalog_sha256")
+            verify_backup_archive(arguments.backup_proof, backup_sha256)
             intent = reserve_receipt(arguments.receipt, base)
             verification_sha256 = assert_applied(run_database(manifest, "apply", sql), manifest)
+            verify_backup_archive(arguments.backup_proof, backup_sha256)
             write_receipt(
                 arguments.receipt,
                 receipt_document(base, "applied", verification_sha256),

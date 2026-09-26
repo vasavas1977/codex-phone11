@@ -105,11 +105,13 @@ class ProofUnitTests(unittest.TestCase):
         with patch.object(helper, "command", side_effect=fake_command):
             with patch.object(helper, "inspect_owned", return_value=self.clone_identity()):
                 with patch.object(helper, "clone_sql"):
-                    with patch.object(helper, "cleanup_owned") as cleanup:
+                    with patch.object(helper, "cleanup_owned") as cleanup, \
+                         patch.object(helper, "pending_marker", return_value=Path("/tmp/fake-marker")), \
+                         patch.object(helper, "clear_pending_marker"):
                         with self.assertRaisesRegex(helper.ProofError, "restore_failed"):
                             helper.clone_rehearsal(Path("/private/backup.dump"),
                                 Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                                ["postgres"], "c" * 64, "d" * 64, 4096)
+                                ["postgres"], "c" * 64, "d" * 64, 4096, Path("/ignored"))
                         cleanup.assert_called_once()
 
     def test_wrong_restored_catalog_and_failed_migration_block_and_cleanup(self) -> None:
@@ -128,11 +130,61 @@ class ProofUnitTests(unittest.TestCase):
                             with patch.object(helper, "clone_node", side_effect=node_result):
                                 with patch.object(helper.migration, "secure_read", return_value=b"BEGIN;\nCOMMIT;\n"):
                                     with patch.object(helper, "cleanup_owned") as cleanup:
-                                        with self.assertRaises(helper.ProofError):
-                                            helper.clone_rehearsal(Path("/private/backup.dump"),
-                                                Path("/private/migration.sql"), "sha256:" + "b" * 64,
-                                                ["postgres"], "c" * 64, "d" * 64, 4096)
+                                        with patch.object(helper, "pending_marker", return_value=Path("/tmp/fake-marker")), \
+                                             patch.object(helper, "clear_pending_marker"):
+                                            with self.assertRaises(helper.ProofError):
+                                                helper.clone_rehearsal(Path("/private/backup.dump"),
+                                                    Path("/private/migration.sql"), "sha256:" + "b" * 64,
+                                                    ["postgres"], "c" * 64, "d" * 64, 4096, Path("/ignored"))
                                         cleanup.assert_called_once()
+
+    def test_late_clone_create_or_start_keeps_manual_cleanup_gate(self) -> None:
+        for phase in ("create", "start"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                out_dir = Path(directory)
+                os.chmod(out_dir, 0o700)
+                def late_command(args, **_kwargs):
+                    if args[1] == phase:
+                        raise helper.ProofError("command_timeout")
+                    return self.fake_clone_command(args)
+                with patch.object(helper, "command", side_effect=late_command), \
+                     patch.object(helper, "inspect_owned", return_value=self.clone_identity()), \
+                     patch.object(helper, "cleanup_owned") as cleanup:
+                    with self.assertRaisesRegex(helper.ProofError, "command_timeout"):
+                        helper.clone_rehearsal(Path("/private/backup.dump"),
+                            Path("/private/migration.sql"), "sha256:" + "b" * 64,
+                            ["postgres"], "c" * 64, "d" * 64, 4096, out_dir)
+                    cleanup.assert_called_once()
+                markers = list((out_dir / "cleanup-pending").glob("*.json"))
+                self.assertEqual(len(markers), 1)
+                self.assertEqual(markers[0].stat().st_mode & 0o777, 0o600)
+                marker = json.loads(markers[0].read_text())
+                self.assertEqual(marker["schema"], "phone11.status-restore-cleanup-pending/v1")
+                self.assertTrue(marker["container_name"].startswith("p11status-"))
+
+    def test_late_sidecar_run_keeps_manual_cleanup_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            os.chmod(out_dir, 0o700)
+            with patch.object(helper, "command", side_effect=helper.ProofError("command_timeout")), \
+                 patch.object(helper, "cleanup_owned") as cleanup:
+                with self.assertRaisesRegex(helper.ProofError, "command_timeout"):
+                    helper.clone_node("sha256:" + "b" * 64, "a" * 64,
+                                      "snapshot", {}, out_dir)
+                cleanup.assert_called_once()
+            markers = list((out_dir / "cleanup-pending").glob("*.json"))
+            self.assertEqual(len(markers), 1)
+            self.assertIn("p11status-node-", markers[0].name)
+
+    def test_pending_cleanup_blocks_new_proof_even_without_prior_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out_dir = Path(directory)
+            os.chmod(out_dir, 0o700)
+            (out_dir / "cleanup-pending").mkdir(mode=0o700)
+            with patch("os.geteuid", return_value=0), patch.object(helper, "private_directory"):
+                with self.assertRaisesRegex(helper.ProofError, "cleanup_pending"):
+                    helper.create_proof(out_dir / "migration.sql", out_dir, "a" * 64,
+                                        "candidate", 3011, "b" * 64, 4096)
 
     def test_manifest_and_archive_hash_mismatch_cannot_make_proofs_valid(self) -> None:
         migration = helper.migration
