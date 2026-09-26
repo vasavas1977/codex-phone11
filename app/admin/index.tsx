@@ -125,6 +125,12 @@ export default function AdminDashboard() {
       route: "/admin/workspace-settings",
     },
     {
+      icon: "person.fill",
+      iconColor: "#64748B",
+      label: "Workspace status",
+      route: "/admin/profile-status",
+    },
+    {
       icon: "chart.bar.fill",
       iconColor: "#14B8A6",
       label: "Call analytics",

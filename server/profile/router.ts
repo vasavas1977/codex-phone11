@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { protectedProcedure, router } from "../_core/trpc";
 import { getPool } from "../pbx/db";
-import { createProfileService, dndDurationMinutes, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, statusExpiryPresets } from "./service";
+import { createProfileService, dndDurationMinutes, ProfileDndUnavailableError, ProfileStatusUnavailableError, ProfileWorkspaceAccessError, ProfileWorkspaceAdminAccessError, statusExpiryPresets } from "./service";
 import { manualAvailabilityValues, workLocationValues } from "./status";
 import { authorizeWorkspace } from "../chat/service";
 import { MAX_PROFILE_PHOTO_BYTES, profilePhotosAvailable, profilePhotoStorageReady } from "./photo";
@@ -41,11 +41,17 @@ export const profileUpdateSchema = z.object({
 });
 
 function trpcError(error: unknown): never {
+  if (error instanceof ProfileDndUnavailableError) {
+    throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Do not disturb is not available for this workspace." });
+  }
   if (error instanceof ProfileStatusUnavailableError) {
     throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Profile status needs a workspace update." });
   }
   if (error instanceof ProfileWorkspaceAccessError) {
     throw new TRPCError({ code: "FORBIDDEN", message: "This workspace is unavailable for your account." });
+  }
+  if (error instanceof ProfileWorkspaceAdminAccessError) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Only an active workspace owner or administrator can manage profile status." });
   }
   throw error;
 }
@@ -54,6 +60,14 @@ export function createProfileRouter(service?: ReturnType<typeof createProfileSer
   let resolvedService = service;
   const currentService = () => (resolvedService ??= createProfileService(getPool()));
   return router({
+    adminSettings: protectedProcedure.input(z.object({ tenantId }).strict()).query(async ({ ctx, input }) => {
+      try { return await currentService().adminSettings(ctx.user.id, input.tenantId); }
+      catch (error) { return trpcError(error); }
+    }),
+    setAdminEnabled: protectedProcedure.input(z.object({ tenantId, enabled: z.boolean() }).strict()).mutation(async ({ ctx, input }) => {
+      try { return await currentService().setAdminEnabled(ctx.user.id, input.tenantId, input.enabled); }
+      catch (error) { return trpcError(error); }
+    }),
     photoCapability: protectedProcedure.input(z.object({ tenantId }).strict()).query(async ({ ctx, input }) => {
       try {
         const db = getPool();

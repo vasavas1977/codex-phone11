@@ -188,7 +188,7 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
     setSheet(null);
   };
   const chooseAvailability = (value: ManualAvailability | null) => {
-    if (value === "dnd") { setDndDuration(60); setSheet("availabilityDuration"); return; }
+    if (value === "dnd") { if (profile?.dndAvailable === true) { setDndDuration(60); setSheet("availabilityDuration"); } return; }
     save({ availability: { value } });
   };
   const changePhoto = async (source: "camera" | "library") => {
@@ -226,7 +226,7 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
       </View>
       <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         {profile ? <>
-          <MenuRow icon={profile.manualAvailability === "dnd" ? "minus.circle" : profile.manualAvailability === "away" || profile.manualAvailability === "out_of_office" ? "moon.fill" : "circle.fill"} title="Availability" detail={availabilitySummary(profile.manualAvailability)} onPress={() => setSheet("availability")} />
+          <MenuRow icon={profile.manualAvailability === "dnd" && profile.dndAvailable === true ? "minus.circle" : profile.manualAvailability === "away" || profile.manualAvailability === "out_of_office" ? "moon.fill" : "circle.fill"} title="Availability" detail={availabilitySummary(profile.manualAvailability === "dnd" && profile.dndAvailable !== true ? null : profile.manualAvailability)} onPress={() => setSheet("availability")} />
           <MenuRow icon="face.smiling" title="Status" detail={profile.statusText || "Set a status"} onPress={() => setSheet("status")} />
           <MenuRow icon="building.2.fill" title="Work location" detail={workLocationSummary(profile.workLocation)} onPress={() => setSheet("location")} last />
         </> : <Text style={[styles.unavailable, { color: colors.muted }]}>Workspace status will be available after your company updates this app.</Text>}
@@ -242,11 +242,11 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
     {profile && <>
       <Sheet visible={sheet === "availability"} title="Availability" onClose={() => setSheet(null)}>
         <View style={styles.sheetList}>
-          {manualAvailabilityOptions.map(option => <SheetChoice key={option.value} label={option.label} selected={profile.manualAvailability === option.value} disabled={profileSaving} onPress={() => chooseAvailability(option.value)} />)}
+          {manualAvailabilityOptions.filter(option => option.value !== "dnd" || profile.dndAvailable === true).map(option => <SheetChoice key={option.value} label={option.label} selected={profile.manualAvailability === option.value} disabled={profileSaving} onPress={() => chooseAvailability(option.value)} />)}
           <SheetChoice label="Reset automatic" detail="Use your current activity" selected={profile.manualAvailability === null} disabled={profileSaving} onPress={() => chooseAvailability(null)} />
         </View>
       </Sheet>
-      <Sheet visible={sheet === "availabilityDuration"} title="Do not disturb" onClose={() => setSheet(null)}>
+      <Sheet visible={profile.dndAvailable === true && sheet === "availabilityDuration"} title="Do not disturb" onClose={() => setSheet(null)}>
         <View style={styles.sheetList}><Text style={[styles.sheetDescription, { color: colors.muted }]}>Choose when Do not disturb ends.</Text>
           {dndExpiryOptions.map(option => <SheetChoice key={option.value} label={option.label} selected={dndDuration === option.value} disabled={profileSaving} onPress={() => { setDndDuration(option.value); save({ availability: { value: "dnd", expiresInMinutes: option.value } }); }} />)}
         </View>

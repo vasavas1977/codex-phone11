@@ -20,7 +20,17 @@ export type ProfileUpdate = {
 };
 
 export class ProfileStatusUnavailableError extends Error {}
+export class ProfileDndUnavailableError extends ProfileStatusUnavailableError {}
 export class ProfileWorkspaceAccessError extends Error {}
+export class ProfileWorkspaceAdminAccessError extends Error {}
+
+export type WorkspaceProfileStatusSettings = {
+  tenantId: number;
+  enabled: boolean;
+  dndEnabled: boolean;
+  updatedBy: number | null;
+  updatedAt: Date | null;
+};
 
 function supportedTimeZone(value: unknown): string {
   const timeZone = typeof value === "string" && value.trim() ? value.trim() : "Asia/Bangkok";
@@ -88,26 +98,108 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
     return { timeZone: supportedTimeZone(result.rows[0].time_zone) };
   }
 
-  async function lookup(userId: number, tenantId: number, userIds: readonly number[]) {
-    const result = await getWorkspaceProfileStatuses(db, userId, tenantId, userIds);
-    if (result.capability === "unavailable") throw new ProfileStatusUnavailableError("Profile status is unavailable.");
-    return result.rows;
+  async function requireSettingsTable(): Promise<void> {
+    const result = await db.query(
+      `SELECT to_regclass('public.phone11_workspace_profile_status_settings') AS relation,
+              EXISTS (SELECT 1 FROM pg_attribute
+                WHERE attrelid = to_regclass('public.phone11_workspace_profile_status_settings')
+                  AND attname = 'dnd_enabled' AND NOT attisdropped) AS dnd_column`,
+    );
+    if (!result.rows[0]?.relation || !result.rows[0]?.dnd_column) throw new ProfileStatusUnavailableError("Workspace profile settings are unavailable.");
   }
 
-  const self = async (userId: number, tenantId: number): Promise<WorkspaceProfileStatus & { photoUrl: string | null; photoVersion: string | null }> => {
+  function settingsFromRow(row: Record<string, unknown>): WorkspaceProfileStatusSettings {
+    const updatedAt = row.updated_at instanceof Date
+      ? row.updated_at
+      : typeof row.updated_at === "string" ? new Date(row.updated_at) : null;
+    return {
+      tenantId: Number(row.tenant_id),
+      enabled: row.enabled === true,
+      dndEnabled: row.dnd_enabled === true,
+      updatedBy: Number.isSafeInteger(Number(row.updated_by)) && Number(row.updated_by) > 0 ? Number(row.updated_by) : null,
+      updatedAt: updatedAt && Number.isFinite(updatedAt.getTime()) ? updatedAt : null,
+    };
+  }
+
+  async function lookup(userId: number, tenantId: number, userIds: readonly number[]) {
+    const result = await getWorkspaceProfileStatuses(db, userId, tenantId, userIds);
+    if (result.capability !== "available") throw new ProfileStatusUnavailableError("Profile status is unavailable for this workspace.");
+    return result;
+  }
+
+  const self = async (userId: number, tenantId: number): Promise<WorkspaceProfileStatus & { dndAvailable: boolean; photoUrl: string | null; photoVersion: string | null }> => {
     await requireWorkspaceMember(userId, tenantId);
-    const row = (await lookup(userId, tenantId, [userId]))[0];
+    const status = await lookup(userId, tenantId, [userId]);
+    const row = status.rows[0];
     if (!row) throw new ProfileWorkspaceAccessError("Workspace access is unavailable.");
     const photo = (await profilePhotoDescriptors(db, tenantId, [userId])).get(userId);
-    return { ...row, photoUrl: photo?.photoUrl ?? null, photoVersion: photo?.photoVersion ?? null };
+    return { ...row, dndAvailable: status.dndEnabled, photoUrl: photo?.photoUrl ?? null, photoVersion: photo?.photoVersion ?? null };
   };
 
   return {
+    async adminSettings(actorUserId: number, tenantId: number): Promise<WorkspaceProfileStatusSettings> {
+      await requireSettingsTable();
+      const result = await db.query(
+        `SELECT tenant.id AS tenant_id,
+                COALESCE(settings.enabled, FALSE) AS enabled,
+                COALESCE(settings.dnd_enabled, FALSE) AS dnd_enabled,
+                settings.updated_by,
+                settings.updated_at
+           FROM tenants tenant
+           JOIN tenant_memberships membership
+             ON membership.tenant_id = tenant.id
+            AND membership.user_id = $1
+            AND membership.status = 'active'
+            AND membership.role::text IN ('owner', 'admin')
+           LEFT JOIN phone11_workspace_profile_status_settings settings
+             ON settings.tenant_id = tenant.id
+          WHERE tenant.id = $2 AND tenant.status = 'active'
+          LIMIT 1`,
+        [actorUserId, tenantId],
+      );
+      if (!result.rows[0]) throw new ProfileWorkspaceAdminAccessError("Workspace administrator access is unavailable.");
+      return settingsFromRow(result.rows[0] as Record<string, unknown>);
+    },
+
+    async setAdminEnabled(actorUserId: number, tenantId: number, enabled: boolean): Promise<WorkspaceProfileStatusSettings> {
+      await requireSettingsTable();
+      const result = await db.query(
+        `INSERT INTO phone11_workspace_profile_status_settings
+           (tenant_id, enabled, updated_by, updated_at)
+         SELECT membership.tenant_id, $3, $1, clock_timestamp()
+           FROM tenant_memberships membership
+           JOIN tenants tenant ON tenant.id = membership.tenant_id AND tenant.status = 'active'
+          WHERE membership.tenant_id = $2
+            AND membership.user_id = $1
+            AND membership.status = 'active'
+            AND membership.role::text IN ('owner', 'admin')
+          FOR UPDATE OF membership, tenant
+         ON CONFLICT (tenant_id) DO UPDATE SET
+           enabled = EXCLUDED.enabled,
+           dnd_enabled = CASE WHEN EXCLUDED.enabled AND phone11_workspace_profile_status_settings.enabled
+             THEN phone11_workspace_profile_status_settings.dnd_enabled ELSE FALSE END,
+           updated_by = EXCLUDED.updated_by,
+           updated_at = clock_timestamp()
+         WHERE EXISTS (
+           SELECT 1 FROM tenant_memberships membership
+           JOIN tenants tenant ON tenant.id = membership.tenant_id AND tenant.status = 'active'
+           WHERE membership.tenant_id = $2
+             AND membership.user_id = $1
+             AND membership.status = 'active'
+             AND membership.role::text IN ('owner', 'admin')
+         )
+         RETURNING tenant_id, enabled, dnd_enabled, updated_by, updated_at`,
+        [actorUserId, tenantId, enabled],
+      );
+      if (!result.rows[0]) throw new ProfileWorkspaceAdminAccessError("Workspace administrator access changed before the setting was saved.");
+      return settingsFromRow(result.rows[0] as Record<string, unknown>);
+    },
+
     self,
 
     async colleagues(userId: number, tenantId: number, userIds: readonly number[]): Promise<Array<WorkspaceProfileStatus & { photoUrl: string | null; photoVersion: string | null }>> {
       await requireWorkspaceMember(userId, tenantId);
-      const rows = await lookup(userId, tenantId, userIds);
+      const rows = (await lookup(userId, tenantId, userIds)).rows;
       const photos = await profilePhotoDescriptors(db, tenantId, rows.map(row => row.userId));
       return rows.map(row => ({ ...row, photoUrl: photos.get(row.userId)?.photoUrl ?? null,
         photoVersion: photos.get(row.userId)?.photoVersion ?? null }));
@@ -115,7 +207,7 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
 
     async update(userId: number, tenantId: number, input: ProfileUpdate): Promise<WorkspaceProfileStatus> {
       const workspace = await requireWorkspaceMember(userId, tenantId);
-      const current = (await lookup(userId, tenantId, [userId]))[0];
+      const current = (await lookup(userId, tenantId, [userId])).rows[0];
       if (!current) throw new ProfileWorkspaceAccessError("Workspace access is unavailable.");
       const writtenAt = now();
       const availability = input.availability
@@ -148,9 +240,13 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
            SELECT $1, $2, $3, $4, $5, $6, $7, clock_timestamp()
              FROM tenant_memberships membership
              JOIN tenants tenant ON tenant.id = membership.tenant_id AND tenant.status = 'active'
+             JOIN phone11_workspace_profile_status_settings settings
+               ON settings.tenant_id = tenant.id AND settings.enabled
+              AND (NOT $12::boolean OR settings.dnd_enabled)
             WHERE membership.tenant_id = $1
               AND membership.user_id = $2
               AND membership.status = 'active'
+            FOR SHARE OF settings
            ON CONFLICT (tenant_id, user_id) DO UPDATE SET
              manual_availability = CASE WHEN $8 THEN EXCLUDED.manual_availability ELSE phone11_workspace_profile_status.manual_availability END,
              manual_availability_expires_at = CASE WHEN $8 THEN EXCLUDED.manual_availability_expires_at ELSE phone11_workspace_profile_status.manual_availability_expires_at END,
@@ -159,6 +255,7 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
                WHEN NOT $9 THEN phone11_workspace_profile_status.status_expires_at
                WHEN EXCLUDED.status_text IS NULL THEN NULL
                WHEN $11 THEN EXCLUDED.status_expires_at
+               WHEN phone11_workspace_profile_status.status_expires_at <= clock_timestamp() THEN NULL
                ELSE phone11_workspace_profile_status.status_expires_at
              END,
              work_location = CASE WHEN $10 THEN EXCLUDED.work_location ELSE phone11_workspace_profile_status.work_location END,
@@ -168,12 +265,20 @@ export function createProfileService(db: ProfileServiceDb, now: () => Date = () 
               JOIN tenants tenant ON tenant.id = membership.tenant_id AND tenant.status = 'active'
               WHERE membership.tenant_id = $1 AND membership.user_id = $2 AND membership.status = 'active'
            )
+           AND EXISTS (
+             SELECT 1 FROM phone11_workspace_profile_status_settings settings
+              WHERE settings.tenant_id = $1 AND settings.enabled
+                AND (NOT $12::boolean OR settings.dnd_enabled)
+           )
            RETURNING user_id`,
           [tenantId, userId, availability, availabilityExpiresAt, statusText, statusExpiresAt, workLocation,
             input.availability !== undefined, input.status !== undefined, input.workLocation !== undefined,
-            input.status?.expiry !== undefined],
+            input.status?.expiry !== undefined, input.availability?.value === "dnd"],
         );
-        if (!written.rows[0]) throw new ProfileWorkspaceAccessError("Workspace access is unavailable.");
+        if (!written.rows[0]) {
+          if (input.availability?.value === "dnd") throw new ProfileDndUnavailableError("Do not disturb is not commissioned for this workspace.");
+          throw new ProfileWorkspaceAccessError("Workspace access is unavailable.");
+        }
       } catch (error) {
         if (error && typeof error === "object" && (error as { code?: unknown }).code === "42P01") {
           throw new ProfileStatusUnavailableError("Profile status is unavailable.");
