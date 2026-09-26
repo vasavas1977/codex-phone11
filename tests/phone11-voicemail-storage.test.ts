@@ -57,6 +57,30 @@ beforeEach(() => {
 });
 
 describe("voicemail storage", () => {
+  it("rejects a redeemed fallback epoch after reassignment and admits the matching owner", async () => {
+    const request = () => fetch(`${base}/recordings/voicemail/admission?tenant_id=12&extension=3001&expected_owner_epoch=${epoch}`, {
+      method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! },
+    });
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 18, voicemail_owner_epoch: "20000000-0000-4000-8000-000000000002" }] });
+    expect((await request()).status).toBe(404);
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [] });
+    expect((await request()).status).toBe(201);
+    expect(mocks.query.mock.calls[1][0]).toContain("FOR SHARE OF e, t, ue, tm");
+    expect(mocks.query.mock.calls[2][1].slice(1)).toEqual([12, 42, 17, epoch]);
+  });
+
+  it("refuses malformed or repeated fallback epochs before querying", async () => {
+    for (const value of ["bad", `${epoch}&expected_owner_epoch=${epoch}`]) {
+      const response = await fetch(`${base}/recordings/voicemail/admission?tenant_id=12&extension=3001&expected_owner_epoch=${value}`, {
+        method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! },
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
   it("issues a durable pre-record admission for an active personal mailbox", async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })

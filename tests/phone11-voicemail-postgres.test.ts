@@ -1,12 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
+import express from "express";
+import type { Server } from "node:http";
 import { URL } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ pool: null as Pool | null }));
 vi.mock("../server/pbx/db", () => ({
   query: (sql: string, values?: unknown[]) => state.pool!.query(sql, values),
+  withTransaction: async (fn: (client: import("pg").PoolClient) => Promise<unknown>) => {
+    const client = await state.pool!.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await fn(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  },
 }));
 
 import { getVoicemails, requireVoicemailStorage, VoicemailStorageUnavailableError } from "../server/pbx/cdr-processor";
@@ -15,6 +29,8 @@ import { countVoicemails, deleteVoicemail, markVoicemailRead } from "../server/p
 
 const socket = process.env.PHONE11_VOICEMAIL_TEST_SOCKET;
 const schema = `phone11_voicemail_${randomUUID().replaceAll("-", "")}`;
+let server: Server | undefined;
+let base: string;
 
 describe.skipIf(!socket)("voicemail isolated PostgreSQL", () => {
   beforeAll(async () => {
@@ -33,12 +49,20 @@ describe.skipIf(!socket)("voicemail isolated PostgreSQL", () => {
       CREATE TABLE extensions (
         id integer PRIMARY KEY, tenant_id integer NOT NULL REFERENCES tenants(id),
         user_id integer REFERENCES users(id), extension_number text NOT NULL, status text NOT NULL,
+        type text NOT NULL DEFAULT 'user',
         deleted_at timestamptz, voicemail_enabled boolean NOT NULL DEFAULT false
       );
       CREATE TABLE user_extensions (user_id integer NOT NULL, extension_id integer NOT NULL REFERENCES extensions(id));
       CREATE TABLE tenant_memberships (user_id integer NOT NULL, tenant_id integer NOT NULL REFERENCES tenants(id), status text NOT NULL);
     `);
     await state.pool.query(await readFile(new URL("../server/pbx/voicemail-storage-migration.sql", import.meta.url), "utf8"));
+    vi.stubEnv("FS_SHARED_SECRET", "synthetic-voicemail-integration-secret-0123456789");
+    const { storageRouter } = await import("../server/pbx/recording-storage");
+    const app = express();
+    app.use("/recordings", storageRouter);
+    server = app.listen(0, "127.0.0.1");
+    await new Promise<void>(resolve => server!.on("listening", resolve));
+    base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   });
 
   beforeEach(async () => {
@@ -61,10 +85,33 @@ describe.skipIf(!socket)("voicemail isolated PostgreSQL", () => {
   });
 
   afterAll(async () => {
+    if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
     if (state.pool) {
       await state.pool.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
       await state.pool.end();
     }
+    vi.unstubAllEnvs();
+  });
+
+  it("rejects an old redeemed epoch after reassignment before making a new admission", async () => {
+    const before = (await state.pool!.query("SELECT voicemail_owner_epoch FROM extensions WHERE id=42")).rows[0].voicemail_owner_epoch;
+    const admit = (epoch: string) => fetch(`${base}/recordings/voicemail/admission?tenant_id=12&extension=3001&expected_owner_epoch=${epoch}`, {
+      method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! },
+    });
+    expect((await admit(before)).status).toBe(201);
+    await state.pool!.query("UPDATE extensions SET user_id=19 WHERE id=42");
+    await state.pool!.query("UPDATE user_extensions SET user_id=19 WHERE extension_id=42");
+    await state.pool!.query("INSERT INTO tenant_memberships VALUES (19,12,'active')");
+    const after = (await state.pool!.query("SELECT voicemail_owner_epoch FROM extensions WHERE id=42")).rows[0].voicemail_owner_epoch;
+    expect(after).not.toBe(before);
+    const count = async () => Number((await state.pool!.query("SELECT count(*) FROM voicemail_deposit_admissions")).rows[0].count);
+    const previousCount = await count();
+    expect((await admit(before)).status).toBe(404);
+    expect(await count()).toBe(previousCount);
+    expect((await admit(after)).status).toBe(201);
+    await state.pool!.query("UPDATE tenant_memberships SET status='suspended' WHERE user_id=19 AND tenant_id=12");
+    expect((await admit(after)).status).toBe(404);
+    expect(await count()).toBe(previousCount + 1);
   });
 
   it("guards the extension tenant and active state at the database boundary", async () => {

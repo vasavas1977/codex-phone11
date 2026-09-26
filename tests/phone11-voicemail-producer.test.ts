@@ -25,6 +25,22 @@ async function fixture() {
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 describe("FreeSWITCH voicemail producer", () => {
+  it("carries fallback ownership through admission and rejects changed retry identity", async () => {
+    const { config } = await fixture();
+    const input = { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: messageUuid };
+    const send = vi.fn(async (url: string) => {
+      expect(new URL(url).searchParams.get("expected_owner_epoch")).toBe(messageUuid);
+      return new Response(JSON.stringify({ message_uuid: messageUuid }), { status: 201 });
+    });
+    await expect(admitVoicemail(config, input, send as typeof fetch)).resolves.toBe(messageUuid);
+    await expect(admitVoicemail(config, input, send as typeof fetch)).resolves.toBe(messageUuid);
+    for (const changed of [undefined, channelUuid]) {
+      await expect(admitVoicemail(config, { ...input, expectedOwnerEpoch: changed }, send as typeof fetch)).rejects.toThrow("Conflicting");
+    }
+    await expect(admitVoicemail(config, { ...input, expectedOwnerEpoch: "bad" }, send as typeof fetch)).rejects.toThrow("Invalid");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it("persists admission before completion and publishes one private relay manifest", async () => {
     const { config, wav } = await fixture();
     const send = vi.fn(async (url: string, init: RequestInit) => {

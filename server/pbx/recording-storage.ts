@@ -194,15 +194,22 @@ storageRouter.post("/upload", verifyFsAuth, raw({ type: ["audio/wav", "audio/x-w
 storageRouter.post("/voicemail/admission", verifyFsAuth, async (req, res) => {
   const tenantId = typeof req.query.tenant_id === "string" ? Number(req.query.tenant_id) : NaN;
   const extension = req.query.extension;
-  if (!validTenant(tenantId) || !validExtension(extension)) {
+  const expectedOwnerEpoch = req.query.expected_owner_epoch;
+  if (!validTenant(tenantId) || !validExtension(extension) ||
+      (expectedOwnerEpoch !== undefined && !validDepositUuid(expectedOwnerEpoch))) {
     res.status(400).json({ error: "Provide a valid tenant and personal mailbox" });
     return;
   }
   try {
     const messageUuid = await withTransaction(async client => {
       // The row lock serializes this admission with an admin reassignment.
-      const mailbox = await client.query(`${ACTIVE_VOICEMAIL_MAILBOX} FOR SHARE OF e`, [tenantId, extension]);
+      const mailbox = await client.query(`${ACTIVE_VOICEMAIL_MAILBOX} FOR SHARE OF e, t, ue, tm`, [tenantId, extension]);
       if (mailbox.rows.length !== 1) return null;
+      // A dedicated fallback ingress must carry the epoch returned by its
+      // one-use redemption. Never silently admit a newly assigned owner after
+      // routing authority was checked for the previous one.
+      if (expectedOwnerEpoch !== undefined &&
+          mailbox.rows[0].voicemail_owner_epoch !== expectedOwnerEpoch.toLowerCase()) return null;
       const id = randomUUID();
       await client.query(
         `INSERT INTO voicemail_deposit_admissions

@@ -25,7 +25,7 @@ export type ProducerConfig = {
   mailboxRoots: Record<string, string>;
 };
 
-export type AdmissionInput = { channelUuid: string; tenantId: number; extension: string };
+export type AdmissionInput = { channelUuid: string; tenantId: number; extension: string; expectedOwnerEpoch?: string };
 export type CompletionInput = { channelUuid: string; voicemailFilePath: string; callerNumber?: string; callerName?: string; durationSeconds?: number };
 type Pending = AdmissionInput & { messageUuid: string };
 
@@ -40,7 +40,9 @@ function validConfig(config: ProducerConfig): URL {
 
 function validateAdmission(input: AdmissionInput): void {
   if (typeof input.channelUuid !== "string" || !UUID.test(input.channelUuid) || !Number.isSafeInteger(input.tenantId) || input.tenantId <= 0 ||
-      typeof input.extension !== "string" || !/^[1-9][0-9]{0,15}$/.test(input.extension)) throw new Error("Invalid voicemail admission identity");
+      typeof input.extension !== "string" || !/^[1-9][0-9]{0,15}$/.test(input.extension) ||
+      (input.expectedOwnerEpoch !== undefined &&
+        (typeof input.expectedOwnerEpoch !== "string" || !UUID.test(input.expectedOwnerEpoch)))) throw new Error("Invalid voicemail admission identity");
 }
 
 function validateCompletion(input: CompletionInput): void {
@@ -130,13 +132,15 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
   const pendingPath = path.join(pendingDir, `${input.channelUuid}.json`);
   try {
     const existing = pendingFrom(await readPrivateJson(pendingPath), input.channelUuid);
-    if (existing.tenantId !== input.tenantId || existing.extension !== input.extension) throw new Error("Conflicting voicemail admission identity");
+    if (existing.tenantId !== input.tenantId || existing.extension !== input.extension ||
+        existing.expectedOwnerEpoch !== input.expectedOwnerEpoch) throw new Error("Conflicting voicemail admission identity");
     return existing.messageUuid;
   } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
 
   endpoint.pathname += "/admission";
   endpoint.searchParams.set("tenant_id", String(input.tenantId));
   endpoint.searchParams.set("extension", input.extension);
+  if (input.expectedOwnerEpoch !== undefined) endpoint.searchParams.set("expected_owner_epoch", input.expectedOwnerEpoch);
   const response = await send(endpoint.toString(), {
     method: "POST", headers: { "x-fs-secret": config.integrationSecret }, signal: AbortSignal.timeout(10_000),
   });
