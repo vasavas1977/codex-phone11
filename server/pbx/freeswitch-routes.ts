@@ -16,6 +16,7 @@ import { CdrInputError, parseCdrBody, requireCdrAuth, resolveCdrTenant } from ".
 import { query } from "./db";
 import { decodeDidInternalTarget } from "./did-route-target";
 import { requireIntegrationSecret } from "./integration-auth";
+import { requireXmlCurlAuth } from "./freeswitch-xml-auth";
 import { cacheGetOrSet, rateLimitCheck, invalidateCache } from "./redis";
 import { normalizeToE164, THAI_EMERGENCY_NUMBERS } from "./e164";
 import { processCdr } from "./cdr-processor";
@@ -36,7 +37,7 @@ const verifyFsAuth = requireIntegrationSecret("FS_SHARED_SECRET", "x-fs-secret")
  * 
  * Per Opus review: Cache responses in Redis (30s TTL) with DB fallback.
  */
-router.post("/directory", verifyFsAuth, async (req: Request, res: Response) => {
+router.post("/directory", requireXmlCurlAuth, async (req: Request, res: Response) => {
   try {
     const { user, domain, action, purpose } = req.body;
 
@@ -81,7 +82,7 @@ router.post("/directory", verifyFsAuth, async (req: Request, res: Response) => {
 // ============================================================================
 // 2. Dialplan Routing (mod_xml_curl)
 // ============================================================================
-router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
+router.post("/dialplan", requireXmlCurlAuth, async (req: Request, res: Response) => {
   try {
     const {
       "Caller-Destination-Number": destNumber,
