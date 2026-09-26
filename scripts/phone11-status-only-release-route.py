@@ -59,7 +59,7 @@ STATUS_MANIFEST = STATUS_ROOT / "manifest.json"
 STATUS_BACKUP_PROOF = STATUS_ROOT / "backup-proof.json"
 STATUS_RESTORE_PROOF = STATUS_ROOT / "restore-proof.json"
 STATUS_RECEIPT = Path("/var/lib/phone11-profile-status/receipt.json")
-STATUS_OPERATOR_SHA = "d1175a87f1388e448f9c9c84efa82e49b883190caa1ac938ec9cc3a147025474"
+STATUS_OPERATOR_SHA = "f6b2d09d00f77c6c59d943ba5507b994da89654c9a8034a76f9aa2df2cc41e67"
 STATUS_SQL_SHA = "92612ccd3c216cd46ac000e51c146bfdaa06117dea12211d64b70fe20b87bcc8"
 # Direct-meeting migration remains independently pinned to its original 3010
 # target; the database identity is compared with the new gate inventories.

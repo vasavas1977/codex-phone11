@@ -410,13 +410,18 @@ async function catalog(client) {
   // resolve role OIDs so a faithful restore in a fresh cluster compares equal.
   const relations = (await client.query(`SELECT n.nspname schema,c.relname name,c.relkind kind,
     pg_get_userbyid(c.relowner) owner_name,
-    COALESCE((SELECT jsonb_agg(jsonb_build_array(
-      CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END,
-      pg_get_userbyid(x.grantor),x.privilege_type,x.is_grantable)
-      ORDER BY CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END,
-               pg_get_userbyid(x.grantor),x.privilege_type,x.is_grantable)
-      FROM aclexplode(COALESCE(c.relacl,acldefault(
-        (CASE WHEN c.relkind='S' THEN 's' ELSE 'r' END)::"char",c.relowner))) x),'[]'::jsonb) acl,
+    COALESCE((SELECT jsonb_agg(acl_entry.entry ORDER BY acl_entry.entry)
+      FROM (SELECT jsonb_build_array(
+        CASE WHEN x.grantee=0 THEN jsonb_build_array('public')
+             WHEN grantee.rolname IS NOT NULL THEN jsonb_build_array('role',grantee.rolname)
+             ELSE jsonb_build_array('oid',x.grantee::text) END,
+        CASE WHEN grantor.rolname IS NOT NULL THEN jsonb_build_array('role',grantor.rolname)
+             ELSE jsonb_build_array('oid',x.grantor::text) END,
+        x.privilege_type,x.is_grantable) entry
+        FROM aclexplode(COALESCE(c.relacl,acldefault(
+          (CASE WHEN c.relkind='S' THEN 's' ELSE 'r' END)::"char",c.relowner))) x
+        LEFT JOIN pg_roles grantee ON grantee.oid=x.grantee
+        LEFT JOIN pg_roles grantor ON grantor.oid=x.grantor) acl_entry),'[]'::jsonb) acl,
     c.relrowsecurity row_security,c.relforcerowsecurity force_row_security
     FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f')
@@ -426,7 +431,7 @@ async function catalog(client) {
   const indexes = (await client.query("SELECT ns.nspname schema,t.relname table_name,i.relname name,pg_get_indexdef(i.oid) definition FROM pg_index x JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_class t ON t.oid=x.indrelid JOIN pg_namespace ns ON ns.oid=t.relnamespace WHERE ns.nspname='public' ORDER BY ns.nspname,t.relname,i.relname")).rows;
   const triggers = (await client.query("SELECT n.nspname schema,c.relname table_name,t.tgname name,pg_get_triggerdef(t.oid,true) definition FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal ORDER BY n.nspname,c.relname,t.tgname")).rows;
   const functions = (await client.query("SELECT n.nspname schema,p.proname name,p.prokind kind,pg_get_function_identity_arguments(p.oid) arguments,pg_get_function_result(p.oid) result,l.lanname language,p.provolatile volatility,p.prosecdef security_definer,CASE WHEN p.prokind IN ('f','p') THEN pg_get_functiondef(p.oid) ELSE NULL END definition FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang WHERE n.nspname='public' ORDER BY n.nspname,p.proname,arguments")).rows;
-  const policies = (await client.query("SELECT n.nspname schema,c.relname table_name,p.polname name,p.polcmd command,p.polpermissive permissive,ARRAY(SELECT CASE WHEN role_oid=0 THEN 'PUBLIC' ELSE pg_get_userbyid(role_oid) END FROM unnest(p.polroles) role_oid ORDER BY 1) roles,pg_get_expr(p.polqual,p.polrelid,true) using_expression,pg_get_expr(p.polwithcheck,p.polrelid,true) check_expression FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY n.nspname,c.relname,p.polname")).rows;
+  const policies = (await client.query("SELECT n.nspname schema,c.relname table_name,p.polname name,p.polcmd command,p.polpermissive permissive,COALESCE((SELECT jsonb_agg(pol_role.entry ORDER BY pol_role.entry) FROM (SELECT CASE WHEN role_oid=0 THEN jsonb_build_array('public') WHEN r.rolname IS NOT NULL THEN jsonb_build_array('role',r.rolname) ELSE jsonb_build_array('oid',role_oid::text) END entry FROM unnest(p.polroles) role_oid LEFT JOIN pg_roles r ON r.oid=role_oid) pol_role),'[]'::jsonb) roles,pg_get_expr(p.polqual,p.polrelid,true) using_expression,pg_get_expr(p.polwithcheck,p.polrelid,true) check_expression FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' ORDER BY n.nspname,c.relname,p.polname")).rows;
   const defaultAcl = (await client.query("SELECT COALESCE(n.nspname,'') schema,pg_get_userbyid(d.defaclrole) role_name,d.defaclobjtype object_type,d.defaclacl::text acl FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid=d.defaclnamespace ORDER BY schema,role_name,object_type,acl")).rows;
   return {relations,columns,constraints,indexes,triggers,functions,policies,defaultAcl};
 }

@@ -146,6 +146,9 @@ privileges. The operator expands the effective grants and resolves role IDs to
 names, so that representation change does not reject a faithful restore;
 additional or missing grants still change the fingerprint. The database's own
 identity, including its OID, is pinned separately for the live apply.
+Public grants and grants to a quoted role named `"PUBLIC"` have distinct
+structured identities in relation ACLs and policy roles; a change between them
+must fail the catalog comparison.
 
 ```sh
 python3 /opt/phone11ai/status-only-release-20260926/migration/phone11-profile-status-restore-proof.py \

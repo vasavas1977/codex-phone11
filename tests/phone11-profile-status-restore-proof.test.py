@@ -374,7 +374,7 @@ class CrossClusterCatalogTests(unittest.TestCase):
             cls.psql_run(0, "CREATE DATABASE phone11_real", database="postgres")
             cls.psql_run(1, "CREATE DATABASE extra_db", database="postgres")
             cls.psql_run(1, "CREATE DATABASE phone11_real", database="postgres")
-            cls.psql_run(0, "CREATE ROLE p11owner; CREATE ROLE p11reader;")
+            cls.psql_run(0, 'CREATE ROLE p11owner; CREATE ROLE p11reader; CREATE ROLE "PUBLIC";')
             cls.psql_run(0, """
                 CREATE TABLE public.p11_equivalent (id integer, value text);
                 ALTER TABLE public.p11_equivalent OWNER TO p11owner;
@@ -395,7 +395,7 @@ class CrossClusterCatalogTests(unittest.TestCase):
                   GRANT SELECT ON TABLES TO p11reader;
             """)
             # Different OIDs for both owner and grantee in the fresh cluster.
-            cls.psql_run(1, "CREATE ROLE extra_role; CREATE ROLE p11reader; CREATE ROLE p11owner;")
+            cls.psql_run(1, 'CREATE ROLE extra_role; CREATE ROLE p11reader; CREATE ROLE p11owner; CREATE ROLE "PUBLIC";')
             dump = cls.base / "backup.dump"
             with dump.open("wb") as output:
                 subprocess.run([cls.pg_dump, "-Fc", "-h", str(cls.clusters[0][1]),
@@ -474,6 +474,33 @@ class CrossClusterCatalogTests(unittest.TestCase):
         self.assertNotEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
         self.psql_run(1, "REVOKE USAGE ON SEQUENCE public.p11_owner_default_seq FROM p11reader")
         self.assertEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+
+    def test_quoted_public_role_cannot_impersonate_global_public_grant_or_policy(self) -> None:
+        quoted_grant = 'GRANT SELECT ON public.p11_owner_default TO "PUBLIC"'
+        quoted_revoke = 'REVOKE SELECT ON public.p11_owner_default FROM "PUBLIC"'
+        global_grant = 'GRANT SELECT ON public.p11_owner_default TO PUBLIC'
+        global_revoke = 'REVOKE SELECT ON public.p11_owner_default FROM PUBLIC'
+        policy_create = 'CREATE POLICY p11_public_identity ON public.p11_equivalent TO "PUBLIC" USING (true)'
+        policy_drop = 'DROP POLICY IF EXISTS p11_public_identity ON public.p11_equivalent'
+        try:
+            for cluster in (0, 1):
+                self.psql_run(cluster, quoted_grant)
+                self.psql_run(cluster, policy_create)
+            baseline = self.snapshot(0)["catalog_fingerprint"]
+            self.assertEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+
+            self.psql_run(1, quoted_revoke + '; ' + global_grant)
+            self.assertNotEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+            self.psql_run(1, global_revoke + '; ' + quoted_grant)
+            self.assertEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+
+            self.psql_run(1, 'ALTER POLICY p11_public_identity ON public.p11_equivalent TO PUBLIC')
+            self.assertNotEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+            self.psql_run(1, 'ALTER POLICY p11_public_identity ON public.p11_equivalent TO "PUBLIC"')
+            self.assertEqual(baseline, self.snapshot(1)["catalog_fingerprint"])
+        finally:
+            self.psql_run(1, global_revoke + '; ' + quoted_revoke + '; ' + policy_drop)
+            self.psql_run(0, quoted_revoke + '; ' + policy_drop)
 
     def test_column_acl_and_default_acl_drift_are_detected(self) -> None:
         base = self.snapshot(1)["catalog_fingerprint"]
