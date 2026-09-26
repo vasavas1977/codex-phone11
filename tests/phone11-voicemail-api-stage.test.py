@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -49,6 +50,58 @@ MANIFEST = {
 
 
 class StageTests(unittest.TestCase):
+    def test_legacy_build_context_is_archived_and_secret_files_stay_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = root / "build"
+            context.mkdir(mode=0o700)
+            legacy = b"FROM sha256:parent\nCOPY --chmod=0644 index.mjs /app/dist/index.mjs\n"
+            current = b"FROM sha256:parent\nCOPY index.mjs /app/dist/index.mjs\n"
+            bundle_data = b"nonsecret compiled API bundle"
+            stage.create_once(context / "Dockerfile", legacy)
+            stage.create_once(context / "index.mjs", bundle_data)
+            secret_file = root / "runtime.env"
+            stage.create_once(secret_file, b"SECRET=never-in-build-context\n")
+            owner = os.getuid()
+            stage.ensure_build_context(context, current, legacy, bundle_data, owner)
+            archive = root / ("build-legacy-" + stage.sha(legacy)[:12] + "-" +
+                              stage.sha(bundle_data)[:12])
+            self.assertEqual({p.name for p in context.iterdir()}, {"Dockerfile", "index.mjs"})
+            self.assertEqual(stat.S_IMODE(context.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE((context / "index.mjs").stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((archive / "index.mjs").stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(secret_file.stat().st_mode), 0o600)
+            self.assertEqual((context / "index.mjs").read_bytes(), bundle_data)
+            stage.ensure_build_context(context, current, legacy, bundle_data, owner)
+            stage.create_once(context / "runtime.env", b"must-not-enter-image")
+            with self.assertRaisesRegex(stage.Refused, "build_context_drift"):
+                stage.ensure_build_context(context, current, legacy, bundle_data, owner)
+            (context / "runtime.env").unlink()
+            (context / "index.mjs").write_bytes(b"X" * len(bundle_data))
+            with self.assertRaisesRegex(stage.Refused, "build_context_drift"):
+                stage.ensure_build_context(context, current, legacy, bundle_data, owner)
+
+    def test_interrupted_build_context_migration_resumes_only_pinned_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = root / "build"
+            legacy = b"COPY --chmod=0644 index.mjs /app/dist/index.mjs\n"
+            current = b"COPY index.mjs /app/dist/index.mjs\n"
+            bundle_data = b"nonsecret bundle"
+            archive = root / ("build-legacy-" + stage.sha(legacy)[:12] + "-" +
+                              stage.sha(bundle_data)[:12])
+            archive.mkdir(mode=0o700)
+            stage.create_once(archive / "Dockerfile", legacy)
+            stage.create_once(archive / "index.mjs", bundle_data)
+            next_context = root / ("build-next-" + stage.sha(current)[:12] + "-" +
+                                   stage.sha(bundle_data)[:12])
+            next_context.mkdir(mode=0o700)
+            stage.create_once(next_context / "Dockerfile", current)
+            stage.ensure_build_context(context, current, legacy, bundle_data, os.getuid())
+            self.assertEqual((context / "index.mjs").read_bytes(), bundle_data)
+            self.assertEqual(stat.S_IMODE((context / "index.mjs").stat().st_mode), 0o644)
+            self.assertFalse(next_context.exists())
+
     def test_inspect_accepts_only_exact_absent_candidate_error(self):
         with patch.object(stage.subprocess, "run", return_value=SimpleNamespace(
                 returncode=1, stdout=b"[]\n",

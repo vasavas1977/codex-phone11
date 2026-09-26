@@ -218,11 +218,12 @@ def private_state() -> None:
          "state_directory")
 
 
-def create_once(path: Path, data: bytes) -> None:
+def create_once(path: Path, data: bytes, mode: int = 0o600) -> None:
+    need(mode in (0o600, 0o644), "file_mode")
     temporary = path.with_name("." + path.name + "." + secrets.token_hex(8))
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        os.fchmod(fd, 0o600)
+        os.fchmod(fd, mode)
         with os.fdopen(fd, "wb", closefd=False) as stream:
             stream.write(data)
             stream.flush()
@@ -248,6 +249,89 @@ def locked() -> int:
     return fd
 
 
+def pinned_build_file(path: Path, expected: bytes, mode: int, owner_uid: int = 0) -> None:
+    before = path.lstat()
+    need(stat.S_ISREG(before.st_mode) and before.st_uid == owner_uid and
+         stat.S_IMODE(before.st_mode) == mode and before.st_size == len(expected) and
+         before.st_size <= MAX_BUNDLE, "build_context_drift")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        after = os.fstat(fd)
+        need((before.st_dev, before.st_ino, before.st_size, before.st_mode) ==
+             (after.st_dev, after.st_ino, after.st_size, after.st_mode) and
+             os.read(fd, len(expected) + 1) == expected, "build_context_drift")
+    finally:
+        os.close(fd)
+
+
+def pinned_build_directory(path: Path, dockerfile: bytes, bundle_data: bytes,
+                           bundle_mode: int, owner_uid: int = 0) -> None:
+    st = path.lstat()
+    need(stat.S_ISDIR(st.st_mode) and st.st_uid == owner_uid and
+         stat.S_IMODE(st.st_mode) == 0o700 and
+         {p.name for p in path.iterdir()} == {"Dockerfile", "index.mjs"},
+         "build_context_drift")
+    pinned_build_file(path / "Dockerfile", dockerfile, 0o600, owner_uid)
+    pinned_build_file(path / "index.mjs", bundle_data, bundle_mode, owner_uid)
+
+
+def complete_build_directory(path: Path, dockerfile: bytes, bundle_data: bytes,
+                             owner_uid: int = 0) -> None:
+    if not (path.exists() or path.is_symlink()):
+        path.mkdir(mode=0o700)
+    st = path.lstat()
+    need(stat.S_ISDIR(st.st_mode) and st.st_uid == owner_uid and
+         stat.S_IMODE(st.st_mode) == 0o700, "build_context_drift")
+    present = {p.name for p in path.iterdir()}
+    need(present <= {"Dockerfile", "index.mjs"}, "build_context_drift")
+    for name, data, mode in (("Dockerfile", dockerfile, 0o600),
+                             ("index.mjs", bundle_data, 0o644)):
+        target = path / name
+        if name in present:
+            pinned_build_file(target, data, mode, owner_uid)
+        else:
+            # The bundle is nonsecret; all other operator artifacts keep 0600.
+            create_once(target, data, mode)
+    pinned_build_directory(path, dockerfile, bundle_data, 0o644, owner_uid)
+
+
+def ensure_build_context(context: Path, dockerfile: bytes, legacy_dockerfile: bytes,
+                         bundle_data: bytes, owner_uid: int = 0) -> None:
+    archive = context.with_name("build-legacy-" + sha(legacy_dockerfile)[:12] +
+                                "-" + sha(bundle_data)[:12])
+    next_context = context.with_name("build-next-" + sha(dockerfile)[:12] +
+                                     "-" + sha(bundle_data)[:12])
+    archive_exists = archive.exists() or archive.is_symlink()
+    if archive_exists:
+        pinned_build_directory(archive, legacy_dockerfile, bundle_data, 0o600, owner_uid)
+    context_exists = context.exists() or context.is_symlink()
+    if context_exists:
+        try:
+            pinned_build_directory(context, dockerfile, bundle_data, 0o644, owner_uid)
+            return
+        except Refused:
+            pinned_build_directory(context, legacy_dockerfile, bundle_data, 0o600, owner_uid)
+            need(not archive_exists and not (next_context.exists() or next_context.is_symlink()),
+                 "build_archive_collision")
+            context.rename(archive)
+            directory = os.open(context.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    # A deterministic staging directory makes a crash after the archive rename
+    # resumable without replacing either the old evidence or partially written bytes.
+    complete_build_directory(next_context, dockerfile, bundle_data, owner_uid)
+    need(not (context.exists() or context.is_symlink()), "build_context_collision")
+    next_context.rename(context)
+    directory = os.open(context.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    pinned_build_directory(context, dockerfile, bundle_data, 0o644, owner_uid)
+
+
 def overlay_image(m: dict[str, Any], manifest_sha: str) -> str:
     old, new = m["predecessor"], m["release"]
     existing_receipt = STATE / "image.json"
@@ -257,23 +341,16 @@ def overlay_image(m: dict[str, Any], manifest_sha: str) -> str:
              "image_receipt")
         check_image(m, record.get("image"))
         return record["image"]
-    dockerfile = (f"FROM {old['image']}\nCOPY --chmod=0644 index.mjs {BUNDLE_TARGET}\n"
+    dockerfile = (f"FROM {old['image']}\nCOPY index.mjs {BUNDLE_TARGET}\n"
                   f"LABEL com.phone11.source-sha={new['source_sha']} "
                   f"com.phone11.bundle-sha256={new['bundle_sha256']} "
                   f"com.phone11.lock-sha256={new['lock_sha256']} "
                   f"com.phone11.candidate-build={new['build']} "
                   f"com.phone11.overlay-parent-image-id={old['image']} "
                   "com.phone11.overlay-kind=bundle-only\n")
+    legacy_dockerfile = dockerfile.replace("COPY index.mjs", "COPY --chmod=0644 index.mjs", 1)
     context = STATE / "build"
-    if not context.exists():
-        context.mkdir(mode=0o700)
-    need(stat.S_IMODE(context.lstat().st_mode) == 0o700 and context.lstat().st_uid == 0, "build_directory")
-    for name, data in (("Dockerfile", dockerfile.encode()), ("index.mjs", bundle(m))):
-        target = context / name
-        if target.exists():
-            need(private_read(target, MAX_BUNDLE) == data, "build_context_drift")
-        else:
-            create_once(target, data)
+    ensure_build_context(context, dockerfile.encode(), legacy_dockerfile.encode(), bundle(m))
     tag = f"phone11-voicemail-stage:{new['source_sha'][:12]}-{new['bundle_sha256'][:12]}"
     run(["docker", "build", "--network=none", "--pull=false", "-t", tag, str(context)], timeout=180)
     image_result = json.loads(run(["docker", "image", "inspect", tag]))
