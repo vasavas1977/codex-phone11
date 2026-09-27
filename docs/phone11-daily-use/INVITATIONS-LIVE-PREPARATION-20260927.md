@@ -201,6 +201,65 @@ Call analytics loads and its 30-day selector displays recorded data (29 calls).
 This verifies page retrieval and interaction, not the completeness of historical
 call outcomes or physical-device calling.
 
-Still pending: live invitation schema apply, protected Resend invitation
-configuration, capability activation, and delivery/acceptance/sign-in for an
-explicitly designated Phone11 recipient. The Super Number recipient is excluded.
+## Owner-authorized enablement
+
+The owner explicitly requested **enable** after the feature-off release.
+This authorizes the invitation capability; no first Phone11 recipient or
+invitation send was designated. The Super Number recipient remains excluded.
+
+Live schema apply passed after a fresh protected backup and independent review.
+
+- Migration operator SHA256:
+  `84a42474e2535530ca6c70c9c908ca75409fbdf2b9309bd12aabb84a92ab23d5`.
+- Five focused operator tests passed. Prepare checks the source catalog against
+  rehearsal 05; apply requires an unchanged backup no older than 15 minutes.
+- Fresh backup SHA256:
+  `c94cb13e7ffd83e4b9ef1fd66f8d22440848d81c8f876c3c9f27ac25a421a033`.
+- Backup and receipt directory:
+  `/var/lib/phone11-invitations-release-20260927/live-schema` (root 0700).
+- SQL SHA256 remains `0247663e589bba73d542c6a815ebee7081cc7326cc05b47001bdbc181ccaf93b`.
+- Apply plus postflight took 0.361 seconds; two expected tables, 16 invitation
+  columns and three critical unique indexes passed readiness checks.
+- Full after catalog matches rehearsal `82fea678a0764f9ba9addc2fa7898d60cc45d37cc6a6ec9593a5cbc076121387`.
+  Existing-object catalog remains `1089dc2dc4fc1d1ca328f7b02c1cf4b288b1723d51f9fd24bdffeada331212a4`.
+- Do not automatically drop additive schema on disable; retain invitation/audit
+  records, and route to the guarded 3014 baseline only.
+
+### Enabled API and live acceptance
+
+- Independently reviewed enable operator SHA256:
+  `754eb08314c60c3212ab5d4c29ab1c529119b01f1636f4db76a60d7ce889c109`.
+  Seven focused tests passed, including schema drift, routing and stage retry.
+- Stage and activate both passed. They recheck the full rehearsal catalog,
+  exact image, private loopback binding, inherited runtime and healthy startup.
+- Enabled container `cp11-api-candidate-invitations-enabled` on loopback 3015:
+  `2d3627f9dc6354ce34f69d9c7dad31493cd04441cb44e5ae86d8f76ea52d28d6`.
+  Same reviewed image `sha256:0942f8a6dd17f2919e6631adbc55318e2e8693ff9f869f90fa26d8327950b47d`,
+  source `b3ed0e71e1683cd3eca503bee902a221b2c3e3ca`, build `invitations-on-b3ed0e7`.
+- Both public tRPC routes now target 3015. API Nginx SHA256:
+  `29c7be9fc516e3bb495400f1deb2619ff57b3b913d96b40cfb19e2e63b97f6b0`.
+  Auth, voicemail HTTP and other routing bytes remain unchanged.
+- Existing authorized Resend key/sender were copied only inside the API host
+  into root-owned 0600 runtime configuration. No secret was printed or exported.
+  Sender: `Phone11 <noreply@phone11.ai>`; origin `https://1toall.phone11.ai`.
+- Protected stage state: `/var/lib/phone11-invitations-enable-20260927`.
+  Applied evidence: `/var/lib/phone11-invitations-release-20260927/enable-applied.json`.
+- Signed-in People page displays **Invitations**, **Invite people**, and the
+  empty Recent invitations list. The form opens with Member selected, rejects
+  a blank email locally, and cancels correctly. Existing two users still load.
+- Public nonexistent-token inspection reaches enabled invitation validation and
+  returns the intended generic 400 BAD_REQUEST; unauthenticated availability
+  remains 401. Initial manual probe expected 404 incorrectly; source confirms
+  invalid invitation tokens intentionally return 400, and the corrected probe
+  passed with the expected message.
+- Postflight: all eight existing service identity/configuration hashes remain
+  unchanged; enabled API is healthy. Database has two users, zero workspace
+  invitations and zero invitation events. No invitation email was sent.
+
+Operational disable command (not run during acceptance):
+`sudo python3 /var/lib/phone11-invitations-release-20260927/enable-operator/phone11-invitations-enable.py disable`.
+This returns only the two public tRPC routes to healthy guarded 3014; preserve
+the additive schema and never route new invited users to unguarded 3013.
+
+Invitation capability is enabled. Actual email delivery, recipient receipt,
+acceptance and sign-in remain untested until a Phone11 recipient is designated.
