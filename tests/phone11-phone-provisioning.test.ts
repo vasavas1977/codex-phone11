@@ -21,7 +21,7 @@ vi.mock("../server/pbx/sip-secrets", () => ({
 }));
 
 import { computeHA1, computeHA1B, createSipCredentials } from "../server/pbx/sip-secrets";
-import { assignExtensionToUser, createExtension, ensurePilotExtensionForUser, getPhoneConfig } from "../server/phone-provisioning";
+import { assignExtensionToUser, createExtension, ensurePilotExtensionForUser, getPhoneConfig, listExtensions } from "../server/phone-provisioning";
 
 const assignedExtension = {
   id: 3001,
@@ -61,6 +61,15 @@ describe("Phone11 phone provisioning ownership", () => {
     });
     process.env.OWNER_OPEN_ID = "owner-open-id";
     delete process.env.PHONE11_PILOT_AUTO_PROVISION_USER_IDS;
+  });
+
+  it("redacts legacy SIP passwords from the organization extension list", async () => {
+    state.pool.query.mockImplementation(async (sql: string) =>
+      sql.includes("SELECT e.*, ue.user_id as assigned_user_id")
+        ? { rows: [{ id: 41, extension_number: "4101", sip_password: "legacy-secret" }] }
+        : { rows: [] },
+    );
+    await expect(listExtensions(7)).resolves.toEqual([{ id: 41, extension_number: "4101" }]);
   });
 
   it("returns the extension already assigned to the authenticated user", async () => {

@@ -182,6 +182,51 @@ async function requireAssignableTenantMember(
   }
 }
 
+const SIP_DOMAIN = "sip.phone11.ai";
+
+/** Kamailio's subscriber URI is global, including across workspaces. */
+async function lockSipUri(execute: SqlQuery, username: string, domain: string) {
+  await execute("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [username, domain]);
+}
+
+async function requireUnambiguousSipUri(
+  execute: SqlQuery,
+  username: string,
+  domain: string,
+  ownExtensionId?: number,
+  ownAccountId?: number,
+) {
+  const [extensions, accounts] = await Promise.all([
+    execute(
+      `SELECT id FROM extensions
+       WHERE deleted_at IS NULL AND id IS DISTINCT FROM $3
+         AND COALESCE(NULLIF(sip_username, ''), extension_number) = $1
+         AND COALESCE(NULLIF(sip_domain, ''), $2) = $2
+       LIMIT 1`,
+      [username, domain, ownExtensionId ?? null],
+    ),
+    execute(
+      `SELECT id FROM sip_accounts
+       WHERE status = 'active' AND deleted_at IS NULL AND id IS DISTINCT FROM $3
+         AND sip_username = $1 AND sip_domain = $2
+       LIMIT 1`,
+      [username, domain, ownAccountId ?? null],
+    ),
+  ]);
+  if (extensions.rows.length || accounts.rows.length) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: "This SIP address is already in use",
+    });
+  }
+}
+
+function publicExtension(row: Record<string, any>) {
+  const safe = { ...row };
+  delete safe.sip_password;
+  return safe;
+}
+
 async function phoneNumberSchemaAvailable(): Promise<boolean> {
   return (await readManagementCapabilities()).phoneNumbers;
 }
@@ -673,7 +718,7 @@ export const pbxRouter = router({
         ]);
 
         return buildPaginatedResponse(
-          dataResult.rows,
+          dataResult.rows.map(publicExtension),
           parseInt(countResult.rows[0]?.total || "0"),
           input || {},
         );
@@ -695,7 +740,7 @@ export const pbxRouter = router({
           [input.id, tc.tenantId],
         );
         if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
-        return result.rows[0];
+        return publicExtension(result.rows[0]);
       }),
 
     /** Create a new extension with SIP account */
@@ -726,13 +771,29 @@ export const pbxRouter = router({
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
-        return withTransaction(async (client) => {
+        const created = await withTransaction(async (client) => {
           if (input.userId !== undefined) {
             await requireAssignableTenantMember(
               (sql, parameters) => client.query(sql, parameters),
               input.userId,
               tc.tenantId,
             );
+          }
+
+          // The legacy Kamailio subscriber table owns this URI globally.
+          // Use the same transaction lock as phone-provisioning.createExtension.
+          await lockSipUri((sql, parameters) => client.query(sql, parameters), input.extensionNumber, SIP_DOMAIN);
+          await requireUnambiguousSipUri(
+            (sql, parameters) => client.query(sql, parameters),
+            input.extensionNumber,
+            SIP_DOMAIN,
+          );
+          const subscriber = await client.query(
+            `SELECT id FROM subscriber WHERE username = $1 AND domain = $2`,
+            [input.extensionNumber, SIP_DOMAIN],
+          );
+          if (subscriber.rows.length) {
+            throw new TRPCError({ code: "CONFLICT", message: "This SIP address is already in use" });
           }
 
           // Check uniqueness
@@ -747,11 +808,20 @@ export const pbxRouter = router({
             });
           }
 
-          // Create extension
+          const creds = createSipCredentials(input.extensionNumber, SIP_DOMAIN, SIP_DOMAIN);
+
+          // All three credential records must commit together. A returned
+          // one-time password is valid only after this transaction commits.
+          await client.query(
+            `INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [creds.sipUsername, creds.sipDomain, creds.plaintextPassword, creds.ha1, creds.ha1b],
+          );
+
           const extResult = await client.query(
-            `INSERT INTO extensions (tenant_id, user_id, extension_number, display_name, type, 
+            `INSERT INTO extensions (tenant_id, org_id, user_id, extension_number, display_name, type,
                                      sip_username, sip_domain, sip_password, caller_id_name, caller_id_number, transport, status)
-             VALUES ($1, $2, $3, $4, $5, $6, 'sip.phone11.ai', '', $7, $8, $9, 'active')
+             VALUES ($1, $1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10, 'active')
              RETURNING *`,
             [
               tc.tenantId,
@@ -759,7 +829,8 @@ export const pbxRouter = router({
               input.extensionNumber,
               input.displayName || `Extension ${input.extensionNumber}`,
               input.type,
-              input.extensionNumber,
+              creds.sipUsername,
+              creds.sipDomain,
               input.callerIdName || null,
               input.callerIdNumber || null,
               input.transport,
@@ -767,14 +838,11 @@ export const pbxRouter = router({
           );
           const ext = extResult.rows[0];
 
-          // Create SIP account with proper encryption
-          const creds = createSipCredentials(input.extensionNumber);
-
           await client.query(
             `INSERT INTO sip_accounts 
-              (tenant_id, extension_id, user_id, sip_username, sip_domain, ha1, ha1b,
+              (tenant_id, org_id, extension_id, user_id, sip_username, sip_domain, ha1, ha1b,
                secret_ciphertext, secret_iv, secret_tag, dek_id, transport_preference, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'active')`,
+             VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'active')`,
             [
               tc.tenantId,
               ext.id,
@@ -791,23 +859,24 @@ export const pbxRouter = router({
             ],
           );
 
-          // Audit log
-          await writeAuditLog({
-            tenantId: tc.tenantId,
-            actorUserId: ctx.user!.id,
-            action: "create",
-            resourceType: "extension",
-            resourceId: String(ext.id),
-            newValue: {
-              extensionNumber: input.extensionNumber,
-              type: input.type,
-            },
-            ipAddress: ctx.req.ip,
-          });
+          if (input.userId !== undefined) {
+            const primary = await client.query(
+              `SELECT EXISTS(
+                 SELECT 1 FROM user_extensions WHERE user_id = $1 AND is_primary = true
+               ) AS has_primary`,
+              [input.userId],
+            );
+            const hasPrimary = primary.rows[0]?.has_primary === true;
+            await client.query(
+              `INSERT INTO user_extensions (user_id, extension_id, is_primary)
+               VALUES ($1, $2, $3)`,
+              [input.userId, ext.id, !hasPrimary],
+            );
+          }
 
           // Return extension + one-time password display
           return {
-            ...ext,
+            ...publicExtension(ext),
             sipCredentials: {
               username: creds.sipUsername,
               domain: creds.sipDomain,
@@ -816,6 +885,17 @@ export const pbxRouter = router({
             },
           };
         });
+        await invalidateCache(`directory:${tc.tenantId}:*`);
+        await writeAuditLog({
+          tenantId: tc.tenantId,
+          actorUserId: ctx.user!.id,
+          action: "create",
+          resourceType: "extension",
+          resourceId: String(created.id),
+          newValue: { extensionNumber: input.extensionNumber, type: input.type },
+          ipAddress: ctx.req.ip,
+        });
+        return created;
       }),
 
     /** Update an extension */
@@ -976,7 +1056,7 @@ export const pbxRouter = router({
             }
           }
 
-          return oldResult.rows[0];
+          return publicExtension(oldResult.rows[0]);
         };
 
         const oldValue = (hasAssignmentChange || input.voicemailEnabled === true)
@@ -1051,44 +1131,82 @@ export const pbxRouter = router({
       .input(z.object({ extensionId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminMutationCtx(ctx);
-        if (
-          !(await validateTenantOwnership(
-            "extensions",
-            input.extensionId,
-            tc.tenantId,
-          ))
-        ) {
-          throw new TRPCError({ code: "NOT_FOUND" });
+        const accountSql = `SELECT e.id AS extension_id, e.sip_username AS extension_username,
+                                   e.sip_domain AS extension_domain, e.user_id AS extension_user_id,
+                                   sa.id AS account_id, sa.sip_username, sa.sip_domain,
+                                   sa.user_id AS account_user_id
+                            FROM extensions e
+                            JOIN sip_accounts sa ON sa.extension_id = e.id
+                              AND sa.tenant_id = e.tenant_id
+                              AND sa.status = 'active' AND sa.deleted_at IS NULL
+                            WHERE e.id = $1 AND e.tenant_id = $2
+                              AND e.status = 'active' AND e.deleted_at IS NULL`;
+        const parameters = [input.extensionId, tc.tenantId];
+        const initial = await query(accountSql, parameters);
+        if (!initial.rows.length) throw new TRPCError({ code: "NOT_FOUND" });
+        if (initial.rows.length !== 1) {
+          throw new TRPCError({ code: "CONFLICT", message: "The extension has ambiguous SIP accounts" });
+        }
+        const before = initial.rows[0];
+        if (!before.sip_username || !before.sip_domain ||
+            before.extension_username !== before.sip_username ||
+            before.extension_domain !== before.sip_domain ||
+            before.extension_user_id !== before.account_user_id) {
+          throw new TRPCError({ code: "CONFLICT", message: "The extension SIP identity is inconsistent" });
         }
 
-        // Get SIP account
-        const saResult = await query(
-          `SELECT * FROM sip_accounts WHERE extension_id = $1 AND deleted_at IS NULL`,
-          [input.extensionId],
-        );
-        if (!saResult.rows[0])
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "No SIP account found",
-          });
+        const { creds, accountId } = await withTransaction(async (client) => {
+          const execute: SqlQuery = (sql, values) => client.query(sql, values);
+          await lockSipUri(execute, before.sip_username, before.sip_domain);
+          const current = await client.query(`${accountSql} FOR UPDATE OF e, sa`, parameters);
+          if (current.rows.length !== 1) {
+            throw new TRPCError({ code: "CONFLICT", message: "The extension SIP account changed" });
+          }
+          const sa = current.rows[0];
+          if (sa.account_id !== before.account_id ||
+              sa.sip_username !== before.sip_username || sa.sip_domain !== before.sip_domain ||
+              sa.extension_username !== sa.sip_username || sa.extension_domain !== sa.sip_domain ||
+              sa.extension_user_id !== sa.account_user_id) {
+            throw new TRPCError({ code: "CONFLICT", message: "The extension SIP identity changed" });
+          }
+          await requireUnambiguousSipUri(execute, sa.sip_username, sa.sip_domain, input.extensionId, sa.account_id);
+          const subscriber = await client.query(
+            `SELECT id FROM subscriber WHERE username = $1 AND domain = $2 FOR UPDATE`,
+            [sa.sip_username, sa.sip_domain],
+          );
+          if (subscriber.rows.length !== 1) {
+            throw new TRPCError({ code: "CONFLICT", message: "The SIP subscriber is missing or ambiguous" });
+          }
 
-        const sa = saResult.rows[0];
-        const creds = regenerateSipCredentials(sa.sip_username, sa.sip_domain);
-
-        await query(
-          `UPDATE sip_accounts SET ha1 = $1, ha1b = $2, secret_ciphertext = $3, 
-           secret_iv = $4, secret_tag = $5, dek_id = $6, updated_at = NOW()
-           WHERE id = $7`,
-          [
-            creds.ha1,
-            creds.ha1b,
-            creds.secretCiphertext,
-            creds.secretIv,
-            creds.secretTag,
-            creds.dekId,
-            sa.id,
-          ],
-        );
+          const creds = regenerateSipCredentials(sa.sip_username, sa.sip_domain, sa.sip_domain);
+          const subscriberUpdate = await client.query(
+            `UPDATE subscriber SET password = $1, ha1 = $2, ha1b = $3
+             WHERE id = $4 AND username = $5 AND domain = $6 RETURNING id`,
+            [creds.plaintextPassword, creds.ha1, creds.ha1b, subscriber.rows[0].id,
+             sa.sip_username, sa.sip_domain],
+          );
+          const accountUpdate = await client.query(
+            `UPDATE sip_accounts SET ha1 = $1, ha1b = $2, secret_ciphertext = $3,
+             secret_iv = $4, secret_tag = $5, dek_id = $6, updated_at = NOW()
+             WHERE id = $7 AND extension_id = $8 AND tenant_id = $9
+               AND sip_username = $10 AND sip_domain = $11
+               AND status = 'active' AND deleted_at IS NULL RETURNING id`,
+            [creds.ha1, creds.ha1b, creds.secretCiphertext, creds.secretIv,
+             creds.secretTag, creds.dekId, sa.account_id, input.extensionId,
+             tc.tenantId, sa.sip_username, sa.sip_domain],
+          );
+          const extensionUpdate = await client.query(
+            `UPDATE extensions SET sip_password = NULL, updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2 AND status = 'active'
+               AND deleted_at IS NULL RETURNING id`,
+            [input.extensionId, tc.tenantId],
+          );
+          if (subscriberUpdate.rows.length !== 1 || accountUpdate.rows.length !== 1 ||
+              extensionUpdate.rows.length !== 1) {
+            throw new TRPCError({ code: "CONFLICT", message: "The SIP credential update could not complete" });
+          }
+          return { creds, accountId: sa.account_id };
+        });
 
         await invalidateCache(`directory:${tc.tenantId}:*`);
 
@@ -1097,7 +1215,7 @@ export const pbxRouter = router({
           actorUserId: ctx.user!.id,
           action: "reset_password",
           resourceType: "sip_account",
-          resourceId: String(sa.id),
+          resourceId: String(accountId),
           ipAddress: ctx.req.ip,
         });
 

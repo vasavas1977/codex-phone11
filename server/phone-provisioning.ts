@@ -582,7 +582,11 @@ export async function listExtensions(orgId: number) {
       AND e.deleted_at IS NULL
     ORDER BY e.extension_number
   `, [orgId]);
-  return result.rows;
+  return result.rows.map((extension: Record<string, unknown>) => {
+    const safe = { ...extension };
+    delete safe.sip_password;
+    return safe;
+  });
 }
 
 /**
