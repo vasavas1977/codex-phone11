@@ -20,7 +20,7 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
   const ids = ['login', 'workspace', 'phone', 'meetings', 'phone-tab', 'meetings-tab',
     'backspace', 'mute-label', 'hold-label', 'history-tab', 'voicemail-tab', 'lines-tab',
     'dialpad-panel', 'history-panel', 'voicemail-panel', 'lines-panel', 'phone-status-mark',
-    'voicemail-state', 'voicemail-list', 'voicemail-refresh',
+    'voicemail-state', 'voicemail-list', 'voicemail-refresh', 'history-list', 'history-state', 'history-refresh',
     'open-meetings', 'meeting-open-message', 'identity', 'status', 'call-id', 'notice', 'hold-message', 'dial', 'answer',
     'end', 'mute', 'hold', 'keypad', 'destination', 'message', 'login-form', 'email', 'password', 'sign-out', 'dial-form'];
   const elements = new Map(ids.map(id => [id, element()]));
@@ -46,6 +46,7 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
       return { sessionRevision: 'session-a', generation: 'generation-a', snapshot: calling };
     },
     openMeetings: async () => { meetingOpens++; throw new Error('private admission token'); },
+    historyList: async (revision: string) => ({sessionRevision: revision, items: [{id:1, direction:'inbound', callerNumber:'3001', calleeNumber:'1020', durationSeconds:0, disposition:'missed', startedAt:'2026-09-27T10:00:00.000Z'}]}),
     voicemailList: async (revision: string) => {
       voicemailLists++;
       return { sessionRevision: revision, items: [{ id: 4, callerName: 'Som-O', callerNumber: '1020',
@@ -56,6 +57,11 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
   try {
     await import('../src/renderer');
     await new Promise(resolve => setImmediate(resolve));
+    assert.equal(elements.get('history-list')!.children.length, 1);
+    elements.get('history-list')!.children[0].listeners.get('click')!({});
+    assert.equal(destination.value, '3001', 'history selects a callback number without dialing');
+    assert.equal(actions.length, 0);
+    destination.value = '';
     assert.equal(keypad.hidden, false, 'the keypad is available after calling registration');
     elements.get('voicemail-tab')!.listeners.get('click')!({});
     await new Promise(resolve => setImmediate(resolve));

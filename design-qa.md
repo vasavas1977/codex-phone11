@@ -33,12 +33,30 @@ Previous mobile report preserved in [Recents QA](docs/design-qa/recents-20260915
 - Spacing: 42px top strip, 68px rail, 288px list pane, persistent sibling dialpad. Circular 46px keys with 15px gaps. Desktop list scrolls independently.
 - Color: white content, cool grey chrome and keys, subtle dividers, Phone11 blue active/call controls; red only for ending a call or errors.
 - Assets: pinned Lucide 1.48.0 icons and license bundled locally. No copied Zoom artwork, profile photos, or fabricated customer data.
-- Copy: Phone11 branding, real assigned extension, honest unavailable-history/playback labels and 60-second trial notice. No backend/provider identifiers exposed as call titles.
+- Copy: Phone11 branding, real assigned extension, clear loading, empty and playback-error states and 60-second trial notice. No backend/provider identifiers exposed as call titles.
 
 ## Intentional differences and limits
 
-Zoom has more licensed modules and populated call history. Phone11 currently exposes Phone and Meetings only; adding inert navigation or synthetic history would misrepresent functionality. History remains unavailable, voicemail playback remains unavailable, and voicemail API deployment is separate from this visual package. The selected visual target has a name search, while Phone11 supports number/extension dialing. Icon silhouettes and brand treatment remain Phone11's. This visual acceptance does not establish full Zoom feature parity.
+Zoom has more licensed modules and populated call history. Phone11 currently exposes Phone and Meetings only; adding inert navigation or synthetic history would misrepresent functionality. Call history and voicemail playback are implemented in the follow-up below; their backend rollout and real-account acceptance remain separate from visual verification. The selected visual target has a name search, while Phone11 supports number/extension dialing. Icon silhouettes and brand treatment remain Phone11's. This visual acceptance does not establish full Zoom feature parity.
 
 ## Interaction validation
 
 The built renderer was exercised in the isolated preview: nested keypad letter taps, backspace, external form-associated Call, connected/muted/held/resumed/ended states, voicemail loading, Lines, Meetings and responsive scrolling. Console check returned no warnings/errors. Independent read-only review caught the removed destination pattern; it was restored before packaging. Desktop automated tests and typecheck are run separately. Live SIP/audio and signed-in native acceptance are not established by preview tests.
+
+## Personal inbox follow-up — 27 September 2026
+
+- Added populated personal History and inline Voicemail audio controls without
+  changing the accepted rail, panel or dialpad layout. Busy and failed calls
+  keep their own labels; missed calls use the red treatment.
+- Evidence: `/tmp/phone11-inbox-qa/history.png` and
+  `/tmp/phone11-inbox-qa/voicemail-final.png`; synthetic local preview only.
+- Verified history selection fills the dialpad without dialing; playback changes
+  New to Read; leaving Voicemail or starting a simulated call clears audio source
+  and hides the player. No browser console warnings/errors.
+- Inspected 360×700 responsive history; the list remains independently scrollable
+  and the trial footer does not overlap its rows.
+- Checks: app 37/37; provider 25/25; backend 117 passed, one pre-existing skipped;
+  root/desktop TypeScript and desktop build passed.
+- Server tenant-contract deployment, signed-in native playback, and real audible
+  voicemail acceptance remain outstanding. No production calls or mutations were
+  used for this visual check.

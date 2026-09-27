@@ -1,10 +1,14 @@
 import { applyTaggedSnapshot, signInFailureMessage, type PublicState, type TaggedSnapshot } from './ipc';
-import type { PublicSnapshot } from '../../src/call-boundary';
+import type { DesktopCallHistory } from '../../src/authenticated-provider';
+import { VoicemailPlayer } from './voicemail-player';
 
 declare global { interface Window { phone11: {
   state(): Promise<PublicState>; signIn(email: string, password: string): Promise<PublicState>;
   action(input: unknown): Promise<TaggedSnapshot>; signOut(): Promise<PublicState>;
   openMeetings(): Promise<void>;
+  historyList?(sessionRevision: string): Promise<{sessionRevision: string; items: DesktopCallHistory[]}>;
+  voicemailAudio?(sessionRevision: string, id: number): Promise<{sessionRevision: string; id: number; mimeType: 'audio/wav'; bytes: Uint8Array}>;
+  voicemailMarkRead?(sessionRevision: string, id: number): Promise<unknown>;
   voicemailList?(sessionRevision: string): Promise<{ sessionRevision: string; items: Array<{
     id: number; callerName: string | null; callerNumber: string | null; durationSeconds: number;
     status: 'new' | 'read'; createdAt: string;
@@ -26,6 +30,91 @@ let voicemailLoadedFor = '';
 let voicemailMessage = 'Open Voicemail to load your messages.';
 let voicemailItems: Array<{ id: number; callerName: string | null; callerNumber: string | null; durationSeconds: number; status: 'new' | 'read'; createdAt: string }> = [];
 let voicemailRequest = 0;
+let historyRequest = 0;
+let historyLoadedFor = '';
+let historyLoading = false;
+let historyMessage = '';
+let historyItems: DesktopCallHistory[] = [];
+const audio = maybeById('voicemail-audio') as HTMLAudioElement | null;
+const player = audio ? new VoicemailPlayer({
+  audio,
+  fetchAudio: async (revision, id) => {
+    if (!window.phone11.voicemailAudio) throw new Error('Unavailable');
+    return window.phone11.voicemailAudio(revision, id);
+  },
+  markRead: async (revision, id) => {
+    if (!window.phone11.voicemailMarkRead) throw new Error('Unavailable');
+    await window.phone11.voicemailMarkRead(revision, id);
+    if (state?.sessionRevision === revision) {
+      voicemailItems = voicemailItems.map(item => item.id === id ? {...item, status: 'read'} : item);
+      render();
+    }
+  },
+  onState: value => {
+    const panel = byId('voicemail-player');
+    panel.hidden = value.id === null && !value.loading && !value.error;
+    byId('voicemail-player-title').textContent = voicemailItems.find(item => item.id === value.id)?.callerName
+      || voicemailItems.find(item => item.id === value.id)?.callerNumber || 'Voicemail';
+    byId('voicemail-playback-state').textContent = value.loading ? 'Loading audio…' : value.error ?? '';
+    audio.hidden = value.loading || value.id === null;
+  },
+}) : null;
+maybeById('voicemail-stop')?.addEventListener('click', () => player?.stop());
+window.addEventListener?.('pagehide', () => player?.dispose());
+function callbackNumber(item: DesktopCallHistory): string | null {
+  const candidate = item.direction === 'inbound' ? item.callerNumber : item.direction === 'outbound' ? item.calleeNumber
+    : item.callerNumber === state?.extensionNumber ? item.calleeNumber
+    : item.calleeNumber === state?.extensionNumber ? item.callerNumber : null;
+  return candidate && /^[+0-9*#]{1,32}$/.test(candidate) ? candidate : null;
+}
+function renderHistory(): void {
+  const status = maybeById('history-state');
+  if (status) status.textContent = historyMessage;
+  const refresh = maybeById('history-refresh') as HTMLButtonElement | null;
+  if (refresh) refresh.disabled = historyLoading;
+  const list = maybeById('history-list');
+  if (!list) return;
+  list.replaceChildren();
+  if (!historyMessage && !historyLoading && historyLoadedFor && historyItems.length === 0) {
+    const empty = document.createElement('p'); empty.className = 'empty-message';
+    empty.textContent = 'No calls in the last 30 days.'; list.append(empty);
+  }
+  for (const item of historyItems) {
+    const number = callbackNumber(item);
+    const missed = ['missed', 'no_answer', 'no-answer', 'busy', 'failed'].includes(item.disposition ?? '');
+    const row = document.createElement('button'); row.type = 'button'; row.className = 'history-row';
+    row.dataset.missed = String(missed);
+    const display = number || [item.callerNumber, item.calleeNumber].filter(Boolean).join(' → ') || 'Unknown caller';
+    row.disabled = !number || !!state?.calling.call || busy || state?.calling.dialState !== 'idle';
+    row.setAttribute('aria-label', number ? `Use ${number} on dialpad` : display);
+    const icon = document.createElement('img'); icon.alt = ''; icon.src = `icons/${missed ? 'phone-missed' : item.direction === 'inbound' ? 'phone-incoming' : 'phone-outgoing'}.svg`;
+    const text = document.createElement('span'); const title = document.createElement('strong'); title.textContent = display;
+    const meta = document.createElement('small');
+    const outcome = item.disposition === 'busy' ? 'Busy' : item.disposition === 'failed' ? 'Failed'
+      : missed ? 'Missed' : `${item.durationSeconds}s`;
+    meta.textContent = `${item.direction[0].toUpperCase()}${item.direction.slice(1)} · ${outcome} · ${new Date(item.startedAt).toLocaleString()}`;
+    text.append(title, meta); row.append(icon, text);
+    row.addEventListener('click', () => {
+      if (!number || !state?.signedIn || state.calling.call || busy || state.calling.dialState !== 'idle') return;
+      const field = byId('destination') as HTMLInputElement; field.value = number; field.focus();
+    }); list.append(row);
+  }
+}
+async function loadHistory(force = false): Promise<void> {
+  if (!state?.signedIn || !state.sessionRevision || historyLoading || (!force && historyLoadedFor === state.sessionRevision)) return;
+  const revision = state.sessionRevision; const request = ++historyRequest;
+  historyLoading = true; historyMessage = 'Loading call history…'; renderHistory();
+  try {
+    if (!window.phone11.historyList) throw new Error('Unavailable');
+    const response = await window.phone11.historyList(revision);
+    if (request !== historyRequest || state?.sessionRevision !== revision) return;
+    if (response.sessionRevision !== revision) throw new Error('Session changed');
+    historyItems = response.items; historyLoadedFor = revision; historyMessage = '';
+  } catch {
+    if (request === historyRequest && state?.sessionRevision === revision)
+      historyMessage = 'Call history could not load. Refresh to try again.';
+  } finally { if (request === historyRequest && state?.sessionRevision === revision) { historyLoading = false; renderHistory(); } }
+}
 function render(): void {
   const signed = !!state?.signedIn;
   const call = signed ? state?.calling.call : null;
@@ -52,8 +141,10 @@ function render(): void {
       panel.hidden = true;
     }
   }
-  if (!signed || !state) return;
+  if (!signed || !state) { player?.stop(); return; }
+  renderHistory();
   const phoneBusy = !!call || state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle';
+  if (phoneBusy) player?.stop();
   (byId('open-meetings') as HTMLButtonElement).disabled = meetingOpening || phoneBusy;
   byId('meeting-open-message').textContent = phoneBusy
     ? 'Finish your Phone call or pending action before opening a meeting.' : meetingMessage;
@@ -104,7 +195,16 @@ function render(): void {
       const dateText = Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
       const duration = Number.isFinite(item.durationSeconds) ? `${Math.max(0, Math.floor(item.durationSeconds))} sec` : '';
       meta.textContent = [item.status === 'new' ? 'New' : 'Read', duration, dateText].filter(Boolean).join(' · ');
-      row.append(caller, meta);
+      const play = document.createElement('button'); play.type = 'button'; play.className = 'voicemail-play';
+      play.setAttribute('aria-label', `Play voicemail from ${caller.textContent}`);
+      play.disabled = phoneBusy;
+      const playIcon = document.createElement('img'); playIcon.src = 'icons/play.svg'; playIcon.alt = '';
+      play.append(playIcon);
+      play.addEventListener('click', () => {
+        if (state?.sessionRevision && !state.calling.call && state.calling.dialState === 'idle' && state.calling.callActionState === 'idle')
+          void player?.play(state.sessionRevision, item.id);
+      });
+      row.append(caller, meta, play);
       voicemailList.append(row);
     }
   }
@@ -172,25 +272,29 @@ byId('login-form').addEventListener('submit', async event => {
   message('Signing in…');
   try {
     const signedIn = await window.phone11.signIn(email, password);
-    if (accountEpoch === epoch) { state = signedIn; busy = false; meetingOpening = false; meetingMessage = ''; message(''); render(); }
+    if (accountEpoch === epoch) { state = signedIn; busy = false; meetingOpening = false; meetingMessage = ''; message(''); render(); void loadHistory(); }
   } catch (error) { if (accountEpoch === epoch) message(signInFailureMessage(error)); }
 });
 for (const tab of ['phone', 'meetings'] as const) {
-  byId(`${tab}-tab`).addEventListener('click', () => { currentTab = tab; render(); });
+  byId(`${tab}-tab`).addEventListener('click', () => { currentTab = tab; if (tab !== 'phone') player?.stop(); render(); });
 }
 for (const section of ['history', 'voicemail', 'lines'] as const) {
   maybeById(`${section}-tab`)?.addEventListener('click', () => {
     currentPhoneSection = section;
+    if (section !== 'voicemail') player?.stop();
     render();
     if (section === 'voicemail') void loadVoicemail();
+    if (section === 'history') void loadHistory();
   });
 }
+maybeById('history-refresh')?.addEventListener('click', () => { void loadHistory(true); });
 maybeById('voicemail-refresh')?.addEventListener('click', () => { void loadVoicemail(true); });
 byId('open-meetings').addEventListener('click', async () => {
   if (!state?.signedIn || !state.sessionRevision || state.calling.call ||
       state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle' || meetingOpening) return;
   const sessionRevision = state.sessionRevision;
   const epoch = accountEpoch;
+  player?.stop();
   meetingOpening = true;
   meetingMessage = 'Opening meeting setup…';
   render();
@@ -210,6 +314,7 @@ byId('open-meetings').addEventListener('click', async () => {
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;
+  player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = '';
   state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; currentPhoneSection = 'history'; voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = []; voicemailMessage = 'Open Voicemail to load your messages.'; render();
   try {
     const signedOut = await window.phone11.signOut();
@@ -253,15 +358,18 @@ byId('keypad').addEventListener('click', event => {
 });
 window.phone11.onUpdate(update => {
   const previousRevision = state?.sessionRevision;
+  const previousCall = state?.calling.call;
   state = applyTaggedSnapshot(state, update);
   if (previousRevision && previousRevision !== state?.sessionRevision) {
+    player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = '';
     voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = [];
     voicemailMessage = 'Open Voicemail to load your messages.';
   }
   render();
+  if (previousCall && !state?.calling.call) void loadHistory(true);
   if (currentPhoneSection === 'voicemail' && state?.signedIn) void loadVoicemail();
 });
 const initialEpoch = accountEpoch;
 window.phone11.state().then(value => {
-  if (accountEpoch === initialEpoch) { state = value; render(); }
+  if (accountEpoch === initialEpoch) { state = value; render(); void loadHistory(); }
 }).catch(() => { if (accountEpoch === initialEpoch) message('Desktop service unavailable.'); });

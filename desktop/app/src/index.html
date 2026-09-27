@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
   <title>Phone11</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -58,10 +58,12 @@
 
             <section id="history-panel" class="phone-panel history-panel" aria-labelledby="history-heading">
               <h2 id="history-heading" class="sr-only">Call history</h2>
-              <div class="list-empty">
-                <img src="icons/clock-3.svg" alt="" aria-hidden="true">
-                <p>Call history is not available in this trial.</p>
+              <div class="panel-heading">
+                <span class="small">Last 30 days</span>
+                <button id="history-refresh" class="icon-button" type="button" aria-label="Refresh call history" title="Refresh"><img src="icons/refresh-cw.svg" alt=""></button>
               </div>
+              <p id="history-state" class="panel-state" role="status"></p>
+              <div id="history-list" class="history-list"></div>
             </section>
 
             <section id="voicemail-panel" class="phone-panel voicemail-panel" hidden aria-labelledby="voicemail-heading">
@@ -71,7 +73,11 @@
                   <img src="icons/refresh-cw.svg" alt="">
                 </button>
               </div>
-              <p class="small voicemail-note">Playback is not available in this trial.</p>
+              <div id="voicemail-player" class="voicemail-player" hidden>
+                <div class="player-heading"><strong id="voicemail-player-title">Voicemail</strong><button id="voicemail-stop" class="text-button" type="button">Close</button></div>
+                <audio id="voicemail-audio" controls preload="none" controlslist="nodownload noplaybackrate"></audio>
+                <p id="voicemail-playback-state" class="small" role="status"></p>
+              </div>
               <p id="voicemail-state" class="panel-state" role="status" aria-live="polite">Open Voicemail to load your messages.</p>
               <div id="voicemail-list" class="voicemail-list" aria-live="polite"></div>
             </section>

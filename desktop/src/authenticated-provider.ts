@@ -19,6 +19,11 @@ const safeDisplay = (value: unknown, limit: number): string | null => {
   return text.length > 0 && text.length <= limit &&
     !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(text) ? text : null;
 };
+const safePhoneNumber = (value: unknown): string | null => {
+  if (typeof value !== "string" || value.length > 64 || !/^[+0-9*#(). -]*$/.test(value)) return null;
+  const text = value.trim();
+  return text || null;
+};
 const meetingId = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const safeMeetingUrl = (value: unknown): value is string => {
@@ -35,6 +40,11 @@ export type DesktopMeetingListing = Readonly<{ meetingId: string; title?: string
 export type DesktopVoicemail = Readonly<{ id: number; callerName: string | null;
   callerNumber: string | null; durationSeconds: number; status: "new" | "read";
   createdAt: string }>;
+export type DesktopCallHistory = Readonly<{ id: number; direction: "inbound" | "outbound" | "internal";
+  callerNumber: string | null; calleeNumber: string | null; durationSeconds: number;
+  disposition: string | null; startedAt: string }>;
+export type DesktopVoicemailAudio = Readonly<{ id: number; mimeType: "audio/wav"; bytes: Uint8Array }>;
+const MAX_VOICEMAIL_BYTES = 20 * 1024 * 1024;
 const safeMeetingTitle = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value === value.normalize("NFC").trim() &&
   Array.from(value).length <= 100 && Buffer.byteLength(value, "utf8") <= 400 &&
@@ -101,7 +111,7 @@ export class AuthenticatedDesktopProvider {
     this.assertSessionAuthority(expectedRevision, epoch);
     if (!Array.isArray(value) || value.length > 100) throw new DesktopAuthenticationError();
     return value.map((item): DesktopVoicemail => {
-      if (!isRecord(item) || !positiveId(item.id) ||
+      if (!isRecord(item) || item.tenant_id !== this.session!.tenantId || !positiveId(item.id) ||
           !(item.status === "new" || item.status === "read") ||
           typeof item.duration_seconds !== "number" || !Number.isSafeInteger(item.duration_seconds) ||
           item.duration_seconds < 0 || item.duration_seconds > 86400 ||
@@ -112,6 +122,119 @@ export class AuthenticatedDesktopProvider {
         callerNumber: safeDisplay(item.caller_number, 64), durationSeconds: item.duration_seconds,
         status: item.status, createdAt: item.created_at };
     });
+  }
+
+  /** Bounded CDR history for the authenticated member and selected tenant. */
+  async listCallHistory(expectedRevision: string): Promise<readonly DesktopCallHistory[]> {
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const value = await this.query("pbx.selfService.usage", token, epoch, { tenantId, period: "month" });
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!isRecord(value) || value.tenantId !== tenantId || !Array.isArray(value.calls) || value.calls.length > 50)
+      throw new DesktopAuthenticationError();
+    return value.calls.map((item): DesktopCallHistory => {
+      if (!isRecord(item) || !positiveId(item.id) ||
+          !["inbound", "outbound", "internal"].includes(item.direction as string) ||
+          typeof item.total_duration_seconds !== "number" || !Number.isSafeInteger(item.total_duration_seconds) ||
+          item.total_duration_seconds < 0 || item.total_duration_seconds > 86400 ||
+          !(item.disposition === null || (typeof item.disposition === "string" && item.disposition.length <= 40 &&
+            /^[A-Za-z_-]*$/.test(item.disposition))) ||
+          typeof item.started_at !== "string" || item.started_at.length > 64 ||
+          !Number.isFinite(Date.parse(item.started_at)))
+        throw new DesktopAuthenticationError();
+      const date = new Date(item.started_at as string);
+      return { id: item.id, direction: item.direction as DesktopCallHistory["direction"],
+        callerNumber: safePhoneNumber(item.caller_number), calleeNumber: safePhoneNumber(item.callee_number),
+        durationSeconds: item.total_duration_seconds, disposition: item.disposition,
+        startedAt: date.toISOString() };
+    });
+  }
+
+  /** Mark a message read under the server's owner and selected-tenant checks. */
+  async markVoicemailRead(expectedRevision: string, id: number): Promise<void> {
+    if (!positiveId(id)) throw new DesktopAuthenticationError();
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const inbox = await this.listVoicemail(expectedRevision);
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!inbox.some(message => message.id === id)) throw new DesktopAuthenticationError();
+    this.assertSessionAuthority(expectedRevision, epoch);
+    const response = await this.send("/api/trpc/pbx.voicemail.markRead", {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ json: { tenantId, id } }),
+    }, epoch);
+    const result = this.unwrapTrpc(await this.json(response));
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!isRecord(result) || result.success !== true) throw new DesktopAuthenticationError();
+  }
+
+  /**
+   * Revalidate the message against a fresh selected-tenant inbox before using
+   * its fixed private media route. Audio never leaves this privileged boundary
+   * as a URL or bearer credential.
+   */
+  async voicemailAudio(expectedRevision: string, id: number): Promise<DesktopVoicemailAudio> {
+    if (!positiveId(id)) throw new DesktopAuthenticationError();
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const inbox = await this.listVoicemail(expectedRevision);
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!inbox.some(message => message.id === id)) throw new DesktopAuthenticationError();
+
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const response = await this.request(`${this.origin}/api/recordings/voicemail/${id}`, {
+        method: "GET", headers: { authorization: `Bearer ${token}` }, signal: controller.signal,
+        cache: "no-store", credentials: "omit", redirect: "error",
+      });
+      if (controller.signal.aborted) throw new DesktopAuthenticationError();
+      this.assertSessionAuthority(expectedRevision, epoch);
+      if (response.status !== 200) throw new DesktopAuthenticationError();
+      if (!response.body) throw new DesktopAuthenticationError();
+      reader = response.body.getReader();
+      controller.signal.addEventListener("abort", () => {
+        void reader?.cancel().catch(() => undefined);
+      }, { once: true });
+      const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+      if (contentType !== "audio/wav" && contentType !== "audio/x-wav")
+        throw new DesktopAuthenticationError();
+      const declared = response.headers.get("content-length");
+      if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_VOICEMAIL_BYTES))
+        throw new DesktopAuthenticationError();
+      const declaredLength = declared === null ? null : Number(declared);
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (controller.signal.aborted) throw new DesktopAuthenticationError();
+        this.assertSessionAuthority(expectedRevision, epoch);
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_VOICEMAIL_BYTES) throw new DesktopAuthenticationError();
+        chunks.push(value);
+      }
+      if (controller.signal.aborted || total < 12 ||
+          (declaredLength !== null && total !== declaredLength))
+        throw new DesktopAuthenticationError();
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      if (String.fromCharCode(...bytes.subarray(0, 4)) !== "RIFF" ||
+          String.fromCharCode(...bytes.subarray(8, 12)) !== "WAVE")
+        throw new DesktopAuthenticationError();
+      if (controller.signal.aborted) throw new DesktopAuthenticationError();
+      this.assertSessionAuthority(expectedRevision, epoch);
+      return { id, mimeType: "audio/wav", bytes };
+    } catch {
+      try { await reader?.cancel(); } catch { /* Ignore stream cleanup failures. */ }
+      throw new DesktopAuthenticationError();
+    } finally {
+      try { reader?.releaseLock(); } catch { /* Reader may already be cancelled. */ }
+      clearTimeout(timeout);
+      this.controllers.delete(controller);
+    }
   }
 
   /** Admitted rooms only. No media credential crosses this privileged boundary. */

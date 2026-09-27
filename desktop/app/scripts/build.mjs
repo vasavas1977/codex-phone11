@@ -40,6 +40,6 @@ for (const name of ['index.html', 'style.css', 'meeting.html', 'meeting.css'])
 
 // Bundle pinned, licensed icons locally; the calling renderer makes no network requests.
 await mkdir(resolve(root, 'dist/icons'), { recursive: true });
-for (const name of ['phone', 'video', 'clock-3', 'voicemail', 'user-round', 'log-out', 'phone-off', 'mic', 'pause', 'delete', 'refresh-cw'])
+for (const name of ['phone', 'video', 'clock-3', 'voicemail', 'user-round', 'log-out', 'phone-off', 'mic', 'pause', 'delete', 'refresh-cw', 'phone-incoming', 'phone-outgoing', 'phone-missed', 'play'])
   await copyFile(resolve(root, `node_modules/lucide-static/icons/${name}.svg`), resolve(root, `dist/icons/${name}.svg`));
 await copyFile(resolve(root, 'node_modules/lucide-static/LICENSE'), resolve(root, 'dist/icons/LICENSE'));

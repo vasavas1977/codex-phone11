@@ -158,3 +158,39 @@ test('macOS helper checks app Frameworks and rejects symlink escape', async () =
     assert.equal(await verifyPackagedHelper(path, dir, pin, 'darwin'), false);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('personal inbox IPC rejects stale history and blocks voicemail across calls, meetings, and account changes', async () => {
+  let current: DesktopSession | null = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 1, extensionId: 2 };
+  let snapshot: import('../../src/call-boundary').PublicSnapshot = { ...empty };
+  let meeting = false;
+  let audioRequests = 0;
+  let releaseAudio!: (value: any) => void;
+  let releaseHistory!: (value: any) => void;
+  const provider = {
+    currentSession: () => current,
+    listCallHistory: () => new Promise(resolve => { releaseHistory = resolve; }),
+    voicemailAudio: () => { audioRequests++; return new Promise(resolve => { releaseAudio = resolve; }); },
+    markVoicemailRead: async () => {},
+  };
+  const handlers = createHandlers(provider as never, { snapshot: () => snapshot } as never, () => 'g1', () => {}, () => meeting);
+  await assert.rejects(handlers.historyList({ sessionRevision: 'old' }));
+  const history = handlers.historyList({ sessionRevision: 'r1' });
+  current = { ...current!, revision: 'r2' };
+  releaseHistory([]);
+  await assert.rejects(history, /session changed/);
+  await assert.rejects(handlers.voicemailAudio({ sessionRevision: 'r2', id: '../4' }));
+  meeting = true;
+  await assert.rejects(handlers.voicemailAudio({ sessionRevision: 'r2', id: 4 }), /Finish/);
+  assert.equal(audioRequests, 0);
+  meeting = false;
+  const audio = handlers.voicemailAudio({ sessionRevision: 'r2', id: 4 });
+  snapshot = { ...empty, dialState: 'requesting' };
+  releaseAudio({ id: 4, mimeType: 'audio/wav', bytes: new Uint8Array([1]) });
+  await assert.rejects(audio, /unavailable/);
+  snapshot = { ...empty };
+  const changed = handlers.voicemailAudio({ sessionRevision: 'r2', id: 4 });
+  current = null;
+  releaseAudio({ id: 4, mimeType: 'audio/wav', bytes: new Uint8Array([1]) });
+  await assert.rejects(changed, /unavailable/);
+  await assert.rejects(handlers.voicemailMarkRead({ sessionRevision: 'r2', id: 4 }));
+});

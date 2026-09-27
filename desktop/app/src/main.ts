@@ -49,7 +49,8 @@ async function bootstrap(): Promise<void> {
   });
   meeting = new DesktopMeetingWindow(provider, helper, () => window);
   meeting.registerIpc();
-  const handlers = createHandlers(provider, helper, () => generation, value => { generation = value; });
+  const handlers = createHandlers(provider, helper, () => generation, value => { generation = value; },
+    () => meeting?.blocksPhoneMedia() ?? false);
   let accountQueue: Promise<void> = Promise.resolve();
   const serial = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = accountQueue.then(operation, operation);
@@ -72,6 +73,9 @@ async function bootstrap(): Promise<void> {
     }
     return handlers.action(value);
   }));
+  ipcMain.handle(CHANNELS.historyList, checked(value => handlers.historyList(value)));
+  ipcMain.handle(CHANNELS.voicemailAudio, checked(value => handlers.voicemailAudio(value)));
+  ipcMain.handle(CHANNELS.voicemailMarkRead, checked(value => handlers.voicemailMarkRead(value)));
   ipcMain.handle(CHANNELS.voicemailList, checked(value => handlers.voicemailList(value)));
   ipcMain.handle(CHANNELS.signOut, checked(() => serial(async () => {
     await meeting?.close();

@@ -1,11 +1,12 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseRendererAction } from '../../src/call-boundary';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
-import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail } from '../../src/authenticated-provider';
+import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail, DesktopCallHistory } from '../../src/authenticated-provider';
 
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
   action: 'phone11:action', signOut: 'phone11:sign-out', update: 'phone11:update',
-  voicemailList: 'phone11:voicemail-list' });
+  voicemailList: 'phone11:voicemail-list', historyList: 'phone11:history-list',
+  voicemailAudio: 'phone11:voicemail-audio', voicemailMarkRead: 'phone11:voicemail-mark-read' });
 export type PublicState = { signedIn: boolean; sessionRevision: string | null; generation: string | null;
   tenantId: number | null; extensionNumber: string | null; calling: ReturnType<DesktopHelperSupervisor['snapshot']> };
 export type TaggedSnapshot = { sessionRevision: string; generation: string;
@@ -32,7 +33,7 @@ export function validSender(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFr
     event.senderFrame?.url === rendererUrl && !event.sender.isDestroyed();
 }
 export function createHandlers(provider: AuthenticatedDesktopProvider, helper: DesktopHelperSupervisor,
-                               getGeneration: () => string | null, setGeneration: (value: string | null) => void) {
+                               getGeneration: () => string | null, setGeneration: (value: string | null) => void, additionalMediaBlocked: () => boolean = () => false) {
   const state = (): PublicState => {
     const session = provider.currentSession();
     return { signedIn: !!session, sessionRevision: session?.revision ?? null,
@@ -45,6 +46,18 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
     await provider.signOut();
     if (!stopped) throw new Error('Calling helper exit could not be verified');
     return state();
+  };
+  const inboxSession = (input: unknown, needsId = false): { revision: string; id: number } => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid inbox request');
+    const { sessionRevision, id } = input as Record<string, unknown>;
+    if (typeof sessionRevision !== 'string' || provider.currentSession()?.revision !== sessionRevision ||
+        (needsId && (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)))
+      throw new Error('Invalid inbox request');
+    return { revision: sessionRevision, id: id as number };
+  };
+  const mediaBlocked = (): boolean => {
+    const calling = helper.snapshot();
+    return !!calling.call || calling.dialState !== 'idle' || calling.callActionState !== 'idle' || additionalMediaBlocked();
   };
   return {
     state,
@@ -83,6 +96,25 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       if (!generation) throw new Error('Calling helper unavailable');
       const snapshot = await helper.handleRendererAction(action);
       return { sessionRevision: session.revision, generation, snapshot } satisfies TaggedSnapshot;
+    },
+    historyList: async (input: unknown): Promise<{ sessionRevision: string; items: readonly DesktopCallHistory[] }> => {
+      const { revision } = inboxSession(input);
+      const items = await provider.listCallHistory(revision);
+      if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
+      return { sessionRevision: revision, items };
+    },
+    voicemailAudio: async (input: unknown) => {
+      const { revision, id } = inboxSession(input, true);
+      if (mediaBlocked()) throw new Error('Finish your call or meeting before playing voicemail');
+      const audio = await provider.voicemailAudio(revision, id);
+      if (provider.currentSession()?.revision !== revision || mediaBlocked()) throw new Error('Voicemail playback unavailable');
+      return { sessionRevision: revision, ...audio };
+    },
+    voicemailMarkRead: async (input: unknown) => {
+      const { revision, id } = inboxSession(input, true);
+      await provider.markVoicemailRead(revision, id);
+      if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
+      return { sessionRevision: revision, id };
     },
     voicemailList: async (input: unknown): Promise<TaggedVoicemail> => {
       if (!input || typeof input !== 'object' || Array.isArray(input) ||

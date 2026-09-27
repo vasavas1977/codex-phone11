@@ -205,3 +205,37 @@ tests. A paid distribution license has not been verified.
 The pinned SiprixUA vendor sample is a separate compile proof only. The
 [desktop media spike](../docs/phone11-daily-use/DESKTOP-PBX-MEDIA-SPIKE-20260924.md)
 records the macOS/Windows runtime and release acceptance gates.
+
+## Desktop personal inbox — 27 September 2026
+
+The Phone screen now loads the signed-in member's last 30 days of call history
+(up to 50 records) through `pbx.selfService.usage`, using the selected tenant.
+Existing call-time ownership rules remain authoritative; current extension
+assignment is not used to grant access to historical calls. Choosing a history
+entry fills the dialpad and never starts a call automatically.
+
+Voicemail supports local playback, seeking, pause and Close. The main process
+rechecks the owner-scoped inbox, downloads only the fixed private voicemail
+route, and returns bounded WAV bytes through sender-checked IPC. The renderer
+receives no media URL or bearer. Downloads have a 30-second timeout and 20 MiB
+limit; partial or mismatched responses fail closed. Audio uses a revocable local
+blob and stops on route/account changes, Phone activity, or opening Meetings.
+A message is marked read only after the audio element reports playback started.
+
+Deploy the companion backend patch before enabling this package for live inbox
+acceptance: `selfService.usage` accepts `tenantId` and echoes the resolved
+`tenantId`; every `voicemail.list` row echoes `tenant_id`; `voicemail.markRead`
+accepts the selected `tenantId`. Missing/mismatched echoes block the desktop
+client. Playback and mark-read both preflight the selected-tenant inbox.
+Legacy callers can continue omitting `tenantId`.
+
+Validation on this source: 37 desktop app tests, 25 provider tests, and 117
+backend tests passed; one existing backend test was skipped. Root and desktop
+TypeScript checks and the desktop build passed. The actual built renderer was
+checked at 1024×768 and 360×700 using synthetic records and a one-second silent
+WAV. These checks prove UI/media-element behavior, not audible production
+voicemail, live CDR ingestion, Windows runtime, or server deployment.
+
+The backend is currently managed by the separate voicemail-status integration
+checkout. Prepare a narrow overlay against its exact running source and preserve
+its route rollback; do not deploy this divergent desktop branch wholesale.
