@@ -1616,6 +1616,7 @@ describe("PBX member self-service isolation", () => {
     await expect(
       pbxRouter.createCaller(context()).selfService.usage({ period: "week" }),
     ).resolves.toEqual({
+      tenantId: 7,
       totalCalls: 2,
       answeredCalls: 1,
       missedCalls: 1,

@@ -803,9 +803,12 @@ export const pbxRouter = router({
 
     /** CDR-backed usage for the signed-in member's assigned extensions. */
     usage: protectedProcedure
-      .input(z.object({ period: z.enum(["week", "month"]).default("month") }).optional())
+      .input(z.object({
+        period: z.enum(["week", "month"]).default("month"),
+        tenantId: z.number().int().positive().optional(),
+      }).optional())
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantCtx(ctx, input?.tenantId);
         const interval = input?.period === "week" ? "7 days" : "30 days";
         const ownership = SELF_SERVICE_CALL_OWNERSHIP_SQL;
         const [summary, calls] = await Promise.all([
@@ -836,6 +839,7 @@ export const pbxRouter = router({
         ]);
         const row = summary.rows[0] || {};
         return {
+          tenantId: tc.tenantId,
           totalCalls: Number(row.total_calls || 0),
           answeredCalls: Number(row.answered_calls || 0),
           missedCalls: Number(row.missed_calls || 0),
@@ -2143,7 +2147,8 @@ export const pbxRouter = router({
       .query(async ({ ctx, input }) => {
         const tc = await getTenantCtx(ctx, input?.tenantId);
         try {
-          return await getVoicemails(tc.tenantId, ctx.user.id, input?.extension);
+          const rows = await getVoicemails(tc.tenantId, ctx.user.id, input?.extension);
+          return rows.map((row) => ({ ...row, tenant_id: tc.tenantId }));
         } catch (error) {
           voicemailUnavailable(error);
         }
@@ -2151,9 +2156,12 @@ export const pbxRouter = router({
 
     /** Mark voicemail as read */
     markRead: protectedProcedure
-      .input(z.object({ id: z.number().int().positive() }))
+      .input(z.object({
+        id: z.number().int().positive(),
+        tenantId: z.number().int().positive().optional(),
+      }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantCtx(ctx, input.tenantId);
         try {
           await requireVoicemailStorage();
           await markVoicemailRead(tc.tenantId, ctx.user.id, input.id);
