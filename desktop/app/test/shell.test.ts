@@ -4,9 +4,9 @@ import { mkdtemp, mkdir, writeFile, symlink, rm, chmod } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { validSender, createHandlers, applyTaggedSnapshot, signInFailureMessage, type PublicState } from '../src/ipc';
+import { validSender, createHandlers, applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, type PublicState } from '../src/ipc';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
-import { DesktopAuthenticationError } from '../../src/authenticated-provider';
+import { DesktopAuthenticationError, DesktopCallHistoryError } from '../../src/authenticated-provider';
 import type { DesktopSession } from '../../src/call-boundary';
 const empty = { version: 1 as const, registered: false, call: null, dialState: 'idle' as const,
   callActionState: 'idle' as const, holdMessage: null };
@@ -193,4 +193,26 @@ test('personal inbox IPC rejects stale history and blocks voicemail across calls
   releaseAudio({ id: 4, mimeType: 'audio/wav', bytes: new Uint8Array([1]) });
   await assert.rejects(changed, /unavailable/);
   await assert.rejects(handlers.voicemailMarkRead({ sessionRevision: 'r2', id: 4 }));
+});
+
+test('call history IPC exposes a stable safe failure code and maps it to actionable UI text', async () => {
+  const current: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 1, extensionId: 2 };
+  const provider = {
+    currentSession: () => current,
+    listCallHistory: async () => { throw new DesktopCallHistoryError('tenant_mismatch', 200); },
+  };
+  const handlers = createHandlers(provider as never, { snapshot: () => empty } as never, () => 'g1', () => {});
+  await assert.rejects(handlers.historyList({ sessionRevision: 'r1' }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, 'PHONE11_HISTORY_TENANT_MISMATCH_200');
+    return true;
+  });
+  assert.equal(callHistoryFailureMessage(new Error('PHONE11_HISTORY_FORBIDDEN_403')),
+    'Your account cannot access call history in this workspace.');
+  assert.equal(callHistoryFailureMessage(new Error('PHONE11_HISTORY_ENDPOINT_UNAVAILABLE_404')),
+    'Call history is unavailable in this Desktop version. Update Phone11 or try again later.');
+  assert.equal(callHistoryFailureMessage(new Error('PHONE11_HISTORY_TENANT_MISMATCH_200')),
+    'Phone11 could not verify the workspace for call history. Sign in again or contact support.');
+  assert.equal(callHistoryFailureMessage(new Error('raw response with bearer and caller number')),
+    'Call history could not load. Refresh to try again.');
 });

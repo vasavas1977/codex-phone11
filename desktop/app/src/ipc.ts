@@ -1,6 +1,7 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseRendererAction } from '../../src/call-boundary';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
+import { DesktopCallHistoryError } from '../../src/authenticated-provider';
 import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail, DesktopCallHistory } from '../../src/authenticated-provider';
 
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
@@ -22,6 +23,18 @@ export function signInFailureMessage(error: unknown): string {
     return 'Signed in, but calling access could not be loaded. Check your extension assignment or retry.';
   if (text.includes('PHONE11_CALLING_UNAVAILABLE')) return 'Signed in, but calling could not start on this Mac.';
   return 'Phone11 sign-in is unavailable. Try again.';
+}
+export function callHistoryFailureMessage(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  if (text.includes('PHONE11_HISTORY_UNAUTHORIZED')) return 'Your session has expired. Sign in again to load call history.';
+  if (text.includes('PHONE11_HISTORY_FORBIDDEN')) return 'Your account cannot access call history in this workspace.';
+  if (text.includes('PHONE11_HISTORY_ENDPOINT_UNAVAILABLE')) return 'Call history is unavailable in this Desktop version. Update Phone11 or try again later.';
+  if (text.includes('PHONE11_HISTORY_SERVER_ERROR')) return 'Call history is temporarily unavailable. Refresh to try again.';
+  if (text.includes('PHONE11_HISTORY_SESSION_CHANGED')) return 'Your session changed. Sign in again to load call history.';
+  if (text.includes('PHONE11_HISTORY_TENANT_MISMATCH')) return 'Phone11 could not verify the workspace for call history. Sign in again or contact support.';
+  if (text.includes('PHONE11_HISTORY_INVALID_RESPONSE')) return 'Call history returned an unexpected response. Refresh to try again.';
+  if (text.includes('PHONE11_HISTORY_REQUEST_FAILED')) return 'Phone11 could not reach the call history service. Check your connection and refresh.';
+  return 'Call history could not load. Refresh to try again.';
 }
 export function applyTaggedSnapshot(state: PublicState | null, update: TaggedSnapshot): PublicState | null {
   return state?.signedIn && state.sessionRevision === update.sessionRevision &&
@@ -99,7 +112,13 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
     },
     historyList: async (input: unknown): Promise<{ sessionRevision: string; items: readonly DesktopCallHistory[] }> => {
       const { revision } = inboxSession(input);
-      const items = await provider.listCallHistory(revision);
+      let items: readonly DesktopCallHistory[];
+      try { items = await provider.listCallHistory(revision); }
+      catch (error) {
+        if (error instanceof DesktopCallHistoryError)
+          throw new Error(`PHONE11_HISTORY_${error.code.toUpperCase()}${error.status ? `_${error.status}` : ''}`);
+        throw error;
+      }
       if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
       return { sessionRevision: revision, items };
     },

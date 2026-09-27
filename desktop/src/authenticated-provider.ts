@@ -72,6 +72,17 @@ export class DesktopAuthenticationError extends Error {
   }
 }
 
+export type DesktopCallHistoryErrorCode = "unauthorized" | "forbidden" | "endpoint_unavailable" |
+  "server_error" | "request_failed" | "invalid_response" | "tenant_mismatch" | "session_changed";
+
+/** Safe failure classification for the non-sensitive call-history IPC boundary. */
+export class DesktopCallHistoryError extends Error {
+  constructor(readonly code: DesktopCallHistoryErrorCode, readonly status?: number) {
+    super(`Phone11 call history unavailable (${code})`);
+    this.name = "DesktopCallHistoryError";
+  }
+}
+
 export class AuthenticatedDesktopProvider {
   private readonly origin: string;
   private readonly request: Fetch;
@@ -128,26 +139,54 @@ export class AuthenticatedDesktopProvider {
   async listCallHistory(expectedRevision: string): Promise<readonly DesktopCallHistory[]> {
     const { token, epoch } = this.sessionAuthority(expectedRevision);
     const tenantId = this.session!.tenantId;
-    const value = await this.query("pbx.selfService.usage", token, epoch, { tenantId, period: "month" });
-    this.assertSessionAuthority(expectedRevision, epoch);
-    if (!isRecord(value) || value.tenantId !== tenantId || !Array.isArray(value.calls) || value.calls.length > 50)
-      throw new DesktopAuthenticationError();
-    return value.calls.map((item): DesktopCallHistory => {
-      if (!isRecord(item) || !positiveId(item.id) ||
-          !["inbound", "outbound", "internal"].includes(item.direction as string) ||
-          typeof item.total_duration_seconds !== "number" || !Number.isSafeInteger(item.total_duration_seconds) ||
-          item.total_duration_seconds < 0 || item.total_duration_seconds > 86400 ||
-          !(item.disposition === null || (typeof item.disposition === "string" && item.disposition.length <= 40 &&
-            /^[A-Za-z_-]*$/.test(item.disposition))) ||
-          typeof item.started_at !== "string" || item.started_at.length > 64 ||
-          !Number.isFinite(Date.parse(item.started_at)))
-        throw new DesktopAuthenticationError();
-      const date = new Date(item.started_at as string);
-      return { id: item.id, direction: item.direction as DesktopCallHistory["direction"],
-        callerNumber: safePhoneNumber(item.caller_number), calleeNumber: safePhoneNumber(item.callee_number),
-        durationSeconds: item.total_duration_seconds, disposition: item.disposition,
-        startedAt: date.toISOString() };
-    });
+    let value: unknown;
+    try {
+      const response = await this.send(
+        `/api/trpc/pbx.selfService.usage?input=${encodeURIComponent(JSON.stringify({ json: { tenantId, period: "month" } }))}`,
+        { headers: { authorization: `Bearer ${token}` } }, epoch,
+      );
+      if (!response.ok) {
+        const code: DesktopCallHistoryErrorCode = response.status === 401 ? "unauthorized"
+          : response.status === 403 ? "forbidden"
+          : response.status === 404 ? "endpoint_unavailable"
+          : response.status >= 500 ? "server_error" : "invalid_response";
+        throw new DesktopCallHistoryError(code, response.status);
+      }
+      value = this.unwrapTrpc(await this.json(response));
+    } catch (error) {
+      if (error instanceof DesktopCallHistoryError) throw error;
+      try { this.assertSessionAuthority(expectedRevision, epoch); }
+      catch { throw new DesktopCallHistoryError("session_changed"); }
+      throw new DesktopCallHistoryError(error instanceof DesktopAuthenticationError ? "invalid_response" : "request_failed");
+    }
+    try {
+      this.assertSessionAuthority(expectedRevision, epoch);
+      if (!isRecord(value) || !Array.isArray(value.calls) || value.calls.length > 50)
+        throw new DesktopCallHistoryError("invalid_response");
+      if (!positiveId(value.tenantId)) throw new DesktopCallHistoryError("invalid_response");
+      if (value.tenantId !== tenantId) throw new DesktopCallHistoryError("tenant_mismatch", 200);
+      return value.calls.map((item): DesktopCallHistory => {
+        if (!isRecord(item) || !positiveId(item.id) ||
+            !["inbound", "outbound", "internal"].includes(item.direction as string) ||
+            typeof item.total_duration_seconds !== "number" || !Number.isSafeInteger(item.total_duration_seconds) ||
+            item.total_duration_seconds < 0 || item.total_duration_seconds > 86400 ||
+            !(item.disposition === null || (typeof item.disposition === "string" && item.disposition.length <= 40 &&
+              /^[A-Za-z_-]*$/.test(item.disposition))) ||
+            typeof item.started_at !== "string" || item.started_at.length > 64 ||
+            !Number.isFinite(Date.parse(item.started_at)))
+          throw new DesktopCallHistoryError("invalid_response");
+        const date = new Date(item.started_at as string);
+        return { id: item.id, direction: item.direction as DesktopCallHistory["direction"],
+          callerNumber: safePhoneNumber(item.caller_number), calleeNumber: safePhoneNumber(item.callee_number),
+          durationSeconds: item.total_duration_seconds, disposition: item.disposition,
+          startedAt: date.toISOString() };
+      });
+    } catch (error) {
+      if (error instanceof DesktopCallHistoryError) throw error;
+      try { this.assertSessionAuthority(expectedRevision, epoch); }
+      catch { throw new DesktopCallHistoryError("session_changed"); }
+      throw new DesktopCallHistoryError("invalid_response");
+    }
   }
 
   /** Mark a message read under the server's owner and selected-tenant checks. */
