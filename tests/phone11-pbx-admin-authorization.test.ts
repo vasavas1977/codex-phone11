@@ -755,9 +755,9 @@ describe("PBX member self-service isolation", () => {
     expect(db.query.mock.calls[0][0]).toContain("tm.user_id, tm.tenant_id");
   });
 
-  it("scopes call activity to immutable call-time member identities", async () => {
+  it("preserves default-tenant portal usage and scopes calls to call-time member identities", async () => {
     db.query
-      .mockResolvedValueOnce({ rows: [membership("user")] })
+      .mockResolvedValueOnce({ rows: [membership("user", 7), membership("user", 12)] })
       .mockResolvedValueOnce({
         rows: [
           {
@@ -775,6 +775,7 @@ describe("PBX member self-service isolation", () => {
     await expect(
       pbxRouter.createCaller(context()).selfService.usage({ period: "week" }),
     ).resolves.toEqual({
+      tenantId: 7,
       totalCalls: 2,
       answeredCalls: 1,
       missedCalls: 1,
@@ -783,6 +784,11 @@ describe("PBX member self-service isolation", () => {
     });
 
     for (const call of db.query.mock.calls.slice(1)) {
+      expect(call[0]).toContain("FROM tenant_memberships tm");
+      expect(call[0]).toContain("tm.tenant_id = cr.tenant_id");
+      expect(call[0]).toContain("tm.user_id = $2");
+      expect(call[0]).toContain("tm.status = 'active'");
+      expect(call[0]).toContain("t.status = 'active'");
       expect(call[0]).toContain("cr.caller_user_id = $2");
       expect(call[0]).toContain("cr.callee_user_id = $2");
       expect(call[0]).toContain("JOIN extensions e");
@@ -798,6 +804,46 @@ describe("PBX member self-service isolation", () => {
     expect(db.query.mock.calls[2]?.[0]).toContain(
       "cr.to_number AS callee_number",
     );
+  });
+
+  it("returns usage for an explicitly selected active tenant instead of the default membership", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [membership("user", 7), membership("user", 12)] })
+      .mockResolvedValueOnce({ rows: [{ total_calls: "1", answered_calls: "1" }] })
+      .mockResolvedValueOnce({ rows: [{ id: 120, caller_number: "+6620000012" }] });
+
+    await expect(
+      pbxRouter.createCaller(context()).selfService.usage({ tenantId: 12 }),
+    ).resolves.toEqual({
+      tenantId: 12,
+      totalCalls: 1,
+      answeredCalls: 1,
+      missedCalls: 0,
+      totalDurationSeconds: 0,
+      calls: [{ id: 120, caller_number: "+6620000012" }],
+    });
+
+    expect(db.query).toHaveBeenCalledTimes(3);
+    for (const call of db.query.mock.calls.slice(1)) {
+      expect(call[0]).toContain("tm.status = 'active'");
+      expect(call[1]).toEqual([12, 9, "30 days"]);
+    }
+  });
+
+  it("rejects a tenant outside the member's active memberships before querying call records", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership("user", 7)] });
+
+    await expect(
+      pbxRouter.createCaller(context()).selfService.usage({ tenantId: 12 }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an invalid explicit tenant before membership or call-record queries", async () => {
+    await expect(
+      pbxRouter.createCaller(context()).selfService.usage({ tenantId: 0 }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(db.query).not.toHaveBeenCalled();
   });
 });
 
