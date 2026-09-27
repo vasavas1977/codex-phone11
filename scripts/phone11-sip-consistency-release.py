@@ -213,6 +213,27 @@ def private_state() -> None:
     route.secure_directory(STATE, private=True)
 
 
+def same_compose_with_mount_order_ignored(expected: bytes, stored: bytes) -> bool:
+    """Docker inspect may enumerate identical bind mounts in a different order."""
+    models = [stage.document(raw, "stage_files") for raw in (expected, stored)]
+    for model in models:
+        try:
+            mounts = model["services"][SERVICE]["volumes"]
+        except (KeyError, TypeError) as error:
+            raise Refused("stage_files") from error
+        need(isinstance(mounts, list) and 0 < len(mounts) <= 32 and
+             all(isinstance(mount, dict) and isinstance(mount.get("source"), str) and
+                 isinstance(mount.get("target"), str) and
+                 type(mount.get("read_only")) is bool for mount in mounts),
+             "stage_files")
+        encoded = [stage.canonical(mount) for mount in mounts]
+        need(len(set(encoded)) == len(encoded) and
+             len({mount["target"] for mount in mounts}) == len(mounts),
+             "stage_files")
+        model["services"][SERVICE]["volumes"] = sorted(mounts, key=stage.canonical)
+    return stage.canonical(models[0]) == stage.canonical(models[1])
+
+
 def staged(path: Path) -> tuple[dict[str, Any], str, dict[str, Any], str]:
     data, digest = manifest(path)
     stage.clean_source(data)
@@ -225,7 +246,8 @@ def staged(path: Path) -> tuple[dict[str, Any], str, dict[str, Any], str]:
     image = image_record.get("image")
     stage.check_image(data, image)
     config, env_bytes, expected = compose(old, image, digest, data["release"]["build"])
-    need(stage.private_read(STATE / "compose.json") == config
+    need(same_compose_with_mount_order_ignored(
+            config, stage.private_read(STATE / "compose.json"))
          and stage.private_read(STATE / "runtime.env") == env_bytes,
          "stage_files")
     need(candidate_ok(data, digest, image, old, expected), "candidate_health")

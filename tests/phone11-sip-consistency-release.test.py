@@ -125,6 +125,25 @@ class ReleaseGuards(unittest.TestCase):
         self.assertIn("127.0.0.1:3016/api/health", result["test"][3])
         self.assertNotIn("127.0.0.1:3013", result["test"][3])
 
+    def test_staged_compose_accepts_only_bind_mount_order_change(self):
+        mounts = [
+            {"type": "bind", "source": "/private/a", "target": "/app/a", "read_only": True},
+            {"type": "bind", "source": "/private/b", "target": "/app/b", "read_only": False},
+        ]
+        base = {"services": {release.SERVICE: {"image": "pinned", "volumes": mounts}}}
+        reordered = {"services": {release.SERVICE: {"image": "pinned", "volumes": mounts[::-1]}}}
+        self.assertTrue(release.same_compose_with_mount_order_ignored(
+            release.stage.canonical(base), release.stage.canonical(reordered)))
+        changed = {"services": {release.SERVICE: {"image": "pinned", "volumes": [
+            mounts[0], {**mounts[1], "read_only": True}]}}}
+        self.assertFalse(release.same_compose_with_mount_order_ignored(
+            release.stage.canonical(base), release.stage.canonical(changed)))
+        duplicate = {"services": {release.SERVICE: {"image": "pinned", "volumes": [
+            mounts[0], mounts[0]]}}}
+        with self.assertRaisesRegex(release.Refused, "stage_files"):
+            release.same_compose_with_mount_order_ignored(
+                release.stage.canonical(base), release.stage.canonical(duplicate))
+
     def test_rollback_does_not_need_healthy_or_present_candidate(self):
         data = self.manifest()
         original, promoted = b"old-site", b"new-site"
