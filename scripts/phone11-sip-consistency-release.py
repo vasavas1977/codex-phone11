@@ -38,6 +38,7 @@ STATE = Path("/var/lib/phone11-sip-consistency-release-20260927")
 LOCK = Path("/run/phone11-sip-consistency-release.lock")
 SOURCE_SHA = "6180658cfcef558a7f198bcd53aa4da68e3d7cd1"
 BUILD = "sip-admin-6180658"
+EXPECTED_BUNDLE_SHA256 = "d489be90000d3cdc1c40088c6efb5048d65d44db6a3084ffebb9461ac87f682c"
 OLD_SOURCE_SHA = "b3ed0e71e1683cd3eca503bee902a221b2c3e3ca"
 OLD_CONTAINER_ID = "2d3627f9dc6354ce34f69d9c7dad31493cd04441cb44e5ae86d8f76ea52d28d6"
 OLD_IMAGE = "sha256:0942f8a6dd17f2919e6631adbc55318e2e8693ff9f869f90fa26d8327950b47d"
@@ -93,7 +94,9 @@ def manifest(path: Path) -> tuple[dict[str, Any], str]:
     need(old == {"container_id": OLD_CONTAINER_ID, "image": OLD_IMAGE,
                  "source_sha": OLD_SOURCE_SHA, "bundle_sha256": OLD_BUNDLE_SHA256,
                  "lock_sha256": LOCK_SHA256, "build": OLD_BUILD}, "predecessor_pin")
-    need(new["source_sha"] == SOURCE_SHA and new["lock_sha256"] == LOCK_SHA256
+    need(new["source_sha"] == SOURCE_SHA
+         and new["bundle_sha256"] == EXPECTED_BUNDLE_SHA256
+         and new["lock_sha256"] == LOCK_SHA256
          and new["build"] == BUILD,
          "release_pin")
     return data, digest

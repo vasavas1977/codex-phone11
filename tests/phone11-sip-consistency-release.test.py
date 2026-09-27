@@ -24,7 +24,7 @@ class ReleaseGuards(unittest.TestCase):
     def manifest(self):
         return {"predecessor": self.predecessor(),
                 "release": {"source_sha": release.SOURCE_SHA,
-                            "bundle_sha256": "a" * 64,
+                            "bundle_sha256": release.EXPECTED_BUNDLE_SHA256,
                             "lock_sha256": release.LOCK_SHA256,
                             "build": "sip-admin-6180658"}}
 
@@ -45,6 +45,13 @@ class ReleaseGuards(unittest.TestCase):
     def test_manifest_refuses_unreviewed_build_label(self):
         data = self.manifest()
         data["release"]["build"] = "unreviewed-build"
+        with mock.patch.object(release, "_original_manifest", return_value=(data, "c" * 64)):
+            with self.assertRaisesRegex(release.Refused, "release_pin"):
+                release.manifest(Path("/private/manifest.json"))
+
+    def test_manifest_refuses_alternate_bundle_even_when_self_declared(self):
+        data = self.manifest()
+        data["release"]["bundle_sha256"] = "a" * 64
         with mock.patch.object(release, "_original_manifest", return_value=(data, "c" * 64)):
             with self.assertRaisesRegex(release.Refused, "release_pin"):
                 release.manifest(Path("/private/manifest.json"))

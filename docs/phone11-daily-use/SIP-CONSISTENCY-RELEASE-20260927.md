@@ -17,6 +17,10 @@ Build `dist/index.mjs` from a clean checkout of the final source commit with
 the backend esbuild command in `infra/docker/backend/Dockerfile`. The
 `pnpm-lock.yaml` SHA-256 must remain
 `24a72aa60f0b43fe3afdad41f2e0f0f348f75ac065172627913fe72d43f2c801`.
+Two independent clean-source builds produced the same backend bundle SHA-256,
+`d489be90000d3cdc1c40088c6efb5048d65d44db6a3084ffebb9461ac87f682c`.
+The operator pins this digest as well as the source commit; a manifest cannot
+substitute different bytes.
 Do not include the uncommitted release operator in that source checkout.
 
 Place the clean source checkout, bundle, and manifest under root-controlled
@@ -36,7 +40,7 @@ directories on the API host. The bundle and manifest must be regular root-owned
   },
   "release": {
     "source_sha": "6180658cfcef558a7f198bcd53aa4da68e3d7cd1",
-    "bundle_sha256": "<sha256 of protected final index.mjs>",
+    "bundle_sha256": "d489be90000d3cdc1c40088c6efb5048d65d44db6a3084ffebb9461ac87f682c",
     "lock_sha256": "24a72aa60f0b43fe3afdad41f2e0f0f348f75ac065172627913fe72d43f2c801",
     "build": "sip-admin-6180658"
   },
@@ -45,7 +49,7 @@ directories on the API host. The bundle and manifest must be regular root-owned
 }
 ```
 
-The placeholder bundle hash and paths must be replaced. Re-inventory the
+The placeholder paths must be replaced. Re-inventory the
 active 3015 container and Nginx site before preparing; any difference from the
 pinned predecessor or site SHA-256 blocks this operator and requires a new
 review. Never copy or print the Docker environment: the operator clones it
