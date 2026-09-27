@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
+  Platform, useWindowDimensions,
   ActivityIndicator,
   Alert,
   FlatList,
@@ -53,6 +54,8 @@ export default function AdminSchedules() {
 
 function AdminSchedulesContent() {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  const wideWeb = Platform.OS === "web" && width >= 1000;
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
   const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
@@ -290,16 +293,15 @@ function AdminSchedulesContent() {
   }
 
   return (
-    <ScreenContainer>
+    <ScreenContainer style={Platform.OS === "web" ? { backgroundColor: colors.surface, paddingHorizontal: wideWeb ? 32 : 0, paddingTop: wideWeb ? 20 : 0 } : undefined}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.backButton}
-        >
-          <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-        </TouchableOpacity>
+        {Platform.OS !== "web" ? (
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to administration" onPress={() => router.back()} style={styles.backButton}>
+            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
+          </TouchableOpacity>
+        ) : null}
         <View style={styles.headerCopy}>
-          <Text style={[styles.title, { color: colors.foreground }]}>
+          <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground, fontSize: wideWeb ? 28 : 20 }]}>
             Business hours
           </Text>
           <Text style={[styles.subtitle, { color: colors.muted }]}>
@@ -368,10 +370,11 @@ function AdminSchedulesContent() {
         transparent
         onRequestClose={closeForm}
       >
-        <View style={styles.overlay}>
+        <View style={[styles.overlay, wideWeb ? { justifyContent: "center", alignItems: "center" } : undefined]}>
           <View
             style={[
               styles.modal,
+              wideWeb ? { width: 680, borderRadius: 16 } : undefined,
               { backgroundColor: colors.surface, borderColor: colors.border },
             ]}
           >
@@ -381,7 +384,7 @@ function AdminSchedulesContent() {
               <Text style={[styles.modalTitle, { color: colors.foreground }]}>
                 {editingId ? "Edit business hours" : "New business hours"}
               </Text>
-              <TouchableOpacity onPress={closeForm}>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close business hours editor" onPress={closeForm}>
                 <IconSymbol
                   name="xmark.circle.fill"
                   size={24}

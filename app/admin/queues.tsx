@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
+  Platform, useWindowDimensions,
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList,
   Alert, TextInput, Modal, ActivityIndicator,
 } from "react-native";
@@ -39,6 +40,8 @@ export default function AdminQueues() {
 
 function AdminQueuesContent() {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  const wideWeb = Platform.OS === "web" && width >= 1000;
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
   const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
@@ -389,13 +392,17 @@ function AdminQueuesContent() {
   }
 
   return (
-    <ScreenContainer>
+    <ScreenContainer style={Platform.OS === "web" ? { backgroundColor: colors.surface, paddingHorizontal: wideWeb ? 32 : 0, paddingTop: wideWeb ? 20 : 0 } : undefined}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-        </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.foreground }]}>Call Queues</Text>
+        {Platform.OS !== "web" ? (
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to administration" onPress={() => router.back()} style={styles.backBtn}>
+            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
+          </TouchableOpacity>
+        ) : null}
+        <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground, fontSize: wideWeb ? 28 : 20 }]}>Call Queues</Text>
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Create call queue"
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
           onPress={() => setShowCreate(true)}
           disabled={!tenantId}
@@ -464,8 +471,8 @@ function AdminQueuesContent() {
 
       {/* Create Modal */}
       <Modal visible={showCreate} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.modalOverlay, wideWeb ? { justifyContent: "center", alignItems: "center" } : undefined]}>
+          <View style={[styles.modal, wideWeb ? { width: 680, borderRadius: 16 } : undefined, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.foreground }]}>New Call Queue</Text>
               <TouchableOpacity onPress={() => setShowCreate(false)}>
@@ -516,7 +523,7 @@ function AdminQueuesContent() {
                 <Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.createBtn, { backgroundColor: "#F59E0B" }]}
+                style={[styles.createBtn, { backgroundColor: colors.primary }]}
                 onPress={handleCreate}
                 disabled={createMutation.isPending}
               >
@@ -532,12 +539,12 @@ function AdminQueuesContent() {
       </Modal>
 
       <Modal visible={editingSettingsId !== null} animationType="slide" transparent onRequestClose={() => closeSettings()}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.modalOverlay, wideWeb ? { justifyContent: "center", alignItems: "center" } : undefined]}>
+          <View style={[styles.modal, wideWeb ? { width: 680, borderRadius: 16 } : undefined, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.modalTitle, { color: colors.foreground }]}>Queue settings</Text>
-                <Text style={[styles.modalSubtitle, { color: colors.muted }]}>Settings applied by the current FIFO runtime.</Text>
+                <Text style={[styles.modalSubtitle, { color: colors.muted }]}>Manage ringing, wait time and unanswered calls.</Text>
               </View>
               <TouchableOpacity onPress={() => closeSettings()} accessibilityLabel="Close queue settings"><IconSymbol name="xmark.circle.fill" size={24} color={colors.muted} /></TouchableOpacity>
             </View>
@@ -561,8 +568,8 @@ function AdminQueuesContent() {
                   <Text style={[styles.fieldLabel, { color: colors.muted }]}>Overflow route</Text>
                   <View style={styles.routeChoices}>
                     {(["hangup", "voicemail", "transfer", "ivr"] as const).map((action) => (
-                      <TouchableOpacity key={action} disabled={updateMutation.isPending} onPress={() => { setSettingsOverflowAction(action); setSettingsOverflowTarget(""); }} style={[styles.routeChoice, { borderColor: settingsOverflowAction === action ? "#F59E0B" : colors.border, backgroundColor: settingsOverflowAction === action ? "#F59E0B10" : colors.background }]} accessibilityRole="radio" accessibilityState={{ selected: settingsOverflowAction === action }}>
-                        <Text style={[styles.routeChoiceText, { color: settingsOverflowAction === action ? "#F59E0B" : colors.foreground }]}>{action === "hangup" ? "Hang up" : action === "ivr" ? "IVR menu" : action[0].toUpperCase() + action.slice(1)}</Text>
+                      <TouchableOpacity key={action} disabled={updateMutation.isPending} onPress={() => { setSettingsOverflowAction(action); setSettingsOverflowTarget(""); }} style={[styles.routeChoice, { borderColor: settingsOverflowAction === action ? colors.primary : colors.border, backgroundColor: settingsOverflowAction === action ? colors.primary + "10" : colors.background }]} accessibilityRole="radio" accessibilityState={{ selected: settingsOverflowAction === action }}>
+                        <Text style={[styles.routeChoiceText, { color: settingsOverflowAction === action ? colors.primary : colors.foreground }]}>{action === "hangup" ? "Hang up" : action === "ivr" ? "IVR menu" : action[0].toUpperCase() + action.slice(1)}</Text>
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -571,9 +578,9 @@ function AdminQueuesContent() {
                       <Text style={[styles.fieldLabel, { color: colors.muted }]}>Choose overflow destination</Text>
                       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.extensionChoices}>
                         {settingsOverflowAction === "ivr" ? (ivrMenusQuery.data || []).filter((menu: any) => menu.is_active === true).map((menu: any) => (
-                          <TouchableOpacity key={String(menu.id)} disabled={updateMutation.isPending} onPress={() => setSettingsOverflowTarget(String(menu.id))} style={[styles.extensionChoice, { borderColor: settingsOverflowTarget === String(menu.id) ? "#F59E0B" : colors.border, backgroundColor: settingsOverflowTarget === String(menu.id) ? "#F59E0B10" : colors.background }]} accessibilityLabel={"Use IVR menu " + String(menu.name)}><Text style={[styles.extensionChoiceText, { color: settingsOverflowTarget === String(menu.id) ? "#F59E0B" : colors.foreground }]}>{String(menu.name || "IVR menu")}</Text></TouchableOpacity>
+                          <TouchableOpacity key={String(menu.id)} disabled={updateMutation.isPending} onPress={() => setSettingsOverflowTarget(String(menu.id))} style={[styles.extensionChoice, { borderColor: settingsOverflowTarget === String(menu.id) ? colors.primary : colors.border, backgroundColor: settingsOverflowTarget === String(menu.id) ? colors.primary + "10" : colors.background }]} accessibilityLabel={"Use IVR menu " + String(menu.name)}><Text style={[styles.extensionChoiceText, { color: settingsOverflowTarget === String(menu.id) ? colors.primary : colors.foreground }]}>{String(menu.name || "IVR menu")}</Text></TouchableOpacity>
                         )) : (settingsOverflowAction === "voicemail" ? voicemailExtensions : callableExtensions).map((extension) => (
-                          <TouchableOpacity key={String(extension.id)} disabled={updateMutation.isPending} onPress={() => setSettingsOverflowTarget(String(extension.extension_number))} style={[styles.extensionChoice, { borderColor: settingsOverflowTarget === String(extension.extension_number) ? "#F59E0B" : colors.border, backgroundColor: settingsOverflowTarget === String(extension.extension_number) ? "#F59E0B10" : colors.background }]} accessibilityLabel={"Use extension " + String(extension.extension_number)}><Text style={[styles.extensionChoiceText, { color: settingsOverflowTarget === String(extension.extension_number) ? "#F59E0B" : colors.foreground }]}>{String(extension.extension_number) + (extension.display_name ? " · " + extension.display_name : "")}</Text></TouchableOpacity>
+                          <TouchableOpacity key={String(extension.id)} disabled={updateMutation.isPending} onPress={() => setSettingsOverflowTarget(String(extension.extension_number))} style={[styles.extensionChoice, { borderColor: settingsOverflowTarget === String(extension.extension_number) ? colors.primary : colors.border, backgroundColor: settingsOverflowTarget === String(extension.extension_number) ? colors.primary + "10" : colors.background }]} accessibilityLabel={"Use extension " + String(extension.extension_number)}><Text style={[styles.extensionChoiceText, { color: settingsOverflowTarget === String(extension.extension_number) ? colors.primary : colors.foreground }]}>{String(extension.extension_number) + (extension.display_name ? " · " + extension.display_name : "")}</Text></TouchableOpacity>
                         ))}
                       </ScrollView>
                     </>
@@ -581,7 +588,7 @@ function AdminQueuesContent() {
                   {settingsWarning ? <Text accessibilityRole="alert" style={[styles.editorWarning, { color: "#F59E0B" }]}>{settingsWarning}</Text> : null}
                   {settingsError ? <Text accessibilityRole="alert" style={[styles.editorError, { color: colors.error }]}>{settingsError}</Text> : null}
                 </ScrollView>
-                <View style={styles.modalFooter}><TouchableOpacity style={[styles.cancelBtn, { borderColor: colors.border }]} onPress={() => closeSettings()}><Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text></TouchableOpacity><TouchableOpacity style={[styles.createBtn, { backgroundColor: "#F59E0B", opacity: updateMutation.isPending ? 0.65 : 1 }]} onPress={saveSettings} disabled={updateMutation.isPending}><Text style={styles.createText}>{updateMutation.isPending ? "Saving…" : "Save settings"}</Text></TouchableOpacity></View>
+                <View style={styles.modalFooter}><TouchableOpacity style={[styles.cancelBtn, { borderColor: colors.border }]} onPress={() => closeSettings()}><Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text></TouchableOpacity><TouchableOpacity style={[styles.createBtn, { backgroundColor: colors.primary, opacity: updateMutation.isPending ? 0.65 : 1 }]} onPress={saveSettings} disabled={updateMutation.isPending}><Text style={styles.createText}>{updateMutation.isPending ? "Saving…" : "Save settings"}</Text></TouchableOpacity></View>
               </>
             )}
           </View>
@@ -589,8 +596,8 @@ function AdminQueuesContent() {
       </Modal>
 
       <Modal visible={editingQueueId !== null} animationType="slide" transparent onRequestClose={() => closeAgents()}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.modalOverlay, wideWeb ? { justifyContent: "center", alignItems: "center" } : undefined]}>
+          <View style={[styles.modal, wideWeb ? { width: 680, borderRadius: 16 } : undefined, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.modalTitle, { color: colors.foreground }]}>Queue agents</Text>
@@ -657,7 +664,7 @@ function AdminQueuesContent() {
                 </ScrollView>
                 <View style={styles.modalFooter}>
                   <TouchableOpacity style={[styles.cancelBtn, { borderColor: colors.border }]} onPress={() => closeAgents()}><Text style={[styles.cancelText, { color: colors.muted }]}>Cancel</Text></TouchableOpacity>
-                  <TouchableOpacity style={[styles.createBtn, { backgroundColor: "#F59E0B", opacity: agentsMutation.isPending ? 0.65 : 1 }]} onPress={saveAgents} disabled={agentsMutation.isPending}><Text style={styles.createText}>{agentsMutation.isPending ? "Saving…" : "Save agents"}</Text></TouchableOpacity>
+                  <TouchableOpacity style={[styles.createBtn, { backgroundColor: colors.primary, opacity: agentsMutation.isPending ? 0.65 : 1 }]} onPress={saveAgents} disabled={agentsMutation.isPending}><Text style={styles.createText}>{agentsMutation.isPending ? "Saving…" : "Save agents"}</Text></TouchableOpacity>
                 </View>
               </>
             )}

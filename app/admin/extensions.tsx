@@ -12,6 +12,7 @@ import {
   Alert,
   FlatList,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -100,6 +101,8 @@ function AdminExtensionsContent() {
   const [editingAssignment, setEditingAssignment] = useState<ExtensionRow | null>(null);
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
   const [assignmentError, setAssignmentError] = useState<string | null>(null);
+  const [pageWidth, setPageWidth] = useState(0);
+  const desktop = pageWidth >= 820;
 
   const rows = useMemo(
     () => (extensionsQuery.data?.data || []) as ExtensionRow[],
@@ -227,56 +230,70 @@ function AdminExtensionsContent() {
       item.sip_status === "active" && item.last_registered_at
         ? "Registered"
         : "Not registered";
+    const personName = item.user_name || item.display_name || "Unassigned extension";
+    const assignmentAction = (
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel={`${assigned ? "Change" : "Assign"} person for extension ${extensionNumber(item)}`}
+        onPress={() => openAssignmentEditor(item)}
+        style={[styles.assignmentButton, { borderColor: colors.primary }]}
+      >
+        <Text style={[styles.assignmentButtonText, { color: colors.primary }]}>
+          {assigned ? "Change" : "Assign"}
+        </Text>
+      </TouchableOpacity>
+    );
+
+    if (desktop) {
+      return (
+        <View style={[styles.tableRow, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
+          <View style={[styles.extensionColumn, styles.desktopCell]}>
+            <Text style={[styles.number, { color: colors.foreground }]}>{extensionNumber(item)}</Text>
+            <Text style={[styles.name, { color: colors.muted }]}>{item.display_name || "User extension"}</Text>
+          </View>
+          <View style={[styles.personColumn, styles.desktopCell]}>
+            {assigned && item.user_id ? (
+              <ProfileAvatar name={personName} photoUrl={directoryPhotos.get(item.user_id) || null} tenantId={tenantId} userId={item.user_id} size={34} />
+            ) : null}
+            <View style={styles.cardBody}>
+              <Text numberOfLines={1} style={[styles.personName, { color: colors.foreground }]}>
+                {assigned ? personName : "Unassigned"}
+              </Text>
+              {item.user_email ? <Text numberOfLines={1} style={[styles.meta, { color: colors.muted }]}>{item.user_email}</Text> : null}
+            </View>
+          </View>
+          <View style={[styles.registrationColumn, styles.desktopCell]}>
+            <View style={[styles.registrationDot, { backgroundColor: registration === "Registered" ? "#00A876" : colors.border }]} />
+            <Text style={[styles.cellText, { color: colors.foreground }]}>{registration}</Text>
+          </View>
+          <View style={[styles.assignmentColumn, styles.desktopCell]}>
+            <View style={[styles.badge, { backgroundColor: assigned ? "#00C89620" : "#FF950020" }]}>
+              <Text style={[styles.badgeText, { color: assigned ? "#00875A" : "#B45309" }]}>{assigned ? "Assigned" : "Open"}</Text>
+            </View>
+          </View>
+          <View style={[styles.actionColumn, styles.desktopCell]}>{assignmentAction}</View>
+        </View>
+      );
+    }
 
     return (
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.surface, borderColor: colors.border },
-        ]}
-      >
+      <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={[styles.icon, { backgroundColor: colors.primary + "15" }]}>
           <IconSymbol name="phone.fill" size={18} color={colors.primary} />
         </View>
         <View style={styles.cardBody}>
-          <Text style={[styles.number, { color: colors.foreground }]}>
-            {extensionNumber(item)}
-          </Text>
-          <Text style={[styles.name, { color: colors.muted }]}>
-            {item.user_name || item.display_name || "Unassigned extension"}
-          </Text>
+          <Text style={[styles.number, { color: colors.foreground }]}>{extensionNumber(item)}</Text>
+          <Text style={[styles.name, { color: colors.muted }]}>{personName}</Text>
           <Text style={[styles.meta, { color: colors.muted }]}>
-            {assigned
-              ? item.user_email || "Assigned to a workspace member"
-              : "No person assigned"}{" "}
-            · {registration}
+            {assigned ? item.user_email || "Assigned to a workspace member" : "No person assigned"} · {registration}
           </Text>
         </View>
-        <View
-          style={[
-            styles.badge,
-            { backgroundColor: assigned ? "#00C89620" : "#FF950020" },
-          ]}
-        >
-          <Text
-            style={[
-              styles.badgeText,
-              { color: assigned ? "#00A876" : "#D97706" },
-            ]}
-          >
+        <View style={[styles.badge, { backgroundColor: assigned ? "#00C89620" : "#FF950020" }]}>
+          <Text style={[styles.badgeText, { color: assigned ? "#00A876" : "#D97706" }]}>
             {assigned ? "ASSIGNED" : "OPEN"}
           </Text>
         </View>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel={`${assigned ? "Change" : "Assign"} person for extension ${extensionNumber(item)}`}
-          onPress={() => openAssignmentEditor(item)}
-          style={[styles.assignmentButton, { borderColor: colors.primary }]}
-        >
-          <Text style={[styles.assignmentButtonText, { color: colors.primary }]}>
-            {assigned ? "Change" : "Assign"}
-          </Text>
-        </TouchableOpacity>
+        {assignmentAction}
       </View>
     );
   };
@@ -317,40 +334,50 @@ function AdminExtensionsContent() {
       </Text>
     </View>
   ) : (
-    <FlatList
-      data={filtered}
-      keyExtractor={(item) => String(item.id)}
-      renderItem={renderExtension}
-      contentContainerStyle={styles.list}
-      refreshing={extensionsQuery.isRefetching}
-      onRefresh={extensionsQuery.refetch}
-      ListEmptyComponent={
-        <View style={styles.state}>
-          <Text style={[styles.stateTitle, { color: colors.foreground }]}>
-            {rows.length === 0 ? "No extensions yet" : "No matching extensions"}
-          </Text>
-          <Text style={[styles.stateText, { color: colors.muted }]}>
-            {rows.length === 0
-              ? "Create the first extension for this workspace."
-              : "Change the search or filter."}
-          </Text>
-        </View>
-      }
-    />
+    <View style={[styles.inventory, { borderTopColor: colors.border }]}>
+      <Text style={[styles.resultCount, { color: colors.muted }]}>Showing {filtered.length} of {rows.length} extensions</Text>
+      <FlatList
+        style={styles.inventoryList}
+        data={filtered}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={renderExtension}
+        contentContainerStyle={[styles.list, desktop && styles.desktopList]}
+        refreshing={extensionsQuery.isRefetching}
+        onRefresh={extensionsQuery.refetch}
+        ListHeaderComponent={desktop ? (
+          <View style={[styles.tableHeader, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
+            <Text style={[styles.extensionColumn, styles.tableHeading, { color: colors.muted }]}>Extension</Text>
+            <Text style={[styles.personColumn, styles.tableHeading, { color: colors.muted }]}>Person</Text>
+            <Text style={[styles.registrationColumn, styles.tableHeading, { color: colors.muted }]}>Registration</Text>
+            <Text style={[styles.assignmentColumn, styles.tableHeading, { color: colors.muted }]}>Assignment</Text>
+            <Text style={[styles.actionColumn, styles.tableHeading, { color: colors.muted }]}>Actions</Text>
+          </View>
+        ) : null}
+        ListEmptyComponent={
+          <View style={styles.state}>
+            <Text style={[styles.stateTitle, { color: colors.foreground }]}>
+              {rows.length === 0 ? "No extensions yet" : "No matching extensions"}
+            </Text>
+            <Text style={[styles.stateText, { color: colors.muted }]}>
+              {rows.length === 0 ? "Create the first extension for this workspace." : "Change the search or filter."}
+            </Text>
+          </View>
+        }
+      />
+    </View>
   );
 
   return (
-    <ScreenContainer>
+    <ScreenContainer onLayout={(event) => setPageWidth(event.nativeEvent.layout.width)}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.headerButton}
-        >
-          <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-        </TouchableOpacity>
+        {Platform.OS !== "web" ? (
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to admin portal" onPress={() => router.back()} style={styles.headerButton}>
+            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
+          </TouchableOpacity>
+        ) : null}
         <View style={styles.heading}>
-          <Text style={[styles.title, { color: colors.foreground }]}>
-            People & extensions
+          <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>
+            Extensions
           </Text>
           <Text style={[styles.subtitle, { color: colors.muted }]}>
             {tenantQuery.data?.name || "Current workspace"}
@@ -358,6 +385,8 @@ function AdminExtensionsContent() {
         </View>
         {canManage && (
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Create extension"
             onPress={() => setShowCreate(true)}
             style={[styles.addButton, { backgroundColor: colors.primary }]}
           >
@@ -367,15 +396,17 @@ function AdminExtensionsContent() {
       </View>
 
       {canManage && (
-        <>
+        <View style={[styles.controls, desktop && styles.desktopControls]}>
           <View
             style={[
               styles.search,
+              desktop && styles.desktopSearch,
               { backgroundColor: colors.surface, borderColor: colors.border },
             ]}
           >
             <IconSymbol name="magnifyingglass" size={18} color={colors.muted} />
             <TextInput
+              accessibilityLabel="Search extensions"
               style={[styles.searchInput, { color: colors.foreground }]}
               placeholder="Search extension or person"
               placeholderTextColor={colors.muted}
@@ -387,6 +418,8 @@ function AdminExtensionsContent() {
             {(["all", "assigned", "open"] as const).map((value) => (
               <TouchableOpacity
                 key={value}
+                accessibilityRole="button"
+                accessibilityState={{ selected: filter === value }}
                 onPress={() => setFilter(value)}
                 style={[
                   styles.filter,
@@ -413,7 +446,7 @@ function AdminExtensionsContent() {
               </TouchableOpacity>
             ))}
           </View>
-        </>
+        </View>
       )}
 
       {listState}
@@ -424,10 +457,11 @@ function AdminExtensionsContent() {
         transparent
         onRequestClose={resetCreate}
       >
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, desktop && styles.modalOverlayDesktop]}>
           <View
             style={[
               styles.modal,
+              desktop && styles.modalDesktop,
               { backgroundColor: colors.surface, borderColor: colors.border },
             ]}
           >
@@ -511,10 +545,11 @@ function AdminExtensionsContent() {
         transparent
         onRequestClose={closeAssignmentEditor}
       >
-        <ProfileCardProvider key={editingAssignment ? "visible" : "hidden"} selectionOnly><View style={styles.modalOverlay}>
+        <ProfileCardProvider key={editingAssignment ? "visible" : "hidden"} selectionOnly><View style={[styles.modalOverlay, desktop && styles.modalOverlayDesktop]}>
           <View
             style={[
               styles.modal,
+              desktop && styles.modalDesktop,
               { backgroundColor: colors.surface, borderColor: colors.border },
             ]}
           >
@@ -643,8 +678,8 @@ const styles = StyleSheet.create({
   },
   headerButton: { padding: 4 },
   heading: { flex: 1 },
-  title: { fontSize: 20, fontWeight: "700" },
-  subtitle: { fontSize: 12, marginTop: 2 },
+  title: { fontSize: 24, fontWeight: "700" },
+  subtitle: { fontSize: 13, marginTop: 3 },
   addButton: {
     width: 34,
     height: 34,
@@ -656,19 +691,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginHorizontal: 16,
-    marginTop: 12,
+    marginTop: 4,
     paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 0.5,
+    height: 40,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
     gap: 8,
   },
   searchInput: { flex: 1, fontSize: 15 },
+  controls: { paddingVertical: 12, gap: 10 },
+  desktopControls: { flexDirection: "row", alignItems: "center", paddingHorizontal: 24, paddingVertical: 12 },
+  desktopSearch: { flex: 1, maxWidth: 420, marginHorizontal: 0, marginTop: 0 },
   filters: {
     flexDirection: "row",
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingVertical: 0,
     gap: 8,
+    flexWrap: "wrap",
   },
   filter: {
     paddingHorizontal: 12,
@@ -677,7 +716,22 @@ const styles = StyleSheet.create({
     borderWidth: 0.5,
   },
   filterText: { fontSize: 12, fontWeight: "600" },
+  resultCount: { paddingHorizontal: 24, paddingBottom: 8, fontSize: 12 },
+  inventory: { flex: 1, minHeight: 0, borderTopWidth: StyleSheet.hairlineWidth },
+  inventoryList: { flex: 1 },
   list: { paddingHorizontal: 16, paddingBottom: 24, gap: 8 },
+  desktopList: { paddingHorizontal: 24, gap: 0 },
+  tableHeader: { flexDirection: "row", alignItems: "center", minHeight: 42, paddingHorizontal: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  tableHeading: { fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.25 },
+  tableRow: { flexDirection: "row", alignItems: "center", minHeight: 72, paddingHorizontal: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  desktopCell: { flexDirection: "row", alignItems: "center", gap: 10 },
+  extensionColumn: { flex: 1.25, minWidth: 100 },
+  personColumn: { flex: 3.5, minWidth: 0 },
+  registrationColumn: { flex: 1.5, minWidth: 122 },
+  assignmentColumn: { flex: 1.3, minWidth: 110 },
+  actionColumn: { flex: 1, minWidth: 85, justifyContent: "flex-end" },
+  cellText: { fontSize: 13, fontWeight: "500" },
+  registrationDot: { width: 8, height: 8, borderRadius: 4 },
   card: {
     flexDirection: "row",
     alignItems: "center",
@@ -716,6 +770,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
   },
+  modalOverlayDesktop: { justifyContent: "center", alignItems: "center", padding: 24 },
   modal: {
     padding: 20,
     paddingBottom: 36,
@@ -724,6 +779,7 @@ const styles = StyleSheet.create({
     borderWidth: 0.5,
     gap: 10,
   },
+  modalDesktop: { width: "100%", maxWidth: 560, maxHeight: "90%", alignSelf: "center", borderRadius: 16, paddingBottom: 24 },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",

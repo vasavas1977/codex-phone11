@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
+  Platform, useWindowDimensions,
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList, Alert,
   TextInput, Modal, ActivityIndicator,
 } from "react-native";
@@ -50,6 +51,8 @@ export default function AdminIVR() {
 
 function AdminIVRContent() {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  const wideWeb = Platform.OS === "web" && width >= 1000;
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id ?? 0;
   const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
@@ -297,13 +300,17 @@ function AdminIVRContent() {
   }
 
   return (
-    <ScreenContainer>
+    <ScreenContainer style={Platform.OS === "web" ? { backgroundColor: colors.surface, paddingHorizontal: wideWeb ? 32 : 0, paddingTop: wideWeb ? 20 : 0 } : undefined}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-        </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.foreground }]}>IVR Menus</Text>
+        {Platform.OS !== "web" ? (
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to administration" onPress={() => router.back()} style={styles.backBtn}>
+            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
+          </TouchableOpacity>
+        ) : null}
+        <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground, fontSize: wideWeb ? 28 : 20 }]}>Auto receptionists</Text>
         <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Create auto receptionist"
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
           onPress={() => setShowCreate(true)}
           disabled={!tenantId}
@@ -358,8 +365,8 @@ function AdminIVRContent() {
       )}
 
       <Modal visible={showCreate} animationType="slide" transparent onRequestClose={() => setShowCreate(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.modalOverlay, wideWeb ? { justifyContent: "center", alignItems: "center" } : undefined]}>
+          <View style={[styles.modal, wideWeb ? { width: 680, borderRadius: 16 } : undefined, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.foreground }]}>New IVR Menu</Text>
               <TouchableOpacity onPress={() => setShowCreate(false)}>
@@ -437,8 +444,8 @@ function AdminIVRContent() {
       </Modal>
 
       <Modal visible={editingMenuId !== null} animationType="slide" transparent onRequestClose={closeEditor}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+        <View style={[styles.modalOverlay, wideWeb ? { justifyContent: "center", alignItems: "center" } : undefined]}>
+          <View style={[styles.modal, wideWeb ? { width: 680, borderRadius: 16 } : undefined, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
                 <Text style={[styles.modalTitle, { color: colors.foreground }]}>Key actions</Text>

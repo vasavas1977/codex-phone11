@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { router } from "expo-router";
@@ -21,9 +23,13 @@ import { useDirectory } from "@/hooks/use-directory";
 import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
 import { trpc } from "@/lib/trpc";
 
-function conversationTitle(conversation: { kind: string; name: string; members: readonly { name: string }[] }) {
+function conversationTitle(conversation: {
+  kind: string;
+  name: string;
+  members: readonly { name: string }[];
+}) {
   return conversation.kind === "direct"
-    ? conversation.members.map(member => member.name).join(" · ")
+    ? conversation.members.map((member) => member.name).join(" · ")
     : conversation.name;
 }
 
@@ -37,18 +43,24 @@ export default function AdminMeetingsScreen() {
 
 function AdminMeetingsContent() {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  const desktopWeb = Platform.OS === "web" && width >= 1000;
   const { user } = useAuth({ autoFetch: false });
   const workspace = usePbxAdminWorkspace();
   const tenantId = workspace.selectedTenantId;
   const [saveError, setSaveError] = useState<string | null>(null);
   const [changing, setChanging] = useState<string | null>(null);
-  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(
-    null,
-  );
+  const [selectedConversationId, setSelectedConversationId] = useState<
+    string | null
+  >(null);
   const [memberSearch, setMemberSearch] = useState("");
-  const [directCursors, setDirectCursors] = useState<(string | undefined)[]>([undefined]);
+  const [directCursors, setDirectCursors] = useState<(string | undefined)[]>([
+    undefined,
+  ]);
   const directPage = directCursors.length - 1;
-  const [channelCursors, setChannelCursors] = useState<(string | undefined)[]>([undefined]);
+  const [channelCursors, setChannelCursors] = useState<(string | undefined)[]>([
+    undefined,
+  ]);
   const channelPage = channelCursors.length - 1;
   useEffect(() => {
     setDirectCursors([undefined]);
@@ -89,7 +101,11 @@ function AdminMeetingsContent() {
     user?.id,
   ]);
   const overview = trpc.meetings.adminOverview.useQuery(
-    { tenantId: tenantId ?? 0, directCursor: directCursors[directPage], channelCursor: channelCursors[channelPage] },
+    {
+      tenantId: tenantId ?? 0,
+      directCursor: directCursors[directPage],
+      channelCursor: channelCursors[channelPage],
+    },
     {
       enabled: Boolean(user) && tenantId !== null && canManage,
       staleTime: 0,
@@ -97,12 +113,15 @@ function AdminMeetingsContent() {
     },
   );
   const setHostPermission = trpc.meetings.adminSetHostPermission.useMutation();
-  const setDirectHostPermission = trpc.meetings.adminSetDirectHostPermission.useMutation();
+  const setDirectHostPermission =
+    trpc.meetings.adminSetDirectHostPermission.useMutation();
   const conversations = overview.data?.available
     ? [...overview.data.channels, ...overview.data.directConversations]
     : [];
   const selectedConversation = overview.data?.available
-    ? conversations.find((conversation) => conversation.id === selectedConversationId)
+    ? conversations.find(
+        (conversation) => conversation.id === selectedConversationId,
+      )
     : undefined;
   const matchingMembers = selectedConversation
     ? selectedConversation.members.filter((member) =>
@@ -152,22 +171,33 @@ function AdminMeetingsContent() {
 
   return (
     <ScreenContainer>
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Back to workspace administration"
-            onPress={goBack}
-            style={styles.back}
-          >
-            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-          </Pressable>
+      <ScrollView
+        contentContainerStyle={[
+          styles.content,
+          desktopWeb && styles.contentDesktop,
+        ]}
+      >
+        <View style={styles.header}>
+          {!desktopWeb ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to workspace administration"
+              onPress={goBack}
+              style={styles.back}
+            >
+              <IconSymbol
+                name="chevron.left"
+                size={22}
+                color={colors.primary}
+              />
+            </Pressable>
+          ) : null}
           <View style={styles.headerText}>
             <Text
               accessibilityRole="header"
               style={[styles.title, { color: colors.foreground }]}
             >
-              Meetings
+              Meeting hosting
             </Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>
               {tenant.data?.name || "Workspace administration"}
@@ -175,15 +205,22 @@ function AdminMeetingsContent() {
           </View>
         </View>
 
-        <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
-          {selectedConversation ? conversationTitle(selectedConversation) : "Meeting hosts"}
-        </Text>
-        <Text style={[styles.description, { color: colors.muted }]}>
-          Choose who can start a meeting from each direct chat, group chat, or channel.
-          Group and channel members join only when selected by the host.
-        </Text>
+        <View style={styles.intro}>
+          <Text style={[styles.sectionTitle, { color: colors.foreground }]}>
+            {selectedConversation
+              ? conversationTitle(selectedConversation)
+              : "Who can start a meeting"}
+          </Text>
+          <Text style={[styles.description, { color: colors.muted }]}>
+            Choose hosts for direct chats, groups, and channels. Group and
+            channel members join only when the host selects them.
+          </Text>
+        </View>
         {overview.data?.available && overview.data.directConversationsReason ? (
-          <Text accessibilityRole="alert" style={[styles.description, { color: colors.muted }]}>
+          <Text
+            accessibilityRole="alert"
+            style={[styles.description, { color: colors.muted }]}
+          >
             {overview.data.directConversationsReason}
           </Text>
         ) : null}
@@ -226,8 +263,11 @@ function AdminMeetingsContent() {
             {overview.data?.reason ||
               "Meeting management is not enabled for this workspace."}
           </Text>
-        ) : conversations.length === 0 && directPage === 0 && channelPage === 0
-          && !overview.data.directNextCursor && !overview.data.channelNextCursor ? (
+        ) : conversations.length === 0 &&
+          directPage === 0 &&
+          channelPage === 0 &&
+          !overview.data.directNextCursor &&
+          !overview.data.channelNextCursor ? (
           <Text style={[styles.stateText, { color: colors.muted }]}>
             No conversations are available for meeting hosting.
           </Text>
@@ -265,9 +305,14 @@ function AdminMeetingsContent() {
                 { borderColor: colors.border, backgroundColor: colors.surface },
               ]}
             >
-              <Text style={[styles.channelMeta, { color: colors.muted }]}>
-                {matchingMembers.length} of {selectedConversation.members.length}{" "}
-                eligible members
+              <Text
+                style={[
+                  styles.listHeading,
+                  { color: colors.muted, borderBottomColor: colors.border },
+                ]}
+              >
+                {matchingMembers.length} of{" "}
+                {selectedConversation.members.length} eligible members
               </Text>
               {matchingMembers.slice(0, 100).map((member) => (
                 <View
@@ -320,84 +365,145 @@ function AdminMeetingsContent() {
           </>
         ) : (
           <>
-          {conversations.map((conversation) => (
-            <Pressable
-              key={conversation.id}
-              accessibilityRole="button"
-              accessibilityLabel={`Manage meeting hosts in ${conversationTitle(conversation)}`}
-              onPress={() => setSelectedConversationId(conversation.id)}
+            <Text style={[styles.listHeading, { color: colors.muted }]}>
+              CONVERSATIONS
+            </Text>
+            <View
               style={[
-                styles.channelChoice,
+                styles.conversationList,
                 { borderColor: colors.border, backgroundColor: colors.surface },
               ]}
             >
-              <View style={styles.memberText}>
-                <Text
-                  style={[styles.channelName, { color: colors.foreground }]}
+              {conversations.map((conversation) => (
+                <Pressable
+                  key={conversation.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Manage meeting hosts in ${conversationTitle(conversation)}`}
+                  onPress={() => setSelectedConversationId(conversation.id)}
+                  style={[
+                    styles.channelChoice,
+                    { borderTopColor: colors.border },
+                  ]}
                 >
-                  {conversationTitle(conversation)}
+                  <View style={styles.memberText}>
+                    <Text
+                      style={[styles.channelName, { color: colors.foreground }]}
+                    >
+                      {conversationTitle(conversation)}
+                    </Text>
+                    <Text style={[styles.channelMeta, { color: colors.muted }]}>
+                      {conversation.kind === "direct"
+                        ? "Direct chat"
+                        : conversation.kind === "channel"
+                          ? "Channel"
+                          : "Group chat"}{" "}
+                      · {conversation.members.length} eligible members ·{" "}
+                      {
+                        conversation.members.filter(
+                          (member) => member.canStartMeeting,
+                        ).length
+                      }{" "}
+                      hosts
+                    </Text>
+                  </View>
+                  <IconSymbol
+                    name="chevron.right"
+                    size={18}
+                    color={colors.muted}
+                  />
+                </Pressable>
+              ))}
+            </View>
+            {channelPage > 0 || overview.data.channelNextCursor ? (
+              <View style={styles.pageControls}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous channels"
+                  disabled={channelPage === 0}
+                  onPress={() =>
+                    setChannelCursors((cursors) => cursors.slice(0, -1))
+                  }
+                >
+                  <Text
+                    style={{
+                      color: channelPage === 0 ? colors.muted : colors.primary,
+                    }}
+                  >
+                    Previous
+                  </Text>
+                </Pressable>
+                <Text style={{ color: colors.muted }}>
+                  Channels · page {channelPage + 1}
                 </Text>
-                <Text style={[styles.channelMeta, { color: colors.muted }]}>
-                  {conversation.kind === "direct" ? "Direct chat" : conversation.kind === "channel" ? "Channel" : "Group chat"} ·{" "}
-                  {conversation.members.length} eligible members ·{" "}
-                  {
-                    conversation.members.filter((member) => member.canStartMeeting)
-                      .length
-                  }{" "}
-                  hosts
-                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Next channels"
+                  disabled={!overview.data.channelNextCursor}
+                  onPress={() => {
+                    if (overview.data.channelNextCursor)
+                      setChannelCursors((cursors) => [
+                        ...cursors,
+                        overview.data!.channelNextCursor,
+                      ]);
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: overview.data.channelNextCursor
+                        ? colors.primary
+                        : colors.muted,
+                    }}
+                  >
+                    Next
+                  </Text>
+                </Pressable>
               </View>
-              <IconSymbol name="chevron.right" size={18} color={colors.muted} />
-            </Pressable>
-          ))}
-          {channelPage > 0 || overview.data.channelNextCursor ? (
-            <View style={styles.pageControls}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Previous channels"
-                disabled={channelPage === 0}
-                onPress={() => setChannelCursors((cursors) => cursors.slice(0, -1))}
-              >
-                <Text style={{ color: channelPage === 0 ? colors.muted : colors.primary }}>Previous</Text>
-              </Pressable>
-              <Text style={{ color: colors.muted }}>Channels · page {channelPage + 1}</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Next channels"
-                disabled={!overview.data.channelNextCursor}
-                onPress={() => {
-                  if (overview.data.channelNextCursor)
-                    setChannelCursors((cursors) => [...cursors, overview.data!.channelNextCursor]);
-                }}
-              >
-                <Text style={{ color: overview.data.channelNextCursor ? colors.primary : colors.muted }}>Next</Text>
-              </Pressable>
-            </View>
-          ) : null}
-          {directPage > 0 || overview.data.directNextCursor ? (
-            <View style={styles.pageControls}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Previous direct chats"
-                disabled={directPage === 0}
-                onPress={() => setDirectCursors((cursors) => cursors.slice(0, -1))}
-              >
-                <Text style={{ color: directPage === 0 ? colors.muted : colors.primary }}>Previous</Text>
-              </Pressable>
-              <Text style={{ color: colors.muted }}>Direct chats · page {directPage + 1}</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Next direct chats"
-                disabled={!overview.data.directNextCursor}
-                onPress={() => {
-                  if (overview.data.directNextCursor)
-                    setDirectCursors((cursors) => [...cursors, overview.data!.directNextCursor]);
-                }}
-              >
-                <Text style={{ color: overview.data.directNextCursor ? colors.primary : colors.muted }}>Next</Text>
-              </Pressable>
-            </View>
-          ) : null}
+            ) : null}
+            {directPage > 0 || overview.data.directNextCursor ? (
+              <View style={styles.pageControls}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Previous direct chats"
+                  disabled={directPage === 0}
+                  onPress={() =>
+                    setDirectCursors((cursors) => cursors.slice(0, -1))
+                  }
+                >
+                  <Text
+                    style={{
+                      color: directPage === 0 ? colors.muted : colors.primary,
+                    }}
+                  >
+                    Previous
+                  </Text>
+                </Pressable>
+                <Text style={{ color: colors.muted }}>
+                  Direct chats · page {directPage + 1}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Next direct chats"
+                  disabled={!overview.data.directNextCursor}
+                  onPress={() => {
+                    if (overview.data.directNextCursor)
+                      setDirectCursors((cursors) => [
+                        ...cursors,
+                        overview.data!.directNextCursor,
+                      ]);
+                  }}
+                >
+                  <Text
+                    style={{
+                      color: overview.data.directNextCursor
+                        ? colors.primary
+                        : colors.muted,
+                    }}
+                  >
+                    Next
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
           </>
         )}
         {saveError ? (
@@ -406,9 +512,8 @@ function AdminMeetingsContent() {
           </Text>
         ) : null}
         <Text style={[styles.footer, { color: colors.muted }]}>
-          Meeting entry, audio, video, and participant admission are controlled
-          by the active meeting service. Additional security controls will
-          appear here only when the service can enforce them.
+          This page controls hosting rights only. Meeting entry, audio, video,
+          and participant admission are controlled by the meeting service.
         </Text>
       </ScrollView>
     </ScreenContainer>
@@ -418,37 +523,55 @@ function AdminMeetingsContent() {
 const styles = StyleSheet.create({
   content: {
     width: "100%",
-    maxWidth: 800,
+    maxWidth: 920,
     alignSelf: "center",
-    padding: 20,
+    padding: 16,
     paddingBottom: 56,
   },
+  contentDesktop: { maxWidth: 1080, paddingHorizontal: 32, paddingTop: 30 },
   header: {
     flexDirection: "row",
     alignItems: "center",
-    borderBottomWidth: 1,
     paddingBottom: 20,
-    marginBottom: 24,
   },
-  back: { padding: 8, marginLeft: -8, marginRight: 8 },
+  back: {
+    padding: 8,
+    marginLeft: -8,
+    marginRight: 8,
+    minHeight: 44,
+    justifyContent: "center",
+  },
   headerText: { flex: 1 },
   title: { fontSize: 28, fontWeight: "700" },
   subtitle: { fontSize: 14, marginTop: 3 },
-  sectionTitle: { fontSize: 19, fontWeight: "600" },
-  description: { fontSize: 14, lineHeight: 21, marginTop: 7, marginBottom: 20 },
+  sectionTitle: { fontSize: 18, fontWeight: "700" },
+  intro: { paddingVertical: 12, marginBottom: 12 },
+  description: { fontSize: 14, lineHeight: 21, marginTop: 7 },
   state: { alignItems: "center", paddingVertical: 25, gap: 12 },
   stateText: { fontSize: 14, lineHeight: 21, paddingVertical: 10 },
-  channel: { borderWidth: 1, borderRadius: 16, padding: 18, marginBottom: 14 },
-  channelChoice: {
+  channel: {
     borderWidth: 1,
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 10,
+    borderRadius: 10,
+    paddingHorizontal: 18,
+    marginBottom: 14,
+  },
+  conversationList: { borderWidth: 1, borderRadius: 10, overflow: "hidden" },
+  channelChoice: {
+    borderTopWidth: 1,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
     flexDirection: "row",
     alignItems: "center",
   },
-  channelName: { fontSize: 17, fontWeight: "600" },
-  channelMeta: { fontSize: 13, marginTop: 3, marginBottom: 12 },
+  channelName: { fontSize: 15, fontWeight: "600" },
+  channelMeta: { fontSize: 12, marginTop: 4 },
+  listHeading: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.7,
+    paddingVertical: 12,
+    borderBottomWidth: 0,
+  },
   allChannels: {
     alignSelf: "flex-start",
     paddingVertical: 7,
@@ -463,7 +586,13 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   moreMembers: { fontSize: 13, lineHeight: 20, marginTop: 12 },
-  pageControls: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 14, gap: 10 },
+  pageControls: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 14,
+    gap: 10,
+  },
   member: {
     minHeight: 60,
     flexDirection: "row",
