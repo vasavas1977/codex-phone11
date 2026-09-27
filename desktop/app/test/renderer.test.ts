@@ -96,6 +96,8 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
 
     publicState = { ...publicState, calling: { ...calling, call: { id: '81', state: 'ringing', muted: false }, dialState: 'requesting' } };
     listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: publicState.calling });
+    assert.equal(elements.get('status')!.textContent, 'Calling…',
+      'a SIP proceeding response does not prove the destination handset alerted');
     assert.equal(elements.get('dialpad-panel')!.hidden, false, 'an active call returns to the dialpad');
     assert.equal(elements.get('history-panel')!.hidden, false, 'history stays beside the visible call controls');
     assert.equal(keypad.hidden, true, 'the keypad is unavailable while the destination is ringing');
