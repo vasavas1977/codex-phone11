@@ -154,7 +154,10 @@ function render(): void {
   byId('identity').textContent = `Extension ${state.extensionNumber ?? 'unavailable'}`;
   const assignedExtension = maybeById('assigned-extension');
   if (assignedExtension) assignedExtension.textContent = state.extensionNumber ?? 'Extension unavailable';
-  byId('status').textContent = call ? `${call.state[0].toUpperCase()}${call.state.slice(1)} call` :
+  // Siprix proceeding covers any SIP 1xx response, including a proxy's 180.
+  // It does not prove the recipient's device alerted, so keep this neutral.
+  byId('status').textContent = call ? (call.state === 'ringing' ? 'Calling…' :
+    `${call.state[0].toUpperCase()}${call.state.slice(1)} call`) :
     state.calling.registered ? 'Ready to call' : 'Connecting to calling service';
   const statusMark = maybeById('phone-status-mark');
   if (statusMark) statusMark.dataset.state = call?.state ?? (state.calling.registered ? 'ready' : 'connecting');
