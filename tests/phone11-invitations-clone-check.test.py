@@ -170,6 +170,15 @@ class InvitationCloneRefusalTests(unittest.TestCase):
             self.assertIn("ROLLBACK", argv)
         self.assertIn("default_transaction_read_only=on", clone.PG_WRAPPER)
 
+    def test_restore_preserves_source_owners_and_acl(self):
+        argv = clone.restore_argv("a" * 64, "phone11ai", "phone11ai")
+        self.assertEqual(argv[3], "pg_restore")
+        self.assertIn("--single-transaction", argv)
+        self.assertIn("--exit-on-error", argv)
+        self.assertNotIn("--no-owner", argv)
+        self.assertNotIn("--no-acl", argv)
+        self.assertEqual(argv[-1], "/tmp/backup.dump")
+
     def test_cleanup_refuses_foreign_name_collision(self):
         foreign = {"Name": "/p11inv-token", "Id": "a" * 64,
                    "Config": {"Labels": {"phone11.invitation.clone-token": "different"}}}

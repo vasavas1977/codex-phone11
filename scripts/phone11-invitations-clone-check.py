@@ -411,6 +411,15 @@ def validate_clone_isolation(item: dict[str, object], container_id: str,
          "clone_isolation")
 
 
+def restore_argv(container_id: str, role: str, database: str) -> list[str]:
+    # Preserve source owners and grants. The pinned live role and the isolated
+    # bootstrap role have identical superuser attributes; an unknown grantee
+    # makes pg_restore fail closed before the migration is attempted.
+    return [DOCKER, "exec", container_id, "pg_restore", "--single-transaction",
+            "--exit-on-error", "-h", "/var/run/postgresql", "-U", role,
+            "-d", database, "/tmp/backup.dump"]
+
+
 def rehearse(args: argparse.Namespace, archive: Path, migration: Path,
              source_catalog: dict[str, object]) -> dict[str, object]:
     token = uuid.uuid4().hex
@@ -449,9 +458,7 @@ def rehearse(args: argparse.Namespace, archive: Path, migration: Path,
                 break
             time.sleep(1)
         need(ready, "clone_ready")
-        command([DOCKER, "exec", container_id, "pg_restore", "--no-owner", "--no-acl",
-                 "--single-transaction", "--exit-on-error", "-h", "/var/run/postgresql",
-                 "-U", args.role, "-d", args.database, "/tmp/backup.dump"], timeout=args.timeout)
+        command(restore_argv(container_id, args.role, args.database), timeout=args.timeout)
         restored = clone_json(container_id, args.role, args.database,
                               CATALOG_SQL % {"base": "false"})
         base_before = clone_json(container_id, args.role, args.database,
