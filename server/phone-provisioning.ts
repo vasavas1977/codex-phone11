@@ -432,6 +432,9 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
                sub.password as subscriber_password, sub.ha1 as subscriber_ha1,
                sub.ha1b as subscriber_ha1b
         FROM extensions e
+        JOIN tenant_memberships owner_tm ON owner_tm.user_id = $2
+          AND owner_tm.tenant_id = e.tenant_id AND owner_tm.status = 'active'
+        JOIN tenants owner_tenant ON owner_tenant.id = e.tenant_id AND owner_tenant.status = 'active'
         LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
         LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
         LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
@@ -456,6 +459,12 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
                 COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
               AND COALESCE(NULLIF(other_e.sip_domain, ''), $1) =
                 COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $1)
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM sip_accounts other_sa WHERE other_sa.id IS DISTINCT FROM sa.id
+              AND other_sa.status = 'active' AND other_sa.deleted_at IS NULL
+              AND other_sa.sip_username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+              AND other_sa.sip_domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $1)
           )
           AND (SELECT COUNT(*) FROM subscriber matching_sub
             WHERE matching_sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
@@ -489,6 +498,15 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
 
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
+
+  // A login alone does not authorize allocating tenant-1 calling resources.
+  const membership = await db.query(`
+    SELECT 1 FROM tenant_memberships tm
+    JOIN tenants t ON t.id = tm.tenant_id AND t.status = 'active'
+    WHERE tm.user_id = $1 AND tm.tenant_id = 1 AND tm.status = 'active'
+    LIMIT 1
+  `, [userId]);
+  if (membership.rows.length !== 1) return { configured: false };
 
   const openExtension = await db.query(`
     SELECT e.*
@@ -528,20 +546,67 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
 export async function assignExtensionToUser(userId: number, extensionId: number, isPrimary: boolean = true) {
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
-
-  if (isPrimary) {
-    await db.query(`UPDATE user_extensions SET is_primary = false WHERE user_id = $1`, [userId]);
-  }
-
-  await db.query(`
-    INSERT INTO user_extensions (user_id, extension_id, is_primary)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (user_id, extension_id) DO UPDATE SET is_primary = EXCLUDED.is_primary
-  `, [userId, extensionId, isPrimary]);
-
-  await db.query(`UPDATE extensions SET user_id = $1, updated_at = NOW() WHERE id = $2`, [userId, extensionId]);
-  await db.query(`UPDATE sip_accounts SET user_id = $1, updated_at = NOW() WHERE extension_id = $2`, [userId, extensionId]);
-
+  await withTransaction(async (client) => {
+    const extension = await client.query(
+      `SELECT id, tenant_id, user_id FROM extensions WHERE id = $1 AND type = 'user'
+         AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+      [extensionId],
+    );
+    if (extension.rows.length !== 1) throw new Error("The extension is unavailable.");
+    if (extension.rows[0].user_id !== null && extension.rows[0].user_id !== userId) {
+      throw new Error("The extension is already assigned to another user.");
+    }
+    const tenantId = extension.rows[0].tenant_id;
+    const eligible = await client.query(
+      `SELECT 1 FROM tenant_memberships tm JOIN tenants t ON t.id = tm.tenant_id
+         AND t.status = 'active' WHERE tm.user_id = $1 AND tm.tenant_id = $2
+         AND tm.status = 'active' LIMIT 1`,
+      [userId, tenantId],
+    );
+    if (eligible.rows.length !== 1) {
+      throw new Error("Extension assignee must be an active member of this workspace.");
+    }
+    const accounts = await client.query(
+      `SELECT id FROM sip_accounts WHERE extension_id = $1 AND tenant_id = $2
+         AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+      [extensionId, tenantId],
+    );
+    const allAccounts = await client.query(
+      `SELECT COUNT(*)::integer AS count FROM sip_accounts WHERE extension_id = $1`,
+      [extensionId],
+    );
+    if (accounts.rows.length > 1 || allAccounts.rows[0]?.count !== accounts.rows.length) {
+      throw new Error("The extension has ambiguous SIP accounts.");
+    }
+    if (isPrimary) {
+      await client.query(
+        `UPDATE user_extensions ue SET is_primary = false FROM extensions e
+           WHERE ue.extension_id = e.id AND ue.user_id = $1 AND e.tenant_id = $2`,
+        [userId, tenantId],
+      );
+    }
+    await client.query(`DELETE FROM user_extensions WHERE extension_id = $1`, [extensionId]);
+    const updated = await client.query(
+      `UPDATE extensions SET user_id = $1, updated_at = NOW()
+         WHERE id = $2 AND tenant_id = $3 AND status = 'active'
+           AND deleted_at IS NULL RETURNING id`,
+      [userId, extensionId, tenantId],
+    );
+    if (updated.rows.length !== 1) throw new Error("The extension assignment changed.");
+    if (accounts.rows.length === 1) {
+      const accountUpdate = await client.query(
+        `UPDATE sip_accounts SET user_id = $1, updated_at = NOW()
+           WHERE id = $2 AND extension_id = $3 AND tenant_id = $4
+             AND status = 'active' AND deleted_at IS NULL RETURNING id`,
+        [userId, accounts.rows[0].id, extensionId, tenantId],
+      );
+      if (accountUpdate.rows.length !== 1) throw new Error("The SIP account assignment changed.");
+    }
+    await client.query(
+      `INSERT INTO user_extensions (user_id, extension_id, is_primary) VALUES ($1, $2, $3)`,
+      [userId, extensionId, isPrimary],
+    );
+  });
   return { success: true };
 }
 

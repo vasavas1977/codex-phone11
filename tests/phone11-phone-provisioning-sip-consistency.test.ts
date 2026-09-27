@@ -21,7 +21,7 @@ vi.mock("../server/pbx/sip-secrets", () => ({
   decryptSecret: state.decryptSecret,
 }));
 
-import { createExtension, getPhoneConfig, listExtensions } from "../server/phone-provisioning";
+import { assignExtensionToUser, createExtension, ensurePilotExtensionForUser, getPhoneConfig, listExtensions } from "../server/phone-provisioning";
 
 const credentials = {
   sipUsername: "4101", sipDomain: "sip.phone11.ai", plaintextPassword: "fixture-secret",
@@ -86,6 +86,37 @@ describe("legacy Phone11 SIP provisioning", () => {
         ? [{ id: 41, sip_password: "old-secret" }] : [],
     }));
     await expect(listExtensions(7)).resolves.toEqual([{ id: 41 }]);
+  });
+
+  it("does not allocate pilot calling resources without active tenant membership", async () => {
+    await expect(ensurePilotExtensionForUser(33, "member-open-id"))
+      .resolves.toEqual({ configured: false });
+    expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("tm.tenant_id = 1"))).toBe(true);
+    expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("ORDER BY e.extension_number"))).toBe(false);
+    expect(state.txQuery).not.toHaveBeenCalled();
+  });
+
+  it("does not assign a SIP extension to an inactive workspace user", async () => {
+    state.txQuery.mockImplementation(async (sql: string) => ({
+      rows: sql.includes("SELECT id, tenant_id, user_id FROM extensions")
+        ? [{ id: 41, tenant_id: 7, user_id: null }] : [],
+    }));
+    await expect(assignExtensionToUser(33, 41)).rejects.toThrow("active member");
+    expect(state.txQuery.mock.calls.some(([sql]) => String(sql).includes("UPDATE extensions SET user_id"))).toBe(false);
+  });
+
+  it("checks owner fallback for active membership and duplicate SIP-account URI", async () => {
+    process.env.OWNER_OPEN_ID = "owner-open-id";
+    try {
+      await expect(getPhoneConfig(33, "owner-open-id")).resolves.toEqual({ configured: false });
+      const ownerSql = String(state.poolQuery.mock.calls.find(([sql]) =>
+        String(sql).includes("e.extension_number = '1020'"))?.[0]);
+      expect(ownerSql).toContain("owner_tm.status = 'active'");
+      expect(ownerSql).toContain("other_sa.sip_username");
+      expect(ownerSql).toContain("other_sa.status = 'active'");
+    } finally {
+      delete process.env.OWNER_OPEN_ID;
+    }
   });
 
   it("withholds a mismatched account and admits it only after subscriber parity", async () => {

@@ -16,6 +16,7 @@ vi.mock("../server/pbx/cdr-processor", () => ({ getCallStats: vi.fn(), getVoicem
 import { pbxRouter } from "../server/pbx/pbx-router";
 import { getPool } from "../server/pbx/db";
 import { computeHA1, computeHA1B, decryptSecret } from "../server/pbx/sip-secrets";
+import { getPhoneConfig } from "../server/phone-provisioning";
 
 const context = (userId: number) => ({
   user: { id: userId, role: "admin" }, req: { ip: "127.0.0.1", headers: {} }, res: {},
@@ -25,7 +26,26 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
   let db: ReturnType<typeof getPool>;
 
   beforeAll(async () => {
+    const database = process.env.PHONE11_SIP_PG_DISPOSABLE_DATABASE;
+    if (!database || !/^phone11_sip_isolated_[a-z0-9]+$/.test(database) ||
+        process.env.PG_DATABASE !== database ||
+        !["127.0.0.1", "localhost", "::1"].includes(process.env.PG_HOST || "")) {
+      throw new Error("SIP PostgreSQL test requires a named disposable loopback database");
+    }
     db = getPool();
+    const identity = await db.query(`
+      SELECT current_database() AS database, host(inet_server_addr()) AS server_address,
+             (SELECT COUNT(*)::integer FROM pg_tables
+               WHERE schemaname = current_schema()
+                 AND tablename IN ('subscriber', 'extensions', 'sip_accounts', 'user_extensions', 'tenant_memberships'))
+               AS existing_fixture_tables
+    `);
+    const actual = identity.rows[0];
+    if (actual?.database !== database ||
+        !["127.0.0.1", "::1"].includes(actual?.server_address) ||
+        actual?.existing_fixture_tables !== 0) {
+      throw new Error("SIP PostgreSQL test refuses non-disposable or reused database");
+    }
     await db.query(`
       CREATE TABLE subscriber (
         id SERIAL PRIMARY KEY, username TEXT NOT NULL, domain TEXT NOT NULL,
@@ -52,7 +72,16 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
       CREATE TABLE tenant_memberships (
         user_id INTEGER NOT NULL, tenant_id INTEGER NOT NULL, status TEXT NOT NULL
       );
-      INSERT INTO tenant_memberships VALUES (33, 7, 'active'), (44, 8, 'active');
+      CREATE TABLE organizations (
+        id INTEGER PRIMARY KEY, name TEXT, plan TEXT
+      );
+      CREATE TABLE tenants (
+        id INTEGER PRIMARY KEY, name TEXT, plan TEXT, status TEXT
+      );
+      INSERT INTO organizations VALUES (7, 'Workspace 7', 'business'), (8, 'Workspace 8', 'business');
+      INSERT INTO tenants VALUES (7, 'Workspace 7', 'business', 'active'),
+        (8, 'Workspace 8', 'business', 'active');
+      INSERT INTO tenant_memberships VALUES (33, 7, 'active'), (55, 7, 'active'), (44, 8, 'active');
       CREATE FUNCTION reject_4102() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW.sip_username = '4102' THEN RAISE EXCEPTION 'fixture account failure'; END IF;
@@ -117,6 +146,30 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
       .toBe(after.rows[0].password);
     await expect(pbxRouter.createCaller(context(10)).extensions.resetPassword({ extensionId: ext.rows[0].id }))
       .rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("reassigns all owner records and only the new user receives phone configuration", async () => {
+    const ext = await db.query("SELECT id FROM extensions WHERE extension_number = '4101'");
+    await expect(pbxRouter.createCaller(context(9)).extensions.update({
+      id: ext.rows[0].id, userId: 55,
+    })).resolves.toEqual({ success: true });
+    const owners = await db.query(`
+      SELECT e.user_id AS extension_user, sa.user_id AS account_user,
+             ue.user_id AS grant_user
+      FROM extensions e JOIN sip_accounts sa ON sa.extension_id = e.id
+      JOIN user_extensions ue ON ue.extension_id = e.id
+      WHERE e.id = $1
+    `, [ext.rows[0].id]);
+    expect(owners.rows).toEqual([{ extension_user: 55, account_user: 55, grant_user: 55 }]);
+    await expect(getPhoneConfig(33, "member-open-id")).resolves.toEqual({ configured: false });
+    await expect(getPhoneConfig(55, "member-open-id")).resolves.toMatchObject({
+      configured: true, sip: { username: "4101" },
+    });
+    await expect(pbxRouter.createCaller(context(9)).extensions.update({
+      id: ext.rows[0].id, userId: 66,
+    })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const unchanged = await db.query("SELECT user_id FROM extensions WHERE id = $1", [ext.rows[0].id]);
+    expect(unchanged.rows[0].user_id).toBe(55);
   });
 
   it("serializes a cross-tenant race for one global SIP URI", async () => {

@@ -345,6 +345,7 @@ export const pbxRouter = router({
       }))
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantCtx(ctx);
+        if (!hasRole(tc.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
         if (!await validateTenantOwnership("extensions", input.id, tc.tenantId)) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
@@ -376,9 +377,78 @@ export const pbxRouter = router({
         if (sets.length === 0) return { success: true };
 
         sets.push(`updated_at = NOW()`);
-        vals.push(input.id);
+        vals.push(input.id, tc.tenantId);
+        const updateSql = `UPDATE extensions SET ${sets.join(", ")}
+          WHERE id = $${idx} AND tenant_id = $${idx + 1} AND deleted_at IS NULL RETURNING id`;
 
-        await query(`UPDATE extensions SET ${sets.join(", ")} WHERE id = $${idx}`, vals);
+        if (input.userId !== undefined) {
+          await withTransaction(async (client) => {
+            const extension = await client.query(
+              `SELECT id, type FROM extensions WHERE id = $1 AND tenant_id = $2
+                 AND deleted_at IS NULL FOR UPDATE`,
+              [input.id, tc.tenantId],
+            );
+            if (extension.rows.length !== 1) throw new TRPCError({ code: "NOT_FOUND" });
+            if (extension.rows[0].type !== "user") {
+              throw new TRPCError({ code: "BAD_REQUEST", message: "Only user extensions can be reassigned" });
+            }
+            const accounts = await client.query(
+              `SELECT id FROM sip_accounts WHERE extension_id = $1 AND tenant_id = $2
+                 AND status = 'active' AND deleted_at IS NULL FOR UPDATE`,
+              [input.id, tc.tenantId],
+            );
+            const allAccounts = await client.query(
+              `SELECT COUNT(*)::integer AS count FROM sip_accounts WHERE extension_id = $1`,
+              [input.id],
+            );
+            if (accounts.rows.length > 1 || allAccounts.rows[0]?.count !== accounts.rows.length) {
+              throw new TRPCError({ code: "CONFLICT", message: "The extension has ambiguous SIP accounts" });
+            }
+            if (input.userId !== null) {
+              const membership = await client.query(
+                `SELECT 1 FROM tenant_memberships tm JOIN tenants t ON t.id = tm.tenant_id
+                   AND t.status = 'active' WHERE tm.user_id = $1 AND tm.tenant_id = $2
+                   AND tm.status = 'active' LIMIT 1`,
+                [input.userId, tc.tenantId],
+              );
+              if (membership.rows.length !== 1) {
+                throw new TRPCError({ code: "BAD_REQUEST", message: "The selected person is not an active member of this workspace" });
+              }
+            }
+            const previousGrant = input.userId === null ? null : await client.query(
+              `SELECT is_primary FROM user_extensions WHERE extension_id = $1 AND user_id = $2`,
+              [input.id, input.userId],
+            );
+            const updated = await client.query(updateSql, vals);
+            if (updated.rows.length !== 1) throw new TRPCError({ code: "CONFLICT" });
+            if (accounts.rows.length === 1) {
+              const accountUpdate = await client.query(
+                `UPDATE sip_accounts SET user_id = $1, updated_at = NOW()
+                   WHERE id = $2 AND extension_id = $3 AND tenant_id = $4
+                     AND status = 'active' AND deleted_at IS NULL RETURNING id`,
+                [input.userId, accounts.rows[0].id, input.id, tc.tenantId],
+              );
+              if (accountUpdate.rows.length !== 1) throw new TRPCError({ code: "CONFLICT" });
+            }
+            await client.query(`DELETE FROM user_extensions WHERE extension_id = $1`, [input.id]);
+            if (input.userId !== null) {
+              const primary = await client.query(
+                `SELECT EXISTS(SELECT 1 FROM user_extensions
+                   WHERE user_id = $1 AND is_primary = true) AS has_primary`,
+                [input.userId],
+              );
+              await client.query(
+                `INSERT INTO user_extensions (user_id, extension_id, is_primary)
+                 VALUES ($1, $2, $3)`,
+                [input.userId, input.id,
+                 previousGrant?.rows[0]?.is_primary === true || primary.rows[0]?.has_primary !== true],
+              );
+            }
+          });
+        } else {
+          const updated = await query(updateSql, vals);
+          if (updated.rows.length !== 1) throw new TRPCError({ code: "NOT_FOUND" });
+        }
 
         // Invalidate cache
         await invalidateCache(`directory:${tc.tenantId}:*`);
@@ -438,6 +508,7 @@ export const pbxRouter = router({
       .input(z.object({ extensionId: z.number() }))
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantCtx(ctx);
+        if (!hasRole(tc.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
         const accountSql = `SELECT e.id AS extension_id, e.sip_username AS extension_username,
                                    e.sip_domain AS extension_domain, e.user_id AS extension_user_id,
                                    sa.id AS account_id, sa.sip_username, sa.sip_domain,
