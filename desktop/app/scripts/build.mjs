@@ -1,0 +1,45 @@
+import { build } from 'esbuild';
+import { mkdir, copyFile, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const resourcesDir = process.env.PHONE11_RESOURCE_STAGE || resolve(root, 'resources');
+// JavaScript bundles are platform-neutral; an explicit target allows the
+// Windows package to embed its verified Windows helper manifest on a Mac.
+const targetPlatform = process.env.PHONE11_BUILD_PLATFORM || process.platform;
+if (targetPlatform !== 'darwin' && targetPlatform !== 'win32')
+  throw new Error('Unsupported Phone11 desktop build platform');
+await mkdir(resolve(root, 'dist'), { recursive: true });
+let pinnedHash = '0'.repeat(64); // No staged helper means calling fails closed.
+try {
+  const bytes = await readFile(resolve(resourcesDir, 'helper-integrity.json'));
+  const manifest = JSON.parse(bytes.toString('utf8'));
+  if (manifest.platform !== targetPlatform || !manifest.files || !manifest.symlinks)
+    throw new Error('Invalid platform helper integrity manifest');
+  pinnedHash = createHash('sha256').update(bytes).digest('hex');
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+}
+for (const name of ['main', 'preload']) {
+  await build({ entryPoints: [resolve(root, `src/${name}.ts`)], outfile: resolve(root, `dist/${name}.cjs`),
+    bundle: true, platform: 'node', target: 'node22', format: 'cjs', external: ['electron'],
+    sourcemap: false, minify: false,
+    define: name === 'main' ? { __PHONE11_MANIFEST_SHA256__: JSON.stringify(pinnedHash) } : {} });
+}
+// A separate, sandboxed preload owns LiveKit. The static meeting page contains
+// no page-world JavaScript, and the normal calling renderer stays network-free.
+await build({ entryPoints: [resolve(root, 'src/meeting-preload.ts')],
+  outfile: resolve(root, 'dist/meeting-preload.cjs'), bundle: true,
+  platform: 'browser', target: 'chrome128', format: 'cjs', external: ['electron'],
+  sourcemap: false, minify: false });
+await build({ entryPoints: [resolve(root, 'src/renderer.ts')], outfile: resolve(root, 'dist/renderer.js'),
+  bundle: true, platform: 'browser', target: 'chrome128', format: 'iife' });
+for (const name of ['index.html', 'style.css', 'meeting.html', 'meeting.css'])
+  await copyFile(resolve(root, `src/${name}`), resolve(root, `dist/${name}`));
+
+// Bundle pinned, licensed icons locally; the calling renderer makes no network requests.
+await mkdir(resolve(root, 'dist/icons'), { recursive: true });
+for (const name of ['phone', 'video', 'clock-3', 'voicemail', 'user-round', 'log-out', 'phone-off', 'mic', 'pause', 'delete', 'refresh-cw', 'phone-incoming', 'phone-outgoing', 'phone-missed', 'play'])
+  await copyFile(resolve(root, `node_modules/lucide-static/icons/${name}.svg`), resolve(root, `dist/icons/${name}.svg`));
+await copyFile(resolve(root, 'node_modules/lucide-static/LICENSE'), resolve(root, 'dist/icons/LICENSE'));
