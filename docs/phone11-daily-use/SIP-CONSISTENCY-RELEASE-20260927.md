@@ -56,6 +56,11 @@ review. Never copy or print the Docker environment: the operator clones it
 inside root-private state, retaining the invitation Resend credential and all
 other settings except `PORT` and `PHONE11_BUILD_SHA`.
 
+The active 3015 container reuses an image built with invitations off. Its
+immutable `com.phone11.candidate-build` image label is
+`invitations-off-b3ed0e7`, while its live `PHONE11_BUILD_SHA` and HTTP health
+are `invitations-on-b3ed0e7`. The operator pins and checks these independently.
+
 ## Phases
 
 Run the following phases as root with the same `--manifest` path:

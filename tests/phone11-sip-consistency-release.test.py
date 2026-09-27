@@ -89,6 +89,34 @@ class ReleaseGuards(unittest.TestCase):
             with self.assertRaisesRegex(release.Refused, "environment_drift"):
                 release.compose({}, "sha256:" + "b" * 64, "c" * 64, "sip-admin-6180658")
 
+    def test_predecessor_pins_image_build_separately_from_live_build(self):
+        data = self.manifest()
+        old = {"Config": {"Labels": {"com.phone11.candidate-build": release.OLD_IMAGE_BUILD}}}
+        env = {"PHONE11_INVITATIONS_ENABLED": "true",
+               "PHONE11_INVITATIONS_PROVIDER": "resend",
+               "PHONE11_INVITATIONS_RESEND_API_KEY": "re_test",
+               "PHONE11_INVITATIONS_FROM": "Phone11 <noreply@phone11.ai>",
+               "PHONE11_RUNTIME_ROLE": "api-candidate",
+               "PHONE11_VOICEMAIL_HOOK_READY": "false",
+               "PHONE11_BUILD_SHA": release.OLD_BUILD}
+        with mock.patch.object(release, "_original_check_old", return_value=old) as predecessor, \
+             mock.patch.object(release.stage, "labels", return_value=old["Config"]["Labels"]), \
+             mock.patch.object(release.stage, "env_map", return_value=env), \
+             mock.patch.object(release, "health") as health:
+            self.assertIs(release.check_old(data), old)
+        checked = predecessor.call_args.args[0]
+        self.assertEqual(checked["predecessor"]["build"], release.OLD_IMAGE_BUILD)
+        self.assertEqual(data["predecessor"]["build"], release.OLD_BUILD)
+        health.assert_called_once_with(release.OLD_PORT, release.OLD_BUILD)
+
+    def test_predecessor_refuses_unexpected_image_build(self):
+        data = self.manifest()
+        old = {"Config": {"Labels": {"com.phone11.candidate-build": "unexpected"}}}
+        with mock.patch.object(release, "_original_check_old", return_value=old), \
+             mock.patch.object(release.stage, "labels", return_value=old["Config"]["Labels"]):
+            with self.assertRaisesRegex(release.Refused, "predecessor_image_build"):
+                release.check_old(data)
+
     def test_healthcheck_targets_isolated_port(self):
         raw = {"test": ["CMD", "node", "-e",
                         "fetch('http://127.0.0.1:3013/api/health')"]}

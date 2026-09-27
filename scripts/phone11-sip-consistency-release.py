@@ -45,6 +45,7 @@ OLD_IMAGE = "sha256:0942f8a6dd17f2919e6631adbc55318e2e8693ff9f869f90fa26d8327950
 OLD_BUNDLE_SHA256 = "f06dcd6044a4a8b50ec35571834d7f82170efdd1d86b7559a2e3315fddd416a2"
 LOCK_SHA256 = "24a72aa60f0b43fe3afdad41f2e0f0f348f75ac065172627913fe72d43f2c801"
 OLD_BUILD = "invitations-on-b3ed0e7"
+OLD_IMAGE_BUILD = "invitations-off-b3ed0e7"
 SITE_SHA256 = "29c7be9fc516e3bb495400f1deb2619ff57b3b913d96b40cfb19e2e63b97f6b0"
 OWNER_LABEL = "com.phone11.sip-consistency-release.owner"
 MANIFEST_LABEL = "com.phone11.sip-consistency-release.manifest-sha256"
@@ -117,7 +118,14 @@ def health(port: int, build: str) -> None:
 
 
 def check_old(data: dict[str, Any]) -> dict[str, Any]:
-    old = _original_check_old(data)
+    # 3015 reused the reviewed 3014 image and enabled invitations only through
+    # runtime environment. The immutable image label therefore records the
+    # earlier image build while the live environment and health record 3015.
+    image_pin = {**data, "predecessor": {**data["predecessor"],
+                                         "build": OLD_IMAGE_BUILD}}
+    old = _original_check_old(image_pin)
+    need(stage.labels(old).get("com.phone11.candidate-build") == OLD_IMAGE_BUILD,
+         "predecessor_image_build")
     env = stage.env_map(old)
     need(env.get("PHONE11_INVITATIONS_ENABLED") == "true"
          and env.get("PHONE11_INVITATIONS_PROVIDER") == "resend"
