@@ -646,9 +646,12 @@ export const pbxRouter = router({
 
     /** CDR-backed usage for the signed-in member's assigned extensions. */
     usage: protectedProcedure
-      .input(z.object({ period: z.enum(["week", "month"]).default("month") }).optional())
+      .input(z.object({
+        tenantId: z.number().int().positive().optional(),
+        period: z.enum(["week", "month"]).default("month"),
+      }).optional())
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantCtx(ctx, input?.tenantId);
         const interval = input?.period === "week" ? "7 days" : "30 days";
         const ownership = SELF_SERVICE_CALL_OWNERSHIP_SQL;
         const [summary, calls] = await Promise.all([
@@ -679,6 +682,7 @@ export const pbxRouter = router({
         ]);
         const row = summary.rows[0] || {};
         return {
+          tenantId: tc.tenantId,
           totalCalls: Number(row.total_calls || 0),
           answeredCalls: Number(row.answered_calls || 0),
           missedCalls: Number(row.missed_calls || 0),
