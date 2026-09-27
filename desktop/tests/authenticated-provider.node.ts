@@ -11,7 +11,7 @@ const trpc = (value: unknown): Response => json({ result: { data: { json: value 
 function harness(overrides: { authStatus?: number; authCode?: string; tenantId?: number; extension?: string;
   extensionId?: number; userId?: number; malformed?: boolean; rotatedPassword?: string;
   secondTenantId?: number; secondExtensionId?: number; secondUsername?: string;
-  availableMeetings?: unknown; meetingGrant?: unknown } = {}) {
+  availableMeetings?: unknown; meetingGrant?: unknown; voicemailItems?: unknown } = {}) {
   const paths: string[] = [];
   let configCalls = 0;
   const fetcher: typeof fetch = async (input, init) => {
@@ -43,6 +43,11 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
     if (url.pathname === "/api/trpc/meetings.availableForTenant") {
       assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""), { json: { tenantId: overrides.tenantId ?? 9 } });
       return trpc(overrides.availableMeetings ?? [{ meetingId: "11111111-1111-4111-8111-111111111111", tenantId: overrides.tenantId ?? 9 }]);
+    }
+    if (url.pathname === "/api/trpc/pbx.voicemail.list") {
+      assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""),
+        { json: { tenantId: overrides.tenantId ?? 9 } });
+      return trpc(overrides.voicemailItems ?? []);
     }
     if (url.pathname === "/api/trpc/meetings.join") {
       assert.equal(init?.method, "POST");
@@ -178,6 +183,43 @@ test("desktop meetings use admitted IDs and keep media grants outside public ses
   assert.equal(paths.filter(path => path.endsWith("meetings.join")).length, 1);
   await provider.signOut();
   await assert.rejects(provider.joinMeeting(session.revision, meetings[0].meetingId));
+});
+
+test("desktop voicemail inbox exposes bounded personal metadata through the signed-in session", async () => {
+  const { provider, paths } = harness({ voicemailItems: [{ id: 4, caller_name: "Som-O",
+    caller_number: "1020", duration_seconds: 23, status: "new", created_at: "2026-09-27T10:00:00.000Z" }] });
+  const session = await provider.signIn("user@example.test", "login-secret");
+  await assert.rejects(provider.listVoicemail("stale-revision"));
+  assert.deepEqual(await provider.listVoicemail(session.revision), [{ id: 4, callerName: "Som-O",
+    callerNumber: "1020", durationSeconds: 23, status: "new", createdAt: "2026-09-27T10:00:00.000Z" }]);
+  assert.equal(paths.filter(path => path.endsWith("pbx.voicemail.list")).length, 1);
+  await provider.signOut();
+  await assert.rejects(provider.listVoicemail(session.revision));
+});
+
+test("desktop voicemail rejects malformed or oversized inbox metadata", async () => {
+  for (const voicemailItems of [
+    [{ id: 0, caller_name: "Som-O", caller_number: "1020", duration_seconds: 23,
+      status: "new", created_at: "2026-09-27T10:00:00.000Z" }],
+    [{ id: 4, caller_name: "Som-O", caller_number: "1020", duration_seconds: 23,
+      status: "deleted", created_at: "2026-09-27T10:00:00.000Z" }],
+    Array.from({ length: 101 }, (_, index) => ({ id: index + 1, caller_name: null,
+      caller_number: "1020", duration_seconds: 23, status: "new", created_at: "2026-09-27T10:00:00.000Z" })),
+  ]) {
+    const { provider } = harness({ voicemailItems });
+    const session = await provider.signIn("user@example.test", "login-secret");
+    await assert.rejects(provider.listVoicemail(session.revision));
+  }
+});
+
+test("desktop voicemail drops unsafe caller labels without hiding a valid message", async () => {
+  const { provider } = harness({ voicemailItems: [{ id: 4, caller_name: "\u202eSpoofed",
+    caller_number: " 1020 ", duration_seconds: 0, status: "read",
+    created_at: "2026-09-27T10:00:00.000Z" }] });
+  const session = await provider.signIn("user@example.test", "login-secret");
+  assert.deepEqual(await provider.listVoicemail(session.revision), [{ id: 4,
+    callerName: null, callerNumber: "1020", durationSeconds: 0, status: "read",
+    createdAt: "2026-09-27T10:00:00.000Z" }]);
 });
 
 test("desktop meeting titles are bounded presentation data and never join authority", async () => {

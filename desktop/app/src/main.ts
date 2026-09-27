@@ -25,7 +25,7 @@ async function bootstrap(): Promise<void> {
   const config = JSON.parse(await readFile(join(resourcesDir, 'config.json'), 'utf8')) as { apiOrigin?: unknown };
   if (typeof config.apiOrigin !== 'string') throw new Error('Phone11 API origin is not configured');
   provider = new AuthenticatedDesktopProvider({ origin: config.apiOrigin });
-  window = new BrowserWindow({ width: 960, height: 740, minWidth: 360, minHeight: 600,
+  window = new BrowserWindow({ width: 1120, height: 760, minWidth: 360, minHeight: 600,
     title: 'Phone11 desktop trial', backgroundColor: '#f8fafc',
     webPreferences: { preload: join(__dirname, 'preload.cjs'), sandbox: true,
       contextIsolation: true, nodeIntegration: false, webSecurity: true } });
@@ -72,6 +72,7 @@ async function bootstrap(): Promise<void> {
     }
     return handlers.action(value);
   }));
+  ipcMain.handle(CHANNELS.voicemailList, checked(value => handlers.voicemailList(value)));
   ipcMain.handle(CHANNELS.signOut, checked(() => serial(async () => {
     await meeting?.close();
     return handlers.signOut();

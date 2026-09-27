@@ -5,17 +5,32 @@ declare global { interface Window { phone11: {
   state(): Promise<PublicState>; signIn(email: string, password: string): Promise<PublicState>;
   action(input: unknown): Promise<TaggedSnapshot>; signOut(): Promise<PublicState>;
   openMeetings(): Promise<void>;
+  voicemailList?(sessionRevision: string): Promise<{ sessionRevision: string; items: Array<{
+    id: number; callerName: string | null; callerNumber: string | null; durationSeconds: number;
+    status: 'new' | 'read'; createdAt: string;
+  }> }>;
   onUpdate(listener: (snapshot: TaggedSnapshot) => void): () => void;
 } } }
 const byId = (id: string): HTMLElement => document.getElementById(id)!;
+const maybeById = (id: string): HTMLElement | null => document.getElementById(id);
 let state: PublicState | null = null;
 let busy = false;
 let accountEpoch = 0;
 let currentTab: 'phone' | 'meetings' = 'phone';
+let currentPhoneSection: 'dialpad' | 'history' | 'voicemail' | 'lines' = 'dialpad';
 let meetingOpening = false;
 let meetingMessage = '';
+let voicemailLoading = false;
+let voicemailLoadingFor = '';
+let voicemailLoadedFor = '';
+let voicemailMessage = 'Open Voicemail to load your messages.';
+let voicemailItems: Array<{ id: number; callerName: string | null; callerNumber: string | null; durationSeconds: number; status: 'new' | 'read'; createdAt: string }> = [];
+let voicemailRequest = 0;
 function render(): void {
   const signed = !!state?.signedIn;
+  const call = signed ? state?.calling.call : null;
+  // An incoming or active call must never be hidden behind an inbox or meeting tab.
+  if (call) { currentTab = 'phone'; currentPhoneSection = 'dialpad'; }
   byId('login').hidden = signed;
   byId('workspace').hidden = !signed;
   byId('phone').hidden = !signed || currentTab !== 'phone';
@@ -25,15 +40,30 @@ function render(): void {
     if (tab === currentTab) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   }
+  for (const section of ['dialpad', 'history', 'voicemail', 'lines'] as const) {
+    const button = maybeById(`${section}-tab`);
+    const panel = maybeById(`${section}-panel`);
+    if (!button || !panel) continue;
+    if (section === currentPhoneSection) {
+      button.setAttribute('aria-current', 'page');
+      panel.hidden = false;
+    } else {
+      button.removeAttribute('aria-current');
+      panel.hidden = true;
+    }
+  }
   if (!signed || !state) return;
-  const call = state.calling.call;
   const phoneBusy = !!call || state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle';
   (byId('open-meetings') as HTMLButtonElement).disabled = meetingOpening || phoneBusy;
   byId('meeting-open-message').textContent = phoneBusy
     ? 'Finish your Phone call or pending action before opening a meeting.' : meetingMessage;
   byId('identity').textContent = `Tenant ${state.tenantId} · Extension ${state.extensionNumber ?? 'unavailable'}`;
+  const assignedExtension = maybeById('assigned-extension');
+  if (assignedExtension) assignedExtension.textContent = state.extensionNumber ?? 'Extension unavailable';
   byId('status').textContent = call ? `${call.state[0].toUpperCase()}${call.state.slice(1)} call` :
     state.calling.registered ? 'Ready to call' : 'Connecting to calling service';
+  const statusMark = maybeById('phone-status-mark');
+  if (statusMark) statusMark.dataset.state = call?.state ?? (state.calling.registered ? 'ready' : 'connecting');
   byId('call-id').textContent = call ? `Call ${call.id}` : 'No active call';
   byId('notice').textContent = 'Siprix official trial: calls may end after 60 seconds. For testing only.';
   byId('hold-message').textContent = state.calling.holdMessage ?? '';
@@ -47,6 +77,65 @@ function render(): void {
   (byId('keypad') as HTMLElement).hidden = !canEnterDestination && !canSendDtmf;
   byId('mute').textContent = call?.muted ? 'Unmute' : 'Mute';
   byId('hold').textContent = call?.state === 'held' ? 'Resume' : 'Hold';
+  const voicemailRefresh = maybeById('voicemail-refresh');
+  if (voicemailRefresh) (voicemailRefresh as HTMLButtonElement).disabled = voicemailLoading;
+  const voicemailState = maybeById('voicemail-state');
+  if (voicemailState) voicemailState.textContent = voicemailMessage;
+  const voicemailList = maybeById('voicemail-list');
+  if (voicemailList && 'replaceChildren' in voicemailList && typeof document.createElement === 'function') {
+    voicemailList.replaceChildren();
+    if (!voicemailLoading && voicemailItems.length === 0 && voicemailLoadedFor && !voicemailMessage) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-message';
+      empty.textContent = 'No voicemail messages.';
+      voicemailList.append(empty);
+    }
+    for (const item of voicemailItems) {
+      const row = document.createElement('article');
+      row.className = 'voicemail-item';
+      const caller = document.createElement('strong');
+      caller.textContent = item.callerName?.trim() || item.callerNumber?.trim() || 'Unknown caller';
+      const meta = document.createElement('span');
+      const date = new Date(item.createdAt);
+      const dateText = Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+      const duration = Number.isFinite(item.durationSeconds) ? `${Math.max(0, Math.floor(item.durationSeconds))} sec` : '';
+      meta.textContent = [item.status === 'new' ? 'New' : 'Read', duration, dateText].filter(Boolean).join(' · ');
+      row.append(caller, meta);
+      voicemailList.append(row);
+    }
+  }
+}
+async function loadVoicemail(force = false): Promise<void> {
+  if (!state?.signedIn || !state.sessionRevision) return;
+  if (!force && voicemailLoadedFor === state.sessionRevision) return;
+  if (!force && voicemailLoading && voicemailLoadingFor === state.sessionRevision) return;
+  const revision = state.sessionRevision;
+  const requestId = ++voicemailRequest;
+  voicemailLoading = true;
+  voicemailLoadingFor = revision;
+  voicemailMessage = 'Loading voicemail…';
+  if (force || voicemailLoadedFor !== revision) voicemailItems = [];
+  render();
+  try {
+    if (!window.phone11.voicemailList) throw new Error('unavailable');
+    const response = await window.phone11.voicemailList(revision);
+    if (requestId !== voicemailRequest || state?.sessionRevision !== revision) return;
+    if (response.sessionRevision !== revision) throw new Error('stale session');
+    voicemailItems = Array.isArray(response.items) ? response.items : [];
+    voicemailLoadedFor = revision;
+    voicemailMessage = '';
+  } catch {
+    if (requestId === voicemailRequest && state?.sessionRevision === revision) {
+      voicemailMessage = 'Voicemail could not load. Refresh to try again.';
+      voicemailLoadedFor = '';
+    }
+  } finally {
+    if (requestId === voicemailRequest && state?.sessionRevision === revision) {
+      voicemailLoading = false;
+      voicemailLoadingFor = '';
+      render();
+    }
+  }
 }
 function message(text: string): void { byId('message').textContent = text; }
 async function request(input: unknown): Promise<void> {
@@ -85,6 +174,14 @@ byId('login-form').addEventListener('submit', async event => {
 for (const tab of ['phone', 'meetings'] as const) {
   byId(`${tab}-tab`).addEventListener('click', () => { currentTab = tab; render(); });
 }
+for (const section of ['dialpad', 'history', 'voicemail', 'lines'] as const) {
+  maybeById(`${section}-tab`)?.addEventListener('click', () => {
+    currentPhoneSection = section;
+    render();
+    if (section === 'voicemail') void loadVoicemail();
+  });
+}
+maybeById('voicemail-refresh')?.addEventListener('click', () => { void loadVoicemail(true); });
 byId('open-meetings').addEventListener('click', async () => {
   if (!state?.signedIn || !state.sessionRevision || state.calling.call ||
       state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle' || meetingOpening) return;
@@ -109,7 +206,7 @@ byId('open-meetings').addEventListener('click', async () => {
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;
-  state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; render();
+  state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; currentPhoneSection = 'dialpad'; voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = []; voicemailMessage = 'Open Voicemail to load your messages.'; render();
   try {
     const signedOut = await window.phone11.signOut();
     if (accountEpoch === epoch) { state = signedOut; message('Signed out.'); render(); }
@@ -144,7 +241,16 @@ byId('keypad').addEventListener('click', event => {
   destination.value += digit;
   destination.focus();
 });
-window.phone11.onUpdate(update => { state = applyTaggedSnapshot(state, update); render(); });
+window.phone11.onUpdate(update => {
+  const previousRevision = state?.sessionRevision;
+  state = applyTaggedSnapshot(state, update);
+  if (previousRevision && previousRevision !== state?.sessionRevision) {
+    voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = [];
+    voicemailMessage = 'Open Voicemail to load your messages.';
+  }
+  render();
+  if (currentPhoneSection === 'voicemail' && state?.signedIn) void loadVoicemail();
+});
 const initialEpoch = accountEpoch;
 window.phone11.state().then(value => {
   if (accountEpoch === initialEpoch) { state = value; render(); }

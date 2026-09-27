@@ -50,7 +50,7 @@ vi.mock("../server/profile/photo", () => ({
 // eslint-disable-next-line import/first
 import { pbxRouter } from "../server/pbx/pbx-router";
 // eslint-disable-next-line import/first
-import { getCallStats } from "../server/pbx/cdr-processor";
+import { getCallStats, getVoicemails } from "../server/pbx/cdr-processor";
 // eslint-disable-next-line import/first
 import { createSipCredentials, regenerateSipCredentials } from "../server/pbx/sip-secrets";
 // eslint-disable-next-line import/first
@@ -345,6 +345,27 @@ describe("PBX selected workspace reads", () => {
       assignedRouteId: null,
     })).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(db.query).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PBX selected voicemail inbox", () => {
+  const memberships = [membership("user", 7), membership("user", 12)];
+
+  it("reads the requested active workspace instead of the oldest membership", async () => {
+    db.query.mockResolvedValueOnce({ rows: memberships });
+    vi.mocked(getVoicemails).mockResolvedValueOnce([]);
+    await expect(pbxRouter.createCaller(context()).voicemail.list({ tenantId: 12 }))
+      .resolves.toEqual([]);
+    expect(getVoicemails).toHaveBeenCalledWith(12, 9, undefined);
+  });
+
+  it("rejects unjoined and malformed workspace input before inbox access", async () => {
+    db.query.mockResolvedValueOnce({ rows: memberships });
+    await expect(pbxRouter.createCaller(context()).voicemail.list({ tenantId: 99 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(pbxRouter.createCaller(context()).voicemail.list(null as never))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(getVoicemails).not.toHaveBeenCalled();
   });
 });
 

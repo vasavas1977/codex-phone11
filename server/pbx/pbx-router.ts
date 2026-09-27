@@ -2136,11 +2136,12 @@ export const pbxRouter = router({
         z
           .object({
             extension: z.string().regex(/^[1-9][0-9]{0,15}$/).optional(),
+            tenantId: z.number().int().positive().optional(),
           })
           .optional(),
       )
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantCtx(ctx, input?.tenantId);
         try {
           return await getVoicemails(tc.tenantId, ctx.user.id, input?.extension);
         } catch (error) {

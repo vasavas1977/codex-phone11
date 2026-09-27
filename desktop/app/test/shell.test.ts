@@ -82,6 +82,23 @@ test('late call results cannot replace a different account or helper generation'
   assert.equal(applyTaggedSnapshot(null, { sessionRevision: 'a', generation: 'ga', snapshot: oldCall }), null);
   assert.equal(applyTaggedSnapshot(accountB, { sessionRevision: 'b', generation: 'gb', snapshot: oldCall })?.calling, oldCall);
 });
+test('voicemail IPC is bound to the current session and rejects a late account switch', async () => {
+  const first: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 1, extensionId: 2 };
+  const second: DesktopSession = { revision: 'r2', accountId: 'a2', userId: 'u2', tenantId: 2, extensionId: 3 };
+  let current: DesktopSession | null = first;
+  let release!: (value: []) => void;
+  const pending = new Promise<[]>(resolve => { release = resolve; });
+  const provider = { currentSession: () => current, currentExtensionNumber: () => '1020',
+    listVoicemail: async () => pending };
+  const helper = { snapshot: () => empty };
+  const handlers = createHandlers(provider as never, helper as never, () => 'g1', () => {});
+  await assert.rejects(handlers.voicemailList({ sessionRevision: 'r2' }), /session changed/);
+  const result = handlers.voicemailList({ sessionRevision: 'r1' });
+  current = second;
+  release([]);
+  await assert.rejects(result, /session changed/);
+  assert.equal((await handlers.voicemailList({ sessionRevision: 'r2' })).sessionRevision, 'r2');
+});
 test('Windows helper checks executable and both loader DLLs', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'phone11-helper-'));
   try {

@@ -6,6 +6,7 @@ const api = Object.freeze({
   state: () => ipcRenderer.invoke(CHANNELS.state),
   signIn: (email: string, password: string) => ipcRenderer.invoke(CHANNELS.signIn, { email, password }),
   action: (action: unknown) => ipcRenderer.invoke(CHANNELS.action, action),
+  voicemailList: (sessionRevision: string) => ipcRenderer.invoke(CHANNELS.voicemailList, { sessionRevision }),
   signOut: () => ipcRenderer.invoke(CHANNELS.signOut),
   openMeetings: () => ipcRenderer.invoke(MEETING_CHANNELS.open),
   onUpdate: (listener: (snapshot: unknown) => void) => {

@@ -13,6 +13,12 @@ const positiveId = (value: unknown): value is number =>
 const clean = (value: unknown, limit: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= limit &&
   !/[\r\n\0]/.test(value) && value.trim() === value;
+const safeDisplay = (value: unknown, limit: number): string | null => {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text.length > 0 && text.length <= limit &&
+    !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(text) ? text : null;
+};
 const meetingId = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const safeMeetingUrl = (value: unknown): value is string => {
@@ -25,6 +31,10 @@ const safeMeetingUrl = (value: unknown): value is string => {
 export type DesktopMeetingGrant = Readonly<{ url: string; token: string;
   grantProfile: "interactive" | "listener"; expiresAt: number }>;
 export type DesktopMeetingListing = Readonly<{ meetingId: string; title?: string }>;
+/** Public inbox metadata only. Recording media stays behind its own access boundary. */
+export type DesktopVoicemail = Readonly<{ id: number; callerName: string | null;
+  callerNumber: string | null; durationSeconds: number; status: "new" | "read";
+  createdAt: string }>;
 const safeMeetingTitle = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0 && value === value.normalize("NFC").trim() &&
   Array.from(value).length <= 100 && Buffer.byteLength(value, "utf8") <= 400 &&
@@ -83,12 +93,33 @@ export class AuthenticatedDesktopProvider {
   /** Public display number from the current authenticated phone grant. */
   currentExtensionNumber(): string | null { return this.session ? this.extensionNumber : null; }
 
+  /** The server lists only the signed-in user's selected-tenant voicemail. */
+  async listVoicemail(expectedRevision: string): Promise<readonly DesktopVoicemail[]> {
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const value = await this.query("pbx.voicemail.list", token, epoch, { tenantId });
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!Array.isArray(value) || value.length > 100) throw new DesktopAuthenticationError();
+    return value.map((item): DesktopVoicemail => {
+      if (!isRecord(item) || !positiveId(item.id) ||
+          !(item.status === "new" || item.status === "read") ||
+          typeof item.duration_seconds !== "number" || !Number.isSafeInteger(item.duration_seconds) ||
+          item.duration_seconds < 0 || item.duration_seconds > 86400 ||
+          typeof item.created_at !== "string" || item.created_at.length > 64 ||
+          !Number.isFinite(Date.parse(item.created_at)))
+        throw new DesktopAuthenticationError();
+      return { id: item.id, callerName: safeDisplay(item.caller_name, 160),
+        callerNumber: safeDisplay(item.caller_number, 64), durationSeconds: item.duration_seconds,
+        status: item.status, createdAt: item.created_at };
+    });
+  }
+
   /** Admitted rooms only. No media credential crosses this privileged boundary. */
   async availableMeetings(expectedRevision: string): Promise<readonly DesktopMeetingListing[]> {
-    const { token, epoch } = this.meetingAuthority(expectedRevision);
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
     const tenantId = this.session!.tenantId;
     const value = await this.query("meetings.availableForTenant", token, epoch, { tenantId });
-    this.assertMeetingAuthority(expectedRevision, epoch);
+    this.assertSessionAuthority(expectedRevision, epoch);
     if (!Array.isArray(value) || value.length > 100 ||
         !value.every(item => isRecord(item) && meetingId(item.meetingId) && item.tenantId === tenantId))
       throw new DesktopAuthenticationError();
@@ -106,7 +137,7 @@ export class AuthenticatedDesktopProvider {
   /** A short-lived server admission. Never expose this result to the calling renderer. */
   async joinMeeting(expectedRevision: string, selectedMeetingId: string): Promise<DesktopMeetingGrant> {
     if (!meetingId(selectedMeetingId)) throw new DesktopAuthenticationError();
-    const { token, epoch } = this.meetingAuthority(expectedRevision);
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
     const tenantId = this.session!.tenantId;
     const response = await this.send("/api/trpc/meetings.join", {
       method: "POST",
@@ -114,7 +145,7 @@ export class AuthenticatedDesktopProvider {
       body: JSON.stringify({ json: { meetingId: selectedMeetingId, tenantId } }),
     }, epoch);
     const raw = await this.json(response);
-    this.assertMeetingAuthority(expectedRevision, epoch);
+    this.assertSessionAuthority(expectedRevision, epoch);
     const value = this.unwrapTrpc(raw);
     if (!isRecord(value) || !safeMeetingUrl(value.url) || !clean(value.token, 16384) ||
         !["interactive", "listener"].includes(value.grant_profile as string) ||
@@ -127,13 +158,13 @@ export class AuthenticatedDesktopProvider {
       expiresAt: value.expires_at };
   }
 
-  private meetingAuthority(expectedRevision: string): { token: string; epoch: number } {
+  private sessionAuthority(expectedRevision: string): { token: string; epoch: number } {
     if (!this.session || this.session.revision !== expectedRevision || !this.token)
       throw new DesktopAuthenticationError();
     return { token: this.token, epoch: this.epoch };
   }
 
-  private assertMeetingAuthority(expectedRevision: string, epoch: number): void {
+  private assertSessionAuthority(expectedRevision: string, epoch: number): void {
     this.assertEpoch(epoch);
     if (!this.session || this.session.revision !== expectedRevision || !this.token)
       throw new DesktopAuthenticationError();

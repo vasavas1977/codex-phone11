@@ -1,14 +1,16 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseRendererAction } from '../../src/call-boundary';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
-import type { AuthenticatedDesktopProvider, DesktopAuthenticationError } from '../../src/authenticated-provider';
+import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail } from '../../src/authenticated-provider';
 
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
-  action: 'phone11:action', signOut: 'phone11:sign-out', update: 'phone11:update' });
+  action: 'phone11:action', signOut: 'phone11:sign-out', update: 'phone11:update',
+  voicemailList: 'phone11:voicemail-list' });
 export type PublicState = { signedIn: boolean; sessionRevision: string | null; generation: string | null;
   tenantId: number | null; extensionNumber: string | null; calling: ReturnType<DesktopHelperSupervisor['snapshot']> };
 export type TaggedSnapshot = { sessionRevision: string; generation: string;
   snapshot: ReturnType<DesktopHelperSupervisor['snapshot']> };
+export type TaggedVoicemail = { sessionRevision: string; items: readonly DesktopVoicemail[] };
 export function signInFailureMessage(error: unknown): string {
   const text = String(error);
   if (text.includes('PHONE11_CREDENTIALS_REJECTED')) return 'Email or password was not accepted.';
@@ -81,6 +83,18 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       if (!generation) throw new Error('Calling helper unavailable');
       const snapshot = await helper.handleRendererAction(action);
       return { sessionRevision: session.revision, generation, snapshot } satisfies TaggedSnapshot;
+    },
+    voicemailList: async (input: unknown): Promise<TaggedVoicemail> => {
+      if (!input || typeof input !== 'object' || Array.isArray(input) ||
+          typeof (input as Record<string, unknown>).sessionRevision !== 'string')
+        throw new Error('Invalid voicemail request');
+      const expectedRevision = (input as { sessionRevision: string }).sessionRevision;
+      const session = provider.currentSession();
+      if (!session || expectedRevision !== session.revision) throw new Error('Calling session changed');
+      const items = await provider.listVoicemail(expectedRevision);
+      if (provider.currentSession()?.revision !== expectedRevision)
+        throw new Error('Calling session changed');
+      return { sessionRevision: expectedRevision, items };
     },
   };
 }

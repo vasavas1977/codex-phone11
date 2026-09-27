@@ -5,15 +5,23 @@ import { join } from 'node:path';
 
 type ElementStub = {
   hidden: boolean; disabled: boolean; textContent: string; value: string; dataset: Record<string, string>;
+  children: ElementStub[]; className: string;
   focused: boolean; listeners: Map<string, (event: any) => void>; addEventListener(type: string, listener: (event: any) => void): void;
   focus(): void; setAttribute(name: string, value: string): void; removeAttribute(name: string): void;
+  append(...children: ElementStub[]): void; replaceChildren(): void;
 };
 const element = (): ElementStub => ({ hidden: false, disabled: false, textContent: '', value: '', dataset: {},
-  focused: false, listeners: new Map(), addEventListener(type, listener) { this.listeners.set(type, listener); },
-  focus() { this.focused = true; }, setAttribute() {}, removeAttribute() {} });
+  children: [], className: '', focused: false, listeners: new Map(),
+  addEventListener(type, listener) { this.listeners.set(type, listener); },
+  focus() { this.focused = true; }, setAttribute() {}, removeAttribute() {},
+  append(...children) { this.children.push(...children); }, replaceChildren() { this.children = []; } });
 
 test('dialpad enters a bounded destination while idle and sends DTMF only in an established call', async () => {
-  const ids = ['login', 'workspace', 'phone', 'meetings', 'phone-tab', 'meetings-tab', 'open-meetings', 'meeting-open-message', 'identity', 'status', 'call-id', 'notice', 'hold-message', 'dial', 'answer',
+  const ids = ['login', 'workspace', 'phone', 'meetings', 'phone-tab', 'meetings-tab',
+    'dialpad-tab', 'history-tab', 'voicemail-tab', 'lines-tab',
+    'dialpad-panel', 'history-panel', 'voicemail-panel', 'lines-panel', 'phone-status-mark',
+    'voicemail-state', 'voicemail-list', 'voicemail-refresh',
+    'open-meetings', 'meeting-open-message', 'identity', 'status', 'call-id', 'notice', 'hold-message', 'dial', 'answer',
     'end', 'mute', 'hold', 'keypad', 'destination', 'message', 'login-form', 'email', 'password', 'sign-out', 'dial-form'];
   const elements = new Map(ids.map(id => [id, element()]));
   const keypad = elements.get('keypad')!;
@@ -21,12 +29,14 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
   const listeners = new Map<string, (snapshot: any) => void>();
   const actions: unknown[] = [];
   let meetingOpens = 0;
+  let voicemailLists = 0;
   const calling = { version: 1, registered: true, call: null, dialState: 'idle', callActionState: 'idle', holdMessage: null };
   let publicState: any = { signedIn: true, sessionRevision: 'session-a', generation: 'generation-a', tenantId: 1,
     extensionNumber: '1020', calling };
   const previousDocument = (globalThis as any).document;
   const previousWindow = (globalThis as any).window;
-  (globalThis as any).document = { getElementById: (id: string) => elements.get(id)! };
+  (globalThis as any).document = { getElementById: (id: string) => elements.get(id) ?? null,
+    createElement: () => element() };
   (globalThis as any).window = { phone11: {
     state: async () => publicState,
     signIn: async () => publicState,
@@ -36,12 +46,23 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
       return { sessionRevision: 'session-a', generation: 'generation-a', snapshot: calling };
     },
     openMeetings: async () => { meetingOpens++; throw new Error('private admission token'); },
+    voicemailList: async (revision: string) => {
+      voicemailLists++;
+      return { sessionRevision: revision, items: [{ id: 4, callerName: 'Som-O', callerNumber: '1020',
+        durationSeconds: 23, status: 'new', createdAt: '2026-09-27T10:00:00.000Z' }] };
+    },
     onUpdate: (listener: (snapshot: any) => void) => { listeners.set('update', listener); return () => listeners.delete('update'); },
   } };
   try {
     await import('../src/renderer');
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(keypad.hidden, false, 'the keypad is available after calling registration');
+    elements.get('voicemail-tab')!.listeners.get('click')!({});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(voicemailLists, 1);
+    assert.equal(elements.get('voicemail-list')!.children[0]?.children[0]?.textContent, 'Som-O');
+    elements.get('history-tab')!.listeners.get('click')!({});
+    assert.equal(elements.get('history-panel')!.hidden, false);
     elements.get('meetings-tab')!.listeners.get('click')!({});
     assert.equal(elements.get('meetings')!.hidden, false);
     assert.equal(elements.get('phone')!.hidden, true);
@@ -63,6 +84,8 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
 
     publicState = { ...publicState, calling: { ...calling, call: { id: '81', state: 'ringing', muted: false }, dialState: 'requesting' } };
     listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: publicState.calling });
+    assert.equal(elements.get('dialpad-panel')!.hidden, false, 'an active call returns to the dialpad');
+    assert.equal(elements.get('history-panel')!.hidden, true, 'history cannot hide an active call');
     assert.equal(keypad.hidden, true, 'the keypad is unavailable while the destination is ringing');
     assert.equal(elements.get('open-meetings')!.disabled, true, 'a pending Phone action blocks meeting entry');
     const ringingDestination = destination.value;
