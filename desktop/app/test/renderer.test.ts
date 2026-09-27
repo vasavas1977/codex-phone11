@@ -18,7 +18,7 @@ const element = (): ElementStub => ({ hidden: false, disabled: false, textConten
 
 test('dialpad enters a bounded destination while idle and sends DTMF only in an established call', async () => {
   const ids = ['login', 'workspace', 'phone', 'meetings', 'phone-tab', 'meetings-tab',
-    'dialpad-tab', 'history-tab', 'voicemail-tab', 'lines-tab',
+    'backspace', 'mute-label', 'hold-label', 'history-tab', 'voicemail-tab', 'lines-tab',
     'dialpad-panel', 'history-panel', 'voicemail-panel', 'lines-panel', 'phone-status-mark',
     'voicemail-state', 'voicemail-list', 'voicemail-refresh',
     'open-meetings', 'meeting-open-message', 'identity', 'status', 'call-id', 'notice', 'hold-message', 'dial', 'answer',
@@ -71,25 +71,33 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     assert.equal(elements.get('meeting-open-message')!.textContent, 'Meetings could not open. Try again.');
     elements.get('phone-tab')!.listeners.get('click')!({});
     assert.equal(elements.get('phone')!.hidden, false);
-    keypad.listeners.get('click')!({ target: { dataset: { digit: '1' } } });
-    keypad.listeners.get('click')!({ target: { dataset: { digit: '0' } } });
-    keypad.listeners.get('click')!({ target: { dataset: { digit: '#' } } });
+    keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '1' } }) } });
+    keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '0' } }) } });
+    keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '#' } }) } });
     assert.equal(destination.value, '10#');
     assert.equal(destination.focused, true);
     assert.equal(actions.length, 0, 'idle keypad taps edit the destination without issuing call actions');
 
+    elements.get('backspace')!.listeners.get('click')!({});
+    assert.equal(destination.value, '10', 'backspace removes only the last digit');
+    keypad.listeners.get('click')!({ target: { closest: () => null } });
+    assert.equal(destination.value, '10', 'clicking keypad spacing does not enter a digit');
+
     destination.value = '7'.repeat(32);
-    keypad.listeners.get('click')!({ target: { dataset: { digit: '2' } } });
+    keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '2' } }) } });
     assert.equal(destination.value, '7'.repeat(32), 'the destination remains within the 32 character field limit');
 
     publicState = { ...publicState, calling: { ...calling, call: { id: '81', state: 'ringing', muted: false }, dialState: 'requesting' } };
     listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: publicState.calling });
     assert.equal(elements.get('dialpad-panel')!.hidden, false, 'an active call returns to the dialpad');
-    assert.equal(elements.get('history-panel')!.hidden, true, 'history cannot hide an active call');
+    assert.equal(elements.get('history-panel')!.hidden, false, 'history stays beside the visible call controls');
     assert.equal(keypad.hidden, true, 'the keypad is unavailable while the destination is ringing');
     assert.equal(elements.get('open-meetings')!.disabled, true, 'a pending Phone action blocks meeting entry');
     const ringingDestination = destination.value;
-    keypad.listeners.get('click')!({ target: { dataset: { digit: '3' } } });
+    elements.get('backspace')!.listeners.get('click')!({});
+    assert.equal(destination.value, ringingDestination, 'backspace cannot edit an active call destination');
+    assert.equal(destination.disabled, true);
+    keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '3' } }) } });
     assert.equal(destination.value, ringingDestination);
     assert.equal(actions.length, 0, 'ringing keypad taps do not issue DTMF');
 
@@ -97,7 +105,7 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: connected });
     assert.equal(keypad.hidden, false, 'the keypad returns for an established call');
     assert.equal(elements.get('open-meetings')!.disabled, true, 'a Phone call prevents opening meeting media');
-    keypad.listeners.get('click')!({ target: { dataset: { digit: '5' } } });
+    keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '5' } }) } });
     assert.deepEqual(actions[0], { operation: 'dtmf', generation: 'generation-a', callId: '81', digits: '5', sessionRevision: 'session-a' });
     await new Promise(resolve => setImmediate(resolve));
   } finally {
@@ -108,5 +116,5 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
 
 test('keypad hidden state wins over its grid layout', async () => {
   const css = await readFile(join(__dirname, '../src/style.css'), 'utf8');
-  assert.match(css, /\.keypad\[hidden\]\s*\{\s*display\s*:\s*none\s*\}/);
+  assert.match(css, /\.keypad\[hidden\]\s*\{\s*display\s*:\s*none;?\s*\}/);
 });

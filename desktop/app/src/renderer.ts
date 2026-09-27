@@ -17,7 +17,7 @@ let state: PublicState | null = null;
 let busy = false;
 let accountEpoch = 0;
 let currentTab: 'phone' | 'meetings' = 'phone';
-let currentPhoneSection: 'dialpad' | 'history' | 'voicemail' | 'lines' = 'dialpad';
+let currentPhoneSection: 'history' | 'voicemail' | 'lines' = 'history';
 let meetingOpening = false;
 let meetingMessage = '';
 let voicemailLoading = false;
@@ -30,7 +30,7 @@ function render(): void {
   const signed = !!state?.signedIn;
   const call = signed ? state?.calling.call : null;
   // An incoming or active call must never be hidden behind an inbox or meeting tab.
-  if (call) { currentTab = 'phone'; currentPhoneSection = 'dialpad'; }
+  if (call) currentTab = 'phone';
   byId('login').hidden = signed;
   byId('workspace').hidden = !signed;
   byId('phone').hidden = !signed || currentTab !== 'phone';
@@ -40,7 +40,7 @@ function render(): void {
     if (tab === currentTab) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   }
-  for (const section of ['dialpad', 'history', 'voicemail', 'lines'] as const) {
+  for (const section of ['history', 'voicemail', 'lines'] as const) {
     const button = maybeById(`${section}-tab`);
     const panel = maybeById(`${section}-panel`);
     if (!button || !panel) continue;
@@ -57,26 +57,30 @@ function render(): void {
   (byId('open-meetings') as HTMLButtonElement).disabled = meetingOpening || phoneBusy;
   byId('meeting-open-message').textContent = phoneBusy
     ? 'Finish your Phone call or pending action before opening a meeting.' : meetingMessage;
-  byId('identity').textContent = `Tenant ${state.tenantId} · Extension ${state.extensionNumber ?? 'unavailable'}`;
+  byId('identity').textContent = `Extension ${state.extensionNumber ?? 'unavailable'}`;
   const assignedExtension = maybeById('assigned-extension');
   if (assignedExtension) assignedExtension.textContent = state.extensionNumber ?? 'Extension unavailable';
   byId('status').textContent = call ? `${call.state[0].toUpperCase()}${call.state.slice(1)} call` :
     state.calling.registered ? 'Ready to call' : 'Connecting to calling service';
   const statusMark = maybeById('phone-status-mark');
   if (statusMark) statusMark.dataset.state = call?.state ?? (state.calling.registered ? 'ready' : 'connecting');
-  byId('call-id').textContent = call ? `Call ${call.id}` : 'No active call';
-  byId('notice').textContent = 'Siprix official trial: calls may end after 60 seconds. For testing only.';
+  byId('call-id').textContent = call ? 'Phone call' : '';
+  byId('notice').textContent = 'Trial · Calls limited to 60 seconds';
   byId('hold-message').textContent = state.calling.holdMessage ?? '';
+  byId('dial').hidden = !!call;
   (byId('dial') as HTMLButtonElement).disabled = busy || !!call || !state.calling.registered || state.calling.dialState !== 'idle';
   (byId('answer') as HTMLButtonElement).hidden = call?.state !== 'incoming';
   (byId('end') as HTMLButtonElement).hidden = !call;
   (byId('mute') as HTMLButtonElement).hidden = !call || !['connected', 'held'].includes(call.state);
   (byId('hold') as HTMLButtonElement).hidden = !call || !['connected', 'held'].includes(call.state);
   const canEnterDestination = !busy && !call && state.calling.registered && state.calling.dialState === 'idle';
+  (byId('destination') as HTMLInputElement).disabled = !canEnterDestination;
+  const backspace = maybeById('backspace') as HTMLButtonElement | null;
+  if (backspace) backspace.disabled = !canEnterDestination;
   const canSendDtmf = !!call && ['connected', 'held'].includes(call.state);
   (byId('keypad') as HTMLElement).hidden = !canEnterDestination && !canSendDtmf;
-  byId('mute').textContent = call?.muted ? 'Unmute' : 'Mute';
-  byId('hold').textContent = call?.state === 'held' ? 'Resume' : 'Hold';
+  (maybeById('mute-label') ?? byId('mute')).textContent = call?.muted ? 'Unmute' : 'Mute';
+  (maybeById('hold-label') ?? byId('hold')).textContent = call?.state === 'held' ? 'Resume' : 'Hold';
   const voicemailRefresh = maybeById('voicemail-refresh');
   if (voicemailRefresh) (voicemailRefresh as HTMLButtonElement).disabled = voicemailLoading;
   const voicemailState = maybeById('voicemail-state');
@@ -174,7 +178,7 @@ byId('login-form').addEventListener('submit', async event => {
 for (const tab of ['phone', 'meetings'] as const) {
   byId(`${tab}-tab`).addEventListener('click', () => { currentTab = tab; render(); });
 }
-for (const section of ['dialpad', 'history', 'voicemail', 'lines'] as const) {
+for (const section of ['history', 'voicemail', 'lines'] as const) {
   maybeById(`${section}-tab`)?.addEventListener('click', () => {
     currentPhoneSection = section;
     render();
@@ -206,7 +210,7 @@ byId('open-meetings').addEventListener('click', async () => {
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;
-  state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; currentPhoneSection = 'dialpad'; voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = []; voicemailMessage = 'Open Voicemail to load your messages.'; render();
+  state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; currentPhoneSection = 'history'; voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = []; voicemailMessage = 'Open Voicemail to load your messages.'; render();
   try {
     const signedOut = await window.phone11.signOut();
     if (accountEpoch === epoch) { state = signedOut; message('Signed out.'); render(); }
@@ -225,9 +229,15 @@ for (const operation of ['answer', 'end', 'mute', 'hold'] as const) {
       ...operation === 'mute' ? { value: !call.muted } : operation === 'hold' ? { value: call.state !== 'held' } : {} });
   });
 }
+maybeById('backspace')?.addEventListener('click', () => {
+  if (busy || !state?.signedIn || state.calling.call || !state.calling.registered || state.calling.dialState !== 'idle') return;
+  const destination = byId('destination') as HTMLInputElement;
+  destination.value = destination.value.slice(0, -1);
+  destination.focus();
+});
 byId('keypad').addEventListener('click', event => {
   const target = event.target as HTMLElement;
-  const digit = target.dataset.digit;
+  const digit = target.closest<HTMLElement>('[data-digit]')?.dataset.digit;
   if (!digit || !/^[0-9*#]$/.test(digit)) return;
   const call = state?.calling.call;
   if (call) {
