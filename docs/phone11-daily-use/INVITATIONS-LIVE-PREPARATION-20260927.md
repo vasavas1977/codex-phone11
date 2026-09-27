@@ -108,9 +108,12 @@ fixture or loopback URL origins.
 - Existing static operators target other source revisions; a release-specific
   manifest/operator must be verified against the live predecessor before use.
 
-The owner-designated first recipient remains pending. No test invitation is
-sent to an inferred address. Provider acceptance, receipt, acceptance, and
-sign-in need distinct live evidence before marking invitations complete.
+The owner clarified that the invitation for `vasavasnonsopa@gmail.com` belongs
+to the separate **Complete Super Number v7.2 Alpha** task. It is not a Phone11
+recipient or authorization to create a Phone11 account. No Phone11 invitation
+was sent for that clarification. A Phone11 first recipient remains undesignated;
+provider acceptance, receipt, acceptance, and sign-in need distinct live evidence
+before marking invitations complete.
 
 ## Rehearsal diagnostic
 
@@ -148,8 +151,56 @@ and indexes passed postflight. The temporary clone was removed.
 - Final check: all eight existing container identities/configurations and
   Nginx routing matched the initial snapshot; no rehearsal clone remained.
 
-Still pending: live schema apply, guarded fallback/routing activation, protected
-Resend invitation configuration, exact static publication, authenticated portal
-checks, and delivery/acceptance/sign-in with the designated first recipient.
-No live schema change, public activation, invitation email, or handset test is
-claimed by this preparation receipt.
+## Public feature-off baseline, 27 September 2026
+
+The guarded API and exact static export are now public. Invitations remain
+disabled. The live invitation schema and Resend invitation configuration were
+not changed, and no invitation email or new account was created.
+
+### API routing
+
+- Independently reviewed route operator SHA256:
+  `b85d8b61ad72e558d635661e857254338417a388e56cf489fa23c85e55d769ed`.
+- Seven focused operator tests passed. Production prepare and promote passed.
+- Both tRPC locations now target the already staged, healthy 3014 candidate.
+  Only those two proxy ports changed; voicemail HTTP remains on 3013, auth on
+  3004, and every other site byte is unchanged.
+- Active site SHA256:
+  `bf4a12523f3cacb8c24dde74948271d95773edac3fe3217baefb0104ca562b2c`.
+- Protected receipt:
+  `/var/lib/phone11-invitations-route-20260927/receipt.json`, SHA256
+  `411290645629c7c0dfe5eb6bcb273033060d451bc36eca6c093d4d6a2930fb21`.
+- Public availability rejects unauthenticated access with 401; public token
+  inspection returns 412 PRECONDITION_FAILED while the capability is disabled.
+  Both exact and prefix tRPC base routes reach the API's expected JSON 404.
+- All eight baseline container identities, images, running states and complete
+  Config/HostConfig hashes still match the before snapshot. Runtime health
+  remains healthy where checks are configured. No phone call was placed.
+
+### Static portal
+
+- Source: `63203c8910ff09ba59eeb6dfcba1f58c769bface`.
+- Sealed export manifest SHA256:
+  `c1703bdc9512a28e473df03a96a6ed9707c7178cab38e88ffd68305437718501`.
+- Release marker SHA256:
+  `a06e91ed6bf4b2e1d721ff9858b2da57394f717df3413ff6b8ec9cf35d99c13c`.
+- Six focused static wrapper tests passed, including archive directory/file
+  modes. Release root is 0755 and regular files are 0644, owned by root on host.
+- Host prepare, activation dry-run, activation, and rollback dry-run passed.
+  Rollback was validated but not applied. Prior release `2b1c2b1` is retained.
+- Public marker and JavaScript entry hashes match the reviewed export exactly;
+  People, Analytics and invitation-acceptance URLs serve HTTP 200.
+- Protected static receipt:
+  `/etc/nginx/phone11-static-portal-rollout/63203c8910ff09ba59eeb6dfcba1f58c769bface/receipt.json`,
+  SHA256 `f2d9b62ce805bffe4a15b9074c38fa7fed521a4fac9cc2b09d7dfe1c7fb1e767`.
+- Portal Nginx site hash remains `e3ca95837a5017913a079059f1cfdc13820c236d09bb8d3a4f35ecc434a4020f`.
+
+Signed-in browser acceptance: People loads both existing members; searching
+1020 shows one of two members; the disabled-invitation explanation is visible.
+Call analytics loads and its 30-day selector displays recorded data (29 calls).
+This verifies page retrieval and interaction, not the completeness of historical
+call outcomes or physical-device calling.
+
+Still pending: live invitation schema apply, protected Resend invitation
+configuration, capability activation, and delivery/acceptance/sign-in for an
+explicitly designated Phone11 recipient. The Super Number recipient is excluded.
