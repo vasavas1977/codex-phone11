@@ -26,7 +26,9 @@ PostgreSQL create/reset/rollback and cross-tenant cases, 13 release-operator
 tests, staged authenticated `phone.getConfig` HTTP 200 for extension 1996,
 public authenticated `https://api.phone11.ai/api/trpc/phone.getConfig` HTTP 200
 for the same extension, and public unauthenticated HTTP 401. The API and
-fallback container health endpoints returned HTTP 200 after activation.
+fallback container health endpoints returned HTTP 200 after activation. A
+separate authenticated check of the 3015 fallback also returned HTTP 200 and
+extension 1996, confirming that the one-row repair survives API rollback.
 Only boolean/status results were printed from authenticated checks; SIP
 credentials and session tokens were not logged or saved.
 
