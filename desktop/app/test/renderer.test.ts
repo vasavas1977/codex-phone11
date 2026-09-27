@@ -63,10 +63,11 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     assert.equal(actions.length, 0);
     destination.value = '';
     assert.equal(keypad.hidden, false, 'the keypad is available after calling registration');
+    assert.equal(elements.get('voicemail-tab')!.disabled, true);
     elements.get('voicemail-tab')!.listeners.get('click')!({});
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(voicemailLists, 1);
-    assert.equal(elements.get('voicemail-list')!.children[0]?.children[0]?.textContent, 'Som-O');
+    assert.equal(voicemailLists, 0, 'disabled voicemail does not query the provider');
+    assert.equal(elements.get('voicemail-panel')!.hidden, true);
     elements.get('history-tab')!.listeners.get('click')!({});
     assert.equal(elements.get('history-panel')!.hidden, false);
     elements.get('meetings-tab')!.listeners.get('click')!({});

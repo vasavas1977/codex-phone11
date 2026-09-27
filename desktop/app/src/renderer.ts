@@ -1,4 +1,4 @@
-import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, type PublicState, type TaggedSnapshot } from './ipc';
+import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, VOICEMAIL_ENABLED, type PublicState, type TaggedSnapshot } from './ipc';
 import type { DesktopCallHistory } from '../../src/authenticated-provider';
 import { VoicemailPlayer } from './voicemail-player';
 
@@ -116,6 +116,9 @@ async function loadHistory(force = false): Promise<void> {
   } finally { if (request === historyRequest && state?.sessionRevision === revision) { historyLoading = false; renderHistory(); } }
 }
 function render(): void {
+  if (!VOICEMAIL_ENABLED && currentPhoneSection === 'voicemail') currentPhoneSection = 'history';
+  const voicemailTab = maybeById('voicemail-tab') as HTMLButtonElement | null;
+  if (voicemailTab) voicemailTab.disabled = !VOICEMAIL_ENABLED;
   const signed = !!state?.signedIn;
   const call = signed ? state?.calling.call : null;
   // An incoming or active call must never be hidden behind an inbox or meeting tab.
@@ -210,6 +213,7 @@ function render(): void {
   }
 }
 async function loadVoicemail(force = false): Promise<void> {
+  if (!VOICEMAIL_ENABLED) return;
   if (!state?.signedIn || !state.sessionRevision) return;
   if (!force && voicemailLoadedFor === state.sessionRevision) return;
   if (!force && voicemailLoading && voicemailLoadingFor === state.sessionRevision) return;
@@ -280,6 +284,7 @@ for (const tab of ['phone', 'meetings'] as const) {
 }
 for (const section of ['history', 'voicemail', 'lines'] as const) {
   maybeById(`${section}-tab`)?.addEventListener('click', () => {
+    if (section === 'voicemail' && !VOICEMAIL_ENABLED) return;
     currentPhoneSection = section;
     if (section !== 'voicemail') player?.stop();
     render();

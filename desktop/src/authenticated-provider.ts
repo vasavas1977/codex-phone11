@@ -3,6 +3,9 @@ import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import type { DesktopSession } from "./call-boundary";
 import type { SipAccountSecret } from "./helper-supervisor";
 import { postNativeCredential } from "./native-credential-request";
+import { DesktopCallHistoryError, type DesktopCallHistoryErrorCode } from "./call-history-error";
+export { DesktopCallHistoryError } from "./call-history-error";
+export type { DesktopCallHistoryErrorCode } from "./call-history-error";
 
 type Fetch = typeof fetch;
 type RecordValue = Record<string, unknown>;
@@ -69,17 +72,6 @@ export class DesktopAuthenticationError extends Error {
     "auth_blocked" | "auth_unavailable" | "phone_access_unavailable" = "auth_unavailable") {
     super(`Desktop authentication failed: ${code}`);
     this.name = "DesktopAuthenticationError";
-  }
-}
-
-export type DesktopCallHistoryErrorCode = "unauthorized" | "forbidden" | "endpoint_unavailable" |
-  "server_error" | "request_failed" | "invalid_response" | "tenant_mismatch" | "session_changed";
-
-/** Safe failure classification for the non-sensitive call-history IPC boundary. */
-export class DesktopCallHistoryError extends Error {
-  constructor(readonly code: DesktopCallHistoryErrorCode, readonly status?: number) {
-    super(`Phone11 call history unavailable (${code})`);
-    this.name = "DesktopCallHistoryError";
   }
 }
 
