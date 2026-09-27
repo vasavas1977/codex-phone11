@@ -41,11 +41,26 @@ PG_WRAPPER = (
 
 # Explicitly include ACLs and grants in the catalog proof. Object identifiers
 # are omitted so the source and a fresh restore can be compared byte-for-byte.
+# A NULL relacl and an explicit owner-default relacl are equivalent after
+# pg_dump/restore; compare their effective grants, including grant options.
+# pg_class relkind 'S' uses acldefault object code 's' for a sequence.
 CATALOG_SQL = r"""
 SELECT jsonb_build_object(
  'schema_acl', (SELECT nspacl::text FROM pg_namespace WHERE nspname='public'),
  'relations', (SELECT coalesce(jsonb_agg(jsonb_build_array(c.relname,c.relkind,
-   pg_get_userbyid(c.relowner),c.relacl::text,c.relrowsecurity,c.relforcerowsecurity)
+   pg_get_userbyid(c.relowner),
+   (SELECT coalesce(jsonb_agg(jsonb_build_array(g.grantor_public,g.grantor_name,
+     g.grantee_public,g.grantee_name,g.privilege_type,g.is_grantable)
+     ORDER BY g.grantor_public,g.grantor_name,g.grantee_public,g.grantee_name,
+       g.privilege_type,g.is_grantable),'[]'::jsonb)
+    FROM (SELECT a.grantor=0 AS grantor_public,
+      CASE WHEN a.grantor=0 THEN NULL ELSE pg_get_userbyid(a.grantor) END AS grantor_name,
+      a.grantee=0 AS grantee_public,
+      CASE WHEN a.grantee=0 THEN NULL ELSE pg_get_userbyid(a.grantee) END AS grantee_name,
+      a.privilege_type,a.is_grantable
+      FROM aclexplode(coalesce(c.relacl,
+        acldefault((CASE WHEN c.relkind='S' THEN 's' ELSE 'r' END)::"char",c.relowner))) a) g),
+   c.relrowsecurity,c.relforcerowsecurity)
    ORDER BY c.relname),'[]'::jsonb) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
    WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f') AND
    (NOT %(base)s OR (c.relname NOT LIKE 'phone11_workspace_invitation%%'
@@ -390,6 +405,42 @@ def catalog_hash(value: dict[str, object]) -> str:
     return sha(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
 
 
+def catalog_difference(source: dict[str, object], restored: dict[str, object]) -> dict[str, object]:
+    """Bounded schema-only diagnostics; never emit function bodies or row values."""
+    result: dict[str, object] = {}
+    for section in ("schema_acl", "relations", "columns", "constraints", "indexes",
+                    "triggers", "functions", "default_acl"):
+        left, right = source.get(section), restored.get(section)
+        if left == right:
+            continue
+        if section == "schema_acl":
+            result[section] = {"source": str(left)[:256], "clone": str(right)[:256],
+                               "source_sha256": catalog_hash({section: left}),
+                               "clone_sha256": catalog_hash({section: right})}
+            continue
+        if not isinstance(left, list) or not isinstance(right, list):
+            result[section] = {"source_type": type(left).__name__,
+                               "clone_type": type(right).__name__}
+            continue
+        detail: dict[str, object] = {"source_count": len(left), "clone_count": len(right),
+                                     "source_sha256": catalog_hash({section: left}),
+                                     "clone_sha256": catalog_hash({section: right})}
+        if section in ("relations", "columns", "indexes"):
+            width = 2 if section in ("columns", "indexes") else 1
+            source_by_id = {tuple(row[:width]): row for row in left}
+            clone_by_id = {tuple(row[:width]): row for row in right}
+            render = lambda key: ".".join(str(part) for part in key)[:128]
+            detail["source_only"] = [render(key) for key in
+                                     sorted(source_by_id.keys() - clone_by_id.keys())[:5]]
+            detail["clone_only"] = [render(key) for key in
+                                    sorted(clone_by_id.keys() - source_by_id.keys())[:5]]
+            detail["changed"] = [render(key) for key in
+                                 sorted(key for key in source_by_id.keys() & clone_by_id.keys()
+                                        if source_by_id[key] != clone_by_id[key])[:5]]
+        result[section] = detail
+    return result
+
+
 def validate_clone_isolation(item: dict[str, object], container_id: str,
                              image: str, archive: Path, migration: Path) -> None:
     need(item.get("Id") == container_id and item.get("Image") == image
@@ -465,7 +516,10 @@ def rehearse(args: argparse.Namespace, archive: Path, migration: Path,
                                  CATALOG_SQL % {"base": "true"})
         source_hash = catalog_hash(source_catalog)
         before_hash = catalog_hash(restored)
-        need(source_hash == before_hash, "restore_catalog_acl")
+        if source_hash != before_hash:
+            raise Blocked("restore_catalog_acl:" + json.dumps(
+                catalog_difference(source_catalog, restored), sort_keys=True,
+                separators=(",", ":")))
         pre = clone_json(container_id, args.role, args.database, PREFLIGHT_SQL)
         counts = clone_json(container_id, args.role, args.database, COUNT_SQL)
         preflight(pre, counts, role=args.role, database=args.database,

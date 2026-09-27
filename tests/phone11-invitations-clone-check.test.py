@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -178,6 +180,86 @@ class InvitationCloneRefusalTests(unittest.TestCase):
         self.assertNotIn("--no-owner", argv)
         self.assertNotIn("--no-acl", argv)
         self.assertEqual(argv[-1], "/tmp/backup.dump")
+
+    def test_catalog_mismatch_diagnostic_is_bounded_and_metadata_only(self):
+        source = {"schema_acl": "{phone11ai=UC/pg_database_owner}",
+                  "relations": [["users", "r", "phone11ai", None, False, False]],
+                  "columns": [["users", "email", "character varying(320)", False,
+                               "", "", None, None]],
+                  "indexes": [["users", "users_pkey", "CREATE UNIQUE INDEX users_pkey", True, True]],
+                  "functions": [["dangerous", "", "phone11ai", None, False,
+                                 "secret function body must never print"]]}
+        restored = {"schema_acl": "{=U/pg_database_owner}",
+                    "relations": [["users", "r", "phone11ai", "{phone11ai=arwdDxt/phone11ai}",
+                                   False, False]],
+                    "columns": [["users", "email", "text", False, "", "", None, None]],
+                    "indexes": [],
+                    "functions": [["dangerous", "", "phone11ai", None, False,
+                                   "other secret function body must never print"]]}
+        detail = clone.catalog_difference(source, restored)
+        encoded = json.dumps(detail)
+        self.assertIn("users", encoded)
+        self.assertIn("users.email", encoded)
+        self.assertIn("users.users_pkey", encoded)
+        self.assertIn("functions", encoded)
+        self.assertNotIn("secret function body", encoded)
+        self.assertNotIn("CREATE UNIQUE INDEX", encoded)
+        self.assertEqual(detail["relations"]["changed"], ["users"])
+
+    def test_relation_catalog_compares_effective_acl_on_private_postgres(self):
+        if os.geteuid() == 0 or shutil.which("pg_config") is None:
+            self.skipTest("private PostgreSQL binaries require a non-root local user")
+        bin_dir = Path(subprocess.run(["pg_config", "--bindir"], check=True,
+                                      capture_output=True, text=True).stdout.strip())
+        if not all((bin_dir / tool).exists() for tool in ("initdb", "pg_ctl", "createdb", "psql")):
+            self.skipTest("private PostgreSQL binaries unavailable")
+
+        with tempfile.TemporaryDirectory(prefix="p11invacl-", dir="/tmp") as root:
+            base = Path(root)
+            data, socket = base / "data", base / "socket"
+            socket.mkdir(mode=0o700)
+
+            def call(tool: str, *argv: str) -> str:
+                return subprocess.run([str(bin_dir / tool), *argv], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            call("initdb", "-D", str(data), "-U", "acl_test", "--auth-local=trust",
+                 "--auth-host=reject", "--no-locale", "-E", "UTF8")
+            started = False
+            try:
+                call("pg_ctl", "-D", str(data), "-l", str(base / "postgres.log"),
+                     "-o", "-h '' -k " + str(socket), "-w", "start")
+                started = True
+                call("createdb", "-h", str(socket), "-U", "acl_test", "acl_test")
+
+                def sql(statement: str) -> str:
+                    return call("psql", "-h", str(socket), "-U", "acl_test", "-d", "acl_test",
+                                "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-c", statement)
+
+                sql("CREATE TABLE rel_default(id integer); CREATE TABLE rel_explicit(id integer); "
+                    "CREATE SEQUENCE seq_default; CREATE SEQUENCE seq_explicit; "
+                    "GRANT ALL ON TABLE rel_explicit TO acl_test; "
+                    "GRANT ALL ON SEQUENCE seq_explicit TO acl_test")
+                raw = json.loads(sql("SELECT jsonb_build_array("
+                    "(SELECT relacl IS NULL FROM pg_class WHERE relname='rel_default'),"
+                    "(SELECT relacl IS NULL FROM pg_class WHERE relname='rel_explicit'),"
+                    "(SELECT relacl IS NULL FROM pg_class WHERE relname='seq_default'),"
+                    "(SELECT relacl IS NULL FROM pg_class WHERE relname='seq_explicit'))::text"))
+                self.assertEqual(raw, [True, False, True, False])
+                rows = {row[0]: row for row in json.loads(
+                    sql(clone.CATALOG_SQL % {"base": "false"}))["relations"]}
+                self.assertEqual(rows["rel_default"][3], rows["rel_explicit"][3])
+                self.assertEqual(rows["seq_default"][3], rows["seq_explicit"][3])
+
+                sql("GRANT SELECT ON TABLE rel_explicit TO PUBLIC; "
+                    "GRANT USAGE ON SEQUENCE seq_explicit TO PUBLIC")
+                rows = {row[0]: row for row in json.loads(
+                    sql(clone.CATALOG_SQL % {"base": "false"}))["relations"]}
+                self.assertNotEqual(rows["rel_default"][3], rows["rel_explicit"][3])
+                self.assertNotEqual(rows["seq_default"][3], rows["seq_explicit"][3])
+            finally:
+                if started:
+                    call("pg_ctl", "-D", str(data), "-m", "fast", "-w", "stop")
 
     def test_cleanup_refuses_foreign_name_collision(self):
         foreign = {"Name": "/p11inv-token", "Id": "a" * 64,
