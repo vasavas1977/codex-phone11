@@ -654,6 +654,16 @@ export const pbxRouter = router({
         const tc = await getTenantCtx(ctx, input?.tenantId);
         const interval = input?.period === "week" ? "7 days" : "30 days";
         const ownership = SELF_SERVICE_CALL_OWNERSHIP_SQL;
+        // Memberships are cached; each CDR statement must recheck the live row.
+        const activeMembership = `EXISTS (
+          SELECT 1
+          FROM tenant_memberships tm
+          JOIN tenants t ON t.id = tm.tenant_id
+          WHERE tm.tenant_id = cr.tenant_id
+            AND tm.user_id = $2
+            AND tm.status = 'active'
+            AND t.status = 'active'
+        )`;
         const [summary, calls] = await Promise.all([
           query(
             `SELECT COUNT(*) AS total_calls,
@@ -663,6 +673,7 @@ export const pbxRouter = router({
              FROM call_records cr
              WHERE cr.tenant_id = $1
                AND cr.started_at >= NOW() - $3::interval
+               AND ${activeMembership}
                AND ${ownership}`,
             [tc.tenantId, ctx.user!.id, interval],
           ),
@@ -674,6 +685,7 @@ export const pbxRouter = router({
              FROM call_records cr
              WHERE cr.tenant_id = $1
                AND cr.started_at >= NOW() - $3::interval
+               AND ${activeMembership}
                AND ${ownership}
              ORDER BY cr.started_at DESC
              LIMIT 50`,

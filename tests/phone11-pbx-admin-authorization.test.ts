@@ -784,6 +784,11 @@ describe("PBX member self-service isolation", () => {
     });
 
     for (const call of db.query.mock.calls.slice(1)) {
+      expect(call[0]).toContain("FROM tenant_memberships tm");
+      expect(call[0]).toContain("tm.tenant_id = cr.tenant_id");
+      expect(call[0]).toContain("tm.user_id = $2");
+      expect(call[0]).toContain("tm.status = 'active'");
+      expect(call[0]).toContain("t.status = 'active'");
       expect(call[0]).toContain("cr.caller_user_id = $2");
       expect(call[0]).toContain("cr.callee_user_id = $2");
       expect(call[0]).toContain("JOIN extensions e");
@@ -820,6 +825,7 @@ describe("PBX member self-service isolation", () => {
 
     expect(db.query).toHaveBeenCalledTimes(3);
     for (const call of db.query.mock.calls.slice(1)) {
+      expect(call[0]).toContain("tm.status = 'active'");
       expect(call[1]).toEqual([12, 9, "30 days"]);
     }
   });

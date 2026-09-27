@@ -1,8 +1,32 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SELF_SERVICE_CALL_OWNERSHIP_SQL } from "../lib/pbx/self-service-usage";
+
+const db = vi.hoisted(() => ({ query: vi.fn(), withTransaction: vi.fn() }));
+const membershipCache = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("../server/pbx/db", () => db);
+vi.mock("../server/pbx/redis", () => ({
+  cacheGetOrSet: async (key: string, _ttl: number, load: () => Promise<unknown>) => {
+    if (membershipCache.has(key)) return membershipCache.get(key);
+    const value = await load();
+    membershipCache.set(key, value);
+    return value;
+  },
+  invalidateCache: vi.fn(),
+}));
+vi.mock("../server/pbx/audit", () => ({ writeAuditLog: vi.fn(), queryAuditLogs: vi.fn() }));
+vi.mock("../server/pbx/sip-secrets", () => ({
+  createSipCredentials: vi.fn(),
+  regenerateSipCredentials: vi.fn(),
+  decryptSecret: vi.fn(),
+}));
+vi.mock("../server/pbx/cdr-processor", () => ({ getCallStats: vi.fn(), getVoicemails: vi.fn() }));
+
+// The router must load after its database and cache modules are mocked.
+// eslint-disable-next-line import/first
+import { pbxRouter } from "../server/pbx/pbx-router";
 
 const connectionString = process.env.PHONE11_MANAGEMENT_TEST_DATABASE_URL;
 if (connectionString) {
@@ -59,6 +83,9 @@ describe.skipIf(!connectionString)(
     });
 
     beforeEach(async () => {
+      membershipCache.clear();
+      db.query.mockClear();
+      db.query.mockImplementation((sql, params) => database!.query(sql, params));
       await database!.query(`
         TRUNCATE users, tenants, extensions, call_records CASCADE;
         INSERT INTO users (id, "openId", name, role)
@@ -123,6 +150,36 @@ describe.skipIf(!connectionString)(
       expect(
         (await visibleCallUuids(2)).rows.map((row) => row.call_uuid),
       ).toEqual(["own-b"]);
+    });
+
+    it("hides summary and call rows after membership or tenant revocation despite a cached membership", async () => {
+      await database!.query(`
+        INSERT INTO call_records
+          (call_uuid, tenant_id, direction, from_number, to_number, caller_user_id, started_at)
+          VALUES ('own-a', 7, 'outbound', '3101', '+6620000001', 1, NOW());
+      `);
+      const caller = pbxRouter.createCaller({
+        user: { id: 1, role: "user" },
+        req: { ip: "127.0.0.1", headers: {} },
+        res: {},
+      } as any);
+
+      const before = await caller.selfService.usage({ tenantId: 7 });
+      expect(before).toMatchObject({ tenantId: 7, totalCalls: 1 });
+      expect(before.calls).toHaveLength(1);
+      expect(membershipCache.has("tenant:memberships:1")).toBe(true);
+
+      await database!.query("UPDATE tenant_memberships SET status = 'inactive' WHERE user_id = 1 AND tenant_id = 7");
+      const afterMembershipRevocation = await caller.selfService.usage({ tenantId: 7 });
+      expect(afterMembershipRevocation).toMatchObject({ tenantId: 7, totalCalls: 0, calls: [] });
+
+      await database!.query("UPDATE tenant_memberships SET status = 'active' WHERE user_id = 1 AND tenant_id = 7");
+      await database!.query("UPDATE tenants SET status = 'inactive' WHERE id = 7");
+      const afterTenantRevocation = await caller.selfService.usage({ tenantId: 7 });
+      expect(afterTenantRevocation).toMatchObject({ tenantId: 7, totalCalls: 0, calls: [] });
+
+      const membershipReads = db.query.mock.calls.filter(([sql]) => String(sql).includes("ORDER BY tm.created_at"));
+      expect(membershipReads).toHaveLength(1);
     });
   },
 );
