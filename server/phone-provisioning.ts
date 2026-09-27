@@ -11,8 +11,8 @@
  * 4. Returns SIP credentials to the app
  */
 
-import { getPool } from "./pbx/db";
-import { createSipCredentials, decryptSecret } from "./pbx/sip-secrets";
+import { getPool, withTransaction } from "./pbx/db";
+import { createSipCredentials, computeHA1, computeHA1B, decryptSecret } from "./pbx/sip-secrets";
 
 export interface PhoneConfig {
   configured: boolean;
@@ -71,23 +71,34 @@ function toBuffer(value: unknown): Buffer | null {
   return Buffer.from(value, "base64");
 }
 
-function getSipPassword(row: any): string {
-  const ciphertext = toBuffer(row.secret_ciphertext);
-  const iv = toBuffer(row.secret_iv);
-  const tag = toBuffer(row.secret_tag);
+function getSipPassword(row: any): string | null {
+  const username = row.account_sip_username || row.sip_username || row.extension_number;
+  const domain = row.account_sip_domain || row.sip_domain || DEFAULT_SIP_DOMAIN;
+  const password = row.subscriber_password;
+  if (!username || !domain || typeof password !== "string" || !password) return null;
+  const ha1 = computeHA1(username, domain, password);
+  const ha1b = computeHA1B(username, domain, domain, password);
+  if (row.subscriber_ha1 !== ha1 || row.subscriber_ha1b !== ha1b) return null;
 
-  if (ciphertext && iv && tag) {
+  if (row.account_id != null) {
+    if (row.sip_username !== username || (row.sip_domain || DEFAULT_SIP_DOMAIN) !== domain ||
+        row.account_ha1 !== ha1 || row.account_ha1b !== ha1b) return null;
+    const ciphertext = toBuffer(row.secret_ciphertext);
+    const iv = toBuffer(row.secret_iv);
+    const tag = toBuffer(row.secret_tag);
+    if (!ciphertext || !iv || !tag) return null;
     try {
-      return decryptSecret(ciphertext, iv, tag);
-    } catch (error) {
-      console.warn("[PhoneProvisioning] Could not decrypt SIP secret, falling back to extension password");
+      return decryptSecret(ciphertext, iv, tag) === password ? password : null;
+    } catch {
+      return null;
     }
   }
 
-  return row.sip_password || row.password || "";
+  // Only extensions without any account may use their legacy password.
+  return row.sip_password === password ? password : null;
 }
 
-function buildConfig(ext: any, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
+function buildConfig(ext: any, password: string, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
   const transport = normalizeSipTransport(ext.transport_preference || ext.transport);
   const sipDomain = ext.account_sip_domain || ext.sip_domain || DEFAULT_SIP_DOMAIN;
   const sipUsername = ext.account_sip_username || ext.sip_username || ext.extension_number;
@@ -102,7 +113,7 @@ function buildConfig(ext: any, dids: Array<{ number: string; description: string
     },
     sip: {
       username: sipUsername,
-      password: getSipPassword(ext),
+      password,
       domain: sipDomain,
       port: getSipPort(transport),
       transport,
@@ -339,22 +350,57 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
     const assignedResult = await db.query(`
       SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan,
              t.name as tenant_name, t.plan as tenant_plan,
-             sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
-             sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference
+             sa.id as account_id, sa.sip_username as account_sip_username,
+             sa.sip_domain as account_sip_domain, sa.ha1 as account_ha1,
+             sa.ha1b as account_ha1b, sa.secret_ciphertext, sa.secret_iv,
+             sa.secret_tag, sa.transport_preference,
+             sub.password as subscriber_password, sub.ha1 as subscriber_ha1,
+             sub.ha1b as subscriber_ha1b
       FROM extensions e
       LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+      JOIN tenant_memberships tm ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
+      JOIN tenants active_tenant ON active_tenant.id = e.tenant_id AND active_tenant.status = 'active'
       LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
       LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
-      LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
-      WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
+      LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
+      LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
+        AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
+      WHERE e.type = 'user'
+        AND ((sa.id IS NOT NULL AND e.user_id = $1 AND sa.user_id = $1 AND ue.user_id = $1)
+          OR (sa.id IS NULL AND e.user_id = $1 AND ue.user_id = $1))
         AND COALESCE(e.status, 'active') = 'active'
         AND e.deleted_at IS NULL
+        AND (sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL))
+        AND (SELECT COUNT(*) FROM sip_accounts accounts_for_extension
+             WHERE accounts_for_extension.extension_id = e.id
+               AND accounts_for_extension.tenant_id = e.tenant_id) <= 1
+        AND (sa.id IS NOT NULL OR NOT EXISTS (
+          SELECT 1 FROM sip_accounts any_account WHERE any_account.extension_id = e.id
+        ))
+        AND NOT EXISTS (
+          SELECT 1 FROM extensions other_e WHERE other_e.id <> e.id AND other_e.deleted_at IS NULL
+            AND COALESCE(NULLIF(other_e.sip_username, ''), other_e.extension_number) =
+              COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND COALESCE(NULLIF(other_e.sip_domain, ''), $2) =
+              COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM sip_accounts other_sa WHERE other_sa.id IS DISTINCT FROM sa.id
+            AND other_sa.status = 'active' AND other_sa.deleted_at IS NULL
+            AND other_sa.sip_username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND other_sa.sip_domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
+        )
+        AND (SELECT COUNT(*) FROM subscriber matching_sub
+          WHERE matching_sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+            AND matching_sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)) = 1
       ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
       LIMIT 1
-    `, [userId]);
+    `, [userId, DEFAULT_SIP_DOMAIN]);
 
     if (assignedResult.rows.length > 0) {
       const ext = assignedResult.rows[0];
+      const password = getSipPassword(ext);
+      if (!password) return { configured: false };
       const didsResult = await db.query(`
         SELECT number, description FROM did_numbers
         WHERE COALESCE(org_id, tenant_id, 1) = $1
@@ -365,6 +411,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
 
       return buildConfig(
         ext,
+        password,
         didsResult.rows.map((d: any) => ({
           number: d.number,
           description: d.description || "",
@@ -378,22 +425,50 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       const ownerExt = await db.query(`
         SELECT e.*, o.name as org_name, o.plan as org_plan,
                t.name as tenant_name, t.plan as tenant_plan,
-               sa.sip_username as account_sip_username, sa.sip_domain as account_sip_domain,
-               sa.secret_ciphertext, sa.secret_iv, sa.secret_tag, sa.transport_preference
+               sa.id as account_id, sa.sip_username as account_sip_username,
+               sa.sip_domain as account_sip_domain, sa.ha1 as account_ha1,
+               sa.ha1b as account_ha1b, sa.secret_ciphertext, sa.secret_iv,
+               sa.secret_tag, sa.transport_preference,
+               sub.password as subscriber_password, sub.ha1 as subscriber_ha1,
+               sub.ha1b as subscriber_ha1b
         FROM extensions e
         LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
         LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
-        LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+        LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
+        LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
+          AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $1)
         WHERE (e.sip_username = '1020' OR e.extension_number = '1020')
+          AND e.tenant_id = 1
+          AND (e.user_id IS NULL OR e.user_id = $2)
+          AND (sa.id IS NULL OR sa.user_id IS NULL OR sa.user_id = $2)
           AND COALESCE(e.status, 'active') = 'active'
           AND e.deleted_at IS NULL
+          AND (sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL))
+          AND (SELECT COUNT(*) FROM sip_accounts accounts_for_extension
+               WHERE accounts_for_extension.extension_id = e.id
+                 AND accounts_for_extension.tenant_id = e.tenant_id) <= 1
+          AND (sa.id IS NOT NULL OR NOT EXISTS (
+            SELECT 1 FROM sip_accounts any_account WHERE any_account.extension_id = e.id
+          ))
+          AND NOT EXISTS (
+            SELECT 1 FROM extensions other_e WHERE other_e.id <> e.id AND other_e.deleted_at IS NULL
+              AND COALESCE(NULLIF(other_e.sip_username, ''), other_e.extension_number) =
+                COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+              AND COALESCE(NULLIF(other_e.sip_domain, ''), $1) =
+                COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $1)
+          )
+          AND (SELECT COUNT(*) FROM subscriber matching_sub
+            WHERE matching_sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+              AND matching_sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $1)) = 1
         LIMIT 1
-      `);
+      `, [DEFAULT_SIP_DOMAIN, userId]);
 
       if (ownerExt.rows.length > 0) {
         const ext = ownerExt.rows[0];
+        const password = getSipPassword(ext);
+        if (!password) return { configured: false };
         await assignExtensionToUser(userId, ext.id, true);
-        return buildConfig({ ...ext, display_name: ext.display_name || "Owner" });
+        return buildConfig({ ...ext, display_name: ext.display_name || "Owner" }, password);
       }
     }
 
@@ -485,7 +560,11 @@ export async function listExtensions(orgId: number) {
       AND e.deleted_at IS NULL
     ORDER BY e.extension_number
   `, [orgId]);
-  return result.rows;
+  return result.rows.map((extension: Record<string, unknown>) => {
+    const safe = { ...extension };
+    delete safe.sip_password;
+    return safe;
+  });
 }
 
 /**
@@ -501,29 +580,46 @@ export async function createExtension(input: {
   await ensurePhoneProvisioningSchema(db);
 
   const { orgId, extensionNumber, displayName, password } = input;
-  const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN, password);
+  return withTransaction(async (client) => {
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+      [extensionNumber, DEFAULT_SIP_DOMAIN],
+    );
+    const existing = await client.query(
+      `SELECT id FROM subscriber WHERE username = $1 AND domain = $2`,
+      [extensionNumber, DEFAULT_SIP_DOMAIN],
+    );
+    const extension = await client.query(
+      `SELECT id FROM extensions WHERE extension_number = $1 AND deleted_at IS NULL LIMIT 1`,
+      [extensionNumber],
+    );
+    const account = await client.query(
+      `SELECT id FROM sip_accounts WHERE sip_username = $1 AND sip_domain = $2
+         AND deleted_at IS NULL LIMIT 1`,
+      [extensionNumber, DEFAULT_SIP_DOMAIN],
+    );
+    if (existing.rows.length || extension.rows.length || account.rows.length) {
+      throw new Error("This SIP address is already in use.");
+    }
 
-  await db.query(`
-    INSERT INTO subscriber (username, domain, password, ha1, ha1b)
-    VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT (username, domain) DO UPDATE SET
-      password = EXCLUDED.password,
-      ha1 = EXCLUDED.ha1,
-      ha1b = EXCLUDED.ha1b
-  `, [extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, creds.ha1, creds.ha1b]);
+    const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN, password);
+    await client.query(`
+      INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, creds.ha1, creds.ha1b]);
 
-  const result = await db.query(`
+    const result = await client.query(`
     INSERT INTO extensions (
       org_id, tenant_id, extension_number, sip_username, sip_domain, sip_password,
       display_name, transport, status, type
     )
-    VALUES ($1, $1, $2, $2, $3, $4, $5, $6, 'active', 'user')
+    VALUES ($1, $1, $2, $2, $3, NULL, $4, $5, 'active', 'user')
     RETURNING *
-  `, [orgId, extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, displayName || `Extension ${extensionNumber}`, DEFAULT_SIP_TRANSPORT]);
+  `, [orgId, extensionNumber, DEFAULT_SIP_DOMAIN, displayName || `Extension ${extensionNumber}`, DEFAULT_SIP_TRANSPORT]);
 
-  const ext = result.rows[0];
+    const ext = result.rows[0];
 
-  await db.query(`
+    await client.query(`
     INSERT INTO sip_accounts (
       tenant_id, org_id, extension_id, sip_username, sip_domain, ha1, ha1b,
       secret_ciphertext, secret_iv, secret_tag, dek_id, transport_preference, status
@@ -543,7 +639,10 @@ export async function createExtension(input: {
     DEFAULT_SIP_TRANSPORT,
   ]);
 
-  return ext;
+    const safe = { ...ext };
+    delete safe.sip_password;
+    return safe;
+  });
 }
 
 /**
