@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <title>Phone11</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header class="topbar">
+      <span class="brand" aria-label="Phone11">Phone<span>11</span></span>
+      <span class="topbar-label">DESKTOP TRIAL</span>
+    </header>
+
+    <p id="message" class="global-message" role="status" aria-live="polite"></p>
+
+    <section id="login" class="login-view">
+      <div class="login-brand brand">Phone<span>11</span></div>
+      <h1>Sign in</h1>
+      <p>Use your Phone11 account to connect your extension.</p>
+      <form id="login-form">
+        <label for="email">Email</label>
+        <input id="email" type="email" autocomplete="username" required>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button class="primary-button login-submit" type="submit">Sign in</button>
+      </form>
+    </section>
+
+    <section id="workspace" class="app-shell" hidden>
+      <aside class="app-rail" aria-label="Main navigation">
+        <nav class="workspace-nav" aria-label="Workspace">
+          <button id="phone-tab" class="rail-item" type="button" aria-current="page">
+            <img src="icons/phone.svg" alt=""><span>Phone</span>
+          </button>
+          <button id="meetings-tab" class="rail-item" type="button">
+            <img src="icons/video.svg" alt=""><span>Meetings</span>
+          </button>
+        </nav>
+        <div class="rail-bottom">
+          <button id="sign-out" class="rail-signout" type="button" aria-label="Sign out" title="Sign out">
+            <img src="icons/log-out.svg" alt="">
+          </button>
+        </div>
+      </aside>
+
+      <section id="phone" class="phone-view">
+        <div class="phone-layout">
+          <aside class="phone-sidebar" aria-label="Phone">
+            <div class="phone-sidebar-title"><h1>Phone</h1></div>
+            <nav class="phone-sections" aria-label="Phone sections">
+              <button id="history-tab" type="button" aria-current="page">History</button>
+              <button id="voicemail-tab" type="button" disabled title="Voicemail is unavailable while personal inbox access is being secured">Voicemail</button>
+              <button id="lines-tab" type="button">Lines</button>
+            </nav>
+
+            <section id="history-panel" class="phone-panel history-panel" aria-labelledby="history-heading">
+              <h2 id="history-heading" class="sr-only">Call history</h2>
+              <div class="panel-heading">
+                <span class="small">Last 30 days</span>
+                <button id="history-refresh" class="icon-button" type="button" aria-label="Refresh call history" title="Refresh"><img src="icons/refresh-cw.svg" alt=""></button>
+              </div>
+              <p id="history-state" class="panel-state" role="status"></p>
+              <div id="history-list" class="history-list"></div>
+            </section>
+
+            <section id="voicemail-panel" class="phone-panel voicemail-panel" hidden aria-labelledby="voicemail-heading">
+              <div class="panel-heading">
+                <h2 id="voicemail-heading">Voicemail</h2>
+                <button id="voicemail-refresh" class="icon-button" type="button" aria-label="Refresh voicemail" title="Refresh">
+                  <img src="icons/refresh-cw.svg" alt="">
+                </button>
+              </div>
+              <div id="voicemail-player" class="voicemail-player" hidden>
+                <div class="player-heading"><strong id="voicemail-player-title">Voicemail</strong><button id="voicemail-stop" class="text-button" type="button">Close</button></div>
+                <audio id="voicemail-audio" controls preload="none" controlslist="nodownload noplaybackrate"></audio>
+                <p id="voicemail-playback-state" class="small" role="status"></p>
+              </div>
+              <p id="voicemail-state" class="panel-state" role="status" aria-live="polite">Open Voicemail to load your messages.</p>
+              <div id="voicemail-list" class="voicemail-list" aria-live="polite"></div>
+            </section>
+
+            <section id="lines-panel" class="phone-panel lines-panel" hidden aria-labelledby="lines-heading">
+              <h2 id="lines-heading">Your line</h2>
+              <p class="small">Assigned extension</p>
+              <strong id="assigned-extension" class="assigned-extension">Unavailable</strong>
+            </section>
+
+            <footer class="trial-note">
+              <strong>Trial calling</strong>
+              <p id="notice">Official Siprix trial. Calls may end after 60 seconds.</p>
+            </footer>
+          </aside>
+
+          <section id="dialpad-panel" class="dialpad-stage" aria-label="Dialpad and call controls">
+            <div class="dialpad-header">
+              <span id="phone-status-mark" class="phone-status-mark" aria-hidden="true"></span>
+              <span id="status" role="status">Connecting</span>
+            </div>
+            <div class="dialpad-content">
+              <p id="call-id" class="call-id"></p>
+
+              <div class="number-entry">
+                <label class="sr-only" for="destination">Number or extension</label>
+                <input id="destination" form="dial-form" aria-label="Number or extension" inputmode="tel" placeholder="Number or extension" maxlength="32" pattern="[+0-9*#]{1,32}" required>
+                <button id="backspace" class="icon-button backspace" type="button" aria-label="Delete last digit" title="Delete last digit">
+                  <img src="icons/delete.svg" alt="">
+                </button>
+              </div>
+              <form id="dial-form" class="sr-only-form"></form>
+
+              <div id="keypad" class="keypad" aria-label="Dialpad">
+                <button type="button" data-digit="1" aria-label="1"><span class="digit">1</span></button>
+                <button type="button" data-digit="2" aria-label="2"><span class="digit">2</span><small>ABC</small></button>
+                <button type="button" data-digit="3" aria-label="3"><span class="digit">3</span><small>DEF</small></button>
+                <button type="button" data-digit="4" aria-label="4"><span class="digit">4</span><small>GHI</small></button>
+                <button type="button" data-digit="5" aria-label="5"><span class="digit">5</span><small>JKL</small></button>
+                <button type="button" data-digit="6" aria-label="6"><span class="digit">6</span><small>MNO</small></button>
+                <button type="button" data-digit="7" aria-label="7"><span class="digit">7</span><small>PQRS</small></button>
+                <button type="button" data-digit="8" aria-label="8"><span class="digit">8</span><small>TUV</small></button>
+                <button type="button" data-digit="9" aria-label="9"><span class="digit">9</span><small>WXYZ</small></button>
+                <button type="button" data-digit="*" aria-label="Star"><span class="digit star-digit">*</span></button>
+                <button type="button" data-digit="0" aria-label="0"><span class="digit">0</span><small>+</small></button>
+                <button type="button" data-digit="#" aria-label="Pound"><span class="digit star-digit">#</span></button>
+              </div>
+
+              <button id="dial" class="call-button" type="submit" form="dial-form" aria-label="Call">
+                <img src="icons/phone.svg" alt=""><span>Call</span>
+              </button>
+
+              <div class="controls" aria-label="Call controls">
+                <button id="answer" type="button" hidden>Answer</button>
+                <button id="end" type="button" hidden><img src="icons/phone-off.svg" alt=""><span>End</span></button>
+                <button id="mute" type="button" hidden><img src="icons/mic.svg" alt=""><span id="mute-label">Mute</span></button>
+                <button id="hold" type="button" hidden><img src="icons/pause.svg" alt=""><span id="hold-label">Hold</span></button>
+              </div>
+              <p id="identity" class="identity" title="Signed in extension"></p>
+              <p id="hold-message" class="hold-message" role="status"></p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="meetings" class="meetings-view" hidden>
+        <div class="meeting-heading"><span class="eyebrow">WORKSPACE</span><h1>Meetings</h1></div>
+        <div class="meetings-content">
+          <div class="meeting-icon"><img src="icons/video.svg" alt=""></div>
+          <h2>Meet with your team</h2>
+          <p>Open meetings to choose a room and join.</p>
+          <button id="open-meetings" class="primary-button" type="button" aria-describedby="meeting-open-message">Open meetings</button>
+          <p id="meeting-open-message" class="small meeting-open-message" role="status" aria-live="polite"></p>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>
