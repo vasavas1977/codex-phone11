@@ -6,13 +6,13 @@ const bearer = "private-bearer-token";
 const password = "private-sip-password";
 const json = (value: unknown, status = 200, headers?: HeadersInit): Response =>
   new Response(JSON.stringify(value), { status, headers });
-const trpc = (value: unknown): Response => json({ result: { data: { json: value } } });
+const trpc = (value: unknown, status = 200): Response => json({ result: { data: { json: value } } }, status);
 
 function harness(overrides: { authStatus?: number; authCode?: string; tenantId?: number; extension?: string;
   extensionId?: number; userId?: number; malformed?: boolean; rotatedPassword?: string;
   secondTenantId?: number; secondExtensionId?: number; secondUsername?: string;
   availableMeetings?: unknown; meetingGrant?: unknown; voicemailItems?: unknown;
-  callHistory?: unknown; audioStatus?: number; audioType?: string; audioLength?: string;
+  callHistory?: unknown; callHistoryStatus?: number; audioStatus?: number; audioType?: string; audioLength?: string;
   audioBytes?: Uint8Array } = {}) {
   const paths: string[] = [];
   let configCalls = 0;
@@ -54,7 +54,7 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
     if (url.pathname === "/api/trpc/pbx.selfService.usage") {
       assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""),
         { json: { tenantId: overrides.tenantId ?? 9, period: "month" } });
-      return trpc(overrides.callHistory ?? { tenantId: overrides.tenantId ?? 9, calls: [] });
+      return trpc(overrides.callHistory ?? { tenantId: overrides.tenantId ?? 9, calls: [] }, overrides.callHistoryStatus ?? 200);
     }
     if (url.pathname === "/api/trpc/pbx.voicemail.markRead") {
       assert.equal(init?.method, "POST");
@@ -267,7 +267,7 @@ test("desktop call history requests the selected tenant month and exposes safe b
 
 test("desktop call history rejects malformed, unsafe, or oversized responses", async () => {
   for (const callHistory of [
-    { tenantId: 10, calls: [] },
+    { calls: [] },
     { tenantId: 9, calls: [{ id: 0, direction: "inbound", total_duration_seconds: 3,
       disposition: null, started_at: "2026-09-27T10:00:00.000Z" }] },
     { tenantId: 9, calls: [{ id: 1, direction: "other", total_duration_seconds: 3,
@@ -279,8 +279,37 @@ test("desktop call history rejects malformed, unsafe, or oversized responses", a
   ]) {
     const { provider } = harness({ callHistory });
     const session = await provider.signIn("user@example.test", "login-secret");
-    await assert.rejects(provider.listCallHistory(session.revision));
+    await assert.rejects(provider.listCallHistory(session.revision), (error: unknown) =>
+      error instanceof Error && "code" in error && error.code === "invalid_response");
   }
+});
+
+test("desktop call history classifies HTTP failures without retaining response bodies", async () => {
+  for (const [status, code] of [[401, "unauthorized"], [403, "forbidden"], [404, "endpoint_unavailable"],
+    [503, "server_error"]] as const) {
+    const { provider } = harness({ callHistoryStatus: status, callHistory: { error: "private CDR and bearer must not surface" } });
+    const session = await provider.signIn("user@example.test", "login-secret");
+    await assert.rejects(provider.listCallHistory(session.revision), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal("code" in error ? error.code : undefined, code);
+      assert.equal("status" in error ? error.status : undefined, status);
+      assert.equal(error.message.includes("private CDR"), false);
+      assert.equal(error.message.includes(bearer), false);
+      return true;
+    });
+  }
+});
+
+test("desktop call history distinguishes an HTTP 200 response for another tenant without exposing tenant data", async () => {
+  const { provider } = harness({ tenantId: 12, callHistory: { tenantId: 9, calls: [] } });
+  const session = await provider.signIn("user@example.test", "login-secret");
+  await assert.rejects(provider.listCallHistory(session.revision), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal("code" in error ? error.code : undefined, "tenant_mismatch");
+    assert.equal("status" in error ? error.status : undefined, 200);
+    assert.equal(error.message.includes("tenant 9"), false);
+    return true;
+  });
 });
 
 test("desktop voicemail read mutation binds the selected tenant and session revision", async () => {

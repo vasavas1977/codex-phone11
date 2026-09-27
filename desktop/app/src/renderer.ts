@@ -1,4 +1,4 @@
-import { applyTaggedSnapshot, signInFailureMessage, type PublicState, type TaggedSnapshot } from './ipc';
+import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, type PublicState, type TaggedSnapshot } from './ipc';
 import type { DesktopCallHistory } from '../../src/authenticated-provider';
 import { VoicemailPlayer } from './voicemail-player';
 
@@ -110,9 +110,9 @@ async function loadHistory(force = false): Promise<void> {
     if (request !== historyRequest || state?.sessionRevision !== revision) return;
     if (response.sessionRevision !== revision) throw new Error('Session changed');
     historyItems = response.items; historyLoadedFor = revision; historyMessage = '';
-  } catch {
+  } catch (error) {
     if (request === historyRequest && state?.sessionRevision === revision)
-      historyMessage = 'Call history could not load. Refresh to try again.';
+      historyMessage = callHistoryFailureMessage(error);
   } finally { if (request === historyRequest && state?.sessionRevision === revision) { historyLoading = false; renderHistory(); } }
 }
 function render(): void {
