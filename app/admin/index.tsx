@@ -10,6 +10,7 @@
 import { useState, useCallback } from "react";
 import {
   ScrollView,
+  Platform,
   Text,
   View,
   TouchableOpacity,
@@ -35,9 +36,9 @@ import {
 
 interface QuickAction {
   icon: string;
-  iconColor: string;
   label: string;
   route: string;
+  group: "People" | "Phone system" | "Workspace";
   facility?: keyof PbxManagementCapabilities;
   requiresImplicitTenant?: boolean;
 }
@@ -45,7 +46,7 @@ interface QuickAction {
 export default function AdminDashboard() {
   const colors = useColors();
   const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  const wide = width >= 1000;
   const [refreshing, setRefreshing] = useState(false);
 
   const { user } = useAuth({ autoFetch: false });
@@ -72,84 +73,84 @@ export default function AdminDashboard() {
   const quickActions: QuickAction[] = [
     {
       icon: "person.2.fill",
-      iconColor: "#0057FF",
       label: "People",
       route: "/admin/users",
+      group: "People",
     },
     {
       icon: "video.fill",
-      iconColor: "#2563EB",
       label: "Meetings",
       route: "/admin/meetings",
+      group: "Workspace",
     },
     {
       icon: "phone.fill",
-      iconColor: "#0369A1",
       label: "Extensions",
       route: "/admin/extensions",
+      group: "People",
     },
     {
       icon: "voicemail",
-      iconColor: "#0D9488",
       label: "Voicemail",
       route: "/admin/voicemail",
+      group: "Phone system",
     },
     {
       icon: "number",
-      iconColor: "#8B5CF6",
       label: "Phone numbers",
       route: "/admin/dids",
+      group: "Phone system",
       facility: "phoneNumbers",
     },
     {
       icon: "rectangle.grid.3x2.fill",
-      iconColor: "#FF9500",
       label: "IVR menus",
       route: "/admin/ivr",
+      group: "Phone system",
       facility: "ivr",
       requiresImplicitTenant: true,
     },
     {
       icon: "person.3.fill",
-      iconColor: "#10B981",
       label: "Ring Groups",
       route: "/admin/ring-groups",
+      group: "Phone system",
       facility: "ringGroups",
       requiresImplicitTenant: true,
     },
     {
       icon: "person.line.dotted.person.fill",
-      iconColor: "#F59E0B",
       label: "Queues",
       route: "/admin/queues",
+      group: "Phone system",
       facility: "queues",
       requiresImplicitTenant: true,
     },
     {
       icon: "calendar.badge.clock",
-      iconColor: "#F97316",
       label: "Business Hours",
       route: "/admin/schedules",
+      group: "Phone system",
       facility: "businessHours",
       requiresImplicitTenant: true,
     },
     {
       icon: "gearshape.fill",
-      iconColor: "#6366F1",
       label: "Workspace settings",
       route: "/admin/workspace-settings",
+      group: "Workspace",
     },
     {
       icon: "person.fill",
-      iconColor: "#64748B",
       label: "Workspace status",
       route: "/admin/profile-status",
+      group: "Workspace",
     },
     {
       icon: "chart.bar.fill",
-      iconColor: "#14B8A6",
       label: "Call analytics",
       route: "/admin/analytics",
+      group: "Workspace",
       requiresImplicitTenant: true,
     },
   ];
@@ -161,10 +162,7 @@ export default function AdminDashboard() {
       tenantQuery.refetch(),
       capabilitiesQuery.refetch(),
       ...(workspace.canUseImplicitTenant
-        ? [
-            statsQuery.refetch(),
-            recentCallsQuery.refetch(),
-          ]
+        ? [statsQuery.refetch(), recentCallsQuery.refetch()]
         : []),
     ]);
     setRefreshing(false);
@@ -296,13 +294,18 @@ export default function AdminDashboard() {
   }
 
   return (
-    <ScreenContainer>
+    <ScreenContainer
+      style={
+        Platform.OS === "web" ? { backgroundColor: colors.surface } : undefined
+      }
+    >
       <ScrollView
         contentContainerStyle={{
           width: "100%",
-          maxWidth: 1200,
+          maxWidth: 1120,
           alignSelf: "center",
-          paddingHorizontal: wide ? 24 : 0,
+          paddingHorizontal: wide ? 32 : 16,
+          paddingTop: wide ? 32 : 12,
         }}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -313,22 +316,30 @@ export default function AdminDashboard() {
           />
         }
       >
-        {/* Header */}
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <TouchableOpacity
-            onPress={() => router.back()}
-            style={styles.backBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Back to settings"
-          >
-            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-          </TouchableOpacity>
+        <View style={styles.header}>
+          {Platform.OS !== "web" || !wide ? (
+            <TouchableOpacity
+              onPress={() => router.back()}
+              style={styles.backBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Back to settings"
+            >
+              <IconSymbol
+                name="chevron.left"
+                size={22}
+                color={colors.primary}
+              />
+            </TouchableOpacity>
+          ) : null}
           <View style={{ flex: 1 }}>
-            <Text style={[styles.title, { color: colors.foreground }]}>
-              Admin Portal
+            <Text
+              accessibilityRole="header"
+              style={[styles.title, { color: colors.foreground }]}
+            >
+              Overview
             </Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>
-              {tenant?.name || "Phone11"} — Cloud PBX Dashboard
+              {tenant?.name || "Phone11"} · Workspace administration
             </Text>
           </View>
         </View>
@@ -346,7 +357,9 @@ export default function AdminDashboard() {
           </Text>
         ) : null}
 
-        {/* Stats Grid */}
+        <Text style={[styles.sectionTitle, { color: colors.muted }]}>
+          TODAY AT A GLANCE
+        </Text>
         {workspace.hasMultipleMemberships ? (
           <View style={styles.emptyState}>
             <Text style={{ color: colors.muted }}>
@@ -380,8 +393,6 @@ export default function AdminDashboard() {
               {
                 label: "Extensions",
                 value: String(stats?.totalExtensions || 0),
-                icon: "phone.fill",
-                iconColor: "#0057FF",
                 sub: `${stats?.activeExtensions || 0} active`,
               },
               {
@@ -391,8 +402,6 @@ export default function AdminDashboard() {
                   stats?.phoneNumbersAvailable === true
                     ? String(stats.phoneNumbers || 0)
                     : "—",
-                icon: "number",
-                iconColor: "#8B5CF6",
                 sub:
                   capabilitiesQuery.data?.phoneNumbers === true &&
                   stats?.phoneNumbersAvailable === true
@@ -404,15 +413,11 @@ export default function AdminDashboard() {
               {
                 label: "Calls Today",
                 value: String(stats?.callsToday || 0),
-                icon: "phone.arrow.up.right.fill",
-                iconColor: "#00C896",
                 sub: `${stats?.missedCallsToday || 0} missed`,
               },
               {
                 label: "Avg Duration",
                 value: formatDuration(stats?.avgCallDuration || 0),
-                icon: "clock.fill",
-                iconColor: "#FF9500",
                 sub: "today",
               },
             ].map((stat, i) => (
@@ -420,32 +425,20 @@ export default function AdminDashboard() {
                 key={i}
                 style={[
                   styles.statCard,
-                  wide && { flexBasis: "22%", width: "23%" },
+                  wide && { flexBasis: "22%" },
                   {
                     backgroundColor: colors.surface,
                     borderColor: colors.border,
                   },
                 ]}
               >
-                <View
-                  style={[
-                    styles.statIcon,
-                    { backgroundColor: stat.iconColor + "15" },
-                  ]}
-                >
-                  <IconSymbol
-                    name={stat.icon as any}
-                    size={18}
-                    color={stat.iconColor}
-                  />
-                </View>
-                <Text style={[styles.statValue, { color: colors.foreground }]}>
-                  {stat.value}
-                </Text>
                 <Text style={[styles.statLabel, { color: colors.muted }]}>
                   {stat.label}
                 </Text>
-                <Text style={[styles.statSub, { color: stat.iconColor }]}>
+                <Text style={[styles.statValue, { color: colors.foreground }]}>
+                  {stat.value}
+                </Text>
+                <Text style={[styles.statSub, { color: colors.muted }]}>
                   {stat.sub}
                 </Text>
               </View>
@@ -453,80 +446,102 @@ export default function AdminDashboard() {
           </View>
         )}
 
-        {/* Quick Actions */}
         <Text style={[styles.sectionTitle, { color: colors.muted }]}>
-          MANAGEMENT
+          MANAGE YOUR WORKSPACE
         </Text>
-        <View style={styles.actionsGrid}>
-          {quickActions.map((action, i) => {
-            const available =
-              !(
-                action.requiresImplicitTenant &&
-                workspace.hasMultipleMemberships
-              ) &&
-              (!action.facility ||
-                capabilitiesQuery.data?.[action.facility] === true);
-            const checking =
-              Boolean(action.facility) && capabilitiesQuery.isLoading;
-            return (
-              <TouchableOpacity
-                key={i}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: !available }}
-                accessibilityLabel={
-                  available
-                    ? action.label
-                    : `${action.label}: ${action.requiresImplicitTenant && workspace.hasMultipleMemberships ? "not available for multiple workspaces" : checking ? "checking availability" : "not available"}`
-                }
-                disabled={!available}
+        <View
+          style={[styles.actionSections, wide && styles.actionSectionsWide]}
+        >
+          {(["People", "Phone system", "Workspace"] as const).map((group) => (
+            <View
+              key={group}
+              style={[
+                styles.actionSection,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+            >
+              <Text
                 style={[
-                  styles.actionCard,
-                  {
-                    backgroundColor: colors.surface,
-                    borderColor: colors.border,
-                  },
-                  !available && styles.actionCardDisabled,
+                  styles.actionSectionTitle,
+                  { color: colors.foreground },
                 ]}
-                onPress={() => router.push(action.route as any)}
-                activeOpacity={available ? 0.7 : 1}
               >
-                <View
-                  style={[
-                    styles.actionIcon,
-                    { backgroundColor: action.iconColor + "15" },
-                  ]}
-                >
-                  <IconSymbol
-                    name={action.icon as any}
-                    size={22}
-                    color={action.iconColor}
-                  />
-                </View>
-                <Text
-                  style={[styles.actionLabel, { color: colors.foreground }]}
-                >
-                  {action.label}
-                </Text>
-                {action.facility && !available ? (
-                  <Text
-                    style={[styles.actionAvailability, { color: colors.muted }]}
-                  >
-                    {action.requiresImplicitTenant &&
-                    workspace.hasMultipleMemberships
-                      ? "Multiple workspaces"
-                      : checking
-                        ? "Checking availability"
-                        : "Not available"}
-                  </Text>
-                ) : null}
-              </TouchableOpacity>
-            );
-          })}
+                {group}
+              </Text>
+              {quickActions
+                .filter((action) => action.group === group)
+                .map((action) => {
+                  const available =
+                    !(
+                      action.requiresImplicitTenant &&
+                      workspace.hasMultipleMemberships
+                    ) &&
+                    (!action.facility ||
+                      capabilitiesQuery.data?.[action.facility] === true);
+                  const checking =
+                    Boolean(action.facility) && capabilitiesQuery.isLoading;
+                  return (
+                    <TouchableOpacity
+                      key={action.route}
+                      accessibilityRole="button"
+                      accessibilityState={{ disabled: !available }}
+                      accessibilityLabel={
+                        available
+                          ? action.label
+                          : `${action.label}: ${action.requiresImplicitTenant && workspace.hasMultipleMemberships ? "not available for multiple workspaces" : checking ? "checking availability" : "not available"}`
+                      }
+                      disabled={!available}
+                      style={[
+                        styles.actionCard,
+                        { borderTopColor: colors.border },
+                        !available && styles.actionCardDisabled,
+                      ]}
+                      onPress={() => router.push(action.route as any)}
+                      activeOpacity={available ? 0.7 : 1}
+                    >
+                      <IconSymbol
+                        name={action.icon as any}
+                        size={17}
+                        color={available ? colors.primary : colors.muted}
+                      />
+                      <Text
+                        style={[
+                          styles.actionLabel,
+                          { color: colors.foreground },
+                        ]}
+                      >
+                        {action.label}
+                      </Text>
+                      {action.facility && !available ? (
+                        <Text
+                          style={[
+                            styles.actionAvailability,
+                            { color: colors.muted },
+                          ]}
+                        >
+                          {action.requiresImplicitTenant &&
+                          workspace.hasMultipleMemberships
+                            ? "Multiple workspaces"
+                            : checking
+                              ? "Checking availability"
+                              : "Not available"}
+                        </Text>
+                      ) : null}
+                      <IconSymbol
+                        name="chevron.right"
+                        size={13}
+                        color={colors.muted}
+                      />
+                    </TouchableOpacity>
+                  );
+                })}
+            </View>
+          ))}
         </View>
 
         {/* Recent Calls */}
         <Text style={[styles.sectionTitle, { color: colors.muted }]}>
-          RECENT CALLS
+          RECENT CALL ACTIVITY
         </Text>
         <View
           style={[
@@ -534,6 +549,34 @@ export default function AdminDashboard() {
             { backgroundColor: colors.surface, borderColor: colors.border },
           ]}
         >
+          {wide &&
+          !workspace.hasMultipleMemberships &&
+          recentCallsQuery.data &&
+          recentCallsQuery.data.length > 0 ? (
+            <View
+              style={[
+                styles.callTableHeader,
+                { borderBottomColor: colors.border },
+              ]}
+            >
+              <View style={styles.callIcon} />
+              <Text style={[styles.callTableMain, { color: colors.muted }]}>
+                CALL
+              </Text>
+              <Text style={[styles.callTableCell, { color: colors.muted }]}>
+                DIRECTION
+              </Text>
+              <Text style={[styles.callTableCell, { color: colors.muted }]}>
+                RESULT
+              </Text>
+              <Text style={[styles.callTableCell, { color: colors.muted }]}>
+                DURATION
+              </Text>
+              <Text style={[styles.callTableCell, { color: colors.muted }]}>
+                WHEN
+              </Text>
+            </View>
+          ) : null}
           {workspace.hasMultipleMemberships ? (
             <View style={styles.emptyState}>
               <Text style={{ color: colors.muted }}>
@@ -589,18 +632,47 @@ export default function AdminDashboard() {
                     color={dispositionColor(call.disposition)}
                   />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={styles.callTableMain}>
                   <Text
                     style={[styles.callNumber, { color: colors.foreground }]}
                   >
                     {call.caller_number} → {call.callee_number}
                   </Text>
-                  <Text style={[styles.callMeta, { color: colors.muted }]}>
-                    {call.direction} · {call.disposition} ·{" "}
-                    {formatDuration(call.total_duration_seconds || 0)}
-                  </Text>
+                  {!wide ? (
+                    <Text style={[styles.callMeta, { color: colors.muted }]}>
+                      {call.direction} · {call.disposition} ·{" "}
+                      {formatDuration(call.total_duration_seconds || 0)}
+                    </Text>
+                  ) : null}
                 </View>
-                <Text style={[styles.callTime, { color: colors.muted }]}>
+                {wide ? (
+                  <>
+                    <Text
+                      style={[styles.callTableCell, { color: colors.muted }]}
+                    >
+                      {call.direction}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.callTableCell,
+                        { color: dispositionColor(call.disposition) },
+                      ]}
+                    >
+                      {call.disposition}
+                    </Text>
+                    <Text
+                      style={[styles.callTableCell, { color: colors.muted }]}
+                    >
+                      {formatDuration(call.total_duration_seconds || 0)}
+                    </Text>
+                  </>
+                ) : null}
+                <Text
+                  style={[
+                    wide ? styles.callTableCell : styles.callTime,
+                    { color: colors.muted },
+                  ]}
+                >
                   {formatTime(call.started_at)}
                 </Text>
               </View>
@@ -699,14 +771,17 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 0.5,
+    paddingVertical: 8,
     gap: 12,
   },
-  backBtn: { padding: 4 },
-  title: { fontSize: 22, fontWeight: "700" },
-  subtitle: { fontSize: 13, marginTop: 2 },
+  backBtn: {
+    padding: 4,
+    minWidth: 36,
+    minHeight: 40,
+    justifyContent: "center",
+  },
+  title: { fontSize: 27, fontWeight: "700" },
+  subtitle: { fontSize: 14, marginTop: 4 },
   loadingContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -715,67 +790,83 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   loadingText: { fontSize: 13 },
-  statsGrid: { flexDirection: "row", flexWrap: "wrap", padding: 12, gap: 8 },
+  statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   statCard: {
-    width: "48%",
     flexGrow: 1,
-    flexBasis: "46%",
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 0.5,
-  },
-  statIcon: {
-    width: 34,
-    height: 34,
+    flexBasis: "45%",
     borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 10,
+    padding: 18,
+    borderWidth: 1,
   },
-  statValue: { fontSize: 24, fontWeight: "700" },
-  statLabel: { fontSize: 12, marginTop: 2 },
-  statSub: { fontSize: 11, fontWeight: "600", marginTop: 4 },
+  statValue: { fontSize: 28, fontWeight: "700", marginTop: 10 },
+  statLabel: { fontSize: 12, fontWeight: "600" },
+  statSub: { fontSize: 12, marginTop: 3 },
   sectionTitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    letterSpacing: 0.5,
-    paddingHorizontal: 20,
-    marginTop: 20,
-    marginBottom: 8,
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1,
+    marginTop: 30,
+    marginBottom: 12,
   },
-  actionsGrid: {
+  actionSections: {
+    gap: 12,
+  },
+  actionSectionsWide: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    paddingHorizontal: 12,
-    gap: 8,
+    alignItems: "flex-start",
   },
-  actionCard: {
-    width: "30%",
-    flexGrow: 1,
-    flexBasis: "29%",
-    borderRadius: 14,
-    padding: 16,
-    alignItems: "center",
-    borderWidth: 0.5,
-    gap: 8,
-  },
-  actionCardDisabled: { opacity: 0.58 },
-  actionIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  actionLabel: { fontSize: 13, fontWeight: "600" },
-  actionAvailability: { fontSize: 10, fontWeight: "600", textAlign: "center" },
-  section: {
-    marginHorizontal: 16,
-    borderRadius: 14,
-    borderWidth: 0.5,
+  actionSection: {
+    flex: 1,
+    minWidth: 0,
+    borderWidth: 1,
+    borderRadius: 10,
     overflow: "hidden",
   },
-  callRow: { flexDirection: "row", alignItems: "center", padding: 14, gap: 10 },
+  actionSectionTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    paddingHorizontal: 16,
+    paddingVertical: 15,
+  },
+  actionCard: {
+    minHeight: 50,
+    borderTopWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  actionCardDisabled: { opacity: 0.58 },
+  actionLabel: { fontSize: 13, fontWeight: "600", flex: 1 },
+  actionAvailability: {
+    fontSize: 10,
+    fontWeight: "600",
+    maxWidth: 94,
+    textAlign: "right",
+  },
+  section: {
+    borderRadius: 10,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  callTableHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    gap: 12,
+  },
+  callTableMain: { flex: 2, minWidth: 0 },
+  callTableCell: { flex: 1, minWidth: 0, fontSize: 12 },
+  callRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    gap: 12,
+  },
   callIcon: {
     width: 32,
     height: 32,

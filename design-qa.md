@@ -1,62 +1,56 @@
-# Phone11 desktop visual verification — 2026-09-27
+# Phone11 admin interface QA — 2026-09-27
 
-final result: passed
+**Scope:** Zoom-inspired admin shell, Overview, and People inventory in the existing Phone11 application. This is not a claim of full Zoom product or pixel parity.
 
-Previous mobile report preserved in [Recents QA](docs/design-qa/recents-20260915.md).
+## Evidence and comparison state
 
-## Target and evidence
+- Source visual truth: `/tmp/phone11-zoom-admin-audit-20260927/01-phone-users.png`, captured read-only from the user's signed-in Zoom admin portal. Additional routing/policy references are indexed in `docs/phone11-daily-use/ZOOM-ADMIN-REFERENCE-20260927.md`.
+- Implementation: `http://localhost:8094/admin/users`, actual application routes/components using a loopback-only, synthetic, read-only API. No production membership changes were submitted.
+- Desktop capture: `/tmp/phone11-zoom-admin-audit-20260927/phone11-people-actual-desktop.png` (1398 × 768 pixels; CSS viewport 1398 × 768).
+- Compact capture: `/tmp/phone11-zoom-admin-audit-20260927/phone11-people-actual-mobile.png` (390 × 844 pixels; CSS viewport 390 × 844).
+- Overview: `/tmp/phone11-zoom-admin-audit-20260927/phone11-overview-desktop.png`.
+- Member editor: `/tmp/phone11-zoom-admin-audit-20260927/phone11-member-editor-desktop.png`.
+- The source and final desktop/compact captures were opened together in one image comparison input. Source includes Chrome chrome and Zoom's account banner; implementation is app content only. Comparison concerns app hierarchy and supported interactions, not identical coordinates or content. Captures map to CSS dimensions without image resampling by the agent; browser output softens fine text, so DOM text and source typography were checked as complementary evidence.
+- Private Zoom account details remain only in local reference captures; none are copied into application fixtures or committed assets.
 
-- Source visual truth: `/tmp/phone11-premium-qa/zoom-reference.png`, captured from the user-authorized Zoom Workplace desktop Phone screen. Contains private contact rows; retained locally, not copied into product data or committed.
-- Implementation: `/tmp/phone11-premium-qa/implementation-final.png` from the actual built HTML/CSS/renderer with an isolated synthetic adapter outside the repository and package. DESIGN PREVIEW is shown in its chrome. No live calls were made by this adapter.
-- Source and implementation: 1024 × 768 pixels, matching 1024 × 768 CSS viewport, no density resampling.
-- Full comparison: `/tmp/phone11-premium-qa/comparison-final.png`, 2048 × 768, source left and implementation right.
-- Focused dialpad comparison: `/tmp/phone11-premium-qa/dialpad-comparison-v2.png`. Key dimensions, labels, control hierarchy and typography were inspected together.
-- Additional states: `held-call.png`, `voicemail.png`, `narrow-final.png` in the same local evidence directory. Narrow test used 360 × 700 CSS pixels; vertical scrolling is intentional, no horizontal overflow.
+## Findings and iteration history
 
-## Comparison history
-
-1. Initial implementation: `/tmp/phone11-premium-qa/comparison-v1.png`.
-   - P1: large ready-to-call heading and outlined 56px keys drifted from Zoom's quiet status and 46px filled keys.
-   - P2: underlined tabs and duplicate rail brand changed the reference hierarchy.
-   - Fixed: top status strip, 46px pale keys and blue call control, centered field, segmented tabs, and simpler rail.
-2. Revised implementation: `comparison-v2.png` and focused dialpad comparison.
-   - Desktop proportions matched the selected reference structure. Intentional differences listed below.
-   - P2 narrow state: voicemail content overlapped the trial footer.
-   - Fixed: constrained independently scrolling list panel and nonshrinking footer; 280px narrow list region. Verified `panelContent=165`, `panelHeight=153`, `scrollWidth=360` at 360px viewport.
-3. Final combined comparison: `comparison-final.png`; narrow evidence: `narrow-final.png`.
-   - No remaining actionable P0/P1/P2 visual findings for this scope.
-   - Minor final correction removed the inherited narrow extension-label width cap and made the End icon white; checked in the final browser rerender.
+1. **P2, fixed:** Wide native Overview lost its Back control when using the desktop breakpoint. Back now remains available on native platforms independently of width. Web gets persistent navigation.
+2. **P2, fixed:** Shell overlays allowed focus outside their intended menu. Replaced with React Native Modal focus management. Browser Tab moved focus into the navigation; Escape dismissed and returned focus to its trigger.
+3. **P2, fixed:** Filter pointerdown closed the menu before option selection. Added a containment check. Browser inspection also found the table was covering dropdown options; raised the toolbar stacking context. Mouse selection now yields one matching row for both Inactive and Admin filters.
+4. **P2, fixed:** Compact topbar wrapped the Admin center label. Reduced compact spacing and kept the label to one line. Final 390-pixel capture has no horizontal overflow.
+5. **Polish applied:** Aligned People content insets with Overview, used a white web surface, added an accessible page heading, centered the desktop member editor, shortened the search placeholder, and replaced implementation-oriented invitation text with a clear product limitation.
 
 ## Required fidelity surfaces
 
-- Typography: local macOS system fonts, compact 11px tabs/status, 16px section title and 21px keypad digits. No remotely loaded fonts. Thai fallbacks retained.
-- Spacing: 42px top strip, 68px rail, 288px list pane, persistent sibling dialpad. Circular 46px keys with 15px gaps. Desktop list scrolls independently.
-- Color: white content, cool grey chrome and keys, subtle dividers, Phone11 blue active/call controls; red only for ending a call or errors.
-- Assets: pinned Lucide 1.48.0 icons and license bundled locally. No copied Zoom artwork, profile photos, or fabricated customer data.
-- Copy: Phone11 branding, real assigned extension, clear loading, empty and playback-error states and 60-second trial notice. No backend/provider identifiers exposed as call titles.
+- **Fonts/typography:** Compact system typography, distinct page/title/table hierarchy, subdued secondary email/extension text. The shell includes Latin/Thai fallbacks. Zoom's proprietary branding is intentionally replaced by Phone11. Final heading and labels fit the captured desktop and compact states.
+- **Spacing/layout:** Persistent approximately 238-pixel sidebar and 66-pixel topbar; grouped admin destinations; search and filters immediately precede a compact inventory. On small screens, a menu replaces the sidebar and readable cards replace the table. Source has more tabs/actions because Zoom supports additional products; Phone11 does not show dead equivalents.
+- **Colors/tokens:** White primary surfaces, light dividers, restrained blue selection/action states, muted metadata, and labeled semantic role/status badges. Source and implementation share this visual hierarchy without copying Zoom brand assets.
+- **Images/assets:** Existing Phone11 avatar renderer retains tenant-bound photo lookup and initials fallback. Synthetic fixtures have no photos. Real profile-photo fetch/upload was not exercised. Existing icon-library symbols are used for ordinary navigation; private profile images and Zoom logos were not copied.
+- **Copy/content:** Actual Phone11 destinations and existing capabilities determine navigation. Pending invitations, bulk provisioning, licenses, sites, and Zoom Rooms are not implied. Member deactivation explains that it does not suspend SIP credentials or remove extension assignments.
 
-## Intentional differences and limits
+## Interaction and regression validation
 
-Zoom has more licensed modules and populated call history. Phone11 currently exposes Phone and Meetings only; adding inert navigation or synthetic history would misrepresent functionality. Call history and voicemail playback are implemented in the follow-up below; their backend rollout and real-account acceptance remain separate from visual verification. The selected visual target has a name search, while Phone11 supports number/extension dialing. Icon silhouettes and brand treatment remain Phone11's. This visual acceptance does not establish full Zoom feature parity.
+- Actual admin Overview and People routes loaded through their normal hooks against the local read-only fixture API.
+- Search by extension, status and role selection, multi-workspace preview switching, member-editor opening, compact navigation, Tab/Escape dismissal, and compact status selection checked in browser.
+- Desktop uses inventory columns; 390-pixel layout uses cards and reports document width equal to viewport width.
+- Browser error log checked: no captured console errors in the tested tab.
+- 42 targeted tests across five files passed; TypeScript passed. Relevant ESLint check passed after removing one unused type. Production-format web export is recorded separately in the delivery status.
+- Independent source review: no remaining concrete P0–P2 finding after corrections.
 
-## Interaction validation
+## Intentional differences and remaining scope
 
-The built renderer was exercised in the isolated preview: nested keypad letter taps, backspace, external form-associated Call, connected/muted/held/resumed/ended states, voicemail loading, Lines, Meetings and responsive scrolling. Console check returned no warnings/errors. Independent read-only review caught the removed destination pattern; it was restored before packaging. Desktop automated tests and typecheck are run separately. Live SIP/audio and signed-in native acceptance are not established by preview tests.
+No unsupported Zoom features are represented as working controls. Existing deeper PBX editor forms inherit the new web shell but were not all redesigned. Native handset, desktop SIP runtime, two-party meeting audio, provider behavior, mutation authorization against production, and deployment were not acceptance-tested here. This work does not complete those separate product gates.
 
-## Personal inbox follow-up — 27 September 2026
+## Implementation checklist
 
-- Added populated personal History and inline Voicemail audio controls without
-  changing the accepted rail, panel or dialpad layout. Busy and failed calls
-  keep their own labels; missed calls use the red treatment.
-- Evidence: `/tmp/phone11-inbox-qa/history.png` and
-  `/tmp/phone11-inbox-qa/voicemail-final.png`; synthetic local preview only.
-- Verified history selection fills the dialpad without dialing; playback changes
-  New to Read; leaving Voicemail or starting a simulated call clears audio source
-  and hides the player. No browser console warnings/errors.
-- Inspected 360×700 responsive history; the list remains independently scrollable
-  and the trial footer does not overlap its rows.
-- Checks: app 37/37; provider 25/25; backend 117 passed, one pre-existing skipped;
-  root/desktop TypeScript and desktop build passed.
-- Server tenant-contract deployment, signed-in native playback, and real audible
-  voicemail acceptance remain outstanding. No production calls or mutations were
-  used for this visual check.
+- [x] Integrate shell, Overview, and People components.
+- [x] Preserve workspace selection, tenant-bound hooks, capability guards, and native navigation.
+- [x] Resolve review findings and repeat affected browser interactions.
+- [x] Compare final reference and implementation captures together.
+- [x] Retain a clearly labeled local design preview.
+- [ ] Deploy the exact reviewed candidate and verify signed-in production rendering separately.
+
+**final result: passed**
+
+This result applies only to the stated local UI scope and intentional Phone11 adaptation.
