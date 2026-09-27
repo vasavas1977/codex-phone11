@@ -60,6 +60,7 @@ describe("Phone11 phone provisioning ownership", () => {
       return { rows: [] };
     });
     process.env.OWNER_OPEN_ID = "owner-open-id";
+    delete process.env.PHONE11_PILOT_AUTO_PROVISION_USER_IDS;
   });
 
   it("returns the extension already assigned to the authenticated user", async () => {
@@ -94,9 +95,23 @@ describe("Phone11 phone provisioning ownership", () => {
   });
 
   it("does not bootstrap another SIP account for an inactive pilot member", async () => {
+    process.env.PHONE11_PILOT_AUTO_PROVISION_USER_IDS = "17";
     await expect(ensurePilotExtensionForUser(17, "member-open-id")).resolves.toEqual({ configured: false });
     expect(state.pool.query.mock.calls.some(([sql]) => String(sql).includes("tm.tenant_id=1 AND tm.status='active'"))).toBe(true);
     expect(state.pool.query.mock.calls.some(([sql]) => /INSERT INTO user_extensions|INSERT INTO extensions|UPDATE extensions SET user_id/.test(String(sql)))).toBe(false);
+  });
+
+  it("preserves an already assigned caller without pilot eligibility", async () => {
+    state.assignedRows = [assignedExtension];
+    await expect(ensurePilotExtensionForUser(17, "member-open-id")).resolves.toMatchObject({
+      configured: true, extension: { number: "3001" },
+    });
+  });
+
+  it.each([undefined, "", "18", "17oops", "017", "1.7e1"])("does not provision an ordinary member with allowlist %s", async (allowlist) => {
+    if (allowlist !== undefined) process.env.PHONE11_PILOT_AUTO_PROVISION_USER_IDS = allowlist;
+    await expect(ensurePilotExtensionForUser(17, "member-open-id")).resolves.toEqual({ configured: false });
+    expect(state.pool.query.mock.calls.some(([sql]) => /ue\.user_id IS NULL|INSERT INTO user_extensions|INSERT INTO extensions|UPDATE extensions SET user_id/.test(String(sql)))).toBe(false);
   });
 
   it("does not reclaim an unassigned extension for the owner", async () => {

@@ -12,6 +12,7 @@ import { registerAuthRoutes, phone11Cors } from "./auth-routes";
 import { registerStorageProxy } from "./storageProxy";
 import { fullRouter } from "../routers";
 import { createContext } from "./context";
+import { createInvitationHttpGuard } from "./phone11-invitation-http";
 import { freeswitchRouter, freeswitchCdrRouter } from "../pbx/freeswitch-routes";
 import { kamailioRouter } from "../pbx/kamailio-routes";
 import { storageRouter } from "../pbx/recording-storage";
@@ -83,6 +84,7 @@ export async function startServer() {
   app.use("/api/freeswitch/cdr", freeswitchCdrRouter);
   // This default-off integration owns its strict 2 KiB parser.
   app.use("/api/voicemail/local-fallback", createVoicemailFallbackRouter());
+  app.use("/api/trpc", createInvitationHttpGuard());
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 

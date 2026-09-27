@@ -460,6 +460,15 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
   const existing = await getPhoneConfig(userId, openId);
   if (existing.configured) return existing;
 
+  // Workspace membership alone never grants telephone service. This legacy
+  // first-device bootstrap is limited to explicitly selected pilot user IDs;
+  // regular members receive extensions through the administrator workflow.
+  const pilotUsers = (process.env.PHONE11_PILOT_AUTO_PROVISION_USER_IDS || "")
+    .split(",").map((value) => value.trim()).filter((value) => /^[1-9]\d*$/.test(value));
+  if (!Number.isSafeInteger(userId) || !pilotUsers.includes(String(userId))) {
+    return { configured: false };
+  }
+
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 

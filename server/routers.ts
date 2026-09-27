@@ -1,3 +1,4 @@
+import { invitationsRouter } from "./invitations/router";
 import { meetingsRouter } from "./meetings/router";
 import { conferenceRouter } from "./conference/router";
 import { cloudRecordingsRouter } from "./cloud-recordings/router";
@@ -131,6 +132,7 @@ async function listPhoneAdminTenants(userId: number): Promise<number[]> {
 }
 
 export const appRouter = router({
+  invitations: invitationsRouter,
   meetings: meetingsRouter,
   conference: conferenceRouter,
   cloudRecordings: cloudRecordingsRouter,
