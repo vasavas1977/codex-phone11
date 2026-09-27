@@ -208,6 +208,12 @@ records the macOS/Windows runtime and release acceptance gates.
 
 ## Desktop personal inbox — 27 September 2026
 
+In the mainline desktop integration, Voicemail is unavailable at the tab and IPC
+boundary. List, read, and audio requests fail before any backend request. The
+source below describes the dormant implementation; enable it only after the
+deployed backend proves selected-tenant and owner-bound authorization for all
+three routes, including media retrieval by ID.
+
 The Phone screen now loads the signed-in member's last 30 days of call history
 (up to 50 records) through `pbx.selfService.usage`, using the selected tenant.
 Existing call-time ownership rules remain authoritative; current extension
@@ -229,12 +235,12 @@ accepts the selected `tenantId`. Missing/mismatched echoes block the desktop
 client. Playback and mark-read both preflight the selected-tenant inbox.
 Legacy callers can continue omitting `tenantId`.
 
-Validation on this source: 37 desktop app tests, 25 provider tests, and 117
-backend tests passed; one existing backend test was skipped. Root and desktop
-TypeScript checks and the desktop build passed. The actual built renderer was
-checked at 1024×768 and 360×700 using synthetic records and a one-second silent
-WAV. These checks prove UI/media-element behavior, not audible production
-voicemail, live CDR ingestion, Windows runtime, or server deployment.
+The current mainline port passed 37 desktop app tests, 68 provider and boundary
+tests, the desktop TypeScript check, and the desktop build. Earlier feature-branch
+work checked the renderer at 1024×768 and 360×700 using synthetic records and a
+one-second silent WAV. These checks prove source and local UI/media-element
+behavior, not audible production voicemail, live CDR ingestion, Windows runtime,
+or server deployment.
 
 The backend is currently managed by the separate voicemail-status integration
 checkout. Prepare a narrow overlay against its exact running source and preserve

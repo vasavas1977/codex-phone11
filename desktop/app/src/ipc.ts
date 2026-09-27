@@ -1,7 +1,7 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseRendererAction } from '../../src/call-boundary';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
-import { DesktopCallHistoryError } from '../../src/authenticated-provider';
+import { DesktopCallHistoryError } from '../../src/call-history-error';
 import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail, DesktopCallHistory } from '../../src/authenticated-provider';
 
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
@@ -13,6 +13,11 @@ export type PublicState = { signedIn: boolean; sessionRevision: string | null; g
 export type TaggedSnapshot = { sessionRevision: string; generation: string;
   snapshot: ReturnType<DesktopHelperSupervisor['snapshot']> };
 export type TaggedVoicemail = { sessionRevision: string; items: readonly DesktopVoicemail[] };
+// Keep the personal inbox closed until the deployed list, read, and media routes enforce owner authority.
+export const VOICEMAIL_ENABLED = false;
+function requireVoicemail(): void {
+  if (!VOICEMAIL_ENABLED) throw new Error('PHONE11_VOICEMAIL_UNAVAILABLE');
+}
 export function signInFailureMessage(error: unknown): string {
   const text = String(error);
   if (text.includes('PHONE11_CREDENTIALS_REJECTED')) return 'Email or password was not accepted.';
@@ -123,6 +128,7 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       return { sessionRevision: revision, items };
     },
     voicemailAudio: async (input: unknown) => {
+      requireVoicemail();
       const { revision, id } = inboxSession(input, true);
       if (mediaBlocked()) throw new Error('Finish your call or meeting before playing voicemail');
       const audio = await provider.voicemailAudio(revision, id);
@@ -130,12 +136,14 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       return { sessionRevision: revision, ...audio };
     },
     voicemailMarkRead: async (input: unknown) => {
+      requireVoicemail();
       const { revision, id } = inboxSession(input, true);
       await provider.markVoicemailRead(revision, id);
       if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
       return { sessionRevision: revision, id };
     },
     voicemailList: async (input: unknown): Promise<TaggedVoicemail> => {
+      requireVoicemail();
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
           typeof (input as Record<string, unknown>).sessionRevision !== 'string')
         throw new Error('Invalid voicemail request');
