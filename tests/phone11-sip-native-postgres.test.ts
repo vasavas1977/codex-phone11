@@ -172,6 +172,46 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
     expect(unchanged.rows[0].user_id).toBe(55);
   });
 
+  it("provisions accountless legacy extensions with empty SIP identity fields", async () => {
+    const domain = "sip.phone11.ai";
+    const assignedPassword = "legacy-assigned-secret";
+    const ownerPassword = "legacy-owner-secret";
+    await db.query(`
+      INSERT INTO extensions (tenant_id, org_id, user_id, extension_number, type,
+        sip_username, sip_domain, sip_password, status)
+      VALUES (7, 7, 33, '4201', 'user', '', '', $1, 'active'),
+             (1, 1, NULL, '1020', 'user', '', '', $2, 'active')
+    `, [assignedPassword, ownerPassword]);
+    await db.query(`
+      INSERT INTO user_extensions (user_id, extension_id, is_primary)
+        SELECT 33, id, true FROM extensions WHERE extension_number = '4201'
+    `);
+    await db.query(`
+      INSERT INTO subscriber (username, domain, password, ha1, ha1b) VALUES
+        ('4201', $1, $2, $3, $4), ('1020', $1, $5, $6, $7)
+    `, [domain, assignedPassword,
+      computeHA1("4201", domain, assignedPassword),
+      computeHA1B("4201", domain, domain, assignedPassword),
+      ownerPassword, computeHA1("1020", domain, ownerPassword),
+      computeHA1B("1020", domain, domain, ownerPassword)]);
+
+    await expect(getPhoneConfig(33, "member-open-id")).resolves.toMatchObject({
+      configured: true, sip: { username: "4201", domain, password: assignedPassword },
+    });
+
+    await db.query("INSERT INTO tenant_memberships VALUES (77, 1, 'active')");
+    const priorOwnerOpenId = process.env.OWNER_OPEN_ID;
+    process.env.OWNER_OPEN_ID = "legacy-owner-open-id";
+    try {
+      await expect(getPhoneConfig(77, "legacy-owner-open-id")).resolves.toMatchObject({
+        configured: true, sip: { username: "1020", domain, password: ownerPassword },
+      });
+    } finally {
+      if (priorOwnerOpenId === undefined) delete process.env.OWNER_OPEN_ID;
+      else process.env.OWNER_OPEN_ID = priorOwnerOpenId;
+    }
+  });
+
   it("serializes a cross-tenant race for one global SIP URI", async () => {
     const outcomes = await Promise.allSettled([
       pbxRouter.createCaller(context(9)).extensions.create({ extensionNumber: "4103", userId: 33 }),

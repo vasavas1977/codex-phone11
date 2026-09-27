@@ -363,8 +363,8 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
       LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
       LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
-      LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
-        AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
+      LEFT JOIN subscriber sub ON sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+        AND sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
       WHERE e.type = 'user'
         AND ((sa.id IS NOT NULL AND e.user_id = $1 AND sa.user_id = $1 AND ue.user_id = $1)
           OR (sa.id IS NULL AND e.user_id = $1 AND ue.user_id = $1))
@@ -438,8 +438,8 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
         LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
         LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
         LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
-        LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
-          AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $1)
+        LEFT JOIN subscriber sub ON sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+          AND sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $1)
         WHERE (e.sip_username = '1020' OR e.extension_number = '1020')
           AND e.tenant_id = 1
           AND (e.user_id IS NULL OR e.user_id = $2)
