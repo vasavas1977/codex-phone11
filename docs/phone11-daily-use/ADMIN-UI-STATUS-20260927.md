@@ -6,16 +6,18 @@ The existing Expo web admin routes now share a persistent desktop sidebar and co
 
 Overview uses compact metrics, grouped management links, and recent call activity. People uses the existing tenant-bound hooks with a responsive table/card inventory, avatar renderer, search, role/status filters, and the existing membership editor. Desktop member editing is a centered dialog. Unsupported invitation delivery remains clearly unavailable.
 
+Source head `61fbec3` also includes a deeper admin presentation pass: a desktop Extensions inventory, centered IVR/queue/business-hours dialogs, and compact meeting-hosting and voicemail-administration pages. These changes retain existing queries, access gates, and operations. They do not add account-wide meeting policies, holiday routing, voicemail retention controls, or provider capabilities.
+
 Independent workers owned the People inventory and Overview, with a separate source reviewer. The lead integrated the shell, corrected focus/stacking issues, and verified browser behavior. No auth, PBX, SIP, provider, or production configuration was changed.
 
 ## Validation
 
-- 42 targeted admin/workspace tests passed across five files.
-- `tsc --noEmit` passed.
+- Final source checks at `61fbec3`: 48 targeted admin/workspace tests passed across seven files; final `tsc --noEmit` passed.
 - ESLint on the six changed/new UI files passed with no lint findings; Node emitted an existing module-type configuration warning.
 - `git diff --check` passed.
-- Expo production web export passed into `/tmp/phone11-admin-ui-export-20260927`, with production API base `https://api.phone11.ai`. This is build evidence, not deployment evidence.
+- The earlier shell/Overview/People Expo production web export passed into `/tmp/phone11-admin-ui-export-20260927`, with production API base `https://api.phone11.ai`. This is build evidence for that earlier candidate, not a claim that the deeper-page head was exported or deployed.
 - Actual `/admin` and `/admin/users` routes were exercised against a localhost-only synthetic read API. Search, filters, member-editor opening, responsive navigation, and keyboard dismissal passed. No captured browser console errors.
+- Deeper-page synthetic fixture captures cover Extensions (desktop and compact), IVR, business hours, and meeting hosting. The queue capture predates its final Save-button color change; no final voicemail capture exists. These images do not prove backend mutation, storage durability, SIP, or provider behavior.
 - Presentation preview workspace switching passed with sample data. No production mutation test was performed.
 - Independent final source review reported no remaining concrete P0–P2 finding.
 
@@ -23,4 +25,4 @@ See root `design-qa.md` for screenshot paths, reference comparison, corrections,
 
 ## Remaining
 
-This candidate is not deployed. Deeper PBX editors inherit the shell but do not yet share all Zoom-style section/tab layouts. Invitation delivery, full bulk provisioning, detailed policy inheritance, mobile/desktop calling behavior, and meeting audio each require their own implementation/acceptance evidence. Do not label this a completed Zoom Phone/Meetings clone.
+The deeper-page source head `61fbec3` is not the production candidate. A separate `phone11-admin-release-20260927` candidate at `bdfca2f` ports only Overview, People, and the shared shell because deeper pages depend on APIs that are not live in that candidate. Deployment and signed-in production rendering remain separate checks. Invitation delivery, full bulk provisioning, detailed policy inheritance, mobile/desktop calling behavior, and meeting audio each require their own implementation and acceptance evidence. Do not label this a completed Zoom Phone/Meetings clone.

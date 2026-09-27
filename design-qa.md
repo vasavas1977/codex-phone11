@@ -1,6 +1,6 @@
 # Phone11 admin interface QA — 2026-09-27
 
-**Scope:** Zoom-inspired admin shell, Overview, and People inventory in the existing Phone11 application. This is not a claim of full Zoom product or pixel parity.
+**Scope:** Zoom-inspired admin shell, Overview, People inventory, and a deeper desktop layout pass for Extensions, IVR, queues, business hours, meeting hosting, and voicemail administration at source head `61fbec3`. This is not a claim of full Zoom product or pixel parity.
 
 ## Evidence and comparison state
 
@@ -12,6 +12,7 @@
 - Member editor: `/tmp/phone11-zoom-admin-audit-20260927/phone11-member-editor-desktop.png`.
 - The source and final desktop/compact captures were opened together in one image comparison input. Source includes Chrome chrome and Zoom's account banner; implementation is app content only. Comparison concerns app hierarchy and supported interactions, not identical coordinates or content. Captures map to CSS dimensions without image resampling by the agent; browser output softens fine text, so DOM text and source typography were checked as complementary evidence.
 - Private Zoom account details remain only in local reference captures; none are copied into application fixtures or committed assets.
+- Deeper-page local fixture captures: `phone11-extensions-final.png`, `phone11-extensions-compact-final.png`, `phone11-ivr-editor-final.png`, `phone11-hours-editor-final.png`, and `phone11-meetings-final.png` in the same `/tmp/phone11-zoom-admin-audit-20260927/` directory. `phone11-queue-settings-final.png` predates the last orange-to-blue Save styling; there is no final voicemail screenshot. These are synthetic UI checks, not production or provider evidence.
 
 ## Findings and iteration history
 
@@ -20,6 +21,7 @@
 3. **P2, fixed:** Filter pointerdown closed the menu before option selection. Added a containment check. Browser inspection also found the table was covering dropdown options; raised the toolbar stacking context. Mouse selection now yields one matching row for both Inactive and Admin filters.
 4. **P2, fixed:** Compact topbar wrapped the Admin center label. Reduced compact spacing and kept the label to one line. Final 390-pixel capture has no horizontal overflow.
 5. **Polish applied:** Aligned People content insets with Overview, used a white web surface, added an accessible page heading, centered the desktop member editor, shortened the search placeholder, and replaced implementation-oriented invitation text with a clear product limitation.
+6. **Deeper pass:** Extensions now uses a compact desktop inventory with responsive cards; IVR, queue, and business-hours editors use centered wide-screen dialogs; meeting hosting and voicemail administration use clearer headings and compact sections. Native Back controls and the existing tenant/capability boundaries remain. Meeting hosting grants are not presented as account-wide meeting policy; voicemail checks still disclose that durability and delivery need a real deposit/playback test.
 
 ## Required fidelity surfaces
 
@@ -35,12 +37,12 @@
 - Search by extension, status and role selection, multi-workspace preview switching, member-editor opening, compact navigation, Tab/Escape dismissal, and compact status selection checked in browser.
 - Desktop uses inventory columns; 390-pixel layout uses cards and reports document width equal to viewport width.
 - Browser error log checked: no captured console errors in the tested tab.
-- 42 targeted tests across five files passed; TypeScript passed. Relevant ESLint check passed after removing one unused type. Production-format web export is recorded separately in the delivery status.
+- Final source pass at `61fbec3`: 48 targeted tests across seven files passed, and the final project TypeScript check passed. Relevant ESLint check passed for the initial shell/People/Overview scope; it is not asserted as a deeper-page lint run. Production-format web export evidence belongs to the earlier candidate and is recorded separately in the delivery status.
 - Independent source review: no remaining concrete P0–P2 finding after corrections.
 
 ## Intentional differences and remaining scope
 
-No unsupported Zoom features are represented as working controls. Existing deeper PBX editor forms inherit the new web shell but were not all redesigned. Native handset, desktop SIP runtime, two-party meeting audio, provider behavior, mutation authorization against production, and deployment were not acceptance-tested here. This work does not complete those separate product gates.
+No unsupported Zoom features are represented as working controls. The deeper admin screens received a layout pass, not missing invitation, holiday, mailbox-retention, or enforced meeting-policy features. The final queue color change and voicemail administration page lack a final browser screenshot. Native handset, desktop SIP runtime, two-party meeting audio, provider behavior, mutation authorization against production, and deployment were not acceptance-tested here. This work does not complete those separate product gates.
 
 ## Implementation checklist
 
@@ -49,8 +51,9 @@ No unsupported Zoom features are represented as working controls. Existing deepe
 - [x] Resolve review findings and repeat affected browser interactions.
 - [x] Compare final reference and implementation captures together.
 - [x] Retain a clearly labeled local design preview.
+- [x] Check deeper admin layout with synthetic fixtures, retaining source-only boundaries.
 - [ ] Deploy the exact reviewed candidate and verify signed-in production rendering separately.
 
 **final result: passed**
 
-This result applies only to the stated local UI scope and intentional Phone11 adaptation.
+This result applies only to the stated local UI scope and intentional Phone11 adaptation. The separate production candidate `bdfca2f` ports only the Overview, People, and shared shell; the deeper screens in `61fbec3` depend on APIs that are not live in that candidate.
