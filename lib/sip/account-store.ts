@@ -6,10 +6,11 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 import { getAuthSnapshot } from "../_core/auth";
 import { hasOngoingSipCall } from "./call-store";
 import { create } from "zustand";
+import type { Phone11SiprixModule } from "../../modules/phone11-siprix";
 
 export type SipTransport = "UDP" | "TCP" | "TLS";
 
@@ -69,6 +70,29 @@ function assertNoCallForAccountChange(current: SipAccount | null, next: SipAccou
     throw new SipAccountChangeDuringCallError();
   }
 }
+
+async function hasNativeSipCallOrWake(): Promise<boolean> {
+  if (Platform.OS !== "ios") return false;
+  const bridge = NativeModules.Phone11Siprix as Phone11SiprixModule | undefined;
+  if (!bridge) return false;
+  if (typeof bridge.getSnapshot !== "function") return true;
+  try {
+    const snapshot = await bridge.getSnapshot();
+    // A VoIP push can own a native ringing session before JS sees any call.
+    // Native getSnapshot intentionally exposes nativeWake even with calls=[].
+    return !Array.isArray(snapshot?.calls) || Boolean(snapshot.nativeWake) ||
+      snapshot.calls.some(call => call.state !== "terminated");
+  } catch {
+    // A quarantined or independently leased native runtime is not safe to replace.
+    return true;
+  }
+}
+
+async function assertNativeIdleForAccountChange(current: SipAccount | null, next: SipAccount): Promise<void> {
+  if (!sameSipAccount(current, next) && (hasOngoingSipCall() || await hasNativeSipCallOrWake())) {
+    throw new SipAccountChangeDuringCallError();
+  }
+}
 let storageQueue: Promise<unknown> = Promise.resolve();
 let revision = 0;
 function serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -102,7 +126,8 @@ export const useSipAccountStore = create<SipAccountState>((set) => ({
     await serialize(async () => {
       if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) return;
       const previous = useSipAccountStore.getState().account;
-      assertNoCallForAccountChange(previous, account);
+      await assertNativeIdleForAccountChange(previous, account);
+      if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) return;
       if (Platform.OS !== "web") {
         await SecureStore.setItemAsync(SECURE_STORAGE_KEY, JSON.stringify(account), {
           keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
@@ -110,7 +135,7 @@ export const useSipAccountStore = create<SipAccountState>((set) => ({
       }
       await AsyncStorage.removeItem(STORAGE_KEY);
       if (current === revision && account.ownerUserId === getAuthSnapshot().user?.id) {
-        if (!sameSipAccount(previous, account) && hasOngoingSipCall()) {
+        if (!sameSipAccount(previous, account) && (hasOngoingSipCall() || await hasNativeSipCallOrWake())) {
           if (Platform.OS !== "web") {
             if (previous) await SecureStore.setItemAsync(SECURE_STORAGE_KEY, JSON.stringify(previous), {
               keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
@@ -123,6 +148,10 @@ export const useSipAccountStore = create<SipAccountState>((set) => ({
             }
           }
           throw new SipAccountChangeDuringCallError();
+        }
+        if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) {
+          if (Platform.OS !== "web") await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+          return;
         }
         set({ account });
       } else if (Platform.OS !== "web") {

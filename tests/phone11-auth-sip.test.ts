@@ -3,9 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   secure: new Map<string, string>(),
   plain: new Map<string, string>(),
+  nativeModules: {} as Record<string, unknown>,
   user: { id: 17 } as { id: number } | null,
 }));
-vi.mock("react-native", () => ({ Platform: { OS: "ios" }, NativeModules: {} }));
+vi.mock("react-native", () => ({ Platform: { OS: "ios" }, NativeModules: state.nativeModules }));
 vi.mock("expo-secure-store", () => ({
   WHEN_UNLOCKED_THIS_DEVICE_ONLY: 7,
   getItemAsync: vi.fn(async (key: string) => state.secure.get(key) ?? null),
@@ -45,6 +46,7 @@ describe("Phone11 auth and SIP account isolation", () => {
     await useSipAccountStore.getState().clearAccount();
     state.secure.clear();
     state.plain.clear();
+    delete state.nativeModules.Phone11Siprix;
     useSipCallStore.setState({ activeCalls: {}, incomingCall: null });
     vi.clearAllMocks();
   });
@@ -74,6 +76,7 @@ describe("Phone11 auth and SIP account isolation", () => {
 
   it("restores the previous secure account when a call starts during a credential write", async () => {
     await useSipAccountStore.getState().setAccount(account);
+    vi.mocked(SecureStore.setItemAsync).mockClear();
     let finish!: () => void;
     const blocked = new Promise<void>(resolve => { finish = resolve; });
     vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value) => {
@@ -83,6 +86,43 @@ describe("Phone11 auth and SIP account isolation", () => {
     await vi.waitFor(() => expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1));
     useSipCallStore.setState({ incomingCall: { id: "ring-2", status: "incoming", direction: "inbound",
       remoteNumber: "3001", isMuted: false, isHeld: false, isSpeaker: false, isVideo: false } });
+    finish();
+    await expect(write).rejects.toThrow("Finish the current phone call");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("preserves a native wake that rings before JS has received a call event", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    let nativeWake = true;
+    state.nativeModules.Phone11Siprix = { getSnapshot: vi.fn(async () => ({
+      calls: [], nativeWake: nativeWake ? { ownerUserId: 17, tenantId: 1 } : undefined,
+    })) };
+    const changed = { ...account, password: "replacement-secret" };
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+    expect(useSipCallStore.getState().activeCalls).toEqual({});
+    await expect(useSipAccountStore.getState().setAccount(changed)).rejects.toThrow("Finish the current phone call");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+    nativeWake = false;
+    await useSipAccountStore.getState().setAccount(changed);
+    expect(useSipAccountStore.getState().account).toEqual(changed);
+  });
+
+  it("restores the account if native wake arrives during the secure-store write", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    vi.mocked(SecureStore.setItemAsync).mockClear();
+    let nativeWake = false;
+    state.nativeModules.Phone11Siprix = { getSnapshot: vi.fn(async () => ({
+      calls: [], nativeWake: nativeWake ? { ownerUserId: 17, tenantId: 1 } : undefined,
+    })) };
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value) => {
+      await blocked; state.secure.set(key, value);
+    });
+    const write = useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" });
+    await vi.waitFor(() => expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1));
+    nativeWake = true;
     finish();
     await expect(write).rejects.toThrow("Finish the current phone call");
     expect(useSipAccountStore.getState().account).toEqual(account);
