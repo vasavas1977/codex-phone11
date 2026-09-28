@@ -174,6 +174,13 @@ async function lockSipSubscriberName(
   }
 }
 
+function publicExtension(row: Record<string, any>) {
+  const safe = { ...row };
+  delete safe.sip_password;
+  delete safe.password;
+  return safe;
+}
+
 function voicemailUnavailable(error: unknown): never {
   if (error instanceof VoicemailStorageUnavailableError) {
     throw new TRPCError({
@@ -913,7 +920,7 @@ export const pbxRouter = router({
         ]);
 
         return buildPaginatedResponse(
-          dataResult.rows.map(({ extension, ...other }) => ({ ...extension, ...other })),
+          dataResult.rows.map(({ extension, ...other }) => publicExtension({ ...extension, ...other })),
           parseInt(countResult.rows[0]?.total || "0"),
           input || {},
         );
@@ -944,7 +951,7 @@ export const pbxRouter = router({
         );
         if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
         const { extension, ...other } = result.rows[0];
-        return { ...extension, ...other };
+        return publicExtension({ ...extension, ...other });
       }),
 
     /** Create a new extension with SIP account */
@@ -988,6 +995,16 @@ export const pbxRouter = router({
 
           const sipDomain = "sip.phone11.ai";
           await lockSipSubscriberName(client, input.extensionNumber, sipDomain, null);
+
+          // A legacy orphaned Kamailio credential cannot be adopted by a new
+          // tenant account, even when no extension currently references it.
+          const existingSubscriber = await client.query(
+            `SELECT id FROM subscriber WHERE username = $1 AND domain = $2`,
+            [input.extensionNumber, sipDomain],
+          );
+          if (existingSubscriber.rows.length) {
+            throw new TRPCError({ code: "CONFLICT", message: "This SIP address is already in use" });
+          }
 
           // Check uniqueness
           const existing = await client.query(
@@ -1387,11 +1404,10 @@ export const pbxRouter = router({
              WHERE username = $1 AND domain = $2 FOR UPDATE`,
             [sa.sip_username, sa.sip_domain],
           );
-          if (currentSubscriber.rows.length > 1 ||
-              (currentSubscriber.rows.length === 1 &&
-                (!sa.ha1 || !sa.ha1b ||
-                 currentSubscriber.rows[0].ha1 !== sa.ha1 ||
-                 currentSubscriber.rows[0].ha1b !== sa.ha1b))) {
+          if (currentSubscriber.rows.length !== 1 ||
+              !sa.ha1 || !sa.ha1b ||
+              currentSubscriber.rows[0].ha1 !== sa.ha1 ||
+              currentSubscriber.rows[0].ha1b !== sa.ha1b) {
             throw new TRPCError({ code: "CONFLICT", message: "Subscriber credentials do not match this SIP account" });
           }
           const creds = regenerateSipCredentials(sa.sip_username, sa.sip_domain, sa.sip_domain);
@@ -1415,20 +1431,13 @@ export const pbxRouter = router({
           if (updated.rows.length !== 1) throw new TRPCError({ code: "CONFLICT" });
 
           // The encrypted account and Kamailio's live auth row must commit
-          // together; otherwise the displayed reset password cannot register.
-          const subscriber = currentSubscriber.rows.length === 1
-            ? await client.query(
-                `UPDATE subscriber SET password = $3, ha1 = $4, ha1b = $5
-                 WHERE username = $1 AND domain = $2 AND ha1 = $6 AND ha1b = $7
-                 RETURNING username`,
-                [creds.sipUsername, creds.sipDomain, creds.plaintextPassword, creds.ha1, creds.ha1b, sa.ha1, sa.ha1b],
-              )
-            : await client.query(
-                `INSERT INTO subscriber (username, domain, password, ha1, ha1b)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (username, domain) DO NOTHING RETURNING username`,
-                [creds.sipUsername, creds.sipDomain, creds.plaintextPassword, creds.ha1, creds.ha1b],
-              );
+          // together; otherwise the newly rotated password cannot register.
+          const subscriber = await client.query(
+            `UPDATE subscriber SET password = $3, ha1 = $4, ha1b = $5
+             WHERE username = $1 AND domain = $2 AND ha1 = $6 AND ha1b = $7
+             RETURNING username`,
+            [creds.sipUsername, creds.sipDomain, creds.plaintextPassword, creds.ha1, creds.ha1b, sa.ha1, sa.ha1b],
+          );
           if (subscriber.rows.length !== 1) {
             throw new TRPCError({ code: "CONFLICT", message: "Subscriber changed before the password reset" });
           }

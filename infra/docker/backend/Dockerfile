@@ -77,8 +77,9 @@ WORKDIR /app
 RUN addgroup -g 1001 -S cloudphone && \
     adduser -S cloudphone -u 1001 -G cloudphone && \
     mkdir -p /var/lib/phone11/recordings /var/lib/phone11/voicemail /var/lib/phone11/chat-media && \
+    mkdir -p /opt/phone11ai/recordings /opt/phone11ai/voicemail && \
     chmod 0700 /var/lib/phone11/chat-media && \
-    chown -R cloudphone:cloudphone /var/lib/phone11
+    chown -R cloudphone:cloudphone /var/lib/phone11 /opt/phone11ai
 
 # Copy production dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules

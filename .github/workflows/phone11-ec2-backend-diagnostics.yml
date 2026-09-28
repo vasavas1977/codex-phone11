@@ -1,0 +1,199 @@
+name: Phone11 EC2 Backend Diagnostics
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: 'EC2 public IP or DNS'
+        required: true
+        default: '43.210.122.111'
+      ec2_user:
+        description: 'SSH/Linux user'
+        required: true
+        default: 'ubuntu'
+      project_path:
+        description: 'Current live Phone11 path on EC2'
+        required: true
+        default: '/opt/phone11ai/cloudphone11'
+      branch:
+        description: 'Git branch deployed on EC2'
+        required: true
+        default: 'main'
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: ${{ github.event.inputs.ec2_host }}
+  EC2_USER: ${{ github.event.inputs.ec2_user }}
+  PROJECT_PATH: ${{ github.event.inputs.project_path }}
+  DEPLOY_BRANCH: ${{ github.event.inputs.branch }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare diagnostic script
+        run: |
+          cat > /tmp/phone11-ec2-backend-diagnostics.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          LIVE_PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
+          DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+          DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
+          REPO_URL="${REPO_URL:-https://github.com/vasavas1977/codex-phone11.git}"
+
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+
+          echo "=== Phone11 EC2 backend diagnostics ==="
+          echo "Live project path: $LIVE_PROJECT_PATH"
+          echo "Deploy branch: $DEPLOY_BRANCH"
+          echo "Host: $(hostname)"
+          echo "Time: $(date -Iseconds)"
+
+          echo "--- Public and private IPs ---"
+          hostname -I || true
+          curl -fsS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true
+          echo ""
+
+          echo "--- Docker containers ---"
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || true
+
+          echo "--- Host TCP listeners ---"
+          $SUDO ss -ltnp || true
+
+          echo "--- Host UDP listeners ---"
+          $SUDO ss -lunp || true
+
+          echo "--- Nginx/Apache/Caddy process hints ---"
+          ps -eo pid,ppid,cmd | grep -E 'nginx|apache|httpd|caddy|node|pm2|bun|tsx|vite|expo|cloudphone|phone11|backend' | grep -v grep || true
+
+          echo "--- Runtime env sources found (paths only) ---"
+          for candidate in \
+            "$LIVE_PROJECT_PATH/infra/compose/.env" \
+            "$LIVE_PROJECT_PATH/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
+            "$LIVE_PROJECT_PATH/.env.production" \
+            "/opt/phone11ai/.env" \
+            "/opt/phone11ai/cloudphone11/.env" \
+            "$DEPLOY_CHECKOUT/.env" \
+            "$DEPLOY_CHECKOUT/infra/compose/.env"; do
+            if [ -f "$candidate" ]; then
+              echo "FOUND $candidate"
+              awk -F= '/^(DB_NAME|DB_USER|SIP_DOMAIN|EXTERNAL_IP|PRIVATE_IP|BIND_IP|PORT)=/ {print $1"=" $2} /^(DB_PASSWORD|REDIS_PASSWORD|JWT_SECRET|FS_ESL_PASSWORD|AWS_|FCM_|OWNER_OPEN_ID)=/ {print $1"=<redacted>"}' "$candidate" || true
+            fi
+          done
+
+          echo "--- Deploy checkout state ---"
+          if [ -d "$DEPLOY_CHECKOUT/.git" ]; then
+            cd "$DEPLOY_CHECKOUT"
+            git rev-parse --short HEAD || true
+            git status --short || true
+          else
+            echo "Deploy checkout missing: $DEPLOY_CHECKOUT"
+          fi
+
+          echo "--- Local backend health and public health probes ---"
+          curl -fsS --max-time 5 http://127.0.0.1:3000/health || true
+          echo ""
+          curl -fsS --max-time 5 http://127.0.0.1:3000/api/health || true
+          echo ""
+          curl -fsS --max-time 5 http://127.0.0.1/health || true
+          echo ""
+          curl -fsS --max-time 5 http://127.0.0.1/api/health || true
+          echo ""
+          curl -kfsS --max-time 5 https://127.0.0.1/health || true
+          echo ""
+          curl -kfsS --max-time 5 https://127.0.0.1/api/health || true
+          echo ""
+
+          echo "--- Backend container env summary ---"
+          if docker ps --format '{{.Names}}' | grep -qx 'cp11-backend'; then
+            docker inspect cp11-backend --format '{{range .Config.Env}}{{println .}}{{end}}' | awk -F= '/^(NODE_ENV|PORT|SIP_DOMAIN|FREESWITCH_ESL_HOST|FREESWITCH_ESL_PORT)=/ {print} /^(DATABASE_URL|REDIS_URL|JWT_SECRET|FCM_API_KEY|FREESWITCH_ESL_PASSWORD|AWS_|STORAGE_)=/ {print $1"=<redacted>"}' || true
+          else
+            echo "cp11-backend is not running"
+          fi
+
+          echo "--- Postgres configured role and DB quick check ---"
+          ENV_FILE=""
+          for candidate in \
+            "$DEPLOY_CHECKOUT/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env" \
+            "$LIVE_PROJECT_PATH/.env" \
+            "/opt/phone11ai/.env"; do
+            if [ -f "$candidate" ]; then ENV_FILE="$candidate"; break; fi
+          done
+          if [ -n "$ENV_FILE" ] && docker ps --format '{{.Names}}' | grep -qx 'cp11-postgres'; then
+            DB_NAME_VALUE=$(awk -F= '$1 == "DB_NAME" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")
+            DB_USER_VALUE=$(awk -F= '$1 == "DB_USER" {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE")
+            DB_NAME_VALUE=${DB_NAME_VALUE:-cloudphone11}
+            DB_USER_VALUE=${DB_USER_VALUE:-cloudphone11}
+            docker exec -u postgres cp11-postgres pg_isready -U "$DB_USER_VALUE" -d "$DB_NAME_VALUE" || true
+            docker exec -i -u postgres cp11-postgres psql -U "$DB_USER_VALUE" -d "$DB_NAME_VALUE" -v ON_ERROR_STOP=0 <<'SQL' || true
+          SELECT current_user, current_database();
+          SELECT COUNT(*) AS extensions FROM extensions;
+          SELECT COUNT(*) AS sip_accounts FROM sip_accounts;
+          SELECT COUNT(*) AS subscribers FROM subscriber;
+          SQL
+          else
+            echo "Cannot run Postgres check; env file or container missing."
+          fi
+
+          echo "--- Recent backend logs redacted ---"
+          docker logs --tail=220 cp11-backend 2>&1 | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(password authentication failed for user )"[^"]+"#\1"<db-user>"#g' || true
+
+          echo "--- Recent nginx logs if present ---"
+          $SUDO tail -n 80 /var/log/nginx/access.log 2>/dev/null || true
+          $SUDO tail -n 80 /var/log/nginx/error.log 2>/dev/null || true
+
+          echo "Diagnostics complete."
+          SCRIPT
+          chmod +x /tmp/phone11-ec2-backend-diagnostics.sh
+
+      - name: Locate EC2 instance through AWS
+        id: ec2
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured."
+            exit 30
+          fi
+
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find a running EC2 instance with public IP $EC2_HOST"
+            exit 31
+          fi
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Run diagnostics through EC2 Instance Connect
+        run: |
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+          AZ='${{ steps.ec2.outputs.az }}'
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
+
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-ec2-backend-diagnostics.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-ec2-backend-diagnostics.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' bash /tmp/phone11-ec2-backend-diagnostics.sh"

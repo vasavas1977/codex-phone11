@@ -1,0 +1,56 @@
+name: Build & Push Docker Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/docker/backend/**'
+      - 'server/**'
+      - 'app/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Service to build. Use backend for the Phone11 API.'
+        required: false
+        default: 'backend'
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-backend:
+    if: github.event_name == 'push' || github.event.inputs.services == 'backend' || github.event.inputs.services == 'all'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/backend/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/backend:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/cloudphone11/backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

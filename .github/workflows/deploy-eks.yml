@@ -1,0 +1,126 @@
+name: Deploy Backend to EKS
+
+on:
+  workflow_run:
+    workflows: ["Build & Push Docker Images"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: 'Backend image tag to deploy. Defaults to this commit SHA.'
+        required: false
+        default: ''
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  EKS_CLUSTER: ${{ vars.EKS_CLUSTER_NAME || 'cloudphone11-cluster' }}
+  NAMESPACE: cloudphone11
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    environment: ${{ github.event.inputs.environment || 'staging' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Set image tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            echo "tag=${{ github.event.inputs.image_tag }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.event.workflow_run.head_sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy Backend
+        run: |
+          kubectl set image deployment/backend \
+            backend=${{ steps.ecr.outputs.registry }}/cloudphone11/backend:${{ steps.tag.outputs.tag }} \
+            -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/backend -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Verify backend deployment
+        run: |
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app.kubernetes.io/name=backend -o wide || kubectl get pods -n ${{ env.NAMESPACE }} -l app=backend -o wide
+          kubectl get svc backend -n ${{ env.NAMESPACE }}
+
+      - name: Health check
+        run: |
+          kubectl port-forward svc/backend 3000:3000 -n ${{ env.NAMESPACE }} &
+          PF_PID=$!
+          sleep 5
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health || echo "000")
+          kill $PF_PID 2>/dev/null || true
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "Backend health check passed"
+          else
+            echo "Backend health check returned $HTTP_CODE"
+            exit 1
+          fi
+
+      - name: Post-deploy summary
+        run: |
+          echo "## Backend Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Image Tag |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | \`${{ steps.tag.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment || 'staging' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Cluster:** ${{ env.EKS_CLUSTER }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Region:** ${{ env.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+
+  rollback-backend:
+    runs-on: ubuntu-latest
+    if: failure()
+    needs: deploy-backend
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Rollback backend
+        run: |
+          kubectl rollout undo deployment/backend -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/backend -n ${{ env.NAMESPACE }} --timeout=120s

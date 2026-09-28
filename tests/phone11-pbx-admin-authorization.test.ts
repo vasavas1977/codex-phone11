@@ -923,18 +923,19 @@ describe("admin SIP credential writes", () => {
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(false);
   });
 
-  it("creates a missing subscriber without overwriting a concurrent insert", async () => {
+  it("rejects a missing subscriber before rotating an account", async () => {
     prepare((sql) => {
       if (sql.includes("SELECT ha1, ha1b FROM subscriber")) return { rows: [] };
-      if (sql.includes("INSERT INTO subscriber") && sql.includes("DO NOTHING")) return { rows: [{ username: "3101" }] };
       return undefined;
     });
     await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
-      .resolves.toMatchObject({ sipCredentials: { username: "3101" } });
-    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("ON CONFLICT (username, domain) DO NOTHING RETURNING username"))).toBe(true);
+      .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(regenerateSipCredentials).not.toHaveBeenCalled();
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(false);
+    expect(writeAuditLog).not.toHaveBeenCalled();
   });
 
-  it("rolls back a reset if a missing subscriber appears before guarded insertion", async () => {
+  it("does not insert a replacement during a missing-subscriber reset", async () => {
     prepare((sql) => {
       if (sql.includes("SELECT ha1, ha1b FROM subscriber")) return { rows: [] };
       if (sql.includes("INSERT INTO subscriber") && sql.includes("DO NOTHING")) return { rows: [] };
@@ -942,6 +943,7 @@ describe("admin SIP credential writes", () => {
     });
     await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
       .rejects.toMatchObject({ code: "CONFLICT" });
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber"))).toBe(false);
     expect(writeAuditLog).not.toHaveBeenCalled();
   });
 

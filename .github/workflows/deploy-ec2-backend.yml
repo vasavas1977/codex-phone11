@@ -1,0 +1,280 @@
+name: Deploy Backend to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: 'EC2 public IP or DNS'
+        required: true
+        default: '43.210.122.111'
+      ec2_user:
+        description: 'SSH/Linux user'
+        required: true
+        default: 'ubuntu'
+      project_path:
+        description: 'Current live Phone11 path on EC2'
+        required: true
+        default: '/opt/phone11ai/cloudphone11'
+      branch:
+        description: 'Git branch to deploy'
+        required: true
+        default: 'main'
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: ${{ github.event.inputs.ec2_host }}
+  EC2_USER: ${{ github.event.inputs.ec2_user }}
+  PROJECT_PATH: ${{ github.event.inputs.project_path }}
+  DEPLOY_BRANCH: ${{ github.event.inputs.branch }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prepare deploy script
+        run: |
+          cat > /tmp/phone11-ec2-deploy.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          LIVE_PROJECT_PATH="${PROJECT_PATH:?missing PROJECT_PATH}"
+          DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+          PUBLIC_HOST="${PUBLIC_HOST:-}"
+          REPO_URL="${REPO_URL:-https://github.com/vasavas1977/codex-phone11.git}"
+          DEPLOY_CHECKOUT="${DEPLOY_CHECKOUT:-/opt/phone11ai/codex-phone11-deploy}"
+
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+
+          echo "=== Phone11 backend deploy ==="
+          echo "Live project path: $LIVE_PROJECT_PATH"
+          echo "Deploy branch: $DEPLOY_BRANCH"
+
+          $SUDO mkdir -p "$(dirname "$DEPLOY_CHECKOUT")"
+          if [ ! -d "$DEPLOY_CHECKOUT/.git" ]; then
+            $SUDO rm -rf "$DEPLOY_CHECKOUT"
+            $SUDO mkdir -p "$DEPLOY_CHECKOUT"
+            $SUDO chown -R "$(id -u):$(id -g)" "$DEPLOY_CHECKOUT"
+            git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$DEPLOY_CHECKOUT"
+          fi
+
+          cd "$DEPLOY_CHECKOUT"
+          git fetch origin "$DEPLOY_BRANCH"
+          git checkout "$DEPLOY_BRANCH"
+          git reset --hard "origin/$DEPLOY_BRANCH"
+
+          mkdir -p infra/compose
+          ENV_FILE="$DEPLOY_CHECKOUT/.env"
+          ENV_SOURCE=""
+          for candidate in \
+            "$LIVE_PROJECT_PATH/infra/compose/.env" \
+            "$LIVE_PROJECT_PATH/.env" \
+            "$LIVE_PROJECT_PATH/infra/compose/.env.production" \
+            "$LIVE_PROJECT_PATH/.env.production" \
+            "/opt/phone11ai/.env" \
+            "/opt/phone11ai/cloudphone11/.env"; do
+            if [ -f "$candidate" ]; then ENV_SOURCE="$candidate"; break; fi
+          done
+
+          if [ -n "$ENV_SOURCE" ]; then
+            $SUDO cp -a "$ENV_SOURCE" "$ENV_FILE"
+            $SUDO chown "$(id -u):$(id -g)" "$ENV_FILE"
+            echo "Copied runtime env file from $(dirname "$ENV_SOURCE")/$(basename "$ENV_SOURCE")"
+          else
+            touch "$ENV_FILE"
+            echo "Created deploy env file because no existing runtime env was found."
+          fi
+
+          read_env_file() {
+            awk -F= -v key="$1" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+          }
+
+          set_env_if_missing() {
+            key="$1"
+            value="${2:-}"
+            if [ -n "$value" ] && ! grep -Eq "^${key}=.+" "$ENV_FILE"; then
+              printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+            fi
+          }
+
+          gen_secret() {
+            if command -v openssl >/dev/null 2>&1; then
+              openssl rand -base64 36 | tr -d '\n=' | tr '+/' '_-'
+            else
+              date +%s%N | sha256sum | awk '{print $1}'
+            fi
+          }
+
+          first_nonempty() {
+            for value in "$@"; do
+              if [ -n "$value" ]; then printf '%s' "$value"; return 0; fi
+            done
+          }
+
+          EXTERNAL_IP_VALUE=$(first_nonempty "$(read_env_file EXTERNAL_IP)" "$PUBLIC_HOST")
+          if [ -z "$EXTERNAL_IP_VALUE" ]; then
+            EXTERNAL_IP_VALUE="$(curl -fsS --max-time 2 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)"
+          fi
+          PRIVATE_IP_VALUE=$(first_nonempty "$(read_env_file PRIVATE_IP)" "$(hostname -I 2>/dev/null | awk '{print $1}')")
+          DB_NAME_VALUE=$(first_nonempty "$(read_env_file DB_NAME)" "cloudphone11")
+          DB_USER_VALUE=$(first_nonempty "$(read_env_file DB_USER)" "cloudphone11")
+          DB_PASSWORD_VALUE=$(first_nonempty "$(read_env_file DB_PASSWORD)" "$(gen_secret)")
+          REDIS_PASSWORD_VALUE=$(first_nonempty "$(read_env_file REDIS_PASSWORD)" "$(gen_secret)")
+          SIP_DOMAIN_VALUE=$(first_nonempty "$(read_env_file SIP_DOMAIN)" "$PUBLIC_HOST" "$EXTERNAL_IP_VALUE")
+          FS_ESL_PASSWORD_VALUE=$(first_nonempty "$(read_env_file FS_ESL_PASSWORD)" "$(read_env_file FREESWITCH_ESL_PASSWORD)" "$(gen_secret)")
+          JWT_SECRET_VALUE=$(first_nonempty "$(read_env_file JWT_SECRET)" "$(gen_secret)")
+          STORAGE_BUCKET_VALUE=$(first_nonempty "$(read_env_file STORAGE_BUCKET)" "phone11-recordings")
+          FCM_API_KEY_VALUE=$(first_nonempty "$(read_env_file FCM_API_KEY)" "disabled")
+
+          set_env_if_missing DB_NAME "$DB_NAME_VALUE"
+          set_env_if_missing DB_USER "$DB_USER_VALUE"
+          set_env_if_missing DB_PASSWORD "$DB_PASSWORD_VALUE"
+          set_env_if_missing REDIS_PASSWORD "$REDIS_PASSWORD_VALUE"
+          set_env_if_missing SIP_DOMAIN "$SIP_DOMAIN_VALUE"
+          set_env_if_missing EXTERNAL_IP "$EXTERNAL_IP_VALUE"
+          set_env_if_missing PRIVATE_IP "$PRIVATE_IP_VALUE"
+          set_env_if_missing FS_ESL_PASSWORD "$FS_ESL_PASSWORD_VALUE"
+          set_env_if_missing FCM_API_KEY "$FCM_API_KEY_VALUE"
+          set_env_if_missing JWT_SECRET "$JWT_SECRET_VALUE"
+          set_env_if_missing STORAGE_BUCKET "$STORAGE_BUCKET_VALUE"
+
+          cp -a "$ENV_FILE" "$DEPLOY_CHECKOUT/infra/compose/.env"
+          if [ -n "$ENV_SOURCE" ] && [ -f "$ENV_SOURCE" ] && [ "$ENV_SOURCE" != "$ENV_FILE" ]; then
+            $SUDO cp -a "$ENV_FILE" "$ENV_SOURCE"
+            echo "Persisted missing runtime env keys back to the EC2 source env file without printing values."
+          fi
+          echo "Hydrated Compose env without printing secret values."
+
+          if docker compose version >/dev/null 2>&1; then
+            COMPOSE="docker compose"
+          elif command -v docker-compose >/dev/null 2>&1; then
+            COMPOSE="docker-compose"
+          else
+            echo "ERROR: docker compose is not available on EC2."
+            exit 22
+          fi
+
+          COMPOSE_FILE="infra/compose/docker-compose.prod.yml"
+          if [ ! -f "$COMPOSE_FILE" ]; then
+            echo "ERROR: $COMPOSE_FILE not found."
+            exit 23
+          fi
+
+          remove_phone11_docker_listener() {
+            port="$1"
+            ids=$(docker ps --format '{{.ID}} {{.Names}} {{.Ports}}' | awk -v pattern=":${port}->" '$0 ~ pattern {print $1}')
+            for container_id in $ids; do
+              name=$(docker inspect --format '{{.Name}}' "$container_id" 2>/dev/null | sed 's#^/##')
+              case "$name" in
+                cp11-*|cloudphone11*|phone11*)
+                  echo "Removing stale Phone11 container $name using host port $port"
+                  docker rm -f "$container_id"
+                  ;;
+                *)
+                  echo "ERROR: host port $port is used by non-Phone11 Docker container $name. Refusing to stop it automatically."
+                  exit 32
+                  ;;
+              esac
+            done
+          }
+
+          stop_host_listener_port() {
+            port="$1"
+            listeners=$($SUDO ss -ltnp 2>/dev/null | grep -E "127\.0\.0\.1:${port}|0\.0\.0\.0:${port}|\[::\]:${port}|:${port}[[:space:]]" || true)
+            if [ -z "$listeners" ]; then return 0; fi
+            echo "Host port $port is still occupied after Docker cleanup. Stopping the existing listener so the managed Phone11 backend can replace it."
+            echo "$listeners"
+            pids=$(printf '%s\n' "$listeners" | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u)
+            if [ -z "$pids" ]; then
+              echo "ERROR: port $port is occupied, but no process id was visible to stop."
+              exit 33
+            fi
+            for pid in $pids; do
+              $SUDO kill "$pid" || true
+            done
+            sleep 3
+            if $SUDO ss -ltnp 2>/dev/null | grep -E "127\.0\.0\.1:${port}|0\.0\.0\.0:${port}|\[::\]:${port}|:${port}[[:space:]]" >/dev/null; then
+              echo "Port $port still occupied after normal stop; forcing old listener down."
+              for pid in $pids; do $SUDO kill -9 "$pid" || true; done
+              sleep 2
+            fi
+          }
+
+          remove_phone11_docker_listener 3000
+          remove_phone11_docker_listener 6379
+          docker rm -f cp11-backend >/dev/null 2>&1 || true
+          stop_host_listener_port 3000
+
+          echo "Deploy commit: $(git rev-parse --short HEAD)"
+          echo "Building backend container..."
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" build backend
+
+          echo "Starting backend container and dependencies..."
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d backend
+
+          echo "Backend container status:"
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps backend
+
+          echo "Health check:"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/health; then
+              echo ""
+              echo "Backend health check passed"
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "ERROR: backend health check failed after restart. Recent logs:"
+          $COMPOSE --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=160 backend || true
+          exit 24
+          SCRIPT
+          chmod +x /tmp/phone11-ec2-deploy.sh
+
+      - name: Locate EC2 instance through AWS
+        id: ec2
+        run: |
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured."
+            exit 30
+          fi
+
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find a running EC2 instance with public IP $EC2_HOST"
+            exit 31
+          fi
+
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Deploy through EC2 Instance Connect
+        run: |
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+          AZ='${{ steps.ec2.outputs.az }}'
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
+
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-ec2-deploy.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-ec2-deploy.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" \
+            "PROJECT_PATH='$PROJECT_PATH' DEPLOY_BRANCH='$DEPLOY_BRANCH' PUBLIC_HOST='$EC2_HOST' bash /tmp/phone11-ec2-deploy.sh"

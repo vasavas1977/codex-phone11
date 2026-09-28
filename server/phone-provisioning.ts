@@ -371,8 +371,8 @@ export async function getPhoneConfig(userId: number, _openId: string, requestedT
       LEFT JOIN organizations o ON COALESCE(e.org_id, 1) = o.id
       LEFT JOIN tenants t ON COALESCE(e.tenant_id, e.org_id, 1) = t.id
       LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
-      LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
-        AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
+      LEFT JOIN subscriber sub ON sub.username = COALESCE(NULLIF(sa.sip_username, ''), NULLIF(e.sip_username, ''), e.extension_number)
+        AND sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)
       WHERE e.tenant_id = $3 AND e.type = 'user'
         AND (
           -- A live SIP account has two current owner records. A stale
@@ -755,14 +755,31 @@ export async function createExtension(input: {
     );
     const conflictingExtension = await client.query(
       `SELECT id, tenant_id FROM extensions
-        WHERE extension_number = $1 AND deleted_at IS NULL
+        WHERE deleted_at IS NULL
+          AND (extension_number = $1 OR (
+            COALESCE(NULLIF(sip_username, ''), extension_number) = $1
+            AND COALESCE(NULLIF(sip_domain, ''), $2) = $2
+          ))
         LIMIT 1`,
-      [extensionNumber],
+      [extensionNumber, DEFAULT_SIP_DOMAIN],
     );
     if (conflictingExtension.rows.length > 0) {
       throw new Error(conflictingExtension.rows[0].tenant_id === orgId
         ? "This extension number is already in use by this workspace."
         : "This extension number is already in use by another workspace.");
+    }
+
+    const conflictingAccount = await client.query(
+      `SELECT id FROM sip_accounts WHERE sip_username = $1 AND sip_domain = $2
+         AND deleted_at IS NULL LIMIT 1`,
+      [extensionNumber, DEFAULT_SIP_DOMAIN],
+    );
+    const existingSubscriber = await client.query(
+      `SELECT id FROM subscriber WHERE username = $1 AND domain = $2`,
+      [extensionNumber, DEFAULT_SIP_DOMAIN],
+    );
+    if (conflictingAccount.rows.length || existingSubscriber.rows.length) {
+      throw new Error("This SIP address is already in use.");
     }
 
     const creds = createSipCredentials(extensionNumber, DEFAULT_SIP_DOMAIN, DEFAULT_SIP_DOMAIN);
