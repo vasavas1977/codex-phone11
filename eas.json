@@ -49,8 +49,12 @@
       }
     },
     "production": {
+      "distribution": "store",
       "channel": "production",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "PHONE11_APP_STORE_BUILD": "1"
+      }
     },
     "production-ios-siprix-store": {
       "distribution": "store",

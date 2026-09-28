@@ -42,6 +42,8 @@ test("Siprix preview preserves bundle identity and separates update channel", ()
 test("App Store profile is isolated, store signed, and production commissioned", () => {
   const profiles = require("../eas.json").build;
   const store = profiles["production-ios-siprix-store"];
+  assert.equal(profiles.production.distribution, "store");
+  assert.equal(profiles.production.env.PHONE11_APP_STORE_BUILD, "1");
   assert.equal(store.distribution, "store");
   assert.equal(store.environment, "production");
   assert.notEqual(store.developmentClient, true);
