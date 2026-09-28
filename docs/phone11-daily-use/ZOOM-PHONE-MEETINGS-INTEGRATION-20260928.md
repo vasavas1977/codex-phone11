@@ -42,7 +42,7 @@ Phone11 Team Chat is the internal workspace conversation store; Super Number's e
 
 ## Candidate verification on 2026-09-28
 
-- Root TypeScript check and server bundle passed. The full root test command passed 2,255 Vitest tests plus 69 native Node tests; 326 Vitest cases were skipped by their explicit environment gates.
+- Root TypeScript check and server bundle passed after the combined desktop/mobile changes. The full root test command passed, including 69 native Node tests; environment-gated Vitest cases were skipped, not counted as passes. Focused iOS native wake tests also passed after the bridge-reload lease fix. The changed JavaScript/TypeScript files have zero ESLint errors; the repository-wide lint still fails on a larger existing backlog.
 - Desktop app typecheck, build and 44 Node tests passed after adding channel Meet now. The synthetic Electron meeting preview reached and passed its assertions before this change, but its runner timed out while closing Electron, so that preview gate remains unresolved and the new picker has no physical desktop-media acceptance yet.
 - On disposable local PostgreSQL, 164 PBX/migration/provisioning tests, three selected-directory tests, and the channel and direct meeting concurrency tests passed. No hosted database was changed.
 - No candidate API deployment, Connect11 provider admission, signed iPhone build, signed desktop package, or two-device Phone/meeting acceptance was performed by these checks. The feature branch is substantially divergent from `origin/main`; its SQL migration chain and provider configuration must be reconciled with the actual deployment target before rollout.
