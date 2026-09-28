@@ -93,6 +93,61 @@ test('multi-workspace IPC waits for explicit selection and rejects stale tenant 
   assert.equal(selections, 1);
   assert.equal(handlers.state().signedIn, false);
 });
+test('queued sign-out cancels workspace selection before SIP helper starts', async () => {
+  const session: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 10, extensionId: 2 };
+  let releaseSelection!: () => void;
+  let enteredSelection!: () => void;
+  const entered = new Promise<void>(resolve => { enteredSelection = resolve; });
+  const selected = new Promise<DesktopSession>(resolve => { releaseSelection = () => resolve(session); });
+  let current: DesktopSession | null = null;
+  let starts = 0;
+  let stops = 0;
+  let cancellationEpoch = 0;
+  const provider = { currentSession: () => current, currentExtensionNumber: () => current ? '1020' : null,
+    signOut: async () => { current = null; },
+    signIn: async () => ({ selectionRevision: 'choice-1', tenants: [{ tenantId: 10, name: 'Two' }] }),
+    selectTenant: async () => { enteredSelection(); current = await selected; return current; } };
+  const helper = { stop: async () => { stops++; return true; }, snapshot: () => empty,
+    start: async () => { starts++; return 'g1'; } };
+  let generation: string | null = null;
+  const handlers = createHandlers(provider as never, helper as never, () => generation, value => { generation = value; });
+  const cancelled = () => cancellationEpoch !== 0;
+  await handlers.signIn({ email: 'person@example.test', password: 'private-login' }, cancelled);
+  const selecting = handlers.selectTenant({ selectionRevision: 'choice-1', tenantId: 10 }, cancelled);
+  await entered;
+  cancellationEpoch++;
+  releaseSelection();
+  await assert.rejects(selecting, /PHONE11_PHONE_ACCESS_UNAVAILABLE/);
+  assert.equal(starts, 0, 'SIP helper cannot start after sign-out was requested');
+  assert.equal(generation, null);
+  assert.equal(current, null);
+  assert.ok(stops >= 2);
+});
+test('window-close cancellation during helper startup stops the helper before publishing a session', async () => {
+  const session: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 10, extensionId: 2 };
+  let releaseStart!: () => void;
+  let enteredStart!: () => void;
+  const entered = new Promise<void>(resolve => { enteredStart = resolve; });
+  const started = new Promise<string>(resolve => { releaseStart = () => resolve('g1'); });
+  let current: DesktopSession | null = null;
+  let stops = 0;
+  let cancelled = false;
+  const provider = { currentSession: () => current, currentExtensionNumber: () => current ? '1020' : null,
+    signOut: async () => { current = null; },
+    selectTenant: async () => { current = session; return session; } };
+  const helper = { stop: async () => { stops++; return true; }, snapshot: () => empty,
+    start: async () => { enteredStart(); return started; } };
+  let generation: string | null = null;
+  const handlers = createHandlers(provider as never, helper as never, () => generation, value => { generation = value; });
+  const selecting = handlers.selectTenant({ selectionRevision: 'choice-1', tenantId: 10 }, () => cancelled);
+  await entered;
+  cancelled = true;
+  releaseStart();
+  await assert.rejects(selecting, /PHONE11_CALLING_UNAVAILABLE/);
+  assert.ok(stops >= 1);
+  assert.equal(generation, null);
+  assert.equal(current, null);
+});
 test('sign-in errors identify the safe failing stage without showing upstream details', () => {
   assert.equal(signInFailureMessage(new Error('PHONE11_CREDENTIALS_REJECTED')), 'Email or password was not accepted.');
   assert.match(signInFailureMessage(new Error('PHONE11_ORIGIN_REJECTED')), /origin check/);

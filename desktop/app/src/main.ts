@@ -16,6 +16,7 @@ let provider: AuthenticatedDesktopProvider | null = null;
 let generation: string | null = null;
 let meeting: DesktopMeetingWindow | null = null;
 let quitting = false;
+let cancelAccountWork: (() => void) | null = null;
 const resourcesDir = app.isPackaged ? join(process.resourcesPath, 'phone11') :
   (process.env.PHONE11_RESOURCE_STAGE ?? join(__dirname, '..', 'resources'));
 const rendererPath = join(__dirname, 'index.html');
@@ -52,6 +53,8 @@ async function bootstrap(): Promise<void> {
   const handlers = createHandlers(provider, helper, () => generation, value => { generation = value; },
     () => meeting?.blocksPhoneMedia() ?? false);
   let accountQueue: Promise<void> = Promise.resolve();
+  let accountCancellationEpoch = 0;
+  cancelAccountWork = () => { accountCancellationEpoch++; };
   const serial = <T>(operation: () => Promise<T>): Promise<T> => {
     const next = accountQueue.then(operation, operation);
     accountQueue = next.then(() => undefined, () => undefined);
@@ -62,11 +65,17 @@ async function bootstrap(): Promise<void> {
     return fn(value);
   };
   ipcMain.handle(CHANNELS.state, checked(() => handlers.state()));
-  ipcMain.handle(CHANNELS.signIn, checked(value => serial(async () => {
-    await meeting?.close();
-    return handlers.signIn(value);
-  })));
-  ipcMain.handle(CHANNELS.selectTenant, checked(value => serial(() => handlers.selectTenant(value))));
+  ipcMain.handle(CHANNELS.signIn, checked(value => {
+    const epoch = accountCancellationEpoch;
+    return serial(async () => {
+      await meeting?.close();
+      return handlers.signIn(value, () => epoch !== accountCancellationEpoch);
+    });
+  }));
+  ipcMain.handle(CHANNELS.selectTenant, checked(value => {
+    const epoch = accountCancellationEpoch;
+    return serial(() => handlers.selectTenant(value, () => epoch !== accountCancellationEpoch));
+  }));
   ipcMain.handle(CHANNELS.action, checked(async value => {
     if (meeting?.blocksPhoneMedia() && value && typeof value === 'object' && 'operation' in value) {
       if (value.operation === 'answer') await meeting.close();
@@ -79,12 +88,15 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle(CHANNELS.voicemailAudio, checked(value => handlers.voicemailAudio(value)));
   ipcMain.handle(CHANNELS.voicemailMarkRead, checked(value => handlers.voicemailMarkRead(value)));
   ipcMain.handle(CHANNELS.voicemailList, checked(value => handlers.voicemailList(value)));
-  ipcMain.handle(CHANNELS.signOut, checked(() => serial(async () => {
-    await meeting?.close();
-    return handlers.signOut();
-  })));
+  ipcMain.handle(CHANNELS.signOut, checked(() => {
+    cancelAccountWork?.();
+    return serial(async () => {
+      await meeting?.close();
+      return handlers.signOut();
+    });
+  }));
   ipcMain.handle(MEETING_CHANNELS.open, checked(() => meeting!.open()));
-  window.on('closed', () => { window = null; });
+  window.on('closed', () => { cancelAccountWork?.(); window = null; });
   await window.loadFile(rendererPath);
 }
 
@@ -94,6 +106,7 @@ app.whenReady().then(() => bootstrap()).catch(() => {
 });
 app.on('before-quit', event => {
   if (quitting) return;
+  cancelAccountWork?.();
   event.preventDefault();
   void (async () => {
     try { await meeting?.close(); } catch { /* Local media teardown is bounded. */ }

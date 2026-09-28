@@ -390,6 +390,8 @@ byId('login-form').addEventListener('submit', async event => {
 });
 function renderTenantChoices(): void {
   const list = maybeById('tenant-choices');
+  const back = maybeById('tenant-picker-back') as HTMLButtonElement | null;
+  if (back) back.disabled = selectionBusy;
   if (!list) return;
   list.replaceChildren();
   const selection = pendingSelection;
@@ -417,6 +419,7 @@ function renderTenantChoices(): void {
   }
 }
 maybeById('tenant-picker-back')?.addEventListener('click', async () => {
+  if (selectionBusy) return;
   ++accountEpoch; pendingSelection = null; selectionBusy = false; message(''); render();
   try { await window.phone11.signOut(); }
   catch { message('Sign-out could not be verified. Restart before calling.'); }

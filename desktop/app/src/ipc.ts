@@ -70,8 +70,14 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
     if (!stopped) throw new Error('Calling helper exit could not be verified');
     return state();
   };
-  const startCalling = async (): Promise<PublicState> => {
-    try { setGeneration(await helper.start()); return state(); }
+  const startCalling = async (cancelled: () => boolean): Promise<PublicState> => {
+    try {
+      if (cancelled()) throw new Error('PHONE11_ACCOUNT_CANCELLED');
+      const nextGeneration = await helper.start();
+      if (cancelled()) throw new Error('PHONE11_ACCOUNT_CANCELLED');
+      setGeneration(nextGeneration);
+      return state();
+    }
     catch {
       try { await signOut(); } catch { /* Never restore an unverified calling helper. */ }
       throw new Error('PHONE11_CALLING_UNAVAILABLE');
@@ -102,13 +108,17 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
   return {
     state,
     signOut,
-    signIn: async (input: unknown) => {
+    signIn: async (input: unknown, cancelled: () => boolean = () => false) => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid sign-in request');
       const { email, password } = input as Record<string, unknown>;
       if (typeof email !== 'string' || typeof password !== 'string') throw new Error('Invalid sign-in request');
       await signOut();
       try {
         const result = await provider.signIn(email, password);
+        if (cancelled()) {
+          await signOut();
+          throw new Error('PHONE11_ACCOUNT_CANCELLED');
+        }
         if (result && typeof result === 'object' && 'selectionRevision' in result)
           return result as DesktopTenantSelection;
       } catch (error) {
@@ -124,20 +134,24 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
           throw new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE');
         throw new Error('PHONE11_AUTH_UNAVAILABLE');
       }
-      return startCalling();
+      return startCalling(cancelled);
     },
-    selectTenant: async (input: unknown): Promise<PublicState> => {
+    selectTenant: async (input: unknown, cancelled: () => boolean = () => false): Promise<PublicState> => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid workspace selection');
       const { selectionRevision, tenantId } = input as Record<string, unknown>;
       if (typeof selectionRevision !== 'string' || typeof tenantId !== 'number' ||
           !Number.isSafeInteger(tenantId) || tenantId <= 0)
         throw new Error('Invalid workspace selection');
-      try { await provider.selectTenant(selectionRevision, tenantId); }
+      try {
+        if (cancelled()) throw new Error('PHONE11_ACCOUNT_CANCELLED');
+        await provider.selectTenant(selectionRevision, tenantId);
+        if (cancelled()) throw new Error('PHONE11_ACCOUNT_CANCELLED');
+      }
       catch {
         try { await signOut(); } catch { /* Pending authority is already invalidated. */ }
         throw new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE');
       }
-      return startCalling();
+      return startCalling(cancelled);
     },
     action: async (input: unknown) => {
       const action = parseRendererAction(input);
