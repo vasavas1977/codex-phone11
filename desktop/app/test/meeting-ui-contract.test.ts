@@ -47,7 +47,7 @@ test('prejoin camera capture is opt-in and remains inside the isolated meeting p
 });
 
 test('prejoin audio check is user-started, local only, and has visible stop controls', () => {
-  assert.match(html, /id="test-speaker"[^>]*>Play test sound/);
+  assert.match(html, /id="test-speaker"[^>]*aria-pressed="false"[^>]*>Play test sound/);
   assert.match(html, /id="test-microphone"[^>]*aria-pressed="false"[^>]*>Test microphone/);
   assert.match(html, /id="audio-check-status" role="status" aria-live="polite"/);
   assert.match(preload, /getUserMedia\(\{ audio: true, video: false \}\)/);
@@ -56,7 +56,18 @@ test('prejoin audio check is user-started, local only, and has visible stop cont
   assert.match(preload, /stopPrejoinAudio\(\);[\s\S]*?MEETING_CHANNELS\.join/);
   assert.match(preload, /leave\(\): Promise<void>[\s\S]*?stopPrejoinAudio\(\)/);
   assert.match(preload, /beforeunload', stopPrejoinAudio/);
+  assert.match(preload, /Playing through your system sound output\. Can you hear it\?/);
+  assert.match(preload, /Test sound is unavailable\. Check your system audio output\./);
+  assert.match(preload, /stopSpeakerTest\(\);[\s\S]*?Test sound ended/);
   assert.match(html, /Microphone audio stays on this device/);
   assert.match(preload, /Audio is not recorded or sent/);
   assert.doesNotMatch(html, /token|grant/i);
+});
+
+test('prejoin shows selected microphone and camera behavior before joining and resets after leaving', () => {
+  assert.match(html, /id="join-media-state"[^>]*role="status" aria-live="polite"/);
+  assert.match(preload, /function updatePrejoinState\(\)/);
+  assert.match(preload, /'start-mic'\)\.addEventListener\('change', updatePrejoinState\)/);
+  assert.match(preload, /async function changePrejoinCamera\(\)[\s\S]*?updatePrejoinState\(\)/);
+  assert.match(preload, /function leave\(\): Promise<void>[\s\S]*?updatePrejoinState\(\)/);
 });

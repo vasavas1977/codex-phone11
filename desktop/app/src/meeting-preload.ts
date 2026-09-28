@@ -39,6 +39,12 @@ const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getE
 const status = (message: string) => { el('status').textContent = message; };
 const error = (message: string) => { el('prejoin-error').textContent = message; };
 
+function updatePrejoinState(): void {
+  const mic = el<HTMLInputElement>('start-mic').checked ? 'on' : 'off';
+  const camera = el<HTMLInputElement>('start-camera').checked ? 'on' : 'off';
+  el('join-media-state').textContent = `Microphone ${mic} at join · Camera ${camera} at join`;
+}
+
 function clearPreview(): void {
   prejoinCamera.stop();
   const video = el<HTMLVideoElement>('prejoin-video');
@@ -85,7 +91,14 @@ async function playSpeakerTest(): Promise<void> {
     const oscillator = context.createOscillator();
     const gain = context.createGain();
     oscillator.frequency.value = 440;
-    gain.gain.value = 0.12;
+    // Soft pulses are easier to recognize than a single click and still stop immediately.
+    gain.gain.setValueAtTime(0, context.currentTime);
+    for (const offset of [0, 0.8, 1.6]) {
+      gain.gain.setValueAtTime(0, context.currentTime + offset);
+      gain.gain.linearRampToValueAtTime(0.09, context.currentTime + offset + 0.04);
+      gain.gain.setValueAtTime(0.09, context.currentTime + offset + 0.36);
+      gain.gain.linearRampToValueAtTime(0, context.currentTime + offset + 0.42);
+    }
     oscillator.connect(gain);
     gain.connect(context.destination);
     await context.resume();
@@ -95,11 +108,11 @@ async function playSpeakerTest(): Promise<void> {
     const button = el<HTMLButtonElement>('test-speaker');
     button.textContent = 'Stop test sound';
     button.setAttribute('aria-pressed', 'true');
-    el('audio-check-status').textContent = 'Playing a short test sound';
+    el('audio-check-status').textContent = 'Playing through your system sound output. Can you hear it?';
     speakerTimer = setTimeout(() => {
       stopSpeakerTest();
-      el('audio-check-status').textContent = 'Test sound finished';
-    }, 900);
+      el('audio-check-status').textContent = 'Test sound ended. If you heard nothing, check your system sound output.';
+    }, 2500);
   } catch {
     stopSpeakerTest();
     el('audio-check-status').textContent = 'Test sound is unavailable. Check your system audio output.';
@@ -147,6 +160,7 @@ async function testMicrophone(): Promise<void> {
 async function changePrejoinCamera(): Promise<void> {
   const choice = el<HTMLInputElement>('start-camera');
   clearPreview();
+  updatePrejoinState();
   if (!choice.checked || busy || room) {
     el('preview-message').textContent = 'Camera is off';
     return;
@@ -165,6 +179,7 @@ async function changePrejoinCamera(): Promise<void> {
     } catch (cause) {
       if (!current() || !choice.checked || busy || room) return;
       choice.checked = false;
+      updatePrejoinState();
       const denied = cause instanceof DOMException && (cause.name === 'NotAllowedError' || cause.name === 'PermissionDeniedError');
       error(denied
         ? 'Camera permission denied. Allow camera access in system settings, or join with camera off.'
@@ -398,6 +413,10 @@ function leave(): Promise<void> {
   canPublish = false;
   clearPreview();
   stopPrejoinAudio();
+  el<HTMLInputElement>('start-mic').checked = false;
+  el<HTMLInputElement>('start-camera').checked = false;
+  updatePrejoinState();
+  el('preview-message').textContent = 'Camera is off';
   leaving = (async () => {
     // In-flight getUserMedia/publish must settle before disconnect and the main-process ack.
     await mediaLifecycle.cancelAndDrain();
@@ -529,6 +548,7 @@ async function join(): Promise<void> {
     try { await ipcRenderer.invoke(MEETING_CHANNELS.joinFailed); } catch { /* The window may be closing. */ }
     if (!current()) return;
     el<HTMLInputElement>('start-camera').checked = false;
+    updatePrejoinState();
     el('preview-message').textContent = 'Camera is off';
     error('Could not join this meeting. Check your connection and try again.');
     status('Could not join');
@@ -561,6 +581,7 @@ async function toggle(kind: 'mic' | 'camera'): Promise<void> {
 
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
+  el<HTMLInputElement>('start-mic').addEventListener('change', updatePrejoinState);
   el<HTMLInputElement>('start-camera').addEventListener('change', () => { void changePrejoinCamera(); });
   el<HTMLButtonElement>('test-speaker').addEventListener('click', () => { void playSpeakerTest(); });
   el<HTMLButtonElement>('test-microphone').addEventListener('click', () => { void testMicrophone(); });

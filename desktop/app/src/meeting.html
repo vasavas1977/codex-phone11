@@ -13,12 +13,13 @@
       <section class="audio-check" aria-labelledby="audio-check-title">
         <h2 id="audio-check-title">Audio check</h2>
         <p>Test your sound and microphone before joining. Microphone audio stays on this device.</p>
-        <div class="audio-check-actions"><button id="test-speaker" type="button">Play test sound</button><button id="test-microphone" type="button" aria-pressed="false">Test microphone</button></div>
+        <div class="audio-check-actions"><button id="test-speaker" type="button" aria-pressed="false">Play test sound</button><button id="test-microphone" type="button" aria-pressed="false">Test microphone</button></div>
         <div class="mic-meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="mic-level"></span></div>
         <p id="audio-check-status" role="status" aria-live="polite">Audio checks are off</p>
       </section>
       <label class="switch"><input id="start-mic" type="checkbox"> Join with microphone on</label>
       <label class="switch"><input id="start-camera" type="checkbox"> Join with camera on and preview now</label>
+      <p id="join-media-state" class="join-media-state" role="status" aria-live="polite">Microphone off at join · Camera off at join</p>
       <button id="join" type="button" disabled>Join meeting</button><p id="prejoin-error" role="alert"></p></div>
   </section>
   <section id="room" hidden>
