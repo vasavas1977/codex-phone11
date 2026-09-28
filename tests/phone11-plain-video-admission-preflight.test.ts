@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  checkIndexes,
   formatPreflightReport,
   inspectPlainVideoAdmissionSchema,
   prerequisiteSchema,
@@ -92,6 +93,22 @@ function mockDatabase({ partialTarget = false } = {}) {
 }
 
 describe("plain-video admission schema preflight", () => {
+  it("accepts PostgreSQL 17 text casts but rejects a widened pending predicate", () => {
+    const indexes = [
+      ["phone11_plain_video_admission_rooms_tenant", "phone11_plain_video_admission_rooms", "(tenant_id, state, created_at DESC)", ""],
+      ["phone11_plain_video_admission_members_lookup", "phone11_plain_video_admission_members", "(tenant_id, user_id, meeting_id)", "WHERE (revoked_at IS NULL)"],
+      ["phone11_plain_video_admission_leases_pending", "phone11_plain_video_admission_leases", "(tenant_id, meeting_id, user_id, expires_at)", "WHERE (state = 'pending'::text)"],
+      ["phone11_plain_video_eviction_operations_pending", "phone11_plain_video_eviction_operations", "(tenant_id, meeting_id, user_id, created_at)", "WHERE (state = 'pending'::text)"],
+    ].map(([indexname, tablename, shape, predicate]) => ({
+      indexname, tablename,
+      indexdef: `CREATE INDEX ${indexname} ON public.${tablename} USING btree ${shape} ${predicate}`,
+    }));
+    expect(checkIndexes(indexes)).toEqual([]);
+    const widened = indexes.map((row) => ({ ...row }));
+    widened[2].indexdef += " OR state = 'issued'";
+    expect(checkIndexes(widened)).toContain("phone11_plain_video_admission_leases_pending:definition");
+  });
+
   it("passes a compatible prerequisite schema with no target migration objects", async () => {
     const database = mockDatabase();
     const result = await inspectPlainVideoAdmissionSchema(database as never);

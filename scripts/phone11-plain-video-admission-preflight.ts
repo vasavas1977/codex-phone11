@@ -314,7 +314,7 @@ function normalizeDefinition(definition: string): string {
   return definition.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-function checkIndexes(rows: IndexRow[]): string[] {
+export function checkIndexes(rows: IndexRow[]): string[] {
   const actual = new Map(rows.map((row) => [row.indexname, row]));
   const issues: string[] = [];
   for (const expected of requiredIndexes) {
@@ -324,11 +324,16 @@ function checkIndexes(rows: IndexRow[]): string[] {
       continue;
     }
     const definition = normalizeDefinition(actualIndex.indexdef);
+    // PostgreSQL 17 deparses text comparisons with an explicit ::text cast.
+    // Compare the whole predicate so a broader or different partial index
+    // cannot satisfy the fail-closed catalog check.
+    const actualPredicate = definition.match(/\bwhere\s+(.+)$/)?.[1]
+      ?.replace(/'pending'::text\b/g, "'pending'") ?? "";
+    const expectedPredicate = expected.predicate.toLowerCase().replace(/^where\s+/, "");
     if (
       actualIndex.tablename !== expected.table ||
       !definition.includes(expected.shape.toLowerCase()) ||
-      (expected.predicate &&
-        !definition.includes(expected.predicate.toLowerCase()))
+      actualPredicate !== expectedPredicate
     ) {
       issues.push(`${expected.name}:definition`);
     }
