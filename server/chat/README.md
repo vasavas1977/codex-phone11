@@ -8,8 +8,8 @@ Read receipts require `read-receipts-migration.sql` after the base and collabora
 
 - Uses `server/pbx/db.ts` and the same PostgreSQL database as Phone11 owned authentication.
 - The authenticated `ctx.user.id` is the `users.id` mapped by `phone11_auth_identity.legacy_user_id`. The client cannot select a sender.
-- The deployed Phone11 model grants workspace access through explicit `user_extensions` assignments joined to active, undeleted `extensions` and an active `tenants` row. No tenant 1 fallback, guessed organization, or `extensions.user_id` fallback is used. Chat-only users need an explicit membership model in a later release.
-- Every request reads current assignment state; access does not rely on the older PBX membership cache. Every room read/write also checks conversation membership in that tenant.
+- The current service requires both an explicit `user_extensions` assignment to an active, undeleted extension and an active `tenant_memberships` row in an active tenant. No tenant 1 fallback, guessed organization, or `extensions.user_id` fallback is used. A chat-only user without an extension is not admitted by this source contract.
+- Every request reads current assignment and membership state; access does not rely on the older PBX membership cache. Every room read/write also checks conversation membership in that tenant.
 - Directory results expose only user ID, display name, and the primary active extension within the selected tenant. They never include SIP credentials.
 - Composite foreign keys bind all messages and conversation memberships to one tenant. A nullable reply parent is also bound to the same tenant and conversation; sends recheck the authorized parent while holding a key-share lock. Sender/client-key uniqueness makes retries idempotent, including simultaneous retries. A retry with changed content or parent is rejected.
 - History and message search return a small parent preview only for messages in the already-authorized conversation. A bounded thread request returns one root plus at most 50 direct replies; it never exposes a cross-room tree.
@@ -19,10 +19,10 @@ Read receipts require `read-receipts-migration.sql` after the base and collabora
 
 ## Deployment
 
-1. Confirm the backend's actual PostgreSQL database contains `users`, `tenants`, `user_extensions`, and `extensions` with the columns queried by `service.ts`.
+1. Confirm the backend's actual PostgreSQL database contains `users`, `tenants`, `tenant_memberships`, `user_extensions`, and `extensions` with the columns and active assignments queried by `service.ts`.
 2. Review/apply `migration.sql`, `collaboration-migration.sql`, then `read-receipts-migration.sql` to that database. They create only the `phone11_chat_*` tables and indexes. They grant no users or assignments and insert no sample messages. These source migrations are never run by the app; an existing deployment cannot be assumed to include them.
 3. Deploy the backend containing `chatRouter` registered in `fullRouter` before releasing the updated mobile build. A new client fails closed when the receipt endpoints or table are absent.
-4. Use two explicitly authorized test accounts with active assignments in the same tenant. Create one conversation; send, receive, leave a message visibly on screen, and confirm the sender sees its receipt. Also confirm an unrelated tenant/account cannot list or read it and that search/notification previews do not publish receipts.
+4. Use two explicitly authorized test accounts with active memberships and assignments in the same tenant. Create one conversation; send, receive, leave a message visibly on screen, and confirm the sender sees its receipt. Also confirm an unrelated tenant/account cannot list or read it and that search/notification previews do not publish receipts.
 
 ## Verification
 
