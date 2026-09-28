@@ -55,7 +55,7 @@ const assignedExtension = {
 const isGlobalExtensionOwnershipQuery = (sql: string) =>
   sql.includes("SELECT id, tenant_id FROM extensions") &&
   sql.includes("deleted_at IS NULL") &&
-  sql.includes("extension_number = $1") &&
+  /AND\s*\(\s*extension_number\s*=\s*\$1\s+OR\s*\(/.test(sql) &&
   sql.includes("COALESCE(NULLIF(sip_username, ''), extension_number) = $1") &&
   sql.includes("COALESCE(NULLIF(sip_domain, ''), $2) = $2");
 
@@ -232,6 +232,32 @@ describe("Phone11 phone provisioning ownership", () => {
     ).toBe(false);
   });
 
+  it("refuses another extension's SIP URI even when its extension number differs", async () => {
+    const existing = {
+      id: 8100, tenant_id: 8, extension_number: "8100",
+      sip_username: "4101", sip_domain: "sip.phone11.ai",
+    };
+    state.pool.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("SELECT id, tenant_id FROM extensions")) {
+        return { rows: isGlobalExtensionOwnershipQuery(sql) &&
+          existing.extension_number !== params?.[0] &&
+          existing.sip_username === params?.[0] &&
+          existing.sip_domain === params?.[1] ? [existing] : [] };
+      }
+      return { rows: [] };
+    });
+
+    await expect(createExtension({ orgId: 7, extensionNumber: "4101" })).rejects.toThrow(
+      "already in use by another workspace",
+    );
+    const ownershipQuery = state.pool.query.mock.calls.find(([sql]) =>
+      String(sql).includes("SELECT id, tenant_id FROM extensions"));
+    expect(ownershipQuery?.[1]).toEqual(["4101", "sip.phone11.ai"]);
+    expect(isGlobalExtensionOwnershipQuery(String(ownershipQuery?.[0]))).toBe(true);
+    expect(createSipCredentials).not.toHaveBeenCalled();
+    expect(state.pool.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber"))).toBe(false);
+  });
+
   it("does not rotate an existing extension's SIP subscriber within the same workspace", async () => {
     state.pool.query.mockImplementation(async (sql: string) =>
       isGlobalExtensionOwnershipQuery(sql)
@@ -289,14 +315,18 @@ describe("Phone11 phone provisioning ownership", () => {
 
     expect(state.withTransaction).toHaveBeenCalledTimes(1);
     const sql = state.pool.query.mock.calls.map(([statement]) => String(statement));
-    expect(sql).toContain("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))");
-    expect(sql.findIndex((statement) => statement.includes("pg_advisory_xact_lock")))
-      .toBeLessThan(sql.findIndex(isGlobalExtensionOwnershipQuery));
-    expect(sql.findIndex(isGlobalExtensionOwnershipQuery)).toBeGreaterThan(-1);
-    expect(sql.findIndex((statement) => statement.includes("SELECT id FROM sip_accounts")))
-      .toBeLessThan(sql.findIndex((statement) => statement.includes("INSERT INTO subscriber")));
-    expect(sql.findIndex((statement) => statement.includes("SELECT id FROM subscriber")))
-      .toBeLessThan(sql.findIndex((statement) => statement.includes("INSERT INTO subscriber")));
+    const lock = sql.findIndex((statement) => statement.includes("pg_advisory_xact_lock"));
+    const ownership = sql.findIndex(isGlobalExtensionOwnershipQuery);
+    const accountPreflight = sql.findIndex((statement) => statement.includes("SELECT id FROM sip_accounts"));
+    const subscriberPreflight = sql.findIndex((statement) => statement.includes("SELECT id FROM subscriber"));
+    const subscriberInsert = sql.findIndex((statement) => statement.includes("INSERT INTO subscriber"));
+    for (const index of [lock, ownership, accountPreflight, subscriberPreflight, subscriberInsert]) {
+      expect(index).toBeGreaterThan(-1);
+    }
+    expect(lock).toBeLessThan(ownership);
+    expect(ownership).toBeLessThan(accountPreflight);
+    expect(accountPreflight).toBeLessThan(subscriberInsert);
+    expect(subscriberPreflight).toBeLessThan(subscriberInsert);
     expect(sql.some((statement) => statement.includes("INSERT INTO subscriber"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO extensions"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO sip_accounts"))).toBe(true);
