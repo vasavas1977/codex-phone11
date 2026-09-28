@@ -52,9 +52,17 @@ const assignedExtension = {
   tenant_plan: "business",
 };
 
+const isGlobalExtensionOwnershipQuery = (sql: string) =>
+  sql.includes("SELECT id, tenant_id FROM extensions") &&
+  sql.includes("deleted_at IS NULL") &&
+  sql.includes("extension_number = $1") &&
+  sql.includes("COALESCE(NULLIF(sip_username, ''), extension_number) = $1") &&
+  sql.includes("COALESCE(NULLIF(sip_domain, ''), $2) = $2");
+
 describe("Phone11 phone provisioning ownership", () => {
   beforeEach(() => {
     state.assignedRows = [];
+    vi.mocked(createSipCredentials).mockReset();
     vi.mocked(computeHA1).mockImplementation((username, realm, password) => `ha1:${username}:${realm}:${password}`);
     vi.mocked(computeHA1B).mockImplementation((username, domain, realm, password) => `ha1b:${username}:${domain}:${realm}:${password}`);
     vi.mocked(decryptSecret).mockReset();
@@ -207,7 +215,7 @@ describe("Phone11 phone provisioning ownership", () => {
 
   it("does not overwrite a global SIP subscriber for an extension owned by another workspace", async () => {
     state.pool.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("WHERE extension_number = $1 AND deleted_at IS NULL")) {
+      if (isGlobalExtensionOwnershipQuery(sql)) {
         return { rows: [{ id: 3001, tenant_id: 8 }] };
       }
       return { rows: [] };
@@ -218,6 +226,7 @@ describe("Phone11 phone provisioning ownership", () => {
     );
 
     expect(createSipCredentials).not.toHaveBeenCalled();
+    expect(state.pool.query.mock.calls.some(([sql]) => isGlobalExtensionOwnershipQuery(String(sql)))).toBe(true);
     expect(
       state.pool.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber")),
     ).toBe(false);
@@ -225,7 +234,7 @@ describe("Phone11 phone provisioning ownership", () => {
 
   it("does not rotate an existing extension's SIP subscriber within the same workspace", async () => {
     state.pool.query.mockImplementation(async (sql: string) =>
-      sql.includes("WHERE extension_number = $1 AND deleted_at IS NULL")
+      isGlobalExtensionOwnershipQuery(sql)
         ? { rows: [{ id: 4101, tenant_id: 7 }] }
         : { rows: [] },
     );
@@ -234,6 +243,7 @@ describe("Phone11 phone provisioning ownership", () => {
       "already in use by this workspace",
     );
     expect(createSipCredentials).not.toHaveBeenCalled();
+    expect(state.pool.query.mock.calls.some(([sql]) => isGlobalExtensionOwnershipQuery(String(sql)))).toBe(true);
     expect(state.pool.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber")))
       .toBe(false);
   });
@@ -245,7 +255,7 @@ describe("Phone11 phone provisioning ownership", () => {
       secretIv: Buffer.from("iv"), secretTag: Buffer.from("tag"), dekId: "test-key",
     });
     state.pool.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("WHERE extension_number = $1 AND deleted_at IS NULL")) return { rows: [] };
+      if (isGlobalExtensionOwnershipQuery(sql)) return { rows: [] };
       if (sql.includes("INSERT INTO subscriber")) return { rows: [] };
       return { rows: [] };
     });
@@ -269,7 +279,7 @@ describe("Phone11 phone provisioning ownership", () => {
       dekId: "test-key",
     });
     state.pool.query.mockImplementation(async (sql: string) => {
-      if (sql.includes("WHERE extension_number = $1 AND deleted_at IS NULL")) return { rows: [] };
+      if (isGlobalExtensionOwnershipQuery(sql)) return { rows: [] };
       if (sql.includes("INSERT INTO subscriber")) return { rows: [{ username: "4101" }] };
       if (sql.includes("INSERT INTO extensions")) return { rows: [{ id: 4101 }] };
       return { rows: [] };
@@ -281,7 +291,12 @@ describe("Phone11 phone provisioning ownership", () => {
     const sql = state.pool.query.mock.calls.map(([statement]) => String(statement));
     expect(sql).toContain("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))");
     expect(sql.findIndex((statement) => statement.includes("pg_advisory_xact_lock")))
-      .toBeLessThan(sql.findIndex((statement) => statement.includes("WHERE extension_number = $1 AND deleted_at IS NULL")));
+      .toBeLessThan(sql.findIndex(isGlobalExtensionOwnershipQuery));
+    expect(sql.findIndex(isGlobalExtensionOwnershipQuery)).toBeGreaterThan(-1);
+    expect(sql.findIndex((statement) => statement.includes("SELECT id FROM sip_accounts")))
+      .toBeLessThan(sql.findIndex((statement) => statement.includes("INSERT INTO subscriber")));
+    expect(sql.findIndex((statement) => statement.includes("SELECT id FROM subscriber")))
+      .toBeLessThan(sql.findIndex((statement) => statement.includes("INSERT INTO subscriber")));
     expect(sql.some((statement) => statement.includes("INSERT INTO subscriber"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO extensions"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO sip_accounts"))).toBe(true);
