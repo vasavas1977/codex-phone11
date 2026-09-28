@@ -63,8 +63,8 @@ describe("mounted plain-video meetings router", () => {
     await api.adminOverview({ tenantId: 41 });
     await api.adminOverview({ tenantId: 42 });
     await api.adminSetHostPermission({ tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true });
-    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(1, 7, 41, true);
-    expect(channelAdminRepository.overview).toHaveBeenNthCalledWith(2, 7, 42, false);
+    expect(channelAdminRepository.overview.mock.calls.map(call => call.slice(0, 3)))
+      .toEqual([[7, 41, true], [7, 42, false]]);
     expect(channelAdminRepository.setHostPermission).toHaveBeenCalledWith(7,
       { tenantId: 41, channelId: meetingId, userId: 8, canStartMeeting: true }, true);
   });
