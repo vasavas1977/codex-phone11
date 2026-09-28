@@ -367,7 +367,8 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
           secret_iv bytea, secret_tag bytea, ha1 text, ha1b text, transport_preference text,
           status text, deleted_at timestamptz
         );
-        CREATE TABLE subscriber(username text, domain text, password text, ha1 text, ha1b text);
+        CREATE TABLE subscriber(id serial PRIMARY KEY, username text, domain text,
+          password text, ha1 text, ha1b text, UNIQUE(username, domain));
         INSERT INTO tenants VALUES (1,'Phone11','business','active');
         INSERT INTO organizations VALUES (1,'Phone11','business');
         INSERT INTO tenant_memberships VALUES (17,1,'active','user'), (18,1,'active','user'), (9,1,'active','admin');
@@ -378,7 +379,7 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
           (1,3001,1,18,'3001','sip.phone11.ai',decode('01','hex'),decode('02','hex'),decode('03','hex'),
            'ha1:3001:sip.phone11.ai:new-owner-secret',
            'ha1b:3001:sip.phone11.ai:sip.phone11.ai:new-owner-secret','TLS','active',NULL);
-        INSERT INTO subscriber VALUES ('3001','sip.phone11.ai','new-owner-secret',
+        INSERT INTO subscriber(username,domain,password,ha1,ha1b) VALUES ('3001','sip.phone11.ai','new-owner-secret',
           'ha1:3001:sip.phone11.ai:new-owner-secret',
           'ha1b:3001:sip.phone11.ai:sip.phone11.ai:new-owner-secret');
       `);
@@ -471,16 +472,17 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
           user_id integer, sip_username text, sip_domain text, ha1 text, ha1b text,
           secret_ciphertext bytea, secret_iv bytea, secret_tag bytea, dek_id text,
           status text, deleted_at timestamptz, updated_at timestamptz);
-        CREATE TABLE subscriber(username text, domain text, password text, ha1 text, ha1b text,
-          UNIQUE(username, domain));
-        INSERT INTO tenants VALUES(7,'active');
+        CREATE TABLE subscriber(id serial PRIMARY KEY, username text, domain text,
+          password text, ha1 text, ha1b text, UNIQUE(username, domain));
+        INSERT INTO tenants VALUES(7,'active'),(8,'active');
         INSERT INTO tenant_memberships VALUES(17,7,'active'),(18,7,'active');
         INSERT INTO extensions(id,tenant_id,user_id,extension_number,sip_username,sip_domain,sip_password,status,deleted_at,updated_at)
           VALUES(3001,7,17,'3001','3001','sip.phone11.ai','old-secret','active',NULL,NOW());
         INSERT INTO user_extensions VALUES(17,3001,true);
         INSERT INTO sip_accounts(id,extension_id,tenant_id,user_id,sip_username,sip_domain,ha1,ha1b,status)
           VALUES(1,3001,7,17,'3001','sip.phone11.ai','old-ha1','old-ha1b','active');
-        INSERT INTO subscriber VALUES('3001','sip.phone11.ai','old-secret','old-ha1','old-ha1b');
+        INSERT INTO subscriber(username,domain,password,ha1,ha1b)
+          VALUES('3001','sip.phone11.ai','old-secret','old-ha1','old-ha1b');
       `);
       state.pool.query.mockReset();
       // Schema bootstrapping is outside this transaction-focused fixture. The
@@ -504,14 +506,27 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
         secretIv: Buffer.from("new-iv"), secretTag: Buffer.from("new-tag"), dekId: "test-key",
       });
 
-      await database.query("INSERT INTO subscriber VALUES('4000','sip.phone11.ai','foreign-secret','foreign-ha1','foreign-ha1b')");
+      await database.query(`INSERT INTO extensions
+        (id,tenant_id,user_id,extension_number,sip_username,sip_domain,status,deleted_at)
+        VALUES(8888,8,NULL,'8888','4001','sip.phone11.ai','active',NULL)`);
+      await expect(createExtension({ orgId: 7, extensionNumber: "4001" }))
+        .rejects.toThrow("already in use by another workspace");
+      expect((await database.query("SELECT 1 FROM subscriber WHERE username='4001'")).rows).toHaveLength(0);
+      expect((await database.query("SELECT 1 FROM extensions WHERE tenant_id=7 AND extension_number='4001'")).rows)
+        .toHaveLength(0);
+      await database.query("DELETE FROM extensions WHERE id=8888");
+
+      await database.query(`INSERT INTO subscriber(username,domain,password,ha1,ha1b)
+        VALUES('4000','sip.phone11.ai','foreign-secret','foreign-ha1','foreign-ha1b')`);
       vi.mocked(createSipCredentials).mockReturnValue({
         plaintextPassword: "takeover-secret", sipUsername: "4000", sipDomain: "sip.phone11.ai",
         ha1: "takeover-ha1", ha1b: "takeover-ha1b", secretCiphertext: Buffer.from("takeover-cipher"),
         secretIv: Buffer.from("takeover-iv"), secretTag: Buffer.from("takeover-tag"), dekId: "test-key",
       });
+      vi.mocked(createSipCredentials).mockClear();
       await expect(createExtension({ orgId: 7, extensionNumber: "4000" }))
-        .rejects.toThrow("already has a subscriber account");
+        .rejects.toThrow("This SIP address is already in use.");
+      expect(createSipCredentials).not.toHaveBeenCalled();
       expect((await database.query("SELECT password FROM subscriber WHERE username='4000'")).rows[0].password)
         .toBe("foreign-secret");
       expect((await database.query("SELECT id FROM extensions WHERE extension_number='4000'")).rows).toHaveLength(0);
