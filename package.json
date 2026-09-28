@@ -28,7 +28,7 @@
     "check": "tsc --noEmit",
     "lint": "expo lint",
     "format": "prettier --write .",
-    "test": "vitest run --exclude '**/*.test.mjs' --exclude 'desktop/app/test/**' && pnpm test:node",
+    "test": "vitest run --exclude '**/*.test.mjs' --exclude 'desktop/app/test/**' && node --test tests/*.test.mjs modules/phone11-siprix/tests/*.test.mjs",
     "test:node": "node --test tests/*.test.mjs modules/phone11-siprix/tests/*.test.mjs",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "postinstall": "node scripts/install-sip-engine.mjs",
