@@ -31,14 +31,35 @@ type ColumnRow = {
 type TableRow = { table_name: string };
 type IndexRow = { indexname: string; tablename: string; indexdef: string };
 type ForeignKeyRow = {
+  constraint_oid: string;
+  local_schema: string;
   table_name: string;
-  column_name: string;
+  columns: string[];
+  foreign_schema: string;
   foreign_table_name: string;
-  foreign_column_name: string;
+  foreign_columns: string[];
 };
 type PrimaryKeyRow = { table_name: string; columns: string[] };
-type TriggerRow = { table_name: string; trigger_name: string };
-type RoutineRow = { routine_name: string };
+type TriggerRow = {
+  table_name: string;
+  trigger_name: string;
+  trigger_type: number;
+  enabled: string;
+  trigger_columns: string;
+  has_when: boolean;
+  argument_count: number;
+  function_oid: string;
+};
+type RoutineRow = {
+  routine_oid: string;
+  routine_name: string;
+  language_name: string;
+  return_type: string;
+  argument_count: number;
+  security_definer: boolean;
+  has_config: boolean;
+  source: string;
+};
 
 const integer = ["integer"];
 const text = ["text", "character varying"];
@@ -148,87 +169,22 @@ const requiredIndexes = [
   },
 ] as const;
 
-const requiredForeignKeys = [
-  ["tenant_memberships", "user_id", "users", "id"],
-  ["tenant_memberships", "tenant_id", "tenants", "id"],
-  ["phone11_auth_identity", "legacy_user_id", "users", "id"],
-  ["phone11_plain_video_admission_rooms", "tenant_id", "tenants", "id"],
-  ["phone11_plain_video_admission_members", "user_id", "users", "id"],
-  [
-    "phone11_plain_video_admission_members",
-    "meeting_id",
-    "phone11_plain_video_admission_rooms",
-    "id",
-  ],
-  [
-    "phone11_plain_video_admission_members",
-    "tenant_id",
-    "phone11_plain_video_admission_rooms",
-    "tenant_id",
-  ],
-  [
-    "phone11_plain_video_admission_members",
-    "user_id",
-    "tenant_memberships",
-    "user_id",
-  ],
-  [
-    "phone11_plain_video_admission_members",
-    "tenant_id",
-    "tenant_memberships",
-    "tenant_id",
-  ],
-  [
-    "phone11_plain_video_admission_leases",
-    "meeting_id",
-    "phone11_plain_video_admission_members",
-    "meeting_id",
-  ],
-  [
-    "phone11_plain_video_admission_leases",
-    "tenant_id",
-    "phone11_plain_video_admission_members",
-    "tenant_id",
-  ],
-  [
-    "phone11_plain_video_admission_leases",
-    "user_id",
-    "phone11_plain_video_admission_members",
-    "user_id",
-  ],
-  [
-    "phone11_plain_video_admission_leases",
-    "participant_id",
-    "phone11_plain_video_admission_members",
-    "participant_id",
-  ],
-  [
-    "phone11_plain_video_eviction_operations",
-    "meeting_id",
-    "phone11_plain_video_admission_members",
-    "meeting_id",
-  ],
-  [
-    "phone11_plain_video_eviction_operations",
-    "tenant_id",
-    "phone11_plain_video_admission_members",
-    "tenant_id",
-  ],
-  [
-    "phone11_plain_video_eviction_operations",
-    "user_id",
-    "phone11_plain_video_admission_members",
-    "user_id",
-  ],
-  [
-    "phone11_plain_video_eviction_operations",
-    "participant_id",
-    "phone11_plain_video_admission_members",
-    "participant_id",
-  ],
+type ForeignKeySpec = readonly [string, readonly string[], string, readonly string[]];
+const requiredForeignKeys: readonly ForeignKeySpec[] = [
+  ["tenant_memberships", ["user_id"], "users", ["id"]],
+  ["tenant_memberships", ["tenant_id"], "tenants", ["id"]],
+  ["phone11_auth_identity", ["legacy_user_id"], "users", ["id"]],
+  ["phone11_plain_video_admission_rooms", ["tenant_id"], "tenants", ["id"]],
+  ["phone11_plain_video_admission_members", ["user_id"], "users", ["id"]],
+  ["phone11_plain_video_admission_members", ["meeting_id", "tenant_id"], "phone11_plain_video_admission_rooms", ["id", "tenant_id"]],
+  ["phone11_plain_video_admission_members", ["user_id", "tenant_id"], "tenant_memberships", ["user_id", "tenant_id"]],
+  ["phone11_plain_video_admission_leases", ["meeting_id", "tenant_id", "user_id", "participant_id"], "phone11_plain_video_admission_members", ["meeting_id", "tenant_id", "user_id", "participant_id"]],
+  ["phone11_plain_video_eviction_operations", ["meeting_id", "tenant_id", "user_id", "participant_id"], "phone11_plain_video_admission_members", ["meeting_id", "tenant_id", "user_id", "participant_id"]],
 ] as const;
 
 const requiredPrimaryKeys: Record<string, readonly string[]> = {
+  users: ["id"],
+  tenants: ["id"],
   tenant_memberships: ["user_id", "tenant_id"],
   phone11_auth_identity: ["auth_user_id"],
   phone11_plain_video_admission_rooms: ["id"],
@@ -251,6 +207,18 @@ const requiredTriggers = [
 const requiredRoutines = [
   "phone11_plain_video_admission_touch_revision",
 ] as const;
+
+// Exact PL/pgSQL body from plain-video-admission-migration.sql. A catalog
+// name/signature match cannot establish that a revision guard still works.
+const revisionGuardSource = `
+BEGIN
+  IF NEW.revision = OLD.revision THEN
+    RAISE EXCEPTION 'plain-video admission revision must change on update';
+  END IF;
+  NEW.updated_at := clock_timestamp();
+  RETURN NEW;
+END;
+`.trim();
 
 function checkColumns(rows: ColumnRow[], schema: SchemaSpec): string[] {
   const issues: string[] = [];
@@ -275,24 +243,16 @@ function checkColumns(rows: ColumnRow[], schema: SchemaSpec): string[] {
 
 function checkForeignKeys(
   rows: ForeignKeyRow[],
-  expectedForeignKeys: readonly (readonly [
-    string,
-    string,
-    string,
-    string,
-  ])[] = requiredForeignKeys,
+  expectedForeignKeys: readonly ForeignKeySpec[] = requiredForeignKeys,
 ): string[] {
-  const actual = new Set(
-    rows.map(
-      (row) =>
-        `${row.table_name}.${row.column_name}->${row.foreign_table_name}.${row.foreign_column_name}`,
-    ),
-  );
+  const key = (table: string, columns: readonly string[], foreignTable: string, foreignColumns: readonly string[]) =>
+    `${table}.(${columns.join(",")})->${foreignTable}.(${foreignColumns.join(",")})`;
+  const actual = new Set(rows.filter((row) =>
+    row.constraint_oid && row.local_schema === "public" && row.foreign_schema === "public" &&
+    Array.isArray(row.columns) && Array.isArray(row.foreign_columns),
+  ).map((row) => key(row.table_name, row.columns, row.foreign_table_name, row.foreign_columns)));
   return expectedForeignKeys
-    .map(
-      ([table, column, foreignTable, foreignColumn]) =>
-        `${table}.${column}->${foreignTable}.${foreignColumn}`,
-    )
+    .map(([table, columns, foreignTable, foreignColumns]) => key(table, columns, foreignTable, foreignColumns))
     .filter((key) => !actual.has(key))
     .map((key) => `${key}:foreign_key`);
 }
@@ -358,11 +318,43 @@ export type PlainVideoAdmissionPreflight = {
 export async function inspectPlainVideoAdmissionSchema(
   client: PreflightClient,
 ): Promise<PlainVideoAdmissionPreflight> {
+  // A Pool.query call after BEGIN may run on a different connection. Bind the
+  // entire read-only inspection to one acquired client when given a Pool.
+  const maybePool = client as PreflightClient & {
+    connect?: () => Promise<PreflightClient & { release(): void }>;
+    release?: () => void;
+  };
+  if (typeof maybePool.connect === "function" && typeof maybePool.release !== "function") {
+    const connection = await maybePool.connect();
+    try {
+      return await inspectPlainVideoAdmissionSchema(connection);
+    } finally {
+      connection.release();
+    }
+  }
   let transactionStarted = false;
   try {
     await client.query("BEGIN TRANSACTION READ ONLY");
     transactionStarted = true;
+    // pg clients must not receive concurrent queries in one transaction.
+    let previous = Promise.resolve();
+    let failed = false;
+    let failure: unknown;
+    const catalogQuery = <R extends QueryResultRow = QueryResultRow>(
+      sql: string, values?: unknown[],
+    ): Promise<QueryResult<R>> => {
+      const next = previous.then(() => {
+        if (failed) throw failure;
+        return client.query<R>(sql, values);
+      });
+      previous = next.then(() => undefined, (error: unknown) => {
+        failed = true;
+        failure = error;
+      });
+      return next;
+    };
     const [
+      contextResult,
       tablesResult,
       columnsResult,
       indexesResult,
@@ -371,7 +363,8 @@ export async function inspectPlainVideoAdmissionSchema(
       triggersResult,
       routinesResult,
     ] = await Promise.all([
-      client.query<TableRow>(
+      catalogQuery<{ schema_name: string }>("SELECT current_schema() AS schema_name"),
+      catalogQuery<TableRow>(
         `SELECT c.relname AS table_name
            FROM pg_catalog.pg_class c
            JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
@@ -379,7 +372,7 @@ export async function inspectPlainVideoAdmissionSchema(
              AND c.relname=ANY($1::text[])`,
         [allTables],
       ),
-      client.query<ColumnRow>(
+      catalogQuery<ColumnRow>(
         `SELECT c.relname AS table_name,a.attname AS column_name,
                 pg_catalog.format_type(a.atttypid,NULL) AS data_type,
                 CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable
@@ -392,7 +385,7 @@ export async function inspectPlainVideoAdmissionSchema(
            ORDER BY c.relname,a.attnum`,
         [allTables],
       ),
-      client.query<IndexRow>(
+      catalogQuery<IndexRow>(
         `SELECT index_rel.relname AS indexname,table_rel.relname AS tablename,
                 pg_catalog.pg_get_indexdef(idx.indexrelid) AS indexdef
            FROM pg_catalog.pg_index idx
@@ -404,14 +397,17 @@ export async function inspectPlainVideoAdmissionSchema(
              AND idx.indisvalid AND idx.indisready`,
         [requiredIndexes.map((index) => index.name)],
       ),
-      client.query<ForeignKeyRow>(
-        `SELECT local_rel.relname AS table_name,local_col.attname AS column_name,
-                foreign_rel.relname AS foreign_table_name,
-                foreign_col.attname AS foreign_column_name
+      catalogQuery<ForeignKeyRow>(
+        `SELECT con.oid::text AS constraint_oid,
+                local_ns.nspname AS local_schema,local_rel.relname AS table_name,
+                array_agg(local_col.attname::text ORDER BY local_key.position) AS columns,
+                foreign_ns.nspname AS foreign_schema,foreign_rel.relname AS foreign_table_name,
+                array_agg(foreign_col.attname::text ORDER BY local_key.position) AS foreign_columns
            FROM pg_catalog.pg_constraint con
            JOIN pg_catalog.pg_class local_rel ON local_rel.oid=con.conrelid
            JOIN pg_catalog.pg_class foreign_rel ON foreign_rel.oid=con.confrelid
-           JOIN pg_catalog.pg_namespace n ON n.oid=local_rel.relnamespace
+           JOIN pg_catalog.pg_namespace local_ns ON local_ns.oid=local_rel.relnamespace
+           JOIN pg_catalog.pg_namespace foreign_ns ON foreign_ns.oid=foreign_rel.relnamespace
            JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS local_key(attnum,position) ON TRUE
            JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS foreign_key(attnum,position)
              ON foreign_key.position=local_key.position
@@ -419,11 +415,13 @@ export async function inspectPlainVideoAdmissionSchema(
              ON local_col.attrelid=local_rel.oid AND local_col.attnum=local_key.attnum
            JOIN pg_catalog.pg_attribute foreign_col
              ON foreign_col.attrelid=foreign_rel.oid AND foreign_col.attnum=foreign_key.attnum
-           WHERE n.nspname=current_schema() AND con.contype='f'
-             AND con.convalidated AND local_rel.relname=ANY($1::text[])`,
+           WHERE local_ns.nspname=current_schema() AND con.contype='f'
+             AND con.convalidated AND local_rel.relname=ANY($1::text[])
+           GROUP BY con.oid,local_ns.nspname,local_rel.relname,
+                    foreign_ns.nspname,foreign_rel.relname`,
         [allTables],
       ),
-      client.query<PrimaryKeyRow>(
+      catalogQuery<PrimaryKeyRow>(
         `SELECT c.relname AS table_name,
                 array_agg(a.attname::text ORDER BY key.position) AS columns
            FROM pg_catalog.pg_constraint con
@@ -437,19 +435,26 @@ export async function inspectPlainVideoAdmissionSchema(
            GROUP BY c.relname`,
         [allTables],
       ),
-      client.query<TriggerRow>(
-        `SELECT c.relname AS table_name,tg.tgname AS trigger_name
+      catalogQuery<TriggerRow>(
+        `SELECT c.relname AS table_name,tg.tgname AS trigger_name,
+                tg.tgtype::integer AS trigger_type,tg.tgenabled AS enabled,
+                tg.tgattr::text AS trigger_columns,tg.tgqual IS NOT NULL AS has_when,
+                tg.tgnargs::integer AS argument_count,tg.tgfoid::text AS function_oid
            FROM pg_catalog.pg_trigger tg
            JOIN pg_catalog.pg_class c ON c.oid=tg.tgrelid
            JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
            WHERE n.nspname=current_schema() AND NOT tg.tgisinternal
-             AND tg.tgenabled IN ('O','A') AND tg.tgname=ANY($1::text[])`,
+             AND tg.tgname=ANY($1::text[])`,
         [requiredTriggers.map(([, trigger]) => trigger)],
       ),
-      client.query<RoutineRow>(
-        `SELECT p.proname AS routine_name
+      catalogQuery<RoutineRow>(
+        `SELECT p.oid::text AS routine_oid,p.proname AS routine_name,
+                lang.lanname AS language_name,p.prorettype::regtype::text AS return_type,
+                p.pronargs::integer AS argument_count,p.prosecdef AS security_definer,
+                p.proconfig IS NOT NULL AS has_config,p.prosrc AS source
            FROM pg_catalog.pg_proc p
            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+           JOIN pg_catalog.pg_language lang ON lang.oid=p.prolang
            WHERE n.nspname=current_schema() AND p.prokind='f'
              AND p.proname=ANY($1::text[])`,
         [requiredRoutines],
@@ -466,6 +471,7 @@ export async function inspectPlainVideoAdmissionSchema(
       ),
     );
     const prerequisiteIssues = [
+      ...(contextResult.rows[0]?.schema_name === "public" ? [] : ["schema:public_required"]),
       ...checkColumns(columns, prerequisiteSchema),
       ...checkForeignKeys(foreignKeysResult.rows, prerequisiteForeignKeys),
       ...checkPrimaryKeys(primaryKeysResult.rows, prerequisitePrimaryKeys),
@@ -485,15 +491,6 @@ export async function inspectPlainVideoAdmissionSchema(
           ...checkIndexes(indexesResult.rows),
           ...checkForeignKeys(foreignKeysResult.rows),
           ...checkPrimaryKeys(primaryKeysResult.rows),
-          ...requiredTriggers
-            .filter(
-              ([table, trigger]) =>
-                !triggersResult.rows.some(
-                  (row) =>
-                    row.table_name === table && row.trigger_name === trigger,
-                ),
-            )
-            .map(([table, trigger]) => `${table}:${trigger}:missing`),
           ...requiredRoutines
             .filter(
               (routine) =>
@@ -502,6 +499,27 @@ export async function inspectPlainVideoAdmissionSchema(
                 ),
             )
             .map((routine) => `${routine}:missing`),
+          ...requiredRoutines.flatMap((routine) => {
+            const row = routinesResult.rows.find((candidate) => candidate.routine_name === routine);
+            return row && (
+              !row.routine_oid || row.language_name !== "plpgsql" ||
+              row.return_type !== "trigger" || row.argument_count !== 0 ||
+              row.security_definer !== false || row.has_config !== false ||
+              row.source?.trim() !== revisionGuardSource
+            ) ? [`${routine}:definition`] : [];
+          }),
+          ...requiredTriggers.flatMap(([table, trigger]) => {
+            const row = triggersResult.rows.find((candidate) =>
+              candidate.table_name === table && candidate.trigger_name === trigger);
+            if (!row) return [`${table}:${trigger}:missing`];
+            const routine = routinesResult.rows.find((candidate) =>
+              candidate.routine_name === requiredRoutines[0]);
+            return row.trigger_type === 19 && row.enabled === "O" &&
+              row.trigger_columns === "" && row.has_when === false &&
+              row.argument_count === 0 && row.function_oid &&
+              row.function_oid === routine?.routine_oid
+              ? [] : [`${table}:${trigger}:definition`];
+          }),
         ]
       : [];
     const migrationState =
@@ -566,7 +584,7 @@ const directInvocation = /phone11-plain-video-admission-preflight(?:\.ts|\.mjs)$
 );
 
 async function runPreflight() {
-  const connectionString = process.env[DATABASE_URL_ENV];
+  const connectionString = process.env.PHONE11_PLAIN_VIDEO_ADMISSION_DATABASE_URL;
   if (!connectionString) {
     console.error(
       `FAIL: set ${DATABASE_URL_ENV} to an explicitly selected protected-clone PostgreSQL URL.`,

@@ -31,30 +31,22 @@ function appliedDatabase() {
     (table_name) => ({ table_name }),
   );
   const foreignKeys = [
-    ["tenant_memberships", "user_id", "users", "id"],
-    ["tenant_memberships", "tenant_id", "tenants", "id"],
-    ["phone11_auth_identity", "legacy_user_id", "users", "id"],
-    ["phone11_plain_video_admission_rooms", "tenant_id", "tenants", "id"],
-    ["phone11_plain_video_admission_members", "user_id", "users", "id"],
-    ["phone11_plain_video_admission_members", "meeting_id", "phone11_plain_video_admission_rooms", "id"],
-    ["phone11_plain_video_admission_members", "tenant_id", "phone11_plain_video_admission_rooms", "tenant_id"],
-    ["phone11_plain_video_admission_members", "user_id", "tenant_memberships", "user_id"],
-    ["phone11_plain_video_admission_members", "tenant_id", "tenant_memberships", "tenant_id"],
-    ["phone11_plain_video_admission_leases", "meeting_id", "phone11_plain_video_admission_members", "meeting_id"],
-    ["phone11_plain_video_admission_leases", "tenant_id", "phone11_plain_video_admission_members", "tenant_id"],
-    ["phone11_plain_video_admission_leases", "user_id", "phone11_plain_video_admission_members", "user_id"],
-    ["phone11_plain_video_admission_leases", "participant_id", "phone11_plain_video_admission_members", "participant_id"],
-    ["phone11_plain_video_eviction_operations", "meeting_id", "phone11_plain_video_admission_members", "meeting_id"],
-    ["phone11_plain_video_eviction_operations", "tenant_id", "phone11_plain_video_admission_members", "tenant_id"],
-    ["phone11_plain_video_eviction_operations", "user_id", "phone11_plain_video_admission_members", "user_id"],
-    ["phone11_plain_video_eviction_operations", "participant_id", "phone11_plain_video_admission_members", "participant_id"],
-  ].map(([table_name, column_name, foreign_table_name, foreign_column_name]) => ({
-    table_name,
-    column_name,
-    foreign_table_name,
-    foreign_column_name,
+    ["tenant_memberships", ["user_id"], "users", ["id"]],
+    ["tenant_memberships", ["tenant_id"], "tenants", ["id"]],
+    ["phone11_auth_identity", ["legacy_user_id"], "users", ["id"]],
+    ["phone11_plain_video_admission_rooms", ["tenant_id"], "tenants", ["id"]],
+    ["phone11_plain_video_admission_members", ["user_id"], "users", ["id"]],
+    ["phone11_plain_video_admission_members", ["meeting_id", "tenant_id"], "phone11_plain_video_admission_rooms", ["id", "tenant_id"]],
+    ["phone11_plain_video_admission_members", ["user_id", "tenant_id"], "tenant_memberships", ["user_id", "tenant_id"]],
+    ["phone11_plain_video_admission_leases", ["meeting_id", "tenant_id", "user_id", "participant_id"], "phone11_plain_video_admission_members", ["meeting_id", "tenant_id", "user_id", "participant_id"]],
+    ["phone11_plain_video_eviction_operations", ["meeting_id", "tenant_id", "user_id", "participant_id"], "phone11_plain_video_admission_members", ["meeting_id", "tenant_id", "user_id", "participant_id"]],
+  ].map(([table_name, columns, foreign_table_name, foreign_columns], index) => ({
+    constraint_oid: String(index + 1), local_schema: "public", foreign_schema: "public",
+    table_name, columns, foreign_table_name, foreign_columns,
   }));
   const primaryKeys = [
+    ["users", ["id"]],
+    ["tenants", ["id"]],
     ["tenant_memberships", ["user_id", "tenant_id"]],
     ["phone11_auth_identity", ["auth_user_id"]],
     ["phone11_plain_video_admission_rooms", ["id"]],
@@ -75,6 +67,8 @@ function appliedDatabase() {
   const query = vi.fn(async (sql: string) => {
     if (sql === "BEGIN TRANSACTION READ ONLY" || sql === "ROLLBACK")
       return { rows: [] };
+    if (sql === "SELECT current_schema() AS schema_name")
+      return { rows: [{ schema_name: "public" }] };
     if (sql.includes("FROM pg_catalog.pg_class c")) return { rows: tables };
     if (sql.includes("FROM pg_catalog.pg_attribute a")) return { rows: allColumns };
     if (sql.includes("FROM pg_catalog.pg_index idx")) return { rows: indexes };
@@ -83,13 +77,21 @@ function appliedDatabase() {
     if (sql.includes("FROM pg_catalog.pg_trigger tg")) {
       return {
         rows: [
-          { table_name: "phone11_plain_video_admission_rooms", trigger_name: "phone11_plain_video_admission_room_revision" },
-          { table_name: "phone11_plain_video_admission_members", trigger_name: "phone11_plain_video_admission_member_revision" },
+          { table_name: "phone11_plain_video_admission_rooms", trigger_name: "phone11_plain_video_admission_room_revision", trigger_type: 19, enabled: "O", trigger_columns: "", has_when: false, argument_count: 0, function_oid: "100" },
+          { table_name: "phone11_plain_video_admission_members", trigger_name: "phone11_plain_video_admission_member_revision", trigger_type: 19, enabled: "O", trigger_columns: "", has_when: false, argument_count: 0, function_oid: "100" },
         ],
       };
     }
     if (sql.includes("FROM pg_catalog.pg_proc p"))
-      return { rows: [{ routine_name: "phone11_plain_video_admission_touch_revision" }] };
+      return { rows: [{ routine_oid: "100", routine_name: "phone11_plain_video_admission_touch_revision", language_name: "plpgsql", return_type: "trigger", argument_count: 0, security_definer: false, has_config: false, source: `
+BEGIN
+  IF NEW.revision = OLD.revision THEN
+    RAISE EXCEPTION 'plain-video admission revision must change on update';
+  END IF;
+  NEW.updated_at := clock_timestamp();
+  RETURN NEW;
+END;
+` }] };
     throw new Error(`unexpected query ${sql}`);
   });
   return { query };

@@ -40,6 +40,8 @@ function mockDatabase({ partialTarget = false } = {}) {
   const query = vi.fn(async (sql: string) => {
     if (sql === "BEGIN TRANSACTION READ ONLY" || sql === "ROLLBACK")
       return { rows: [] };
+    if (sql === "SELECT current_schema() AS schema_name")
+      return { rows: [{ schema_name: "public" }] };
     if (sql.includes("FROM pg_catalog.pg_class c")) {
       return {
         rows: [
@@ -60,22 +62,25 @@ function mockDatabase({ partialTarget = false } = {}) {
       return {
         rows: [
           {
+            constraint_oid: "1", local_schema: "public", foreign_schema: "public",
             table_name: "tenant_memberships",
-            column_name: "user_id",
+            columns: ["user_id"],
             foreign_table_name: "users",
-            foreign_column_name: "id",
+            foreign_columns: ["id"],
           },
           {
+            constraint_oid: "2", local_schema: "public", foreign_schema: "public",
             table_name: "tenant_memberships",
-            column_name: "tenant_id",
+            columns: ["tenant_id"],
             foreign_table_name: "tenants",
-            foreign_column_name: "id",
+            foreign_columns: ["id"],
           },
           {
+            constraint_oid: "3", local_schema: "public", foreign_schema: "public",
             table_name: "phone11_auth_identity",
-            column_name: "legacy_user_id",
+            columns: ["legacy_user_id"],
             foreign_table_name: "users",
-            foreign_column_name: "id",
+            foreign_columns: ["id"],
           },
         ],
       };
@@ -83,6 +88,8 @@ function mockDatabase({ partialTarget = false } = {}) {
     if (sql.includes("con.contype='p'")) {
       return {
         rows: [
+          { table_name: "users", columns: ["id"] },
+          { table_name: "tenants", columns: ["id"] },
           {
             table_name: "tenant_memberships",
             columns: ["user_id", "tenant_id"],
@@ -134,6 +141,46 @@ describe("plain-video admission schema preflight", () => {
     expect(database.query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
     for (const [sql] of database.query.mock.calls.slice(1, -1))
       expect(sql.trim()).toMatch(/^SELECT/i);
+  });
+
+  it("keeps BEGIN, every catalog read, and ROLLBACK on one acquired pool client", async () => {
+    const connection = mockDatabase();
+    const release = vi.fn();
+    const poolQuery = vi.fn(async () => { throw new Error("Pool.query must not run inside inspection"); });
+    const connect = vi.fn(async () => ({ ...connection, release }));
+    const result = await inspectPlainVideoAdmissionSchema({
+      query: poolQuery,
+      connect,
+    } as never);
+    expect(result.outcome).toBe("ready_for_migration");
+    expect(connect).toHaveBeenCalledOnce();
+    expect(poolQuery).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    expect(connection.query.mock.calls[0][0]).toBe("BEGIN TRANSACTION READ ONLY");
+    expect(connection.query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
+  });
+
+  it("rolls back and releases the same client when catalog inspection fails", async () => {
+    const statements: string[] = [];
+    const release = vi.fn();
+    const query = vi.fn(async (sql: string) => {
+      statements.push(sql);
+      if (sql === "SELECT current_schema() AS schema_name")
+        throw new Error("catalog unavailable");
+      return { rows: [] };
+    });
+    const poolQuery = vi.fn(async () => { throw new Error("pool query forbidden"); });
+    await expect(inspectPlainVideoAdmissionSchema({
+      query: poolQuery,
+      connect: async () => ({ query, release }),
+    } as never)).rejects.toThrow("catalog unavailable");
+    expect(statements).toEqual([
+      "BEGIN TRANSACTION READ ONLY",
+      "SELECT current_schema() AS schema_name",
+      "ROLLBACK",
+    ]);
+    expect(poolQuery).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("fails a partial target schema and never attempts to apply it", async () => {
@@ -243,6 +290,98 @@ describe("plain-video admission catalog under a SELECT-only role", () => {
         expect(afterOwner.outcome).toBe("already_applied");
         expect(afterProbe).toEqual(afterOwner);
 
+        const assertRejected = async (issue: string) => {
+          const ownerResult = await inspectPlainVideoAdmissionSchema(ownerPool!);
+          const probeResult = await inspectPlainVideoAdmissionSchema(probePool!);
+          expect(probeResult).toEqual(ownerResult);
+          expect(ownerResult.outcome).toBe("blocked");
+          expect([...ownerResult.prerequisites.issues, ...ownerResult.migration.issues])
+            .toContain(issue);
+        };
+        const roomBinding = await ownerPool.query(`SELECT conname,
+            pg_get_constraintdef(oid) AS definition FROM pg_constraint
+          WHERE conrelid='public.phone11_plain_video_admission_members'::regclass
+            AND confrelid='public.phone11_plain_video_admission_rooms'::regclass
+            AND contype='f'`);
+        expect(roomBinding.rows).toHaveLength(1);
+        const constraintName = `"${String(roomBinding.rows[0].conname).replaceAll('"', '""')}"`;
+        const restoreRoomBinding = async () => ownerPool!.query(`ALTER TABLE
+          phone11_plain_video_admission_members ADD CONSTRAINT ${constraintName}
+          ${roomBinding.rows[0].definition}`);
+        const missingRoomBinding = "phone11_plain_video_admission_members.(meeting_id,tenant_id)->phone11_plain_video_admission_rooms.(id,tenant_id):foreign_key";
+
+        // Both column pairs exist, but neither is the composite tenant binding.
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_members
+          DROP CONSTRAINT ${constraintName}`);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_rooms
+          ADD CONSTRAINT phone11_test_unique_room_tenant UNIQUE (tenant_id)`);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_members
+          ADD CONSTRAINT phone11_test_split_room_id FOREIGN KEY (meeting_id)
+          REFERENCES phone11_plain_video_admission_rooms(id)`);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_members
+          ADD CONSTRAINT phone11_test_split_room_tenant FOREIGN KEY (tenant_id)
+          REFERENCES phone11_plain_video_admission_rooms(tenant_id)`);
+        await assertRejected(missingRoomBinding);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_members
+          DROP CONSTRAINT phone11_test_split_room_id,
+          DROP CONSTRAINT phone11_test_split_room_tenant`);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_rooms
+          DROP CONSTRAINT phone11_test_unique_room_tenant`);
+        await restoreRoomBinding();
+
+        // Identical names and columns in a different schema cannot bind public.
+        await ownerPool.query(`CREATE SCHEMA shadow`);
+        await ownerPool.query(`CREATE TABLE shadow.phone11_plain_video_admission_rooms
+          (id uuid NOT NULL, tenant_id integer NOT NULL, PRIMARY KEY (id, tenant_id))`);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_members
+          DROP CONSTRAINT ${constraintName}`);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_members
+          ADD CONSTRAINT phone11_test_shadow_room FOREIGN KEY (meeting_id, tenant_id)
+          REFERENCES shadow.phone11_plain_video_admission_rooms(id, tenant_id)`);
+        await assertRejected(missingRoomBinding);
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_members
+          DROP CONSTRAINT phone11_test_shadow_room`);
+        await restoreRoomBinding();
+
+        // A shadow-first search path must not make a shadow copy look release-ready.
+        await ownerPool.query(`GRANT USAGE ON SCHEMA shadow TO ${probe}`);
+        for (const pool of [ownerPool, probePool]) {
+          const connection = await pool.connect();
+          try {
+            await connection.query(`SET search_path=shadow,public`);
+            const result = await inspectPlainVideoAdmissionSchema(connection);
+            expect(result.outcome).toBe("blocked");
+            expect(result.prerequisites.issues).toContain("schema:public_required");
+          } finally {
+            await connection.query(`RESET search_path`);
+            connection.release();
+          }
+        }
+
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_rooms
+          DISABLE TRIGGER phone11_plain_video_admission_room_revision`);
+        await assertRejected("phone11_plain_video_admission_rooms:phone11_plain_video_admission_room_revision:definition");
+        await ownerPool.query(`ALTER TABLE phone11_plain_video_admission_rooms
+          ENABLE TRIGGER phone11_plain_video_admission_room_revision`);
+        await ownerPool.query(`DROP TRIGGER phone11_plain_video_admission_room_revision
+          ON phone11_plain_video_admission_rooms`);
+        await ownerPool.query(`CREATE TRIGGER phone11_plain_video_admission_room_revision
+          AFTER INSERT ON phone11_plain_video_admission_rooms FOR EACH ROW
+          EXECUTE FUNCTION phone11_plain_video_admission_touch_revision()`);
+        await assertRejected("phone11_plain_video_admission_rooms:phone11_plain_video_admission_room_revision:definition");
+        await ownerPool.query(`DROP TRIGGER phone11_plain_video_admission_room_revision
+          ON phone11_plain_video_admission_rooms`);
+        await ownerPool.query(`CREATE TRIGGER phone11_plain_video_admission_room_revision
+          BEFORE UPDATE ON phone11_plain_video_admission_rooms FOR EACH ROW
+          EXECUTE FUNCTION phone11_plain_video_admission_touch_revision()`);
+        await ownerPool.query(`CREATE OR REPLACE FUNCTION phone11_plain_video_admission_touch_revision()
+          RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$`);
+        await assertRejected("phone11_plain_video_admission_touch_revision:definition");
+        await ownerPool.query(readFileSync(join(root,
+          "server/meetings/plain-video-admission-migration.sql"), "utf8"));
+        expect((await inspectPlainVideoAdmissionSchema(ownerPool)).outcome)
+          .toBe("already_applied");
+
         await ownerPool.query(`DROP INDEX phone11_plain_video_admission_leases_pending`);
         await ownerPool.query(`CREATE INDEX phone11_plain_video_admission_leases_pending
           ON phone11_plain_video_admission_leases(tenant_id,meeting_id,user_id,expires_at)
@@ -259,6 +398,12 @@ describe("plain-video admission catalog under a SELECT-only role", () => {
           "phone11_plain_video_admission_leases_pending:definition",
           "phone11_plain_video_eviction_operations_pending:definition",
         ]));
+        const userPk = await ownerPool.query(`SELECT conname FROM pg_constraint
+          WHERE conrelid='public.users'::regclass AND contype='p'`);
+        expect(userPk.rows).toHaveLength(1);
+        await ownerPool.query(`ALTER TABLE users DROP CONSTRAINT
+          "${String(userPk.rows[0].conname).replaceAll('"', '""')}" CASCADE`);
+        await assertRejected("users:primary_key");
       } finally {
         await probePool?.end();
         await ownerPool?.end();
@@ -329,6 +474,13 @@ describe("plain-video admission catalog on disposable PostgreSQL 16", () => {
           "phone11_plain_video_admission_leases_pending:definition",
           "phone11_plain_video_eviction_operations_pending:definition",
         ]));
+        await ownerPool.query(`CREATE OR REPLACE FUNCTION phone11_plain_video_admission_touch_revision()
+          RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END; $$`);
+        const inertOwner = await inspectPlainVideoAdmissionSchema(ownerPool);
+        const inertProbe = await inspectPlainVideoAdmissionSchema(probePool);
+        expect(inertProbe).toEqual(inertOwner);
+        expect(inertProbe.migration.issues)
+          .toContain("phone11_plain_video_admission_touch_revision:definition");
       } finally {
         await probePool?.end();
         await ownerPool.end();
