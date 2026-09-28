@@ -34,6 +34,7 @@ import { countVoicemails, deleteVoicemail, markVoicemailRead, voicemailStorageSt
 import { SELF_SERVICE_CALL_OWNERSHIP_SQL } from "../../lib/pbx/self-service-usage";
 import { profilePhotoDescriptors } from "../profile/photo";
 import { reactivateExtensionSipAuth, revokeExtensionSipAuth, rotateExtensionSipAuth } from "../phone-provisioning";
+import { listSelectedTenantDirectory } from "./selected-directory";
 
 // ============================================================================
 // Zod Schemas
@@ -376,6 +377,20 @@ export async function upsertBusinessHoursTimezone(
 // PBX Router
 // ============================================================================
 export const pbxRouter = router({
+  directory: router({
+    list: protectedProcedure
+      .input(z.object({
+        tenantId: z.number().int().positive(),
+        search: z.string().trim().max(64).regex(/^[^\u0000-\u001f\u007f]*$/).default(""),
+        limit: z.number().int().min(1).max(50).default(25),
+        offset: z.number().int().min(0).max(1000).default(0),
+      }).strict())
+      .query(({ ctx, input }) => listSelectedTenantDirectory({
+        userId: ctx.user!.id,
+        ...input,
+      })),
+  }),
+
   capabilities: protectedProcedure
     .input(selectedTenantSchema.optional())
     .query(async ({ ctx, input }) => {
