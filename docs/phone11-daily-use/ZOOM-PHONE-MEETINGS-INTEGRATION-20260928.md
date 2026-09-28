@@ -36,6 +36,10 @@ The directory requires an explicitly selected tenant, active tenant membership a
 
 Source tests, a built bundle and an authenticated token do not prove live audio, push or background ringing. This document is not a statement of complete Zoom Phone or Meetings parity.
 
+## Related product boundaries
+
+Phone11 Team Chat is the internal workspace conversation store; Super Number's external LINE OA Inbox keeps its separate provider send and assignment path. Any shared tenant, user, or contact context must cross an explicit authenticated contract. The visible meeting notetaker is a shared note11/Super Number capability, not a second Phone11 bot or Zoom cloud-recording sync. These boundaries were coordinated with the `Complete Super Number v7.2 Alpha` task on 2026-09-28; they do not imply either provider feature is live.
+
 ## Candidate verification on 2026-09-28
 
 - Root TypeScript check and server bundle passed. The full root test command passed 2,255 Vitest tests plus 69 native Node tests; 326 Vitest cases were skipped by their explicit environment gates.
