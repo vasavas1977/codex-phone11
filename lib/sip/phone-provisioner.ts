@@ -1,46 +1,41 @@
 import { useEffect } from "react";
 
 import { useAuth } from "@/hooks/use-auth";
-import { trpc } from "@/lib/trpc";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useSipAccountStore } from "./account-store";
 import { sipAccountFromPhoneConfig } from "./provisioning";
+import { fetchSelectedPhoneConfig, assertProvisioningScope, mayAutoProvisionSipAccount } from "./selected-provisioning";
+import { useSipTenantSelection } from "./tenant-selection";
 
 export function PhoneProvisioner() {
   const { user, isAuthenticated, loading } = useAuth();
   const account = useSipAccountStore((s) => s.account);
   const setAccount = useSipAccountStore((s) => s.setAccount);
-
-  const configQuery = trpc.phone.getConfig.useQuery(undefined, {
-    enabled: isAuthenticated && !loading,
-    retry: false,
-    staleTime: 5 * 60 * 1000,
-  });
+  const workspace = useSipTenantSelection(user?.id);
 
   useEffect(() => {
-    if (!user || !isAuthenticated || loading || !configQuery.data?.configured || !configQuery.data.sip) return;
-
-    const nextAccount = { ...sipAccountFromPhoneConfig(configQuery.data, account?.id), ownerUserId: user.id };
-    const unchanged =
-      account?.ownerUserId === user.id &&
-      account?.tenantId === nextAccount.tenantId &&
-      account?.username === nextAccount.username &&
-      account?.domain === nextAccount.domain &&
-      account?.port === nextAccount.port &&
-      account?.transport === nextAccount.transport &&
-      account?.password === nextAccount.password &&
-      account?.displayName === nextAccount.displayName &&
-      account?.proxy === nextAccount.proxy &&
-      account?.srtp === nextAccount.srtp &&
-      account?.stun === nextAccount.stun &&
-      account?.enabled === nextAccount.enabled;
-
-    if (unchanged) return;
-
-    // SipProvider connects only after this account belongs to the verified owner.
-    setAccount(nextAccount).catch(() =>
-      console.error("[PhoneProvisioner] Could not securely store provisioning"),
-    );
-  }, [account, configQuery.data, setAccount, user, isAuthenticated, loading]);
+    const tenantId = workspace.tenantId;
+    if (!user || !isAuthenticated || loading || !workspace.ready || tenantId === null) return;
+    // A workspace picker changes the intended scope, never the registered SIP
+    // identity. Replacing another tenant's account requires an explicit sync.
+    if (!mayAutoProvisionSipAccount(account, user.id, tenantId)) return;
+    let cancelled = false;
+    void fetchSelectedPhoneConfig(user, tenantId).then(async config => {
+      if (cancelled || !config.configured || !config.sip || getAuthSnapshot().user !== user) return;
+      assertProvisioningScope(user, tenantId, config);
+      const current = useSipAccountStore.getState().account;
+      if (!mayAutoProvisionSipAccount(current, user.id, tenantId)) return;
+      const nextAccount = { ...sipAccountFromPhoneConfig(config, current?.id), ownerUserId: user.id };
+      if (current &&
+        current.username === nextAccount.username && current.domain === nextAccount.domain &&
+        current.port === nextAccount.port && current.transport === nextAccount.transport &&
+        current.password === nextAccount.password && current.displayName === nextAccount.displayName &&
+        current.proxy === nextAccount.proxy && current.srtp === nextAccount.srtp &&
+        current.stun === nextAccount.stun && current.enabled === nextAccount.enabled) return;
+      await setAccount(nextAccount);
+    }).catch(() => console.warn("[PhoneProvisioner] Could not verify selected phone account"));
+    return () => { cancelled = true; };
+  }, [account, isAuthenticated, loading, setAccount, user, workspace.ready, workspace.tenantId]);
 
   return null;
 }

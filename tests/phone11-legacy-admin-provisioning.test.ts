@@ -135,10 +135,10 @@ describe("legacy phone administration tenant isolation", () => {
     expect(provisioning.assignExtensionToUser).not.toHaveBeenCalled();
   });
 
-  it("keeps ordinary pilot synchronization on the server-owned provisioning path", () => {
+  it("keeps ordinary synchronization on the selected server-owned provisioning path", () => {
     const source = readFileSync(resolve(process.cwd(), "app/settings/sip.tsx"), "utf8");
 
-    expect(source).toContain("return ensurePilotConfig.mutateAsync();");
+    expect(source).toContain("fetchSelectedPilotConfig(owner, tenantId)");
     expect(source).not.toContain("trpc.phone.createExtension.useMutation()");
     expect(source).not.toContain("trpc.phone.assignExtension.useMutation()");
     expect(source).not.toContain("falling back to admin APIs");

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
@@ -9,10 +9,12 @@ import { SIGN_IN_ROUTE } from "@/constants/oauth";
 import { useAuth } from "@/hooks/use-auth";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useColors } from "@/hooks/use-colors";
-import { trpc } from "@/lib/trpc";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
 import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 import { type PhoneProvisioningConfig, sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
+import { assertProvisioningScope, fetchSelectedPhoneConfig, fetchSelectedPilotConfig } from "@/lib/sip/selected-provisioning";
+import { resolveSipTenant, selectedSipTenant, useSipTenantSelection } from "@/lib/sip/tenant-selection";
+import type { User } from "@/lib/_core/auth";
 
 function registrationLabel(state: RegistrationState): string {
   switch (state) {
@@ -36,8 +38,8 @@ function errorMessage(error: unknown): string {
 export default function SIPAccountScreen() {
   const colors = useColors();
   const { user, loading: authLoading, isAuthenticated, refresh: refreshAuth } = useAuth();
-  const [accountLoaded, setAccountLoaded] = useState(false);
-  const autoProvisionAttempted = useRef(false);
+  const [syncing, setSyncing] = useState(false);
+  const workspace = useSipTenantSelection(user?.id);
   const account = useSipAccountStore((s) => s.account);
   const loadAccount = useSipAccountStore((s) => s.loadAccount);
   const setAccount = useSipAccountStore((s) => s.setAccount);
@@ -45,20 +47,9 @@ export default function SIPAccountScreen() {
   const registrationState = useSipAccountStore((s) => s.registrationState);
   const registrationError = useSipAccountStore((s) => s.registrationError);
   const addDiagnosticEvent = useSipDiagnosticsStore((s) => s.addEvent);
-  const phoneConfigQuery = trpc.phone.getConfig.useQuery(undefined, { enabled: false, retry: false });
-  const ensurePilotConfig = trpc.phone.ensurePilotConfig.useMutation();
 
   useEffect(() => {
-    let cancelled = false;
-    loadAccount()
-      .catch(console.error)
-      .finally(() => {
-        if (!cancelled) setAccountLoaded(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
+    void loadAccount().catch(console.error);
   }, [loadAccount]);
 
   const statusColor =
@@ -72,16 +63,15 @@ export default function SIPAccountScreen() {
 
   const handleSignIn = () => router.push(SIGN_IN_ROUTE);
 
-  const applyProvisioningConfig = async (config: PhoneProvisioningConfig, title: string) => {
+  const applyProvisioningConfig = async (config: PhoneProvisioningConfig, owner: User, tenantId: number) => {
     if (!config.configured || !config.sip) {
       throw new Error("No SIP extension was returned by admin management.");
     }
-
-    const provisionedAccount = sipAccountFromPhoneConfig(config, account?.id);
-    if (!user?.id || getAuthSnapshot().user?.id !== user.id) {
-      throw new Error("Please sign in before saving your phone account.");
-    }
-    await setAccount({ ...provisionedAccount, ownerUserId: user.id });
+    assertProvisioningScope(owner, tenantId, config);
+    const currentAccount = useSipAccountStore.getState().account;
+    const provisionedAccount = sipAccountFromPhoneConfig(config, currentAccount?.id);
+    await setAccount({ ...provisionedAccount, ownerUserId: owner.id });
+    assertProvisioningScope(owner, tenantId, config);
     setRegistrationState("unregistered");
     addDiagnosticEvent({
       level: "info",
@@ -100,13 +90,9 @@ export default function SIPAccountScreen() {
     });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert(
-      title,
+      "Provisioning synced",
       `Extension ${provisionedAccount.username} is saved on ${provisionedAccount.domain}. SIP registration will only start from a call or an explicit diagnostics test.`
     );
-  };
-
-  const createOrSyncPilotConfig = async (): Promise<PhoneProvisioningConfig> => {
-    return ensurePilotConfig.mutateAsync();
   };
 
   const handleSyncFromAdmin = async () => {
@@ -123,49 +109,45 @@ export default function SIPAccountScreen() {
       return;
     }
 
-    try {
-      await refreshAuth();
-      const result = await phoneConfigQuery.refetch();
-
-      if (result.error) throw result.error;
-
-      if (result.data?.configured && result.data.sip) {
-        await applyProvisioningConfig(result.data, "Provisioning synced");
-        return;
-      }
-
-      const pilotConfig = await createOrSyncPilotConfig();
-      await applyProvisioningConfig(pilotConfig, "Pilot extension created");
-    } catch (error) {
-      Alert.alert(
-        "Pilot provisioning failed",
-        `The phone is signed in as User ID ${user?.id ?? "unknown"}, but the backend did not return a SIP account. ${errorMessage(error)}`,
-      );
-    }
-  };
-
-  useEffect(() => {
-    if (!accountLoaded || !isAuthenticated || !user?.id || account) return;
-    if (autoProvisionAttempted.current) return;
-    if (
-      phoneConfigQuery.isFetching ||
-      ensurePilotConfig.isPending
-    ) {
+    if (!workspace.ready || workspace.tenantId === null) {
+      Alert.alert("Select a workspace", workspace.needsSelection
+        ? "Choose the workspace whose phone extension you want to use."
+        : "Could not verify your active Phone11 workspace. Try again.");
       return;
     }
 
-    autoProvisionAttempted.current = true;
-    handleSyncFromAdmin().catch((error) => {
-      console.warn("[Phone Provisioning] automatic provisioning failed:", error);
-    });
-  }, [
-    account,
-    accountLoaded,
-    isAuthenticated,
-    user?.id,
-    phoneConfigQuery.isFetching,
-    ensurePilotConfig.isPending,
-  ]);
+    setSyncing(true);
+    try {
+      await refreshAuth();
+      const owner = getAuthSnapshot().user;
+      if (!owner || owner.id !== user?.id) throw new Error("Your sign-in changed. Please try again.");
+      const membershipResult = await workspace.refetch();
+      if (!membershipResult.isSuccess || !membershipResult.data) throw new Error("Could not verify your active workspace.");
+      const tenantId = resolveSipTenant(owner.id, membershipResult.data, selectedSipTenant(owner.id));
+      if (tenantId === null || tenantId !== workspace.tenantId) throw new Error("Your workspace selection changed. Please choose it again.");
+      let config = await fetchSelectedPhoneConfig(owner, tenantId);
+      if (!config.configured) config = await fetchSelectedPilotConfig(owner, tenantId);
+      assertProvisioningScope(owner, tenantId, config);
+      const currentAccount = useSipAccountStore.getState().account;
+      if (currentAccount && (currentAccount.ownerUserId !== owner.id || currentAccount.tenantId !== tenantId)) {
+        Alert.alert("Switch phone workspace?", "This will replace the saved SIP account for your other workspace.", [
+          { text: "Cancel", style: "cancel" },
+          { text: "Switch account", onPress: () => { void fetchSelectedPhoneConfig(owner, tenantId)
+            .then(latest => applyProvisioningConfig(latest, owner, tenantId))
+            .catch(error => Alert.alert("Provisioning failed", errorMessage(error))); } },
+        ]);
+      } else {
+        await applyProvisioningConfig(config, owner, tenantId);
+      }
+    } catch (error) {
+      Alert.alert(
+        "Phone provisioning failed",
+        `The phone is signed in as User ID ${user?.id ?? "unknown"}, but the backend did not return a SIP account. ${errorMessage(error)}`,
+      );
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const ReadOnlyField = ({
     label,
@@ -193,14 +175,15 @@ export default function SIPAccountScreen() {
     </View>
   );
 
-  const syncing =
-    phoneConfigQuery.isFetching ||
-    ensurePilotConfig.isPending;
   const userLabel = isAuthenticated
     ? `${user?.email || user?.name || "Signed-in user"} - User ID ${user?.id}`
     : authLoading
     ? "Checking sign-in..."
     : "Not signed in";
+  const savedWorkspaceName = account?.tenantId
+    ? workspace.memberships.find(row => row.tenantId === account.tenantId)?.tenantName
+      ?? `Workspace ID ${account.tenantId}${workspace.ready ? " (no active membership)" : ""}`
+    : account ? "Unknown workspace" : undefined;
 
   return (
     <ScreenContainer>
@@ -247,14 +230,35 @@ export default function SIPAccountScreen() {
           <Text style={[styles.infoBody, { color: colors.muted }]}>Registration only starts after the phone is signed in and an extension is assigned in admin management.</Text>
         </View>
 
+        {isAuthenticated && (workspace.memberships.length > 1 || workspace.needsSelection) && (
+          <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text style={[styles.cardTitle, { color: colors.foreground }]}>Phone workspace</Text>
+            <Text style={[styles.infoBody, { color: colors.muted }]}>Choose a workspace before syncing its assigned extension.</Text>
+            {workspace.memberships.map(membership => (
+              <TouchableOpacity key={membership.tenantId} accessibilityRole="button"
+                accessibilityLabel={`Use ${membership.tenantName} for Phone11 calling`}
+                onPress={() => workspace.chooseTenant(membership.tenantId)}
+                style={[styles.workspaceChoice, { borderColor: workspace.tenantId === membership.tenantId ? colors.primary : colors.border }]}>
+                <Text style={{ color: colors.foreground }}>{membership.tenantName}</Text>
+                {workspace.tenantId === membership.tenantId && <Text style={{ color: colors.primary }}>Selected</Text>}
+              </TouchableOpacity>
+            ))}
+            {account && workspace.tenantId !== null && account.tenantId !== workspace.tenantId && (
+              <Text style={[styles.infoBody, { color: colors.muted }]}>
+                Your saved calling account remains on {savedWorkspaceName}. Use Sync Assigned Extension to switch it.
+              </Text>
+            )}
+          </View>
+        )}
+
         <TouchableOpacity
           style={[styles.syncCard, { backgroundColor: colors.primary + "10", borderColor: colors.primary + "30" }]}
           onPress={handleSyncFromAdmin}
           disabled={syncing}
         >
           <View style={styles.syncText}>
-            <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync or Create Pilot Extension</Text>
-            <Text style={[styles.syncSub, { color: colors.muted }]}>Loads admin settings, or creates a first-device pilot extension for this signed-in user.</Text>
+            <Text style={[styles.syncTitle, { color: colors.primary }]}>Sync Assigned Extension</Text>
+            <Text style={[styles.syncSub, { color: colors.muted }]}>Loads the extension assigned to you in the selected Phone11 workspace.</Text>
           </View>
           {syncing ? (
             <ActivityIndicator size="small" color={colors.primary} />
@@ -273,6 +277,7 @@ export default function SIPAccountScreen() {
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}> 
           <Text style={[styles.cardTitle, { color: colors.foreground }]}>Assigned Extension</Text>
+          <ReadOnlyField label="Saved Phone11 workspace" value={savedWorkspaceName} />
           <ReadOnlyField label="Display Name" value={account?.displayName} />
           <ReadOnlyField label="Username / Extension" value={account?.username} />
           <ReadOnlyField label="Password" value={account?.password ? "Stored securely" : ""} rightElement={<IconSymbol name="lock.fill" size={15} color={colors.muted} />} />
@@ -290,7 +295,7 @@ export default function SIPAccountScreen() {
             <IconSymbol name="info.circle" size={16} color={colors.primary} />
             <Text style={[styles.infoTitle, { color: colors.primary }]}>Admin-managed configuration</Text>
           </View>
-          <Text style={[styles.infoBody, { color: colors.muted }]}>Create or assign the user&apos;s extension in Admin Portal &gt; Phone Provisioning. For pilot testing, this screen can request a server-created pilot extension for the signed-in user.</Text>
+          <Text style={[styles.infoBody, { color: colors.muted }]}>An administrator must create or assign your extension in Admin Portal &gt; Phone Provisioning before you can sync it here.</Text>
         </View>
 
         <View style={{ height: 32 }} />
@@ -345,6 +350,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   cardTitle: { fontSize: 15, fontWeight: "700", marginBottom: 4 },
+  workspaceChoice: { borderWidth: 1, borderRadius: 10, padding: 12, flexDirection: "row", justifyContent: "space-between" },
   accountHeader: {
     flexDirection: "row",
     alignItems: "center",
