@@ -46,7 +46,7 @@ const accountFields = [
   "port", "transport", "srtp", "stun", "enabled",
 ] as const satisfies ReadonlyArray<keyof SipAccount>;
 
-function nativeAccount(account: SipAccount): AccountConfig {
+export function nativeAccount(account: SipAccount): AccountConfig {
   return {
     sipServer: account.domain, sipExtension: account.username, sipPassword: account.password,
     sipAuthId: account.username, ...(account.proxy ? { sipProxy: account.proxy } : {}),

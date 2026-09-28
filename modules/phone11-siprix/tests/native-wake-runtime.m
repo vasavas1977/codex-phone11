@@ -495,6 +495,37 @@ int main(void) {
     }
     [Phone11Siprix endIncomingWake:uuid];
   }
+  // Main-queue reservation closes the JS snapshot-to-publication gap. A wake
+  // reported by CallKit during the reservation must wait, not lose its call.
+  [js beginAccountChange:resolve rejecter:reject];
+  CHECK(!error && [result isKindOfClass:NSString.class]);
+  NSString *changeLease=[result copy];
+  int startsBefore=initializes; before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK(runtime.pendingAccountWake && !runtime.wakeContext && initializes==startsBefore && readyCount==before);
+  [js initialize:@{} resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_ACCOUNT_CHANGE"]);
+  [js makeCall:@"10" destination:@"2001" resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_ACCOUNT_CHANGE"]);
+  [js endAccountChange:changeLease config:sip resumeWake:YES resolver:resolve rejecter:reject];
+  CHECK(!error && !runtime.pendingAccountWake && runtime.wakeContext && readyCount==before);
+  [js beginAccountChange:resolve rejecter:reject]; CHECK([error isEqual:@"E_CALL_ACTIVE"]);
+  [Phone11Siprix endIncomingWake:uuid];
+  [js beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  changeLease=[result copy]; before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  [Phone11Siprix endIncomingWake:uuid];
+  CHECK(readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake ended."]);
+  [js endAccountChange:changeLease config:sip resumeWake:YES resolver:resolve rejecter:reject];
+  CHECK(!error && !runtime.wakeContext);
+  [js beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  changeLease=[result copy]; before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  [js endAccountChange:changeLease config:sip resumeWake:NO resolver:resolve rejecter:reject];
+  CHECK(!error && readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake owner changed."] && !runtime.wakeContext);
+  [js beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  changeLease=[result copy]; before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  [js endAccountChange:changeLease config:differentSip resumeWake:YES resolver:resolve rejecter:reject];
+  CHECK(!error && readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake owner changed."] && !runtime.wakeContext);
   [NSFileManager.defaultManager removeItemAtURL:historyURL error:nil];
   printf("PASS: %d native wake runtime assertions\n", assertions);
  }

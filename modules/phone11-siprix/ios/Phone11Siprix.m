@@ -150,6 +150,13 @@ static NSString *P11HistoryNumber(id uri) {
 @property(nonatomic, copy) NSDictionary *accountConfig;
 @property(nonatomic, copy) NSDictionary *wakeOwner;
 @property(nonatomic, copy) NSDictionary *wakeContext;
+// A foreground credential replacement holds native call admission until JS
+// has retired the idle runtime and published its new account. Main-queue only.
+@property(nonatomic, copy) NSString *accountChangeLease;
+@property(nonatomic, copy) NSString *pendingAccountWakeUUID;
+@property(nonatomic, copy) NSDictionary *pendingAccountWakeConfig;
+@property(nonatomic, copy) dispatch_block_t pendingAccountWake;
+@property(nonatomic, copy) void (^pendingAccountWakeCompletion)(NSError *error);
 @property(nonatomic, strong) Phone11Siprix *wakeBridge;
 @property(nonatomic, copy) NSString *wakeCallId;
 @property(nonatomic, copy) void (^wakeEvent)(NSDictionary *event);
@@ -897,6 +904,20 @@ RCT_EXPORT_MODULE(Phone11Siprix)
       completion(P11WakeError(@"Invalid or expired incoming wake.")); return;
     }
     P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    if (runtime.accountChangeLease) {
+      // CallKit has already reported this call. Wait for the short foreground
+      // account transaction, then revalidate the grant before SIP recovery.
+      if (runtime.pendingAccountWake) {
+        completion(P11WakeError(@"The phone runtime is already busy.")); return;
+      }
+      runtime.pendingAccountWakeUUID = uuid;
+      runtime.pendingAccountWakeConfig = P11AccountIdentity(sip);
+      runtime.pendingAccountWakeCompletion = completion;
+      runtime.pendingAccountWake = ^{
+        [self prepareIncomingWake:context sip:sip receivedAt:receivedAt event:event completion:completion];
+      };
+      return;
+    }
     if (runtime.wakeContext || runtime.calls.count || runtime.quarantined) {
       completion(P11WakeError(@"The phone runtime is already busy.")); return;
     }
@@ -1036,6 +1057,15 @@ RCT_EXPORT_MODULE(Phone11Siprix)
   P11OnMain(^{
 #if PHONE11_VOIP_WAKE_COMMISSIONED
     P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    if ([runtime.pendingAccountWakeUUID isEqualToString:callUUID]) {
+      void (^completion)(NSError *) = runtime.pendingAccountWakeCompletion;
+      runtime.pendingAccountWakeUUID = nil;
+      runtime.pendingAccountWakeConfig = nil;
+      runtime.pendingAccountWake = nil;
+      runtime.pendingAccountWakeCompletion = nil;
+      if (completion) completion(P11WakeError(@"Incoming wake ended."));
+      return;
+    }
     if (![runtime.wakeContext[@"callUUID"] isEqual:callUUID] || runtime.wakeEnding) return;
     runtime.wakeEnding = YES;
     NSDictionary *call = runtime.calls[runtime.wakeCallId ?: @""];
@@ -1154,6 +1184,9 @@ RCT_EXPORT_METHOD(initialize:(NSDictionary *)options resolver:(RCTPromiseResolve
     P11Reject(reject, @"E_INVALID_ARGUMENT", @"This pinned trial accepts an empty initialization options object."); return;
   }
   P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.accountChangeLease) {
+    P11Reject(reject, @"E_ACCOUNT_CHANGE", @"A phone account change is in progress."); return;
+  }
   if (runtime.wakeContext && ![runtime.lease isEqualToString:self.lease]) {
     P11Reject(reject, @"E_WAKE_ADOPTION_REQUIRED", @"Validate the phone session before adopting this incoming wake."); return;
   }
@@ -1210,6 +1243,40 @@ RCT_EXPORT_METHOD(getSnapshot:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromi
     P11Reject(reject, @"E_CLEANUP_REQUIRED", @"Siprix cleanup failed. Retry destroy before reading state."); return;
   }
   resolve([runtime snapshot]);
+}
+
+// This check and the native wake arm both run on the main queue. JS holds the
+// returned lease through idle-runtime retirement and account publication.
+RCT_EXPORT_METHOD(beginAccountChange:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (runtime.accountChangeLease || runtime.pendingAccountWake || P11HasLiveCall(runtime) || runtime.quarantined ||
+      (runtime.lease && ![runtime.lease isEqualToString:self.lease] && runtime.sink)) {
+    P11Reject(reject, @"E_CALL_ACTIVE", @"Finish the current phone call before changing accounts."); return;
+  }
+  runtime.accountChangeLease = NSUUID.UUID.UUIDString;
+  resolve(runtime.accountChangeLease);
+}
+
+RCT_EXPORT_METHOD(endAccountChange:(NSString *)token config:(NSDictionary *)config resumeWake:(BOOL)resumeWake resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+  if (!P11String(token, 64) || ![runtime.accountChangeLease isEqualToString:token]) {
+    P11Reject(reject, @"E_ACCOUNT_CHANGE", @"The account change lease is no longer valid."); return;
+  }
+  dispatch_block_t pending = runtime.pendingAccountWake;
+  void (^completion)(NSError *) = runtime.pendingAccountWakeCompletion;
+  BOOL compatible = resumeWake && [runtime.pendingAccountWakeConfig isEqual:P11AccountIdentity(config)];
+  runtime.pendingAccountWake = nil;
+  runtime.pendingAccountWakeUUID = nil;
+  runtime.pendingAccountWakeConfig = nil;
+  runtime.pendingAccountWakeCompletion = nil;
+  runtime.accountChangeLease = nil;
+  // Run before the next main-queue event so CallKit End cannot be interleaved
+  // between releasing the lease and rearming its deferred incoming wake.
+  if (pending) {
+    if (compatible) pending();
+    else if (completion) completion(P11WakeError(@"Incoming wake owner changed."));
+  }
+  resolve(nil);
 }
 
 RCT_EXPORT_METHOD(createAccount:(NSDictionary *)config resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
@@ -1334,6 +1401,7 @@ RCT_EXPORT_METHOD(makeVideoCall:(NSString *)accountId destination:(NSString *)de
   [self invite:accountId destination:destination video:YES resolver:resolve rejecter:reject];
 }
 - (void)invite:(NSString *)accountId destination:(NSString *)destination video:(BOOL)video resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject {
+  if (P11SiprixRuntime.shared.accountChangeLease) { P11Reject(reject, @"E_ACCOUNT_CHANGE", @"A phone account change is in progress."); return; }
   if (video && ![self cameraAuthorized:reject]) return;
   if (P11SiprixRuntime.shared.wakeContext) { P11Reject(reject, @"E_WAKE_PENDING", @"An incoming wake owns the phone runtime."); return; }
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:accountId in:runtime.accounts reject:reject]) return;

@@ -28,10 +28,14 @@ vi.mock("../lib/sip/diagnostics-store", () => ({
   recordPersistentSipDiagnosticEvent: vi.fn(),
   useSipDiagnosticsStore: { getState: () => ({ addEvent: vi.fn() }) },
 }));
+vi.mock("../lib/sip/siprix-engine", () => ({ siprixEngine: { destroy: vi.fn(async () => {}) },
+  nativeAccount: (account: SipAccount) => ({ sipServer: account.domain, sipExtension: account.username,
+    sipPassword: account.password, transport: account.transport }) }));
 
 import * as SecureStore from "expo-secure-store";
 import { useSipAccountStore, type SipAccount } from "../lib/sip/account-store";
 import { sipEngine } from "../lib/sip/pjsip-engine";
+import { siprixEngine } from "../lib/sip/siprix-engine";
 import { useSipCallStore } from "../lib/sip/call-store";
 
 const account: SipAccount = {
@@ -94,7 +98,11 @@ describe("Phone11 auth and SIP account isolation", () => {
   it("preserves a native wake that rings before JS has received a call event", async () => {
     await useSipAccountStore.getState().setAccount(account);
     let nativeWake = true;
-    state.nativeModules.Phone11Siprix = { getSnapshot: vi.fn(async () => ({
+    state.nativeModules.Phone11Siprix = { beginAccountChange: vi.fn(async () => {
+        if (nativeWake) throw new Error("wake armed");
+        return "lease";
+      }),
+      endAccountChange: vi.fn(async () => {}), getSnapshot: vi.fn(async () => ({
       calls: [], nativeWake: nativeWake ? { ownerUserId: 17, tenantId: 1 } : undefined,
     })) };
     const changed = { ...account, password: "replacement-secret" };
@@ -112,7 +120,11 @@ describe("Phone11 auth and SIP account isolation", () => {
     await useSipAccountStore.getState().setAccount(account);
     vi.mocked(SecureStore.setItemAsync).mockClear();
     let nativeWake = false;
-    state.nativeModules.Phone11Siprix = { getSnapshot: vi.fn(async () => ({
+    state.nativeModules.Phone11Siprix = { beginAccountChange: vi.fn(async () => {
+        if (nativeWake) throw new Error("wake armed");
+        return "lease";
+      }),
+      endAccountChange: vi.fn(async () => {}), getSnapshot: vi.fn(async () => ({
       calls: [], nativeWake: nativeWake ? { ownerUserId: 17, tenantId: 1 } : undefined,
     })) };
     let finish!: () => void;
@@ -127,6 +139,80 @@ describe("Phone11 auth and SIP account isolation", () => {
     await expect(write).rejects.toThrow("Finish the current phone call");
     expect(useSipAccountStore.getState().account).toEqual(account);
     expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("fails closed when an installed native bridge cannot atomically reserve the idle runtime", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    state.nativeModules.Phone11Siprix = { getSnapshot: vi.fn(async () => ({ calls: [] })) };
+    await expect(useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" }))
+      .rejects.toThrow("Install the latest Phone11 app");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("rolls back a credential write when native wake wins lease acquisition", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => { throw Object.assign(new Error("wake armed"), { code: "E_CALL_ACTIVE" }); }),
+      endAccountChange: vi.fn(async () => {}) };
+    state.nativeModules.Phone11Siprix = bridge;
+    await expect(useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" }))
+      .rejects.toThrow("Finish the current phone call");
+    expect(bridge.beginAccountChange).toHaveBeenCalledOnce();
+    expect(bridge.endAccountChange).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("holds native wake admission through old runtime retirement and new account publication", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    let finishDestroy!: () => void;
+    const blocked = new Promise<void>(resolve => { finishDestroy = resolve; });
+    vi.mocked(siprixEngine.destroy).mockImplementationOnce(async () => { await blocked; });
+    let leaseHeld = false;
+    let wakeQueued = false;
+    let wakeResumed = false;
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => { leaseHeld = true; return "lease"; }),
+      endAccountChange: vi.fn(async (_token: string, _config: unknown, resume: boolean) => {
+        expect(useSipAccountStore.getState().account?.password).toBe("replacement-secret");
+        expect(resume).toBe(true);
+        leaseHeld = false;
+        wakeResumed = wakeQueued;
+      }) };
+    state.nativeModules.Phone11Siprix = bridge;
+    const write = useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" });
+    await vi.waitFor(() => expect(siprixEngine.destroy).toHaveBeenCalledOnce());
+    expect(leaseHeld).toBe(true);
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    wakeQueued = true;
+    finishDestroy();
+    await write;
+    expect(bridge.endAccountChange).toHaveBeenCalledWith("lease", expect.objectContaining({ sipPassword: "replacement-secret" }), true);
+    expect(wakeResumed).toBe(true);
+    expect(leaseHeld).toBe(false);
+  });
+  it("does not resume a deferred wake for a different extension", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => "lease"), endAccountChange: vi.fn(async () => {}) };
+    state.nativeModules.Phone11Siprix = bridge;
+    await useSipAccountStore.getState().setAccount({ ...account, username: "2002" });
+    expect(bridge.endAccountChange).toHaveBeenCalledWith("lease", expect.any(Object), false);
+  });
+  it("releases the lease without resuming wake after sign-out interrupts publication", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    let finishDestroy!: () => void;
+    const blocked = new Promise<void>(resolve => { finishDestroy = resolve; });
+    vi.mocked(siprixEngine.destroy).mockImplementationOnce(async () => { await blocked; });
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => "lease"), endAccountChange: vi.fn(async () => {}) };
+    state.nativeModules.Phone11Siprix = bridge;
+    const write = useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" });
+    await vi.waitFor(() => expect(siprixEngine.destroy).toHaveBeenCalledOnce());
+    const clear = useSipAccountStore.getState().clearAccount();
+    finishDestroy();
+    await Promise.all([write, clear]);
+    expect(bridge.endAccountChange).toHaveBeenCalledWith("lease", null, false);
+    expect(useSipAccountStore.getState().account).toBeNull();
+    expect(state.secure.size).toBe(0);
   });
   it("discards old unbound plaintext credentials instead of assigning them to the next user", async () => {
     state.plain.set("phone11_sip_account", JSON.stringify(account));

@@ -10,7 +10,7 @@ import { NativeModules, Platform } from "react-native";
 import { getAuthSnapshot } from "../_core/auth";
 import { hasOngoingSipCall } from "./call-store";
 import { create } from "zustand";
-import type { Phone11SiprixModule } from "../../modules/phone11-siprix";
+import type { AccountConfig, Phone11SiprixModule } from "../../modules/phone11-siprix";
 
 export type SipTransport = "UDP" | "TCP" | "TLS";
 
@@ -93,6 +93,28 @@ async function assertNativeIdleForAccountChange(current: SipAccount | null, next
     throw new SipAccountChangeDuringCallError();
   }
 }
+function nativeAccountChangeBridge(current: SipAccount | null, next: SipAccount): Phone11SiprixModule | null {
+  // The Siprix native wake module is iOS-only. Android currently uses PJSIP
+  // and its JS call-store guard; an Android native wake lease needs its own
+  // implementation before claiming the same background-race guarantee.
+  if (sameSipAccount(current, next) || Platform.OS !== "ios") return null;
+  const bridge = NativeModules.Phone11Siprix as Phone11SiprixModule | undefined;
+  if (!bridge) return null;
+  // Old installed builds cannot make the final idle check atomic with wake
+  // admission. Never replace their account while that gap remains open.
+  if (typeof bridge.beginAccountChange !== "function" || typeof bridge.endAccountChange !== "function") {
+    throw new Error("Install the latest Phone11 app before syncing a different phone account.");
+  }
+  return bridge;
+}
+
+async function restoreSecureAccount(previous: SipAccount | null): Promise<void> {
+  if (Platform.OS === "web") return;
+  if (previous) await SecureStore.setItemAsync(SECURE_STORAGE_KEY, JSON.stringify(previous), {
+    keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+  });
+  else await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+}
 let storageQueue: Promise<unknown> = Promise.resolve();
 let revision = 0;
 function serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -127,6 +149,7 @@ export const useSipAccountStore = create<SipAccountState>((set) => ({
       if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) return;
       const previous = useSipAccountStore.getState().account;
       await assertNativeIdleForAccountChange(previous, account);
+      const bridge = nativeAccountChangeBridge(previous, account);
       if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) return;
       if (Platform.OS !== "web") {
         await SecureStore.setItemAsync(SECURE_STORAGE_KEY, JSON.stringify(account), {
@@ -135,25 +158,43 @@ export const useSipAccountStore = create<SipAccountState>((set) => ({
       }
       await AsyncStorage.removeItem(STORAGE_KEY);
       if (current === revision && account.ownerUserId === getAuthSnapshot().user?.id) {
-        if (!sameSipAccount(previous, account) && (hasOngoingSipCall() || await hasNativeSipCallOrWake())) {
-          if (Platform.OS !== "web") {
-            if (previous) await SecureStore.setItemAsync(SECURE_STORAGE_KEY, JSON.stringify(previous), {
-              keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
-            });
-            else await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
-            // Sign-out or another write may have started during the rollback.
-            // A queued clear/new write now owns the keychain state.
-            if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) {
-              await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+        let lease: string | null = null;
+        let published = false;
+        let nextNativeConfig: AccountConfig | null = null;
+        try {
+          if (!sameSipAccount(previous, account)) {
+            if (hasOngoingSipCall()) throw new SipAccountChangeDuringCallError();
+            if (bridge) {
+              try { lease = await bridge.beginAccountChange!(); }
+              catch { throw new SipAccountChangeDuringCallError(); }
+              if (!lease || hasOngoingSipCall()) throw new SipAccountChangeDuringCallError();
+              // The lease prevents a native wake or outgoing call from starting
+              // while the old idle runtime is retired and JS changes owner.
+              const { siprixEngine, nativeAccount } = await import("./siprix-engine");
+              nextNativeConfig = nativeAccount(account);
+              await siprixEngine.destroy();
+            } else if (await hasNativeSipCallOrWake()) {
+              throw new SipAccountChangeDuringCallError();
             }
           }
-          throw new SipAccountChangeDuringCallError();
+          if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) {
+            if (Platform.OS !== "web") await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+            return;
+          }
+          set({ account });
+          published = true;
+        } catch (error) {
+          if (current === revision && account.ownerUserId === getAuthSnapshot().user?.id) {
+            await restoreSecureAccount(previous);
+          } else if (Platform.OS !== "web") {
+            await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
+          }
+          throw error;
+        } finally {
+          if (lease && bridge) await bridge.endAccountChange!(lease, published ? nextNativeConfig : null,
+            published && previous?.ownerUserId === account.ownerUserId && previous?.tenantId === account.tenantId &&
+            previous?.username === account.username && previous?.domain === account.domain);
         }
-        if (current !== revision || account.ownerUserId !== getAuthSnapshot().user?.id) {
-          if (Platform.OS !== "web") await SecureStore.deleteItemAsync(SECURE_STORAGE_KEY);
-          return;
-        }
-        set({ account });
       } else if (Platform.OS !== "web") {
         // Auth can change while the keychain write is in flight. Do not leave that
         // owner's credentials available to a later hydration before cleanup runs.

@@ -96,6 +96,10 @@ export interface Phone11SiprixModule {
   restoreIncomingWakeDelegate(): Promise<void>;
   initialize(options: Record<string, never>): Promise<Snapshot>;
   getSnapshot(): Promise<Snapshot>;
+  /** Atomically reserve the idle native runtime against incoming wake and new calls. */
+  beginAccountChange?(): Promise<string>;
+  /** Release a matching reservation; any queued CallKit wake resumes first. */
+  endAccountChange?(token: string, config: AccountConfig | null, resumeWake: boolean): Promise<void>;
   createAccount(config: AccountConfig): Promise<Account>;
   registerAccount(accountId: string, expireTime: number): Promise<void>;
   unregisterAccount(accountId: string): Promise<void>;
