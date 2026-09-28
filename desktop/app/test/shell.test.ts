@@ -18,6 +18,29 @@ test('IPC rejects a different sender, subframe, and URL', () => {
   assert.equal(validSender({ sender: owner, senderFrame: { url: frame.url } } as never, owner as never, frame.url), false);
   assert.equal(validSender({ sender: owner, senderFrame: frame } as never, owner as never, 'https://evil.test/'), false);
 });
+test('directory IPC binds requests and responses to the current selected tenant session', async () => {
+  let current: DesktopSession | null = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 9, extensionId: 2 };
+  let resolvePage!: (page: { tenantId: number; items: { id: number; name: string; number: string }[]; nextOffset: null }) => void;
+  const calls: unknown[] = [];
+  const provider = { currentSession: () => current, currentExtensionNumber: () => '1020',
+    listDirectory: (revision: string, search: string, offset: number) => {
+      calls.push({ revision, search, offset });
+      return new Promise(resolve => { resolvePage = resolve; });
+    } };
+  const helper = { snapshot: () => empty };
+  const handlers = createHandlers(provider as never, helper as never, () => 'g1', () => {});
+  await assert.rejects(handlers.directoryList({ sessionRevision: 'old', search: '', offset: 0 }));
+  await assert.rejects(handlers.directoryList({ sessionRevision: 'r1', search: '', offset: -1 }));
+  assert.equal(calls.length, 0);
+  const pending = handlers.directoryList({ sessionRevision: 'r1', search: 'Som', offset: 0 });
+  assert.deepEqual(calls, [{ revision: 'r1', search: 'Som', offset: 0 }]);
+  resolvePage({ tenantId: 10, items: [], nextOffset: null });
+  await assert.rejects(pending, /PHONE11_DIRECTORY_TENANT_MISMATCH/);
+  const oldPage = handlers.directoryList({ sessionRevision: 'r1', search: 'Som', offset: 0 });
+  current = { revision: 'r2', accountId: 'a1', userId: 'u1', tenantId: 10, extensionId: 3 };
+  resolvePage({ tenantId: 9, items: [{ id: 41, name: 'Som', number: '1020' }], nextOffset: null });
+  await assert.rejects(oldPage, /session changed/);
+});
 test('sign out stops helper and clears public session without secret emission', async () => {
   const secret = 'VERY_PRIVATE_SIP_PASSWORD';
   const session: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 1, extensionId: 2 };

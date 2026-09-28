@@ -52,6 +52,7 @@
             <div class="phone-sidebar-title"><h1>Phone</h1></div>
             <nav class="phone-sections" aria-label="Phone sections">
               <button id="history-tab" type="button" aria-current="page">History</button>
+              <button id="directory-tab" type="button">Contacts</button>
               <button id="voicemail-tab" type="button" disabled title="Voicemail is unavailable while personal inbox access is being secured">Voicemail</button>
               <button id="lines-tab" type="button">Lines</button>
             </nav>
@@ -64,6 +65,18 @@
               </div>
               <p id="history-state" class="panel-state" role="status"></p>
               <div id="history-list" class="history-list"></div>
+            </section>
+
+            <section id="directory-panel" class="phone-panel directory-panel" hidden aria-labelledby="directory-heading">
+              <div class="panel-heading">
+                <h2 id="directory-heading">Contacts</h2>
+                <button id="directory-refresh" class="icon-button" type="button" aria-label="Refresh contacts" title="Refresh"><img src="icons/refresh-cw.svg" alt=""></button>
+              </div>
+              <label class="sr-only" for="directory-search">Search contacts by name or extension</label>
+              <input id="directory-search" class="directory-search" type="search" placeholder="Search name or extension" maxlength="64" autocomplete="off">
+              <p id="directory-state" class="panel-state" role="status" aria-live="polite"></p>
+              <div id="directory-list" class="directory-list"></div>
+              <button id="directory-more" class="directory-more" type="button" hidden>Show more contacts</button>
             </section>
 
             <section id="voicemail-panel" class="phone-panel voicemail-panel" hidden aria-labelledby="voicemail-heading">

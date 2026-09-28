@@ -46,6 +46,9 @@ export type DesktopVoicemail = Readonly<{ id: number; callerName: string | null;
 export type DesktopCallHistory = Readonly<{ id: number; direction: "inbound" | "outbound" | "internal";
   callerNumber: string | null; calleeNumber: string | null; durationSeconds: number;
   disposition: string | null; startedAt: string }>;
+export type DesktopDirectoryEntry = Readonly<{ id: number; name: string; number: string }>;
+export type DesktopDirectoryPage = Readonly<{ tenantId: number; items: readonly DesktopDirectoryEntry[];
+  nextOffset: number | null }>;
 export type DesktopVoicemailAudio = Readonly<{ id: number; mimeType: "audio/wav"; bytes: Uint8Array }>;
 const MAX_VOICEMAIL_BYTES = 20 * 1024 * 1024;
 const safeMeetingTitle = (value: unknown): value is string =>
@@ -105,6 +108,51 @@ export class AuthenticatedDesktopProvider {
   currentSession(): DesktopSession | null { return this.session; }
   /** Public display number from the current authenticated phone grant. */
   currentExtensionNumber(): string | null { return this.session ? this.extensionNumber : null; }
+
+  /** Public extension labels from the currently selected, authorized tenant. */
+  async listDirectory(expectedRevision: string, search: string, offset: number): Promise<DesktopDirectoryPage> {
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    if (typeof search !== "string" || search.length > 64 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(search) ||
+        !Number.isSafeInteger(offset) || offset < 0 || offset > 1000)
+      throw new Error("PHONE11_DIRECTORY_INVALID_REQUEST");
+    let value: unknown;
+    try {
+      const response = await this.send(
+        `/api/trpc/pbx.directory.list?input=${encodeURIComponent(JSON.stringify({ json: {
+          tenantId, search: search.trim(), limit: 25, offset,
+        } }))}`,
+        { headers: { authorization: `Bearer ${token}` } }, epoch,
+      );
+      if (!response.ok) throw new Error(response.status === 401 ? "PHONE11_DIRECTORY_UNAUTHORIZED"
+        : response.status === 403 ? "PHONE11_DIRECTORY_FORBIDDEN"
+        : response.status === 404 ? "PHONE11_DIRECTORY_UNAVAILABLE"
+        : "PHONE11_DIRECTORY_REQUEST_FAILED");
+      value = this.unwrapTrpc(await this.json(response));
+    } catch (error) {
+      try { this.assertSessionAuthority(expectedRevision, epoch); }
+      catch { throw new Error("PHONE11_DIRECTORY_SESSION_CHANGED"); }
+      if (error instanceof Error && error.message.startsWith("PHONE11_DIRECTORY_")) throw error;
+      throw new Error("PHONE11_DIRECTORY_REQUEST_FAILED");
+    }
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!isRecord(value) || !positiveId(value.tenantId) || !Array.isArray(value.items) ||
+        value.items.length > 25 ||
+        !(value.nextOffset === null || (Number.isSafeInteger(value.nextOffset) &&
+          typeof value.nextOffset === "number" && value.nextOffset > offset && value.nextOffset <= 1025)))
+      throw new Error("PHONE11_DIRECTORY_INVALID_RESPONSE");
+    if (value.tenantId !== tenantId) throw new Error("PHONE11_DIRECTORY_TENANT_MISMATCH");
+    const items = value.items.map((item): DesktopDirectoryEntry => {
+      if (!isRecord(item) || !positiveId(item.id) || !clean(item.number, 32) ||
+          !/^[0-9]{1,32}$/.test(item.number) || !safeDisplay(item.name, 160))
+        throw new Error("PHONE11_DIRECTORY_INVALID_RESPONSE");
+      return { id: item.id, name: item.name as string, number: item.number };
+    });
+    // The server may report one more page after the last permitted offset.
+    const nextOffset = value.nextOffset as number | null;
+    return { tenantId, items, nextOffset: nextOffset !== null && nextOffset <= 1000 ? nextOffset : null };
+  }
 
   /** The server lists only the signed-in user's selected-tenant voicemail. */
   async listVoicemail(expectedRevision: string): Promise<readonly DesktopVoicemail[]> {

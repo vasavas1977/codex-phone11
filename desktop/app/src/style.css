@@ -250,6 +250,17 @@ p { color: var(--muted); line-height: 1.45; }
 .history-row small { display: block; margin-top: 5px; color: #747d89; font-size: 10px; }
 .history-row[data-missed="true"] strong { color: #cb3548; }
 .history-row:disabled { opacity: 1; cursor: default; }
+.directory-panel { padding-bottom: 12px; }
+.directory-search { display: block; width: calc(100% - 32px); height: 36px; margin: 10px 16px 8px;
+  padding: 0 10px; border: 1px solid #cfd4db; border-radius: 6px; background: #fff; color: var(--ink); font-size: 12px; }
+.directory-row { display: flex; width: 100%; min-height: 54px; flex-direction: column; justify-content: center;
+  gap: 4px; padding: 10px 16px; border: 0; border-bottom: 1px solid #eff0f2; background: #fff; text-align: left; color: var(--ink); }
+.directory-row:hover { background: #f6f8fb; }
+.directory-row strong { overflow-wrap: anywhere; font-size: 13px; font-weight: 600; }
+.directory-row small { color: #747d89; font-size: 11px; }
+.directory-row:disabled { opacity: .6; }
+.directory-more { display: block; width: calc(100% - 32px); min-height: 34px; margin: 12px 16px;
+  border: 1px solid #d8e2ff; border-radius: 6px; background: #f3f6ff; color: #164fbd; font-size: 12px; font-weight: 600; }
 .voicemail-item { position: relative; padding-right: 49px; }
 .voicemail-play { position: absolute; right: 12px; top: 12px; width: 28px; height: 28px; border: 0; border-radius: 50%; background: #edf2ff; }
 .voicemail-play img { width: 13px; height: 13px; }

@@ -18,8 +18,9 @@ const element = (): ElementStub => ({ hidden: false, disabled: false, textConten
 
 test('dialpad enters a bounded destination while idle and sends DTMF only in an established call', async () => {
   const ids = ['login', 'workspace', 'phone', 'meetings', 'phone-tab', 'meetings-tab',
-    'backspace', 'mute-label', 'hold-label', 'history-tab', 'voicemail-tab', 'lines-tab',
-    'dialpad-panel', 'history-panel', 'voicemail-panel', 'lines-panel', 'phone-status-mark',
+    'backspace', 'mute-label', 'hold-label', 'history-tab', 'directory-tab', 'voicemail-tab', 'lines-tab',
+    'dialpad-panel', 'history-panel', 'directory-panel', 'voicemail-panel', 'lines-panel', 'phone-status-mark',
+    'directory-search', 'directory-state', 'directory-list', 'directory-refresh', 'directory-more',
     'voicemail-state', 'voicemail-list', 'voicemail-refresh', 'history-list', 'history-state', 'history-refresh',
     'open-meetings', 'meeting-open-message', 'identity', 'status', 'call-id', 'notice', 'hold-message', 'dial', 'answer',
     'end', 'mute', 'hold', 'keypad', 'destination', 'message', 'login-form', 'email', 'password', 'sign-out', 'dial-form'];
@@ -30,6 +31,7 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
   const actions: unknown[] = [];
   let meetingOpens = 0;
   let voicemailLists = 0;
+  const directoryCalls: unknown[] = [];
   const calling = { version: 1, registered: true, call: null, dialState: 'idle', callActionState: 'idle', holdMessage: null };
   let publicState: any = { signedIn: true, sessionRevision: 'session-a', generation: 'generation-a', tenantId: 1,
     extensionNumber: '1020', calling };
@@ -47,6 +49,11 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     },
     openMeetings: async () => { meetingOpens++; throw new Error('private admission token'); },
     historyList: async (revision: string) => ({sessionRevision: revision, items: [{id:1, direction:'inbound', callerNumber:'3001', calleeNumber:'1020', durationSeconds:0, disposition:'missed', startedAt:'2026-09-27T10:00:00.000Z'}]}),
+    directoryList: async (revision: string, search: string, offset: number) => {
+      directoryCalls.push({ revision, search, offset });
+      return { sessionRevision: revision, tenantId: 1,
+        items: [{ id: 41, name: 'Som', number: '3001' }], nextOffset: null };
+    },
     voicemailList: async (revision: string) => {
       voicemailLists++;
       return { sessionRevision: revision, items: [{ id: 4, callerName: 'Som-O', callerNumber: '1020',
@@ -70,6 +77,20 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     assert.equal(elements.get('voicemail-panel')!.hidden, true);
     elements.get('history-tab')!.listeners.get('click')!({});
     assert.equal(elements.get('history-panel')!.hidden, false);
+    elements.get('directory-tab')!.listeners.get('click')!({});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(directoryCalls, [{ revision: 'session-a', search: '', offset: 0 }]);
+    assert.equal(elements.get('directory-list')!.children.length, 1);
+    destination.value = '';
+    elements.get('directory-list')!.children[0].listeners.get('click')!({});
+    assert.equal(destination.value, '3001', 'contact selection fills the dialpad');
+    assert.equal(actions.length, 0, 'contact selection does not dial');
+    elements.get('directory-search')!.value = 'Som';
+    elements.get('directory-search')!.listeners.get('input')!({});
+    await new Promise(resolve => setTimeout(resolve, 280));
+    assert.deepEqual(directoryCalls[1], { revision: 'session-a', search: 'Som', offset: 0 });
+    destination.value = '';
+    elements.get('history-tab')!.listeners.get('click')!({});
     elements.get('meetings-tab')!.listeners.get('click')!({});
     assert.equal(elements.get('meetings')!.hidden, false);
     assert.equal(elements.get('phone')!.hidden, true);

@@ -74,6 +74,7 @@ async function bootstrap(): Promise<void> {
     return handlers.action(value);
   }));
   ipcMain.handle(CHANNELS.historyList, checked(value => handlers.historyList(value)));
+  ipcMain.handle(CHANNELS.directoryList, checked(value => handlers.directoryList(value)));
   ipcMain.handle(CHANNELS.voicemailAudio, checked(value => handlers.voicemailAudio(value)));
   ipcMain.handle(CHANNELS.voicemailMarkRead, checked(value => handlers.voicemailMarkRead(value)));
   ipcMain.handle(CHANNELS.voicemailList, checked(value => handlers.voicemailList(value)));

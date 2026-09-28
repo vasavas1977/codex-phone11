@@ -1,4 +1,4 @@
-import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, VOICEMAIL_ENABLED, type PublicState, type TaggedSnapshot } from './ipc';
+import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, VOICEMAIL_ENABLED, type PublicState, type TaggedSnapshot, type TaggedDirectory, type DirectoryEntry } from './ipc';
 import type { DesktopCallHistory } from '../../src/authenticated-provider';
 import { VoicemailPlayer } from './voicemail-player';
 
@@ -7,6 +7,7 @@ declare global { interface Window { phone11: {
   action(input: unknown): Promise<TaggedSnapshot>; signOut(): Promise<PublicState>;
   openMeetings(): Promise<void>;
   historyList?(sessionRevision: string): Promise<{sessionRevision: string; items: DesktopCallHistory[]}>;
+  directoryList(sessionRevision: string, search: string, offset: number): Promise<TaggedDirectory>;
   voicemailAudio?(sessionRevision: string, id: number): Promise<{sessionRevision: string; id: number; mimeType: 'audio/wav'; bytes: Uint8Array}>;
   voicemailMarkRead?(sessionRevision: string, id: number): Promise<unknown>;
   voicemailList?(sessionRevision: string): Promise<{ sessionRevision: string; items: Array<{
@@ -21,7 +22,7 @@ let state: PublicState | null = null;
 let busy = false;
 let accountEpoch = 0;
 let currentTab: 'phone' | 'meetings' = 'phone';
-let currentPhoneSection: 'history' | 'voicemail' | 'lines' = 'history';
+let currentPhoneSection: 'history' | 'directory' | 'voicemail' | 'lines' = 'history';
 let meetingOpening = false;
 let meetingMessage = '';
 let voicemailLoading = false;
@@ -35,6 +36,95 @@ let historyLoadedFor = '';
 let historyLoading = false;
 let historyMessage = '';
 let historyItems: DesktopCallHistory[] = [];
+let directoryRequest = 0;
+let directoryLoadedFor = '';
+let directoryLoading = false;
+let directoryMessage = '';
+let directoryItems: DirectoryEntry[] = [];
+let directoryNextOffset: number | null = null;
+let directorySearchTimer: ReturnType<typeof setTimeout> | null = null;
+function directoryKey(revision: string, tenantId: number, search: string): string {
+  return JSON.stringify([revision, tenantId, search]);
+}
+function resetDirectory(): void {
+  directoryRequest++;
+  if (directorySearchTimer) clearTimeout(directorySearchTimer);
+  directorySearchTimer = null;
+  directoryLoadedFor = ''; directoryLoading = false; directoryMessage = '';
+  directoryItems = []; directoryNextOffset = null;
+  const search = maybeById('directory-search') as HTMLInputElement | null;
+  if (search) search.value = '';
+  renderDirectory();
+}
+function directoryFailureMessage(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  if (text.includes('PHONE11_DIRECTORY_UNAUTHORIZED')) return 'Your session has expired. Sign in again to load contacts.';
+  if (text.includes('PHONE11_DIRECTORY_FORBIDDEN')) return 'Your account cannot access contacts in this workspace.';
+  if (text.includes('PHONE11_DIRECTORY_TENANT_MISMATCH')) return 'Phone11 could not verify the workspace for contacts.';
+  if (text.includes('PHONE11_DIRECTORY_UNAVAILABLE')) return 'Contacts are unavailable in this Phone11 version.';
+  if (text.includes('PHONE11_DIRECTORY_SESSION_CHANGED')) return 'Your session changed. Sign in again to load contacts.';
+  return 'Contacts could not load. Refresh to try again.';
+}
+function renderDirectory(): void {
+  const status = maybeById('directory-state');
+  if (status) status.textContent = directoryMessage;
+  const refresh = maybeById('directory-refresh') as HTMLButtonElement | null;
+  if (refresh) refresh.disabled = directoryLoading;
+  const more = maybeById('directory-more') as HTMLButtonElement | null;
+  if (more) { more.hidden = directoryNextOffset === null; more.disabled = directoryLoading; }
+  const list = maybeById('directory-list');
+  if (!list) return;
+  list.replaceChildren();
+  if (!directoryLoading && !directoryMessage && directoryLoadedFor && directoryItems.length === 0) {
+    const empty = document.createElement('p'); empty.className = 'empty-message';
+    empty.textContent = 'No contacts found in this workspace.'; list.append(empty);
+  }
+  for (const item of directoryItems) {
+    const row = document.createElement('button'); row.type = 'button'; row.className = 'directory-row';
+    row.setAttribute('aria-label', `Use ${item.name}, extension ${item.number} on dialpad`);
+    const name = document.createElement('strong'); name.textContent = item.name;
+    const number = document.createElement('small'); number.textContent = `Extension ${item.number}`;
+    row.append(name, number);
+    row.disabled = !state?.signedIn || !!state.calling.call || busy ||
+      state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle';
+    row.addEventListener('click', () => {
+      if (!state?.signedIn || !state.calling.registered || state.calling.call || busy ||
+          state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle' ||
+          directoryLoadedFor !== directoryKey(state.sessionRevision!, state.tenantId!,
+            (byId('directory-search') as HTMLInputElement).value.trim())) return;
+      const field = byId('destination') as HTMLInputElement;
+      field.value = item.number; field.focus();
+    });
+    list.append(row);
+  }
+}
+async function loadDirectory(more = false): Promise<void> {
+  if (!state?.signedIn || !state.sessionRevision || !state.tenantId) return;
+  const search = (byId('directory-search') as HTMLInputElement).value.trim();
+  const key = directoryKey(state.sessionRevision, state.tenantId, search);
+  if (more && (directoryNextOffset === null || directoryLoadedFor !== key)) return;
+  const offset = more ? directoryNextOffset! : 0;
+  const revision = state.sessionRevision; const tenantId = state.tenantId;
+  const request = ++directoryRequest;
+  directoryLoading = true; directoryMessage = 'Loading contacts…';
+  if (!more) { directoryItems = []; directoryNextOffset = null; directoryLoadedFor = ''; }
+  renderDirectory();
+  try {
+    const response = await window.phone11.directoryList(revision, search, offset);
+    if (request !== directoryRequest || state?.sessionRevision !== revision || state.tenantId !== tenantId ||
+        (byId('directory-search') as HTMLInputElement).value.trim() !== search) return;
+    if (response.sessionRevision !== revision || response.tenantId !== tenantId) throw new Error('PHONE11_DIRECTORY_TENANT_MISMATCH');
+    directoryItems = more ? [...directoryItems, ...response.items] : [...response.items];
+    directoryNextOffset = response.nextOffset; directoryLoadedFor = key; directoryMessage = '';
+  } catch (error) {
+    if (request === directoryRequest && state?.sessionRevision === revision && state.tenantId === tenantId)
+      directoryMessage = directoryFailureMessage(error);
+  } finally {
+    if (request === directoryRequest && state?.sessionRevision === revision && state.tenantId === tenantId) {
+      directoryLoading = false; renderDirectory();
+    }
+  }
+}
 const audio = maybeById('voicemail-audio') as HTMLAudioElement | null;
 const player = audio ? new VoicemailPlayer({
   audio,
@@ -132,7 +222,7 @@ function render(): void {
     if (tab === currentTab) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   }
-  for (const section of ['history', 'voicemail', 'lines'] as const) {
+  for (const section of ['history', 'directory', 'voicemail', 'lines'] as const) {
     const button = maybeById(`${section}-tab`);
     const panel = maybeById(`${section}-panel`);
     if (!button || !panel) continue;
@@ -144,6 +234,7 @@ function render(): void {
       panel.hidden = true;
     }
   }
+  renderDirectory();
   if (!signed || !state) { player?.stop(); return; }
   renderHistory();
   const phoneBusy = !!call || state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle';
@@ -285,7 +376,7 @@ byId('login-form').addEventListener('submit', async event => {
 for (const tab of ['phone', 'meetings'] as const) {
   byId(`${tab}-tab`).addEventListener('click', () => { currentTab = tab; if (tab !== 'phone') player?.stop(); render(); });
 }
-for (const section of ['history', 'voicemail', 'lines'] as const) {
+for (const section of ['history', 'directory', 'voicemail', 'lines'] as const) {
   maybeById(`${section}-tab`)?.addEventListener('click', () => {
     if (section === 'voicemail' && !VOICEMAIL_ENABLED) return;
     currentPhoneSection = section;
@@ -293,8 +384,17 @@ for (const section of ['history', 'voicemail', 'lines'] as const) {
     render();
     if (section === 'voicemail') void loadVoicemail();
     if (section === 'history') void loadHistory();
+    if (section === 'directory' && !directoryLoadedFor) void loadDirectory();
   });
 }
+maybeById('directory-search')?.addEventListener('input', () => {
+  directoryRequest++; directoryLoading = false; directoryItems = []; directoryNextOffset = null;
+  directoryLoadedFor = ''; directoryMessage = ''; renderDirectory();
+  if (directorySearchTimer) clearTimeout(directorySearchTimer);
+  directorySearchTimer = setTimeout(() => { directorySearchTimer = null; void loadDirectory(); }, 250);
+});
+maybeById('directory-refresh')?.addEventListener('click', () => { void loadDirectory(); });
+maybeById('directory-more')?.addEventListener('click', () => { void loadDirectory(true); });
 maybeById('history-refresh')?.addEventListener('click', () => { void loadHistory(true); });
 maybeById('voicemail-refresh')?.addEventListener('click', () => { void loadVoicemail(true); });
 byId('open-meetings').addEventListener('click', async () => {
@@ -322,7 +422,7 @@ byId('open-meetings').addEventListener('click', async () => {
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;
-  player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = '';
+  player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = ''; resetDirectory();
   state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; currentPhoneSection = 'history'; voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = []; voicemailMessage = 'Open Voicemail to load your messages.'; render();
   try {
     const signedOut = await window.phone11.signOut();
@@ -369,7 +469,7 @@ window.phone11.onUpdate(update => {
   const previousCall = state?.calling.call;
   state = applyTaggedSnapshot(state, update);
   if (previousRevision && previousRevision !== state?.sessionRevision) {
-    player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = '';
+    player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = ''; resetDirectory();
     voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = [];
     voicemailMessage = 'Open Voicemail to load your messages.';
   }

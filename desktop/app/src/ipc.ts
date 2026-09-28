@@ -7,12 +7,16 @@ import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopV
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
   action: 'phone11:action', signOut: 'phone11:sign-out', update: 'phone11:update',
   voicemailList: 'phone11:voicemail-list', historyList: 'phone11:history-list',
+  directoryList: 'phone11:directory-list',
   voicemailAudio: 'phone11:voicemail-audio', voicemailMarkRead: 'phone11:voicemail-mark-read' });
 export type PublicState = { signedIn: boolean; sessionRevision: string | null; generation: string | null;
   tenantId: number | null; extensionNumber: string | null; calling: ReturnType<DesktopHelperSupervisor['snapshot']> };
 export type TaggedSnapshot = { sessionRevision: string; generation: string;
   snapshot: ReturnType<DesktopHelperSupervisor['snapshot']> };
 export type TaggedVoicemail = { sessionRevision: string; items: readonly DesktopVoicemail[] };
+export type DirectoryEntry = Readonly<{ id: number; name: string; number: string }>;
+export type TaggedDirectory = { sessionRevision: string; tenantId: number;
+  items: readonly DirectoryEntry[]; nextOffset: number | null };
 // Keep the personal inbox closed until the deployed list, read, and media routes enforce owner authority.
 export const VOICEMAIL_ENABLED = false;
 function requireVoicemail(): void {
@@ -77,6 +81,16 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
     const calling = helper.snapshot();
     return !!calling.call || calling.dialState !== 'idle' || calling.callActionState !== 'idle' || additionalMediaBlocked();
   };
+  const directorySession = (input: unknown): { revision: string; search: string; offset: number; tenantId: number } => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid directory request');
+    const { sessionRevision, search, offset } = input as Record<string, unknown>;
+    const session = provider.currentSession();
+    if (!session || session.revision !== sessionRevision || typeof search !== 'string' ||
+        search.length > 64 || /[\u0000-\u001f\u007f-\u009f]/u.test(search) ||
+        typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset > 1000)
+      throw new Error('Invalid directory request');
+    return { revision: session.revision, search: search.trim(), offset, tenantId: session.tenantId };
+  };
   return {
     state,
     signOut,
@@ -126,6 +140,13 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       }
       if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
       return { sessionRevision: revision, items };
+    },
+    directoryList: async (input: unknown): Promise<TaggedDirectory> => {
+      const { revision, search, offset, tenantId } = directorySession(input);
+      const page = await provider.listDirectory(revision, search, offset);
+      if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
+      if (page.tenantId !== tenantId) throw new Error('PHONE11_DIRECTORY_TENANT_MISMATCH');
+      return { sessionRevision: revision, ...page };
     },
     voicemailAudio: async (input: unknown) => {
       requireVoicemail();

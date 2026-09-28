@@ -13,6 +13,7 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
   secondTenantId?: number; secondExtensionId?: number; secondUsername?: string;
   availableMeetings?: unknown; meetingGrant?: unknown; voicemailItems?: unknown;
   callHistory?: unknown; callHistoryStatus?: number; audioStatus?: number; audioType?: string; audioLength?: string;
+  directory?: unknown; directoryStatus?: number;
   audioBytes?: Uint8Array } = {}) {
   const paths: string[] = [];
   let configCalls = 0;
@@ -55,6 +56,12 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
       assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""),
         { json: { tenantId: overrides.tenantId ?? 9, period: "month" } });
       return trpc(overrides.callHistory ?? { tenantId: overrides.tenantId ?? 9, calls: [] }, overrides.callHistoryStatus ?? 200);
+    }
+    if (url.pathname === "/api/trpc/pbx.directory.list") {
+      assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""),
+        { json: { tenantId: overrides.tenantId ?? 9, search: "Som", limit: 25, offset: 0 } });
+      return trpc(overrides.directory ?? { tenantId: overrides.tenantId ?? 9,
+        items: [{ id: 41, name: "Som", number: "1020" }], nextOffset: null }, overrides.directoryStatus ?? 200);
     }
     if (url.pathname === "/api/trpc/pbx.voicemail.markRead") {
       assert.equal(init?.method, "POST");
@@ -247,6 +254,35 @@ test("desktop voicemail drops unsafe caller labels without hiding a valid messag
   assert.deepEqual(await provider.listVoicemail(session.revision), [{ id: 4,
     callerName: null, callerNumber: "1020", durationSeconds: 0, status: "read",
     createdAt: "2026-09-27T10:00:00.000Z" }]);
+});
+
+test("desktop directory uses the selected tenant and returns bounded extension labels", async () => {
+  const { provider, paths } = harness();
+  const session = await provider.signIn("user@example.test", "login-secret");
+  await assert.rejects(provider.listDirectory("stale", "Som", 0));
+  const page = await provider.listDirectory(session.revision, "Som", 0);
+  assert.deepEqual(page, { tenantId: 9, items: [{ id: 41, name: "Som", number: "1020" }], nextOffset: null });
+  assert.equal(paths.filter(path => path === "/api/trpc/pbx.directory.list").length, 1);
+});
+
+test("desktop directory rejects foreign tenant and unsafe rows before display", async () => {
+  for (const directory of [
+    { tenantId: 10, items: [{ id: 41, name: "Som", number: "1020" }], nextOffset: null },
+    { tenantId: 9, items: [{ id: 41, name: "Som", number: "1020;drop" }], nextOffset: null },
+    { tenantId: 9, items: [{ id: 41, name: "Som\u202e", number: "1020" }], nextOffset: null },
+  ]) {
+    const { provider } = harness({ directory });
+    const session = await provider.signIn("user@example.test", "login-secret");
+    await assert.rejects(provider.listDirectory(session.revision, "Som", 0),
+      /PHONE11_DIRECTORY_(TENANT_MISMATCH|INVALID_RESPONSE)/);
+  }
+});
+
+test("desktop directory ends pagination when the server's next offset exceeds its request cap", async () => {
+  const { provider } = harness({ directory: { tenantId: 9,
+    items: [{ id: 41, name: "Som", number: "1020" }], nextOffset: 1025 } });
+  const session = await provider.signIn("user@example.test", "login-secret");
+  assert.equal((await provider.listDirectory(session.revision, "Som", 0)).nextOffset, null);
 });
 
 test("desktop call history requests the selected tenant month and exposes safe bounded metadata", async () => {
