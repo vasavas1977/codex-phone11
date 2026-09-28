@@ -153,6 +153,7 @@ static NSString *P11HistoryNumber(id uri) {
 // A foreground credential replacement holds native call admission until JS
 // has retired the idle runtime and published its new account. Main-queue only.
 @property(nonatomic, copy) NSString *accountChangeLease;
+@property(nonatomic, weak) Phone11Siprix *accountChangeBridge;
 @property(nonatomic, copy) NSString *pendingAccountWakeUUID;
 @property(nonatomic, copy) NSDictionary *pendingAccountWakeConfig;
 @property(nonatomic, copy) dispatch_block_t pendingAccountWake;
@@ -841,10 +842,29 @@ RCT_EXPORT_MODULE(Phone11Siprix)
   NSString *lease = self.lease;
   dispatch_async(dispatch_get_main_queue(), ^{
     P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
+    // The JS finally block cannot release its token after this bridge dies.
+    // Retire the old idle SDK first, then hand an already reported CallKit
+    // wake back to native recovery. Never leave the process-wide lease stuck.
+    BOOL abandonedChange = runtime.accountChangeBridge == self;
+    dispatch_block_t pending = abandonedChange ? runtime.pendingAccountWake : nil;
+    void (^completion)(NSError *) = abandonedChange ? runtime.pendingAccountWakeCompletion : nil;
+    if (abandonedChange) {
+      runtime.accountChangeLease = nil;
+      runtime.accountChangeBridge = nil;
+      runtime.pendingAccountWake = nil;
+      runtime.pendingAccountWakeUUID = nil;
+      runtime.pendingAccountWakeConfig = nil;
+      runtime.pendingAccountWakeCompletion = nil;
+    }
+    int shutdownResult = kErrorCodeEOK;
     if ([runtime.lease isEqualToString:lease]) {
       runtime.sink = nil;
       if (runtime.wakeContext) runtime.lease = nil;
-      else [runtime shutdown];
+      else shutdownResult = [runtime shutdown];
+    }
+    if (pending) {
+      if (shutdownResult == kErrorCodeEOK && !runtime.quarantined) pending();
+      else if (completion) completion(P11WakeError(@"Incoming wake could not resume after phone reload."));
     }
   });
   [super invalidate];
@@ -1254,12 +1274,13 @@ RCT_EXPORT_METHOD(beginAccountChange:(RCTPromiseResolveBlock)resolve rejecter:(R
     P11Reject(reject, @"E_CALL_ACTIVE", @"Finish the current phone call before changing accounts."); return;
   }
   runtime.accountChangeLease = NSUUID.UUID.UUIDString;
+  runtime.accountChangeBridge = self;
   resolve(runtime.accountChangeLease);
 }
 
 RCT_EXPORT_METHOD(endAccountChange:(NSString *)token config:(NSDictionary *)config resumeWake:(BOOL)resumeWake resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = P11SiprixRuntime.shared;
-  if (!P11String(token, 64) || ![runtime.accountChangeLease isEqualToString:token]) {
+  if (!P11String(token, 64) || runtime.accountChangeBridge != self || ![runtime.accountChangeLease isEqualToString:token]) {
     P11Reject(reject, @"E_ACCOUNT_CHANGE", @"The account change lease is no longer valid."); return;
   }
   dispatch_block_t pending = runtime.pendingAccountWake;
@@ -1270,6 +1291,7 @@ RCT_EXPORT_METHOD(endAccountChange:(NSString *)token config:(NSDictionary *)conf
   runtime.pendingAccountWakeConfig = nil;
   runtime.pendingAccountWakeCompletion = nil;
   runtime.accountChangeLease = nil;
+  runtime.accountChangeBridge = nil;
   // Run before the next main-queue event so CallKit End cannot be interleaved
   // between releasing the lease and rearming its deferred incoming wake.
   if (pending) {

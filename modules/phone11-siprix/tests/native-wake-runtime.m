@@ -526,6 +526,77 @@ int main(void) {
   [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
   [js endAccountChange:changeLease config:differentSip resumeWake:YES resolver:resolve rejecter:reject];
   CHECK(!error && readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake owner changed."] && !runtime.wakeContext);
+  // React bridge reload can abandon the JS finally block. Its reservation
+  // must expire with that bridge, including the no-SDK/idle case.
+  [js beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  changeLease=[result copy];
+  [js invalidate]; flush();
+  CHECK(!runtime.accountChangeLease && !runtime.accountChangeBridge && !runtime.initialized);
+  Phone11Siprix *replacement=[Phone11Siprix new];
+  [replacement endAccountChange:changeLease config:sip resumeWake:YES resolver:resolve rejecter:reject];
+  CHECK([error isEqual:@"E_ACCOUNT_CHANGE"]);
+  [replacement initialize:@{} resolver:resolve rejecter:reject]; CHECK(!error);
+  [replacement beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  changeLease=[result copy]; before=readyCount; startsBefore=initializes;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK(runtime.pendingAccountWake && !runtime.wakeContext && readyCount==before);
+  [replacement invalidate]; flush();
+  CHECK(!runtime.accountChangeLease && !runtime.accountChangeBridge && !runtime.pendingAccountWake &&
+    runtime.wakeContext && runtime.wakeBridge && initializes==startsBefore+1 && readyCount==before);
+  // A fresh bridge may observe and adopt the surviving CallKit wake.
+  Phone11Siprix *afterReload=[Phone11Siprix new];
+  [afterReload getSnapshot:resolve rejecter:reject];
+  CHECK(!error && result[@"nativeWake"] && [result[@"calls"] count]==0);
+  [afterReload adoptIncomingWake:binding sip:sip resolver:resolve rejecter:reject];
+  CHECK(!error && runtime.sink==afterReload && runtime.wakeContext);
+  [afterReload invalidate]; flush();
+  CHECK(runtime.wakeContext && !runtime.sink);
+  [Phone11Siprix endIncomingWake:uuid];
+  CHECK(!runtime.wakeContext && !runtime.accountChangeLease);
+  Phone11Siprix *afterCall=[Phone11Siprix new];
+  [afterCall initialize:@{} resolver:resolve rejecter:reject]; CHECK(!error);
+  [afterCall destroy:resolve rejecter:reject]; CHECK(!error);
+  Phone11Siprix *failedReload=[Phone11Siprix new];
+  [failedReload initialize:@{} resolver:resolve rejecter:reject]; CHECK(!error);
+  [failedReload beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  [runtime shutdown];
+  CHECK(runtime.accountChangeLease && runtime.accountChangeBridge==failedReload);
+  changeLease=[result copy];
+  [failedReload endAccountChange:changeLease config:sip resumeWake:NO resolver:resolve rejecter:reject]; CHECK(!error);
+  [failedReload initialize:@{} resolver:resolve rejecter:reject]; CHECK(!error);
+  [failedReload beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK(runtime.pendingAccountWake && readyCount==before);
+  [failedReload initialize:@{} resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_ACCOUNT_CHANGE"]);
+  shutdownCode=-10;
+  [failedReload invalidate]; flush(); shutdownCode=0;
+  CHECK(!runtime.accountChangeLease && !runtime.pendingAccountWake && runtime.quarantined &&
+    readyCount==before+1 && [wakeError.localizedDescription isEqual:@"Incoming wake could not resume after phone reload."]);
+  [runtime shutdown]; CHECK(!runtime.quarantined);
+  Phone11Siprix *recovered=[Phone11Siprix new];
+  [recovered initialize:@{} resolver:resolve rejecter:reject]; CHECK(!error);
+  [recovered destroy:resolve rejecter:reject]; CHECK(!error);
+  // A pending CallKit End wins before bridge invalidation; no canceled wake
+  // may be replayed, even when no SDK exists for that bridge.
+  Phone11Siprix *emptyReload=[Phone11Siprix new];
+  [emptyReload beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  before=readyCount;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  [Phone11Siprix endIncomingWake:uuid];
+  CHECK(readyCount==before+1 && !runtime.pendingAccountWake);
+  [emptyReload invalidate]; flush();
+  CHECK(!runtime.accountChangeLease && !runtime.wakeContext && !runtime.initialized);
+  // Conversely, an already reported wake waiting after the old SDK has been
+  // destroyed must restart natively when its abandoned bridge disappears.
+  Phone11Siprix *coldReload=[Phone11Siprix new];
+  [coldReload beginAccountChange:resolve rejecter:reject]; CHECK(!error);
+  before=readyCount; startsBefore=initializes;
+  [Phone11Siprix prepareIncomingWake:context sip:sip event:event completion:ready];
+  CHECK(runtime.pendingAccountWake && !runtime.initialized && initializes==startsBefore);
+  [coldReload invalidate]; flush();
+  CHECK(!runtime.accountChangeLease && runtime.wakeContext && runtime.wakeBridge && initializes==startsBefore+1 && readyCount==before);
+  [Phone11Siprix endIncomingWake:uuid]; CHECK(!runtime.wakeContext && !runtime.initialized);
   [NSFileManager.defaultManager removeItemAtURL:historyURL error:nil];
   printf("PASS: %d native wake runtime assertions\n", assertions);
  }
