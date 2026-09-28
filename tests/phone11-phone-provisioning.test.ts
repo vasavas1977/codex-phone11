@@ -418,7 +418,8 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
         CREATE TABLE tenant_memberships(user_id integer, tenant_id integer, status text);
         CREATE TABLE extensions(id integer PRIMARY KEY, tenant_id integer, user_id integer,
           extension_number text, sip_username text, sip_domain text, sip_password text,
-          status text, deleted_at timestamptz, updated_at timestamptz);
+          status text, deleted_at timestamptz, updated_at timestamptz,
+          type text NOT NULL DEFAULT 'user');
         CREATE TABLE user_extensions(user_id integer, extension_id integer, is_primary boolean,
           UNIQUE(user_id, extension_id));
         CREATE TABLE sip_accounts(id integer PRIMARY KEY, extension_id integer, tenant_id integer,
@@ -429,7 +430,8 @@ describe.skipIf(!ownershipDatabaseUrl)("Phone11 SIP config ownership on isolated
           UNIQUE(username, domain));
         INSERT INTO tenants VALUES(7,'active');
         INSERT INTO tenant_memberships VALUES(17,7,'active'),(18,7,'active');
-        INSERT INTO extensions VALUES(3001,7,17,'3001','3001','sip.phone11.ai','old-secret','active',NULL,NOW());
+        INSERT INTO extensions(id,tenant_id,user_id,extension_number,sip_username,sip_domain,sip_password,status,deleted_at,updated_at)
+          VALUES(3001,7,17,'3001','3001','sip.phone11.ai','old-secret','active',NULL,NOW());
         INSERT INTO user_extensions VALUES(17,3001,true);
         INSERT INTO sip_accounts(id,extension_id,tenant_id,user_id,sip_username,sip_domain,ha1,ha1b,status)
           VALUES(1,3001,7,17,'3001','sip.phone11.ai','old-ha1','old-ha1b','active');

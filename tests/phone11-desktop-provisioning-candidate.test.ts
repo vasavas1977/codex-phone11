@@ -35,7 +35,7 @@ vi.mock("../server/pbx/db", () => ({
   withTransaction: async (callback: (pool: Pool) => Promise<unknown>) => callback(database),
 }));
 
-import { computeHA1, computeHA1B } from "../server/pbx/sip-secrets";
+import { computeHA1, computeHA1B, encryptSecret } from "../server/pbx/sip-secrets";
 import { getPhoneConfig } from "../server/phone-provisioning";
 
 const TEST_PASSWORD = "synthetic-desktop-provisioning-only";
@@ -49,6 +49,7 @@ async function insertAuthorizedOwner() {
   const username = "3001";
   const ha1 = computeHA1(username, SIP_DOMAIN, TEST_PASSWORD);
   const ha1b = computeHA1B(username, SIP_DOMAIN, SIP_DOMAIN, TEST_PASSWORD);
+  const secret = encryptSecret(TEST_PASSWORD);
   await database.query("INSERT INTO tenants (id, name, plan, status) VALUES ($1, 'Test workspace', 'business', 'active')", [TENANT_ID]);
   await database.query("INSERT INTO tenant_memberships (user_id, tenant_id, status) VALUES ($1, $2, 'active')", [USER_ID, TENANT_ID]);
   await database.query(`
@@ -57,9 +58,10 @@ async function insertAuthorizedOwner() {
   `, [EXTENSION_ID, TENANT_ID, USER_ID, SIP_DOMAIN, TEST_PASSWORD]);
   await database.query("INSERT INTO user_extensions (user_id, extension_id, is_primary) VALUES ($1, $2, true)", [USER_ID, EXTENSION_ID]);
   await database.query(`
-    INSERT INTO sip_accounts (tenant_id, org_id, extension_id, user_id, sip_username, sip_domain, ha1, ha1b, transport_preference, status)
-    VALUES ($1, $1, $2, $3, '3001', $4, $5, $6, 'TLS', 'active')
-  `, [TENANT_ID, EXTENSION_ID, USER_ID, SIP_DOMAIN, ha1, ha1b]);
+    INSERT INTO sip_accounts (tenant_id, org_id, extension_id, user_id, sip_username, sip_domain, ha1, ha1b,
+      secret_ciphertext, secret_iv, secret_tag, transport_preference, status)
+    VALUES ($1, $1, $2, $3, '3001', $4, $5, $6, $7, $8, $9, 'TLS', 'active')
+  `, [TENANT_ID, EXTENSION_ID, USER_ID, SIP_DOMAIN, ha1, ha1b, secret.ciphertext, secret.iv, secret.tag]);
   await database.query("INSERT INTO subscriber (username, domain, password, ha1, ha1b) VALUES ('3001', $1, $2, $3, $4)", [SIP_DOMAIN, TEST_PASSWORD, ha1, ha1b]);
 }
 
