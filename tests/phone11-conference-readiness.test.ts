@@ -75,12 +75,12 @@ function appliedDatabase() {
   const query = vi.fn(async (sql: string) => {
     if (sql === "BEGIN TRANSACTION READ ONLY" || sql === "ROLLBACK")
       return { rows: [] };
-    if (sql.includes("information_schema.tables")) return { rows: tables };
-    if (sql.includes("information_schema.columns")) return { rows: allColumns };
-    if (sql.includes("FROM pg_indexes")) return { rows: indexes };
-    if (sql.includes("constraint_type='FOREIGN KEY'")) return { rows: foreignKeys };
-    if (sql.includes("constraint_type='PRIMARY KEY'")) return { rows: primaryKeys };
-    if (sql.includes("information_schema.triggers")) {
+    if (sql.includes("FROM pg_catalog.pg_class c")) return { rows: tables };
+    if (sql.includes("FROM pg_catalog.pg_attribute a")) return { rows: allColumns };
+    if (sql.includes("FROM pg_catalog.pg_index idx")) return { rows: indexes };
+    if (sql.includes("con.contype='f'")) return { rows: foreignKeys };
+    if (sql.includes("con.contype='p'")) return { rows: primaryKeys };
+    if (sql.includes("FROM pg_catalog.pg_trigger tg")) {
       return {
         rows: [
           { table_name: "phone11_plain_video_admission_rooms", trigger_name: "phone11_plain_video_admission_room_revision" },
@@ -88,7 +88,7 @@ function appliedDatabase() {
         ],
       };
     }
-    if (sql.includes("information_schema.routines"))
+    if (sql.includes("FROM pg_catalog.pg_proc p"))
       return { rows: [{ routine_name: "phone11_plain_video_admission_touch_revision" }] };
     throw new Error(`unexpected query ${sql}`);
   });

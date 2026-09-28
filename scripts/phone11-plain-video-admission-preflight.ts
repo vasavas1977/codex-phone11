@@ -372,57 +372,86 @@ export async function inspectPlainVideoAdmissionSchema(
       routinesResult,
     ] = await Promise.all([
       client.query<TableRow>(
-        `SELECT table_name FROM information_schema.tables
-           WHERE table_schema=current_schema() AND table_type='BASE TABLE'
-             AND table_name=ANY($1::text[])`,
+        `SELECT c.relname AS table_name
+           FROM pg_catalog.pg_class c
+           JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+           WHERE n.nspname=current_schema() AND c.relkind='r'
+             AND c.relname=ANY($1::text[])`,
         [allTables],
       ),
       client.query<ColumnRow>(
-        `SELECT table_name,column_name,data_type,is_nullable
-           FROM information_schema.columns
-           WHERE table_schema=current_schema() AND table_name=ANY($1::text[])
-           ORDER BY table_name,ordinal_position`,
+        `SELECT c.relname AS table_name,a.attname AS column_name,
+                pg_catalog.format_type(a.atttypid,NULL) AS data_type,
+                CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable
+           FROM pg_catalog.pg_attribute a
+           JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+           JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+           WHERE n.nspname=current_schema() AND c.relkind='r'
+             AND c.relname=ANY($1::text[])
+             AND a.attnum>0 AND NOT a.attisdropped
+           ORDER BY c.relname,a.attnum`,
         [allTables],
       ),
       client.query<IndexRow>(
-        `SELECT indexname,tablename,indexdef FROM pg_indexes
-           WHERE schemaname=current_schema() AND indexname=ANY($1::text[])`,
+        `SELECT index_rel.relname AS indexname,table_rel.relname AS tablename,
+                pg_catalog.pg_get_indexdef(idx.indexrelid) AS indexdef
+           FROM pg_catalog.pg_index idx
+           JOIN pg_catalog.pg_class index_rel ON index_rel.oid=idx.indexrelid
+           JOIN pg_catalog.pg_class table_rel ON table_rel.oid=idx.indrelid
+           JOIN pg_catalog.pg_namespace n ON n.oid=table_rel.relnamespace
+           WHERE n.nspname=current_schema()
+             AND index_rel.relname=ANY($1::text[])
+             AND idx.indisvalid AND idx.indisready`,
         [requiredIndexes.map((index) => index.name)],
       ),
       client.query<ForeignKeyRow>(
-        `SELECT tc.table_name,kcu.column_name,ccu.table_name AS foreign_table_name,
-                  ccu.column_name AS foreign_column_name
-           FROM information_schema.table_constraints tc
-           JOIN information_schema.key_column_usage kcu
-             ON tc.constraint_catalog=kcu.constraint_catalog AND tc.constraint_schema=kcu.constraint_schema
-            AND tc.constraint_name=kcu.constraint_name
-           JOIN information_schema.constraint_column_usage ccu
-             ON tc.constraint_catalog=ccu.constraint_catalog AND tc.constraint_schema=ccu.constraint_schema
-            AND tc.constraint_name=ccu.constraint_name
-           WHERE tc.constraint_schema=current_schema() AND tc.constraint_type='FOREIGN KEY'
-             AND tc.table_name=ANY($1::text[])`,
+        `SELECT local_rel.relname AS table_name,local_col.attname AS column_name,
+                foreign_rel.relname AS foreign_table_name,
+                foreign_col.attname AS foreign_column_name
+           FROM pg_catalog.pg_constraint con
+           JOIN pg_catalog.pg_class local_rel ON local_rel.oid=con.conrelid
+           JOIN pg_catalog.pg_class foreign_rel ON foreign_rel.oid=con.confrelid
+           JOIN pg_catalog.pg_namespace n ON n.oid=local_rel.relnamespace
+           JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS local_key(attnum,position) ON TRUE
+           JOIN LATERAL unnest(con.confkey) WITH ORDINALITY AS foreign_key(attnum,position)
+             ON foreign_key.position=local_key.position
+           JOIN pg_catalog.pg_attribute local_col
+             ON local_col.attrelid=local_rel.oid AND local_col.attnum=local_key.attnum
+           JOIN pg_catalog.pg_attribute foreign_col
+             ON foreign_col.attrelid=foreign_rel.oid AND foreign_col.attnum=foreign_key.attnum
+           WHERE n.nspname=current_schema() AND con.contype='f'
+             AND con.convalidated AND local_rel.relname=ANY($1::text[])`,
         [allTables],
       ),
       client.query<PrimaryKeyRow>(
-        `SELECT tc.table_name,array_agg(kcu.column_name::text ORDER BY kcu.ordinal_position) AS columns
-           FROM information_schema.table_constraints tc
-           JOIN information_schema.key_column_usage kcu
-             ON tc.constraint_catalog=kcu.constraint_catalog AND tc.constraint_schema=kcu.constraint_schema
-            AND tc.constraint_name=kcu.constraint_name
-           WHERE tc.constraint_schema=current_schema() AND tc.constraint_type='PRIMARY KEY'
-             AND tc.table_name=ANY($1::text[])
-           GROUP BY tc.table_name`,
+        `SELECT c.relname AS table_name,
+                array_agg(a.attname::text ORDER BY key.position) AS columns
+           FROM pg_catalog.pg_constraint con
+           JOIN pg_catalog.pg_class c ON c.oid=con.conrelid
+           JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+           JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS key(attnum,position) ON TRUE
+           JOIN pg_catalog.pg_attribute a
+             ON a.attrelid=c.oid AND a.attnum=key.attnum
+           WHERE n.nspname=current_schema() AND con.contype='p'
+             AND c.relname=ANY($1::text[])
+           GROUP BY c.relname`,
         [allTables],
       ),
       client.query<TriggerRow>(
-        `SELECT DISTINCT event_object_table AS table_name,trigger_name
-           FROM information_schema.triggers
-           WHERE trigger_schema=current_schema() AND trigger_name=ANY($1::text[])`,
+        `SELECT c.relname AS table_name,tg.tgname AS trigger_name
+           FROM pg_catalog.pg_trigger tg
+           JOIN pg_catalog.pg_class c ON c.oid=tg.tgrelid
+           JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+           WHERE n.nspname=current_schema() AND NOT tg.tgisinternal
+             AND tg.tgenabled IN ('O','A') AND tg.tgname=ANY($1::text[])`,
         [requiredTriggers.map(([, trigger]) => trigger)],
       ),
       client.query<RoutineRow>(
-        `SELECT routine_name FROM information_schema.routines
-           WHERE routine_schema=current_schema() AND routine_name=ANY($1::text[])`,
+        `SELECT p.proname AS routine_name
+           FROM pg_catalog.pg_proc p
+           JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+           WHERE n.nspname=current_schema() AND p.prokind='f'
+             AND p.proname=ANY($1::text[])`,
         [requiredRoutines],
       ),
     ]);
