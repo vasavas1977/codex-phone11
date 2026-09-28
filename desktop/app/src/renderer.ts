@@ -1,9 +1,10 @@
 import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, VOICEMAIL_ENABLED, type PublicState, type TaggedSnapshot, type TaggedDirectory, type DirectoryEntry } from './ipc';
-import type { DesktopCallHistory } from '../../src/authenticated-provider';
+import type { DesktopCallHistory, DesktopTenantSelection } from '../../src/authenticated-provider';
 import { VoicemailPlayer } from './voicemail-player';
 
 declare global { interface Window { phone11: {
-  state(): Promise<PublicState>; signIn(email: string, password: string): Promise<PublicState>;
+  state(): Promise<PublicState>; signIn(email: string, password: string): Promise<PublicState | DesktopTenantSelection>;
+  selectTenant(selectionRevision: string, tenantId: number): Promise<PublicState>;
   action(input: unknown): Promise<TaggedSnapshot>; signOut(): Promise<PublicState>;
   openMeetings(): Promise<void>;
   historyList?(sessionRevision: string): Promise<{sessionRevision: string; items: DesktopCallHistory[]}>;
@@ -21,6 +22,8 @@ const maybeById = (id: string): HTMLElement | null => document.getElementById(id
 let state: PublicState | null = null;
 let busy = false;
 let accountEpoch = 0;
+let pendingSelection: DesktopTenantSelection | null = null;
+let selectionBusy = false;
 let currentTab: 'phone' | 'meetings' = 'phone';
 let currentPhoneSection: 'history' | 'directory' | 'voicemail' | 'lines' = 'history';
 let meetingOpening = false;
@@ -214,6 +217,10 @@ function render(): void {
   // An incoming or active call must never be hidden behind an inbox or meeting tab.
   if (call) currentTab = 'phone';
   byId('login').hidden = signed;
+  const picker = maybeById('tenant-picker');
+  if (picker) picker.hidden = signed || !pendingSelection;
+  const loginForm = maybeById('login-form');
+  if (loginForm) loginForm.hidden = !!pendingSelection;
   byId('workspace').hidden = !signed;
   byId('phone').hidden = !signed || currentTab !== 'phone';
   byId('meetings').hidden = !signed || currentTab !== 'meetings';
@@ -369,9 +376,50 @@ byId('login-form').addEventListener('submit', async event => {
   passwordField.value = '';
   message('Signing in…');
   try {
-    const signedIn = await window.phone11.signIn(email, password);
-    if (accountEpoch === epoch) { state = signedIn; busy = false; meetingOpening = false; meetingMessage = ''; message(''); render(); void loadHistory(); }
+    const result = await window.phone11.signIn(email, password);
+    if (accountEpoch !== epoch) return;
+    if ('selectionRevision' in result) {
+      pendingSelection = result;
+      selectionBusy = false;
+      renderTenantChoices();
+      message(''); render();
+      return;
+    }
+    state = result; busy = false; meetingOpening = false; meetingMessage = ''; message(''); render(); void loadHistory();
   } catch (error) { if (accountEpoch === epoch) message(signInFailureMessage(error)); }
+});
+function renderTenantChoices(): void {
+  const list = maybeById('tenant-choices');
+  if (!list) return;
+  list.replaceChildren();
+  const selection = pendingSelection;
+  if (!selection) return;
+  for (const tenant of selection.tenants) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'tenant-choice'; button.textContent = tenant.name;
+    button.disabled = selectionBusy;
+    button.addEventListener('click', async () => {
+      if (pendingSelection !== selection || selectionBusy) return;
+      const epoch = accountEpoch;
+      selectionBusy = true; renderTenantChoices(); message('Connecting to workspace…');
+      try {
+        const signedIn = await window.phone11.selectTenant(selection.selectionRevision, tenant.tenantId);
+        if (accountEpoch !== epoch || pendingSelection !== selection) return;
+        pendingSelection = null; selectionBusy = false; state = signedIn; busy = false;
+        meetingOpening = false; meetingMessage = ''; message(''); render(); void loadHistory();
+      } catch (error) {
+        if (accountEpoch !== epoch || pendingSelection !== selection) return;
+        pendingSelection = null; selectionBusy = false;
+        message(signInFailureMessage(error)); render();
+      }
+    });
+    list.append(button);
+  }
+}
+maybeById('tenant-picker-back')?.addEventListener('click', async () => {
+  ++accountEpoch; pendingSelection = null; selectionBusy = false; message(''); render();
+  try { await window.phone11.signOut(); }
+  catch { message('Sign-out could not be verified. Restart before calling.'); }
 });
 for (const tab of ['phone', 'meetings'] as const) {
   byId(`${tab}-tab`).addEventListener('click', () => { currentTab = tab; if (tab !== 'phone') player?.stop(); render(); });

@@ -63,6 +63,36 @@ test('sign out stops helper and clears public session without secret emission', 
   assert.equal(current, null);
   assert.equal(generation, null);
 });
+test('multi-workspace IPC waits for explicit selection and rejects stale tenant choice', async () => {
+  const session: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 10, extensionId: 2 };
+  let current: DesktopSession | null = null;
+  let starts = 0;
+  let selections = 0;
+  const provider = { currentSession: () => current, currentExtensionNumber: () => current ? '1020' : null,
+    signOut: async () => { current = null; },
+    signIn: async () => ({ selectionRevision: 'choice-1', tenants: [
+      { tenantId: 9, name: 'One' }, { tenantId: 10, name: 'Two' },
+    ] }),
+    selectTenant: async (revision: string, tenantId: number) => {
+      selections++;
+      if (revision !== 'choice-1' || tenantId !== 10) throw new DesktopAuthenticationError('phone_access_unavailable');
+      current = session; return session;
+    } };
+  const helper = { stop: async () => true, snapshot: () => empty, start: async () => { starts++; return 'g1'; } };
+  let generation: string | null = null;
+  const handlers = createHandlers(provider as never, helper as never, () => generation, value => { generation = value; });
+  const pending = await handlers.signIn({ email: 'person@example.test', password: 'private-login' });
+  assert.deepEqual(pending, { selectionRevision: 'choice-1', tenants: [
+    { tenantId: 9, name: 'One' }, { tenantId: 10, name: 'Two' },
+  ] });
+  assert.equal(starts, 0);
+  assert.equal(handlers.state().signedIn, false);
+  await assert.rejects(handlers.selectTenant({ selectionRevision: 'stale', tenantId: 10 }),
+    /PHONE11_PHONE_ACCESS_UNAVAILABLE/);
+  assert.equal(starts, 0);
+  assert.equal(selections, 1);
+  assert.equal(handlers.state().signedIn, false);
+});
 test('sign-in errors identify the safe failing stage without showing upstream details', () => {
   assert.equal(signInFailureMessage(new Error('PHONE11_CREDENTIALS_REJECTED')), 'Email or password was not accepted.');
   assert.match(signInFailureMessage(new Error('PHONE11_ORIGIN_REJECTED')), /origin check/);

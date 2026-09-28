@@ -55,6 +55,11 @@ test("provider uses native transport for sign-in and bearer for protected lookup
     } else if (request.url === "/api/auth/me") {
       assert.equal(request.headers.authorization, "Bearer local-test-bearer");
       response.end('{"user":{"id":7}}');
+    } else if (request.url?.startsWith("/api/trpc/pbx.memberships?")) {
+      assert.equal(request.headers.authorization, "Bearer local-test-bearer");
+      response.end(JSON.stringify({ result: { data: { json: [
+        { tenantId: 9, tenantName: "Phone11", tenantStatus: "active" },
+      ] } } }));
     } else if (request.url?.startsWith("/api/trpc/phone.getConfig?")) {
       assert.equal(request.headers.authorization, "Bearer local-test-bearer");
       response.end(JSON.stringify({ result: { data: { json: {
@@ -74,9 +79,11 @@ test("provider uses native transport for sign-in and bearer for protected lookup
     const provider = new AuthenticatedDesktopProvider({ origin: `http://127.0.0.1:${address.port}`,
       allowHttpLoopbackForTests: true });
     const session = await provider.signIn("test@example.invalid", "test-password");
+    if ("selectionRevision" in session) throw new Error("Expected one active workspace");
     assert.equal(session.userId, "7");
     assert.equal(provider.currentExtensionNumber(), "3001");
-    assert.deepEqual(paths, ["/api/auth/sign-in/email", "/api/auth/me", "/api/trpc/phone.getConfig"]);
+    assert.deepEqual(paths, ["/api/auth/sign-in/email", "/api/trpc/pbx.memberships",
+      "/api/auth/me", "/api/trpc/phone.getConfig"]);
     assert.equal(signInHeaders?.origin, undefined);
     assert.equal(signInHeaders?.["sec-fetch-mode"], undefined);
     assert.equal(signInHeaders?.["x-phone11-client"], "native");

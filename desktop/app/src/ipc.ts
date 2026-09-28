@@ -2,9 +2,10 @@ import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseRendererAction } from '../../src/call-boundary';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
 import { DesktopCallHistoryError } from '../../src/call-history-error';
-import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail, DesktopCallHistory } from '../../src/authenticated-provider';
+import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail, DesktopCallHistory, DesktopTenantSelection } from '../../src/authenticated-provider';
 
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
+  selectTenant: 'phone11:select-tenant',
   action: 'phone11:action', signOut: 'phone11:sign-out', update: 'phone11:update',
   voicemailList: 'phone11:voicemail-list', historyList: 'phone11:history-list',
   directoryList: 'phone11:directory-list',
@@ -69,6 +70,13 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
     if (!stopped) throw new Error('Calling helper exit could not be verified');
     return state();
   };
+  const startCalling = async (): Promise<PublicState> => {
+    try { setGeneration(await helper.start()); return state(); }
+    catch {
+      try { await signOut(); } catch { /* Never restore an unverified calling helper. */ }
+      throw new Error('PHONE11_CALLING_UNAVAILABLE');
+    }
+  };
   const inboxSession = (input: unknown, needsId = false): { revision: string; id: number } => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid inbox request');
     const { sessionRevision, id } = input as Record<string, unknown>;
@@ -100,7 +108,9 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       if (typeof email !== 'string' || typeof password !== 'string') throw new Error('Invalid sign-in request');
       await signOut();
       try {
-        await provider.signIn(email, password);
+        const result = await provider.signIn(email, password);
+        if (result && typeof result === 'object' && 'selectionRevision' in result)
+          return result as DesktopTenantSelection;
       } catch (error) {
         try { await signOut(); } catch { /* Never restore an unverified calling helper. */ }
         const authCode = error instanceof Error && error.name === 'DesktopAuthenticationError' &&
@@ -114,11 +124,20 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
           throw new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE');
         throw new Error('PHONE11_AUTH_UNAVAILABLE');
       }
-      try { setGeneration(await helper.start()); return state(); }
+      return startCalling();
+    },
+    selectTenant: async (input: unknown): Promise<PublicState> => {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid workspace selection');
+      const { selectionRevision, tenantId } = input as Record<string, unknown>;
+      if (typeof selectionRevision !== 'string' || typeof tenantId !== 'number' ||
+          !Number.isSafeInteger(tenantId) || tenantId <= 0)
+        throw new Error('Invalid workspace selection');
+      try { await provider.selectTenant(selectionRevision, tenantId); }
       catch {
-        try { await signOut(); } catch { /* Never restore an unverified calling helper. */ }
-        throw new Error('PHONE11_CALLING_UNAVAILABLE');
+        try { await signOut(); } catch { /* Pending authority is already invalidated. */ }
+        throw new Error('PHONE11_PHONE_ACCESS_UNAVAILABLE');
       }
+      return startCalling();
     },
     action: async (input: unknown) => {
       const action = parseRendererAction(input);

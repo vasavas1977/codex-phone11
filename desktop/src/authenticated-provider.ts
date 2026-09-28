@@ -49,6 +49,9 @@ export type DesktopCallHistory = Readonly<{ id: number; direction: "inbound" | "
 export type DesktopDirectoryEntry = Readonly<{ id: number; name: string; number: string }>;
 export type DesktopDirectoryPage = Readonly<{ tenantId: number; items: readonly DesktopDirectoryEntry[];
   nextOffset: number | null }>;
+export type DesktopTenantChoice = Readonly<{ tenantId: number; name: string }>;
+export type DesktopTenantSelection = Readonly<{ selectionRevision: string;
+  tenants: readonly DesktopTenantChoice[] }>;
 export type DesktopVoicemailAudio = Readonly<{ id: number; mimeType: "audio/wav"; bytes: Uint8Array }>;
 const MAX_VOICEMAIL_BYTES = 20 * 1024 * 1024;
 const safeMeetingTitle = (value: unknown): value is string =>
@@ -86,6 +89,7 @@ export class AuthenticatedDesktopProvider {
   private epoch = 0;
   private token: string | null = null;
   private session: DesktopSession | null = null;
+  private pendingSelection: DesktopTenantSelection | null = null;
   private extensionNumber: string | null = null;
   private fingerprint: string | null = null;
   private readonly fingerprintKey = randomBytes(32);
@@ -373,7 +377,7 @@ export class AuthenticatedDesktopProvider {
   }
 
   /** Sign-in never persists the bearer, password, or derived SIP secret. */
-  async signIn(email: string, password: string): Promise<DesktopSession> {
+  async signIn(email: string, password: string): Promise<DesktopSession | DesktopTenantSelection> {
     this.clear();
     const epoch = this.epoch;
     if (!clean(email, 320) || typeof password !== "string" || !password || password.length > 4096)
@@ -406,9 +410,15 @@ export class AuthenticatedDesktopProvider {
       const signInBody = await this.json(signed);
       if (!isRecord(signInBody) || signInBody.success !== true) throw new DesktopAuthenticationError();
       phase = "phone_access_unavailable";
-      const bound = await this.lookup(token, epoch);
-      this.assertEpoch(epoch);
+      const tenants = await this.tenantChoices(token, epoch);
       this.token = token;
+      if (tenants.length > 1) {
+        const selection = Object.freeze({ selectionRevision: randomUUID(), tenants });
+        this.pendingSelection = selection;
+        return selection;
+      }
+      const bound = await this.lookup(token, epoch, tenants[0].tenantId);
+      this.assertEpoch(epoch);
       this.session = bound.session;
       this.extensionNumber = bound.secret.extension;
       this.fingerprint = bound.fingerprint;
@@ -421,6 +431,31 @@ export class AuthenticatedDesktopProvider {
     }
   }
 
+  /** A multi-workspace account must choose from the server's active memberships. */
+  async selectTenant(selectionRevision: string, tenantId: number): Promise<DesktopSession> {
+    const pending = this.pendingSelection;
+    const token = this.token;
+    const epoch = this.epoch;
+    if (!pending || !token || this.session || pending.selectionRevision !== selectionRevision ||
+        !positiveId(tenantId) || !pending.tenants.some(choice => choice.tenantId === tenantId))
+      throw new DesktopAuthenticationError("phone_access_unavailable");
+    try {
+      const fresh = await this.tenantChoices(token, epoch);
+      if (!fresh.some(choice => choice.tenantId === tenantId)) throw new DesktopAuthenticationError();
+      const bound = await this.lookup(token, epoch, tenantId);
+      this.assertEpoch(epoch);
+      if (this.pendingSelection !== pending) throw new DesktopAuthenticationError();
+      this.pendingSelection = null;
+      this.session = bound.session;
+      this.extensionNumber = bound.secret.extension;
+      this.fingerprint = bound.fingerprint;
+      return bound.session;
+    } catch {
+      if (this.epoch === epoch) this.clear();
+      throw new DesktopAuthenticationError("phone_access_unavailable");
+    }
+  }
+
   /** For DesktopHelperSupervisor.provision; rechecks the current grant every time. */
   async provision(expected: DesktopSession): Promise<SipAccountSecret> {
     const epoch = this.epoch;
@@ -429,7 +464,7 @@ export class AuthenticatedDesktopProvider {
     const fingerprint = this.fingerprint;
     if (!token || !current || !fingerprint || !same(expected, current)) throw new DesktopAuthenticationError();
     try {
-      const bound = await this.lookup(token, epoch);
+      const bound = await this.lookup(token, epoch, current.tenantId);
       this.assertEpoch(epoch);
       if (this.session !== current || !sameGrant(bound.session, current) || bound.fingerprint !== fingerprint)
         throw new DesktopAuthenticationError();
@@ -458,6 +493,7 @@ export class AuthenticatedDesktopProvider {
     this.epoch++;
     this.token = null;
     this.session = null;
+    this.pendingSelection = null;
     this.extensionNumber = null;
     this.fingerprint = null;
     for (const controller of this.controllers) controller.abort();
@@ -509,7 +545,21 @@ export class AuthenticatedDesktopProvider {
     return payload.result.data.json;
   }
 
-  private async lookup(token: string, epoch: number): Promise<{
+  private async tenantChoices(token: string, epoch: number): Promise<readonly DesktopTenantChoice[]> {
+    const value = await this.query("pbx.memberships", token, epoch);
+    if (!Array.isArray(value) || value.length < 1 || value.length > 100)
+      throw new DesktopAuthenticationError();
+    const seen = new Set<number>();
+    return value.map((item): DesktopTenantChoice => {
+      if (!isRecord(item) || !positiveId(item.tenantId) || item.tenantStatus !== "active" ||
+          !safeDisplay(item.tenantName, 160) || seen.has(item.tenantId))
+        throw new DesktopAuthenticationError();
+      seen.add(item.tenantId);
+      return Object.freeze({ tenantId: item.tenantId, name: item.tenantName as string });
+    });
+  }
+
+  private async lookup(token: string, epoch: number, selectedTenantId: number): Promise<{
     session: DesktopSession; secret: SipAccountSecret; fingerprint: string;
   }> {
     const me = await this.json(await this.send("/api/auth/me", {
@@ -517,8 +567,8 @@ export class AuthenticatedDesktopProvider {
     }, epoch));
     if (!isRecord(me) || !isRecord(me.user) || !positiveId(me.user.id)) throw new DesktopAuthenticationError();
     const userId = String(me.user.id);
-    const config = await this.query("phone.getConfig", token, epoch);
-    if (!isRecord(config) || config.configured !== true || !positiveId(config.tenantId) ||
+    const config = await this.query("phone.getConfig", token, epoch, { tenantId: selectedTenantId });
+    if (!isRecord(config) || config.configured !== true || config.tenantId !== selectedTenantId ||
         !isRecord(config.extension) || !positiveId(config.extension.id) ||
         typeof config.extension.number !== "string" || !/^[0-9]{1,32}$/.test(config.extension.number) ||
         !isRecord(config.sip) || !clean(config.sip.username, 256) ||

@@ -66,6 +66,7 @@ async function bootstrap(): Promise<void> {
     await meeting?.close();
     return handlers.signIn(value);
   })));
+  ipcMain.handle(CHANNELS.selectTenant, checked(value => serial(() => handlers.selectTenant(value))));
   ipcMain.handle(CHANNELS.action, checked(async value => {
     if (meeting?.blocksPhoneMedia() && value && typeof value === 'object' && 'operation' in value) {
       if (value.operation === 'answer') await meeting.close();

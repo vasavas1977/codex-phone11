@@ -8,15 +8,23 @@ const json = (value: unknown, status = 200, headers?: HeadersInit): Response =>
   new Response(JSON.stringify(value), { status, headers });
 const trpc = (value: unknown, status = 200): Response => json({ result: { data: { json: value } } }, status);
 
+async function signInSingle(provider: AuthenticatedDesktopProvider) {
+  const result = await provider.signIn("user@example.test", "login-secret");
+  if ("selectionRevision" in result) throw new Error("Expected one active workspace");
+  return result;
+}
+
 function harness(overrides: { authStatus?: number; authCode?: string; tenantId?: number; extension?: string;
   extensionId?: number; userId?: number; malformed?: boolean; rotatedPassword?: string;
   secondTenantId?: number; secondExtensionId?: number; secondUsername?: string;
+  memberships?: unknown; nextMemberships?: unknown; configTenantId?: number;
   availableMeetings?: unknown; meetingGrant?: unknown; voicemailItems?: unknown;
   callHistory?: unknown; callHistoryStatus?: number; audioStatus?: number; audioType?: string; audioLength?: string;
   directory?: unknown; directoryStatus?: number;
   audioBytes?: Uint8Array } = {}) {
   const paths: string[] = [];
   let configCalls = 0;
+  let membershipCalls = 0;
   const fetcher: typeof fetch = async (input, init) => {
     const url = new URL(String(input));
     paths.push(url.pathname);
@@ -32,10 +40,21 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
     }
     assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${bearer}`);
     if (url.pathname === "/api/auth/me") return json({ user: { id: overrides.userId ?? 7 } });
+    if (url.pathname === "/api/trpc/pbx.memberships") {
+      membershipCalls++;
+      return trpc(membershipCalls > 1 && overrides.nextMemberships !== undefined
+        ? overrides.nextMemberships
+        : overrides.memberships ?? [{ tenantId: overrides.tenantId ?? 9,
+          tenantName: "Phone11", tenantStatus: "active" }]);
+    }
     if (url.pathname === "/api/trpc/phone.getConfig") {
       const subsequent = ++configCalls > 1;
+      const requestedTenantId = overrides.tenantId ?? 9;
+      assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""),
+        { json: { tenantId: requestedTenantId } });
       return trpc(overrides.malformed ? { configured: true } : {
-      configured: true, tenantId: subsequent ? (overrides.secondTenantId ?? overrides.tenantId ?? 9) : (overrides.tenantId ?? 9),
+      configured: true, tenantId: subsequent ? (overrides.secondTenantId ?? requestedTenantId)
+        : (overrides.configTenantId ?? requestedTenantId),
       extension: { id: subsequent ? (overrides.secondExtensionId ?? overrides.extensionId ?? 41)
         : (overrides.extensionId ?? 41), number: overrides.extension ?? "1020" },
       sip: { username: subsequent ? (overrides.secondUsername ?? "sip1020") : "sip1020",
@@ -103,7 +122,7 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
 test("sign-in binds the own extension, and provisioning rechecks the grant", async () => {
   const { provider, paths } = harness();
   assert.equal(provider.currentExtensionNumber(), null);
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   assert.equal(provider.currentExtensionNumber(), "1020");
   assert.equal(Object.isFrozen(session), true);
   assert.deepEqual({ userId: session.userId, tenantId: session.tenantId,
@@ -114,9 +133,48 @@ test("sign-in binds the own extension, and provisioning rechecks the grant", asy
   assert.deepEqual(secret, { accountId: session.accountId, server: "sip.example.test",
     extension: "1020", authId: "sip1020", password, transport: "TLS" });
   assert.equal(paths.filter(path => path.endsWith("phone.getConfig")).length, 2);
-  assert.equal(paths.some(path => path.includes("overview") || path.includes("memberships")), false);
+  assert.equal(paths.filter(path => path.endsWith("pbx.memberships")).length, 1);
   assert.equal(JSON.stringify(session).includes(password), false);
   assert.equal(JSON.stringify(session).includes(bearer), false);
+});
+
+test("multi-workspace sign-in waits for an explicit tenant before SIP provisioning", async () => {
+  const { provider, paths } = harness({ tenantId: 10, memberships: [
+    { tenantId: 9, tenantName: "One", tenantStatus: "active" },
+    { tenantId: 10, tenantName: "Two", tenantStatus: "active" },
+  ] });
+  const pending = await provider.signIn("user@example.test", "login-secret");
+  assert.ok("selectionRevision" in pending);
+  assert.deepEqual(pending.tenants, [{ tenantId: 9, name: "One" }, { tenantId: 10, name: "Two" }]);
+  assert.equal(provider.currentSession(), null);
+  assert.equal(paths.includes("/api/trpc/phone.getConfig"), false);
+  await assert.rejects(provider.selectTenant("stale-selection", 10));
+  await assert.rejects(provider.selectTenant(pending.selectionRevision, 11));
+  const session = await provider.selectTenant(pending.selectionRevision, 10);
+  assert.equal(session.tenantId, 10);
+  assert.equal(provider.currentExtensionNumber(), "1020");
+  await assert.rejects(provider.selectTenant(pending.selectionRevision, 9));
+  await provider.provision(session);
+  assert.equal(paths.filter(path => path === "/api/trpc/phone.getConfig").length, 2);
+});
+
+test("workspace selection fails closed if membership disappears or config echoes another tenant", async () => {
+  const tenants = [
+    { tenantId: 9, tenantName: "One", tenantStatus: "active" },
+    { tenantId: 10, tenantName: "Two", tenantStatus: "active" },
+  ];
+  const stale = harness({ tenantId: 10, memberships: tenants, nextMemberships: [tenants[0]] });
+  const pending = await stale.provider.signIn("user@example.test", "login-secret");
+  assert.ok("selectionRevision" in pending);
+  await assert.rejects(stale.provider.selectTenant(pending.selectionRevision, 10));
+  assert.equal(stale.provider.currentSession(), null);
+  assert.equal(stale.paths.includes("/api/trpc/phone.getConfig"), false);
+
+  const wrong = harness({ tenantId: 10, memberships: tenants, configTenantId: 9 });
+  const wrongPending = await wrong.provider.signIn("user@example.test", "login-secret");
+  assert.ok("selectionRevision" in wrongPending);
+  await assert.rejects(wrong.provider.selectTenant(wrongPending.selectionRevision, 10));
+  assert.equal(wrong.provider.currentSession(), null);
 });
 
 test("auth rejection and malformed config fail closed without revealing credentials", async () => {
@@ -154,7 +212,7 @@ test("changed SIP config requires a new sign-in before provisioning", async () =
     { secondUsername: "another-account" },
   ]) {
     const { provider } = harness(changed);
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     assert.equal(provider.currentExtensionNumber(), "1020");
     await assert.rejects(provider.provision(session), error => {
       assert.equal(String(error).includes("new-private-sip-password"), false);
@@ -179,6 +237,8 @@ test("sign-out invalidates before a pending provisioning response completes", as
         if (++meCalls === 2) { entered(); return pending; }
         return json({ user: { id: 7 } });
       }
+      if (path === "/api/trpc/pbx.memberships")
+        return trpc([{ tenantId: 9, tenantName: "Phone11", tenantStatus: "active" }]);
       if (path === "/api/trpc/phone.getConfig") return trpc({ configured: true, tenantId: 9,
         extension: { id: 41, number: "1020" }, sip: { username: "sip1020", password,
           domain: "sip.example.test", transport: "TLS" } });
@@ -186,7 +246,7 @@ test("sign-out invalidates before a pending provisioning response completes", as
       throw new Error(`Unexpected ${path}`);
     },
   });
-  const session = await controlled.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(controlled);
   assert.equal(controlled.currentExtensionNumber(), "1020");
   const provisioning = controlled.provision(session);
   await waiting;
@@ -206,7 +266,7 @@ test("non-HTTPS remote origins and URL credentials are rejected", () => {
 
 test("desktop meetings use admitted IDs and keep media grants outside public session state", async () => {
   const { provider, paths } = harness();
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.availableMeetings("stale-revision"));
   const meetings = await provider.availableMeetings(session.revision);
   assert.deepEqual(meetings, [{ meetingId: "11111111-1111-4111-8111-111111111111" }]);
@@ -222,7 +282,7 @@ test("desktop meetings use admitted IDs and keep media grants outside public ses
 test("desktop voicemail inbox exposes bounded personal metadata through the signed-in session", async () => {
   const { provider, paths } = harness({ voicemailItems: [{ id: 4, tenant_id: 9, caller_name: "Som-O",
     caller_number: "1020", duration_seconds: 23, status: "new", created_at: "2026-09-27T10:00:00.000Z" }] });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.listVoicemail("stale-revision"));
   assert.deepEqual(await provider.listVoicemail(session.revision), [{ id: 4, callerName: "Som-O",
     callerNumber: "1020", durationSeconds: 23, status: "new", createdAt: "2026-09-27T10:00:00.000Z" }]);
@@ -241,7 +301,7 @@ test("desktop voicemail rejects malformed or oversized inbox metadata", async ()
       caller_number: "1020", duration_seconds: 23, status: "new", created_at: "2026-09-27T10:00:00.000Z" })),
   ]) {
     const { provider } = harness({ voicemailItems });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.listVoicemail(session.revision));
   }
 });
@@ -250,7 +310,7 @@ test("desktop voicemail drops unsafe caller labels without hiding a valid messag
   const { provider } = harness({ voicemailItems: [{ id: 4, tenant_id: 9, caller_name: "\u202eSpoofed",
     caller_number: " 1020 ", duration_seconds: 0, status: "read",
     created_at: "2026-09-27T10:00:00.000Z" }] });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   assert.deepEqual(await provider.listVoicemail(session.revision), [{ id: 4,
     callerName: null, callerNumber: "1020", durationSeconds: 0, status: "read",
     createdAt: "2026-09-27T10:00:00.000Z" }]);
@@ -258,7 +318,7 @@ test("desktop voicemail drops unsafe caller labels without hiding a valid messag
 
 test("desktop directory uses the selected tenant and returns bounded extension labels", async () => {
   const { provider, paths } = harness();
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.listDirectory("stale", "Som", 0));
   const page = await provider.listDirectory(session.revision, "Som", 0);
   assert.deepEqual(page, { tenantId: 9, items: [{ id: 41, name: "Som", number: "1020" }], nextOffset: null });
@@ -272,7 +332,7 @@ test("desktop directory rejects foreign tenant and unsafe rows before display", 
     { tenantId: 9, items: [{ id: 41, name: "Som\u202e", number: "1020" }], nextOffset: null },
   ]) {
     const { provider } = harness({ directory });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.listDirectory(session.revision, "Som", 0),
       /PHONE11_DIRECTORY_(TENANT_MISMATCH|INVALID_RESPONSE)/);
   }
@@ -281,7 +341,7 @@ test("desktop directory rejects foreign tenant and unsafe rows before display", 
 test("desktop directory ends pagination when the server's next offset exceeds its request cap", async () => {
   const { provider } = harness({ directory: { tenantId: 9,
     items: [{ id: 41, name: "Som", number: "1020" }], nextOffset: 1025 } });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   assert.equal((await provider.listDirectory(session.revision, "Som", 0)).nextOffset, null);
 });
 
@@ -290,7 +350,7 @@ test("desktop call history requests the selected tenant month and exposes safe b
     caller_number: "+6621234567", callee_number: "3001", total_duration_seconds: 42,
     disposition: "answered", started_at: "2026-09-27T10:00:00.000Z",
     call_uuid: "private-call-id", recording_url: "https://private.invalid/audio?token=secret" }] } });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.listCallHistory("stale-revision"));
   const calls = await provider.listCallHistory(session.revision);
   assert.deepEqual(calls, [{ id: 71, direction: "inbound", callerNumber: "+6621234567",
@@ -314,7 +374,7 @@ test("desktop call history rejects malformed, unsafe, or oversized responses", a
       total_duration_seconds: 3, disposition: null, started_at: "2026-09-27T10:00:00.000Z" })) },
   ]) {
     const { provider } = harness({ callHistory });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.listCallHistory(session.revision), (error: unknown) =>
       error instanceof Error && "code" in error && error.code === "invalid_response");
   }
@@ -324,7 +384,7 @@ test("desktop call history classifies HTTP failures without retaining response b
   for (const [status, code] of [[401, "unauthorized"], [403, "forbidden"], [404, "endpoint_unavailable"],
     [503, "server_error"]] as const) {
     const { provider } = harness({ callHistoryStatus: status, callHistory: { error: "private CDR and bearer must not surface" } });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.listCallHistory(session.revision), (error: unknown) => {
       assert.ok(error instanceof Error);
       assert.equal("code" in error ? error.code : undefined, code);
@@ -338,7 +398,7 @@ test("desktop call history classifies HTTP failures without retaining response b
 
 test("desktop call history distinguishes an HTTP 200 response for another tenant without exposing tenant data", async () => {
   const { provider } = harness({ tenantId: 12, callHistory: { tenantId: 9, calls: [] } });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.listCallHistory(session.revision), (error: unknown) => {
     assert.ok(error instanceof Error);
     assert.equal("code" in error ? error.code : undefined, "tenant_mismatch");
@@ -352,7 +412,7 @@ test("desktop voicemail read mutation binds the selected tenant and session revi
   const { provider } = harness({ tenantId: 12, voicemailItems: [{ id: 4, tenant_id: 12,
     caller_name: null, caller_number: null, duration_seconds: 0, status: "new",
     created_at: "2026-09-27T10:00:00.000Z" }] });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.markVoicemailRead("stale-revision", 4));
   await assert.rejects(provider.markVoicemailRead(session.revision, 0));
   await provider.markVoicemailRead(session.revision, 4);
@@ -370,7 +430,7 @@ test("desktop voicemail read rejects old-server or foreign inbox data before mut
       created_at: "2026-09-27T10:00:00.000Z" }],
   ]) {
     const { provider, paths } = harness({ tenantId: 12, voicemailItems });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.markVoicemailRead(session.revision, 4));
     assert.equal(paths.some(path => path.endsWith("pbx.voicemail.markRead")), false);
   }
@@ -387,6 +447,8 @@ test("desktop voicemail read sends no mutation if sign-out changes the session d
       const path = new URL(String(input)).pathname;
       if (path === "/api/auth/sign-in/email") return json({ success: true }, 200, { "set-auth-token": bearer });
       if (path === "/api/auth/me") return json({ user: { id: 7 } });
+      if (path === "/api/trpc/pbx.memberships")
+        return trpc([{ tenantId: 12, tenantName: "Phone11", tenantStatus: "active" }]);
       if (path === "/api/trpc/phone.getConfig") return trpc({ configured: true, tenantId: 12,
         extension: { id: 41, number: "1020" }, sip: { username: "sip1020", password,
           domain: "sip.example.test", transport: "TLS" } });
@@ -395,7 +457,7 @@ test("desktop voicemail read sends no mutation if sign-out changes the session d
       if (path === "/api/auth/sign-out") return json({ success: true });
       throw new Error(`Unexpected ${path}`);
     } });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   const marking = provider.markVoicemailRead(session.revision, 4);
   await waiting;
   await provider.signOut();
@@ -408,7 +470,7 @@ test("desktop voicemail read sends no mutation if sign-out changes the session d
 test("desktop voicemail audio requires a fresh inbox match and returns only bounded WAV bytes", async () => {
   const { provider, paths } = harness({ tenantId: 12, voicemailItems: [{ id: 4, tenant_id: 12, caller_name: "Som-O",
     caller_number: "1020", duration_seconds: 23, status: "new", created_at: "2026-09-27T10:00:00.000Z" }] });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.voicemailAudio("stale-revision", 4));
   const audio = await provider.voicemailAudio(session.revision, 4);
   assert.deepEqual(audio, { id: 4, mimeType: "audio/wav", bytes: Uint8Array.from([
@@ -423,7 +485,7 @@ test("desktop voicemail audio requires a fresh inbox match and returns only boun
 test("desktop voicemail audio rejects foreign IDs before media fetch", async () => {
   const { provider, paths } = harness({ voicemailItems: [{ id: 5, tenant_id: 9, caller_name: null,
     caller_number: null, duration_seconds: 23, status: "new", created_at: "2026-09-27T10:00:00.000Z" }] });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.voicemailAudio(session.revision, 4));
   assert.equal(paths.some(path => path.startsWith("/api/recordings/voicemail/")), false);
 });
@@ -432,7 +494,7 @@ test("desktop voicemail audio rejects a row returned for another tenant before m
   const { provider, paths } = harness({ tenantId: 12, voicemailItems: [{ id: 4, tenant_id: 9,
     caller_name: null, caller_number: null, duration_seconds: 23, status: "new",
     created_at: "2026-09-27T10:00:00.000Z" }] });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   await assert.rejects(provider.voicemailAudio(session.revision, 4));
   assert.equal(paths.some(path => path.startsWith("/api/recordings/voicemail/")), false);
 });
@@ -449,7 +511,7 @@ test("desktop voicemail audio rejects redirects, wrong media types, and oversize
   ]) {
     const { provider } = harness({ voicemailItems: [{ id: 4, tenant_id: 9, caller_name: null,
       caller_number: null, duration_seconds: 0, status: "read", created_at: "2026-09-27T10:00:00.000Z" }], ...options });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.voicemailAudio(session.revision, 4), error => {
       assert.equal(String(error).includes(bearer), false);
       return true;
@@ -467,6 +529,8 @@ test("desktop voicemail body read aborts and discards bytes when sign-out change
       if (path === "/api/auth/sign-in/email") return json({ success: true }, 200, { "set-auth-token": bearer });
       assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${bearer}`);
       if (path === "/api/auth/me") return json({ user: { id: 7 } });
+      if (path === "/api/trpc/pbx.memberships")
+        return trpc([{ tenantId: 9, tenantName: "Phone11", tenantStatus: "active" }]);
       if (path === "/api/trpc/phone.getConfig") return trpc({ configured: true, tenantId: 9,
         extension: { id: 41, number: "1020" }, sip: { username: "sip1020", password,
           domain: "sip.example.test", transport: "TLS" } });
@@ -483,7 +547,7 @@ test("desktop voicemail body read aborts and discards bytes when sign-out change
       if (path === "/api/auth/sign-out") return json({ success: true });
       throw new Error(`Unexpected ${path}`);
     } });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   const reading = provider.voicemailAudio(session.revision, 4);
   await waiting;
   await provider.signOut();
@@ -501,6 +565,8 @@ test("desktop voicemail timeout cannot return a RIFF prefix as a complete record
       const path = new URL(String(input)).pathname;
       if (path === "/api/auth/sign-in/email") return json({ success: true }, 200, { "set-auth-token": bearer });
       if (path === "/api/auth/me") return json({ user: { id: 7 } });
+      if (path === "/api/trpc/pbx.memberships")
+        return trpc([{ tenantId: 9, tenantName: "Phone11", tenantStatus: "active" }]);
       if (path === "/api/trpc/phone.getConfig") return trpc({ configured: true, tenantId: 9,
         extension: { id: 41, number: "1020" }, sip: { username: "sip1020", password,
           domain: "sip.example.test", transport: "TLS" } });
@@ -523,7 +589,7 @@ test("desktop voicemail timeout cannot return a RIFF prefix as a complete record
       if (path === "/api/auth/sign-out") return json({ success: true });
       throw new Error(`Unexpected ${path}`);
     } });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   const originalSetTimeout = globalThis.setTimeout;
   let heldTimer: ReturnType<typeof setTimeout> | undefined;
   globalThis.setTimeout = ((callback: TimerHandler, delay?: number, ...args: unknown[]) => {
@@ -556,7 +622,7 @@ test("desktop meeting titles are bounded presentation data and never join author
     ["x".repeat(101), undefined],
   ] as const) {
     const { provider } = harness({ availableMeetings: [{ meetingId: id, tenantId: 9, title }] });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     assert.deepEqual(await provider.availableMeetings(session.revision), [
       { meetingId: id, ...(expected ? { title: expected } : {}) },
     ]);
@@ -571,7 +637,7 @@ test("desktop meeting admission rejects malformed, expired, and credential-beari
     { url: "wss://room.example.test", token: "private-room-token", grant_profile: "host", expires_at: Math.floor(Date.now() / 1000) + 300 },
   ]) {
     const { provider } = harness({ meetingGrant });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.joinMeeting(session.revision, "11111111-1111-4111-8111-111111111111"));
   }
 });
@@ -581,7 +647,7 @@ test("desktop meeting list rejects unexpected IDs, mismatched tenants, and overs
     [{ meetingId: "11111111-1111-4111-8111-111111111111", tenantId: 10 }],
     Array.from({ length: 101 }, () => ({ meetingId: "11111111-1111-4111-8111-111111111111", tenantId: 9 }))]) {
     const { provider } = harness({ availableMeetings });
-    const session = await provider.signIn("user@example.test", "login-secret");
+    const session = await signInSingle(provider);
     await assert.rejects(provider.availableMeetings(session.revision));
   }
 });
@@ -596,6 +662,8 @@ test("sign-out invalidates an in-flight desktop meeting grant before delivery", 
       const path = new URL(String(input)).pathname;
       if (path === "/api/auth/sign-in/email") return json({ success: true }, 200, { "set-auth-token": bearer });
       if (path === "/api/auth/me") return json({ user: { id: 7 } });
+      if (path === "/api/trpc/pbx.memberships")
+        return trpc([{ tenantId: 9, tenantName: "Phone11", tenantStatus: "active" }]);
       if (path === "/api/trpc/phone.getConfig") return trpc({ configured: true, tenantId: 9,
         extension: { id: 41, number: "1020" }, sip: { username: "sip1020", password,
           domain: "sip.example.test", transport: "TLS" } });
@@ -603,7 +671,7 @@ test("sign-out invalidates an in-flight desktop meeting grant before delivery", 
       if (path === "/api/auth/sign-out") return json({ success: true });
       throw new Error(`Unexpected ${path}`);
     } });
-  const session = await provider.signIn("user@example.test", "login-secret");
+  const session = await signInSingle(provider);
   const joining = provider.joinMeeting(session.revision, "11111111-1111-4111-8111-111111111111");
   await requestEntered;
   await provider.signOut();

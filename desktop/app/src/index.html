@@ -27,6 +27,12 @@
         <input id="password" type="password" autocomplete="current-password" required>
         <button class="primary-button login-submit" type="submit">Sign in</button>
       </form>
+      <section id="tenant-picker" hidden aria-labelledby="tenant-picker-heading">
+        <h2 id="tenant-picker-heading">Choose a workspace</h2>
+        <p>Select where you want to use your Phone11 extension.</p>
+        <div id="tenant-choices" class="tenant-choices"></div>
+        <button id="tenant-picker-back" class="tenant-picker-back" type="button">Back to sign in</button>
+      </section>
     </section>
 
     <section id="workspace" class="app-shell" hidden>
