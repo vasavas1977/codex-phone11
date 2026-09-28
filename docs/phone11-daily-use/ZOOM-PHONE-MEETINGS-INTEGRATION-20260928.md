@@ -36,6 +36,16 @@ The directory requires an explicitly selected tenant, active tenant membership a
 
 Source tests, a built bundle and an authenticated token do not prove live audio, push or background ringing. This document is not a statement of complete Zoom Phone or Meetings parity.
 
+## Remaining Zoom workflow slices
+
+The source mapping above covers the core daily-use path, not every Zoom control. The next distinct product slices are:
+
+1. [Shared call history](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0069013): mobile Recents currently reads an owner-local store while desktop reads PBX CDR. A tenant- and user-bound reconciliation contract is required before claiming the same history on both clients; a CDR row alone does not establish call ownership.
+2. [Meeting scheduling](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0060700): immediate channel/direct rooms must not be repurposed as future meetings. Scheduling needs durable time, invitee, cancellation, expiry and reminder state, plus the corresponding server authorization.
+3. [In-meeting collaboration and moderation](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0062674): current rooms have basic participant, microphone, camera and leave controls. Screen sharing, meeting chat, waiting-room and host actions need provider-capability checks and server-authoritative policy before the controls are shown.
+4. [Phone transfer and voicemail](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0066777): transfer remains narrower than Zoom Phone. Mailbox configuration and schema checks do not establish completed-message delivery, owner-bound storage, playback or deletion. Both require PBX-backed end-to-end tests.
+5. [Admin onboarding and delegation](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0060257): the admin UI currently manages assigned users and extensions but does not create or invite users. A verified invitation sender, identity lifecycle and target-scoped role checks are required before adding onboarding and delegated Phone administration.
+
 ## Related product boundaries
 
 Phone11 Team Chat is the internal workspace conversation store; Super Number's external LINE OA Inbox keeps its separate provider send and assignment path. Any shared tenant, user, or contact context must cross an explicit authenticated contract. The visible meeting notetaker is a shared note11/Super Number capability, not a second Phone11 bot or Zoom cloud-recording sync. These boundaries were coordinated with the `Complete Super Number v7.2 Alpha` task on 2026-09-28; they do not imply either provider feature is live.
