@@ -10,6 +10,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useColors } from "@/hooks/use-colors";
 import { useSipAccountStore, type RegistrationState } from "@/lib/sip/account-store";
+import { hasOngoingSipCall } from "@/lib/sip/call-store";
 import { useSipDiagnosticsStore } from "@/lib/sip/diagnostics-store";
 import { type PhoneProvisioningConfig, sipAccountFromPhoneConfig } from "@/lib/sip/provisioning";
 import { assertProvisioningScope, fetchSelectedPhoneConfig, fetchSelectedPilotConfig } from "@/lib/sip/selected-provisioning";
@@ -68,6 +69,9 @@ export default function SIPAccountScreen() {
       throw new Error("No SIP extension was returned by admin management.");
     }
     assertProvisioningScope(owner, tenantId, config);
+    if (hasOngoingSipCall()) {
+      throw new Error("Finish the current phone call before syncing your phone account.");
+    }
     const currentAccount = useSipAccountStore.getState().account;
     const provisionedAccount = sipAccountFromPhoneConfig(config, currentAccount?.id);
     await setAccount({ ...provisionedAccount, ownerUserId: owner.id });
@@ -96,6 +100,10 @@ export default function SIPAccountScreen() {
   };
 
   const handleSyncFromAdmin = async () => {
+    if (hasOngoingSipCall()) {
+      Alert.alert("Call in progress", "Finish the current phone call before syncing your phone account.");
+      return;
+    }
     if (authLoading && !user) {
       Alert.alert("Account is still loading", "Please wait a moment, then sync again.");
       return;
@@ -132,7 +140,10 @@ export default function SIPAccountScreen() {
       if (currentAccount && (currentAccount.ownerUserId !== owner.id || currentAccount.tenantId !== tenantId)) {
         Alert.alert("Switch phone workspace?", "This will replace the saved SIP account for your other workspace.", [
           { text: "Cancel", style: "cancel" },
-          { text: "Switch account", onPress: () => { void fetchSelectedPhoneConfig(owner, tenantId)
+          { text: "Switch account", onPress: () => { if (hasOngoingSipCall()) {
+              Alert.alert("Call in progress", "Finish the current phone call before switching your phone account.");
+              return;
+            } void fetchSelectedPhoneConfig(owner, tenantId)
             .then(latest => applyProvisioningConfig(latest, owner, tenantId))
             .catch(error => Alert.alert("Provisioning failed", errorMessage(error))); } },
         ]);

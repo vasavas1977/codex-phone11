@@ -240,8 +240,8 @@ describe("Phone11 sign-in surface", () => {
       );
     }
     const sipSource = read("app/settings/sip.tsx");
-    expect(sipSource).toContain("getAuthSnapshot().user?.id !== user.id");
-    expect(sipSource).toContain("ownerUserId: user.id");
+    expect(sipSource).toContain("owner.id !== user?.id");
+    expect(sipSource).toContain("ownerUserId: owner.id");
   });
 
   it("parses and transpiles all touched auth screens and hooks", () => {

@@ -27,8 +27,27 @@ export function getAuthSnapshot(): AuthState {
 }
 
 export function updateAuthState(next: Partial<AuthState>): void {
+  let profileChanged = false;
+  const existing = authState.user;
+  const verified = next.user;
+  // /auth/me returns a new object on every refresh. Keep the verified session's
+  // identity stable for native call/wake guards while still publishing changes
+  // to its visible profile. A real sign-in first clears user; a changed login
+  // timestamp or owner also creates a new identity.
+  if (existing && verified && existing !== verified &&
+      existing.id === verified.id && existing.openId === verified.openId &&
+      existing.lastSignedIn.getTime() === verified.lastSignedIn.getTime()) {
+    for (const key of ["name", "email", "loginMethod"] as const) {
+      if (existing[key] !== verified[key]) {
+        existing[key] = verified[key];
+        profileChanged = true;
+      }
+    }
+    next = { ...next, user: existing };
+  }
   const updated = { ...authState, ...next };
   if (
+    !profileChanged &&
     updated.user === authState.user &&
     updated.loading === authState.loading &&
     updated.error === authState.error

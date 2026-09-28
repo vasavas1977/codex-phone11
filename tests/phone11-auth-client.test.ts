@@ -385,6 +385,26 @@ describe("Phone11 email/password client", () => {
 });
 
 describe("Phone11 session lifecycle", () => {
+  it("keeps native call identity on a same-session profile refresh and publishes changed profile fields", async () => {
+    const user = await signedIn();
+    const listener = vi.fn();
+    const unsubscribe = auth.addAuthChangeListener(listener);
+    fetchMock.mockResolvedValueOnce(json({ user: { ...canonicalUser, name: "Updated Name" } }));
+    await api.refreshAuth();
+    expect(auth.getAuthSnapshot().user).toBe(user);
+    expect(user.name).toBe("Updated Name");
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+
+  it("replaces native call identity when the verified login timestamp changes", async () => {
+    const user = await signedIn();
+    fetchMock.mockResolvedValueOnce(json({ user: { ...canonicalUser, lastSignedIn: "2026-09-10T00:00:00.000Z" } }));
+    await api.refreshAuth();
+    expect(auth.getAuthSnapshot().user).not.toBe(user);
+    expect(auth.getAuthSnapshot().user?.id).toBe(user.id);
+  });
+
   it.each(["ios", "web"])(
     "clears rejected auth on 401 on %s without notification/refetch loops",
     async (platform) => {

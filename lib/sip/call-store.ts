@@ -35,6 +35,12 @@ export interface SipCall {
   history?: CallHistoryEntry;
 }
 
+/** Ringing, connecting, active and held calls all keep the native SIP account in use. */
+export function hasOngoingSipCall(state = useSipCallStore.getState()): boolean {
+  return (state.incomingCall !== null && state.incomingCall.status !== "disconnected") ||
+    Object.values(state.activeCalls).some(call => call.status !== "disconnected");
+}
+
 let historySequence = 0;
 const exactNativeHistoryId =
   /^native-(?:wake|outbound):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
