@@ -1023,7 +1023,7 @@ export const pbxRouter = router({
           const extResult = await client.query(
             `INSERT INTO extensions (tenant_id, user_id, extension_number, display_name, type, 
                                      sip_username, sip_domain, sip_password, caller_id_name, caller_id_number, transport, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, '', $8, $9, $10, 'active')
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10, 'active')
              RETURNING *`,
             [
               tc.tenantId,
@@ -1170,6 +1170,9 @@ export const pbxRouter = router({
           );
           if (!oldResult.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
           const oldExtension = oldResult.rows[0] as { user_id: number | null; status: string; type: string; old_value: Record<string, unknown> };
+          if (hasAssignmentChange && oldExtension.type !== "user") {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "Only user extensions can be reassigned" });
+          }
           const disabling = oldExtension.status === "active" && input.status !== undefined && input.status !== "active";
           const enabling = oldExtension.status !== "active" && input.status === "active";
 
@@ -1428,6 +1431,18 @@ export const pbxRouter = router({
               );
           if (subscriber.rows.length !== 1) {
             throw new TRPCError({ code: "CONFLICT", message: "Subscriber changed before the password reset" });
+          }
+
+          // A later missing account must never expose the previous legacy
+          // extension password as an alternative to the rotated account.
+          const extensionUpdated = await client.query(
+            `UPDATE extensions SET sip_password = NULL, updated_at = NOW()
+             WHERE id = $1 AND tenant_id = $2 AND status = 'active'
+               AND deleted_at IS NULL RETURNING id`,
+            [input.extensionId, tc.tenantId],
+          );
+          if (extensionUpdated.rows.length !== 1) {
+            throw new TRPCError({ code: "CONFLICT", message: "The SIP credential update could not complete" });
           }
 
           return {

@@ -413,7 +413,7 @@ function prepareAssignment(options: {
     if (sql.includes("tm.role::text AS role") && sql.includes("FOR UPDATE")) return { rows: [{ role: "admin" }] };
     if (sql.includes("old_value, e.user_id")) {
       const userId = options.oldUserId === undefined ? 88 : options.oldUserId;
-      return { rows: [{ user_id: userId, old_value: { id: 44, user_id: userId } }] };
+      return { rows: [{ user_id: userId, type: "user", status: "active", old_value: { id: 44, user_id: userId } }] };
     }
     if (sql.includes("SELECT 1 FROM tenant_memberships")) {
       return { rows: options.memberExists === false ? [] : [{ exists: 1 }] };
@@ -822,6 +822,7 @@ describe("admin SIP credential writes", () => {
       if (sql.includes("SELECT ha1, ha1b FROM subscriber")) return { rows: [{ ha1: "old-ha1", ha1b: "old-ha1b" }] };
       if (sql.includes("UPDATE sip_accounts SET ha1")) return { rows: [{ id: 55 }] };
       if (sql.includes("UPDATE subscriber SET password")) return { rows: [{ username: "3101" }] };
+      if (sql.includes("UPDATE extensions SET sip_password = NULL")) return { rows: [{ id: 44 }] };
       return { rows: [] };
     });
     vi.mocked(createSipCredentials).mockReturnValue(credentials);
@@ -886,8 +887,10 @@ describe("admin SIP credential writes", () => {
     const calls = db.query.mock.calls.map(([sql]) => String(sql));
     const account = calls.findIndex((sql) => sql.includes("UPDATE sip_accounts SET ha1"));
     const subscriber = calls.findIndex((sql) => sql.includes("UPDATE subscriber SET password"));
+    const legacySecret = calls.findIndex((sql) => sql.includes("UPDATE extensions SET sip_password = NULL"));
     expect(account).toBeGreaterThan(-1);
     expect(subscriber).toBeGreaterThan(account);
+    expect(legacySecret).toBeGreaterThan(subscriber);
     expect(db.query.mock.calls[subscriber][1]).toEqual(["3101", "sip.phone11.ai", "new-secret", "new-ha1", "new-ha1b", "old-ha1", "old-ha1b"]);
     expect(calls.some((sql) => sql.includes("FOR UPDATE OF e, sa"))).toBe(true);
     expect(calls.some((sql) => sql.includes("SELECT ha1, ha1b FROM subscriber") && sql.includes("FOR UPDATE"))).toBe(true);

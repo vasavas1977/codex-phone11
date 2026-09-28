@@ -38,7 +38,7 @@ describe("legacy phone administration tenant isolation", () => {
       appRouter.createCaller(context()).phone.getConfig(),
     ).resolves.toEqual({ extension: "4101" });
 
-    expect(provisioning.getPhoneConfig).toHaveBeenCalledWith(9, undefined);
+    expect(provisioning.getPhoneConfig).toHaveBeenCalledWith(9, undefined, undefined);
     expect(db.query).not.toHaveBeenCalled();
   });
 
@@ -104,7 +104,7 @@ describe("legacy phone administration tenant isolation", () => {
     },
   );
 
-  it("preserves the oldest authorized workspace for a legacy read without a selection", async () => {
+  it("requires selection for a legacy read with multiple administrator workspaces", async () => {
     db.query.mockResolvedValueOnce({
       rows: [{ tenant_id: 7 }, { tenant_id: 8 }],
     });
@@ -112,9 +112,9 @@ describe("legacy phone administration tenant isolation", () => {
 
     await expect(
       appRouter.createCaller(context()).phone.listExtensions(),
-    ).resolves.toEqual([{ id: 41 }]);
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
 
-    expect(provisioning.listExtensions).toHaveBeenCalledWith(7);
+    expect(provisioning.listExtensions).not.toHaveBeenCalled();
     expect(String(db.query.mock.calls[0][0])).toContain("tm.created_at ASC");
     expect(String(db.query.mock.calls[0][0])).not.toContain("tm.is_default");
   });

@@ -7,7 +7,7 @@
  * Flow:
  * 1. User logs in -> app calls phone.getConfig
  * 2. Server looks up user's assigned extension
- * 3. If no extension assigned, pilot provisioning can create one
+ * 3. If no extension is assigned in the selected tenant, return unconfigured
  * 4. Returns SIP credentials to the app
  */
 
@@ -80,33 +80,26 @@ function getSipPassword(row: any): string | null {
   const domain = row.account_sip_domain || row.sip_domain || DEFAULT_SIP_DOMAIN;
   const password = row.subscriber_password;
   if (!username || !domain || typeof password !== "string" || !password) return null;
-  if (row.account_id !== null && row.account_id !== undefined &&
-      ((row.sip_username || row.extension_number) !== username ||
-       (row.sip_domain || DEFAULT_SIP_DOMAIN) !== domain)) return null;
-
   const ha1 = computeHA1(username, domain, password);
   const ha1b = computeHA1B(username, domain, domain, password);
-  if (!ha1 || !ha1b || row.subscriber_ha1 !== ha1 || row.subscriber_ha1b !== ha1b) return null;
-  if (row.account_id !== null && row.account_id !== undefined) {
-    if (row.account_ha1 !== ha1 || row.account_ha1b !== ha1b) return null;
-    const hasSecret = row.secret_ciphertext != null || row.secret_iv != null || row.secret_tag != null;
-    if (hasSecret) {
-      const ciphertext = toBuffer(row.secret_ciphertext);
-      const iv = toBuffer(row.secret_iv);
-      const tag = toBuffer(row.secret_tag);
-      if (!ciphertext || !iv || !tag) return null;
-      try {
-        if (decryptSecret(ciphertext, iv, tag) !== password) return null;
-      } catch {
-        return null;
-      }
+  if (row.subscriber_ha1 !== ha1 || row.subscriber_ha1b !== ha1b) return null;
+
+  if (row.account_id != null) {
+    if (row.sip_username !== username || (row.sip_domain || DEFAULT_SIP_DOMAIN) !== domain ||
+        row.account_ha1 !== ha1 || row.account_ha1b !== ha1b) return null;
+    const ciphertext = toBuffer(row.secret_ciphertext);
+    const iv = toBuffer(row.secret_iv);
+    const tag = toBuffer(row.secret_tag);
+    if (!ciphertext || !iv || !tag) return null;
+    try {
+      return decryptSecret(ciphertext, iv, tag) === password ? password : null;
+    } catch {
+      return null;
     }
-  } else if (row.sip_password !== password) {
-    // A legacy extension has no account digest, so its own stored secret must
-    // prove ownership of the global Kamailio subscriber row.
-    return null;
   }
-  return password;
+
+  // Only extensions without any account may use their legacy password.
+  return row.sip_password === password ? password : null;
 }
 
 function buildConfig(ext: any, password: string, dids: Array<{ number: string; description: string }> = []): PhoneConfig {
@@ -134,9 +127,9 @@ function buildConfig(ext: any, password: string, dids: Array<{ number: string; d
       stun: DEFAULT_SIP_STUN,
     },
     organization: {
-      id: ext.org_id || ext.tenant_id || 1,
-      name: ext.org_name || ext.tenant_name || "Phone11",
-      plan: ext.org_plan || ext.tenant_plan || "business",
+      id: ext.tenant_id,
+      name: ext.tenant_name || ext.org_name || "Phone11",
+      plan: ext.tenant_plan || ext.org_plan || "business",
     },
     dids,
   };
@@ -339,26 +332,28 @@ async function ensurePhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
   return schemaReady;
 }
 
-async function getNextPilotExtensionNumber(db: ReturnType<typeof getPool>): Promise<string> {
-  const seed = Number.parseInt(process.env.PILOT_EXTENSION_START || "1020", 10);
-  const result = await db.query(`
-    SELECT MAX(extension_number::integer) AS max_extension
-    FROM extensions
-    WHERE extension_number ~ '^[0-9]+$'
-      AND deleted_at IS NULL
-  `);
-  const currentMax = Number.parseInt(result.rows[0]?.max_extension || "", 10);
-  return String(Math.max(Number.isFinite(currentMax) ? currentMax + 1 : seed, seed));
-}
-
 /**
  * Get phone configuration for a logged-in user.
  */
-export async function getPhoneConfig(userId: number, openId: string): Promise<PhoneConfig> {
+export async function getPhoneConfig(userId: number, _openId: string, requestedTenantId?: number): Promise<PhoneConfig> {
   const db = getPool();
 
   try {
     await ensurePhoneProvisioningSchema(db);
+
+    // An account with multiple workspaces must select the workspace whose SIP
+    // identity it is requesting. Recheck that selection against live membership.
+    const memberships = await db.query(
+      `SELECT tm.tenant_id FROM tenant_memberships tm
+       JOIN tenants t ON t.id = tm.tenant_id AND t.status = 'active'
+       WHERE tm.user_id = $1 AND tm.status = 'active'
+         AND ($2::integer IS NULL OR tm.tenant_id = $2)
+       ORDER BY tm.tenant_id LIMIT 2`,
+      [userId, requestedTenantId ?? null],
+    );
+    if (memberships.rows.length !== 1) return { configured: false };
+    const selectedTenantId = Number(memberships.rows[0].tenant_id);
+    if (!Number.isSafeInteger(selectedTenantId) || selectedTenantId <= 0) return { configured: false };
 
     const assignedResult = await db.query(`
       SELECT e.*, ue.is_primary, o.name as org_name, o.plan as org_plan,
@@ -378,7 +373,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
       LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
       LEFT JOIN subscriber sub ON sub.username = COALESCE(sa.sip_username, e.sip_username, e.extension_number)
         AND sub.domain = COALESCE(sa.sip_domain, e.sip_domain, $2)
-      WHERE e.type = 'user'
+      WHERE e.tenant_id = $3 AND e.type = 'user'
         AND (
           -- A live SIP account has two current owner records. A stale
           -- user_extensions row must never disclose the account password.
@@ -396,6 +391,11 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
         -- credential fields. Once an account exists, only its live state can
         -- provision credentials; suspended/deleted accounts fail closed.
         AND (sa.id IS NULL OR (sa.status = 'active' AND sa.deleted_at IS NULL))
+        AND (SELECT COUNT(*) FROM sip_accounts account_row
+             WHERE account_row.extension_id = e.id) <= 1
+        AND (sa.id IS NOT NULL OR NOT EXISTS (
+          SELECT 1 FROM sip_accounts any_account WHERE any_account.extension_id = e.id
+        ))
         AND NOT EXISTS (
           SELECT 1 FROM extensions other_e
           WHERE other_e.id <> e.id AND other_e.deleted_at IS NULL
@@ -422,7 +422,7 @@ export async function getPhoneConfig(userId: number, openId: string): Promise<Ph
             AND matching_sub.domain = COALESCE(NULLIF(sa.sip_domain, ''), NULLIF(e.sip_domain, ''), $2)) = 1
       ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
       LIMIT 1
-    `, [userId, DEFAULT_SIP_DOMAIN]);
+    `, [userId, DEFAULT_SIP_DOMAIN, selectedTenantId]);
 
     if (assignedResult.rows.length > 0) {
       const ext = assignedResult.rows[0];
@@ -571,13 +571,18 @@ async function lockExtensionSipAuth(client: PoolClient, extensionId: number, ten
   );
   if (ext.rows.length !== 1) throw new Error("Extension is not available in this workspace.");
   const accounts = await client.query(
-    `SELECT id, sip_username, sip_domain, ha1, ha1b FROM sip_accounts
-      WHERE extension_id = $1 AND tenant_id = $2 AND status = ANY($3::text[])
-        AND deleted_at IS NULL LIMIT 2 FOR UPDATE`,
-    [extensionId, tenantId, allowSuspendedAccount ? ['suspended'] : ['active']],
+    `SELECT id, tenant_id, sip_username, sip_domain, ha1, ha1b, status, deleted_at FROM sip_accounts
+      WHERE extension_id = $1 LIMIT 2 FOR UPDATE`,
+    [extensionId],
   );
-  if (accounts.rows.length > 1) throw new Error("Extension has multiple active SIP accounts.");
+  if (accounts.rows.length > 1) throw new Error("Extension has multiple SIP accounts.");
   const account = accounts.rows[0];
+  const expectedStatus = allowSuspendedAccount ? "suspended" : "active";
+  if (account && (account.tenant_id !== tenantId || account.deleted_at !== null ||
+      (account.status !== expectedStatus &&
+       !(allowCredentialFree && !allowSuspendedAccount && account.status === "suspended")))) {
+    throw new Error("SIP account state does not match this extension.");
+  }
   const username = account?.sip_username || ext.rows[0].sip_username || ext.rows[0].extension_number;
   const domain = account?.sip_domain || ext.rows[0].sip_domain || DEFAULT_SIP_DOMAIN;
   if (!username || !domain ||
@@ -620,53 +625,9 @@ async function lockExtensionSipAuth(client: PoolClient, extensionId: number, ten
     subscriberPresent: subscriber.rows.length === 1 };
 }
 
-/**
- * Pilot bootstrap for first-device tests. This still provisions on the server side
- * and returns the same admin-controlled SIP config as getPhoneConfig.
- */
-export async function ensurePilotExtensionForUser(userId: number, openId: string): Promise<PhoneConfig> {
-  const existing = await getPhoneConfig(userId, openId);
-  if (existing.configured) return existing;
-
-  const db = getPool();
-  await ensurePhoneProvisioningSchema(db);
-
-  // Pilot bootstrap must not revive an inactive member by handing out a fresh
-  // extension and its SIP credentials.
-  const membership = await db.query(`SELECT 1 FROM tenant_memberships tm JOIN tenants t ON t.id=tm.tenant_id
-    WHERE tm.user_id=$1 AND tm.tenant_id=1 AND tm.status='active' AND t.status='active' LIMIT 1`, [userId]);
-  if (membership.rows.length !== 1) return { configured: false };
-
-  const openExtension = await db.query(`
-    SELECT e.*
-    FROM extensions e
-    LEFT JOIN user_extensions ue ON ue.extension_id = e.id
-    LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
-    WHERE e.tenant_id = 1
-      AND COALESCE(e.status, 'active') = 'active'
-      AND e.deleted_at IS NULL
-      AND e.user_id IS NULL
-      AND ue.user_id IS NULL
-      AND (sa.user_id IS NULL OR sa.user_id = 0)
-    ORDER BY e.extension_number
-    LIMIT 1
-  `);
-
-  if (openExtension.rows.length > 0) {
-    const ext = openExtension.rows[0];
-    await assignExtensionToUser(userId, ext.id, true, 1);
-    return getPhoneConfig(userId, openId);
-  }
-
-  const extensionNumber = await getNextPilotExtensionNumber(db);
-  const created = await createExtension({
-    orgId: 1,
-    extensionNumber,
-    displayName: `Phone11 Pilot ${extensionNumber}`,
-  });
-  await assignExtensionToUser(userId, created.id, true, 1);
-
-  return getPhoneConfig(userId, openId);
+/** Preserve the legacy pilot endpoint as a read of the selected assignment. */
+export async function ensurePilotExtensionForUser(userId: number, openId: string, tenantId?: number): Promise<PhoneConfig> {
+  return getPhoneConfig(userId, openId, tenantId);
 }
 
 /**
@@ -675,8 +636,8 @@ export async function ensurePilotExtensionForUser(userId: number, openId: string
 export async function assignExtensionToUser(
   userId: number,
   extensionId: number,
-  isPrimary: boolean = true,
-  tenantId: number = 1,
+  isPrimary: boolean,
+  tenantId: number,
   actorUserId?: number,
 ) {
   const db = getPool();
@@ -704,7 +665,7 @@ export async function assignExtensionToUser(
          JOIN tenant_memberships tm
            ON tm.user_id = $1 AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
          JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
-        WHERE e.id = $2 AND e.tenant_id = $3
+        WHERE e.id = $2 AND e.tenant_id = $3 AND e.type = 'user'
           AND e.status = 'active' AND e.deleted_at IS NULL
         LIMIT 1 FOR UPDATE OF e`,
       [userId, extensionId, tenantId],
@@ -820,9 +781,9 @@ export async function createExtension(input: {
         org_id, tenant_id, extension_number, sip_username, sip_domain, sip_password,
         display_name, transport, status, type
       )
-      VALUES ($1, $1, $2, $2, $3, $4, $5, $6, 'active', 'user')
+      VALUES ($1, $1, $2, $2, $3, NULL, $4, $5, 'active', 'user')
       RETURNING *
-    `, [orgId, extensionNumber, DEFAULT_SIP_DOMAIN, creds.plaintextPassword, displayName || `Extension ${extensionNumber}`, DEFAULT_SIP_TRANSPORT]);
+    `, [orgId, extensionNumber, DEFAULT_SIP_DOMAIN, displayName || `Extension ${extensionNumber}`, DEFAULT_SIP_TRANSPORT]);
 
     const ext = result.rows[0];
     await client.query(`
@@ -855,7 +816,7 @@ async function lockLegacyPhoneAdmin(client: PoolClient, actorUserId: number, ten
     `SELECT tm.role FROM tenant_memberships tm
        JOIN tenants t ON t.id = tm.tenant_id
       WHERE tm.user_id = $1 AND tm.tenant_id = $2
-        AND tm.status = 'active' AND tm.role IN ('owner', 'admin')
+        AND tm.status = 'active' AND tm.role::text IN ('owner', 'admin')
         AND t.status = 'active'
       FOR UPDATE OF tm, t`,
     [actorUserId, tenantId],
@@ -896,14 +857,18 @@ export async function createDidNumber(input: {
   description?: string;
   destinationType: string;
   destinationValue?: string;
+  actorUserId?: number;
 }) {
   const db = getPool();
   await ensurePhoneProvisioningSchema(db);
 
-  const result = await db.query(`
-    INSERT INTO did_numbers (org_id, tenant_id, number, description, destination_type, destination_value, status)
-    VALUES ($1, $1, $2, $3, $4, $5, 'active')
-    RETURNING *
-  `, [input.orgId, input.number, input.description || "", input.destinationType, input.destinationValue || ""]);
-  return result.rows[0];
+  return withTransaction(async (client) => {
+    if (input.actorUserId !== undefined) await lockLegacyPhoneAdmin(client, input.actorUserId, input.orgId);
+    const result = await client.query(`
+      INSERT INTO did_numbers (org_id, tenant_id, number, description, destination_type, destination_value, status)
+      VALUES ($1, $1, $2, $3, $4, $5, 'active')
+      RETURNING *
+    `, [input.orgId, input.number, input.description || "", input.destinationType, input.destinationValue || ""]);
+    return result.rows[0];
+  });
 }

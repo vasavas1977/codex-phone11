@@ -73,7 +73,6 @@ const legacyRecordingAnalysisSchema = z.object({
 async function requirePhoneTenantAdmin(
   userId: number,
   requestedTenantId?: number,
-  failOnAmbiguousImplicit = false,
 ): Promise<number> {
   const values = requestedTenantId === undefined ? [userId] : [userId, requestedTenantId];
   const requestedClause = requestedTenantId === undefined ? "" : "AND tm.tenant_id = $2";
@@ -90,7 +89,6 @@ async function requirePhoneTenantAdmin(
   );
 
   if (
-    failOnAmbiguousImplicit &&
     requestedTenantId === undefined &&
     result.rows.length !== 1
   ) {
@@ -153,14 +151,14 @@ export const appRouter = router({
   /** Phone provisioning - auto-configure SIP after login */
   phone: router({
     /** Get SIP config for the logged-in user (auto-provisioning) */
-    getConfig: protectedProcedure.query(async ({ ctx }) => {
-      return getPhoneConfig(ctx.user.id, ctx.user.openId);
-    }),
+    getConfig: protectedProcedure
+      .input(z.object({ tenantId: phoneTenantIdSchema }).strict().optional())
+      .query(async ({ ctx, input }) => getPhoneConfig(ctx.user.id, ctx.user.openId, input?.tenantId)),
 
-    /** Pilot: create or assign a first-device test extension for the logged-in user */
-    ensurePilotConfig: protectedProcedure.mutation(async ({ ctx }) => {
-      return ensurePilotExtensionForUser(ctx.user.id, ctx.user.openId);
-    }),
+    /** Legacy pilot endpoint: read the selected assignment without allocation. */
+    ensurePilotConfig: protectedProcedure
+      .input(z.object({ tenantId: phoneTenantIdSchema }).strict().optional())
+      .mutation(async ({ ctx, input }) => ensurePilotExtensionForUser(ctx.user.id, ctx.user.openId, input?.tenantId)),
 
     /** Legacy admin: list extensions only in a live administrator workspace. */
     listExtensions: protectedProcedure
@@ -178,7 +176,7 @@ export const appRouter = router({
         displayName: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId, true);
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId);
         return createExtension({ ...input, orgId: tenantId, actorUserId: ctx.user.id });
       }),
 
@@ -227,8 +225,8 @@ export const appRouter = router({
         destinationValue: z.string().optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId, true);
-        return createDidNumber({ ...input, orgId: tenantId });
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId);
+        return createDidNumber({ ...input, orgId: tenantId, actorUserId: ctx.user.id });
       }),
   }),
 
