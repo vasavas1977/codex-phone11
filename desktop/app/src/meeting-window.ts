@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AuthenticatedDesktopProvider, DesktopMeetingGrant } from '../../src/authenticated-provider';
@@ -15,8 +16,12 @@ export class DesktopMeetingWindow {
   private win: BrowserWindow | null = null;
   private revision: string | null = null;
   private admitted = new Set<string>();
+  private channels = new Set<string>();
   private closing: Promise<void> | null = null;
   private joined = false;
+  private starting = false;
+  private startedChannel = false;
+  private startRequest: { key: string; requestId: string } | null = null;
   private acceptingClose = false;
 
   constructor(private readonly provider: AuthenticatedDesktopProvider,
@@ -41,7 +46,11 @@ export class DesktopMeetingWindow {
     if (this.win && !this.win.isDestroyed()) { this.win.show(); this.win.focus(); return; }
     this.revision = session.revision;
     this.admitted.clear();
+    this.channels.clear();
     this.joined = false;
+    this.starting = false;
+    this.startedChannel = false;
+    this.startRequest = null;
     this.acceptingClose = false;
     const win = new BrowserWindow({ parent: this.parent() ?? undefined, width: 980, height: 760,
       minWidth: 480, minHeight: 560, show: false, title: 'Phone11 meeting', backgroundColor: '#101827',
@@ -70,7 +79,7 @@ export class DesktopMeetingWindow {
       void this.close();
     });
     win.on('closed', () => {
-      if (this.win === win) { this.win = null; this.revision = null; this.admitted.clear(); this.joined = false; }
+      if (this.win === win) { this.win = null; this.revision = null; this.admitted.clear(); this.channels.clear(); this.joined = false; }
     });
     try { await win.loadFile(meetingPath); if (this.win === win && this.current()) win.show(); }
     catch { await this.close(); throw new Error('Meeting window unavailable'); }
@@ -89,10 +98,46 @@ export class DesktopMeetingWindow {
     ipcMain.handle(MEETING_CHANNELS.state, async event => {
       if (!this.valid(event) || !this.revision) throw new Error('Meeting session changed');
       const revision = this.revision;
-      const meetings = await this.provider.availableMeetings(revision);
+      const [meetings, channels] = await Promise.all([
+        this.provider.availableMeetings(revision), this.provider.meetingChannels(revision),
+      ]);
       if (!this.valid(event) || this.revision !== revision) throw new Error('Meeting session changed');
       this.admitted = new Set(meetings.map(({ meetingId }) => meetingId));
-      return { revision, meetings } satisfies PublicMeetingState;
+      this.channels = new Set(channels.map(({ id }) => id));
+      return { revision, meetings, channels } satisfies PublicMeetingState;
+    });
+    ipcMain.handle(MEETING_CHANNELS.channelDetails, async (event, input: unknown) => {
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel ||
+          !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
+      const { channelId, revision } = input as Record<string, unknown>;
+      if (typeof channelId !== 'string' || !uuid.test(channelId) ||
+          revision !== this.revision || !this.channels.has(channelId)) throw new Error('Meeting unavailable');
+      const expected = this.revision;
+      const details = await this.provider.meetingChannelDetails(expected, channelId);
+      if (!this.valid(event) || this.revision !== expected || this.phoneBusy())
+        throw new Error('Meeting session changed');
+      return details;
+    });
+    ipcMain.handle(MEETING_CHANNELS.startChannel, async (event, input: unknown) => {
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel ||
+          !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
+      const { channelId, selectedMemberIds, revision } = input as Record<string, unknown>;
+      if (typeof channelId !== 'string' || !uuid.test(channelId) || revision !== this.revision ||
+          !this.channels.has(channelId) || !Array.isArray(selectedMemberIds) ||
+          selectedMemberIds.length > 50 || selectedMemberIds.some(id => !Number.isSafeInteger(id) || id <= 0) ||
+          new Set(selectedMemberIds).size !== selectedMemberIds.length) throw new Error('Meeting unavailable');
+      const expected = this.revision;
+      this.starting = true;
+      try {
+        const key = JSON.stringify([channelId, [...selectedMemberIds].sort((a, b) => a - b)]);
+        if (this.startRequest?.key !== key) this.startRequest = { key, requestId: randomUUID() };
+        const meetingId = await this.provider.startChannelMeeting(expected, channelId, selectedMemberIds, this.startRequest.requestId);
+        if (!this.valid(event) || this.revision !== expected || this.phoneBusy())
+          throw new Error('Meeting session changed');
+        this.admitted.add(meetingId);
+        this.startedChannel = true;
+        return { meetingId };
+      } finally { this.starting = false; }
     });
     ipcMain.handle(MEETING_CHANNELS.join, async (event, input: unknown): Promise<DesktopMeetingGrant> => {
       if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined ||
@@ -135,7 +180,11 @@ export class DesktopMeetingWindow {
     if (!win || win.isDestroyed()) return;
     this.closing = (async () => {
       this.admitted.clear();
+      this.channels.clear();
       this.joined = false;
+      this.starting = false;
+      this.startedChannel = false;
+      this.startRequest = null;
       // Ask the trusted preload to disconnect tracks first; bound the wait so sign-out never hangs.
       await new Promise<void>(resolve => {
         let done = false;

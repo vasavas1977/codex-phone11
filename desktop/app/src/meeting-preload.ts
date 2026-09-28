@@ -4,7 +4,7 @@ import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
-import type { DesktopMeetingGrant } from '../../src/authenticated-provider';
+import type { DesktopMeetingGrant, DesktopMeetingChannelDetails } from '../../src/authenticated-provider';
 
 // This isolated preload is the only Chromium world that receives a media grant.
 // The static page has no script and no bridge exposing the token or Room.
@@ -19,6 +19,10 @@ let speakerContext: AudioContext | null = null;
 let speakerOscillator: OscillatorNode | null = null;
 let speakerTimer: ReturnType<typeof setTimeout> | null = null;
 let leaving: Promise<void> | null = null;
+let channelLoad = 0;
+let startingChannel = false;
+let createdChannelMeeting = false;
+let selectedChannelDetails: DesktopMeetingChannelDetails | null = null;
 type ParticipantTile = {
   participant: Participant;
   camera: MeetingVideoSlot;
@@ -579,8 +583,85 @@ async function toggle(kind: 'mic' | 'camera'): Promise<void> {
   }).catch(() => undefined);
 }
 
+async function loadChannelDetails(): Promise<void> {
+  const sequence = ++channelLoad;
+  const channelId = el<HTMLSelectElement>('channel-select').value;
+  selectedChannelDetails = null;
+  el('invite-members').replaceChildren();
+  el<HTMLFieldSetElement>('invite-picker').disabled = true;
+  el<HTMLButtonElement>('start-channel-meeting').disabled = true;
+  if (!revision || !channelId) return;
+  el('meet-now-message').textContent = 'Checking channel members…';
+  try {
+    const details = await ipcRenderer.invoke(MEETING_CHANNELS.channelDetails,
+      { channelId, revision }) as DesktopMeetingChannelDetails;
+    if (sequence !== channelLoad || channelId !== el<HTMLSelectElement>('channel-select').value ||
+        details.channelId !== channelId) return;
+    selectedChannelDetails = details;
+    const list = el('invite-members');
+    for (const member of details.members) {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = String(member.id);
+      checkbox.checked = true;
+      label.append(checkbox, document.createTextNode(member.name));
+      list.appendChild(label);
+    }
+    el<HTMLFieldSetElement>('invite-picker').disabled = !details.canStart || startingChannel;
+    el<HTMLButtonElement>('start-channel-meeting').disabled = !details.canStart || startingChannel;
+    el('meet-now-message').textContent = details.canStart
+      ? `${details.members.length} members selected. Deselect anyone you do not want to invite.`
+      : details.members.length > 50 ? 'This channel has more than 50 members; meeting invitations are unavailable.'
+        : 'You cannot start a meeting in this channel.';
+  } catch {
+    if (sequence === channelLoad) el('meet-now-message').textContent = 'Channel members are unavailable. Try again.';
+  }
+}
+
+async function startChannelMeeting(): Promise<void> {
+  const details = selectedChannelDetails;
+  const channelId = el<HTMLSelectElement>('channel-select').value;
+  if (!revision || !details?.canStart || details.channelId !== channelId || startingChannel || busy || room) return;
+  const selectedMemberIds = Array.from(el('invite-members').querySelectorAll<HTMLInputElement>('input:checked'))
+    .map(checkbox => Number(checkbox.value));
+  startingChannel = true;
+  el<HTMLButtonElement>('start-channel-meeting').disabled = true;
+  el<HTMLSelectElement>('channel-select').disabled = true;
+  el<HTMLFieldSetElement>('invite-picker').disabled = true;
+  el('meet-now-message').textContent = 'Starting meeting…';
+  try {
+    const result = await ipcRenderer.invoke(MEETING_CHANNELS.startChannel,
+      { channelId, selectedMemberIds, revision }) as { meetingId: string };
+    if (channelId !== el<HTMLSelectElement>('channel-select').value) return;
+    const select = el<HTMLSelectElement>('meeting-select');
+    const option = document.createElement('option');
+    option.value = result.meetingId;
+    option.textContent = `New channel meeting · …${result.meetingId.slice(-6).toUpperCase()}`;
+    option.title = `Room ID: ${result.meetingId}`;
+    select.appendChild(option);
+    select.value = result.meetingId;
+    select.disabled = false;
+    el<HTMLButtonElement>('join').disabled = false;
+    createdChannelMeeting = true;
+    el('meet-now-message').textContent = 'Meeting started. Review your audio and video, then join.';
+    status('Ready to join your new meeting');
+  } catch {
+    el('meet-now-message').textContent = 'Meeting could not start. Check your access and try again.';
+  } finally {
+    startingChannel = false;
+    el<HTMLSelectElement>('channel-select').disabled = createdChannelMeeting;
+    if (!createdChannelMeeting && selectedChannelDetails?.channelId === channelId && selectedChannelDetails.canStart && !room) {
+      el<HTMLButtonElement>('start-channel-meeting').disabled = false;
+      el<HTMLFieldSetElement>('invite-picker').disabled = false;
+    }
+  }
+}
+
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
+  el<HTMLSelectElement>('channel-select').addEventListener('change', () => { void loadChannelDetails(); });
+  el<HTMLButtonElement>('start-channel-meeting').addEventListener('click', () => { void startChannelMeeting(); });
   el<HTMLInputElement>('start-mic').addEventListener('change', updatePrejoinState);
   el<HTMLInputElement>('start-camera').addEventListener('change', () => { void changePrejoinCamera(); });
   el<HTMLButtonElement>('test-speaker').addEventListener('click', () => { void playSpeakerTest(); });
@@ -634,6 +715,21 @@ async function load(): Promise<void> {
     }
     select.disabled = !meetings.length;
     el<HTMLButtonElement>('join').disabled = !meetings.length;
+    const channelSelect = el<HTMLSelectElement>('channel-select');
+    channelSelect.replaceChildren();
+    for (const channel of state.channels) {
+      const option = document.createElement('option');
+      option.value = channel.id;
+      option.textContent = channel.name;
+      channelSelect.appendChild(option);
+    }
+    if (!state.channels.length) {
+      const option = document.createElement('option');
+      option.textContent = 'No channels available';
+      channelSelect.appendChild(option);
+    }
+    channelSelect.disabled = !state.channels.length;
+    if (state.channels.length) void loadChannelDetails();
     status(meetings.length ? 'Ready to join' : 'No admitted meetings for this account');
   } catch {
     error('Meeting access could not be checked. Close this window and try again.');

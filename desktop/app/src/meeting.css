@@ -28,6 +28,14 @@ h1 { font-size: 27px; letter-spacing: -.025em; margin: 3px 0; }
 .preview-icon { color: #78aaff; width: 62px; height: 62px; margin: 0 auto 12px; }
 .prejoin-options { display: flex; flex-direction: column; gap: 15px; padding: 28px; }
 .prejoin-options > label:first-child { font-weight: 700; }
+.meet-now { display: flex; flex-direction: column; gap: 9px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #141f31; }
+.meet-now h2 { margin: 0; font-size: 15px; }
+.meet-now > label { font-weight: 650; }
+#invite-picker { max-height: 180px; overflow-y: auto; margin: 0; border: 1px solid var(--line); border-radius: 8px; }
+#invite-members { display: grid; gap: 7px; }
+#invite-members label { display: flex; align-items: center; gap: 9px; }
+#invite-members input { accent-color: #3379f6; }
+#meet-now-message { min-height: 1.4em; margin: 0; color: var(--muted); font-size: 12px; }
 .switch { display: flex; align-items: center; gap: 12px; }
 .switch input { width: 18px; height: 18px; accent-color: #3379f6; }
 .join-media-state { margin: -7px 0 0; color: #c9d9f2; font-size: 13px; }
