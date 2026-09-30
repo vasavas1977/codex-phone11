@@ -98,10 +98,10 @@ def manifest(path: Path) -> dict[str, Any]:
     require(isinstance(value, dict) and set(value) == {"schema", "predecessor", "baseline", "recovery", "candidate", "nginx", "wake"}, "manifest_shape")
     require(value["schema"] == SCHEMA, "manifest_schema")
     for key, fields in {
-        "predecessor": {"container_id", "image", "source_sha", "bundle_sha256", "runtime_sha256"},
+        "predecessor": {"container_id", "image", "source_sha", "bundle_sha256", "runtime_sha256", "node_version"},
         "baseline": {"container_id", "image", "runtime_sha256", "build", "role"},
         "recovery": {"container_id", "image", "runtime_sha256", "build", "role"},
-        "candidate": {"image", "source_sha", "bundle_sha256", "lock_sha256", "build", "name", "port"},
+        "candidate": {"image", "source_sha", "bundle_sha256", "lock_sha256", "build", "name", "port", "node_version"},
         "nginx": {"site_path", "site_sha256", "dump_sha256"},
         "wake": {"config_path", "config_sha256", "reference_count"},
     }.items():
@@ -109,6 +109,8 @@ def manifest(path: Path) -> dict[str, Any]:
     p, b, r, c, n, w = (value[key] for key in ("predecessor", "baseline", "recovery", "candidate", "nginx", "wake"))
     require(p["container_id"] == PREDECESSOR_ID and p["image"] == PREDECESSOR_IMAGE
             and p["source_sha"] == PREDECESSOR_SOURCE and p["bundle_sha256"] == PREDECESSOR_BUNDLE, "predecessor_pin")
+    require(all(isinstance(version, str) and re.fullmatch(r"22\.\d+\.\d+", version) is not None
+                for version in (p["node_version"], c["node_version"])), "node_version_pin")
     require(b["image"] == BASELINE_IMAGE and IMAGE.fullmatch(r["image"]), "protected_runtime_pin")
     require(all(re.fullmatch(r"[0-9a-f]{64}", x["container_id"]) for x in (p, b, r)), "container_pin")
     require(all(SHA.fullmatch(x["runtime_sha256"]) for x in (p, b, r)), "runtime_pin")
@@ -156,7 +158,7 @@ def runtime_hash(container: dict[str, Any]) -> str:
     return digest(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode())
 
 
-def health(port: int, build: str, role: str) -> None:
+def health(port: int, build: str, role: str, *, legacy_default: bool = False) -> None:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         connection.request("GET", "/api/health")
@@ -164,8 +166,12 @@ def health(port: int, build: str, role: str) -> None:
         raw = response.read(16_385)
         require(response.status == 200 and len(raw) <= 16_384, "health_http")
         value = json.loads(raw)
+        observed_role = value.get("runtimeRole")
+        role_matches = observed_role == role or (
+            legacy_default and role == "default" and "runtimeRole" not in value
+        )
         require(value.get("ok") is True and value.get("service") == "phone11-backend"
-                and value.get("build") == build and value.get("runtimeRole") == role, "health_identity")
+                and value.get("build") == build and role_matches, "health_identity")
     finally:
         connection.close()
 
@@ -178,7 +184,9 @@ def pinned_container(name: str, pin: dict[str, Any], *, port: int, build: str, r
     require(runtime_hash(item) == pin["runtime_sha256"], "runtime_drift")
     variables = env_map(item)
     require(variables.get("PHONE11_RUNTIME_ROLE", "default") == role and variables.get("PORT") == str(port), "runtime_role")
-    health(port, build, role)
+    # The immutable port-3000 baseline predates runtimeRole in /api/health.
+    # Its pinned container/env still prove default-worker identity.
+    health(port, build, role, legacy_default=(name == BASELINE))
     return item
 
 
@@ -251,8 +259,13 @@ def candidate_image(pins: dict[str, Any], source: dict[str, Any]) -> None:
     require(image["Config"].get("User") == "cloudphone", "candidate_user")
     image_defaults = env_map(image)
     source_vars = env_map(source)
+    # The images were built separately; pin their exact Node versions rather
+    # than inheriting the predecessor's stale image metadata.
+    require(image_defaults.get("NODE_VERSION") == candidate["node_version"]
+            and source_vars.get("NODE_VERSION") == pins["predecessor"]["node_version"],
+            "image_node_version")
     require(all(key in source_vars and source_vars[key] == value
-                for key, value in image_defaults.items() if key not in {"PORT", "PHONE11_BUILD_SHA"}), "image_env_defaults")
+                for key, value in image_defaults.items() if key not in {"PORT", "PHONE11_BUILD_SHA", "NODE_VERSION"}), "image_env_defaults")
 
 
 def mount_shape(item: dict[str, Any]) -> tuple[Any, ...]:
@@ -278,6 +291,7 @@ def check_candidate(pins: dict[str, Any], source: dict[str, Any], expected_id: s
     require(expected_env.get("PHONE11_RUNTIME_ROLE") == "api-candidate", "source_role")
     expected_env["PORT"] = str(c["port"])
     expected_env["PHONE11_BUILD_SHA"] = c["build"]
+    expected_env["NODE_VERSION"] = c["node_version"]
     require(env_map(item) == expected_env, "candidate_env_delta")
     require((item.get("Config", {}).get("Healthcheck") or {}).get("Test") == ["CMD-SHELL", health_command(c["port"], c["build"])], "candidate_healthcheck")
     host, source_host = item.get("HostConfig") or {}, source["HostConfig"]
@@ -376,6 +390,7 @@ def start(pins: dict[str, Any]) -> Path:
     require(variables.get("PHONE11_RUNTIME_ROLE") == "api-candidate" and variables.get("PORT") == str(PREDECESSOR_PORT), "source_role")
     variables["PORT"] = str(c["port"])
     variables["PHONE11_BUILD_SHA"] = c["build"]
+    variables["NODE_VERSION"] = c["node_version"]
     host = source["HostConfig"]
     network = host["NetworkMode"]
     args = ["docker", "create", "--name", c["name"], "--restart", "no", "--network", network,

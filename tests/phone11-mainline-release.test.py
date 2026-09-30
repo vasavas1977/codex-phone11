@@ -27,14 +27,14 @@ def pins():
         "schema": start.SCHEMA,
         "predecessor": {"container_id": start.PREDECESSOR_ID, "image": start.PREDECESSOR_IMAGE,
                         "source_sha": start.PREDECESSOR_SOURCE, "bundle_sha256": start.PREDECESSOR_BUNDLE,
-                        "runtime_sha256": sha},
+                        "runtime_sha256": sha, "node_version": "22.22.3"},
         "baseline": {"container_id": "b" * 64, "image": start.BASELINE_IMAGE,
                      "runtime_sha256": sha, "build": "baseline", "role": "default"},
         "recovery": {"container_id": "c" * 64, "image": "sha256:" + "c" * 64,
                      "runtime_sha256": sha, "build": "recovery", "role": "api-candidate"},
         "candidate": {"image": "sha256:" + "e" * 64, "source_sha": "d" * 40,
                       "bundle_sha256": sha, "lock_sha256": sha, "build": "build-1",
-                      "name": "cp11-api-candidate-release", "port": 3020},
+                      "name": "cp11-api-candidate-release", "port": 3020, "node_version": "22.23.3"},
         "nginx": {"site_path": str(start.SITE_ENABLED), "site_sha256": start.SITE_SHA,
                   "dump_sha256": start.NGINX_DUMP_SHA},
         "wake": {"config_path": str(start.WAKE_CONFIG), "config_sha256": start.WAKE_CONFIG_SHA,
@@ -52,6 +52,19 @@ def wake_container(mounts=None):
 
 
 class StartGuards(TestCase):
+    def test_legacy_baseline_health_omits_role_but_candidate_remains_strict(self):
+        response = mock.Mock(status=200)
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch.object(start.http.client, "HTTPConnection", return_value=connection):
+            response.read.return_value = b'{"ok":true,"service":"phone11-backend","build":"baseline"}'
+            start.health(3000, "baseline", "default", legacy_default=True)
+            with self.assertRaisesRegex(start.Refused, "health_identity"):
+                start.health(3019, "baseline", "api-candidate")
+            response.read.return_value = b'{"ok":true,"service":"phone11-backend","build":"baseline","runtimeRole":"api-candidate"}'
+            with self.assertRaisesRegex(start.Refused, "health_identity"):
+                start.health(3000, "baseline", "default", legacy_default=True)
+
     def test_observed_wake_topology_is_pinned(self):
         self.assertEqual(start.WAKE_CONFIG, Path("/opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg"))
         self.assertEqual(start.WAKE_RUNTIME_CONFIG, Path("/etc/kamailio/kamailio.cfg"))
@@ -123,10 +136,10 @@ class StartGuards(TestCase):
     def test_image_default_additional_flag_refused_before_create(self):
         source = {"Config": {"User": "cloudphone", "Entrypoint": ["docker-entrypoint.sh"],
                              "Cmd": ["node", "dist/index.mjs"], "WorkingDir": "/app",
-                             "Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3016"]}}
+                             "Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3016", "NODE_VERSION=22.22.3"]}}
         c = pins()["candidate"]
         image = {"Id": c["image"], "Os": "linux", "Architecture": "amd64",
-                 "Config": {**source["Config"], "Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3000", "PHONE11_WAKE_ENABLED=1"],
+                 "Config": {**source["Config"], "Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3000", "NODE_VERSION=22.23.3", "PHONE11_WAKE_ENABLED=1"],
                             "Labels": {"com.phone11.source-sha": c["source_sha"],
                                        "com.phone11.bundle-sha256": c["bundle_sha256"],
                                        "com.phone11.lock-sha256": c["lock_sha256"],
@@ -134,6 +147,12 @@ class StartGuards(TestCase):
                                        "com.phone11.runtime-role-guard": "api-candidate"}}}
         with mock.patch.object(start, "inspect", return_value=image):
             with self.assertRaisesRegex(start.Refused, "image_env_defaults"):
+                start.candidate_image(pins(), source)
+            image["Config"]["Env"].remove("PHONE11_WAKE_ENABLED=1")
+            start.candidate_image(pins(), source)
+            image["Config"]["Env"].remove("NODE_VERSION=22.23.3")
+            image["Config"]["Env"].append("NODE_VERSION=23.0.0")
+            with self.assertRaisesRegex(start.Refused, "image_node_version"):
                 start.candidate_image(pins(), source)
 
     def test_candidate_upstream_collision_refused(self):
