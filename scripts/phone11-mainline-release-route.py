@@ -71,9 +71,7 @@ def protected(pins: dict[str, Any], candidate_id: str | None = None) -> None:
     start.pinned_container(start.RECOVERY, pins["recovery"], port=3004, build=pins["recovery"]["build"], role=pins["recovery"]["role"])
     if candidate_id is not None:
         start.check_candidate(pins, source, candidate_id)
-    wake = start.secure_file(start.WAKE_CONFIG)
-    require(start.digest(wake) == pins["wake"]["config_sha256"] and wake.count(start.WAKE_URL) == pins["wake"]["reference_count"], "wake_drift")
-    require(start.command("docker", "exec", "p11-kamailio", "sha256sum", str(start.WAKE_CONFIG)).decode().split()[0] == pins["wake"]["config_sha256"], "wake_runtime_drift")
+    start.wake_guard(pins)
 
 
 def start_receipt(path: Path, pins: dict[str, Any]) -> str:

@@ -34,8 +34,14 @@ RECOVERY = "cp11-password-recovery"
 SITE_ENABLED = Path("/etc/nginx/sites-enabled/phone11ai")
 SITE_SHA = "aa31a27c3d65a0167fb3f8d2aca08b059f86cbec824c0777e73b278169737485"
 NGINX_DUMP_SHA = "9515fab03098d66cfbf1d5531fe16f603eb07442633f7dac5382539cecd4badb"
-WAKE_URL = b"http://127.0.0.1:3000/api/phone11/wake"
-WAKE_CONFIG = Path("/etc/kamailio/kamailio.cfg")
+WAKE_URL = b"http://127.0.0.1:3018/api/phone11/wake"
+WAKE_CONFIG = Path("/opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg")
+WAKE_RUNTIME_CONFIG = Path("/etc/kamailio/kamailio.cfg")
+WAKE_CONFIG_SHA = "f4716d3b48e8f59ae863926cc6390f61b8a0d3b67b1732b484b6f7f23fb25d0a"
+WAKE_REFERENCE_COUNT = 1
+WAKE_CONTAINER = "p11-kamailio"
+WAKE_CONTAINER_ID = "ae72519b1e2f7fbc500dd92b14569362b073dbc9614c99da6ef3ba41567a99df"
+WAKE_IMAGE = "sha256:f7c3a2412b49f1372c70b2ad06da6f28cb34a044ee3ae408c7b960ef484bb5b7"
 LOCK = Path("/run/phone11-desktop-provisioning-route.lock")
 STATE_ROOT = Path("/var/lib/phone11-mainline-release-start")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -64,15 +70,21 @@ def command(*args: str, timeout: int = 20) -> bytes:
     return result.stdout
 
 
-def secure_file(path: Path, *, root: bool = True, max_size: int = 2_000_000) -> bytes:
+def secure_file(path: Path, *, owner: tuple[int, int] = (0, 0), exact_mode: int | None = None,
+                max_size: int = 2_000_000) -> bytes:
     before = path.lstat()
     require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1, "file_shape")
-    require(not root or (before.st_uid == 0 and before.st_gid == 0 and not before.st_mode & 0o022), "file_owner")
+    require((before.st_uid, before.st_gid) == owner
+            and (stat.S_IMODE(before.st_mode) == exact_mode if exact_mode is not None
+                 else not before.st_mode & 0o022), "file_owner")
     require(before.st_size <= max_size, "file_size")
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         after = os.fstat(fd)
-        require((after.st_dev, after.st_ino, after.st_size) == (before.st_dev, before.st_ino, before.st_size), "file_drift")
+        require((after.st_dev, after.st_ino, after.st_size, after.st_uid, after.st_gid,
+                 after.st_mode, after.st_nlink) ==
+                (before.st_dev, before.st_ino, before.st_size, before.st_uid, before.st_gid,
+                 before.st_mode, before.st_nlink), "file_drift")
         raw = os.read(fd, max_size + 1)
         require(len(raw) <= max_size, "file_size")
         return raw
@@ -104,14 +116,15 @@ def manifest(path: Path) -> dict[str, Any]:
     require(re.fullmatch(r"[0-9a-f]{40}", p["source_sha"]) is not None, "source_pin")
     require(re.fullmatch(r"[0-9a-f]{40}", c["source_sha"]) is not None and IMAGE.fullmatch(c["image"]), "candidate_pin")
     require(c["image"] != p["image"] and re.fullmatch(r"cp11-api-candidate-[a-z0-9-]{1,50}", c["name"]) is not None and c["name"] != PREDECESSOR, "candidate_identity")
-    require(type(c["port"]) is int and 1024 <= c["port"] <= 65535 and c["port"] not in {3000, 3004, PREDECESSOR_PORT}, "candidate_port")
+    require(type(c["port"]) is int and 1024 <= c["port"] <= 65535 and c["port"] not in {3000, 3004, 3018, PREDECESSOR_PORT}, "candidate_port")
     require(isinstance(c["build"], str) and re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", c["build"]) is not None, "candidate_build")
     require(n["dump_sha256"] == NGINX_DUMP_SHA and n["site_sha256"] == SITE_SHA
             and n["site_path"] == str(SITE_ENABLED), "nginx_pin")
     require(b["role"] == "default" and r["role"] in {"default", "api-candidate"}
             and all(isinstance(x["build"], str) and re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", x["build"]) for x in (b, r)), "protected_role_pin")
     require(Path(n["site_path"]).is_absolute() and Path(w["config_path"]) == WAKE_CONFIG, "path_pin")
-    require(type(w["reference_count"]) is int and w["reference_count"] > 0, "wake_pin")
+    require(w["config_sha256"] == WAKE_CONFIG_SHA and type(w["reference_count"]) is int
+            and w["reference_count"] == WAKE_REFERENCE_COUNT, "wake_pin")
     return value
 
 
@@ -169,6 +182,27 @@ def pinned_container(name: str, pin: dict[str, Any], *, port: int, build: str, r
     return item
 
 
+def wake_guard(pins: dict[str, Any]) -> None:
+    wake = secure_file(WAKE_CONFIG, owner=(1000, 1000), exact_mode=0o600)
+    require(digest(wake) == pins["wake"]["config_sha256"]
+            and wake.count(WAKE_URL) == pins["wake"]["reference_count"], "wake_drift")
+    container = inspect(WAKE_CONTAINER)
+    require(container.get("Name") == "/" + WAKE_CONTAINER
+            and container.get("Id") == WAKE_CONTAINER_ID
+            and container.get("Image") == WAKE_IMAGE, "wake_container_identity")
+    state = container.get("State")
+    require(isinstance(state, dict) and state.get("Running") is True, "wake_container_stopped")
+    mounts = container.get("Mounts")
+    require(isinstance(mounts, list), "wake_mount_drift")
+    config_mounts = [item for item in mounts if isinstance(item, dict)
+                     and item.get("Destination") == str(WAKE_RUNTIME_CONFIG.parent)]
+    require(len(config_mounts) == 1 and config_mounts[0].get("Type") == "bind"
+            and config_mounts[0].get("Source") == str(WAKE_CONFIG.parent), "wake_mount_drift")
+    runtime = command("docker", "exec", WAKE_CONTAINER, "sha256sum", str(WAKE_RUNTIME_CONFIG)).decode().split()
+    require(len(runtime) == 2 and runtime[0] == pins["wake"]["config_sha256"]
+            and runtime[1] == str(WAKE_RUNTIME_CONFIG), "wake_runtime_drift")
+
+
 def site_and_wake(pins: dict[str, Any], candidate_port: int | None = None) -> None:
     path = Path(pins["nginx"]["site_path"])
     require(path in {SITE_ENABLED, Path("/etc/nginx/sites-available/phone11ai")}, "site_path")
@@ -179,9 +213,7 @@ def site_and_wake(pins: dict[str, Any], candidate_port: int | None = None) -> No
     require(digest(dump) == pins["nginx"]["dump_sha256"], "nginx_dump_drift")
     if candidate_port is not None:
         require(re.search(rb"(?<![0-9])(?:127\.0\.0\.1|localhost):" + str(candidate_port).encode() + rb"(?![0-9])", dump) is None, "candidate_upstream_collision")
-    wake = secure_file(Path(pins["wake"]["config_path"]))
-    require(digest(wake) == pins["wake"]["config_sha256"] and wake.count(WAKE_URL) == pins["wake"]["reference_count"], "wake_drift")
-    require(command("docker", "exec", "p11-kamailio", "sha256sum", str(WAKE_CONFIG)).decode().split()[0] == pins["wake"]["config_sha256"], "wake_runtime_drift")
+    wake_guard(pins)
 
 
 def source_runtime(pins: dict[str, Any]) -> dict[str, Any]:

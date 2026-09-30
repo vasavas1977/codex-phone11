@@ -3,6 +3,8 @@
 import importlib.util
 import json
 from pathlib import Path
+import stat
+from types import SimpleNamespace
 from unittest import TestCase, main, mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,11 +37,30 @@ def pins():
                       "name": "cp11-api-candidate-release", "port": 3020},
         "nginx": {"site_path": str(start.SITE_ENABLED), "site_sha256": start.SITE_SHA,
                   "dump_sha256": start.NGINX_DUMP_SHA},
-        "wake": {"config_path": str(start.WAKE_CONFIG), "config_sha256": sha, "reference_count": 4},
+        "wake": {"config_path": str(start.WAKE_CONFIG), "config_sha256": start.WAKE_CONFIG_SHA,
+                 "reference_count": start.WAKE_REFERENCE_COUNT},
     }
 
 
+def wake_container(mounts=None):
+    if mounts is None:
+        mounts = [{"Type": "bind", "Source": str(start.WAKE_CONFIG.parent),
+                   "Destination": str(start.WAKE_RUNTIME_CONFIG.parent)}]
+    return {"Name": "/" + start.WAKE_CONTAINER, "Id": start.WAKE_CONTAINER_ID,
+            "Image": start.WAKE_IMAGE, "State": {"Running": True, "Health": None},
+            "Mounts": mounts}
+
+
 class StartGuards(TestCase):
+    def test_observed_wake_topology_is_pinned(self):
+        self.assertEqual(start.WAKE_CONFIG, Path("/opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg"))
+        self.assertEqual(start.WAKE_RUNTIME_CONFIG, Path("/etc/kamailio/kamailio.cfg"))
+        self.assertEqual(start.WAKE_URL, b"http://127.0.0.1:3018/api/phone11/wake")
+        self.assertEqual(start.WAKE_CONFIG_SHA, "f4716d3b48e8f59ae863926cc6390f61b8a0d3b67b1732b484b6f7f23fb25d0a")
+        self.assertEqual(start.WAKE_REFERENCE_COUNT, 1)
+        self.assertEqual(start.WAKE_CONTAINER_ID, "ae72519b1e2f7fbc500dd92b14569362b073dbc9614c99da6ef3ba41567a99df")
+        self.assertEqual(start.WAKE_IMAGE, "sha256:f7c3a2412b49f1372c70b2ad06da6f28cb34a044ee3ae408c7b960ef484bb5b7")
+
     def test_reviewed_manifest_shape_passes(self):
         record = pins()
         with mock.patch.object(start, "secure_file", return_value=json.dumps(record).encode()):
@@ -48,7 +69,9 @@ class StartGuards(TestCase):
     def test_stale_predecessor_and_decoy_wake_refused_before_commands(self):
         cases = (("predecessor", "container_id", "f" * 64),
                  ("nginx", "site_sha256", "f" * 64),
-                 ("wake", "config_path", "/tmp/decoy"))
+                 ("wake", "config_path", "/tmp/decoy"),
+                 ("wake", "config_sha256", "f" * 64),
+                 ("wake", "reference_count", 4))
         for section, key, value in cases:
             with self.subTest(section=section):
                 record = pins()
@@ -58,6 +81,17 @@ class StartGuards(TestCase):
                     with self.assertRaises(start.Refused):
                         start.manifest(Path("/root/manifest.json"))
                     command.assert_not_called()
+
+    def test_manifest_refuses_wake_port_even_when_unoccupied(self):
+        record = pins()
+        record["candidate"]["port"] = 3018
+        with mock.patch.object(start, "secure_file", return_value=json.dumps(record).encode()), \
+             mock.patch.object(start, "command") as command, \
+             mock.patch.object(start.socket, "socket") as socket:
+            with self.assertRaisesRegex(start.Refused, "candidate_port"):
+                start.manifest(Path("/root/reviewed.json"))
+            command.assert_not_called()
+            socket.assert_not_called()
 
     def test_candidate_port_cannot_reuse_known_3017_or_3018(self):
         record = pins()
@@ -115,8 +149,119 @@ class StartGuards(TestCase):
             with self.assertRaisesRegex(start.Refused, "candidate_upstream_collision"):
                 start.site_and_wake(record, 3020)
 
+    def test_wake_guard_reads_host_bind_and_hashes_container_config(self):
+        record = pins()
+        wake = b'url="' + start.WAKE_URL + b'"'
+        record["wake"]["config_sha256"] = start.digest(wake)
+        with mock.patch.object(start, "secure_file", return_value=wake) as read, \
+             mock.patch.object(start, "inspect", return_value=wake_container()) as inspect, \
+             mock.patch.object(start, "command", return_value=(start.digest(wake) + "  " + str(start.WAKE_RUNTIME_CONFIG)).encode()) as command:
+            start.wake_guard(record)
+        read.assert_called_once_with(start.WAKE_CONFIG, owner=(1000, 1000), exact_mode=0o600)
+        inspect.assert_called_once_with(start.WAKE_CONTAINER)
+        command.assert_called_once_with("docker", "exec", start.WAKE_CONTAINER, "sha256sum", str(start.WAKE_RUNTIME_CONFIG))
+
+    def test_wake_guard_refuses_absent_or_wrong_host_config(self):
+        record = pins()
+        with mock.patch.object(start, "secure_file", side_effect=FileNotFoundError) as read, \
+             mock.patch.object(start, "inspect") as inspect:
+            with self.assertRaises(FileNotFoundError):
+                start.wake_guard(record)
+            read.assert_called_once_with(start.WAKE_CONFIG, owner=(1000, 1000), exact_mode=0o600)
+            inspect.assert_not_called()
+        with mock.patch.object(start, "secure_file", return_value=b"wrong config"), \
+             mock.patch.object(start, "inspect") as inspect:
+            with self.assertRaisesRegex(start.Refused, "wake_drift"):
+                start.wake_guard(record)
+            inspect.assert_not_called()
+
+    def test_wake_guard_refuses_wrong_target_or_count_even_with_matching_hash(self):
+        for wake in (b"http://127.0.0.1:3000/api/phone11/wake", start.WAKE_URL * 2):
+            with self.subTest(wake=wake):
+                record = pins()
+                record["wake"]["config_sha256"] = start.digest(wake)
+                with mock.patch.object(start, "secure_file", return_value=wake), \
+                     mock.patch.object(start, "inspect") as inspect:
+                    with self.assertRaisesRegex(start.Refused, "wake_drift"):
+                        start.wake_guard(record)
+                    inspect.assert_not_called()
+
+    def test_wake_guard_refuses_mount_or_runtime_hash_drift(self):
+        record = pins()
+        wake = start.WAKE_URL
+        record["wake"]["config_sha256"] = start.digest(wake)
+        with mock.patch.object(start, "secure_file", return_value=wake), \
+             mock.patch.object(start, "inspect", return_value=wake_container([{"Type": "bind", "Source": "/tmp/decoy",
+                 "Destination": str(start.WAKE_RUNTIME_CONFIG.parent)}])), \
+             mock.patch.object(start, "command") as command:
+            with self.assertRaisesRegex(start.Refused, "wake_mount_drift"):
+                start.wake_guard(record)
+            command.assert_not_called()
+        with mock.patch.object(start, "secure_file", return_value=wake), \
+             mock.patch.object(start, "inspect", return_value=wake_container()), \
+             mock.patch.object(start, "command", return_value=("f" * 64 + "  " + str(start.WAKE_RUNTIME_CONFIG)).encode()):
+            with self.assertRaisesRegex(start.Refused, "wake_runtime_drift"):
+                start.wake_guard(record)
+
+    def test_wake_guard_refuses_replacement_wrong_image_or_stopped_container(self):
+        record = pins()
+        wake = start.WAKE_URL
+        record["wake"]["config_sha256"] = start.digest(wake)
+        for field, value, stage in (("Id", "f" * 64, "wake_container_identity"),
+                                    ("Image", "sha256:" + "f" * 64, "wake_container_identity"),
+                                    ("State", {"Running": False}, "wake_container_stopped")):
+            with self.subTest(field=field):
+                container = wake_container()
+                container[field] = value
+                with mock.patch.object(start, "secure_file", return_value=wake), \
+                     mock.patch.object(start, "inspect", return_value=container), \
+                     mock.patch.object(start, "command") as command:
+                    with self.assertRaisesRegex(start.Refused, stage):
+                        start.wake_guard(record)
+                    command.assert_not_called()
+
+    def test_wake_file_requires_exact_owner_mode_and_single_regular_link(self):
+        for uid, gid, mode, links in ((0, 1000, 0o600, 1), (1000, 0, 0o600, 1),
+                                      (1000, 1000, 0o640, 1), (1000, 1000, 0o600, 2),
+                                      (1000, 1000, stat.S_IFLNK | 0o600, 1)):
+            with self.subTest(uid=uid, gid=gid, mode=mode, links=links):
+                info = SimpleNamespace(st_mode=(mode if stat.S_IFMT(mode) else stat.S_IFREG | mode),
+                                       st_nlink=links, st_uid=uid, st_gid=gid, st_size=4,
+                                       st_dev=1, st_ino=2)
+                with mock.patch.object(start.Path, "lstat", return_value=info), \
+                     mock.patch.object(start.os, "open") as opened:
+                    with self.assertRaisesRegex(start.Refused, "file_shape|file_owner"):
+                        start.secure_file(start.WAKE_CONFIG, owner=(1000, 1000), exact_mode=0o600)
+                    opened.assert_not_called()
+
+    def test_wake_file_rechecks_owner_after_open_and_root_default_stays_strict(self):
+        before = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_nlink=1, st_uid=1000,
+                                 st_gid=1000, st_size=4, st_dev=1, st_ino=2)
+        after = SimpleNamespace(**{**vars(before), "st_uid": 0})
+        with mock.patch.object(start.Path, "lstat", return_value=before), \
+             mock.patch.object(start.os, "open", return_value=7), \
+             mock.patch.object(start.os, "fstat", return_value=after), \
+             mock.patch.object(start.os, "close") as close:
+            with self.assertRaisesRegex(start.Refused, "file_drift"):
+                start.secure_file(start.WAKE_CONFIG, owner=(1000, 1000), exact_mode=0o600)
+            close.assert_called_once_with(7)
+        with mock.patch.object(start.Path, "lstat", return_value=before), \
+             mock.patch.object(start.os, "open") as opened:
+            with self.assertRaisesRegex(start.Refused, "file_owner"):
+                start.secure_file(start.SITE_ENABLED)
+            opened.assert_not_called()
+
 
 class RouteGuards(TestCase):
+    def test_protected_route_uses_shared_wake_guard(self):
+        record = pins()
+        with mock.patch.object(route.start, "source_runtime", return_value={}), \
+             mock.patch.object(route.start, "pinned_container"), \
+             mock.patch.object(route.start, "wake_guard", side_effect=start.Refused("wake_drift")) as wake:
+            with self.assertRaisesRegex(start.Refused, "wake_drift"):
+                route.protected(record)
+            wake.assert_called_once_with(record)
+
     def setup_route(self):
         record = pins()
         before = b"before"
