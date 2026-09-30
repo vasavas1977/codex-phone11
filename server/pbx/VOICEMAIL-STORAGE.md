@@ -45,10 +45,25 @@ through the normal deployment process:
    manifest; 400/404/409 moves it to quarantine for operator review. A timeout
    or 5xx keeps it for idempotent retry. An event-only notification is
    insufficient because listener downtime loses deposits. A producer source
-   candidate exists in `scripts/phone11-voicemail-producer.ts`, but the hook is
-   **not wired or commissioned**: the active FreeSWITCH path and completed
-   event have not been observed. Do not enable the consumer alone or claim end
-   to end readiness.
+   candidate exists in `scripts/phone11-voicemail-producer.ts`. The dynamic
+   dialplan has a source-only, default-off Lua handoff gated by
+   `PHONE11_VOICEMAIL_HOOK_READY=true`; only a voicemail-enabled personal
+   extension with an assigned owner can enter that handoff. The Lua adapter
+   calls the fixed producer command before `mod_voicemail`, and calls its
+   completion command only for a matching mailbox and final WAV path. Failed
+   admission never starts an inbox recording. The flag remains **off** until
+   the Lua script, fixed runner, Node producer, durable outbox, relay, exact
+   mailbox map, and final-file lifecycle have been commissioned on the active
+   FreeSWITCH host. The active FreeSWITCH path and completed event have not
+   been observed. Do not enable the consumer alone or claim end-to-end readiness.
+   The checked-in `phone11-voicemail-runner.sh` must be installed at the hook's
+   fixed path and run the compiled producer under one `flock` for admission,
+   completion, inspection, and reviewed retirement. A pending admission is
+   retained when FreeSWITCH supplies no final file path. Completed evidence
+   remains deliverable and idempotently retryable after an outage; elapsed time
+   alone never invalidates its admission. Only an explicit operator review may
+   retire an abandoned pending identity after eight days. See
+   `docs/phone11-daily-use/VOICEMAIL-PENDING-RECONCILIATION-20260930.md`.
 6. Test a new voicemail with an assigned, voicemail-enabled extension and a
    different tenant. Verify list, playback, read, delete, and cross-tenant
    denial on a physical signed build.

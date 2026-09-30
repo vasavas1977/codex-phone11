@@ -6,13 +6,25 @@
  * deposit from a delayed filesystem scan or CDR.
  */
 import { constants } from "node:fs";
-import { lstat, mkdir, open, realpath, link, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, opendir, realpath, link, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_WAV_SIZE = 25 * 1024 * 1024;
+const REVIEW_AGE_MS = 8 * 24 * 60 * 60 * 1000;
+const MAX_PENDING_ADMISSIONS = 1_000;
+const MAX_EVIDENCE_ENTRIES = 5_000;
+const REVIEW_BATCH = 100;
+
+/** Fixed production ceilings; a pure boundary lets tests avoid thousands of files. */
+export function voicemailEvidenceAtCapacity(pendingCount: number, totalCount: number): boolean {
+  if (!Number.isSafeInteger(pendingCount) || pendingCount < 0 ||
+      !Number.isSafeInteger(totalCount) || totalCount < 0)
+    throw new Error("Invalid voicemail evidence count");
+  return pendingCount >= MAX_PENDING_ADMISSIONS || totalCount >= MAX_EVIDENCE_ENTRIES;
+}
 
 export type ProducerConfig = {
   sourceRoot: string;
@@ -58,10 +70,14 @@ function mailboxRootFor(config: ProducerConfig, tenantId: number, extension: str
   return root;
 }
 
-async function privateDirectory(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+async function assertPrivateDirectory(directory: string): Promise<void> {
   const stat = await lstat(directory);
   if (!stat.isDirectory() || (stat.mode & 0o077) !== 0) throw new Error("Producer outbox directory must be private");
+}
+
+async function privateDirectory(directory: string): Promise<void> {
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await assertPrivateDirectory(directory);
 }
 
 async function syncDirectory(directory: string): Promise<void> {
@@ -95,6 +111,47 @@ async function readPrivateJson(file: string): Promise<unknown> {
   finally { await handle.close(); }
 }
 
+/** Count private evidence before any remote admission; an unavailable sweep fails closed. */
+async function countEvidence(directory: string, limit = MAX_EVIDENCE_ENTRIES, depth = 0): Promise<number> {
+  if (depth > 3) throw new Error("Voicemail evidence layout is too deep");
+  let count = 0;
+  for await (const entry of await opendir(directory)) {
+    count++;
+    if (count > limit) return count;
+    if (entry.isSymbolicLink()) throw new Error("Voicemail evidence symlink is not allowed");
+    if (entry.isDirectory()) {
+      count += await countEvidence(path.join(directory, entry.name), limit - count, depth + 1);
+      if (count > limit) return count;
+    }
+  }
+  return count;
+}
+
+async function pendingNames(directory: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const entry of await opendir(directory)) {
+    if (!entry.isFile() || !entry.name.endsWith(".json") || !UUID.test(entry.name.slice(0, -5)))
+      throw new Error("Unrecognized voicemail pending evidence");
+    names.push(entry.name);
+    if (names.length > MAX_PENDING_ADMISSIONS) throw new Error("Voicemail pending admission limit reached");
+  }
+  return names.sort();
+}
+
+async function movePrivateEvidence(source: string, destinationDirectory: string): Promise<void> {
+  const target = path.join(destinationDirectory, path.basename(source));
+  try { await link(source, target); }
+  catch (error: any) {
+    if (error?.code !== "EEXIST") throw error;
+    const [original, retained] = await Promise.all([lstat(source), lstat(target)]);
+    if (original.dev !== retained.dev || original.ino !== retained.ino)
+      throw new Error("Conflicting voicemail retirement evidence");
+  }
+  await syncDirectory(destinationDirectory);
+  await unlink(source);
+  await syncDirectory(path.dirname(source));
+}
+
 function pendingFrom(value: unknown, channelUuid: string): Pending {
   if (!value || typeof value !== "object") throw new Error("Invalid voicemail admission record");
   const input = value as Partial<Pending>;
@@ -117,6 +174,13 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
     if (existing.tenantId !== input.tenantId || existing.extension !== input.extension) throw new Error("Conflicting voicemail admission identity");
     return existing.messageUuid;
   } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+
+  // The fixed flock runner serializes this check with other deposits. A full
+  // or uninspectable private outbox rejects new recording before API admission.
+  const pendingCount = (await pendingNames(pendingDir)).length;
+  if (voicemailEvidenceAtCapacity(pendingCount, 0) ||
+      voicemailEvidenceAtCapacity(pendingCount, await countEvidence(config.outboxRoot)))
+    throw new Error("Voicemail evidence capacity reached");
 
   endpoint.pathname += "/admission";
   endpoint.searchParams.set("tenant_id", String(input.tenantId));
@@ -168,7 +232,8 @@ export async function completeVoicemail(config: ProducerConfig, input: Completio
   validateCompletion(input);
   await privateDirectory(config.outboxRoot);
   const pendingDir = path.join(config.outboxRoot, "pending");
-  const pending = pendingFrom(await readPrivateJson(path.join(pendingDir, `${input.channelUuid}.json`)), input.channelUuid);
+  const pendingPath = path.join(pendingDir, `${input.channelUuid}.json`);
+  const pending = pendingFrom(await readPrivateJson(pendingPath), input.channelUuid);
   const relative = await completedWavPath(config.sourceRoot,
     mailboxRootFor(config, pending.tenantId, pending.extension), input.voicemailFilePath);
   const manifest = {
@@ -183,9 +248,68 @@ export async function completeVoicemail(config: ProducerConfig, input: Completio
   await publishJson(config.outboxRoot, `${pending.messageUuid}.json`, manifest);
   // Keep admission until the manifest is durable; a crash before unlink retries
   // idempotently and a crash after unlink leaves the durable manifest.
-  await unlink(path.join(pendingDir, `${input.channelUuid}.json`));
+  await unlink(pendingPath);
   await syncDirectory(pendingDir);
   return pending.messageUuid;
+}
+
+/** Read-only operator inventory; no media or admission is inferred from age. */
+export async function inspectStaleVoicemailPending(config: ProducerConfig, now = Date.now()) {
+  validConfig(config);
+  if (!Number.isFinite(now)) throw new Error("Invalid review clock");
+  const pendingDir = path.join(config.outboxRoot, "pending");
+  await assertPrivateDirectory(config.outboxRoot);
+  await assertPrivateDirectory(pendingDir);
+  const stale: Array<{ channelUuid: string; messageUuid: string; tenantId: number; extension: string }> = [];
+  let total = 0;
+  for (const name of await pendingNames(pendingDir)) {
+    const file = path.join(pendingDir, name);
+    if ((await lstat(file)).mtimeMs > now - REVIEW_AGE_MS) continue;
+    total++;
+    if (stale.length >= REVIEW_BATCH) continue;
+    const pending = pendingFrom(await readPrivateJson(file), name.slice(0, -5));
+    stale.push({ channelUuid: pending.channelUuid, messageUuid: pending.messageUuid,
+      tenantId: pending.tenantId, extension: pending.extension });
+  }
+  return { stale, total, more: total > stale.length };
+}
+
+/**
+ * Explicitly retire one operator-reviewed, eight-day-old uncertainty. The
+ * operator must inspect the exact FreeSWITCH mailbox and final WAV first.
+ * This function never guesses that missing callback data means no recording.
+ */
+export async function retireReviewedVoicemailPending(
+  config: ProducerConfig,
+  input: { channelUuid: string; reviewedNoFinalWav: true },
+  send: typeof fetch = fetch,
+  now = Date.now(),
+): Promise<void> {
+  const endpoint = validConfig(config);
+  if (!input || !UUID.test(input.channelUuid) || input.reviewedNoFinalWav !== true || !Number.isFinite(now))
+    throw new Error("An exact operator-reviewed voicemail identity is required");
+  const pendingDir = path.join(config.outboxRoot, "pending");
+  const retiredDir = path.join(config.outboxRoot, "retired-pending");
+  for (const directory of [config.outboxRoot, pendingDir, retiredDir]) await privateDirectory(directory);
+  const source = path.join(pendingDir, `${input.channelUuid}.json`);
+  const pending = pendingFrom(await readPrivateJson(source), input.channelUuid);
+  if ((await lstat(source)).mtimeMs > now - REVIEW_AGE_MS)
+    throw new Error("Voicemail pending admission is too recent to retire");
+  for (const file of [path.join(config.outboxRoot, `${pending.messageUuid}.json`),
+    path.join(config.outboxRoot, "quarantine", `${pending.messageUuid}.json`)]) {
+    try { await lstat(file); throw new Error("Completed voicemail evidence needs delivery review"); }
+    catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+  }
+  const cancel = new URL(endpoint);
+  cancel.pathname += "/admission/expire";
+  cancel.searchParams.set("tenant_id", String(pending.tenantId));
+  cancel.searchParams.set("extension", pending.extension);
+  cancel.searchParams.set("message_uuid", pending.messageUuid);
+  const response = await send(cancel.toString(), {
+    method: "POST", headers: { "x-fs-secret": config.integrationSecret }, signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status !== 200) throw new Error(`Voicemail retirement denied: ${response.status}`);
+  await movePrivateEvidence(source, retiredDir);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
@@ -200,6 +324,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       integrationSecret: process.env.FS_SHARED_SECRET || "",
       mailboxRoots,
     };
+    if (process.argv[2] === "inspect") {
+      process.stdout.write(`${JSON.stringify(await inspectStaleVoicemailPending(config))}\n`);
+      return;
+    }
     const raw = await new Promise<string>((resolve, reject) => {
       let value = "";
       process.stdin.setEncoding("utf8");
@@ -208,7 +336,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
       process.stdin.on("error", reject);
     });
     const value = JSON.parse(raw);
-    if (process.argv[2] === "admit") {
+    if (process.argv[2] === "retire") {
+      await retireReviewedVoicemailPending(config, value);
+      process.stdout.write("Retired reviewed voicemail admission\n");
+    } else if (process.argv[2] === "admit") {
       const id = await admitVoicemail(config, value);
       process.stdout.write(`${id}\n`);
     } else if (process.argv[2] === "complete") {

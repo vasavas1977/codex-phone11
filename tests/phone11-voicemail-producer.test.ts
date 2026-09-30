@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import { admitVoicemail, completeVoicemail, type ProducerConfig } from "../scripts/phone11-voicemail-producer";
+import { admitVoicemail, completeVoicemail, inspectStaleVoicemailPending,
+  retireReviewedVoicemailPending, voicemailEvidenceAtCapacity,
+  type ProducerConfig } from "../scripts/phone11-voicemail-producer";
 
 const channelUuid = "11111111-1111-4111-8111-111111111111";
 const messageUuid = "22222222-2222-4222-8222-222222222222";
@@ -25,6 +27,12 @@ async function fixture() {
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 describe("FreeSWITCH voicemail producer", () => {
+  it("does not create an outbox during read-only inspection", async () => {
+    const { config } = await fixture();
+    await expect(inspectStaleVoicemailPending(config)).rejects.toThrow();
+    await expect(access(config.outboxRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("persists admission before completion and publishes one private relay manifest", async () => {
     const { config, wav } = await fixture();
     const send = vi.fn(async (url: string, init: RequestInit) => {
@@ -109,4 +117,93 @@ describe("FreeSWITCH voicemail producer", () => {
       .rejects.toThrow("Invalid voicemail completion metadata");
     expect((await readdir(config.outboxRoot)).filter(name => name.endsWith(".json"))).toEqual([]);
   });
+
+  it("keeps an interrupted deposit pending until an explicit aged review", async () => {
+    const { config, wav } = await fixture();
+    const sendAdmission = vi.fn(async () => new Response(JSON.stringify({ message_uuid: messageUuid }), { status: 201 }));
+    await admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001" }, sendAdmission as typeof fetch);
+    const pending = path.join(config.outboxRoot, "pending", `${channelUuid}.json`);
+    expect((await inspectStaleVoicemailPending(config)).total).toBe(0);
+    await expect(retireReviewedVoicemailPending(config,
+      { channelUuid, reviewedNoFinalWav: true }, vi.fn() as typeof fetch)).rejects.toThrow("too recent");
+    expect((await stat(wav)).isFile()).toBe(true);
+    expect((await stat(pending)).isFile()).toBe(true);
+
+    const old = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000);
+    await utimes(pending, old, old);
+    expect((await inspectStaleVoicemailPending(config)).stale).toEqual([
+      { channelUuid, messageUuid, tenantId: 12, extension: "3001" },
+    ]);
+    await expect(retireReviewedVoicemailPending(config,
+      { channelUuid, reviewedNoFinalWav: false } as any, vi.fn() as typeof fetch))
+      .rejects.toThrow("operator-reviewed");
+
+    const unavailable = vi.fn(async () => new Response("", { status: 503 }));
+    await expect(retireReviewedVoicemailPending(config,
+      { channelUuid, reviewedNoFinalWav: true }, unavailable as typeof fetch))
+      .rejects.toThrow("denied: 503");
+    expect((await stat(pending)).isFile()).toBe(true);
+
+    const retire = vi.fn(async (url: string, init: RequestInit) => {
+      expect(new URL(url).pathname).toBe("/api/recordings/voicemail/admission/expire");
+      expect(new URL(url).searchParams.get("message_uuid")).toBe(messageUuid);
+      expect(init.headers).toEqual({ "x-fs-secret": config.integrationSecret });
+      return new Response("{}", { status: 200 });
+    });
+    await retireReviewedVoicemailPending(config, { channelUuid, reviewedNoFinalWav: true }, retire as typeof fetch);
+    expect(await readdir(path.join(config.outboxRoot, "pending"))).toEqual([]);
+    expect(await readdir(path.join(config.outboxRoot, "retired-pending"))).toEqual([`${channelUuid}.json`]);
+    expect((await stat(wav)).isFile()).toBe(true);
+  });
+
+  it("publishes durable completion after a prolonged relay outage without age-only rejection", async () => {
+    const { config, wav } = await fixture();
+    await admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001" },
+      vi.fn(async () => new Response(JSON.stringify({ message_uuid: messageUuid }), { status: 201 })) as typeof fetch);
+    const pending = path.join(config.outboxRoot, "pending", `${channelUuid}.json`);
+    const old = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000);
+    await utimes(pending, old, old);
+    expect(await completeVoicemail(config, { channelUuid, voicemailFilePath: wav })).toBe(messageUuid);
+    expect((await readdir(config.outboxRoot)).includes(`${messageUuid}.json`)).toBe(true);
+    expect(await readdir(path.join(config.outboxRoot, "pending"))).toEqual([]);
+  });
+
+  it("does not retire a pending admission with a completed relay manifest", async () => {
+    const { config, wav } = await fixture();
+    await admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001" },
+      vi.fn(async () => new Response(JSON.stringify({ message_uuid: messageUuid }), { status: 201 })) as typeof fetch);
+    const pending = path.join(config.outboxRoot, "pending", `${channelUuid}.json`);
+    const bytes = await readFile(pending);
+    await completeVoicemail(config, { channelUuid, voicemailFilePath: wav });
+    await writeFile(pending, bytes, { mode: 0o600 });
+    const old = new Date(Date.now() - 9 * 24 * 60 * 60 * 1000);
+    await utimes(pending, old, old);
+    const send = vi.fn();
+    await expect(retireReviewedVoicemailPending(config,
+      { channelUuid, reviewedNoFinalWav: true }, send as typeof fetch))
+      .rejects.toThrow("delivery review");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before admission when pending evidence reaches the hard cap", async () => {
+    const { config } = await fixture();
+    const pendingDir = path.join(config.outboxRoot, "pending");
+    await mkdir(pendingDir, { recursive: true, mode: 0o700 });
+    for (let i = 0; i < 1_000; i++) {
+      const name = `${i.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000.json`;
+      await writeFile(path.join(pendingDir, name), "{}", { mode: 0o600 });
+    }
+    const send = vi.fn();
+    await expect(admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001" }, send as typeof fetch))
+      .rejects.toThrow("capacity reached");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when reviewed evidence fills the total retention cap", () => {
+    expect(voicemailEvidenceAtCapacity(999, 4_999)).toBe(false);
+    expect(voicemailEvidenceAtCapacity(999, 5_000)).toBe(true);
+    expect(voicemailEvidenceAtCapacity(1_000, 0)).toBe(true);
+    expect(() => voicemailEvidenceAtCapacity(-1, 0)).toThrow("Invalid voicemail evidence count");
+  });
+
 });

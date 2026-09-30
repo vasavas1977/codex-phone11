@@ -14,6 +14,8 @@ const VOICEMAIL_BASE = process.env.VOICEMAIL_PATH || "/opt/phone11ai/voicemail";
 const MAX_RECORDING_SIZE = 100 * 1024 * 1024;
 const MAX_VOICEMAIL_SIZE = 25 * 1024 * 1024;
 const validUuid = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
+const validDepositUuid = (value: unknown): value is string => typeof value === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const validTenant = (value: number) => Number.isSafeInteger(value) && value > 0;
 const validVoicemailId = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value > 0;
@@ -217,6 +219,60 @@ storageRouter.post("/voicemail/admission", verifyFsAuth, async (req, res) => {
     res.status(201).json({ message_uuid: messageUuid });
   } catch {
     res.status(503).json({ error: "Voicemail admission is unavailable" });
+  }
+});
+
+/** Retire one exact old admission only after the producer's reviewed handoff. */
+storageRouter.post("/voicemail/admission/expire", verifyFsAuth, async (req, res) => {
+  const tenantId = typeof req.query.tenant_id === "string" ? Number(req.query.tenant_id) : NaN;
+  const extension = req.query.extension;
+  const messageUuid = req.query.message_uuid;
+  if (!validTenant(tenantId) || !validExtension(extension) || !validDepositUuid(messageUuid)) {
+    res.status(400).json({ error: "Provide an exact voicemail admission identity" });
+    return;
+  }
+  try {
+    const retired = await query(
+      `DELETE FROM voicemail_deposit_admissions a USING extensions e
+       WHERE a.message_uuid = $1 AND a.tenant_id = $2
+         AND a.extension_id = e.id AND e.tenant_id = a.tenant_id
+         AND e.extension_number = $3
+         AND a.created_at <= clock_timestamp() - INTERVAL '7 days'
+         AND NOT EXISTS (
+           SELECT 1 FROM voicemail_messages vm
+           WHERE vm.message_uuid = a.message_uuid AND vm.tenant_id = a.tenant_id
+         )
+       RETURNING a.message_uuid`,
+      [messageUuid, tenantId, extension],
+    );
+    if (retired.rows.length === 1) {
+      res.json({ retired: true });
+      return;
+    }
+    const active = await query(
+      `SELECT 1 FROM voicemail_deposit_admissions a JOIN extensions e
+         ON e.id = a.extension_id AND e.tenant_id = a.tenant_id
+       WHERE a.message_uuid = $1 AND a.tenant_id = $2 AND e.extension_number = $3
+         AND a.created_at > clock_timestamp() - INTERVAL '7 days'`,
+      [messageUuid, tenantId, extension],
+    );
+    if (active.rows.length) {
+      res.status(409).json({ error: "Voicemail admission has not expired" });
+      return;
+    }
+    const conflicting = await query(
+      `SELECT 1 FROM voicemail_deposit_admissions
+       WHERE message_uuid = $1 AND tenant_id = $2`,
+      [messageUuid, tenantId],
+    );
+    if (conflicting.rows.length) {
+      res.status(409).json({ error: "Voicemail admission identity changed" });
+      return;
+    }
+    // The exact identity may already have been retired; retry is idempotent.
+    res.json({ retired: true });
+  } catch {
+    res.status(503).json({ error: "Voicemail admission retirement is unavailable" });
   }
 });
 

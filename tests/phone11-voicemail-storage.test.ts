@@ -25,6 +25,7 @@ describe("voicemail storage migration contract", () => {
       migration.indexOf("DROP TRIGGER IF EXISTS phone11_voicemail_extension_tenant_guard"),
     );
     expect(guard).toContain("e.status = 'active'");
+    expect(guard).not.toContain("a.created_at > clock_timestamp() - INTERVAL '7 days'");
   });
 });
 
@@ -71,6 +72,32 @@ describe("voicemail storage", () => {
     expect(mocks.query.mock.calls[1][1]).toEqual([body.message_uuid, 12, 42, 17, epoch]);
   });
 
+  it("retires only an exact expired admission and rejects an active or mismatched one", async () => {
+    const url = `${base}/recordings/voicemail/admission/expire?tenant_id=12&extension=3001&message_uuid=${epoch}`;
+    const post = () => fetch(url, { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+    mocks.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ exists: 1 }] });
+    expect((await post()).status).toBe(409);
+    expect(mocks.query.mock.calls[0][0]).toContain("a.created_at <= clock_timestamp() - INTERVAL '7 days'");
+    expect(mocks.query.mock.calls[0][1]).toEqual([epoch, 12, "3001"]);
+
+    mocks.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ exists: 1 }] });
+    expect((await post()).status).toBe(409);
+
+    mocks.query.mockResolvedValueOnce({ rows: [{ message_uuid: epoch }] });
+    const expired = await post();
+    expect(expired.status).toBe(200);
+    expect(await expired.json()).toEqual({ retired: true });
+  });
+
+  it("requires the integration secret and exact identity for retirement", async () => {
+    expect((await fetch(`${base}/recordings/voicemail/admission/expire?tenant_id=12&extension=3001&message_uuid=${epoch}`,
+      { method: "POST" })).status).toBe(403);
+    expect((await fetch(`${base}/recordings/voicemail/admission/expire?tenant_id=12&extension=3001&message_uuid=bad`,
+      { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } })).status).toBe(400);
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
   it("requires a configured integration secret before mailbox or filesystem work", async () => {
     const response = await fetch(`${base}/recordings/voicemail?tenant_id=12&extension=3001&message_uuid=vm-1`, {
       method: "POST",
@@ -108,11 +135,12 @@ describe("voicemail storage", () => {
     ]);
     expect(mocks.query.mock.calls[0][0]).toContain("JOIN user_extensions ue");
     expect(mocks.query.mock.calls[0][0]).toContain("tm.status = 'active'");
+    expect(mocks.query.mock.calls[1][0]).not.toContain("created_at > clock_timestamp() - INTERVAL '7 days'");
     const insert = mocks.query.mock.calls[3];
     expect(await readFile(insert[1][8], "utf8")).toBe("voice-bytes");
   });
 
-  it("is idempotent only when a repeat upload has identical audio and storage identity", async () => {
+  it("acknowledges a lost-response replay after a prolonged outage only for identical audio and identity", async () => {
     let storedPath = "";
     let storedSize = 0;
     let duplicate = false;
@@ -138,6 +166,11 @@ describe("voicemail storage", () => {
     const repeated = await request();
     expect(repeated.status).toBe(200);
     expect(await repeated.json()).toMatchObject({ ok: true, id: 8, duplicate: true });
+    // Admission is durable until exact reviewed retirement; an elapsed week
+    // must not turn an otherwise valid relay replay into a permanent 409.
+    const admissionQueries = mocks.query.mock.calls.filter(([sql]) => String(sql).includes("FROM voicemail_deposit_admissions"));
+    expect(admissionQueries).toHaveLength(2);
+    for (const [sql] of admissionQueries) expect(sql).not.toContain("created_at >");
   });
 
   it("reuses a verified existing object when an idempotent retry crosses a UTC month boundary", async () => {
