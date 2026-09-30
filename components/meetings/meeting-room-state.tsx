@@ -44,6 +44,11 @@ export interface MeetingRoomStateProps {
   session?: BrowserMeetingSession;
   /** Existing native room from NativeMeetingLifecycle; never URL/token input. */
   nativeRoom?: BrowserRoom;
+  /** Native lifecycle methods, guarded by its SIP/media lease. */
+  audioRoute?: {
+    getAudioOutputs?: () => Promise<string[]>;
+    selectAudioOutput?: (deviceId: string) => Promise<void>;
+  };
   /** Server-derived receive-only membership. */
   receiveOnly?: boolean;
   /** Reads the lifecycle interruption flag after its session event re-renders this view. */
@@ -133,6 +138,18 @@ function participantState(participant: MeetingParticipant) {
     : media.join(" · ");
 }
 
+function audioOutputLabel(deviceId: string): string {
+  const labels: Record<string, string> = {
+    default: "Automatic",
+    force_speaker: "Speaker",
+    speaker: "Speaker",
+    earpiece: "Phone earpiece",
+    headset: "Wired headset",
+    bluetooth: "Bluetooth",
+  };
+  return labels[deviceId] ?? "Selected";
+}
+
 /**
  * A display and control surface for a real BrowserMeetingSession.
  * It never creates a room or media stream; that remains the meeting adapter's job.
@@ -140,6 +157,7 @@ function participantState(participant: MeetingParticipant) {
 export function MeetingRoomState({
   session,
   nativeRoom,
+  audioRoute,
   receiveOnly = false,
   isSipInterrupted,
   captions = [],
@@ -160,7 +178,9 @@ export function MeetingRoomState({
   >(null);
   const [leaving, setLeaving] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [panel, setPanel] = useState<"participants" | "more" | null>(null);
+  const [panel, setPanel] = useState<"participants" | "more" | "audio" | null>(null);
+  const [audioOutputs, setAudioOutputs] = useState<string[]>([]);
+  const [busyAudioRoute, setBusyAudioRoute] = useState(false);
   const sipInterrupted = isSipInterrupted?.() ?? false;
   const status = statusCopy(
     snapshot,
@@ -214,6 +234,9 @@ export function MeetingRoomState({
     !!localParticipant &&
     !leaving &&
     !receiveOnly;
+  const routeReady = snapshot.status === "connected" &&
+    !!audioRoute?.getAudioOutputs && !!audioRoute.selectAudioOutput &&
+    !sipInterrupted && !leaving;
   const participantsByIdentity = useMemo(
     () =>
       new Map(
@@ -266,6 +289,38 @@ export function MeetingRoomState({
       setFeedback("Could not leave the meeting. Please try again.");
     } finally {
       setLeaving(false);
+    }
+  }
+
+  async function openAudioRoute() {
+    if (!routeReady || !audioRoute?.getAudioOutputs || busyAudioRoute) return;
+    setBusyAudioRoute(true);
+    setAudioOutputs([]);
+    setFeedback(null);
+    setPanel("audio");
+    try {
+      setAudioOutputs(await audioRoute.getAudioOutputs());
+    } catch {
+      setPanel(null);
+      setFeedback("Audio outputs are unavailable. Check your meeting connection and try again.");
+    } finally {
+      setBusyAudioRoute(false);
+    }
+  }
+
+  async function chooseAudioOutput(deviceId: string) {
+    if (!routeReady || !audioRoute?.selectAudioOutput || busyAudioRoute) return;
+    setBusyAudioRoute(true);
+    setFeedback(null);
+    try {
+      await audioRoute.selectAudioOutput(deviceId);
+      setPanel(null);
+      setFeedback(`Requested ${audioOutputLabel(deviceId)} audio output.`);
+    } catch {
+      setPanel(null);
+      setFeedback("Could not change meeting audio output. Check your connection and try again.");
+    } finally {
+      setBusyAudioRoute(false);
     }
   }
 
@@ -440,6 +495,24 @@ export function MeetingRoomState({
               </>
             )}
           </Pressable>
+          {audioRoute?.getAudioOutputs && audioRoute.selectAudioOutput && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Meeting audio output"
+              accessibilityHint="Choose an available speaker or headset for this meeting."
+              accessibilityState={{ disabled: !routeReady || busyAudioRoute, selected: panel === "audio" }}
+              disabled={!routeReady || busyAudioRoute}
+              onPress={() => void openAudioRoute()}
+              style={[
+                styles.controlButton,
+                panel === "audio" && styles.selectedControl,
+                (!routeReady || busyAudioRoute) && styles.disabledControl,
+              ]}
+            >
+              <IconSymbol name="speaker.wave.2.fill" size={22} color="#FFFFFF" />
+              <Text style={styles.controlText}>Audio</Text>
+            </Pressable>
+          )}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Participants"
@@ -529,7 +602,7 @@ export function MeetingRoomState({
               <Text style={styles.sheetTitle}>
                 {panel === "participants"
                   ? `Participants (${snapshot.participants.length})`
-                  : "Meeting details"}
+                  : panel === "audio" ? "Audio output" : "Meeting details"}
               </Text>
               <Pressable
                 accessibilityRole="button"
@@ -609,6 +682,31 @@ export function MeetingRoomState({
                   ))
                 )}
               </ScrollView>
+            ) : panel === "audio" ? (
+              <View style={styles.infoRows}>
+                {!routeReady ? (
+                  <Text style={styles.emptyText}>Meeting audio is unavailable during a Phone call or while reconnecting.</Text>
+                ) : busyAudioRoute && audioOutputs.length === 0 ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : audioOutputs.length === 0 ? (
+                  <Text style={styles.emptyText}>No audio outputs are available. Connect a headset or try again.</Text>
+                ) : (
+                  audioOutputs.map((deviceId) => (
+                    <Pressable
+                      key={deviceId}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${audioOutputLabel(deviceId)} audio output`}
+                      accessibilityState={{ disabled: !routeReady || busyAudioRoute }}
+                      disabled={!routeReady || busyAudioRoute}
+                      onPress={() => void chooseAudioOutput(deviceId)}
+                      style={[styles.audioOutput, (!routeReady || busyAudioRoute) && styles.disabledControl]}
+                    >
+                      <Text style={styles.audioOutputText}>{audioOutputLabel(deviceId)}</Text>
+                    </Pressable>
+                  ))
+                )}
+                <Text style={styles.audioRouteHint}>Available outputs may change when accessories connect. The phone manages the final route.</Text>
+              </View>
             ) : (
               <View style={styles.infoRows}>
                 <View style={styles.infoRow}>
@@ -797,6 +895,14 @@ const styles = StyleSheet.create({
   sheetClose: { minHeight: 44, justifyContent: "center", paddingHorizontal: 8 },
   sheetCloseText: { color: "#69AFFF", fontSize: 16, fontWeight: "700" },
   infoRows: { gap: 0 },
+  audioOutput: {
+    minHeight: 52,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#FFFFFF1F",
+    justifyContent: "center",
+  },
+  audioOutputText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
+  audioRouteHint: { color: "#B4BAC6", fontSize: 13, lineHeight: 19, paddingTop: 8 },
   infoRow: {
     minHeight: 54,
     flexDirection: "row",

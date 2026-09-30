@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => {
       lifecycleEvents.push("audio-start");
     }),
     stopAudioSession: vi.fn(async () => {}),
+    getAudioOutputs: vi.fn(async () => ["speaker", "earpiece"]),
+    selectAudioOutput: vi.fn(async (_deviceId: string) => {}),
     roomConnect: vi.fn(async () => {
       lifecycleEvents.push("room-connect");
     }),
@@ -56,6 +58,8 @@ vi.mock("@livekit/react-native", () => ({
     setAppleAudioConfiguration: mocks.configureMeetingAudio,
     startAudioSession: mocks.startAudioSession,
     stopAudioSession: mocks.stopAudioSession,
+    getAudioOutputs: mocks.getAudioOutputs,
+    selectAudioOutput: mocks.selectAudioOutput,
   },
 }));
 vi.mock("livekit-client", () => {
@@ -147,6 +151,8 @@ beforeEach(async () => {
     mocks.lifecycleEvents.push("audio-config");
   });
   mocks.stopAudioSession.mockResolvedValue(undefined);
+  mocks.getAudioOutputs.mockResolvedValue(["speaker", "earpiece"]);
+  mocks.selectAudioOutput.mockResolvedValue(undefined);
   mocks.roomConnect.mockImplementation(async () => {
     mocks.lifecycleEvents.push("room-connect");
   });
@@ -189,6 +195,55 @@ describe("native meeting lifecycle", () => {
     expect(mocks.configureMeetingAudio).not.toHaveBeenCalled();
     expect(mocks.lifecycleEvents).toEqual(["audio-start", "room-connect"]);
     await lifecycle.leave();
+  });
+
+  it("offers native outputs and rejects an unavailable route", async () => {
+    mocks.platformOS = "android";
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-route", admission, preferences);
+    await expect(lifecycle.getAudioOutputs()).resolves.toEqual(["speaker", "earpiece"]);
+    await lifecycle.selectAudioOutput("earpiece");
+    expect(mocks.selectAudioOutput).toHaveBeenCalledWith("earpiece");
+    await expect(lifecycle.selectAudioOutput("bluetooth")).rejects.toThrow("unavailable");
+    expect(mocks.selectAudioOutput).toHaveBeenCalledTimes(1);
+    await lifecycle.leave();
+  });
+
+  it("uses the installed iOS default and speaker output choices", async () => {
+    mocks.getAudioOutputs.mockResolvedValue(["default", "force_speaker"]);
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-ios-route", admission, preferences);
+    await expect(lifecycle.getAudioOutputs()).resolves.toEqual(["default", "force_speaker"]);
+    await lifecycle.selectAudioOutput("force_speaker");
+    expect(mocks.selectAudioOutput).toHaveBeenCalledWith("force_speaker");
+    await lifecycle.leave();
+  });
+
+  it("does not issue a late route change after SIP takes the media lease", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-route-sip", admission, preferences);
+    let resolveOutputs!: (outputs: string[]) => void;
+    mocks.getAudioOutputs.mockImplementationOnce(() => new Promise(resolve => { resolveOutputs = resolve; }));
+    const selection = lifecycle.selectAudioOutput("speaker");
+    await vi.waitFor(() => expect(mocks.getAudioOutputs).toHaveBeenCalledTimes(1));
+    const sip = native.phone11MediaOwnership.requestSip("sip:route-race");
+    resolveOutputs(["speaker"]);
+    await expect(selection).rejects.toThrow("unavailable");
+    await sip.ready;
+    expect(mocks.selectAudioOutput).not.toHaveBeenCalled();
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    native.releaseSipMediaOwnership(sip.lease);
+  });
+
+  it("waits for an in-flight route request before stopping native audio", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-route-leave", admission, preferences);
+    let finishSelection!: () => void;
+    mocks.selectAudioOutput.mockImplementationOnce(() => new Promise(resolve => { finishSelection = resolve; }));
+    const selection = lifecycle.selectAudioOutput("speaker");
+    await vi.waitFor(() => expect(mocks.selectAudioOutput).toHaveBeenCalledTimes(1));
+    const leaving = lifecycle.leave();
+    expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+    finishSelection();
+    await selection;
+    await leaving;
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
   });
 
   it("stops a partially configured session and releases media when Apple configuration fails", async () => {

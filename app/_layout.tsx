@@ -112,6 +112,7 @@ function RootNavigator() {
               <Stack.Screen name="auth/sign-in" />
               <Stack.Screen name="auth/forgot-password" />
               <Stack.Screen name="auth/reset-password" />
+              <Stack.Screen name="auth/accept-invitation" />
               <Stack.Screen name="oauth/callback" />
               <Stack.Screen name="conference/room" options={{ gestureEnabled: false }} />
             </Stack>

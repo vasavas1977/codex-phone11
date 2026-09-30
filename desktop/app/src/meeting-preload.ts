@@ -1,5 +1,6 @@
 import { ipcRenderer } from 'electron';
-import { Participant, Room, RoomEvent, Track } from 'livekit-client';
+import { Participant, Room, RoomEvent, Track, supportsAudioOutputSelection } from 'livekit-client';
+import { MeetingAudioOutputSequence } from './meeting-audio-output-sequence';
 import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
@@ -23,6 +24,7 @@ let channelLoad = 0;
 let startingChannel = false;
 let createdChannelMeeting = false;
 let selectedChannelDetails: DesktopMeetingChannelDetails | null = null;
+const audioOutputSequence = new MeetingAudioOutputSequence();
 type ParticipantTile = {
   participant: Participant;
   camera: MeetingVideoSlot;
@@ -47,6 +49,83 @@ function updatePrejoinState(): void {
   const mic = el<HTMLInputElement>('start-mic').checked ? 'on' : 'off';
   const camera = el<HTMLInputElement>('start-camera').checked ? 'on' : 'off';
   el('join-media-state').textContent = `Microphone ${mic} at join · Camera ${camera} at join`;
+}
+
+function resetAudioOutput(): void {
+  audioOutputSequence.reset();
+  const select = el<HTMLSelectElement>('audio-output');
+  select.replaceChildren(new Option('System default', 'default'));
+  select.disabled = true;
+  el('audio-output-status').textContent = '';
+}
+
+async function refreshAudioOutputs(): Promise<void> {
+  // A devicechange during switchActiveDevice must not re-enable the selector
+  // before that SDK operation settles. Refresh against the final route instead.
+  const revision = audioOutputSequence.beginRefresh();
+  if (revision === null) return;
+  const active = room;
+  const select = el<HTMLSelectElement>('audio-output');
+  if (!active || !supportsAudioOutputSelection()) {
+    select.disabled = true;
+    if (active) el('audio-output-status').textContent = 'Use your system sound settings to change speaker.';
+    return;
+  }
+  try {
+    // The meeting preload keeps device IDs local; no device metadata crosses IPC.
+    const devices = await Room.getLocalDevices('audiooutput', false);
+    if (room !== active || !audioOutputSequence.isCurrent(revision)) return;
+    const options = [new Option('System default', 'default')];
+    const seen = new Set(['default']);
+    for (const device of devices) {
+      if (!device.deviceId || seen.has(device.deviceId)) continue;
+      seen.add(device.deviceId);
+      options.push(new Option(device.label || `Speaker ${options.length}`, device.deviceId));
+    }
+    select.replaceChildren(...options);
+    const currentDevice = active.getActiveDevice('audiooutput') ?? 'default';
+    select.value = seen.has(currentDevice) ? currentDevice : 'default';
+    select.disabled = false;
+    el('audio-output-status').textContent = '';
+  } catch {
+    if (room !== active || !audioOutputSequence.isCurrent(revision)) return;
+    select.disabled = true;
+    el('audio-output-status').textContent = 'Speakers could not be listed. Use your system sound settings.';
+  }
+}
+
+async function changeAudioOutput(): Promise<void> {
+  const active = room;
+  const select = el<HTMLSelectElement>('audio-output');
+  if (!active || select.disabled) return;
+  const revision = audioOutputSequence.beginSwitch();
+  if (revision === null) return;
+  const deviceId = select.value;
+  // Invalidate an enumeration already awaiting the browser before it can
+  // re-enable the selector during this switch.
+  select.disabled = true;
+  el('audio-output-status').textContent = 'Changing speaker…';
+  try { await mediaLifecycle.run(async current => {
+    try {
+      const changed = await active.switchActiveDevice('audiooutput', deviceId);
+      if (!current() || room !== active || !audioOutputSequence.isCurrent(revision)) return;
+      el('audio-output-status').textContent = changed ? 'Speaker changed' : 'Could not change speaker. Check system sound settings.';
+    } catch {
+      if (!current() || room !== active || !audioOutputSequence.isCurrent(revision)) return;
+      el('audio-output-status').textContent = 'Could not change speaker. Check system sound settings.';
+    } finally {
+      if (current() && room === active && audioOutputSequence.isCurrent(revision)) {
+        const currentDevice = active.getActiveDevice('audiooutput') ?? 'default';
+        select.value = Array.from(select.options).some(option => option.value === currentDevice) ? currentDevice : 'default';
+        select.disabled = false;
+      }
+    }
+  }).catch(() => undefined); }
+  finally {
+    if (audioOutputSequence.finishSwitch() && room === active) {
+      void refreshAudioOutputs();
+    }
+  }
 }
 
 function clearPreview(): void {
@@ -415,6 +494,7 @@ function leave(): Promise<void> {
   const active = room;
   room = null;
   canPublish = false;
+  resetAudioOutput();
   clearPreview();
   stopPrejoinAudio();
   el<HTMLInputElement>('start-mic').checked = false;
@@ -536,6 +616,7 @@ async function join(): Promise<void> {
     activeSpeakerSid = participantKey(next.localParticipant);
     if (el('status').textContent === 'Joining…') status('Connected');
     updateRoomUi();
+    void refreshAudioOutputs();
   } catch {
     if (!current()) return;
     room = null;
@@ -666,6 +747,8 @@ async function load(): Promise<void> {
   el<HTMLInputElement>('start-camera').addEventListener('change', () => { void changePrejoinCamera(); });
   el<HTMLButtonElement>('test-speaker').addEventListener('click', () => { void playSpeakerTest(); });
   el<HTMLButtonElement>('test-microphone').addEventListener('click', () => { void testMicrophone(); });
+  el<HTMLSelectElement>('audio-output').addEventListener('change', () => { void changeAudioOutput(); });
+  navigator.mediaDevices?.addEventListener('devicechange', () => { if (room) void refreshAudioOutputs(); });
   window.addEventListener('beforeunload', stopPrejoinAudio, { once: true });
   el<HTMLButtonElement>('layout-gallery').addEventListener('click', () => {
     layoutMode = 'gallery';

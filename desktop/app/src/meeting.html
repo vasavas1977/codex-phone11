@@ -48,7 +48,8 @@
     </div>
     <div id="remote-audio" hidden></div>
     <div class="meeting-bottom"><div><strong id="participant-count">You</strong><span id="media-note">Connecting audio…</span></div><nav aria-label="Meeting controls">
+      <label class="meeting-output" for="audio-output">Speaker <select id="audio-output" aria-label="Meeting speaker" disabled><option value="default">System default</option></select></label>
       <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="leave" class="danger" type="button">Leave</button>
-    </nav></div>
+    </nav></div><p id="audio-output-status" role="status" aria-live="polite"></p>
   </section>
 </main></body></html>

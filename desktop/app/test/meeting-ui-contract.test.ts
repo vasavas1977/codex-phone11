@@ -64,6 +64,16 @@ test('prejoin audio check is user-started, local only, and has visible stop cont
   assert.doesNotMatch(html, /token|grant/i);
 });
 
+test('in-room speaker selection stays in the isolated preload and follows meeting lifecycle', () => {
+  assert.match(html, /id="audio-output" aria-label="Meeting speaker" disabled/);
+  assert.match(html, /id="audio-output-status" role="status" aria-live="polite"/);
+  assert.match(preload, /supportsAudioOutputSelection\(\)/);
+  assert.match(preload, /Room\.getLocalDevices\('audiooutput', false\)/);
+  assert.match(preload, /active\.switchActiveDevice\('audiooutput', deviceId\)/);
+  assert.match(preload, /mediaLifecycle\.run\(async current => \{[\s\S]*?active\.switchActiveDevice\('audiooutput', deviceId\)/);
+  assert.match(preload, /function leave\(\): Promise<void> \{[\s\S]*?resetAudioOutput\(\)/);
+});
+
 test('prejoin shows selected microphone and camera behavior before joining and resets after leaving', () => {
   assert.match(html, /id="join-media-state"[^>]*role="status" aria-live="polite"/);
   assert.match(preload, /function updatePrejoinState\(\)/);

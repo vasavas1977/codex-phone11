@@ -97,6 +97,9 @@ button:disabled { cursor: not-allowed; opacity: .45; }
 .meeting-bottom > div { display: flex; flex-direction: column; }
 .meeting-bottom span { color: var(--muted); }
 .meeting-bottom nav { display: flex; gap: 10px; }
+.meeting-output { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.meeting-output select { max-width: 190px; padding: 8px 10px; color: #edf3ff; font-size: 12px; }
+#audio-output-status { min-height: 1.4em; margin: 5px 0 0; color: var(--muted); font-size: 12px; text-align: right; }
 .danger { border-color: #a93b45; color: #fff; background: #9f2835; }
 .danger:hover:enabled { background: #bd3340; }
 
@@ -117,7 +120,10 @@ button:disabled { cursor: not-allowed; opacity: .45; }
   #speaker-strip .participant-tile { flex-basis: 96px; }
   #participant-roster { max-height: 230px; }
   .meeting-bottom { align-items: stretch; flex-direction: column; }
+  .meeting-bottom nav { flex-wrap: wrap; }
   .meeting-bottom nav button { flex: 1; }
+  .meeting-output { width: 100%; }
+  .meeting-output select { flex: 1; max-width: none; }
 }
 
 #screen-shares[hidden] { display: none; }

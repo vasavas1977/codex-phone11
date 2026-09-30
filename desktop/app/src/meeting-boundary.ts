@@ -27,3 +27,8 @@ export function permitMeetingMedia(permission: string, mediaTypes: readonly stri
   return permission === 'media' && exactFrame && !phoneBusy && !!mediaTypes?.length &&
     mediaTypes.every(type => type === 'audio' || type === 'video');
 }
+
+/** Output selection has its own Chromium permission; it never grants capture. */
+export function permitMeetingSpeakerSelection(permission: string, exactFrame: boolean, phoneBusy: boolean): boolean {
+  return permission === 'speaker-selection' && exactFrame && !phoneBusy;
+}

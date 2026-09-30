@@ -7,6 +7,9 @@ export type ActiveNativeMeeting = {
   readonly room: BrowserRoom | undefined;
   readonly receiveOnly: boolean;
   readonly wasInterruptedBySip: boolean;
+  /** Present only for a native room whose lifecycle owns the audio session. */
+  getAudioOutputs?: () => Promise<string[]>;
+  selectAudioOutput?: (deviceId: string) => Promise<void>;
   leave: () => Promise<void>;
 };
 

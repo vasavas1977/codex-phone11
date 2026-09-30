@@ -38,6 +38,7 @@ export default function ConferenceRoomScreen() {
       <MeetingRoomState
         session={meeting?.session}
         nativeRoom={meeting?.room}
+        audioRoute={meeting}
         receiveOnly={meeting?.receiveOnly}
         isSipInterrupted={meeting ? () => meeting.wasInterruptedBySip : undefined}
         roomName="Meeting room"

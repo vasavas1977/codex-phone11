@@ -33,7 +33,7 @@ test('desktop participant labels keep human names and replace provider identitie
             loader: 'js',
             contents: args.path === 'electron'
               ? 'export const ipcRenderer = {};'
-              : 'export class Participant {} export class Room {} export const RoomEvent = {}; export const Track = { Kind: { Audio: "audio", Video: "video" } };',
+              : 'export class Participant {} export class Room {} export const RoomEvent = {}; export const Track = { Kind: { Audio: "audio", Video: "video" } }; export const supportsAudioOutputSelection = () => false;',
           }));
         },
       }],

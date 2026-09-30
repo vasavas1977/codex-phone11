@@ -1,12 +1,12 @@
 /**
  * Workspace people administration.
  *
- * This screen manages existing tenant memberships only. It deliberately does
- * not create users or send invitations because Phone11 has no verified
- * invitation-delivery path yet.
+ * Existing membership management and capability-gated invitations.
  */
 import { useMemo, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
+import { AdminInvitations } from "@/components/admin/admin-invitations";
+import * as Auth from "@/lib/_core/auth";
 import {
   ActivityIndicator,
   Alert,
@@ -33,6 +33,7 @@ import {
   useTenant,
   useTenantMembers,
   useUpdateTenantMember,
+  usePbxAdminWorkspace,
 } from "@/hooks/use-pbx-admin";
 
 type MembershipStatus = "active" | "inactive";
@@ -60,6 +61,7 @@ function AdminUsersContent() {
   const { width } = useWindowDimensions();
   const wideWeb = Platform.OS === "web" && width >= 1000;
   const { user } = useAuth({ autoFetch: false });
+  const workspace = usePbxAdminWorkspace();
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id;
   const actorRole = String(tenantQuery.data?.userRole || "");
@@ -284,29 +286,14 @@ function AdminUsersContent() {
       </View>
 
       {canManage ? (
-        <>
-          <View
-            style={[
-              styles.notice,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-            ]}
-          >
-            <IconSymbol
-              name="person.badge.plus"
-              size={18}
-              color={colors.muted}
-            />
-            <View style={styles.noticeCopy}>
-              <Text style={[styles.noticeTitle, { color: colors.foreground }]}>
-                Invitations are not available yet
-              </Text>
-              <Text style={[styles.noticeText, { color: colors.muted }]}>
-                You can manage existing workspace members here. Adding new
-                people will be available when invitations are enabled.
-              </Text>
-            </View>
-          </View>
-        </>
+        <AdminInvitations
+          tenantId={tenantId ?? null}
+          actorRole={actorRole}
+          userId={typeof user?.id === "number" ? user.id : null}
+          workspaceValid={Boolean(tenantId && workspace.selectedTenantId === tenantId &&
+            workspace.membershipsQuery.isSuccess && !workspace.membershipsQuery.isFetching &&
+            Auth.getAuthSnapshot().user?.id === user?.id)}
+        />
       ) : null}
 
       {body}

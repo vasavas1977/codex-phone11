@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { permitMeetingMedia, phoneMediaBusy, validMeetingFrame } from '../src/meeting-boundary';
+import { permitMeetingMedia, permitMeetingSpeakerSelection, phoneMediaBusy, validMeetingFrame } from '../src/meeting-boundary';
 import { DesktopMeetingWindow } from '../src/meeting-window';
 
 const url = 'file:///app/meeting.html';
@@ -32,6 +32,14 @@ test('only microphone or camera permission in the exact meeting frame is allowed
   assert.equal(permitMeetingMedia('media', ['audio', 'display'], true, false), false);
   assert.equal(permitMeetingMedia('notifications', ['audio'], true, false), false);
   assert.equal(permitMeetingMedia('media', undefined, true, false), false);
+});
+
+test('speaker permission is separate from capture and belongs only to the active meeting frame', () => {
+  assert.equal(permitMeetingSpeakerSelection('speaker-selection', allowed(), false), true);
+  assert.equal(permitMeetingSpeakerSelection('speaker-selection', false, false), false);
+  assert.equal(permitMeetingSpeakerSelection('speaker-selection', true, true), false);
+  assert.equal(permitMeetingSpeakerSelection('media', true, false), false);
+  assert.equal(permitMeetingMedia('speaker-selection', ['audio'], true, false), false);
 });
 
 test('outbound SIP request and reconciliation reserve media before a call ID exists', () => {

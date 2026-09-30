@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import type { AuthenticatedDesktopProvider, DesktopMeetingGrant } from '../../src/authenticated-provider';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
 import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
-import { permitMeetingMedia, phoneMediaBusy, validMeetingFrame } from './meeting-boundary';
+import { permitMeetingMedia, permitMeetingSpeakerSelection, phoneMediaBusy, validMeetingFrame } from './meeting-boundary';
 
 const meetingPath = join(__dirname, 'meeting.html');
 const meetingUrl = pathToFileURL(meetingPath).href;
@@ -64,11 +64,14 @@ export class DesktopMeetingWindow {
       currentRevision: this.provider.currentSession()?.revision ?? null, closing: !!this.closing });
     win.webContents.session.setPermissionRequestHandler((sender, permission, callback, details) => {
       const types = 'mediaTypes' in details ? details.mediaTypes : undefined;
+      const allowedFrame = exactFrame(sender) && details.requestingUrl === meetingUrl;
       callback(permitMeetingMedia(permission, Array.isArray(types) ? types : undefined,
-        exactFrame(sender) && details.requestingUrl === meetingUrl, this.phoneBusy()));
+        allowedFrame, this.phoneBusy()) ||
+        permitMeetingSpeakerSelection(permission, allowedFrame, this.phoneBusy()));
     });
     win.webContents.session.setPermissionCheckHandler((sender, permission) =>
-      permitMeetingMedia(permission, ['audio', 'video'], exactFrame(sender), this.phoneBusy()));
+      permitMeetingMedia(permission, ['audio', 'video'], exactFrame(sender), this.phoneBusy()) ||
+      permitMeetingSpeakerSelection(permission, exactFrame(sender), this.phoneBusy()));
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
     wc.on('will-navigate', event => event.preventDefault());
     wc.on('will-redirect', event => event.preventDefault());

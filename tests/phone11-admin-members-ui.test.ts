@@ -6,6 +6,10 @@ const members = readFileSync(
   resolve(process.cwd(), "app/admin/users.tsx"),
   "utf8",
 );
+const invitations = readFileSync(
+  resolve(process.cwd(), "components/admin/admin-invitations.tsx"),
+  "utf8",
+);
 const peopleTable = readFileSync(
   resolve(process.cwd(), "components/admin/admin-people-table.tsx"),
   "utf8",
@@ -34,11 +38,11 @@ describe("workspace member administration", () => {
     expect(members).not.toMatch(/MOCK_|Math\.random|demo user/i);
   });
 
-  it("keeps invitations unavailable until a verified delivery path exists", () => {
-    expect(members).toContain("Invitations are not available yet");
-    expect(members).toContain(
-      "will be available when invitations are enabled.",
-    );
+  it("mounts capability-gated invitations without changing existing member management", () => {
+    expect(members).toContain("<AdminInvitations");
+    expect(members).toContain("workspace.selectedTenantId === tenantId");
+    expect(invitations).toContain("client.invitations.availability.query");
+    expect(invitations).toContain("Invitations are not available yet");
     expect(router).toMatch(
       /adding a\s+\* person needs an identity-verification and invitation-delivery service/,
     );

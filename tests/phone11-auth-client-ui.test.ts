@@ -218,6 +218,7 @@ describe("Phone11 sign-in surface", () => {
       "app/auth/sign-in.tsx",
       "app/auth/forgot-password.tsx",
       "app/auth/reset-password.tsx",
+      "app/auth/accept-invitation.tsx",
       "app/oauth/callback.tsx",
       "app/_layout.tsx",
     ]) {
@@ -247,6 +248,7 @@ describe("Phone11 sign-in surface", () => {
   it("parses and transpiles all touched auth screens and hooks", () => {
     for (const path of [
       "app/auth/sign-in.tsx",
+      "app/auth/accept-invitation.tsx",
       "app/oauth/callback.tsx",
       "app/_layout.tsx",
       "app/(tabs)/settings.tsx",

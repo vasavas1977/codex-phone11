@@ -39,6 +39,8 @@ type NativeBindings = {
   configureMeetingAudio: () => Promise<void>;
   startAudioSession: () => Promise<void>;
   stopAudioSession: () => Promise<void>;
+  getAudioOutputs: () => Promise<string[]>;
+  selectAudioOutput: (deviceId: string) => Promise<void>;
   classifyJoinFailure: (
     error: unknown,
     stage: MeetingJoinStage,
@@ -98,6 +100,8 @@ async function loadNativeBindings(): Promise<NativeBindings> {
             : async () => undefined,
           startAudioSession: native.AudioSession.startAudioSession,
           stopAudioSession: native.AudioSession.stopAudioSession,
+          getAudioOutputs: native.AudioSession.getAudioOutputs,
+          selectAudioOutput: native.AudioSession.selectAudioOutput,
           classifyJoinFailure: (error: unknown, stage: MeetingJoinStage) => {
             if (stage === "room_create") {
               return classifyRoomConstructionFailure(error, client.Room);
@@ -154,6 +158,7 @@ export class NativeMeetingLifecycle {
   private audioStartAttempted = false;
   private audioSetupTask?: Promise<void>;
   private audioStopped = false;
+  private audioRouteTask?: Promise<void>;
   private roomStopped = false;
   private unsubscribe?: () => void;
   private unsubscribeOwner?: () => void;
@@ -176,6 +181,36 @@ export class NativeMeetingLifecycle {
 
   get wasInterruptedBySip(): boolean {
     return this.interruptedBySip;
+  }
+
+  private canChangeAudioOutput(): boolean {
+    return !this.leaving && !this.interruptedBySip && !hasLiveSipCall() &&
+      this.ownerIsCurrent() && !!this.lease &&
+      phone11MediaOwnership.isCurrent(this.lease) &&
+      this.session.getSnapshot().status === "connected";
+  }
+
+  /** Route controls only operate while this meeting owns the shared audio session. */
+  async getAudioOutputs(): Promise<string[]> {
+    if (!this.canChangeAudioOutput() || !this.bindings)
+      throw new Error("Meeting audio is unavailable.");
+    const outputs = await this.bindings.getAudioOutputs();
+    if (!this.canChangeAudioOutput())
+      throw new Error("Meeting audio is unavailable.");
+    return outputs;
+  }
+
+  async selectAudioOutput(deviceId: string): Promise<void> {
+    if (this.audioRouteTask) throw new Error("Meeting audio output is busy.");
+    const task = (async () => {
+      const outputs = await this.getAudioOutputs();
+      if (!outputs.includes(deviceId) || !this.canChangeAudioOutput() || !this.bindings)
+        throw new Error("Meeting audio output is unavailable.");
+      await this.bindings.selectAudioOutput(deviceId);
+    })();
+    this.audioRouteTask = task;
+    try { await task; }
+    finally { if (this.audioRouteTask === task) this.audioRouteTask = undefined; }
   }
 
   private ownerIsCurrent(): boolean {
@@ -340,6 +375,7 @@ export class NativeMeetingLifecycle {
   async leave(): Promise<void> {
     this.leaving = true;
     try {
+      await this.audioRouteTask?.catch(() => undefined);
       await this.session.disconnect();
       this.roomStopped = true;
       await this.releaseAfterMediaStops();
