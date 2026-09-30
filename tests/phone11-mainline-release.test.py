@@ -316,7 +316,7 @@ class RouteGuards(TestCase):
         before = b"before"
         after = b"after"
         receipt = {"candidate_id": "f" * 64, "fixture_sha256": "a" * 64,
-                   "active_dump_sha256": start.digest(b"active-dump"), "rollback_fixture_sha256": "b" * 64, "state": "prepared"}
+                   "active_dump_sha256": start.digest(b"active-dump"), "state": "prepared"}
         return record, before, after, receipt
 
     def test_activate_reload_failure_restores_only_exact_site(self):
@@ -367,7 +367,7 @@ class RouteGuards(TestCase):
              mock.patch.object(route.start, "command", return_value=b"different-dump"), \
              mock.patch.object(route, "write_site") as write:
             with self.assertRaisesRegex(route.start.Refused, "nginx_dump_drift"):
-                route.rollback(record, Path("/unused"), Path("/fixture"), "https://api.phone11.ai")
+                route.rollback(record, Path("/unused"), "https://api.phone11.ai")
             write.assert_not_called()
 
     def test_successful_activation_records_generation(self):
@@ -438,7 +438,7 @@ class RouteGuards(TestCase):
                 route.probes(Path("/fixture"), route.start.digest(raw), "https://api.phone11.ai")
             http.assert_not_called()
 
-    def test_rollback_candidate_down_keeps_predecessor_after_probe_failure(self):
+    def test_rollback_candidate_down_restores_pinned_predecessor_without_authenticated_probe(self):
         record, before, after, receipt = self.setup_route()
         record["nginx"]["dump_sha256"] = route.start.digest(b"headbeforetail")
         current = [after]
@@ -454,12 +454,14 @@ class RouteGuards(TestCase):
              mock.patch.object(route, "site", side_effect=site), \
              mock.patch.object(route, "write_site", side_effect=write), \
              mock.patch.object(route, "reload"), mock.patch.object(route, "protected", side_effect=protected), \
-             mock.patch.object(route, "probes", side_effect=route.start.Refused("probe_failed")), \
+             mock.patch.object(route, "probes") as probes, \
+             mock.patch.object(route.old, "atomic_write") as receipt_write, \
              mock.patch.object(route.start, "command", side_effect=(b"active-dump", b"headbeforetail")):
-            with self.assertRaisesRegex(route.start.Refused, "probe_failed"):
-                route.rollback(record, Path("/unused"), Path("/fixture"), "https://api.phone11.ai")
+            route.rollback(record, Path("/unused"), "https://api.phone11.ai")
         self.assertEqual(current[0], before)
-        self.assertEqual(calls, [None])
+        self.assertEqual(calls, [None, None])
+        probes.assert_not_called()
+        receipt_write.assert_called_once()
 
     def test_unrelated_nginx_generation_change_restores_before(self):
         record, before, after, receipt = self.setup_route()
@@ -489,7 +491,7 @@ class RouteGuards(TestCase):
              mock.patch.object(route, "reload") as reload, \
              mock.patch.object(route.start, "command", return_value=b"active-dump"):
             with self.assertRaisesRegex(route.start.Refused, "predecessor_down"):
-                route.rollback(record, Path("/unused"), Path("/fixture"), "https://api.phone11.ai")
+                route.rollback(record, Path("/unused"), "https://api.phone11.ai")
             write.assert_not_called()
             reload.assert_not_called()
 
@@ -506,13 +508,14 @@ class RouteGuards(TestCase):
              mock.patch.object(route, "site", side_effect=site), \
              mock.patch.object(route, "write_site", side_effect=write), \
              mock.patch.object(route, "reload"), mock.patch.object(route, "protected") as protected, \
-             mock.patch.object(route, "probes"), \
+             mock.patch.object(route, "probes") as probes, \
              mock.patch.object(route.old, "atomic_write") as receipt_write, \
              mock.patch.object(route.start, "command", side_effect=(b"headaftertail", b"headbeforetail")):
-            route.recover(record, route.ROOT / "receipt", Path("/fixture"), "https://api.phone11.ai")
+            route.recover(record, route.ROOT / "receipt", "https://api.phone11.ai")
         self.assertEqual(current[0], before)
         self.assertEqual(receipt["state"], "aborted")
         self.assertEqual(protected.call_count, 2)
+        probes.assert_not_called()
         receipt_write.assert_called_once()
 
     def test_recover_interrupted_rollback_reconciles_receipt(self):
@@ -522,15 +525,16 @@ class RouteGuards(TestCase):
         with mock.patch.object(route, "root_file", return_value=b'{"state":"active"}'), \
              mock.patch.object(route, "sealed", return_value=(receipt, before, after)), \
              mock.patch.object(route, "site", return_value=(before, mock.Mock())), \
-             mock.patch.object(route, "protected"), mock.patch.object(route, "probes"), \
+             mock.patch.object(route, "protected"), mock.patch.object(route, "probes") as probes, \
              mock.patch.object(route, "write_site") as write, \
              mock.patch.object(route, "reload") as reload, \
              mock.patch.object(route.old, "atomic_write") as receipt_write, \
              mock.patch.object(route.start, "command", return_value=b"headbeforetail"):
-            route.recover(record, route.ROOT / "receipt", Path("/fixture"), "https://api.phone11.ai")
+            route.recover(record, route.ROOT / "receipt", "https://api.phone11.ai")
         self.assertEqual(receipt["state"], "rolled_back")
         write.assert_not_called()
         reload.assert_called_once()
+        probes.assert_not_called()
         receipt_write.assert_called_once()
 
     def test_prepare_activate_rollback_control_flow(self):
@@ -569,14 +573,16 @@ class RouteGuards(TestCase):
              mock.patch.object(route, "sealed", side_effect=sealed), \
              mock.patch.object(route.old, "atomic_write", side_effect=atomic), \
              mock.patch.object(route.start, "command", side_effect=nginx):
-            directory = route.prepare(record, Path("/start.json"), Path("/candidate-probes"),
-                                      "a" * 64, Path("/rollback-probes"), "b" * 64)
+            directory = route.prepare(record, Path("/start.json"), Path("/candidate-probes"), "a" * 64)
             route.activate(record, directory, Path("/candidate-probes"), "https://api.phone11.ai")
             self.assertEqual(current[0], after)
-            route.rollback(record, directory, Path("/rollback-probes"), "https://api.phone11.ai")
+            route.rollback(record, directory, "https://api.phone11.ai")
             self.assertEqual(current[0], before)
             self.assertEqual(json.loads(files[str(directory / "receipt.json")])["state"], "rolled_back")
-            self.assertEqual(probes.call_count, 5)
+            self.assertEqual(probes.call_count, 3)
+            self.assertEqual([call.args[2] for call in probes.call_args_list],
+                             [f"http://127.0.0.1:{record['candidate']['port']}"] * 2
+                             + ["https://api.phone11.ai"])
 
 
 if __name__ == "__main__":

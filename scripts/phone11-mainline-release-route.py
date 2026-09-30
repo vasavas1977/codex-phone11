@@ -27,7 +27,7 @@ def sibling(filename: str, name: str):
 start = sibling("phone11-mainline-release-start.py", "phone11_mainline_start")
 old = sibling("phone11-chat-inbox-release-route.py", "phone11_old_route")
 pilot = sibling("phone11-parallel-api-pilot.py", "phone11_pilot")
-SCHEMA = "phone11-mainline-ec2-route/v1"
+SCHEMA = "phone11-mainline-ec2-route/v2"
 ROOT = Path("/var/lib/phone11-mainline-release-route")
 PROBE_LABELS = {"existing_phone", "existing_chat", "conference", "mixed_batch", "denied_tenant"}
 READ_ONLY_PROBE_HEADER = "X-Phone11-Read-Only-Probe"
@@ -113,9 +113,8 @@ def sealed(directory: Path, state: str, pins: dict[str, Any]) -> tuple[dict[str,
     before, active = root_file(directory / "site.before"), root_file(directory / "site.active")
     require(isinstance(record, dict) and set(record) == {"schema", "state", "manifest_sha256",
         "before_sha256", "active_sha256", "candidate_id", "active_dump_sha256",
-        "fixture_sha256", "rollback_fixture_sha256"}, "receipt_integrity")
+        "fixture_sha256"}, "receipt_integrity")
     require(start.SHA.fullmatch(record["fixture_sha256"]) is not None
-        and start.SHA.fullmatch(record["rollback_fixture_sha256"]) is not None
         and (record["active_dump_sha256"] is None if state == "prepared"
              else start.SHA.fullmatch(record["active_dump_sha256"]) is not None), "receipt_integrity")
     require(record.get("schema") == SCHEMA and record.get("state") == state
@@ -139,13 +138,11 @@ def reload() -> None:
     start.command("systemctl", "reload", "nginx")
 
 
-def prepare(pins: dict[str, Any], receipt: Path, fixture: Path, fixture_sha: str,
-            rollback_fixture: Path, rollback_sha: str) -> Path:
+def prepare(pins: dict[str, Any], receipt: Path, fixture: Path, fixture_sha: str) -> Path:
     start.site_and_wake(pins, pins["candidate"]["port"])
     candidate_id = start_receipt(receipt, pins)
     protected(pins, candidate_id)
     probes(fixture, fixture_sha, f"http://127.0.0.1:{pins['candidate']['port']}")
-    probes(rollback_fixture, rollback_sha, "http://127.0.0.1:3016")
     before, _ = site()
     require(start.digest(before) == pins["nginx"]["site_sha256"], "site_drift")
     after = old.rewrite_trpc(before, 3016, pins["candidate"]["port"])
@@ -156,8 +153,7 @@ def prepare(pins: dict[str, Any], receipt: Path, fixture: Path, fixture_sha: str
     old.atomic_write(directory / "site.active", after, mode=0o600)
     record = {"schema": SCHEMA, "state": "prepared", "manifest_sha256": start.digest(encoded(pins)),
         "before_sha256": start.digest(before), "active_sha256": start.digest(after),
-        "candidate_id": candidate_id, "active_dump_sha256": None, "fixture_sha256": fixture_sha,
-        "rollback_fixture_sha256": rollback_sha}
+        "candidate_id": candidate_id, "active_dump_sha256": None, "fixture_sha256": fixture_sha}
     old.atomic_write(directory / "receipt.json", encoded(record), mode=0o600)
     return directory
 
@@ -195,7 +191,7 @@ def activate(pins: dict[str, Any], directory: Path, fixture: Path, public_origin
         raise
 
 
-def rollback(pins: dict[str, Any], directory: Path, fixture: Path, public_origin: str) -> None:
+def rollback(pins: dict[str, Any], directory: Path, public_origin: str) -> None:
     record, before, after = sealed(directory, "active", pins)
     require(public_origin == "https://api.phone11.ai", "public_origin")
     require(start.digest(start.command("nginx", "-T")) == record["active_dump_sha256"], "nginx_dump_drift")
@@ -206,7 +202,10 @@ def rollback(pins: dict[str, Any], directory: Path, fixture: Path, public_origin
         reload()
         site(before)
         require(start.digest(start.command("nginx", "-T")) == pins["nginx"]["dump_sha256"], "nginx_dump_drift")
-        probes(fixture, record["rollback_fixture_sha256"], public_origin)
+        # 3016 predates read-only session lookup. Its phone.getConfig can
+        # initialize schema, so never replay authenticated candidate probes
+        # against it. The pinned runtime/health and exact Nginx generation
+        # checks above and below are the safe rollback contract.
         site(before)
         protected(pins)
         record["state"] = "rolled_back"
@@ -220,7 +219,7 @@ def rollback(pins: dict[str, Any], directory: Path, fixture: Path, public_origin
         raise
 
 
-def recover(pins: dict[str, Any], directory: Path, rollback_fixture: Path, public_origin: str) -> None:
+def recover(pins: dict[str, Any], directory: Path, public_origin: str) -> None:
     """Reconcile only interrupted writes toward the pinned 3016 predecessor."""
     require(public_origin == "https://api.phone11.ai", "public_origin")
     require(directory.parent == ROOT and not directory.is_symlink(), "receipt_path")
@@ -241,7 +240,6 @@ def recover(pins: dict[str, Any], directory: Path, rollback_fixture: Path, publi
         # a process could have died between atomic site write and reload.
         reload()
     require(start.digest(start.command("nginx", "-T")) == pins["nginx"]["dump_sha256"], "nginx_dump_drift")
-    probes(rollback_fixture, record["rollback_fixture_sha256"], public_origin)
     site(before)
     protected(pins)
     record["state"] = "aborted" if raw["state"] == "prepared" else "rolled_back"
@@ -254,10 +252,8 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--start-receipt", type=Path)
     parser.add_argument("--receipt-dir", type=Path)
-    parser.add_argument("--probes-file", type=Path, required=True)
+    parser.add_argument("--probes-file", type=Path)
     parser.add_argument("--probes-sha256", type=str)
-    parser.add_argument("--rollback-probes-file", type=Path)
-    parser.add_argument("--rollback-probes-sha256", type=str)
     parser.add_argument("--public-origin", default="https://api.phone11.ai")
     args = parser.parse_args()
     fd = None
@@ -266,20 +262,18 @@ def main() -> int:
         fd = start.lock()
         pins = start.manifest(args.manifest)
         if args.action == "prepare":
-            require(args.start_receipt is not None and args.probes_sha256 is not None
-                    and args.rollback_probes_file is not None and args.rollback_probes_sha256 is not None, "arguments")
-            print(prepare(pins, args.start_receipt, args.probes_file, args.probes_sha256,
-                          args.rollback_probes_file, args.rollback_probes_sha256))
+            require(args.start_receipt is not None and args.probes_file is not None
+                    and args.probes_sha256 is not None, "arguments")
+            print(prepare(pins, args.start_receipt, args.probes_file, args.probes_sha256))
         else:
             require(args.receipt_dir is not None, "arguments")
             if args.action == "activate":
+                require(args.probes_file is not None, "arguments")
                 activate(pins, args.receipt_dir, args.probes_file, args.public_origin)
             elif args.action == "rollback":
-                require(args.rollback_probes_file is not None, "arguments")
-                rollback(pins, args.receipt_dir, args.rollback_probes_file, args.public_origin)
+                rollback(pins, args.receipt_dir, args.public_origin)
             else:
-                require(args.rollback_probes_file is not None, "arguments")
-                recover(pins, args.receipt_dir, args.rollback_probes_file, args.public_origin)
+                recover(pins, args.receipt_dir, args.public_origin)
         return 0
     except (start.Refused, old.GuardError, pilot.GuardError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         print("Phone11 route operation refused; inspect host state and sealed receipt.", file=sys.stderr)
