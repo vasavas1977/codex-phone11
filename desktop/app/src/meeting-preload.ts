@@ -5,6 +5,7 @@ import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, ty
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
+import { channelInviteMessage } from './channel-invite-selection';
 import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingDirectDetails, DesktopMeetingDirectChat } from '../../src/authenticated-provider';
 
 // This isolated preload is the only Chromium world that receives a media grant.
@@ -701,12 +702,18 @@ async function loadChannelDetails(): Promise<void> {
     el<HTMLFieldSetElement>('invite-picker').disabled = !details.canStart || startingChannel;
     el<HTMLButtonElement>('start-channel-meeting').disabled = !details.canStart || startingChannel;
     el('meet-now-message').textContent = details.canStart
-      ? `${details.members.length} members selected. Deselect anyone you do not want to invite.`
+      ? channelInviteMessage(details.members.length, details.members.length)
       : details.members.length > 50 ? 'This channel has more than 50 members; meeting invitations are unavailable.'
         : 'You cannot start a meeting in this channel.';
   } catch {
     if (sequence === channelLoad) el('meet-now-message').textContent = 'Channel members are unavailable. Try again.';
   }
+}
+
+function updateChannelInviteSelection(): void {
+  if (!selectedChannelDetails?.canStart || startingChannel || createdChannelMeeting) return;
+  const selected = el('invite-members').querySelectorAll('input:checked').length;
+  el('meet-now-message').textContent = channelInviteMessage(selected, selectedChannelDetails.members.length);
 }
 
 async function startChannelMeeting(): Promise<void> {
@@ -927,6 +934,7 @@ async function startDirectMeeting(): Promise<void> {
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
   el<HTMLSelectElement>('channel-select').addEventListener('change', () => { void loadChannelDetails(); });
+  el('invite-members').addEventListener('change', updateChannelInviteSelection);
   el<HTMLButtonElement>('start-channel-meeting').addEventListener('click', () => { void startChannelMeeting(); });
   el<HTMLSelectElement>('direct-select').addEventListener('change', () => { void loadDirectDetails(); });
   el<HTMLButtonElement>('search-direct').addEventListener('click', () => { void searchDirectChats(); });

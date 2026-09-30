@@ -297,8 +297,11 @@ def check_candidate(pins: dict[str, Any], source: dict[str, Any], expected_id: s
     host, source_host = item.get("HostConfig") or {}, source["HostConfig"]
     binding = {f"{c['port']}/tcp": [{"HostIp": "127.0.0.1", "HostPort": str(c["port"])}]}
     require(host.get("PortBindings") == binding and (item.get("NetworkSettings") or {}).get("Ports", {}).get(f"{c['port']}/tcp") == binding[f"{c['port']}/tcp"], "candidate_binding")
-    for key in ("NetworkMode", "Memory", "NanoCpus", "ReadonlyRootfs", "Privileged", "CapAdd", "CapDrop", "SecurityOpt", "Devices", "PidMode", "IpcMode"):
+    for key in ("NetworkMode", "Memory", "NanoCpus", "ReadonlyRootfs", "Privileged", "CapAdd", "CapDrop", "SecurityOpt", "PidMode", "IpcMode"):
         require(host.get(key) == source_host.get(key), "candidate_isolation")
+    # Docker normalizes an omitted empty device list to [] on a newly created
+    # container. Neither side may add a device.
+    require(not host.get("Devices") and not source_host.get("Devices"), "candidate_isolation")
     require(sorted(mount_shape(x) for x in item.get("Mounts", [])) == sorted(mount_shape(x) for x in source.get("Mounts", [])), "candidate_mounts")
     labels = item.get("Config", {}).get("Labels") or {}
     require(all(labels.get(key) == value for key, value in {

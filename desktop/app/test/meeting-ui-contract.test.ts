@@ -101,3 +101,10 @@ test('direct contact chooser is rendered in isolated prejoin and routes through 
   assert.match(meetingWindow, /this\.provider\.meetingDirectChats\(revision\)\.catch\(\(\) => \[\]\)/);
   assert.match(meetingWindow, /generation !== this\.directSearchGeneration/);
 });
+
+test('channel invitations default to the full roster and update selection feedback', () => {
+  assert.match(preload, /checkbox\.checked = true/);
+  assert.match(preload, /channelInviteMessage\(details\.members\.length, details\.members\.length\)/);
+  assert.match(preload, /invite-members'\)\.addEventListener\('change', updateChannelInviteSelection\)/);
+  assert.match(preload, /querySelectorAll\('input:checked'\)\.length/);
+});

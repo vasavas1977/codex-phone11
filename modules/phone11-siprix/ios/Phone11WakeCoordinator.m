@@ -215,6 +215,9 @@ static BOOL P11ValidEnrollment(NSDictionary *value) {
   if (![self isCurrent:generation] || self.connected) return;
   [self request:@"status" completion:^(NSDictionary *response) {
     if (![self isCurrent:generation] || self.connected) return;
+    // A transport failure is not evidence that the held INVITE was cancelled.
+    // The original setup-expiry timer still bounds an unanswered call.
+    if (!response) { [self scheduleAfter:1 block:^{ [self poll:generation]; }]; return; }
     if (![@[@"pending", @"ready"] containsObject:response[@"status"] ?: @""]) { [self finish:CXCallEndedReasonRemoteEnded notifyServer:NO]; return; }
     [self scheduleAfter:1 block:^{ [self poll:generation]; }];
   }];

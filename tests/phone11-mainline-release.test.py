@@ -155,6 +155,36 @@ class StartGuards(TestCase):
             with self.assertRaisesRegex(start.Refused, "image_node_version"):
                 start.candidate_image(pins(), source)
 
+    def test_candidate_accepts_docker_empty_device_normalization_only(self):
+        record = pins()
+        candidate = record["candidate"]
+        created = "f" * 64
+        source_host = {key: None for key in ("NetworkMode", "Memory", "NanoCpus", "ReadonlyRootfs",
+                                               "Privileged", "CapAdd", "CapDrop", "SecurityOpt", "Devices", "PidMode", "IpcMode")}
+        source_host.update(NetworkMode="test-network", Memory=1024, ReadonlyRootfs=False, Privileged=False)
+        host = {**source_host, "Devices": [], "PortBindings": {"3020/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3020"}]}}
+        source = {"Config": {"Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3016", "NODE_VERSION=22.22.3"]},
+                  "HostConfig": source_host, "Mounts": []}
+        labels = {"com.phone11.source-sha": candidate["source_sha"],
+                  "com.phone11.bundle-sha256": candidate["bundle_sha256"],
+                  "com.phone11.lock-sha256": candidate["lock_sha256"],
+                  "com.phone11.candidate-build": candidate["build"],
+                  "com.phone11.runtime-role-guard": "api-candidate"}
+        item = {"Name": "/" + candidate["name"], "Id": created, "Image": candidate["image"],
+                "State": {"Running": True, "Health": {"Status": "healthy"}},
+                "Config": {"Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3020",
+                                   "NODE_VERSION=22.23.3", "PHONE11_BUILD_SHA=build-1"],
+                           "Healthcheck": {"Test": ["CMD-SHELL", start.health_command(3020, "build-1")]},
+                           "Labels": labels},
+                "HostConfig": host, "NetworkSettings": {"Ports": host["PortBindings"]}, "Mounts": []}
+        with mock.patch.object(start, "inspect", return_value=item), \
+             mock.patch.object(start, "command", return_value=(candidate["bundle_sha256"] + "  /app/dist/index.mjs").encode()), \
+             mock.patch.object(start, "health"):
+            start.check_candidate(record, source, created)
+            host["Devices"] = [{"PathOnHost": "/dev/sda"}]
+            with self.assertRaisesRegex(start.Refused, "candidate_isolation"):
+                start.check_candidate(record, source, created)
+
     def test_candidate_upstream_collision_refused(self):
         record = pins()
         dump = b"proxy_pass http://127.0.0.1:3020;"

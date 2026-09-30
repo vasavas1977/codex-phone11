@@ -83,6 +83,8 @@ static void check(BOOL ok) { checks++; if (!ok) { fprintf(stderr,"FAIL wake asse
 @property(nonatomic,copy) void (^heldClaim)(NSDictionary *);
 @property(nonatomic) BOOL hangClaim;
 @property(nonatomic, strong) NSDictionary *heartbeatResponse;
+@property(nonatomic, strong) NSDictionary *statusResponse;
+@property(nonatomic) BOOL failStatus;
 @property(nonatomic, strong) NSMutableArray *timers;
 @end
 @implementation TestWake
@@ -96,7 +98,7 @@ static void check(BOOL ok) { checks++; if (!ok) { fprintf(stderr,"FAIL wake asse
     if (self.hangClaim) self.heldClaim=completion;
     else { NSMutableDictionary *body=[self.saved mutableCopy]; body[@"status"]=@"pending"; body[@"sip"]=@{@"sipPassword":@"fake-only"}; completion(body); }
   } else if ([operation isEqual:@"ready"]) completion(self.connected ? self.heartbeatResponse : @{@"status":@"ready"});
-  // Status intentionally pending: tests drive cancellation and SDK callbacks.
+  else if ([operation isEqual:@"status"]) completion(self.failStatus ? nil : (self.statusResponse ?: @{ @"status":@"pending" }));
 }
 @end
 static NSURLRequest *capturedRequest;
@@ -145,6 +147,14 @@ int main(void) { @autoreleasepool {
   [v provider:v.provider performAnswerCallAction:other]; check(other.testFulfilled && ordinaryAnswers==1);
   [v provider:v.provider didActivateAudioSession:nil]; check(audioForwarded==1);
   sdkEvent(@{@"type":@"terminated",@"callUUID":currentUUID}); check(v.active==nil && [v.requests containsObject:@"end"]);
+  // A transient status transport failure cannot masquerade as remote cancel.
+  // The setup timer remains armed and an authenticated terminal response ends it.
+  v=fresh(); [v receivePayload:payload() completion:^{}]; sdkReady(nil);
+  v.failStatus=YES; NSUInteger pendingTimers=v.timers.count; int pendingEnds=ends;
+  [v poll:v.generation]; check(v.active!=nil && ends==pendingEnds && v.timers.count==pendingTimers+1);
+  v.failStatus=NO; v.statusResponse=@{@"status":@"cancelled"};
+  void (^retryStatus)(void)=v.timers.lastObject; retryStatus();
+  check(v.active==nil && ends==pendingEnds+1 && ![v.requests containsObject:@"end"]);
   // End/clear before a hung claim resolves cannot start SDK work afterwards.
   v=fresh(); v.hangClaim=YES; [v receivePayload:payload() completion:^{}]; a=answer(v);
   void (^late)(NSDictionary *)=v.heldClaim; before=prepared; [v clearEnrollment];
