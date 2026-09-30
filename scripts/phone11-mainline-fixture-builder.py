@@ -18,10 +18,11 @@ import re
 import stat
 import subprocess
 import sys
+from typing import Callable
 from urllib.parse import parse_qs, quote, urlsplit
 
-ORIGIN = "http://127.0.0.1:3019"
-HOST, PORT = "127.0.0.1", 3019
+HOST = "127.0.0.1"
+ALLOWED_CANDIDATE_PORTS = {3019, 3020}
 ROOT = Path("/var/lib/phone11-mainline-fixtures")
 EXTENSIONS = {"3001", "1020"}
 NAME = re.compile(r"candidate-[a-z0-9][a-z0-9-]{0,62}\.json\Z")
@@ -92,14 +93,19 @@ def document(token: str, tenant_id: int, denied_tenant_id: int) -> bytes:
 
 
 def request(method: str, path: str, body: bytes | None = None,
-            token: str | None = None) -> tuple[int, dict[str, str], bytes]:
+            token: str | None = None, *, port: int,
+            before_request: Callable[[], None] | None = None
+            ) -> tuple[int, dict[str, str], bytes]:
+    require(type(port) is int and port in ALLOWED_CANDIDATE_PORTS, "candidate_port")
     require(path.startswith("/") and not path.startswith("//"), "http_path")
     headers = {"Accept": "application/json", "X-Phone11-Client": "native"}
     if body is not None:
         headers["Content-Type"] = "application/json"
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
-    connection = http.client.HTTPConnection(HOST, PORT, timeout=5)
+    if before_request is not None:
+        before_request()
+    connection = http.client.HTTPConnection(HOST, port, timeout=5)
     try:
         connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
@@ -110,10 +116,12 @@ def request(method: str, path: str, body: bytes | None = None,
         connection.close()
 
 
-def sign_in(email: str, password: str) -> tuple[str, str]:
+def sign_in(email: str, password: str, *, port: int,
+            before_request: Callable[[], None]) -> tuple[str, str]:
     body = json.dumps({"email": email, "password": password, "rememberMe": False},
                       separators=(",", ":")).encode()
-    status, headers, raw = request("POST", "/api/auth/sign-in/email", body)
+    status, headers, raw = request("POST", "/api/auth/sign-in/email", body, port=port,
+                                   before_request=before_request)
     require(status == 200, "sign_in")
     token = headers.get("set-auth-token", "")
     require(bool(token) and len(token) <= 4096 and "\r" not in token and "\n" not in token, "sign_in")
@@ -123,14 +131,37 @@ def sign_in(email: str, password: str) -> tuple[str, str]:
     return token, auth_id
 
 
-def verify_session(token: str, auth_id: str, email: str) -> None:
-    status, _, raw = request("GET", "/api/auth/get-session?disableRefresh=true", token=token)
+def verify_session(token: str, auth_id: str, email: str, *, port: int,
+                   before_request: Callable[[], None]) -> None:
+    status, _, raw = request("GET", "/api/auth/get-session?disableRefresh=true", token=token,
+                             port=port, before_request=before_request)
     require(status == 200, "session")
     session = json.loads(raw)
     require(isinstance(session, dict) and isinstance(session.get("session"), dict)
             and isinstance(session.get("user"), dict)
             and session["user"].get("id") == auth_id
             and session["user"].get("email") == email, "session_identity")
+
+
+def start_receipt(path: Path, pins: dict[str, object], start: object) -> str:
+    candidate = pins["candidate"]
+    require(path.parent == start.STATE_ROOT and path.name.endswith(".json"), "start_receipt_path")
+    container_id = path.stem
+    require(CONTAINER_ID.fullmatch(container_id) is not None
+            and path.name == container_id + ".json", "start_receipt")
+    try:
+        root = start.STATE_ROOT.lstat()
+        require(stat.S_ISDIR(root.st_mode) and root.st_uid == 0 and root.st_gid == 0
+                and stat.S_IMODE(root.st_mode) == 0o700, "start_receipt_root")
+        record = json.loads(start.secure_file(path, exact_mode=0o600))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        raise Refused("start_receipt") from None
+    expected = {"schema": start.SCHEMA, "container_id": container_id,
+                "image": candidate["image"], "source_sha": candidate["source_sha"],
+                "bundle_sha256": candidate["bundle_sha256"], "build": candidate["build"],
+                "name": candidate["name"], "port": candidate["port"]}
+    require(record == expected, "start_receipt")
+    return container_id
 
 
 # This child receives the prompted DB URL over stdin, not argv or environment.
@@ -177,16 +208,24 @@ try {
 """
 
 
-def pinned_runtime(manifest: Path, database_container_id: str) -> tuple[str, str]:
-    require(CONTAINER_ID.fullmatch(database_container_id) is not None, "database_container_id")
-    pins = release_start().manifest(manifest)
+def pinned_candidate(manifest: Path, receipt_path: Path) -> tuple[str, int, str]:
+    start = release_start()
+    pins = start.manifest(manifest)
     candidate = pins["candidate"]
-    require(candidate["port"] == PORT, "candidate_port")
+    port = candidate["port"]
+    require(type(port) is int and port in ALLOWED_CANDIDATE_PORTS, "candidate_port")
     image = candidate["image"]
-    inspected_image = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", image],
-                                     capture_output=True, text=True, timeout=10, check=False)
-    require(inspected_image.returncode == 0 and inspected_image.stdout.strip() == image,
-            "candidate_image")
+    candidate_id = start_receipt(receipt_path, pins, start)
+    source = start.source_runtime(pins)
+    start.candidate_image(pins, source)
+    start.check_candidate(pins, source, candidate_id)
+    return image, port, candidate_id
+
+
+def pinned_runtime(manifest: Path, database_container_id: str,
+                   receipt_path: Path) -> tuple[str, str, int, str]:
+    require(CONTAINER_ID.fullmatch(database_container_id) is not None, "database_container_id")
+    image, port, candidate_id = pinned_candidate(manifest, receipt_path)
     inspected_database = subprocess.run(
         ["docker", "inspect", "--type", "container", "--format",
          "{{.Id}}|{{.Name}}|{{.State.Running}}|{{.HostConfig.NetworkMode}}", "cp11-postgres"],
@@ -196,7 +235,7 @@ def pinned_runtime(manifest: Path, database_container_id: str) -> tuple[str, str
             and fields[:3] == [database_container_id, "/cp11-postgres", "true"]
             and fields[3] not in {"", "host", "none"}
             and not fields[3].startswith("container:"), "database_container")
-    return image, database_container_id
+    return image, database_container_id, port, candidate_id
 
 
 def database_command(image: str, database_container_id: str) -> list[str]:
@@ -277,6 +316,7 @@ def main() -> int:
     parser.add_argument("--user-role", required=True, choices=("user", "admin"))
     parser.add_argument("--tenant-role", required=True, choices=("user", "admin", "owner"))
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--start-receipt", type=Path, required=True)
     parser.add_argument("--database-container-id", required=True)
     args = parser.parse_args()
     try:
@@ -288,7 +328,8 @@ def main() -> int:
             return 0
         require(os.geteuid() == 0 and os.getegid() == 0, "root_required")
         require(not os.path.lexists(ROOT / args.output_name), "output_exists")
-        image, database_container_id = pinned_runtime(args.manifest, args.database_container_id)
+        image, database_container_id, port, candidate_id = pinned_runtime(
+            args.manifest, args.database_container_id, args.start_receipt)
         require(sys.stdin.isatty(), "tty_required")
         email = input("Dedicated Phone11 test account email: ").strip().lower()
         require(bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email)), "email")
@@ -301,9 +342,16 @@ def main() -> int:
                                            args.denied_tenant_id, args.extension)
         password = getpass.getpass("Dedicated Phone11 test account password: ")
         require(bool(password), "credentials")
-        token, auth_id = sign_in(email, password)
+
+        def confirm_candidate() -> None:
+            current = pinned_candidate(args.manifest, args.start_receipt)
+            require(current == (image, port, candidate_id), "candidate_changed")
+
+        token, auth_id = sign_in(email, password, port=port,
+                                 before_request=confirm_candidate)
         require(auth_id == expected_auth_id, "sign_in_identity")
-        verify_session(token, auth_id, email)
+        verify_session(token, auth_id, email, port=port,
+                       before_request=confirm_candidate)
         raw = document(token, args.tenant_id, args.denied_tenant_id)
         digest = secure_write(ROOT, args.output_name, raw)
         print(f"fixture={ROOT / args.output_name} sha256={digest}")

@@ -6,8 +6,14 @@ security/source review is required before operator use.
 
 `scripts/phone11-mainline-fixture-builder.py` creates the one candidate-only
 five-GET probe bundle consumed by `phone11-mainline-release-route.py` at the
-current loopback candidate origin `http://127.0.0.1:3019`. It never contacts the
-old 3016 service. The origin is fixed in source; there is no remote URL option.
+loopback candidate port pinned in the root-owned release-start manifest. The
+builder accepts only isolated candidate ports 3019 and 3020 and only the fixed
+host `127.0.0.1`; it refuses other ports. Before any credential prompt, it
+validates the root-owned start receipt against the manifest and reuses the
+release-start checks for the exact candidate container ID, image, build, role,
+health, environment, runtime settings, mounts, labels, and bundle hash. It
+repeats this check immediately before sign-in and session verification. It
+cannot contact the old 3016 service.
 The approved test extensions are `3001` and `1020`, but the operator must enter
 the actual canonical user ID, email, role, selected tenant, and distinct denied
 tenant from reviewed identity evidence. The tool does not infer these from an
@@ -22,6 +28,7 @@ python3 scripts/phone11-mainline-fixture-builder.py --dry-run \
   --denied-tenant-id <reviewed-denied-tenant-id> \
   --user-role user --tenant-role user \
   --manifest /root/<reviewed-mainline-start-manifest>.json \
+  --start-receipt /var/lib/phone11-mainline-release-start/<candidate-container-id>.json \
   --database-container-id <reviewed-64-character-cp11-postgres-id>
 ```
 
@@ -43,11 +50,16 @@ transaction checks the active Better Auth to canonical-user mapping, exact
 user ID/email/global and tenant roles, active selected-tenant membership and
 assigned extension, and absence of active membership in a real, active denied
 tenant. A mismatch stops before prompting for the account password or signing
-in. Only then does the operator prompt for the test password, sign in to 3019,
-and match the fresh auth user ID and session to the preflight. It reads no
+in. Only then does the operator prompt for the test password, sign in to the
+manifest-pinned candidate port, and match the fresh auth user ID and session
+to the preflight. It reads no
 existing sessions. Passwords, database URL, bearer token, and response bodies
 are not printed. The sign-in creates a new test-account session; use only the
 two explicitly approved test accounts, never customer or personal credentials.
+The repeated inspection narrows the interval in which a trusted root operator
+could replace or rebind the candidate, but local Docker state and loopback
+cannot be made atomic with the HTTP connection. Run this on a trusted host with
+exclusive control of Docker and the candidate port during fixture creation.
 
 `--apply` writes a new file under `/var/lib/phone11-mainline-fixtures` with
 root:root ownership, `0700` directory and `0600` file permissions. It refuses
