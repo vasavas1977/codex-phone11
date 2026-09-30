@@ -43,6 +43,27 @@ Rollback is a guarded proxy-only restoration to the **freshly revalidated** heal
 
 ## Commands ready versus still blocked
 
+**Actual-target preflight, 30 September at 14:45 UTC:** A read-only inspection
+inside the pinned 3020 candidate found `tenant_settings` compatible and the
+plain-video admission schema already applied with compatible prerequisites.
+The PBX preflight returned **incompatible**: `extensions.tenant_id` permits
+NULL, and all nine advanced-routing tables are absent. A second read-only
+inspection at 14:48 UTC found four extensions, zero NULL tenant assignments,
+and no extension foreign keys. Zero current NULL rows does not satisfy the
+schema contract or justify silently weakening it. Prepare and review the
+extension prerequisite constraint and advanced-routing migration against the
+actual schema before commissioning advanced PBX. Neither inspection executed
+DDL, changed tenant membership, nor activated routing.
+
+**Signed client installation, 30 September:** `devicectl` installed verified
+Build 110 on the iPhone 17 Pro Max and its app inventory confirms bundle
+version 110. The subsequent remote launch failed when the device connection
+was lost; a later attempt reached the handset but was explicitly denied because
+the iPhone was locked (`FBSOpenApplicationErrorDomain`, code 7). iPhone Mirroring
+also remained locked. This is installation evidence,
+without foreground, SIP wake, meeting audio, or invite acceptance. Retain the
+verified Build 109 rollback IPA.
+
 **Ready now:** the exact-source isolated 3020 candidate is running and healthy with a sealed root-only start receipt; 3019 remains a separate older candidate. The start operator accepts a root-only `--manifest`; the route operator has `prepare`, `activate`, `rollback`, and restore-only `recover` actions using the same manifest and one pinned candidate protected-probe file. The current operator source passed offline review and CI, but protected fixture creation and live tenant/provider checks remain open. Do not run route activation or rollback yet.
 
 **Required before a public route command:** prepare a dedicated authenticated candidate fixture through a secure local TTY without exposing credentials; establish an active second test tenant or an independently reviewed equivalent for cross-tenant denial; prove selected-tenant and Connect11 admission, directory and meeting permissions, admin denial, revoked-member denial, and rollback compatibility by a separately reviewed safe method. The target has no migration-ledger table, so reconcile actual schema and reviewed migration receipts explicitly. Seal a route receipt and rehearse rollback before activation. Then separately validate signed iPhone and desktop packages, two-device media, invite/reconnect, background wake, and physical audio directions. Source, database, provider, deployment, and device evidence remain separate.

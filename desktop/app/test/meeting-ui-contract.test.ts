@@ -107,4 +107,7 @@ test('channel invitations default to the full roster and update selection feedba
   assert.match(preload, /channelInviteMessage\(details\.members\.length, details\.members\.length\)/);
   assert.match(preload, /invite-members'\)\.addEventListener\('change', updateChannelInviteSelection\)/);
   assert.match(preload, /querySelectorAll\('input:checked'\)\.length/);
+  assert.match(preload, /start-channel-meeting'\)\.disabled = !channelInviteSelectionIsValid\(selected\)/);
+  assert.match(preload, /if \(!channelInviteSelectionIsValid\(selectedMemberIds\.length\)\)[\s\S]*?return;[\s\S]*?MEETING_CHANNELS\.startChannel/);
+  assert.doesNotMatch(preload, /more than 50 members; meeting invitations are unavailable/);
 });

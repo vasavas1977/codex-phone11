@@ -5,7 +5,7 @@ import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, ty
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
-import { channelInviteMessage } from './channel-invite-selection';
+import { channelInviteMessage, channelInviteSelectionIsValid } from './channel-invite-selection';
 import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingDirectDetails, DesktopMeetingDirectChat } from '../../src/authenticated-provider';
 
 // This isolated preload is the only Chromium world that receives a media grant.
@@ -700,11 +700,11 @@ async function loadChannelDetails(): Promise<void> {
       list.appendChild(label);
     }
     el<HTMLFieldSetElement>('invite-picker').disabled = !details.canStart || startingChannel;
-    el<HTMLButtonElement>('start-channel-meeting').disabled = !details.canStart || startingChannel;
+    el<HTMLButtonElement>('start-channel-meeting').disabled = !details.canStart || startingChannel ||
+      !channelInviteSelectionIsValid(details.members.length);
     el('meet-now-message').textContent = details.canStart
       ? channelInviteMessage(details.members.length, details.members.length)
-      : details.members.length > 50 ? 'This channel has more than 50 members; meeting invitations are unavailable.'
-        : 'You cannot start a meeting in this channel.';
+      : 'You cannot start a meeting in this channel.';
   } catch {
     if (sequence === channelLoad) el('meet-now-message').textContent = 'Channel members are unavailable. Try again.';
   }
@@ -714,6 +714,7 @@ function updateChannelInviteSelection(): void {
   if (!selectedChannelDetails?.canStart || startingChannel || createdChannelMeeting) return;
   const selected = el('invite-members').querySelectorAll('input:checked').length;
   el('meet-now-message').textContent = channelInviteMessage(selected, selectedChannelDetails.members.length);
+  el<HTMLButtonElement>('start-channel-meeting').disabled = !channelInviteSelectionIsValid(selected);
 }
 
 async function startChannelMeeting(): Promise<void> {
@@ -722,6 +723,11 @@ async function startChannelMeeting(): Promise<void> {
   if (!revision || !details?.canStart || details.channelId !== channelId || startingChannel || startingDirect || busy || room) return;
   const selectedMemberIds = Array.from(el('invite-members').querySelectorAll<HTMLInputElement>('input:checked'))
     .map(checkbox => Number(checkbox.value));
+  if (!channelInviteSelectionIsValid(selectedMemberIds.length)) {
+    el('meet-now-message').textContent = channelInviteMessage(selectedMemberIds.length, details.members.length);
+    el<HTMLButtonElement>('start-channel-meeting').disabled = true;
+    return;
+  }
   startingChannel = true;
   el<HTMLButtonElement>('start-channel-meeting').disabled = true;
   el<HTMLSelectElement>('channel-select').disabled = true;

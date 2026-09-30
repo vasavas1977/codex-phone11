@@ -260,7 +260,7 @@ test('personal inbox IPC rejects stale history and disables voicemail before pro
   let releaseHistory!: (value: any) => void;
   const provider = {
     currentSession: () => current,
-    listCallHistory: () => new Promise(resolve => { releaseHistory = resolve; }),
+    listCallHistoryPage: () => new Promise(resolve => { releaseHistory = resolve; }),
     listVoicemail: async () => { listRequests++; return []; },
     voicemailAudio: async () => { audioRequests++; return { id: 4, mimeType: 'audio/wav', bytes: new Uint8Array([1]) }; },
     markVoicemailRead: async () => { readRequests++; },
@@ -269,7 +269,7 @@ test('personal inbox IPC rejects stale history and disables voicemail before pro
   await assert.rejects(handlers.historyList({ sessionRevision: 'old' }));
   const history = handlers.historyList({ sessionRevision: 'r1' });
   current = { ...current!, revision: 'r2' };
-  releaseHistory([]);
+  releaseHistory({ items: [], nextCursor: null });
   await assert.rejects(history, /session changed/);
   await assert.rejects(handlers.voicemailList({ sessionRevision: 'r2' }), /PHONE11_VOICEMAIL_UNAVAILABLE/);
   await assert.rejects(handlers.voicemailAudio({ sessionRevision: 'r2', id: 4 }), /PHONE11_VOICEMAIL_UNAVAILABLE/);
@@ -281,7 +281,7 @@ test('call history IPC exposes a stable safe failure code and maps it to actiona
   const current: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 1, extensionId: 2 };
   const provider = {
     currentSession: () => current,
-    listCallHistory: async () => { throw new DesktopCallHistoryError('tenant_mismatch', 200); },
+    listCallHistoryPage: async () => { throw new DesktopCallHistoryError('tenant_mismatch', 200); },
   };
   const handlers = createHandlers(provider as never, { snapshot: () => empty } as never, () => 'g1', () => {});
   await assert.rejects(handlers.historyList({ sessionRevision: 'r1' }), (error: unknown) => {
@@ -297,4 +297,23 @@ test('call history IPC exposes a stable safe failure code and maps it to actiona
     'Phone11 could not verify the workspace for call history. Sign in again or contact support.');
   assert.equal(callHistoryFailureMessage(new Error('raw response with bearer and caller number')),
     'Call history could not load. Refresh to try again.');
+});
+
+test('call history IPC validates and forwards an exact bounded page cursor', async () => {
+  const current: DesktopSession = { revision: 'r1', accountId: 'a1', userId: 'u1', tenantId: 1, extensionId: 2 };
+  const cursor = { startedAt: '2026-09-29T10:00:00.000001Z', id: 51 };
+  const received: unknown[] = [];
+  const provider = { currentSession: () => current,
+    listCallHistoryPage: async (_revision: string, value?: unknown) => {
+      received.push(value); return { items: [], nextCursor: null };
+    } };
+  const handlers = createHandlers(provider as never, { snapshot: () => empty } as never, () => 'g1', () => {});
+  await assert.rejects(handlers.historyList({ sessionRevision: 'r1', cursor: { ...cursor, id: 0 } }),
+    /Invalid history cursor/);
+  await assert.rejects(handlers.historyList({ sessionRevision: 'r1', cursor: { ...cursor, startedAt: 'bad' } }),
+    /Invalid history cursor/);
+  assert.deepEqual(received, []);
+  assert.deepEqual(await handlers.historyList({ sessionRevision: 'r1', cursor }),
+    { sessionRevision: 'r1', items: [], nextCursor: null });
+  assert.deepEqual(received, [cursor]);
 });

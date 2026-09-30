@@ -19,7 +19,8 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
   secondTenantId?: number; secondExtensionId?: number; secondUsername?: string;
   memberships?: unknown; nextMemberships?: unknown; configTenantId?: number;
   availableMeetings?: unknown; meetingGrant?: unknown; voicemailItems?: unknown;
-  callHistory?: unknown; callHistoryStatus?: number; audioStatus?: number; audioType?: string; audioLength?: string;
+  callHistory?: unknown | ((cursor?: { startedAt: string; id: number }) => unknown);
+  callHistoryStatus?: number; audioStatus?: number; audioType?: string; audioLength?: string;
   directory?: unknown; directoryStatus?: number;
   audioBytes?: Uint8Array } = {}) {
   const paths: string[] = [];
@@ -71,10 +72,14 @@ function harness(overrides: { authStatus?: number; authCode?: string; tenantId?:
         { json: { tenantId: overrides.tenantId ?? 9 } });
       return trpc(overrides.voicemailItems ?? []);
     }
-    if (url.pathname === "/api/trpc/pbx.selfService.usage") {
-      assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""),
-        { json: { tenantId: overrides.tenantId ?? 9, period: "month" } });
-      return trpc(overrides.callHistory ?? { tenantId: overrides.tenantId ?? 9, calls: [] }, overrides.callHistoryStatus ?? 200);
+    if (url.pathname === "/api/trpc/pbx.selfService.callHistory") {
+      const input = JSON.parse(url.searchParams.get("input") ?? "");
+      assert.equal(input.json.tenantId, overrides.tenantId ?? 9);
+      assert.equal(input.json.limit, 50);
+      const response = typeof overrides.callHistory === "function"
+        ? overrides.callHistory(input.json.cursor)
+        : overrides.callHistory ?? { tenantId: overrides.tenantId ?? 9, items: [], nextCursor: null };
+      return trpc(response, overrides.callHistoryStatus ?? 200);
     }
     if (url.pathname === "/api/trpc/pbx.directory.list") {
       assert.deepEqual(JSON.parse(url.searchParams.get("input") ?? ""),
@@ -345,33 +350,67 @@ test("desktop directory ends pagination when the server's next offset exceeds it
   assert.equal((await provider.listDirectory(session.revision, "Som", 0)).nextOffset, null);
 });
 
-test("desktop call history requests the selected tenant month and exposes safe bounded metadata", async () => {
-  const { provider } = harness({ tenantId: 12, callHistory: { tenantId: 12, calls: [{ id: 71, direction: "inbound",
+test("desktop call history requests selected-tenant completed CDRs beyond a month and exposes safe metadata", async () => {
+  const { provider, paths } = harness({ tenantId: 12, callHistory: { tenantId: 12, items: [{ id: 71, direction: "inbound",
     caller_number: "+6621234567", callee_number: "3001", total_duration_seconds: 42,
-    disposition: "answered", started_at: "2026-09-27T10:00:00.000Z",
-    call_uuid: "private-call-id", recording_url: "https://private.invalid/audio?token=secret" }] } });
+    callback_number: "+6621234567", disposition: "answered", started_at: "2025-01-27T10:00:00.000000Z",
+    call_uuid: "private-call-id", recording_url: "https://private.invalid/audio?token=secret" }], nextCursor: null } });
   const session = await signInSingle(provider);
   await assert.rejects(provider.listCallHistory("stale-revision"));
   const calls = await provider.listCallHistory(session.revision);
   assert.deepEqual(calls, [{ id: 71, direction: "inbound", callerNumber: "+6621234567",
-    calleeNumber: "3001", durationSeconds: 42, disposition: "answered",
-    startedAt: "2026-09-27T10:00:00.000Z" }]);
+    calleeNumber: "3001", callbackNumber: "+6621234567", durationSeconds: 42, disposition: "answered",
+    startedAt: "2025-01-27T10:00:00.000Z" }]);
+  assert.equal(paths.filter(path => path === "/api/trpc/pbx.selfService.callHistory").length, 1);
+  assert.equal(paths.includes("/api/trpc/pbx.selfService.usage"), false);
   assert.equal(JSON.stringify(calls).includes("private-call-id"), false);
   assert.equal(JSON.stringify(calls).includes("private.invalid"), false);
   assert.equal(JSON.stringify(calls).includes("secret"), false);
 });
 
+test("desktop call history pages on exact microsecond cursor and parses an owner-backed emergency DTO", async () => {
+  const startedAt = "2026-09-29T10:00:00.000001Z";
+  const first = Array.from({ length: 50 }, (_, index) => ({ id: 100 - index,
+    direction: index === 0 ? "emergency" : "outbound", caller_number: "3101",
+    callee_number: index === 0 ? "191" : "+6620000001", callback_number: index === 0 ? "191" : "+6620000001",
+    total_duration_seconds: 3, disposition: "answered", started_at: startedAt }));
+  const seen: unknown[] = [];
+  const { provider } = harness({ callHistory: (cursor?: { startedAt: string; id: number }) => {
+    seen.push(cursor);
+    return cursor ? { tenantId: 9, items: [{ ...first[0], id: 50, started_at: "2026-09-29T10:00:00.000000Z" }], nextCursor: null }
+      : { tenantId: 9, items: first, nextCursor: { startedAt, id: 51 } };
+  } });
+  const session = await signInSingle(provider);
+  const page = await provider.listCallHistoryPage(session.revision);
+  assert.equal(page.items.length, 50);
+  assert.equal(page.items[0].direction, "emergency");
+  assert.equal(page.items[0].callbackNumber, "191");
+  assert.deepEqual(page.nextCursor, { startedAt, id: 51 });
+  const second = await provider.listCallHistoryPage(session.revision, page.nextCursor!);
+  assert.deepEqual(second.items.map(item => item.id), [50]);
+  assert.equal(second.nextCursor, null);
+  assert.deepEqual(seen, [undefined, { startedAt, id: 51 }]);
+  await assert.rejects(provider.listCallHistoryPage(session.revision, { startedAt: "bad", id: 1 }),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "invalid_response");
+  await provider.signOut();
+  await assert.rejects(provider.listCallHistoryPage(session.revision, { startedAt, id: 51 }));
+});
+
 test("desktop call history rejects malformed, unsafe, or oversized responses", async () => {
   for (const callHistory of [
-    { calls: [] },
-    { tenantId: 9, calls: [{ id: 0, direction: "inbound", total_duration_seconds: 3,
-      disposition: null, started_at: "2026-09-27T10:00:00.000Z" }] },
-    { tenantId: 9, calls: [{ id: 1, direction: "other", total_duration_seconds: 3,
-      disposition: null, started_at: "2026-09-27T10:00:00.000Z" }] },
-    { tenantId: 9, calls: [{ id: 1, direction: "inbound", total_duration_seconds: 3,
-      disposition: "https://secret.invalid", started_at: "2026-09-27T10:00:00.000Z" }] },
-    { tenantId: 9, calls: Array.from({ length: 51 }, (_, id) => ({ id: id + 1, direction: "inbound",
-      total_duration_seconds: 3, disposition: null, started_at: "2026-09-27T10:00:00.000Z" })) },
+    { items: [], nextCursor: null },
+    { tenantId: 9, items: [], nextCursor: undefined },
+    { tenantId: 9, items: [{ id: 0, direction: "inbound", total_duration_seconds: 3,
+      disposition: null, started_at: "2026-09-27T10:00:00.000000Z" }], nextCursor: null },
+    { tenantId: 9, items: [{ id: 1, direction: "other", total_duration_seconds: 3,
+      disposition: null, started_at: "2026-09-27T10:00:00.000000Z" }], nextCursor: null },
+    { tenantId: 9, items: [{ id: 1, direction: "inbound", total_duration_seconds: 3,
+      disposition: "https://secret.invalid", started_at: "2026-09-27T10:00:00.000000Z" }], nextCursor: null },
+    { tenantId: 9, items: [{ id: 1, tenant_id: 10, direction: "inbound", total_duration_seconds: 3,
+      disposition: "answered", started_at: "2026-09-27T10:00:00.000000Z" }], nextCursor: null },
+    { tenantId: 9, items: [], nextCursor: { startedAt: "2026-09-27T10:00:00.000000Z", id: 1 } },
+    { tenantId: 9, items: Array.from({ length: 51 }, (_, id) => ({ id: id + 1, direction: "inbound",
+      total_duration_seconds: 3, disposition: null, started_at: "2026-09-27T10:00:00.000000Z" })), nextCursor: null },
   ]) {
     const { provider } = harness({ callHistory });
     const session = await signInSingle(provider);
@@ -397,7 +436,7 @@ test("desktop call history classifies HTTP failures without retaining response b
 });
 
 test("desktop call history distinguishes an HTTP 200 response for another tenant without exposing tenant data", async () => {
-  const { provider } = harness({ tenantId: 12, callHistory: { tenantId: 9, calls: [] } });
+  const { provider } = harness({ tenantId: 12, callHistory: { tenantId: 9, items: [], nextCursor: null } });
   const session = await signInSingle(provider);
   await assert.rejects(provider.listCallHistory(session.revision), (error: unknown) => {
     assert.ok(error instanceof Error);

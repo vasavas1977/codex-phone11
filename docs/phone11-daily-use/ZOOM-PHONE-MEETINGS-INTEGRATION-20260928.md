@@ -87,6 +87,31 @@ The coordinating Connect11 task freshly checked AWS metadata at approximately 01
 
 ## Source progress on 2026-09-30
 
+The later personal-history slice adds a selected-workspace completed-CDR query
+with call-time ownership, active membership/assignment rechecks and exact
+timestamp keyset paging. Desktop exposes Load more and bounded call-end
+reconciliation; mobile exposes Workspace history separately from This device
+records. Read the [history contract and coverage limits](PERSONAL-CALL-HISTORY-20260930.md),
+especially the still-unattributed internal/emergency ingestion paths. The
+isolated PostgreSQL history suite passed; this slice postdates the running
+3020 candidate and installed signed Build 110.
+
+Desktop channel Meet now permits authorized channels with 51–100 invitees
+to reduce the invite list to the existing 50-person limit. It still selects all
+listed members initially, excludes the host, disables Start over the limit,
+and checks selection again before IPC. The previous roster-size rejection
+prevented this selection flow even though the backend accepts a smaller list.
+
+The [voicemail lifecycle rehearsal](VOICEMAIL-PENDING-RECONCILIATION-20260930.md#isolated-lifecycle-rehearsal)
+passes finalize-before-upload, lost-response replay, mailbox-path rejection
+and simulated owner rejection. The local Lua harness also passes. Voicemail
+remains default-off until actual FreeSWITCH final-WAV lifecycle and protected
+playback are verified. An actual-target read-only schema inspection found
+workspace settings and meeting admission compatible, while advanced PBX
+commissioning is blocked by the nullable extension tenant column and absent
+routing tables; the [release plan](EC2-CANDIDATE-RELEASE-PLAN-20260929.md#commands-ready-versus-still-blocked)
+records the concrete results.
+
 The current mainline integration source adds an in-room speaker output selector to the isolated desktop meeting window. Its Electron permission handler grants `speaker-selection` only to the exact meeting frame while no SIP call owns audio. The meeting client uses LiveKit's active output switch, disables the control when unavailable, serializes headset-change refreshes with a pending switch, and discards stale device results after meeting teardown. The mobile room adds guarded audio-output switching: iOS offers Automatic and Speaker; Android lists available routed outputs. Mobile route work is serialized with the meeting audio lease before it returns control to SIP. An iOS Bluetooth/AirPlay picker is intentionally deferred because the installed native picker has no completion or dismissal hook to prevent a late route change after SIP resumes.
 
 The source also adds a default-off, tenant-scoped admin invitation path with single-use acceptance. Its separate [source and migration note](ADMIN-INVITATIONS-SOURCE-20260930.md) records the remaining live sender, database and authenticated acceptance gates. Neither source work nor a successful web export means these features are on the live Phone11 host or signed client packages. The active EC2 candidate still needs its exact schema and rollback checks, protected user/provider probes, a built candidate image, and physical two-client meeting audio and invite acceptance before a route change. Zoom-level transfer, shared call history, scheduling, moderation, voicemail delivery and Windows media acceptance remain open product work.

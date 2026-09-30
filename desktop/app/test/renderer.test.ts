@@ -21,7 +21,7 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     'backspace', 'mute-label', 'hold-label', 'history-tab', 'directory-tab', 'voicemail-tab', 'lines-tab',
     'dialpad-panel', 'history-panel', 'directory-panel', 'voicemail-panel', 'lines-panel', 'phone-status-mark',
     'directory-search', 'directory-state', 'directory-list', 'directory-refresh', 'directory-more',
-    'voicemail-state', 'voicemail-list', 'voicemail-refresh', 'history-list', 'history-state', 'history-refresh',
+    'voicemail-state', 'voicemail-list', 'voicemail-refresh', 'history-list', 'history-state', 'history-refresh', 'history-more',
     'open-meetings', 'meeting-open-message', 'identity', 'status', 'call-id', 'notice', 'hold-message', 'dial', 'answer',
     'end', 'mute', 'hold', 'keypad', 'destination', 'message', 'login-form', 'email', 'password', 'sign-out', 'dial-form'];
   const elements = new Map(ids.map(id => [id, element()]));
@@ -32,11 +32,27 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
   let meetingOpens = 0;
   let voicemailLists = 0;
   const directoryCalls: unknown[] = [];
+  const historyCalls: unknown[] = [];
   const calling = { version: 1, registered: true, call: null, dialState: 'idle', callActionState: 'idle', holdMessage: null };
   let publicState: any = { signedIn: true, sessionRevision: 'session-a', generation: 'generation-a', tenantId: 1,
     extensionNumber: '1020', calling };
   const previousDocument = (globalThis as any).document;
   const previousWindow = (globalThis as any).window;
+  const previousSetTimeout = globalThis.setTimeout;
+  const previousClearTimeout = globalThis.clearTimeout;
+  const reconciliationTimers = new Map<number, { delay: number; callback: () => void; active: boolean }>();
+  let nextTimer = 1;
+  (globalThis as any).setTimeout = (callback: () => void, delay: number) => {
+    if (![1000, 3000, 10000].includes(delay)) return previousSetTimeout(callback, delay);
+    const id = nextTimer++;
+    reconciliationTimers.set(id, { delay, callback, active: true });
+    return id;
+  };
+  (globalThis as any).clearTimeout = (id: number) => {
+    const timer = reconciliationTimers.get(id);
+    if (timer) timer.active = false;
+    else previousClearTimeout(id as any);
+  };
   (globalThis as any).document = { getElementById: (id: string) => elements.get(id) ?? null,
     createElement: () => element() };
   (globalThis as any).window = { phone11: {
@@ -48,7 +64,13 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
       return { sessionRevision: 'session-a', generation: 'generation-a', snapshot: calling };
     },
     openMeetings: async () => { meetingOpens++; throw new Error('private admission token'); },
-    historyList: async (revision: string) => ({sessionRevision: revision, items: [{id:1, direction:'inbound', callerNumber:'3001', calleeNumber:'1020', durationSeconds:0, disposition:'missed', startedAt:'2026-09-27T10:00:00.000Z'}]}),
+    historyList: async (revision: string, cursor?: {startedAt: string; id: number}) => {
+      historyCalls.push(cursor);
+      return {sessionRevision: revision, items: [{id: cursor ? 2 : 1, direction:'inbound', callerNumber:'3001',
+        calleeNumber:'1020', callbackNumber:'3001', durationSeconds:0, disposition:'missed',
+        startedAt:'2026-09-27T10:00:00.000Z'}],
+        nextCursor: cursor ? null : {startedAt:'2026-09-27T10:00:00.000001Z', id:1}};
+    },
     directoryList: async (revision: string, search: string, offset: number) => {
       directoryCalls.push({ revision, search, offset });
       return { sessionRevision: revision, tenantId: 1,
@@ -65,6 +87,11 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     await import('../src/renderer');
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(elements.get('history-list')!.children.length, 1);
+    assert.equal(elements.get('history-more')!.hidden, false);
+    elements.get('history-more')!.listeners.get('click')!({});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(elements.get('history-list')!.children.length, 2);
+    assert.deepEqual(historyCalls, [undefined, {startedAt:'2026-09-27T10:00:00.000001Z', id:1}]);
     elements.get('history-list')!.children[0].listeners.get('click')!({});
     assert.equal(destination.value, '3001', 'history selects a callback number without dialing');
     assert.equal(actions.length, 0);
@@ -137,8 +164,20 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     assert.equal(elements.get('open-meetings')!.disabled, true, 'a Phone call prevents opening meeting media');
     keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '5' } }) } });
     assert.deepEqual(actions[0], { operation: 'dtmf', generation: 'generation-a', callId: '81', digits: '5', sessionRevision: 'session-a' });
+    listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: calling });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...reconciliationTimers.values()].map(timer => timer.delay), [1000, 3000, 10000]);
+    const afterImmediate = historyCalls.length;
+    reconciliationTimers.get(1)!.callback();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(historyCalls.length, afterImmediate + 1, 'CDR reconciliation retries after call end');
+    listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: connected });
+    assert.equal(reconciliationTimers.get(2)!.active, false, 'a new call cancels later history retries');
+    assert.equal(reconciliationTimers.get(3)!.active, false);
     await new Promise(resolve => setImmediate(resolve));
   } finally {
+    (globalThis as any).setTimeout = previousSetTimeout;
+    (globalThis as any).clearTimeout = previousClearTimeout;
     (globalThis as any).document = previousDocument;
     (globalThis as any).window = previousWindow;
   }

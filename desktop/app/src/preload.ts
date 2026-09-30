@@ -8,7 +8,8 @@ const api = Object.freeze({
   selectTenant: (selectionRevision: string, tenantId: number) =>
     ipcRenderer.invoke(CHANNELS.selectTenant, { selectionRevision, tenantId }),
   action: (action: unknown) => ipcRenderer.invoke(CHANNELS.action, action),
-  historyList: (sessionRevision: string) => ipcRenderer.invoke(CHANNELS.historyList, { sessionRevision }),
+  historyList: (sessionRevision: string, cursor?: { startedAt: string; id: number }) =>
+    ipcRenderer.invoke(CHANNELS.historyList, { sessionRevision, ...(cursor ? { cursor } : {}) }),
   directoryList: (sessionRevision: string, search: string, offset: number) =>
     ipcRenderer.invoke(CHANNELS.directoryList, { sessionRevision, search, offset }),
   voicemailAudio: (sessionRevision: string, id: number) => ipcRenderer.invoke(CHANNELS.voicemailAudio, { sessionRevision, id }),

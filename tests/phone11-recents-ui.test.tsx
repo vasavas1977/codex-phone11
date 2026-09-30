@@ -27,6 +27,7 @@ vi.mock("../lib/_core/auth", () => ({
 const mocks = vi.hoisted(() => ({
   user: { id: 1 } as { id: number } | null,
   history: {} as any,
+  workspaceHistory: { items: [] as any[], nextCursor: null as any, loading: false, loadingMore: false, error: null as string | null, reload: vi.fn(), loadMore: vi.fn() },
   cloud: { items: [] as any[], reload: vi.fn(), loading: false },
   contacts: [] as any[],
   account: { ownerUserId: 1, tenantId: 7, enabled: true } as any,
@@ -44,6 +45,7 @@ const mocks = vi.hoisted(() => ({
       disabled: boolean;
       role?: string;
       minHeight?: number;
+      selected?: boolean;
     }
   >(),
 }));
@@ -68,6 +70,9 @@ vi.mock("expo-router", () => ({ useRouter: () => ({ push: mocks.routerPush }) })
 vi.mock("../hooks/use-cloud-recordings", () => ({
   useCloudRecordings: () => mocks.cloud,
 }));
+vi.mock("../hooks/use-personal-call-history", () => ({
+  usePersonalCallHistory: () => mocks.workspaceHistory,
+}));
 vi.mock("react-native", () => ({
   StyleSheet: { create: (s: any) => s },
   View: ({ children }: any) => createElement("div", null, children),
@@ -85,6 +90,7 @@ vi.mock("react-native", () => ({
     renderItem,
     ListEmptyComponent,
     ListHeaderComponent,
+    ListFooterComponent,
     onRefresh,
     refreshing,
   }: any) => {
@@ -97,14 +103,16 @@ vi.mock("react-native", () => ({
       data.length
         ? data.map((item: any, index: number) =>
             createElement("div", { key: item.id }, renderItem({ item, index })),
-          )
+        )
         : ListEmptyComponent,
+      ListFooterComponent,
     );
   },
   TouchableOpacity: ({
     children,
     accessibilityLabel,
     accessibilityRole,
+    accessibilityState,
     onPress,
     disabled,
     style,
@@ -115,6 +123,7 @@ vi.mock("react-native", () => ({
         disabled,
         role: accessibilityRole,
         minHeight: style?.minHeight,
+        selected: Boolean(accessibilityState?.selected),
       });
     return createElement(
       "button",
@@ -154,7 +163,8 @@ vi.mock("../lib/sip/call-history", () => ({
   isMissedCall: (entry: any) =>
     entry.direction === "inbound" && entry.answeredAt === undefined,
 }));
-import RecentsScreen, { filterRecentsRows } from "../app/(tabs)/recents";
+import RecentsScreen, { filterRecentsRows, safeCallbackNumber, workspaceHistoryRows } from "../app/(tabs)/recents";
+import { CallHistoryRow } from "../components/cloud-recordings/call-history-view";
 function entry(ownerUserId = 1) {
   return {
     id: `saved-${ownerUserId}`,
@@ -186,6 +196,10 @@ beforeEach(() => {
     error: null,
     reload: vi.fn(),
   };
+  mocks.workspaceHistory = {
+    items: [], nextCursor: null, loading: false, loadingMore: false,
+    error: null, reload: vi.fn(), loadMore: vi.fn(),
+  };
 });
 it("opens voicemail from Recents with an accessible 44-point target", async () => {
   renderToStaticMarkup(<RecentsScreen />);
@@ -194,6 +208,19 @@ it("opens voicemail from Recents with an accessible 44-point target", async () =
   expect(voicemail.minHeight).toBeGreaterThanOrEqual(44);
   await voicemail.run();
   expect(mocks.routerPush).toHaveBeenCalledWith("/voicemail");
+});
+it("defaults to This device and keeps Workspace rows separate from native history", () => {
+  mocks.workspaceHistory.items = [{
+    id: 200, call_uuid: "server-uuid", direction: "inbound", disposition: "missed",
+    caller_number: "3002", callee_number: "3001", callback_number: "3002",
+    total_duration_seconds: 0, started_at: new Date(Date.now() - 20000).toISOString(),
+  }];
+  const html = renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.press.get("This device call history")?.selected).toBe(true);
+  expect(mocks.press.get("Workspace call history")?.selected).toBe(false);
+  expect(html.match(/aria-label="Details for/g)).toHaveLength(1);
+  expect(html).toContain("สมชาย");
+  expect(html).not.toContain("server-uuid");
 });
 it("expands a row without dialing; only its explicit call button places a call", async () => {
   renderToStaticMarkup(<RecentsScreen />);
@@ -286,6 +313,37 @@ it("shows a unique local phone photo and falls back on ambiguous matches", () =>
   expect(renderToStaticMarkup(<RecentsScreen />)).toContain('data-device-photo="file:///private/contact.jpg"');
   mocks.contacts = [local, { ...local, id: "local2" }];
   expect(renderToStaticMarkup(<RecentsScreen />)).not.toContain('data-device-photo="file:///private/contact.jpg"');
+});
+
+it("maps emergency CDRs as outgoing and exposes no call action without a safe callback number", () => {
+  const [row] = workspaceHistoryRows([{
+    id: 900, call_uuid: "emergency", direction: "emergency", disposition: "answered",
+    caller_number: "3001", callee_number: "191", callback_number: null,
+    total_duration_seconds: 42, started_at: "2026-09-30T09:00:00.123456Z",
+  }], 7, [], []);
+  expect(row.direction).toBe("outgoing");
+  expect(row.name).toBe("Emergency call");
+  expect(row.number).toBe("191");
+  expect(row.callbackNumber).toBeNull();
+  const html = renderToStaticMarkup(createElement(CallHistoryRow, {
+    call: row, expanded: false, onToggle: vi.fn(),
+  }));
+  expect(html).not.toContain('aria-label="Call 191"');
+});
+
+it("allows only short plain callback targets and keeps malformed values display-only", () => {
+  expect(safeCallbackNumber("+66812345678")).toBe("+66812345678");
+  expect(safeCallbackNumber("sip:alice@evil.example")).toBeNull();
+  expect(safeCallbackNumber("tel:+66812345678")).toBeNull();
+  expect(safeCallbackNumber("+66abc123")).toBeNull();
+  expect(safeCallbackNumber("1".repeat(33))).toBeNull();
+});
+
+it("does not show an empty Workspace success state when the SIP account belongs to another owner", () => {
+  mocks.account = { ownerUserId: 2, tenantId: 7, enabled: true };
+  const html = renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.press.get("Workspace call history")?.disabled).toBe(true);
+  expect(html).toContain("Workspace history unavailable. Select or restore an active workspace phone account.");
 });
 
 it("joins cloud recording controls only by exact server-provided history ID", () => {

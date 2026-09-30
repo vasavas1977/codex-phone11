@@ -49,7 +49,7 @@ export function CallHistoryRow({
   call: HistoryRowCall;
   expanded: boolean;
   onToggle(): void;
-  onCall(): void;
+  onCall?(): void;
   onMore?(): void;
   starred?: boolean;
   calling?: boolean;
@@ -165,25 +165,27 @@ export function CallHistoryRow({
             </Text>
           </View>
         </TouchableOpacity>
-        <TouchableOpacity
-          accessibilityRole="button"
-          accessibilityLabel={`Call ${call.number}`}
-          disabled={calling}
-          onPress={onCall}
-          style={{
-            minWidth: 48,
-            minHeight: 48,
-            alignItems: "center",
-            justifyContent: "center",
-            marginLeft: 4,
-          }}
-        >
-          <IconSymbol
-            name="phone.fill"
-            size={21}
-            color={calling ? colors.muted : colors.primary}
-          />
-        </TouchableOpacity>
+        {onCall && (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={`Call ${call.number}`}
+            disabled={calling}
+            onPress={onCall}
+            style={{
+              minWidth: 48,
+              minHeight: 48,
+              alignItems: "center",
+              justifyContent: "center",
+              marginLeft: 4,
+            }}
+          >
+            <IconSymbol
+              name="phone.fill"
+              size={21}
+              color={calling ? colors.muted : colors.primary}
+            />
+          </TouchableOpacity>
+        )}
         {onMore && (
           <TouchableOpacity
             accessibilityRole="button"

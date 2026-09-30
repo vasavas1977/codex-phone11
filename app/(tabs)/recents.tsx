@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import {
   FlatList,
   ScrollView,
@@ -16,6 +16,7 @@ import {
 } from "@/components/cloud-recordings/call-history-view";
 import { LiveRecordingPanel } from "@/components/cloud-recordings/live-recording-panel";
 import { useCloudRecordings } from "@/hooks/use-cloud-recordings";
+import { usePersonalCallHistory, type PersonalCallHistoryItem } from "@/hooks/use-personal-call-history";
 import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { useDirectory, useDirectoryFocusRefresh } from "@/hooks/use-directory";
 import { useAuth } from "@/hooks/use-auth";
@@ -50,7 +51,11 @@ type Row = HistoryRowCall & {
   startedAt: number;
   recording?: CloudRecording;
   avatar?: RecentCallAvatar;
+  source: "device" | "workspace";
+  callbackNumber?: string | null;
 };
+type HistorySource = "device" | "workspace";
+const EMPTY_TEAM_PEOPLE: ReturnType<typeof useDirectory>["people"] = [];
 type RecentsFilter = "all" | "starred" | "missed" | "recorded" | "hidden";
 const filters: readonly {
   value: Exclude<RecentsFilter, "hidden">;
@@ -125,6 +130,59 @@ function recentAvatar(row: Row, size: number) {
     return <DeviceContactAvatar name={row.name} imageUri={row.avatar.imageUri} size={size} />;
   return <ProfileAvatar name={row.name} size={size} accessibilityLabel={`${row.name} initials`} />;
 }
+
+export function workspaceHistoryRows(
+  items: readonly PersonalCallHistoryItem[],
+  tenantId: number | undefined,
+  contacts: ReturnType<typeof useDeviceContacts>["people"],
+  teamPeople: ReturnType<typeof useDirectory>["people"],
+): Row[] {
+  return items.flatMap((item) => {
+    const startedAt = Date.parse(item.started_at);
+    if (!Number.isFinite(startedAt)) return [];
+    const displayNumber = item.direction === "inbound"
+      ? item.caller_number
+      : item.direction === "internal"
+        ? `${item.caller_number} ↔ ${item.callee_number}`
+        : item.callee_number;
+    const contactName = item.direction === "emergency"
+      ? "Emergency call"
+      : item.direction === "internal"
+        ? "Internal call"
+        : deviceContactName(contacts, displayNumber);
+    const avatar = item.direction === "internal"
+      ? undefined
+      : resolveRecentCallAvatar(displayNumber, contacts, teamPeople, tenantId);
+    const counterpartName = contactName || (avatar?.kind === "team" ? avatar.person.name : displayNumber);
+    return [{
+      id: `workspace:${tenantId ?? "none"}:${item.id}`,
+      name: counterpartName,
+      number: displayNumber,
+      direction: item.direction === "inbound"
+        ? item.disposition === "missed" ? "missed" : "incoming"
+        : "outgoing",
+      startedAt,
+      time: time(startedAt),
+      duration: item.disposition === "missed"
+        ? "Missed"
+        : item.total_duration_seconds > 0
+          ? duration(item.total_duration_seconds)
+          : "Not answered",
+      avatar,
+      recordingReady: false,
+      summaryReady: false,
+      source: "workspace" as const,
+      // This is the only value allowed to reach the callback action.
+      callbackNumber: safeCallbackNumber(item.callback_number),
+    }];
+  });
+}
+
+export function safeCallbackNumber(value: string | null): string | null {
+  if (typeof value !== "string" || !/^[+0-9*#]{1,32}$/.test(value)) return null;
+  return internationalHistoryNumber(value);
+}
+
 export default function RecentsScreen() {
   const colors = useColors(),
     cloud = useCloudRecordings(),
@@ -141,7 +199,17 @@ export default function RecentsScreen() {
     ? phoneTenantId : undefined;
   useDirectoryFocusRefresh(directory.owner, activeTenantId, Boolean(activeTenantId), directory.reload);
   useProfilePhotoCacheScope(activeTenantId);
-  const teamPeople = activeTenantId ? directory.people : [];
+  const teamPeople = activeTenantId ? directory.people : EMPTY_TEAM_PEOPLE;
+  const [historySource, setHistorySource] = useState<HistorySource>("device");
+  const {
+    items: workspaceItems,
+    nextCursor: workspaceNextCursor,
+    loading: workspaceLoading,
+    loadingMore: workspaceLoadingMore,
+    error: workspaceError,
+    reload: reloadWorkspaceHistory,
+    loadMore: loadMoreWorkspaceHistory,
+  } = usePersonalCallHistory(phoneTenantId, historySource === "workspace");
   const favorites = useCallFavorites(user?.id);
   const blocks = useCallBlocks(user?.id);
   const hidden = useHiddenCalls(user?.id);
@@ -155,20 +223,24 @@ export default function RecentsScreen() {
   const reloadCloud = cloud.reload;
   useFocusEffect(
     useCallback(() => {
-      void reloadHistory();
-      void reloadCloud();
+      if (historySource === "device") {
+        void reloadHistory();
+        void reloadCloud();
+      } else {
+        void reloadWorkspaceHistory();
+      }
       return () => {
         setExpanded(null);
         setActionId(null);
       };
-    }, [reloadHistory, reloadCloud]),
+    }, [historySource, reloadHistory, reloadCloud, reloadWorkspaceHistory]),
   );
   const local =
     history.ownerUserId === user?.id
       ? history.entries.filter((call) => call.ownerUserId === user?.id)
       : [];
   const ids = new Set(local.map((call) => call.id));
-  const rows: Row[] = local.map((call) => {
+  const deviceRows: Row[] = local.map((call) => {
     const recording = cloud.items.find(
       (item) => item.nativeHistoryId === call.id,
     );
@@ -197,6 +269,7 @@ export default function RecentsScreen() {
       avatar: resolveRecentCallAvatar(call.number, contacts.people, teamPeople, activeTenantId),
       recordingReady: recording?.recordingStatus === "ready",
       summaryReady: recording?.summaryStatus === "ready",
+      source: "device",
     };
   });
   if (user && filter !== "missed")
@@ -205,7 +278,7 @@ export default function RecentsScreen() {
         continue;
       const number = internationalHistoryNumber(recording.number);
       const remoteName = deviceContactName(contacts.people, number);
-      rows.push({
+      deviceRows.push({
         id: `cloud:${recording.callUuid}`,
         name: remoteName || number,
         number,
@@ -217,21 +290,27 @@ export default function RecentsScreen() {
         avatar: resolveRecentCallAvatar(number, contacts.people, teamPeople, activeTenantId),
         recordingReady: recording.recordingStatus === "ready",
         summaryReady: recording.summaryStatus === "ready",
+        source: "device",
       });
     }
+  const workspaceRows = useMemo(
+    () => workspaceHistoryRows(workspaceItems, phoneTenantId, contacts.people, teamPeople),
+    [workspaceItems, phoneTenantId, contacts.people, teamPeople],
+  );
+  const rows = historySource === "workspace" ? workspaceRows : deviceRows;
   const isHidden = (row: Row) =>
     hidden.ids.includes(row.id) ||
     Boolean(
       row.recording && hidden.ids.includes(`cloud:${row.recording.callUuid}`),
     );
   const visible = filterRecentsRows(
-    hidden.ready ? rows : [],
+    historySource === "workspace" || hidden.ready ? rows : [],
     filter,
     search,
     isHidden,
     favorites.starred,
   );
-  const actionCall = actionId
+  const actionCall = historySource === "device" && actionId
     ? rows.find((row) => row.id === actionId)
     : undefined;
   const chatTarget =
@@ -260,6 +339,19 @@ export default function RecentsScreen() {
       })
       .catch(() => {});
   };
+  const selectHistorySource = (source: HistorySource) => {
+    setHistorySource(source);
+    setExpanded(null);
+    setActionId(null);
+  };
+  const currentError = historySource === "workspace"
+    ? workspaceError || (!phoneTenantId
+      ? user ? "Select an active workspace phone account to view calls." : "Sign in to view workspace call history."
+      : null)
+    : history.error || cloud.error || hidden.error || favorites.error || blocks.error;
+  const currentLoading = historySource === "workspace"
+    ? workspaceLoading
+    : history.loading || cloud.loading;
   return (
     <ScreenContainer>
       <View
@@ -309,6 +401,33 @@ export default function RecentsScreen() {
             </Text>
           </TouchableOpacity>
         </View>
+        <View accessibilityRole="tablist" style={{ flexDirection: "row", backgroundColor: colors.surface, borderRadius: 14, padding: 4, gap: 4 }}>
+          {(["device", "workspace"] as const).map((source) => {
+            const selected = historySource === source;
+            const unavailable = source === "workspace" && !phoneTenantId;
+            const label = source === "device" ? "This device" : "Workspace";
+            return (
+              <TouchableOpacity
+                key={source}
+                accessibilityRole="tab"
+                accessibilityLabel={`${label} call history`}
+                accessibilityState={{ selected }}
+                disabled={unavailable}
+                onPress={() => selectHistorySource(source)}
+                style={{ flex: 1, minHeight: 44, borderRadius: 11, alignItems: "center", justifyContent: "center", backgroundColor: selected ? colors.primary : "transparent", opacity: unavailable ? 0.48 : 1 }}
+              >
+                <Text style={{ color: selected ? "white" : colors.muted, fontSize: 14, fontWeight: "600" }}>{label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        <Text style={{ color: colors.muted, fontSize: 12 }}>
+          {!phoneTenantId
+            ? "Workspace history unavailable. Select or restore an active workspace phone account."
+            : historySource === "workspace"
+            ? directory.workspace?.name ?? "Workspace call history"
+            : "Calls saved on this device"}
+        </Text>
         <TextInput
           accessibilityLabel="Search recent calls"
           value={search}
@@ -392,17 +511,16 @@ export default function RecentsScreen() {
       <FlatList
         data={visible}
         keyExtractor={(item) => item.id}
-        refreshing={history.loading || cloud.loading}
+        refreshing={currentLoading}
         onRefresh={() => {
-          void history.reload();
-          void cloud.reload();
+          if (historySource === "workspace") void reloadWorkspaceHistory();
+          else {
+            void history.reload();
+            void cloud.reload();
+          }
         }}
         ListHeaderComponent={
-          history.error ||
-          cloud.error ||
-          hidden.error ||
-          favorites.error ||
-          blocks.error ? (
+          currentError ? (
             <Text
               style={{
                 paddingHorizontal: 20,
@@ -411,21 +529,31 @@ export default function RecentsScreen() {
                 lineHeight: 22,
               }}
             >
-              {history.error ||
-                cloud.error ||
-                hidden.error ||
-                favorites.error ||
-                blocks.error}
+              {currentError}
             </Text>
           ) : null
         }
+        ListFooterComponent={historySource === "workspace" && workspaceNextCursor ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Load more workspace calls"
+            accessibilityState={{ disabled: workspaceLoadingMore }}
+            disabled={workspaceLoadingMore}
+            onPress={() => void loadMoreWorkspaceHistory()}
+            style={{ minHeight: 48, alignItems: "center", justifyContent: "center" }}
+          >
+            <Text style={{ color: colors.primary }}>{workspaceLoadingMore ? "Loading…" : "Load more calls"}</Text>
+          </TouchableOpacity>
+        ) : null}
         ListEmptyComponent={
           <Text
             style={{ padding: 24, color: colors.muted, textAlign: "center" }}
           >
             {!user
               ? "Sign in to see your calls"
-              : history.loading || !hidden.ready
+              : historySource === "workspace" && !phoneTenantId
+                ? "Workspace history unavailable. Select or restore an active workspace phone account."
+              : currentLoading || (historySource === "device" && !hidden.ready)
                 ? "Loading calls..."
                 : filter === "starred" && favorites.loading
                   ? "Loading starred calls..."
@@ -468,10 +596,16 @@ export default function RecentsScreen() {
               onToggle={() =>
                 setExpanded(expanded === item.id ? null : item.id)
               }
-              onCall={() => void placeCall(item.number)}
-              onMore={() => openActions(item.id)}
+              onCall={item.source === "workspace"
+                ? item.callbackNumber ? () => void placeCall(item.callbackNumber!) : undefined
+                : () => void placeCall(item.number)}
+              onMore={item.source === "device" ? () => openActions(item.id) : undefined}
             >
-              {item.recording ? (
+              {item.source === "workspace" ? (
+                <Text style={{ paddingHorizontal: 20, paddingBottom: 20, fontSize: 13, color: colors.muted }}>
+                  Private recordings and recording actions remain under This device.
+                </Text>
+              ) : item.recording ? (
                 <LiveRecordingPanel
                   callUuid={item.recording.callUuid}
                   contactName={item.name}

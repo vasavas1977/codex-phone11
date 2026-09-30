@@ -2,7 +2,7 @@ import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { parseRendererAction } from '../../src/call-boundary';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
 import { DesktopCallHistoryError } from '../../src/call-history-error';
-import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail, DesktopCallHistory, DesktopTenantSelection } from '../../src/authenticated-provider';
+import type { AuthenticatedDesktopProvider, DesktopAuthenticationError, DesktopVoicemail, DesktopCallHistory, DesktopCallHistoryCursor, DesktopTenantSelection } from '../../src/authenticated-provider';
 
 export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11:sign-in',
   selectTenant: 'phone11:select-tenant',
@@ -162,17 +162,31 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       const snapshot = await helper.handleRendererAction(action);
       return { sessionRevision: session.revision, generation, snapshot } satisfies TaggedSnapshot;
     },
-    historyList: async (input: unknown): Promise<{ sessionRevision: string; items: readonly DesktopCallHistory[] }> => {
+    historyList: async (input: unknown): Promise<{ sessionRevision: string; items: readonly DesktopCallHistory[];
+      nextCursor: DesktopCallHistoryCursor | null }> => {
       const { revision } = inboxSession(input);
-      let items: readonly DesktopCallHistory[];
-      try { items = await provider.listCallHistory(revision); }
+      const requested = input as Record<string, unknown>;
+      let cursor: DesktopCallHistoryCursor | undefined;
+      if (requested.cursor !== undefined) {
+        const value = requested.cursor;
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            !Number.isSafeInteger((value as DesktopCallHistoryCursor).id) ||
+            (value as DesktopCallHistoryCursor).id <= 0 ||
+            typeof (value as DesktopCallHistoryCursor).startedAt !== 'string' ||
+            !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test((value as DesktopCallHistoryCursor).startedAt) ||
+            !Number.isFinite(Date.parse((value as DesktopCallHistoryCursor).startedAt)))
+          throw new Error('Invalid history cursor');
+        cursor = { startedAt: (value as DesktopCallHistoryCursor).startedAt, id: (value as DesktopCallHistoryCursor).id };
+      }
+      let page: Awaited<ReturnType<AuthenticatedDesktopProvider['listCallHistoryPage']>>;
+      try { page = await provider.listCallHistoryPage(revision, cursor); }
       catch (error) {
         if (error instanceof DesktopCallHistoryError)
           throw new Error(`PHONE11_HISTORY_${error.code.toUpperCase()}${error.status ? `_${error.status}` : ''}`);
         throw error;
       }
       if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
-      return { sessionRevision: revision, items };
+      return { sessionRevision: revision, ...page };
     },
     directoryList: async (input: unknown): Promise<TaggedDirectory> => {
       const { revision, search, offset, tenantId } = directorySession(input);

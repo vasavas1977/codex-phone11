@@ -47,3 +47,40 @@ exact review, backend outage retry, stored-message conflict, and the hard cap.
 They do not prove FreeSWITCH returns a final WAV after caller hangup. Keep the
 hook off until that lifecycle is traced on the active image and a signed-device
 mailbox test passes.
+
+## Isolated lifecycle rehearsal
+
+Run from the repository root:
+
+```sh
+./node_modules/.bin/vitest run tests/phone11-voicemail-lifecycle-rehearsal.test.ts
+```
+
+The temporary private mailbox and outbox use the actual producer and relay
+functions with in-process admission/upload responses. The fixture proves the
+relay makes zero upload attempts while only pending admission exists, then
+publishes the exact tenant/extension/message manifest after `complete`. A lost
+upload response keeps that manifest for retry; the fake backend records one
+accepted message under two upload attempts. A WAV from a different mailbox
+cannot publish a manifest or upload. A simulated backend owner rejection (409)
+quarantines the completed manifest and preserves the WAV. The output includes:
+
+```text
+voicemail_lifecycle_rehearsal {"admission":"22222222-2222-4222-8222-222222222222","preFinalizeUploads":0,"replayAttempts":2,"uniqueAccepted":1,"manifestRemaining":false,"wavPreserved":true}
+voicemail_failure_rehearsal {"crossMailboxManifest":false,"crossMailboxUploads":0,"ownerRejected":409,"quarantined":true}
+```
+
+These are isolated fixture observations, not FreeSWITCH, hosted database, or
+provider evidence. Before enabling the hook, the operator still needs to trace
+the exact active FreeSWITCH image and durable mounts: verify that admission
+finishes before `mod_voicemail`, that a completed deposit returns with the
+correct account/domain and final private WAV path even across caller hangup,
+and that abandoned/interrupted deposits retain pending evidence without
+inventing a completion. Then verify backend owner-epoch rejection and replay
+against an isolated tenant, plus authenticated playback on a signed device.
+
+On 30 September, the focused lifecycle, producer and relay suites passed
+18 cases; TypeScript passed. After installing the official Homebrew Lua
+package locally, `lua tests/phone11-voicemail-hook.lua` passed 12 cases.
+The Lua harness supplies simulated FreeSWITCH objects; it does not establish
+the actual host's `mod_voicemail` callback or completed deposit behavior.

@@ -92,6 +92,43 @@ describe("pbx.selfService.usage tenant selection", () => {
   });
 });
 
+describe("pbx.selfService.callHistory", () => {
+  it("rejects invalid page input before any database read", async () => {
+    const caller = pbxRouter.createCaller(ctx());
+    await expect(caller.selfService.callHistory({ tenantId: 7, limit: 101 }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    await expect(caller.selfService.callHistory({ tenantId: 7, cursor: { startedAt: "bad", id: 1 } }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects a nonmember before the live assignment or CDR read", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership(8)] });
+    await expect(pbxRouter.createCaller(ctx()).selfService.callHistory({ tenantId: 7 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the selected tenant and denies a member who lost the active assignment", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership(7), membership(8)] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(pbxRouter.createCaller(ctx()).selfService.callHistory({ tenantId: 8 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.query).toHaveBeenCalledTimes(2);
+    expect(db.query.mock.calls[1][1]).toEqual([9, 8]);
+  });
+
+  it("returns a bounded page using the authenticated user, tenant and cursor", async () => {
+    const cursor = { startedAt: "2026-09-29T10:00:00.000Z", id: 29 };
+    db.query.mockResolvedValueOnce({ rows: [membership(7), membership(8)] })
+      .mockResolvedValueOnce({ rows: [{ one: 1 }] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(pbxRouter.createCaller(ctx()).selfService.callHistory({ tenantId: 8, limit: 10, cursor }))
+      .resolves.toEqual({ tenantId: 8, items: [], nextCursor: null });
+    expect(db.query.mock.calls[2][1]).toEqual([8, 9, cursor.startedAt, cursor.id, 11]);
+  });
+});
+
 describe("pbx.voicemail.markRead tenant selection", () => {
   it("uses the selected tenant and preserves omitted-tenant behavior", async () => {
     db.query.mockResolvedValueOnce({ rows: [membership(7), membership(8)] });

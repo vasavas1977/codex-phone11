@@ -1,5 +1,5 @@
 import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, VOICEMAIL_ENABLED, type PublicState, type TaggedSnapshot, type TaggedDirectory, type DirectoryEntry } from './ipc';
-import type { DesktopCallHistory, DesktopTenantSelection } from '../../src/authenticated-provider';
+import type { DesktopCallHistory, DesktopCallHistoryCursor, DesktopTenantSelection } from '../../src/authenticated-provider';
 import { VoicemailPlayer } from './voicemail-player';
 
 declare global { interface Window { phone11: {
@@ -7,7 +7,8 @@ declare global { interface Window { phone11: {
   selectTenant(selectionRevision: string, tenantId: number): Promise<PublicState>;
   action(input: unknown): Promise<TaggedSnapshot>; signOut(): Promise<PublicState>;
   openMeetings(): Promise<void>;
-  historyList?(sessionRevision: string): Promise<{sessionRevision: string; items: DesktopCallHistory[]}>;
+  historyList?(sessionRevision: string, cursor?: DesktopCallHistoryCursor): Promise<{
+    sessionRevision: string; items: DesktopCallHistory[]; nextCursor: DesktopCallHistoryCursor | null }>;
   directoryList(sessionRevision: string, search: string, offset: number): Promise<TaggedDirectory>;
   voicemailAudio?(sessionRevision: string, id: number): Promise<{sessionRevision: string; id: number; mimeType: 'audio/wav'; bytes: Uint8Array}>;
   voicemailMarkRead?(sessionRevision: string, id: number): Promise<unknown>;
@@ -37,8 +38,28 @@ let voicemailRequest = 0;
 let historyRequest = 0;
 let historyLoadedFor = '';
 let historyLoading = false;
+let historyRefreshQueued = false;
 let historyMessage = '';
 let historyItems: DesktopCallHistory[] = [];
+let historyNextCursor: DesktopCallHistoryCursor | null = null;
+let historyReconcileTimers: Array<ReturnType<typeof setTimeout>> = [];
+function cancelHistoryReconciliation(): void {
+  for (const timer of historyReconcileTimers) clearTimeout(timer);
+  historyReconcileTimers = [];
+}
+function reconcileCompletedCall(): void {
+  cancelHistoryReconciliation();
+  const revision = state?.sessionRevision;
+  const generation = state?.generation;
+  if (!revision || !generation) return;
+  void loadHistory(true);
+  for (const delay of [1000, 3000, 10000]) {
+    historyReconcileTimers.push(setTimeout(() => {
+      if (state?.sessionRevision === revision && state.generation === generation && !state.calling.call)
+        void loadHistory(true);
+    }, delay));
+  }
+}
 let directoryRequest = 0;
 let directoryLoadedFor = '';
 let directoryLoading = false;
@@ -153,11 +174,9 @@ const player = audio ? new VoicemailPlayer({
   },
 }) : null;
 maybeById('voicemail-stop')?.addEventListener('click', () => player?.stop());
-window.addEventListener?.('pagehide', () => player?.dispose());
+window.addEventListener?.('pagehide', () => { cancelHistoryReconciliation(); player?.dispose(); });
 function callbackNumber(item: DesktopCallHistory): string | null {
-  const candidate = item.direction === 'inbound' ? item.callerNumber : item.direction === 'outbound' ? item.calleeNumber
-    : item.callerNumber === state?.extensionNumber ? item.calleeNumber
-    : item.calleeNumber === state?.extensionNumber ? item.callerNumber : null;
+  const candidate = item.callbackNumber;
   return candidate && /^[+0-9*#]{1,32}$/.test(candidate) ? candidate : null;
 }
 function renderHistory(): void {
@@ -165,12 +184,14 @@ function renderHistory(): void {
   if (status) status.textContent = historyMessage;
   const refresh = maybeById('history-refresh') as HTMLButtonElement | null;
   if (refresh) refresh.disabled = historyLoading;
+  const more = maybeById('history-more') as HTMLButtonElement | null;
+  if (more) { more.hidden = !historyNextCursor; more.disabled = historyLoading || !historyNextCursor; }
   const list = maybeById('history-list');
   if (!list) return;
   list.replaceChildren();
   if (!historyMessage && !historyLoading && historyLoadedFor && historyItems.length === 0) {
     const empty = document.createElement('p'); empty.className = 'empty-message';
-    empty.textContent = 'No calls in the last 30 days.'; list.append(empty);
+    empty.textContent = 'No calls yet.'; list.append(empty);
   }
   for (const item of historyItems) {
     const number = callbackNumber(item);
@@ -193,20 +214,38 @@ function renderHistory(): void {
     }); list.append(row);
   }
 }
-async function loadHistory(force = false): Promise<void> {
-  if (!state?.signedIn || !state.sessionRevision || historyLoading || (!force && historyLoadedFor === state.sessionRevision)) return;
+async function loadHistory(force = false, more = false): Promise<void> {
+  if (historyLoading) { if (force) historyRefreshQueued = true; return; }
+  if (!state?.signedIn || !state.sessionRevision ||
+      (more && (!historyNextCursor || historyLoadedFor !== state.sessionRevision)) ||
+      (!force && !more && historyLoadedFor === state.sessionRevision)) return;
   const revision = state.sessionRevision; const request = ++historyRequest;
+  const cursor = more ? historyNextCursor! : undefined;
+  if (!more) { historyItems = []; historyNextCursor = null; historyLoadedFor = ''; }
   historyLoading = true; historyMessage = 'Loading call history…'; renderHistory();
   try {
     if (!window.phone11.historyList) throw new Error('Unavailable');
-    const response = await window.phone11.historyList(revision);
+    const response = await window.phone11.historyList(revision, cursor);
     if (request !== historyRequest || state?.sessionRevision !== revision) return;
     if (response.sessionRevision !== revision) throw new Error('Session changed');
-    historyItems = response.items; historyLoadedFor = revision; historyMessage = '';
+    const existing = new Set(historyItems.map(item => item.id));
+    if (response.items.some(item => existing.has(item.id)) ||
+        (cursor && response.nextCursor &&
+          (response.nextCursor.startedAt > cursor.startedAt ||
+            (response.nextCursor.startedAt === cursor.startedAt && response.nextCursor.id >= cursor.id))))
+      throw new Error('Invalid call history page');
+    historyItems = more ? [...historyItems, ...response.items] : response.items;
+    historyNextCursor = response.nextCursor;
+    historyLoadedFor = revision; historyMessage = '';
   } catch (error) {
     if (request === historyRequest && state?.sessionRevision === revision)
       historyMessage = callHistoryFailureMessage(error);
-  } finally { if (request === historyRequest && state?.sessionRevision === revision) { historyLoading = false; renderHistory(); } }
+  } finally {
+    if (request === historyRequest && state?.sessionRevision === revision) {
+      historyLoading = false; renderHistory();
+      if (historyRefreshQueued) { historyRefreshQueued = false; void loadHistory(true); }
+    }
+  }
 }
 function render(): void {
   if (!VOICEMAIL_ENABLED && currentPhoneSection === 'voicemail') currentPhoneSection = 'history';
@@ -447,6 +486,7 @@ maybeById('directory-search')?.addEventListener('input', () => {
 maybeById('directory-refresh')?.addEventListener('click', () => { void loadDirectory(); });
 maybeById('directory-more')?.addEventListener('click', () => { void loadDirectory(true); });
 maybeById('history-refresh')?.addEventListener('click', () => { void loadHistory(true); });
+maybeById('history-more')?.addEventListener('click', () => { void loadHistory(false, true); });
 maybeById('voicemail-refresh')?.addEventListener('click', () => { void loadVoicemail(true); });
 byId('open-meetings').addEventListener('click', async () => {
   if (!state?.signedIn || !state.sessionRevision || state.calling.call ||
@@ -473,7 +513,7 @@ byId('open-meetings').addEventListener('click', async () => {
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;
-  player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = ''; resetDirectory();
+  cancelHistoryReconciliation(); player?.stop(); historyRequest++; historyLoading = false; historyRefreshQueued = false; historyLoadedFor = ''; historyItems = []; historyNextCursor = null; historyMessage = ''; resetDirectory();
   state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; currentPhoneSection = 'history'; voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = []; voicemailMessage = 'Open Voicemail to load your messages.'; render();
   try {
     const signedOut = await window.phone11.signOut();
@@ -520,12 +560,13 @@ window.phone11.onUpdate(update => {
   const previousCall = state?.calling.call;
   state = applyTaggedSnapshot(state, update);
   if (previousRevision && previousRevision !== state?.sessionRevision) {
-    player?.stop(); historyRequest++; historyLoading = false; historyLoadedFor = ''; historyItems = []; historyMessage = ''; resetDirectory();
+    cancelHistoryReconciliation(); player?.stop(); historyRequest++; historyLoading = false; historyRefreshQueued = false; historyLoadedFor = ''; historyItems = []; historyNextCursor = null; historyMessage = ''; resetDirectory();
     voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = [];
     voicemailMessage = 'Open Voicemail to load your messages.';
   }
   render();
-  if (previousCall && !state?.calling.call) void loadHistory(true);
+  if (state?.calling.call) { cancelHistoryReconciliation(); historyRefreshQueued = false; }
+  if (previousCall && !state?.calling.call) reconcileCompletedCall();
   if (currentPhoneSection === 'voicemail' && state?.signedIn) void loadVoicemail();
 });
 const initialEpoch = accountEpoch;

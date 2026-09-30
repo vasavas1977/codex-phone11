@@ -32,6 +32,7 @@ import {
 } from "./cdr-processor";
 import { countVoicemails, deleteVoicemail, markVoicemailRead, voicemailStorageStatus } from "./voicemail-access";
 import { SELF_SERVICE_CALL_OWNERSHIP_SQL } from "../../lib/pbx/self-service-usage";
+import { listPersonalCallHistory } from "./personal-call-history";
 import { profilePhotoDescriptors } from "../profile/photo";
 import { reactivateExtensionSipAuth, revokeExtensionSipAuth, rotateExtensionSipAuth } from "../phone-provisioning";
 import { listSelectedTenantDirectory } from "./selected-directory";
@@ -767,6 +768,25 @@ export const pbxRouter = router({
   // MEMBER SELF-SERVICE
   // ========================================================================
   selfService: router({
+    /** Keyset-paged completed CDRs for the signed-in member across devices. */
+    callHistory: protectedProcedure
+      .input(z.object({
+        tenantId: z.number().int().positive(),
+        limit: z.number().int().min(1).max(100).default(50),
+        cursor: z.object({
+          startedAt: z.string().datetime({ offset: true }),
+          id: z.number().int().positive(),
+        }).strict().optional(),
+      }).strict())
+      .query(async ({ ctx, input }) => {
+        const tc = await getTenantCtx(ctx, input.tenantId);
+        return listPersonalCallHistory({
+          tenantId: tc.tenantId,
+          userId: ctx.user!.id,
+          limit: input.limit,
+          cursor: input.cursor,
+        });
+      }),
     /**
      * Return only extensions explicitly assigned to the signed-in member.
      * Tenant membership by itself never grants access to another person's

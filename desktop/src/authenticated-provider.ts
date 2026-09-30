@@ -50,9 +50,12 @@ export type DesktopMeetingChannelDetails = Readonly<{ channelId: string;
 export type DesktopVoicemail = Readonly<{ id: number; callerName: string | null;
   callerNumber: string | null; durationSeconds: number; status: "new" | "read";
   createdAt: string }>;
-export type DesktopCallHistory = Readonly<{ id: number; direction: "inbound" | "outbound" | "internal";
+export type DesktopCallHistory = Readonly<{ id: number; direction: "inbound" | "outbound" | "internal" | "emergency";
   callerNumber: string | null; calleeNumber: string | null; durationSeconds: number;
-  disposition: string | null; startedAt: string }>;
+  callbackNumber: string | null; disposition: string | null; startedAt: string }>;
+export type DesktopCallHistoryCursor = Readonly<{ startedAt: string; id: number }>;
+export type DesktopCallHistoryPage = Readonly<{ items: readonly DesktopCallHistory[];
+  nextCursor: DesktopCallHistoryCursor | null }>;
 export type DesktopDirectoryEntry = Readonly<{ id: number; name: string; number: string }>;
 export type DesktopDirectoryPage = Readonly<{ tenantId: number; items: readonly DesktopDirectoryEntry[];
   nextOffset: number | null }>;
@@ -186,14 +189,19 @@ export class AuthenticatedDesktopProvider {
     });
   }
 
-  /** Bounded CDR history for the authenticated member and selected tenant. */
-  async listCallHistory(expectedRevision: string): Promise<readonly DesktopCallHistory[]> {
+  /** One bounded CDR page for the authenticated member and selected tenant. */
+  async listCallHistoryPage(expectedRevision: string, cursor?: DesktopCallHistoryCursor): Promise<DesktopCallHistoryPage> {
+    const validTime = (value: unknown): value is string =>
+      typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value) &&
+      Number.isFinite(Date.parse(value));
+    if (cursor && (!positiveId(cursor.id) || !validTime(cursor.startedAt)))
+      throw new DesktopCallHistoryError("invalid_response");
     const { token, epoch } = this.sessionAuthority(expectedRevision);
     const tenantId = this.session!.tenantId;
     let value: unknown;
     try {
       const response = await this.send(
-        `/api/trpc/pbx.selfService.usage?input=${encodeURIComponent(JSON.stringify({ json: { tenantId, period: "month" } }))}`,
+        `/api/trpc/pbx.selfService.callHistory?input=${encodeURIComponent(JSON.stringify({ json: { tenantId, limit: 50, ...(cursor ? { cursor } : {}) } }))}`,
         { headers: { authorization: `Bearer ${token}` } }, epoch,
       );
       if (!response.ok) {
@@ -212,32 +220,63 @@ export class AuthenticatedDesktopProvider {
     }
     try {
       this.assertSessionAuthority(expectedRevision, epoch);
-      if (!isRecord(value) || !Array.isArray(value.calls) || value.calls.length > 50)
+      if (!isRecord(value) || !Array.isArray(value.items) || value.items.length > 50)
         throw new DesktopCallHistoryError("invalid_response");
       if (!positiveId(value.tenantId)) throw new DesktopCallHistoryError("invalid_response");
       if (value.tenantId !== tenantId) throw new DesktopCallHistoryError("tenant_mismatch", 200);
-      return value.calls.map((item): DesktopCallHistory => {
-        if (!isRecord(item) || !positiveId(item.id) ||
-            !["inbound", "outbound", "internal"].includes(item.direction as string) ||
+      const rawItems = value.items as unknown[];
+      const seen = new Set<number>();
+      const calls = rawItems.map((item): DesktopCallHistory => {
+        if (!isRecord(item) || (item.tenant_id !== undefined && item.tenant_id !== tenantId) ||
+            !positiveId(item.id) || seen.has(item.id) ||
+            !["inbound", "outbound", "internal", "emergency"].includes(item.direction as string) ||
             typeof item.total_duration_seconds !== "number" || !Number.isSafeInteger(item.total_duration_seconds) ||
             item.total_duration_seconds < 0 || item.total_duration_seconds > 86400 ||
             !(item.disposition === null || (typeof item.disposition === "string" && item.disposition.length <= 40 &&
               /^[A-Za-z_-]*$/.test(item.disposition))) ||
-            typeof item.started_at !== "string" || item.started_at.length > 64 ||
-            !Number.isFinite(Date.parse(item.started_at)))
+            !validTime(item.started_at) ||
+            !(item.callback_number === null ||
+              (typeof item.callback_number === "string" && item.callback_number.length <= 64 &&
+                /^[+0-9*#(). -]*$/.test(item.callback_number))))
           throw new DesktopCallHistoryError("invalid_response");
+        seen.add(item.id);
         const date = new Date(item.started_at as string);
         return { id: item.id, direction: item.direction as DesktopCallHistory["direction"],
           callerNumber: safePhoneNumber(item.caller_number), calleeNumber: safePhoneNumber(item.callee_number),
-          durationSeconds: item.total_duration_seconds, disposition: item.disposition,
+          callbackNumber: safePhoneNumber(item.callback_number), durationSeconds: item.total_duration_seconds,
+          disposition: item.disposition,
           startedAt: date.toISOString() };
       });
+      for (let index = 0; index < rawItems.length; index++) {
+        const item = rawItems[index] as RecordValue;
+        const priorTime = index === 0 ? cursor?.startedAt : (rawItems[index - 1] as RecordValue).started_at as string;
+        const priorId = index === 0 ? cursor?.id : (rawItems[index - 1] as RecordValue).id as number;
+        if (priorTime !== undefined && !((item.started_at as string) < priorTime ||
+          (item.started_at === priorTime && (item.id as number) < priorId!)))
+          throw new DesktopCallHistoryError("invalid_response");
+      }
+      let nextCursor: DesktopCallHistoryCursor | null = null;
+      if (value.nextCursor !== null) {
+        const next = value.nextCursor;
+        const last = rawItems.at(-1);
+        if (!isRecord(next) || calls.length !== 50 || !isRecord(last) ||
+            !positiveId(next.id) || next.id !== last.id ||
+            !validTime(next.startedAt) || next.startedAt !== last.started_at)
+          throw new DesktopCallHistoryError("invalid_response");
+        nextCursor = { startedAt: next.startedAt, id: next.id };
+      }
+      return { items: calls, nextCursor };
     } catch (error) {
       if (error instanceof DesktopCallHistoryError) throw error;
       try { this.assertSessionAuthority(expectedRevision, epoch); }
       catch { throw new DesktopCallHistoryError("session_changed"); }
       throw new DesktopCallHistoryError("invalid_response");
     }
+  }
+
+  /** Compatibility for consumers that display only the first page. */
+  async listCallHistory(expectedRevision: string): Promise<readonly DesktopCallHistory[]> {
+    return (await this.listCallHistoryPage(expectedRevision)).items;
   }
 
   /** Mark a message read under the server's owner and selected-tenant checks. */
@@ -458,8 +497,7 @@ export class AuthenticatedDesktopProvider {
       return { id: item.id, name: item.name as string };
     }).filter(item => item.id !== actor);
     if (!seen.has(actor)) throw new DesktopAuthenticationError();
-    return { channelId, members, canStart: capabilities.available && capabilities.canStart &&
-      members.length <= 50 };
+    return { channelId, members, canStart: capabilities.available && capabilities.canStart };
   }
 
   /** The request UUID is generated by the privileged process and never reused across selections. */

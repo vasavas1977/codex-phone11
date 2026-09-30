@@ -47,6 +47,37 @@ test('Meet now uses only the selected workspace and selected current channel mem
   assert.equal(calls.filter(call => call.path.endsWith('/meetings.startChannelMeeting')).length, 1);
 });
 
+test('Meet now permits authorized channels over 50 members while excluding the host and preserving capability denial', async () => {
+  const roster = [
+    { id: 7, name: 'Host' },
+    ...Array.from({ length: 51 }, (_, index) => ({ id: index + 8, name: `Member ${index + 1}` })),
+  ];
+  let available = true;
+  const provider = signed(async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/chat.details')) return trpc({ members: roster });
+    if (path.endsWith('/meetings.channelCapabilities'))
+      return trpc({ available, canStart: available, maxSelectedMembers: 50 });
+    if (path.endsWith('/meetings.startChannelMeeting')) {
+      const body = JSON.parse(String(init?.body)).json;
+      return trpc({ meetingId, channelId, invitedMemberIds: body.selectedMemberIds, replayed: false });
+    }
+    throw new Error(`Unexpected ${path}`);
+  });
+
+  const details = await provider.meetingChannelDetails('signed-a', channelId);
+  assert.equal(details.members.length, 51);
+  assert.equal(details.members.some(member => member.id === 7), false);
+  assert.equal(details.canStart, true);
+  const reducedSelection = Array.from({ length: 50 }, (_, index) => index + 8);
+  assert.equal(await provider.startChannelMeeting('signed-a', channelId, reducedSelection, requestId), meetingId);
+
+  available = false;
+  const denied = await provider.meetingChannelDetails('signed-a', channelId);
+  assert.equal(denied.members.length, 51);
+  assert.equal(denied.canStart, false);
+});
+
 test('sign-out invalidates an in-flight Meet now result before the desktop can use its room', async () => {
   let release!: (value: Response) => void;
   let started!: () => void;
