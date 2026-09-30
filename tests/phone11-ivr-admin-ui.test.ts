@@ -8,8 +8,10 @@ const source = readFileSync(resolve(process.cwd(), "app/admin/ivr.tsx"), "utf8")
 describe("IVR key-action editor", () => {
   it("uses the tenant-scoped action reader and transactional saver", () => {
     expect(source).toContain("useIvrMenus(tenantId, ivrAvailable)");
-    expect(source).toMatch(/useIvrMenu\(\s*editingMenuId \?\? 0,\s*ivrAvailable,?\s*\)/);
+    expect(source).toMatch(/useIvrMenu\(\s*editingMenuId \?\? 0,\s*tenantId,\s*ivrAvailable,?\s*\)/);
     expect(source).toContain("useSetIvrActions()");
+    expect(source).toContain("<AdminWorkspaceBoundary>");
+    expect(source).toContain("tenant_id: tenantId");
     expect(source).toContain("menuDetailQuery.refetch()");
     expect(source).toContain("menusQuery.refetch()");
   });

@@ -59,7 +59,13 @@ describe("Phone11 management capability gates", () => {
 
   it("makes every direct advanced-administration page fail closed before showing create or edit controls", () => {
     for (const [facility, page] of Object.entries(advancedPages)) {
-      expect(page).toContain("usePbxCapabilities(tenantQuery.isSuccess)");
+      if (facility === "ivr") {
+        expect(page).toContain("<AdminWorkspaceBoundary>");
+        expect(page).toContain("usePbxAdminCapabilities(tenantId > 0)");
+        expect(page).toContain("const tenantId = workspace.selectedTenantId ?? 0");
+      } else {
+        expect(page).toContain("usePbxCapabilities(tenantQuery.isSuccess)");
+      }
       expect(page).toContain("UnavailableAdminScreen");
       expect(page).toContain("This feature is not available for your workspace yet.");
       expect(page).toContain(facility === "businessHours" ? "businessHours === true" : `${facility} === true`);

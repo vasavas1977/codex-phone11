@@ -532,11 +532,11 @@ export function useIvrMenus(tenantId: number, enabled: boolean = true) {
   );
 }
 
-export function useIvrMenu(id: number, enabled: boolean = true) {
+export function useIvrMenu(id: number, tenantId: number, enabled: boolean = true) {
   return trpc.ivr.ivr.get.useQuery(
-    { id },
+    { id, tenant_id: tenantId },
     {
-      enabled: id > 0 && enabled,
+      enabled: id > 0 && tenantId > 0 && enabled,
       staleTime: 30_000,
     },
   );

@@ -124,6 +124,51 @@ describe("PBX voice application administration", () => {
     expect(db.query.mock.calls[1][1]).toEqual([41, 7]);
   });
 
+  it("reads the selected tenant and keeps IVR actions attached to its menu", async () => {
+    const secondTenant = { ...membership("admin"), tenant_id: 8 };
+    db.query
+      .mockResolvedValueOnce({ rows: [secondTenant] })
+      .mockResolvedValueOnce({ rows: [{ id: 41, tenant_id: 8 }] })
+      .mockResolvedValueOnce({ rows: [{ digit: "1", action_type: "hangup" }] });
+    const result = await ivrRouter.createCaller(context()).ivr.get({ id: 41, tenant_id: 8 });
+    expect(result.tenant_id).toBe(8);
+    expect(result.actions).toHaveLength(1);
+    expect(db.query.mock.calls[0][1]).toEqual([9, 8]);
+    expect(db.query.mock.calls[1][1]).toEqual([41, 8]);
+    expect(db.query.mock.calls[2][1]).toEqual([41]);
+  });
+
+  it("requires explicit selection when an IVR administrator has two memberships", async () => {
+    db.query.mockResolvedValueOnce({ rows: [
+      membership("admin"),
+      { ...membership("user"), tenant_id: 8 },
+    ] });
+    await expect(ivrRouter.createCaller(context()).ivr.get({ id: 41 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies a revoked selected-tenant membership before reading or changing IVR rows", async () => {
+    const caller = ivrRouter.createCaller(context());
+    db.query.mockResolvedValue({ rows: [] });
+    await expect(caller.ivr.get({ id: 41, tenant_id: 8 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.ivr.delete({ id: 41, tenant_id: 8 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.ivr.setActions({ menu_id: 41, tenant_id: 8, actions: [] })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.query.mock.calls).toHaveLength(3);
+    expect(db.query.mock.calls.every(([sql]) => String(sql).includes("tenant_memberships"))).toBe(true);
+  });
+
+  it("denies a cross-tenant IVR update before touching the resource", async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [{ ...membership("admin"), tenant_id: 8 }] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(ivrRouter.createCaller(context()).ivr.update({
+      id: 41, tenant_id: 8, name: "Other workspace",
+    })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(db.query.mock.calls[0][1]).toEqual([9, 8]);
+    expect(db.query.mock.calls[1][1]).toEqual([41, 8]);
+    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE ivr_menus"))).toBe(false);
+  });
+
   it("uses the verified workspace rather than trusting a supplied tenant ID", async () => {
     db.query
       .mockResolvedValueOnce({ rows: [membership("owner")] })

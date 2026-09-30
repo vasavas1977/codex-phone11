@@ -30,8 +30,27 @@ async function requireFacilityAdmin(
   return tenant;
 }
 
-const requireIvrAdmin = (ctx: any, requestedTenantId?: number) =>
-  requireFacilityAdmin(ctx, "ivr", "IVR", requestedTenantId);
+async function requireIvrAdmin(ctx: any, requestedTenantId?: number) {
+  // IVR settings affect live call routing. Read current membership for every
+  // operation rather than accepting the five-minute membership cache.
+  const memberships = await query(
+    `SELECT tm.tenant_id, tm.role FROM tenant_memberships tm
+     JOIN tenants t ON t.id = tm.tenant_id
+     WHERE tm.user_id = $1 AND tm.status = 'active' AND t.status = 'active'
+       AND ($2::bigint IS NULL OR tm.tenant_id = $2)
+     ORDER BY tm.created_at ASC, tm.tenant_id ASC`,
+    [ctx.user.id, requestedTenantId ?? null],
+  );
+  // Legacy callers without an explicit tenant remain safe for a single
+  // membership. Multiple memberships must select a tenant, even if only one
+  // of them currently has administrator rights.
+  if (memberships.rows.length !== 1) throw new TRPCError({ code: "FORBIDDEN" });
+  const membership = memberships.rows[0] as { tenant_id: number; role: string };
+  if (!hasRole(membership.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
+  const available = await readManagementCapabilities();
+  if (!available.ivr) unavailableFacility("IVR");
+  return { tenantId: membership.tenant_id };
+}
 const requireRingGroupAdmin = (ctx: any, requestedTenantId?: number) =>
   requireFacilityAdmin(ctx, "ringGroups", "Ring groups", requestedTenantId);
 const requireQueueAdmin = (ctx: any, requestedTenantId?: number) =>
@@ -432,9 +451,9 @@ export const ivrRouter = router({
       }),
 
     get: protectedProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.number(), tenant_id: z.number().int().positive().optional() }))
       .query(async ({ ctx, input }) => {
-        const tenant = await requireIvrAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx, input.tenant_id);
         const menu = await query(`SELECT * FROM ivr_menus WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         if (!menu.rows[0]) throw new Error("IVR menu not found");
         const actions = await query(
@@ -460,11 +479,11 @@ export const ivrRouter = router({
       }),
 
     update: protectedProcedure
-      .input(z.object({ id: z.number() }).merge(ivrMenuInput.partial()))
+      .input(z.object({ id: z.number(), tenant_id: z.number().int().positive().optional() }).merge(ivrMenuInput.partial()))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireIvrAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx, input.tenant_id);
         await requireTenantResource("ivr_menus", input.id, tenant.tenantId);
-        const { id, ...data } = input;
+        const { id, tenant_id: _tenantId, ...data } = input;
         const sets = Object.entries(data)
           .filter(([_, v]) => v !== undefined)
           .map(([k], i) => `${k} = $${i + 2}`);
@@ -481,9 +500,9 @@ export const ivrRouter = router({
       }),
 
     delete: protectedProcedure
-      .input(z.object({ id: z.number() }))
+      .input(z.object({ id: z.number(), tenant_id: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireIvrAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx, input.tenant_id);
         await requireTenantResource("ivr_menus", input.id, tenant.tenantId);
         await query(`DELETE FROM ivr_menus WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         await invalidateCache(`ivr:menu:${input.id}`);
@@ -495,10 +514,11 @@ export const ivrRouter = router({
     setActions: protectedProcedure
       .input(z.object({
         menu_id: z.number(),
+        tenant_id: z.number().int().positive().optional(),
         actions: z.array(ivrActionInput),
       }))
       .mutation(async ({ ctx, input }) => {
-        const tenant = await requireIvrAdmin(ctx);
+        const tenant = await requireIvrAdmin(ctx, input.tenant_id);
         await requireTenantResource("ivr_menus", input.menu_id, tenant.tenantId);
         const normalizedActions = input.actions.map((action) => ({
           ...action,

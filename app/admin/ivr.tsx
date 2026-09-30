@@ -24,7 +24,8 @@ import {
 } from "@/lib/pbx/ivr-actions";
 import {
   useCallQueues,
-  usePbxCapabilities,
+  usePbxAdminCapabilities,
+  usePbxAdminWorkspace,
   useCreateIvrMenu,
   useDeleteIvrMenu,
   useExtensions,
@@ -32,7 +33,6 @@ import {
   useIvrMenus,
   useRingGroups,
   useSetIvrActions,
-  useTenant,
 } from "@/hooks/use-pbx-admin";
 
 const EXIT_ACTIONS = [
@@ -43,7 +43,7 @@ const EXIT_ACTIONS = [
 
 export default function AdminIVR() {
   return (
-    <AdminWorkspaceBoundary requiresImplicitTenant>
+    <AdminWorkspaceBoundary>
       <AdminIVRContent />
     </AdminWorkspaceBoundary>
   );
@@ -53,13 +53,13 @@ function AdminIVRContent() {
   const colors = useColors();
   const { width } = useWindowDimensions();
   const wideWeb = Platform.OS === "web" && width >= 1000;
-  const tenantQuery = useTenant();
-  const tenantId = tenantQuery.data?.id ?? 0;
-  const capabilitiesQuery = usePbxCapabilities(tenantQuery.isSuccess);
+  const workspace = usePbxAdminWorkspace();
+  const tenantId = workspace.selectedTenantId ?? 0;
+  const capabilitiesQuery = usePbxAdminCapabilities(tenantId > 0);
   const ivrAvailable = capabilitiesQuery.data?.ivr === true;
   const menusQuery = useIvrMenus(tenantId, ivrAvailable);
   const [editingMenuId, setEditingMenuId] = useState<number | null>(null);
-  const menuDetailQuery = useIvrMenu(editingMenuId ?? 0, ivrAvailable);
+  const menuDetailQuery = useIvrMenu(editingMenuId ?? 0, tenantId, ivrAvailable);
   const extensionsQuery = useExtensions(
     1,
     100,
@@ -84,7 +84,13 @@ function AdminIVRContent() {
   const [draftActions, setDraftActions] = useState<IvrActionDraft[]>([]);
   const [editorError, setEditorError] = useState<string | null>(null);
   const initializedEditor = useRef<number | null>(null);
+  const activeWorkspace = useRef(true);
   const menus = menusQuery.data || [];
+
+  useEffect(() => {
+    activeWorkspace.current = true;
+    return () => { activeWorkspace.current = false; };
+  }, []);
 
   const extensionRows = (extensionsQuery.data?.data || []) as Array<{
     extension_number?: string | null;
@@ -155,7 +161,7 @@ function AdminIVRContent() {
   };
 
   const saveActions = async () => {
-    if (editingMenuId === null) return;
+    if (editingMenuId === null || !activeWorkspace.current) return;
     const validationError = validateIvrActionDraft(draftActions);
     if (validationError) {
       setEditorError(validationError);
@@ -164,6 +170,7 @@ function AdminIVRContent() {
     try {
       await actionsMutation.mutateAsync({
         menu_id: editingMenuId,
+        tenant_id: tenantId,
         actions: draftActions.map(({ id: _id, ...action }, index) => ({
           ...action,
           action_type: action.action_type as SupportedActionType,
@@ -172,10 +179,13 @@ function AdminIVRContent() {
           sort_order: index,
         })),
       });
+      if (!activeWorkspace.current) return;
       await Promise.all([menuDetailQuery.refetch(), menusQuery.refetch()]);
+      if (!activeWorkspace.current) return;
       closeEditor();
     } catch (error: any) {
-      setEditorError(error?.message || "Actions could not be saved. Your changes are still here; try again.");
+      if (activeWorkspace.current)
+        setEditorError(error?.message || "Actions could not be saved. Your changes are still here; try again.");
     }
   };
 
@@ -186,10 +196,12 @@ function AdminIVRContent() {
       [
         { text: "Cancel", style: "cancel" },
         { text: "Delete", style: "destructive", onPress: async () => {
+          if (!activeWorkspace.current) return;
           try {
-            await deleteMutation.mutateAsync({ id });
+            await deleteMutation.mutateAsync({ id, tenant_id: tenantId });
           } catch (e: any) {
-            Alert.alert("IVR not deleted", e.message || "Please try again.");
+            if (activeWorkspace.current)
+              Alert.alert("IVR not deleted", e.message || "Please try again.");
           }
         }},
       ]
@@ -197,6 +209,7 @@ function AdminIVRContent() {
   };
 
   const handleCreate = async () => {
+    if (!activeWorkspace.current) return;
     if (!tenantId || !name.trim() || !greeting.trim()) {
       Alert.alert("Missing details", "Enter a menu name and greeting.");
       return;
@@ -214,13 +227,15 @@ function AdminIVRContent() {
         exit_target: exitAction === "hangup" ? undefined : exitTarget.trim(),
         is_active: true,
       });
+      if (!activeWorkspace.current) return;
       setShowCreate(false);
       setName("");
       setGreeting("");
       setExitAction("voicemail");
       setExitTarget("");
     } catch (e: any) {
-      Alert.alert("IVR not created", e.message || "Please try again.");
+      if (activeWorkspace.current)
+        Alert.alert("IVR not created", e.message || "Please try again.");
     }
   };
 
@@ -332,12 +347,12 @@ function AdminIVRContent() {
         </View>
       </View>
 
-      {tenantQuery.isLoading || menusQuery.isLoading ? (
+      {menusQuery.isLoading ? (
         <View style={styles.emptyState}>
           <ActivityIndicator size="small" color={colors.primary} />
           <Text style={[styles.emptyText, { color: colors.muted }]}>Loading IVR menus...</Text>
         </View>
-      ) : tenantQuery.isError || menusQuery.isError ? (
+      ) : menusQuery.isError ? (
         <View style={styles.emptyState}>
           <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Couldn’t load IVR menus</Text>
           <TouchableOpacity onPress={() => menusQuery.refetch()}>
