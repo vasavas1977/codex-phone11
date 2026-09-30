@@ -259,6 +259,7 @@ describe("workspace profile photo HTTP routes", () => {
     expect(await reconcileProfilePhotoOrphans({ transaction: transaction as any })).toBe(0);
   });
 
+  // Uses real files across 205 tenant directories; bound filesystem-test time explicitly.
   it("eventually scans every owner across more than 200 tenant directories", async () => {
     const scanDirectory = await mkdtemp(path.join(tmpdir(), "phone11-profile-fair-scan-"));
     await chmod(scanDirectory, 0o700);
@@ -281,7 +282,7 @@ describe("workspace profile photo HTTP routes", () => {
       vi.stubEnv("PHONE11_CHAT_MEDIA_PATH", directory);
       await rm(scanDirectory, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("continues to later owners after a persistent directory read failure", async () => {
     const scanDirectory = await mkdtemp(path.join(tmpdir(), "phone11-profile-error-scan-"));

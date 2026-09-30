@@ -185,6 +185,7 @@ describe("FreeSWITCH voicemail producer", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  // Writes 1,000 real pending files before exercising hard-cap admission behavior.
   it("fails closed before admission when pending evidence reaches the hard cap", async () => {
     const { config } = await fixture();
     const pendingDir = path.join(config.outboxRoot, "pending");
@@ -197,7 +198,7 @@ describe("FreeSWITCH voicemail producer", () => {
     await expect(admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001" }, send as typeof fetch))
       .rejects.toThrow("capacity reached");
     expect(send).not.toHaveBeenCalled();
-  });
+  }, 30_000);
 
   it("fails closed when reviewed evidence fills the total retention cap", () => {
     expect(voicemailEvidenceAtCapacity(999, 4_999)).toBe(false);

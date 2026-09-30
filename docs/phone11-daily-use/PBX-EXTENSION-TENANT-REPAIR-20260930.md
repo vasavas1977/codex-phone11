@@ -46,11 +46,25 @@ with the two exact session settings; never from application startup. Save
 preflight and catalog readback before and after. A lock timeout or guard failure
 means rollback and investigation, not a blind retry.
 
-The next advanced-routing migration remains a separate gate. Its member
-triggers reject cross-tenant extension assignment on member INSERT/UPDATE,
-but they do not prevent a later extension tenant move from leaving an existing
-ring-group member or queue agent across tenants. Enforce that invariant,
-including concurrent insertion, before commissioning those routes. Review the
+The next advanced-routing migration remains a separate gate. It also requires
+the exact `phone11.expected_database` and `phone11.expected_schema` session
+settings, checks that ordinary `tenants` and `extensions` tables exist in that
+schema, and pins its transaction-local search path with `pg_temp` last. Its
+member triggers check the final inserted or updated row and lock its referenced
+extension while checking the parent tenant. Its extension update trigger
+refuses tenant moves for an extension with
+ring-group or queue membership. These guards serialize concurrent member
+insertion and extension movement in either order under READ COMMITTED. An
+extension tenant move in REPEATABLE READ or SERIALIZABLE is refused, even for
+a nonmember, because an older snapshot could miss a newly committed member.
+Existing memberships on soft-deleted extensions remain on replay, while new
+membership on a deleted extension is refused. After installing all guards and
+holding their DDL locks, the migration refuses existing cross-tenant or orphaned
+member rows on replay. The read-only preflight checks the guards' enabled
+catalog wiring, unrestricted update events, exact tenant-change predicate,
+volatility, pinned function search path, and same-schema validated foreign keys,
+but cannot prove a function body has not been changed. Review exact trigger
+function definitions separately before commissioning. Review the
 app role's explicit privileges on the nine new tables and their serial
 sequences; a compatible schema alone does not prove usable or safe tenant ACLs.
 Rehearse the prerequisite and advanced migration in order against a protected

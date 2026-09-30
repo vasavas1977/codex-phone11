@@ -146,7 +146,7 @@ describe.skipIf(!connectionString)(
     const database = new Pool({
       connectionString,
       ssl: false,
-      options: `-c search_path=${schema}`,
+      options: `-c search_path=${schema} -c phone11.expected_database=phone11_pbx_test -c phone11.expected_schema=${schema}`,
     });
 
     beforeAll(async () => {
@@ -203,6 +203,95 @@ describe.skipIf(!connectionString)(
           advanced: { status: "compatible", missingTables: [], issues: [] },
         });
       } finally {
+        client.release();
+      }
+    });
+
+    it("marks disabled extension and parent tenant guards incompatible", async () => {
+      const client = await database.connect();
+      try {
+        for (const [table, trigger] of [
+          ["extensions", "phone11_extension_member_tenant_move"],
+          ["ring_groups", "phone11_ring_group_tenant_immutable"],
+        ]) {
+          await client.query(`ALTER TABLE ${table} DISABLE TRIGGER ${trigger}`);
+          try {
+            const result = await inspectPbxSchema(client);
+            expect(result.advanced.status).toBe("incompatible");
+            expect(result.advanced.issues).toContain(`${table}:${trigger}`);
+          } finally {
+            await client.query(`ALTER TABLE ${table} ENABLE TRIGGER ${trigger}`);
+          }
+        }
+        expect((await inspectPbxSchema(client)).advanced.status).toBe("compatible");
+      } finally { client.release(); }
+    });
+
+    it("rejects a same-named foreign key target in another schema", async () => {
+      const foreignSchema = `pbx_foreign_${randomBytes(8).toString("hex")}`;
+      await admin.query(`CREATE SCHEMA ${foreignSchema}`);
+      const client = await database.connect();
+      try {
+        await admin.query(`CREATE TABLE ${foreignSchema}.tenants(id INTEGER PRIMARY KEY)`);
+        await client.query("ALTER TABLE ivr_menus DROP CONSTRAINT ivr_menus_tenant_id_fkey");
+        await client.query(`ALTER TABLE ivr_menus ADD CONSTRAINT ivr_menus_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES ${foreignSchema}.tenants(id)`);
+        const result = await inspectPbxSchema(client);
+        expect(result.advanced.status).toBe("incompatible");
+        expect(result.advanced.issues).toContain("ivr_menus.tenant_id:foreign_key");
+      } finally {
+        await client.query("ALTER TABLE ivr_menus DROP CONSTRAINT IF EXISTS ivr_menus_tenant_id_fkey");
+        await client.query("ALTER TABLE ivr_menus ADD CONSTRAINT ivr_menus_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE");
+        client.release();
+        await admin.query(`DROP SCHEMA ${foreignSchema} CASCADE`);
+      }
+    });
+
+    it("does not synthesize a valid foreign key from duplicate constraint names", async () => {
+      const client = await database.connect();
+      try {
+        await client.query("ALTER TABLE ivr_menus DROP CONSTRAINT ivr_menus_tenant_id_fkey");
+        await client.query("ALTER TABLE ivr_menus ADD CONSTRAINT ivr_menus_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES extensions(id)");
+        await client.query("ALTER TABLE ring_groups RENAME CONSTRAINT ring_groups_tenant_id_fkey TO ivr_menus_tenant_id_fkey");
+        const result = await inspectPbxSchema(client);
+        expect(result.advanced.status).toBe("incompatible");
+        expect(result.advanced.issues).toContain("ivr_menus.tenant_id:foreign_key");
+      } finally {
+        await client.query("ALTER TABLE ivr_menus DROP CONSTRAINT IF EXISTS ivr_menus_tenant_id_fkey");
+        await client.query("ALTER TABLE ivr_menus ADD CONSTRAINT ivr_menus_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE");
+        await client.query("ALTER TABLE ring_groups RENAME CONSTRAINT ivr_menus_tenant_id_fkey TO ring_groups_tenant_id_fkey");
+        client.release();
+      }
+    });
+
+    it("rejects a tenant-move trigger with a no-op predicate", async () => {
+      const client = await database.connect();
+      try {
+        await client.query("DROP TRIGGER phone11_extension_member_tenant_move ON extensions");
+        await client.query(`CREATE TRIGGER phone11_extension_member_tenant_move
+          AFTER UPDATE ON extensions FOR EACH ROW WHEN (false)
+          EXECUTE FUNCTION phone11_validate_advanced_pbx_extension_move()`);
+        const result = await inspectPbxSchema(client);
+        expect(result.advanced.status).toBe("incompatible");
+        expect(result.advanced.issues).toContain("extensions:phone11_extension_member_tenant_move");
+      } finally {
+        await client.query(await readFile(new URL("../server/pbx/advanced-routing-migration.sql", import.meta.url), "utf8"));
+        client.release();
+      }
+    });
+
+    it("rejects a tenant-move guard restricted to an unrelated UPDATE column", async () => {
+      const client = await database.connect();
+      try {
+        await client.query("DROP TRIGGER phone11_extension_member_tenant_move ON extensions");
+        await client.query(`CREATE TRIGGER phone11_extension_member_tenant_move
+          AFTER UPDATE OF display_name ON extensions
+          FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)
+          EXECUTE FUNCTION phone11_validate_advanced_pbx_extension_move()`);
+        const result = await inspectPbxSchema(client);
+        expect(result.advanced.status).toBe("incompatible");
+        expect(result.advanced.issues).toContain("extensions:phone11_extension_member_tenant_move");
+      } finally {
+        await client.query(await readFile(new URL("../server/pbx/advanced-routing-migration.sql", import.meta.url), "utf8"));
         client.release();
       }
     });

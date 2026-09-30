@@ -42,7 +42,16 @@ type PrimaryKeyRow = {
 
 type TriggerRow = {
   table_name: string;
+  table_schema: string;
   trigger_name: string;
+  enabled: string;
+  trigger_type: number;
+  function_name: string;
+  function_schema: string;
+  volatility: string;
+  function_config: string[] | null;
+  update_columns: string;
+  definition: string;
 };
 
 const integer = ["integer"];
@@ -268,8 +277,11 @@ const requiredPrimaryKeys: Record<string, readonly string[]> = {
 };
 
 const requiredTriggers = [
-  ["ring_group_members", "phone11_ring_group_member_tenant"],
-  ["queue_agents", "phone11_queue_agent_tenant"],
+  { table: "ring_group_members", name: "phone11_ring_group_member_tenant", functionName: "phone11_validate_advanced_pbx_member", type: 21 },
+  { table: "queue_agents", name: "phone11_queue_agent_tenant", functionName: "phone11_validate_advanced_pbx_member", type: 21 },
+  { table: "ring_groups", name: "phone11_ring_group_tenant_immutable", functionName: "phone11_advanced_pbx_tenant_immutable", type: 17, hasWhen: true },
+  { table: "call_queues", name: "phone11_queue_tenant_immutable", functionName: "phone11_advanced_pbx_tenant_immutable", type: 17, hasWhen: true },
+  { table: "extensions", name: "phone11_extension_member_tenant_move", functionName: "phone11_validate_advanced_pbx_extension_move", type: 17, hasWhen: true },
 ] as const;
 
 function checkColumns(
@@ -334,17 +346,22 @@ export async function inspectPbxSchema(
     );
     const foreignKeysResult = await client.query<ForeignKeyRow>(
       `
-        SELECT tc.table_name,kcu.column_name,ccu.table_name AS foreign_table_name,
-               ccu.column_name AS foreign_column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_catalog=kcu.constraint_catalog AND tc.constraint_schema=kcu.constraint_schema
-         AND tc.constraint_name=kcu.constraint_name
-        JOIN information_schema.constraint_column_usage ccu
-          ON tc.constraint_catalog=ccu.constraint_catalog AND tc.constraint_schema=ccu.constraint_schema
-         AND tc.constraint_name=ccu.constraint_name
-        WHERE tc.constraint_schema=current_schema() AND tc.constraint_type='FOREIGN KEY'
-          AND tc.table_name=ANY($1::text[])`,
+        SELECT child.relname AS table_name,child_attr.attname AS column_name,
+               parent.relname AS foreign_table_name,parent_attr.attname AS foreign_column_name
+        FROM pg_catalog.pg_constraint fk
+        JOIN pg_catalog.pg_class child ON child.oid=fk.conrelid
+        JOIN pg_catalog.pg_namespace child_ns ON child_ns.oid=child.relnamespace
+        JOIN pg_catalog.pg_class parent ON parent.oid=fk.confrelid
+        JOIN pg_catalog.pg_namespace parent_ns ON parent_ns.oid=parent.relnamespace
+        JOIN pg_catalog.pg_attribute child_attr
+          ON child_attr.attrelid=child.oid AND child_attr.attnum=fk.conkey[1]
+        JOIN pg_catalog.pg_attribute parent_attr
+          ON parent_attr.attrelid=parent.oid AND parent_attr.attnum=fk.confkey[1]
+        WHERE fk.contype='f' AND fk.convalidated
+          AND pg_catalog.array_length(fk.conkey,1)=1
+          AND pg_catalog.array_length(fk.confkey,1)=1
+          AND child_ns.nspname=current_schema() AND parent_ns.nspname=current_schema()
+          AND child.relname=ANY($1::text[])`,
       [Object.keys(advancedSchema)],
     );
     const primaryKeysResult = await client.query<PrimaryKeyRow>(
@@ -361,10 +378,20 @@ export async function inspectPbxSchema(
     );
     const triggersResult = await client.query<TriggerRow>(
       `
-        SELECT DISTINCT event_object_table AS table_name,trigger_name
-        FROM information_schema.triggers
-        WHERE trigger_schema=current_schema() AND event_object_table=ANY($1::text[])`,
-      [Object.keys(advancedSchema)],
+        SELECT c.relname AS table_name,n.nspname AS table_schema,t.tgname AS trigger_name,
+               t.tgenabled AS enabled,t.tgtype::integer AS trigger_type,
+               p.proname AS function_name,pn.nspname AS function_schema,
+               p.provolatile AS volatility,p.proconfig AS function_config,
+               t.tgattr::text AS update_columns,
+               pg_catalog.pg_get_triggerdef(t.oid) AS definition
+        FROM pg_catalog.pg_trigger t
+        JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
+        JOIN pg_catalog.pg_namespace pn ON pn.oid=p.pronamespace
+        WHERE n.nspname=current_schema() AND NOT t.tgisinternal
+          AND c.relname=ANY($1::text[])`,
+      [[...Object.keys(advancedSchema), "extensions"]],
     );
 
     const rows = columnsResult.rows;
@@ -406,14 +433,18 @@ export async function inspectPbxSchema(
         if (JSON.stringify(primaryKeys.get(table)) !== JSON.stringify(expected))
           advancedIssues.push(`${table}:primary_key`);
       }
-      const triggers = new Set(
-        triggersResult.rows.map(
-          (row) => `${row.table_name}.${row.trigger_name}`,
-        ),
+      const triggers = new Map(
+        triggersResult.rows.map((row) => [`${row.table_name}.${row.trigger_name}`, row]),
       );
-      for (const [table, trigger] of requiredTriggers) {
-        if (!triggers.has(`${table}.${trigger}`))
-          advancedIssues.push(`${table}:${trigger}`);
+      for (const required of requiredTriggers) {
+        const trigger = triggers.get(`${required.table}.${required.name}`);
+        if (!trigger || !["O", "A"].includes(trigger.enabled) || trigger.trigger_type !== required.type ||
+            trigger.function_name !== required.functionName || trigger.function_schema !== trigger.table_schema ||
+            trigger.volatility !== "v" || trigger.update_columns !== "" ||
+            !trigger.function_config?.includes("search_path=pg_catalog") ||
+            ("hasWhen" in required && !/\bWHEN \(\(old\.tenant_id IS DISTINCT FROM new\.tenant_id\)\) EXECUTE FUNCTION /i.test(trigger.definition))) {
+          advancedIssues.push(`${required.table}:${required.name}`);
+        }
       }
     }
 

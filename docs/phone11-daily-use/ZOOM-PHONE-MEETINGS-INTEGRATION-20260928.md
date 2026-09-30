@@ -121,3 +121,14 @@ The desktop source now includes direct-contact Meet now with selected-tenant pro
 For the initial audio-output and invitation commit, root TypeScript and tests, backend bundle, desktop TypeScript/build and 48 desktop Node tests passed. The invitation/auth disposable-PostgreSQL suite passed 92 cases with one environment-gated browser skip; the intentionally rejected phase-2-before-phase-1 migration was tested. Focused ESLint and diff checks passed.
 
 After direct-chat search, paging and extension labels were integrated, root TypeScript and backend build passed. A serial root test run passed 2,305 Vitest cases with 346 environment-gated skips, plus 69 native Node tests; a concurrent run had one unrelated profile-photo timeout, whose 18 focused tests then passed on rerun. Desktop TypeScript/build and 56 Node tests passed. The chat/notification disposable-PostgreSQL suite passed 91 cases, including older chats, same-name paging, tenant and block isolation; invitation/auth passed 92 with one skip. An independent source review found no remaining P0–P2 issue in the direct Meet slice. These checks do not establish production schema compatibility, email delivery, provider admission or physical audio routing.
+
+The advanced PBX migration now pins its target, validates final member rows,
+serializes extension tenant moves, and refuses unsafe isolation or invalid
+existing memberships. Its read-only catalog preflight checks exact foreign-key
+and trigger wiring; exact function-body readback remains an operator gate.
+The combined isolated PostgreSQL history, usage, prerequisite, migration and
+preflight suites passed 50 tests and are wired into the dedicated CI job.
+The [tenant repair gate](PBX-EXTENSION-TENANT-REPAIR-20260930.md) still refuses
+the actual target's implicit tenant default. No production DDL ran.
+The [internal/emergency ownership handoff](INTERNAL-EMERGENCY-OWNERSHIP-DESIGN-20260930.md)
+records the distinct call-routing and completion work; it is design only.

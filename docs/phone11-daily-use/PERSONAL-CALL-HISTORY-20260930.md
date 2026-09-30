@@ -28,13 +28,21 @@ of manufacturing calls or falling back to a broader admin endpoint.
 ## Coverage and release boundary
 
 The upstream trusted route capture currently covers inbound/outbound routes.
-Internal routing and the early emergency XML path do not persist that same
-call-time ownership snapshot. Such unattributed CDRs remain excluded. The query
-can display owned internal/emergency snapshots, but this source change does
-not backfill historical attribution or complete their live ingestion paths.
-Finishing those paths requires a separately reviewed authenticated call-time
-capture change, followed by real endpoint tests. Never repair history by
-resolving current extension ownership at read time.
+The checked-in FreeSWITCH `xml_curl` dialplan callback is disabled. Kamailio
+relays ordinary four-digit internal calls directly to the registered endpoint,
+so they do not produce a FreeSWITCH channel or XML CDR. It routes emergency
+calls to FreeSWITCH without a protected call-time owner marker; the existing
+outbound marker explicitly excludes emergency and internal calls. The trusted
+recording route table also constrains direction to inbound/outbound. Neither
+the unused backend dialplan callback nor a From/domain or caller-ID lookup can
+close these gaps. Unattributed records remain excluded even though the history
+query can display owned internal/emergency snapshots. A separate release must
+carry post-auth identity through the actual Kamailio paths, validate tenant and
+active assignment, and persist immutable ownership with exact call correlation
+and completion evidence; internal calls need an ingestion path independent of
+FreeSWITCH CDRs. Emergency routing must continue when attribution is absent.
+Real endpoint tests are required. Never repair history by resolving current
+extension ownership at read time.
 
 The existing monthly `selfService.usage` response remains unchanged. The new
 contract and clients require a matching API/client release; the running 3020

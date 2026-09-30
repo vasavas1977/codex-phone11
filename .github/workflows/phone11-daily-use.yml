@@ -261,13 +261,14 @@ jobs:
         env:
           PG_CONTAINER_ID: ${{ job.services.postgres.id }}
         run: docker exec "$PG_CONTAINER_ID" psql -U phone11_management_test -d phone11_management_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE phone11_pbx_test'
-      - name: Test call-time ownership, paging and PBX migration refusal
+      - name: Test call-time ownership, paging and PBX migration catalog guards
         run: >-
           pnpm exec vitest run
           tests/phone11-personal-call-history-postgres.test.ts
           tests/phone11-self-service-usage-postgres.test.ts
           tests/phone11-extension-tenant-prerequisites-postgres.test.ts
           tests/phone11-pbx-advanced-migration.test.ts
+          tests/phone11-pbx-schema-preflight.test.ts
 
   chat-postgres-tests:
     runs-on: ubuntu-24.04

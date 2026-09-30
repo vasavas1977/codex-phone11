@@ -2,7 +2,44 @@
 -- application startup. Requires existing tenants and extensions tables in the
 -- PostgreSQL database selected by server/pbx/db.ts. It creates no tenants,
 -- extensions, routes, assignments, or sample data.
-BEGIN;
+BEGIN ISOLATION LEVEL READ COMMITTED;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+
+-- Refuse an unintended database/schema before any DDL. The operator supplies
+-- these session settings after independent target review, as for the extension
+-- prerequisite. Keep pg_temp last so temporary relation shadows cannot change
+-- any unqualified migration DDL or catalog/data validation below.
+DO $phone11_target$
+DECLARE
+  expected_database text := pg_catalog.current_setting('phone11.expected_database', true);
+  expected_schema text := pg_catalog.current_setting('phone11.expected_schema', true);
+BEGIN
+  IF expected_database IS NULL OR expected_database = ''
+     OR expected_schema IS NULL OR expected_schema = ''
+     OR pg_catalog.current_database() <> expected_database
+     OR pg_catalog.current_schema() <> expected_schema
+     OR pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'Phone11 advanced PBX migration target pin mismatch'
+      USING ERRCODE = '55000';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = expected_schema AND c.relname = 'tenants' AND c.relkind = 'r'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = expected_schema AND c.relname = 'extensions' AND c.relkind = 'r'
+  ) THEN
+    RAISE EXCEPTION 'Phone11 advanced PBX migration requires pinned ordinary tenants and extensions tables'
+      USING ERRCODE = '55000';
+  END IF;
+  PERFORM pg_catalog.set_config(
+    'search_path', pg_catalog.format('%I,pg_catalog,pg_temp', expected_schema), true
+  );
+END;
+$phone11_target$;
 
 -- The advanced ring-group detail query presents these optional contact fields.
 -- Older provisioning schemas created extensions without them.
@@ -186,22 +223,26 @@ CREATE INDEX IF NOT EXISTS time_condition_rules_order
 -- Keep member rows tenant-safe even if a maintenance script bypasses the API's
 -- workspace checks. The trigger derives tenancy from the selected parent.
 CREATE OR REPLACE FUNCTION phone11_validate_advanced_pbx_member() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog AS $$
 DECLARE
   parent_tenant_id INTEGER;
+  extension_tenant_id INTEGER;
 BEGIN
   IF TG_TABLE_NAME = 'ring_group_members' THEN
-    SELECT tenant_id INTO parent_tenant_id FROM ring_groups WHERE id = NEW.ring_group_id;
+    EXECUTE pg_catalog.format('SELECT tenant_id FROM %I.ring_groups WHERE id = $1', TG_TABLE_SCHEMA)
+      INTO parent_tenant_id USING NEW.ring_group_id;
   ELSE
-    SELECT tenant_id INTO parent_tenant_id FROM call_queues WHERE id = NEW.queue_id;
+    EXECUTE pg_catalog.format('SELECT tenant_id FROM %I.call_queues WHERE id = $1', TG_TABLE_SCHEMA)
+      INTO parent_tenant_id USING NEW.queue_id;
   END IF;
 
-  IF parent_tenant_id IS NULL OR NOT EXISTS (
-    SELECT 1 FROM extensions
-    WHERE id = NEW.extension_id
-      AND tenant_id = parent_tenant_id
-      AND deleted_at IS NULL
-  ) THEN
+  -- A tenant move updates this same extension row. FOR SHARE conflicts with
+  -- that update and holds the lock until the member transaction commits.
+  EXECUTE pg_catalog.format(
+    'SELECT tenant_id FROM %I.extensions WHERE id = $1 AND deleted_at IS NULL FOR SHARE',
+    TG_TABLE_SCHEMA
+  ) INTO extension_tenant_id USING NEW.extension_id;
+  IF parent_tenant_id IS NULL OR extension_tenant_id IS DISTINCT FROM parent_tenant_id THEN
     RAISE EXCEPTION 'advanced PBX member extension must belong to the parent tenant'
       USING ERRCODE = '23514';
   END IF;
@@ -211,19 +252,52 @@ $$;
 
 DROP TRIGGER IF EXISTS phone11_ring_group_member_tenant ON ring_group_members;
 CREATE TRIGGER phone11_ring_group_member_tenant
-  BEFORE INSERT OR UPDATE ON ring_group_members
+  AFTER INSERT OR UPDATE ON ring_group_members
   FOR EACH ROW EXECUTE FUNCTION phone11_validate_advanced_pbx_member();
 
 DROP TRIGGER IF EXISTS phone11_queue_agent_tenant ON queue_agents;
 CREATE TRIGGER phone11_queue_agent_tenant
-  BEFORE INSERT OR UPDATE ON queue_agents
+  AFTER INSERT OR UPDATE ON queue_agents
   FOR EACH ROW EXECUTE FUNCTION phone11_validate_advanced_pbx_member();
+
+-- An extension tenant move already owns its row lock. A concurrent member
+-- insert must take FOR SHARE on that row before it can finish; whichever
+-- transaction arrives second therefore sees the first committed decision.
+CREATE OR REPLACE FUNCTION phone11_validate_advanced_pbx_extension_move() RETURNS trigger
+LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog AS $$
+DECLARE
+  has_member BOOLEAN;
+BEGIN
+  -- An older REPEATABLE READ snapshot can miss a member inserted while this
+  -- transaction waited for the extension row. Fail closed in that isolation;
+  -- READ COMMITTED takes a fresh snapshot for this trigger's membership query.
+  IF pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
+    RAISE EXCEPTION 'advanced PBX extension tenant moves require READ COMMITTED'
+      USING ERRCODE = '23514';
+  END IF;
+  EXECUTE pg_catalog.format(
+    'SELECT EXISTS (SELECT 1 FROM %I.ring_group_members WHERE extension_id = $1) OR EXISTS (SELECT 1 FROM %I.queue_agents WHERE extension_id = $1)',
+    TG_TABLE_SCHEMA, TG_TABLE_SCHEMA
+  ) INTO has_member USING NEW.id;
+  IF has_member THEN
+    RAISE EXCEPTION 'advanced PBX member extension tenant is immutable'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS phone11_extension_member_tenant_move ON extensions;
+CREATE TRIGGER phone11_extension_member_tenant_move
+  AFTER UPDATE ON extensions
+  FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)
+  EXECUTE FUNCTION phone11_validate_advanced_pbx_extension_move();
 
 -- Child rows reference integer parent IDs, so changing a parent workspace would
 -- otherwise leave existing members attached to extensions from the old tenant.
 -- Tenant moves must be represented by a reviewed export/recreate operation.
 CREATE OR REPLACE FUNCTION phone11_advanced_pbx_tenant_immutable() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog AS $$
 BEGIN
   IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id THEN
     RAISE EXCEPTION 'advanced PBX parent tenant is immutable'
@@ -235,12 +309,38 @@ $$;
 
 DROP TRIGGER IF EXISTS phone11_ring_group_tenant_immutable ON ring_groups;
 CREATE TRIGGER phone11_ring_group_tenant_immutable
-  BEFORE UPDATE OF tenant_id ON ring_groups
-  FOR EACH ROW EXECUTE FUNCTION phone11_advanced_pbx_tenant_immutable();
+  AFTER UPDATE ON ring_groups
+  FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)
+  EXECUTE FUNCTION phone11_advanced_pbx_tenant_immutable();
 
 DROP TRIGGER IF EXISTS phone11_queue_tenant_immutable ON call_queues;
 CREATE TRIGGER phone11_queue_tenant_immutable
-  BEFORE UPDATE OF tenant_id ON call_queues
-  FOR EACH ROW EXECUTE FUNCTION phone11_advanced_pbx_tenant_immutable();
+  AFTER UPDATE ON call_queues
+  FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)
+  EXECUTE FUNCTION phone11_advanced_pbx_tenant_immutable();
+
+-- All member, parent, and extension tables now carry their write guards, and their DDL locks remain
+-- held through commit. This READ COMMITTED scan sees the latest committed
+-- rows, so replay refuses invalid memberships introduced before the guards.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM ring_group_members m
+    LEFT JOIN ring_groups g ON g.id = m.ring_group_id
+    LEFT JOIN extensions e ON e.id = m.extension_id
+    WHERE g.id IS NULL OR e.id IS NULL
+      OR e.tenant_id IS DISTINCT FROM g.tenant_id
+  ) OR EXISTS (
+    SELECT 1 FROM queue_agents a
+    LEFT JOIN call_queues q ON q.id = a.queue_id
+    LEFT JOIN extensions e ON e.id = a.extension_id
+    WHERE q.id IS NULL OR e.id IS NULL
+      OR e.tenant_id IS DISTINCT FROM q.tenant_id
+  ) THEN
+    RAISE EXCEPTION 'advanced PBX has invalid existing member tenant assignments'
+      USING ERRCODE = '23514';
+  END IF;
+END;
+$$;
 
 COMMIT;
