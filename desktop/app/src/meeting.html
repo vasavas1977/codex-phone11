@@ -17,6 +17,15 @@
         <button id="start-channel-meeting" type="button" disabled>Meet now</button>
         <p id="meet-now-message" role="status" aria-live="polite"></p>
       </section>
+      <section class="meet-now" aria-labelledby="direct-meet-title">
+        <h2 id="direct-meet-title">Meet with a contact</h2>
+        <label for="direct-search">Find an older direct chat</label>
+        <div class="direct-search-row"><input id="direct-search" type="search" maxlength="100" placeholder="Contact name" autocomplete="off"><button id="search-direct" type="button">Search</button></div>
+        <label for="direct-select">Direct chat</label><select id="direct-select" disabled><option>Loading…</option></select>
+        <button id="more-direct" type="button" hidden>Load more contacts</button>
+        <button id="start-direct-meeting" type="button" disabled>Meet with contact</button>
+        <p id="direct-meet-message" role="status" aria-live="polite"></p>
+      </section>
       <section class="audio-check" aria-labelledby="audio-check-title">
         <h2 id="audio-check-title">Audio check</h2>
         <p>Test your sound and microphone before joining. Microphone audio stays on this device.</p>

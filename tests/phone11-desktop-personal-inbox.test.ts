@@ -35,7 +35,7 @@ beforeEach(() => {
   db.storage.mockReset();
   db.voicemails.mockReset();
   db.storage.mockResolvedValue(undefined);
-  db.markRead.mockResolvedValue(undefined);
+  db.markRead.mockResolvedValue(true);
 });
 
 describe("pbx.selfService.usage tenant selection", () => {
@@ -110,6 +110,14 @@ describe("pbx.voicemail.markRead tenant selection", () => {
       .rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(db.storage).not.toHaveBeenCalled();
     expect(db.markRead).not.toHaveBeenCalled();
+  });
+
+  it("returns a non-disclosing false acknowledgment when no owned unread row changed", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership(7)] });
+    db.markRead.mockResolvedValueOnce(false);
+    await expect(pbxRouter.createCaller(ctx()).voicemail.markRead({ id: 41 }))
+      .resolves.toEqual({ success: false });
+    expect(db.markRead).toHaveBeenCalledWith(7, 9, 41);
   });
 
   it("rejects an invalid selected tenant before membership or storage queries", async () => {

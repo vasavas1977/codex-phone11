@@ -2,9 +2,9 @@ import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AuthenticatedDesktopProvider, DesktopMeetingGrant } from '../../src/authenticated-provider';
+import type { AuthenticatedDesktopProvider, DesktopMeetingGrant, DesktopMeetingDirectCursor } from '../../src/authenticated-provider';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
-import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
+import { appendDirectMeetingPage, MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
 import { permitMeetingMedia, permitMeetingSpeakerSelection, phoneMediaBusy, validMeetingFrame } from './meeting-boundary';
 
 const meetingPath = join(__dirname, 'meeting.html');
@@ -17,6 +17,13 @@ export class DesktopMeetingWindow {
   private revision: string | null = null;
   private admitted = new Set<string>();
   private channels = new Set<string>();
+  private directChats = new Map<string, number>();
+  private directSearchGeneration = 0;
+  private directSearchTerm = '';
+  private directCursor: DesktopMeetingDirectCursor | null = null;
+  private directHasMore = false;
+  private directSearchPending = false;
+  private directPagePending = false;
   private closing: Promise<void> | null = null;
   private joined = false;
   private starting = false;
@@ -47,6 +54,13 @@ export class DesktopMeetingWindow {
     this.revision = session.revision;
     this.admitted.clear();
     this.channels.clear();
+    this.directChats.clear();
+    this.directSearchGeneration++;
+    this.directSearchTerm = '';
+    this.directCursor = null;
+    this.directHasMore = false;
+    this.directSearchPending = false;
+    this.directPagePending = false;
     this.joined = false;
     this.starting = false;
     this.startedChannel = false;
@@ -101,13 +115,66 @@ export class DesktopMeetingWindow {
     ipcMain.handle(MEETING_CHANNELS.state, async event => {
       if (!this.valid(event) || !this.revision) throw new Error('Meeting session changed');
       const revision = this.revision;
-      const [meetings, channels] = await Promise.all([
+      const [meetings, channels, directChats] = await Promise.all([
         this.provider.availableMeetings(revision), this.provider.meetingChannels(revision),
+        this.provider.meetingDirectChats(revision).catch(() => []),
       ]);
       if (!this.valid(event) || this.revision !== revision) throw new Error('Meeting session changed');
       this.admitted = new Set(meetings.map(({ meetingId }) => meetingId));
       this.channels = new Set(channels.map(({ id }) => id));
-      return { revision, meetings, channels } satisfies PublicMeetingState;
+      this.directChats = new Map(directChats.map(({ id, peerId }) => [id, peerId]));
+      this.directSearchTerm = '';
+      this.directCursor = directChats.length
+        ? { peerId: directChats[directChats.length - 1].peerId, id: directChats[directChats.length - 1].id } : null;
+      this.directHasMore = directChats.length === 50;
+      return { revision, meetings, channels, directChats,
+        directHasMore: this.directHasMore } satisfies PublicMeetingState;
+    });
+    ipcMain.handle(MEETING_CHANNELS.directSearch, async (event, input: unknown) => {
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel ||
+          !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
+      const { search, revision } = input as Record<string, unknown>;
+      if (revision !== this.revision || typeof search !== 'string' || search !== search.trim() ||
+          (search.length > 0 && search.length < 2) || search.length > 100 ||
+          /[\u0000-\u001f\u007f-\u009f]/u.test(search)) throw new Error('Meeting unavailable');
+      const expected = this.revision;
+      const generation = ++this.directSearchGeneration;
+      this.directSearchPending = true;
+      try {
+        const directChats = await this.provider.meetingDirectChats(expected, search);
+        if (!this.valid(event) || this.revision !== expected || this.phoneBusy() ||
+            generation !== this.directSearchGeneration) throw new Error('Meeting session changed');
+        this.directChats = new Map(directChats.map(({ id, peerId }) => [id, peerId]));
+        this.directSearchTerm = search;
+        this.directCursor = directChats.length
+          ? { peerId: directChats[directChats.length - 1].peerId, id: directChats[directChats.length - 1].id } : null;
+        this.directHasMore = directChats.length === 50;
+        return { chats: directChats, hasMore: this.directHasMore };
+      } finally {
+        if (generation === this.directSearchGeneration) this.directSearchPending = false;
+      }
+    });
+    ipcMain.handle(MEETING_CHANNELS.directMore, async (event, input: unknown) => {
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel ||
+          this.directSearchPending || this.directPagePending || !this.directHasMore || !this.directCursor ||
+          !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
+      const { search, revision } = input as Record<string, unknown>;
+      if (revision !== this.revision || search !== this.directSearchTerm) throw new Error('Meeting unavailable');
+      const expected = this.revision;
+      const generation = this.directSearchGeneration;
+      const cursor = this.directCursor;
+      this.directPagePending = true;
+      try {
+        const page = await this.provider.meetingDirectChats(expected, this.directSearchTerm, cursor);
+        if (!this.valid(event) || this.revision !== expected || this.phoneBusy() ||
+            generation !== this.directSearchGeneration) throw new Error('Meeting session changed');
+        const { choices, added } = appendDirectMeetingPage(this.directChats, page);
+        this.directChats = choices;
+        if (page.length) this.directCursor = { peerId: page[page.length - 1].peerId,
+          id: page[page.length - 1].id };
+        this.directHasMore = page.length === 50;
+        return { chats: added, hasMore: this.directHasMore };
+      } finally { this.directPagePending = false; }
     });
     ipcMain.handle(MEETING_CHANNELS.channelDetails, async (event, input: unknown) => {
       if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel ||
@@ -142,8 +209,43 @@ export class DesktopMeetingWindow {
         return { meetingId };
       } finally { this.starting = false; }
     });
+    ipcMain.handle(MEETING_CHANNELS.directDetails, async (event, input: unknown) => {
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel ||
+          this.directSearchPending ||
+          !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
+      const { conversationId, revision } = input as Record<string, unknown>;
+      if (typeof conversationId !== 'string' || !uuid.test(conversationId) ||
+          revision !== this.revision || !this.directChats.has(conversationId)) throw new Error('Meeting unavailable');
+      const expected = this.revision;
+      const peerId = this.directChats.get(conversationId)!;
+      const details = await this.provider.meetingDirectDetails(expected, conversationId, peerId);
+      if (!this.valid(event) || this.revision !== expected || this.phoneBusy() ||
+          this.directChats.get(conversationId) !== details.peerId) throw new Error('Meeting session changed');
+      return details;
+    });
+    ipcMain.handle(MEETING_CHANNELS.startDirect, async (event, input: unknown) => {
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel ||
+          this.directSearchPending ||
+          !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
+      const { conversationId, revision } = input as Record<string, unknown>;
+      if (typeof conversationId !== 'string' || !uuid.test(conversationId) ||
+          revision !== this.revision || !this.directChats.has(conversationId)) throw new Error('Meeting unavailable');
+      const expected = this.revision;
+      const peerId = this.directChats.get(conversationId)!;
+      this.starting = true;
+      try {
+        const key = JSON.stringify(['direct', conversationId, peerId]);
+        if (this.startRequest?.key !== key) this.startRequest = { key, requestId: randomUUID() };
+        const meetingId = await this.provider.startDirectMeeting(expected, conversationId, peerId, this.startRequest.requestId);
+        if (!this.valid(event) || this.revision !== expected || this.phoneBusy())
+          throw new Error('Meeting session changed');
+        this.admitted.add(meetingId);
+        this.startedChannel = true;
+        return { meetingId };
+      } finally { this.starting = false; }
+    });
     ipcMain.handle(MEETING_CHANNELS.join, async (event, input: unknown): Promise<DesktopMeetingGrant> => {
-      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined ||
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting ||
           !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
       const { meetingId, revision } = input as Record<string, unknown>;
       if (typeof meetingId !== 'string' || !uuid.test(meetingId) ||
@@ -184,6 +286,13 @@ export class DesktopMeetingWindow {
     this.closing = (async () => {
       this.admitted.clear();
       this.channels.clear();
+      this.directChats.clear();
+      this.directSearchGeneration++;
+      this.directSearchTerm = '';
+      this.directCursor = null;
+      this.directHasMore = false;
+      this.directSearchPending = false;
+      this.directPagePending = false;
       this.joined = false;
       this.starting = false;
       this.startedChannel = false;

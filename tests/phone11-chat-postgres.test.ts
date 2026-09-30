@@ -60,6 +60,69 @@ describe.skipIf(!connectionString && !socket)("Team Chat real PostgreSQL persist
   });
   afterAll(() => pool.end());
   const room = () => service.create(1, 10, "direct", "Direct", [2]);
+  it("finds an older direct chat by peer name beyond the 200-row chat list", async () => {
+    const older = await room();
+    await pool.query("UPDATE phone11_chat_conversations SET created_at = NOW() - INTERVAL '1 year' WHERE id = $1", [older.id]);
+    const recentIds = Array.from({ length: 201 }, () => randomUUID());
+    await pool.query(`INSERT INTO phone11_chat_conversations(id, tenant_id, kind, name)
+      SELECT id::uuid, 10, 'group', 'Recent group' FROM unnest($1::text[]) AS id`, [recentIds]);
+    await pool.query(`INSERT INTO phone11_chat_members(tenant_id, conversation_id, user_id)
+      SELECT 10, id::uuid, 1 FROM unnest($1::text[]) AS id`, [recentIds]);
+    expect((await service.list(1, 10)).channels.some(chat => chat.id === older.id)).toBe(false);
+    expect(await service.directMeetingChats(1, 10)).toEqual([{ id: older.id, name: "Bob", peerId: 2, extension: "1002" }]);
+    expect(await service.directMeetingChats(1, 10, "  BoB  ")).toEqual([{ id: older.id, name: "Bob", peerId: 2, extension: "1002" }]);
+  });
+  it("keeps direct meeting candidates tenant, member, assignment, and block scoped", async () => {
+    const alpha = await room();
+    const beta = await service.create(3, 20, "direct", "Beta", [6]);
+    const outsider = await service.create(2, 10, "direct", "Other member", [5]);
+    expect(await service.directMeetingChats(1, 10)).toEqual([{ id: alpha.id, name: "Bob", peerId: 2, extension: "1002" }]);
+    expect((await service.directMeetingChats(1, 10, "Beta")).map(chat => chat.id)).not.toContain(beta.id);
+    expect((await service.directMeetingChats(1, 10, "Not in conversation")).map(chat => chat.id)).not.toContain(outsider.id);
+    await expect(service.directMeetingChats(1, 20)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await service.block(2, 10, 1);
+    expect(await service.directMeetingChats(1, 10, "Bob")).toEqual([]);
+    await service.unblock(2, 10, 1);
+    expect((await service.directMeetingChats(1, 10, "Bob")).map(chat => chat.id)).toEqual([alpha.id]);
+    await pool.query("UPDATE tenant_memberships SET status = 'inactive' WHERE tenant_id = 10 AND user_id = 2");
+    expect(await service.directMeetingChats(1, 10, "Bob")).toEqual([]);
+    await pool.query("UPDATE tenant_memberships SET status = 'active' WHERE tenant_id = 10 AND user_id = 2");
+    await pool.query("UPDATE extensions SET status = 'inactive' WHERE id = 2");
+    expect(await service.directMeetingChats(1, 10, "Bob")).toEqual([]);
+    await pool.query("UPDATE extensions SET status = 'active' WHERE id = 2");
+    await pool.query("INSERT INTO extensions(id, tenant_id, extension_number, status) VALUES (7, 10, '1007', 'active')");
+    await pool.query("INSERT INTO user_extensions(user_id, extension_id, is_primary) VALUES (2, 7, true)");
+    expect((await service.directMeetingChats(1, 10, "Bob"))[0].extension).toBe("1002");
+    await pool.query("UPDATE user_extensions SET is_primary = false WHERE user_id = 2 AND extension_id = 2");
+    expect((await service.directMeetingChats(1, 10, "Bob"))[0].extension).toBe("1007");
+    await pool.query("UPDATE extensions SET status = 'inactive' WHERE id = 7");
+    expect((await service.directMeetingChats(1, 10, "Bob"))[0].extension).toBe("1002");
+    await pool.query("INSERT INTO phone11_chat_members(tenant_id, conversation_id, user_id) VALUES (10, $1, 5)", [alpha.id]);
+    expect(await service.directMeetingChats(1, 10, "Bob")).toEqual([]);
+  });
+  it("pages through 55 same-name direct candidates and treats LIKE metacharacters literally", async () => {
+    const peerIds = Array.from({ length: 55 }, (_, index) => index + 100);
+    await pool.query(`INSERT INTO users(id, name) SELECT id, 'Peer' FROM unnest($1::integer[]) id`, [peerIds]);
+    await pool.query(`INSERT INTO tenant_memberships(user_id, tenant_id, role, status, is_default)
+      SELECT id, 10, 'user', 'active', false FROM unnest($1::integer[]) id`, [peerIds]);
+    await pool.query(`INSERT INTO extensions(id, tenant_id, extension_number, status)
+      SELECT id, 10, id::text, 'active' FROM unnest($1::integer[]) id`, [peerIds]);
+    await pool.query(`INSERT INTO user_extensions(user_id, extension_id, is_primary)
+      SELECT id, id, true FROM unnest($1::integer[]) id`, [peerIds]);
+    for (const peerId of peerIds) await service.create(1, 10, "direct", "Direct", [peerId]);
+    const first = await service.directMeetingChats(1, 10, "Peer");
+    expect(first).toHaveLength(50);
+    expect(first.map(row => row.peerId)).toEqual(peerIds.slice(0, 50));
+    expect(first.map(row => row.extension)).toEqual(peerIds.slice(0, 50).map(String));
+    const last = first.at(-1)!;
+    const second = await service.directMeetingChats(1, 10, "Peer", { peerId: last.peerId, id: last.id });
+    expect(second).toHaveLength(5);
+    expect([...first, ...second].map(row => row.peerId)).toEqual(peerIds);
+    expect(second.map(row => row.extension)).toEqual(peerIds.slice(50).map(String));
+    expect(await service.directMeetingChats(1, 10, "Peer", { peerId: second[4].peerId, id: second[4].id })).toEqual([]);
+    expect(await service.directMeetingChats(1, 10)).toHaveLength(50);
+    expect(await service.directMeetingChats(1, 10, "%_")).toEqual([]);
+  });
   it("uses only assigned active workspaces and rejects arbitrary tenant selection", async () => {
     expect((await service.list(1)).workspace).toEqual({ id: 10, name: "Alpha" });
     await expect(service.list(1, 20)).rejects.toMatchObject({ code: "FORBIDDEN" });

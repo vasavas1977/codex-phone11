@@ -1,11 +1,11 @@
 import { ipcRenderer } from 'electron';
 import { Participant, Room, RoomEvent, Track, supportsAudioOutputSelection } from 'livekit-client';
 import { MeetingAudioOutputSequence } from './meeting-audio-output-sequence';
-import { MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
+import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, type PublicMeetingDirectPage } from './meeting-channels';
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
-import type { DesktopMeetingGrant, DesktopMeetingChannelDetails } from '../../src/authenticated-provider';
+import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingDirectDetails, DesktopMeetingDirectChat } from '../../src/authenticated-provider';
 
 // This isolated preload is the only Chromium world that receives a media grant.
 // The static page has no script and no bridge exposing the token or Room.
@@ -24,6 +24,15 @@ let channelLoad = 0;
 let startingChannel = false;
 let createdChannelMeeting = false;
 let selectedChannelDetails: DesktopMeetingChannelDetails | null = null;
+let directLoad = 0;
+let directSearchLoad = 0;
+let searchingDirect = false;
+let loadingDirectPage = false;
+let directHasMore = false;
+let directActiveSearch = '';
+const directLoadedIds = new Set<string>();
+let startingDirect = false;
+let selectedDirectDetails: DesktopMeetingDirectDetails | null = null;
 const audioOutputSequence = new MeetingAudioOutputSequence();
 type ParticipantTile = {
   participant: Participant;
@@ -676,7 +685,7 @@ async function loadChannelDetails(): Promise<void> {
   try {
     const details = await ipcRenderer.invoke(MEETING_CHANNELS.channelDetails,
       { channelId, revision }) as DesktopMeetingChannelDetails;
-    if (sequence !== channelLoad || channelId !== el<HTMLSelectElement>('channel-select').value ||
+    if (sequence !== channelLoad || createdChannelMeeting || channelId !== el<HTMLSelectElement>('channel-select').value ||
         details.channelId !== channelId) return;
     selectedChannelDetails = details;
     const list = el('invite-members');
@@ -703,7 +712,7 @@ async function loadChannelDetails(): Promise<void> {
 async function startChannelMeeting(): Promise<void> {
   const details = selectedChannelDetails;
   const channelId = el<HTMLSelectElement>('channel-select').value;
-  if (!revision || !details?.canStart || details.channelId !== channelId || startingChannel || busy || room) return;
+  if (!revision || !details?.canStart || details.channelId !== channelId || startingChannel || startingDirect || busy || room) return;
   const selectedMemberIds = Array.from(el('invite-members').querySelectorAll<HTMLInputElement>('input:checked'))
     .map(checkbox => Number(checkbox.value));
   startingChannel = true;
@@ -725,6 +734,11 @@ async function startChannelMeeting(): Promise<void> {
     select.disabled = false;
     el<HTMLButtonElement>('join').disabled = false;
     createdChannelMeeting = true;
+    updateDirectMore();
+    el<HTMLButtonElement>('start-direct-meeting').disabled = true;
+    el<HTMLSelectElement>('direct-select').disabled = true;
+    el<HTMLButtonElement>('search-direct').disabled = true;
+    el<HTMLInputElement>('direct-search').disabled = true;
     el('meet-now-message').textContent = 'Meeting started. Review your audio and video, then join.';
     status('Ready to join your new meeting');
   } catch {
@@ -739,10 +753,188 @@ async function startChannelMeeting(): Promise<void> {
   }
 }
 
+async function loadDirectDetails(): Promise<void> {
+  const sequence = ++directLoad;
+  const conversationId = el<HTMLSelectElement>('direct-select').value;
+  selectedDirectDetails = null;
+  el<HTMLButtonElement>('start-direct-meeting').disabled = true;
+  if (!revision || !conversationId || createdChannelMeeting || searchingDirect) return;
+  el('direct-meet-message').textContent = 'Checking contact meeting access…';
+  try {
+    const details = await ipcRenderer.invoke(MEETING_CHANNELS.directDetails,
+      { conversationId, revision }) as DesktopMeetingDirectDetails;
+    if (sequence !== directLoad || searchingDirect || createdChannelMeeting ||
+        conversationId !== el<HTMLSelectElement>('direct-select').value ||
+        details.conversationId !== conversationId) return;
+    selectedDirectDetails = details;
+    el<HTMLButtonElement>('start-direct-meeting').disabled = !details.canStart || startingDirect;
+    el('direct-meet-message').textContent = details.canStart
+      ? 'Start a meeting and invite this contact.'
+      : 'Meeting hosting is unavailable for this direct chat.';
+  } catch {
+    if (sequence === directLoad) el('direct-meet-message').textContent = 'Contact meeting access is unavailable. Try again.';
+  }
+}
+
+function updateDirectMore(): void {
+  const button = el<HTMLButtonElement>('more-direct');
+  button.hidden = !directHasMore || createdChannelMeeting;
+  button.disabled = loadingDirectPage || searchingDirect;
+}
+
+function showDirectChats(chats: readonly DesktopMeetingDirectChat[], hasMore: boolean): void {
+  const select = el<HTMLSelectElement>('direct-select');
+  select.replaceChildren();
+  directLoadedIds.clear();
+  directHasMore = hasMore;
+  selectedDirectDetails = null;
+  el<HTMLButtonElement>('start-direct-meeting').disabled = true;
+  for (const chat of chats) {
+    if (directLoadedIds.has(chat.id)) continue;
+    directLoadedIds.add(chat.id);
+    const option = document.createElement('option');
+    option.value = chat.id;
+    option.textContent = directMeetingOptionLabel(chat);
+    select.appendChild(option);
+  }
+  if (!chats.length) {
+    const option = document.createElement('option');
+    option.textContent = 'No direct chats found';
+    select.appendChild(option);
+  }
+  select.disabled = !chats.length || createdChannelMeeting;
+  updateDirectMore();
+  if (chats.length && !createdChannelMeeting) void loadDirectDetails();
+}
+
+async function loadMoreDirectChats(): Promise<void> {
+  if (!revision || !directHasMore || loadingDirectPage || searchingDirect ||
+      createdChannelMeeting || startingDirect || startingChannel || room) return;
+  const sequence = directSearchLoad;
+  const search = directActiveSearch;
+  loadingDirectPage = true;
+  updateDirectMore();
+  el('direct-meet-message').textContent = 'Loading more direct chats…';
+  try {
+    const page = await ipcRenderer.invoke(MEETING_CHANNELS.directMore,
+      { search, revision }) as PublicMeetingDirectPage;
+    if (sequence !== directSearchLoad || search !== directActiveSearch || createdChannelMeeting) return;
+    const select = el<HTMLSelectElement>('direct-select');
+    for (const chat of page.chats) {
+      if (directLoadedIds.has(chat.id)) continue;
+      directLoadedIds.add(chat.id);
+      const option = document.createElement('option');
+      option.value = chat.id;
+      option.textContent = directMeetingOptionLabel(chat);
+      select.appendChild(option);
+    }
+    directHasMore = page.hasMore;
+    el('direct-meet-message').textContent = page.chats.length
+      ? 'More direct chats loaded.' : 'No more direct chats found.';
+  } catch {
+    if (sequence === directSearchLoad)
+      el('direct-meet-message').textContent = 'More direct chats could not be loaded. Try again.';
+  } finally {
+    loadingDirectPage = false;
+    updateDirectMore();
+  }
+}
+
+async function searchDirectChats(): Promise<void> {
+  const search = el<HTMLInputElement>('direct-search').value.trim();
+  if (!revision || createdChannelMeeting || startingDirect || startingChannel || room) return;
+  if (search.length === 1 || search.length > 100) {
+    el('direct-meet-message').textContent = 'Enter at least two characters, or clear search to show recent chats.';
+    return;
+  }
+  const sequence = ++directSearchLoad;
+  let failed = false;
+  ++directLoad;
+  searchingDirect = true;
+  el<HTMLSelectElement>('direct-select').disabled = true;
+  el<HTMLButtonElement>('start-direct-meeting').disabled = true;
+  el<HTMLButtonElement>('search-direct').disabled = true;
+  updateDirectMore();
+  el('direct-meet-message').textContent = search ? 'Searching direct chats…' : 'Loading recent direct chats…';
+  try {
+    const page = await ipcRenderer.invoke(MEETING_CHANNELS.directSearch,
+      { search, revision }) as PublicMeetingDirectPage;
+    if (sequence !== directSearchLoad || search !== el<HTMLInputElement>('direct-search').value.trim() ||
+        createdChannelMeeting) return;
+    searchingDirect = false;
+    directActiveSearch = search;
+    showDirectChats(page.chats, page.hasMore);
+    el('direct-meet-message').textContent = page.chats.length
+      ? 'Select a direct chat to check meeting access.' : 'No matching direct chats. Try another name.';
+  } catch {
+    if (sequence === directSearchLoad) {
+      failed = true;
+      el<HTMLSelectElement>('direct-select').disabled = directLoadedIds.size === 0;
+      el('direct-meet-message').textContent = 'Direct chats could not be searched. Try again.';
+    }
+  } finally {
+    if (sequence === directSearchLoad) {
+      searchingDirect = false;
+      el<HTMLButtonElement>('search-direct').disabled = createdChannelMeeting;
+      updateDirectMore();
+      if (failed && directLoadedIds.size) void loadDirectDetails();
+    }
+  }
+}
+
+async function startDirectMeeting(): Promise<void> {
+  const details = selectedDirectDetails;
+  const conversationId = el<HTMLSelectElement>('direct-select').value;
+  if (!revision || !details?.canStart || details.conversationId !== conversationId ||
+      startingDirect || startingChannel || createdChannelMeeting || busy || room) return;
+  startingDirect = true;
+  el<HTMLButtonElement>('start-direct-meeting').disabled = true;
+  el<HTMLSelectElement>('direct-select').disabled = true;
+  el('direct-meet-message').textContent = 'Starting meeting…';
+  try {
+    const result = await ipcRenderer.invoke(MEETING_CHANNELS.startDirect,
+      { conversationId, revision }) as { meetingId: string };
+    if (conversationId !== el<HTMLSelectElement>('direct-select').value) return;
+    const select = el<HTMLSelectElement>('meeting-select');
+    const option = document.createElement('option');
+    option.value = result.meetingId;
+    option.textContent = `New contact meeting · …${result.meetingId.slice(-6).toUpperCase()}`;
+    option.title = `Room ID: ${result.meetingId}`;
+    select.appendChild(option);
+    select.value = result.meetingId;
+    select.disabled = false;
+    el<HTMLButtonElement>('join').disabled = false;
+    createdChannelMeeting = true;
+    updateDirectMore();
+    el<HTMLButtonElement>('search-direct').disabled = true;
+    el<HTMLInputElement>('direct-search').disabled = true;
+    el<HTMLButtonElement>('start-channel-meeting').disabled = true;
+    el<HTMLSelectElement>('channel-select').disabled = true;
+    el<HTMLFieldSetElement>('invite-picker').disabled = true;
+    el('direct-meet-message').textContent = 'Meeting started. Review your audio and video, then join.';
+    status('Ready to join your new meeting');
+  } catch {
+    el('direct-meet-message').textContent = 'Meeting could not start. Check your access and try again.';
+  } finally {
+    startingDirect = false;
+    el<HTMLSelectElement>('direct-select').disabled = createdChannelMeeting;
+    if (!createdChannelMeeting && selectedDirectDetails?.conversationId === conversationId &&
+        selectedDirectDetails.canStart && !room)
+      el<HTMLButtonElement>('start-direct-meeting').disabled = false;
+  }
+}
+
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
   el<HTMLSelectElement>('channel-select').addEventListener('change', () => { void loadChannelDetails(); });
   el<HTMLButtonElement>('start-channel-meeting').addEventListener('click', () => { void startChannelMeeting(); });
+  el<HTMLSelectElement>('direct-select').addEventListener('change', () => { void loadDirectDetails(); });
+  el<HTMLButtonElement>('search-direct').addEventListener('click', () => { void searchDirectChats(); });
+  el<HTMLButtonElement>('more-direct').addEventListener('click', () => { void loadMoreDirectChats(); });
+  el<HTMLInputElement>('direct-search').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); void searchDirectChats(); }
+  });
+  el<HTMLButtonElement>('start-direct-meeting').addEventListener('click', () => { void startDirectMeeting(); });
   el<HTMLInputElement>('start-mic').addEventListener('change', updatePrejoinState);
   el<HTMLInputElement>('start-camera').addEventListener('change', () => { void changePrejoinCamera(); });
   el<HTMLButtonElement>('test-speaker').addEventListener('click', () => { void playSpeakerTest(); });
@@ -813,6 +1005,7 @@ async function load(): Promise<void> {
     }
     channelSelect.disabled = !state.channels.length;
     if (state.channels.length) void loadChannelDetails();
+    showDirectChats(state.directChats, state.directHasMore);
     status(meetings.length ? 'Ready to join' : 'No admitted meetings for this account');
   } catch {
     error('Meeting access could not be checked. Close this window and try again.');

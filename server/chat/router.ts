@@ -27,6 +27,9 @@ const chatProcedure = protectedProcedure.use(({ ctx, next }) => {
 });
 export const chatRouter = router({
   list: chatProcedure.input(z.object({ tenantId: tenant.optional() }).optional()).query(({ ctx, input }) => service.list(ctx.user.id, input?.tenantId)),
+  directMeetingChats: chatProcedure.input(z.object({ tenantId: tenant, search: z.string().trim().min(2).max(100).optional(),
+    after: z.object({ peerId: tenant, id: z.string().uuid() }).strict().optional() }).strict())
+    .query(({ ctx, input: i }) => service.directMeetingChats(ctx.user.id, i.tenantId, i.search, i.after)),
   directory: chatProcedure.input(z.object({ tenantId: tenant })).query(({ ctx, input }) => service.directory(ctx.user.id, input.tenantId)),
   create: chatProcedure.input(z.object({ tenantId: tenant, kind: z.enum(["direct", "group", "channel"]), name: z.string().trim().min(1).max(100), memberIds: z.array(tenant).min(1).max(49) }))
     .mutation(({ ctx, input: i }) => service.create(ctx.user.id, i.tenantId, i.kind, i.name, i.memberIds)),

@@ -2203,11 +2203,11 @@ export const pbxRouter = router({
         const tc = await getTenantCtx(ctx, input.tenantId);
         try {
           await requireVoicemailStorage();
-          await markVoicemailRead(tc.tenantId, ctx.user.id, input.id);
+          const markedRead = await markVoicemailRead(tc.tenantId, ctx.user.id, input.id);
+          return { success: markedRead };
         } catch (error) {
           voicemailUnavailable(error);
         }
-        return { success: true };
       }),
 
     /** Delete voicemail */

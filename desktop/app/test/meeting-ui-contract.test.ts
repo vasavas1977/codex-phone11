@@ -7,6 +7,7 @@ const source = resolve(process.cwd(), 'src');
 const html = readFileSync(resolve(source, 'meeting.html'), 'utf8');
 const css = readFileSync(resolve(source, 'meeting.css'), 'utf8');
 const preload = readFileSync(resolve(source, 'meeting-preload.ts'), 'utf8');
+const meetingWindow = readFileSync(resolve(source, 'meeting-window.ts'), 'utf8');
 
 test('active desktop meeting has accessible gallery, speaker, and participant controls', () => {
   assert.match(html, /id="layout-gallery"[^>]*aria-pressed="true"/);
@@ -80,4 +81,23 @@ test('prejoin shows selected microphone and camera behavior before joining and r
   assert.match(preload, /'start-mic'\)\.addEventListener\('change', updatePrejoinState\)/);
   assert.match(preload, /async function changePrejoinCamera\(\)[\s\S]*?updatePrejoinState\(\)/);
   assert.match(preload, /function leave\(\): Promise<void>[\s\S]*?updatePrejoinState\(\)/);
+});
+
+test('direct contact chooser is rendered in isolated prejoin and routes through guarded IPC', () => {
+  assert.match(html, /id="direct-select" disabled/);
+  assert.match(html, /id="direct-search" type="search" maxlength="100"/);
+  assert.match(html, /id="search-direct" type="button"/);
+  assert.match(html, /id="more-direct" type="button" hidden/);
+  assert.match(html, /id="start-direct-meeting" type="button" disabled/);
+  assert.match(html, /id="direct-meet-message" role="status" aria-live="polite"/);
+  assert.match(preload, /MEETING_CHANNELS\.directDetails/);
+  assert.match(preload, /MEETING_CHANNELS\.directSearch/);
+  assert.match(preload, /MEETING_CHANNELS\.directMore/);
+  assert.match(preload, /directLoadedIds\.has\(chat\.id\)/);
+  assert.match(preload, /MEETING_CHANNELS\.startDirect/);
+  assert.match(preload, /option\.textContent = directMeetingOptionLabel\(chat\)/);
+  assert.match(preload, /option\.value = result\.meetingId/);
+  assert.doesNotMatch(html, /<script\b/i);
+  assert.match(meetingWindow, /this\.provider\.meetingDirectChats\(revision\)\.catch\(\(\) => \[\]\)/);
+  assert.match(meetingWindow, /generation !== this\.directSearchGeneration/);
 });

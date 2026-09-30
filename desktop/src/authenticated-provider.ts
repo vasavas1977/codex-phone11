@@ -40,6 +40,9 @@ export type DesktopMeetingGrant = Readonly<{ url: string; token: string;
   grantProfile: "interactive" | "listener"; expiresAt: number }>;
 export type DesktopMeetingListing = Readonly<{ meetingId: string; title?: string }>;
 export type DesktopMeetingChannel = Readonly<{ id: string; name: string }>;
+export type DesktopMeetingDirectChat = Readonly<{ id: string; name: string; peerId: number; extension: string }>;
+export type DesktopMeetingDirectCursor = Readonly<{ peerId: number; id: string }>;
+export type DesktopMeetingDirectDetails = Readonly<{ conversationId: string; peerId: number; canStart: boolean }>;
 export type DesktopMeetingMember = Readonly<{ id: number; name: string }>;
 export type DesktopMeetingChannelDetails = Readonly<{ channelId: string;
   members: readonly DesktopMeetingMember[]; canStart: boolean }>;
@@ -361,6 +364,76 @@ export class AuthenticatedDesktopProvider {
       if (item.kind !== "direct") channels.set(item.id, { id: item.id, name: item.name as string });
     }
     return [...channels.values()];
+  }
+
+  /** Protected selected-tenant search includes older eligible direct chats. */
+  async meetingDirectChats(expectedRevision: string, search = "",
+    after?: DesktopMeetingDirectCursor): Promise<readonly DesktopMeetingDirectChat[]> {
+    if (typeof search !== "string") throw new DesktopAuthenticationError();
+    const query = search.trim();
+    if ((query.length > 0 && query.length < 2) || query.length > 100 ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(query)) throw new DesktopAuthenticationError();
+    if (after !== undefined && (!isRecord(after) || !positiveId(after.peerId) || !meetingId(after.id)))
+      throw new DesktopAuthenticationError();
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const actor = Number(this.session!.userId);
+    const value = await this.query("chat.directMeetingChats", token, epoch,
+      { tenantId, ...(query ? { search: query } : {}),
+        ...(after ? { after: { peerId: after.peerId, id: after.id } } : {}) });
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!positiveId(actor) || !Array.isArray(value) || value.length > 50)
+      throw new DesktopAuthenticationError();
+    const chats = new Map<string, DesktopMeetingDirectChat>();
+    let previous = after;
+    for (const item of value) {
+      const name = isRecord(item) ? safeDisplay(item.name, 160) : null;
+      if (!isRecord(item) || !meetingId(item.id) || !positiveId(item.peerId) ||
+          item.peerId === actor || !name || typeof item.extension !== "string" ||
+          !/^[0-9]{1,32}$/.test(item.extension) || chats.has(item.id))
+        throw new DesktopAuthenticationError();
+      if (previous && (item.peerId < previous.peerId ||
+          (item.peerId === previous.peerId && item.id.toLowerCase() <= previous.id.toLowerCase())))
+        throw new DesktopAuthenticationError();
+      chats.set(item.id, { id: item.id, name, peerId: item.peerId, extension: item.extension });
+      previous = { peerId: item.peerId, id: item.id };
+    }
+    return [...chats.values()];
+  }
+
+  async meetingDirectDetails(expectedRevision: string, conversationId: string,
+    peerId: number): Promise<DesktopMeetingDirectDetails> {
+    if (!meetingId(conversationId) || !positiveId(peerId) || peerId === Number(this.session?.userId))
+      throw new DesktopAuthenticationError();
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const capability = await this.query("meetings.directCapabilities", token, epoch, { tenantId, conversationId });
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!isRecord(capability) || typeof capability.available !== "boolean" ||
+        typeof capability.canStart !== "boolean" || capability.maxSelectedMembers !== 1)
+      throw new DesktopAuthenticationError();
+    return { conversationId, peerId,
+      canStart: capability.available && capability.canStart };
+  }
+
+  async startDirectMeeting(expectedRevision: string, conversationId: string,
+    peerId: number, requestId: string): Promise<string> {
+    if (!meetingId(conversationId) || !positiveId(peerId) || !meetingId(requestId))
+      throw new DesktopAuthenticationError();
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    const details = await this.meetingDirectDetails(expectedRevision, conversationId, peerId);
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!details.canStart || details.peerId !== peerId) throw new DesktopAuthenticationError();
+    const response = await this.send("/api/trpc/meetings.startDirectMeeting", {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ json: { tenantId, conversationId, requestId } }),
+    }, epoch);
+    const value = this.unwrapTrpc(await this.json(response));
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (!isRecord(value) || !meetingId(value.meetingId) || value.conversationId !== conversationId ||
+        value.invitedMemberId !== peerId) throw new DesktopAuthenticationError();
+    return value.meetingId;
   }
 
   async meetingChannelDetails(expectedRevision: string, channelId: string): Promise<DesktopMeetingChannelDetails> {

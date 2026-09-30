@@ -5,12 +5,16 @@ on:
   pull_request:
     paths:
       - "app/**"
+      - "components/admin/**"
       - "hooks/**"
       - "constants/**"
       - "lib/**"
       - "server/**"
+      - "shared/invitations.ts"
       - "tests/phone11-auth*"
+      - "tests/phone11-invitation*"
       - "scripts/*phone11-auth*"
+      - "scripts/test-phone11-invitations.mjs"
       - "package.json"
       - "pnpm-lock.yaml"
       - "vitest.config.ts"
@@ -40,6 +44,8 @@ jobs:
           sudo apt-get install -y postgresql postgresql-client libpq-dev
       - name: Test auth with disposable local database
         run: pnpm run test:auth
+      - name: Test workspace invitations with disposable local database
+        run: node scripts/test-phone11-invitations.mjs
       - name: Test mobile auth state and SIP account isolation
         run: |
           pnpm run test:auth-client

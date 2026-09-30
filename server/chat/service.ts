@@ -283,6 +283,45 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
         })) };
       });
     },
+    directMeetingChats(userId: number, tenantId: number, search?: string,
+      after?: { peerId: number; id: string }): Promise<{ id: string; name: string; peerId: number; extension: string }[]> {
+      return scoped(userId, tenantId, async (db, workspace) => {
+        // The caller's indexed membership narrows the scan before any name
+        // match. Escape LIKE metacharacters so a search is always literal.
+        const term = search?.trim();
+        if (term !== undefined && (term.length < 2 || term.length > 100))
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Search must be between 2 and 100 characters." });
+        const pattern = term === undefined ? null : `%${term.replace(/[\\%_]/g, "\\$&")}%`;
+        await db.query("SET LOCAL statement_timeout = '2s'");
+        const result = await db.query(`WITH mine AS MATERIALIZED (
+            SELECT tenant_id, conversation_id FROM phone11_chat_members
+            WHERE user_id = $2 AND tenant_id = $1
+          )
+          SELECT c.id, COALESCE(u.name, 'Team member') AS name, peer.user_id AS peer_id,
+            active_extension.extension_number AS extension
+          FROM mine
+          JOIN phone11_chat_conversations c ON c.tenant_id = mine.tenant_id AND c.id = mine.conversation_id AND c.kind = 'direct'
+          JOIN phone11_chat_members peer ON peer.tenant_id = c.tenant_id AND peer.conversation_id = c.id AND peer.user_id <> $2
+          JOIN users u ON u.id = peer.user_id
+          JOIN tenant_memberships tm ON tm.tenant_id = c.tenant_id AND tm.user_id = peer.user_id AND tm.status = 'active'
+          JOIN LATERAL (SELECT e.extension_number FROM user_extensions ue JOIN extensions e ON e.id = ue.extension_id
+            WHERE ue.user_id = peer.user_id AND e.tenant_id = c.tenant_id
+              AND e.status = 'active' AND e.deleted_at IS NULL
+              AND NULLIF(btrim(e.extension_number), '') IS NOT NULL
+            ORDER BY ue.is_primary DESC, ue.id ASC LIMIT 1) active_extension ON TRUE
+          WHERE NOT EXISTS (SELECT 1 FROM phone11_chat_members extra
+              WHERE extra.tenant_id = c.tenant_id AND extra.conversation_id = c.id
+                AND extra.user_id NOT IN ($2, peer.user_id))
+            AND NOT EXISTS (SELECT 1 FROM phone11_chat_blocks b WHERE b.tenant_id = c.tenant_id
+              AND ((b.blocker_id = $2 AND b.blocked_id = peer.user_id)
+                OR (b.blocker_id = peer.user_id AND b.blocked_id = $2)))
+            AND ($3::text IS NULL OR COALESCE(u.name, 'Team member') ILIKE $3 ESCAPE '\\')
+            AND ($4::integer IS NULL OR (peer.user_id, c.id) > ($4::integer, $5::uuid))
+          ORDER BY peer.user_id ASC, c.id ASC LIMIT 50`,
+          [workspace.id, userId, pattern, after?.peerId ?? null, after?.id ?? null]);
+        return result.rows.map((row: any) => ({ id: row.id, name: row.name, peerId: Number(row.peer_id), extension: row.extension }));
+      });
+    },
     directory(userId: number, tenantId: number) {
       return scoped(userId, tenantId, async (db, workspace) => {
         const result = await db.query(`SELECT DISTINCT u.id, COALESCE(u.name, 'Team member') AS name,
