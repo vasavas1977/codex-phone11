@@ -206,6 +206,69 @@ jobs:
       - name: Test recording policies, ownership, job leases and retention
         run: node scripts/test-phone11-cloud-recordings.mjs
 
+  pbx-and-history-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_management_test
+          POSTGRES_PASSWORD: phone11_management_test
+          POSTGRES_DB: phone11_management_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_management_test -d phone11_management_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Synthetic, job-local databases. Never a production credential or URL.
+      PHONE11_MANAGEMENT_TEST_DATABASE_URL: postgresql://phone11_management_test:phone11_management_test@127.0.0.1:5432/phone11_management_test
+      PHONE11_PBX_TEST_DATABASE_URL: postgresql://phone11_management_test:phone11_management_test@127.0.0.1:5432/phone11_pbx_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require both dedicated local databases
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          for (const [key, name] of [
+            ['PHONE11_MANAGEMENT_TEST_DATABASE_URL', 'phone11_management_test'],
+            ['PHONE11_PBX_TEST_DATABASE_URL', 'phone11_pbx_test'],
+          ]) {
+            assert.ok(process.env[key], 'PostgreSQL tests must not silently skip');
+            const url = new URL(process.env[key]);
+            assert.equal(url.protocol, 'postgresql:');
+            assert.equal(url.hostname, '127.0.0.1');
+            assert.equal(url.port, '5432');
+            assert.equal(url.pathname, '/' + name);
+            assert.equal(url.username, 'phone11_management_test');
+            assert.equal(url.search, '');
+            assert.equal(url.hash, '');
+          }
+          JS
+      - name: Create the separate PBX fixture database
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER_ID" psql -U phone11_management_test -d phone11_management_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE phone11_pbx_test'
+      - name: Test call-time ownership, paging and PBX migration refusal
+        run: >-
+          pnpm exec vitest run
+          tests/phone11-personal-call-history-postgres.test.ts
+          tests/phone11-self-service-usage-postgres.test.ts
+          tests/phone11-extension-tenant-prerequisites-postgres.test.ts
+          tests/phone11-pbx-advanced-migration.test.ts
+
   chat-postgres-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

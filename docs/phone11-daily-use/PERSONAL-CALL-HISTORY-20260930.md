@@ -55,3 +55,9 @@ cases. Full root and desktop test commands, root/desktop TypeScript and both
 backend/desktop builds also passed. Independent source review approved the
 server/desktop slice and the final mobile callback/lifecycle delta. These
 checks do not establish deployed history or real-call ingestion coverage.
+
+All 13 PR jobs passed at `c73c3d3c3d5d44aa593f9afb81c963db6fb4fe87`.
+A subsequent dedicated CI job runs the PostgreSQL history/usage suites and
+PBX migration suites with explicit loopback database assertions, preventing
+those integration checks from silently skipping when an environment variable
+is missing. The combined local run of those four suites passed 19 cases.

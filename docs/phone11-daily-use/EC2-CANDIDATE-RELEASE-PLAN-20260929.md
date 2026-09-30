@@ -55,6 +55,24 @@ extension prerequisite constraint and advanced-routing migration against the
 actual schema before commissioning advanced PBX. Neither inspection executed
 DDL, changed tenant membership, nor activated routing.
 
+At 15:33 UTC, an additional read-only catalog inspection confirmed `int4`
+extension/tenant IDs with validated single-ID primary keys, and found the
+legacy `extensions.tenant_id DEFAULT 1`. Retaining that default would continue
+assigning omitted-tenant inserts to workspace 1; dropping it requires an audit
+of the exact 3016 predecessor and all database writers. The new prerequisite
+source deliberately refuses a tenant default until that compatibility question
+is resolved. A matching nullable/no-FK synthetic test fixture is not proof that
+the current public predecessor or external writers tolerate removal.
+
+The 15:45 UTC read-only writer audit found two literal `INSERT INTO extensions`
+column lists in the exact running 3016 bundle, both including `tenant_id`, and
+no literal positional INSERT/COPY. PostgreSQL reported one shared superuser
+login with effective extension insert access; the activity snapshot could not
+identify every writer and showed multiple service sources with empty
+application names. This narrows the predecessor question without proving
+dormant, dynamic or external writers safe. A controlled writer audit and
+rollback check remain required before removing `DEFAULT 1`; no DDL was run.
+
 **Signed client installation, 30 September:** `devicectl` installed verified
 Build 110 on the iPhone 17 Pro Max and its app inventory confirms bundle
 version 110. The subsequent remote launch failed when the device connection
