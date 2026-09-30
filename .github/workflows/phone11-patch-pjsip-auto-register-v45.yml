@@ -61,35 +61,37 @@ jobs:
           except ValueError as exc:
               raise SystemExit(f"Could not find manual register block: {exc}")
 
-          replacement = '''      this._diag("info", "registration", "Native PJSIP auto-registration armed", {
-        destination: registrationServer,
-        context: {
-          stage: "endpoint.createAccount.regOnAdd",
-          username: account.username,
-          domain: account.domain,
-          proxy: outboundProxy,
-          transport: account.transport,
-          hasPassword: Boolean(account.password),
-          passwordLength: account.password?.length ?? 0,
-        },
-      });
-      await recordPersistentSipDiagnosticEvent({
-        level: "info",
-        category: "registration",
-        message: "Native PJSIP auto-registration armed",
-        destination: registrationServer,
-        context: {
-          stage: "endpoint.createAccount.regOnAdd",
-          username: account.username,
-          domain: account.domain,
-          proxy: outboundProxy,
-          transport: account.transport,
-          hasPassword: Boolean(account.password),
-          passwordLength: account.password?.length ?? 0,
-        },
-      });
-
-'''
+          replacement_lines = [
+              '      this._diag("info", "registration", "Native PJSIP auto-registration armed", {',
+              '        destination: registrationServer,',
+              '        context: {',
+              '          stage: "endpoint.createAccount.regOnAdd",',
+              '          username: account.username,',
+              '          domain: account.domain,',
+              '          proxy: outboundProxy,',
+              '          transport: account.transport,',
+              '          hasPassword: Boolean(account.password),',
+              '          passwordLength: account.password?.length ?? 0,',
+              '        },',
+              '      });',
+              '      await recordPersistentSipDiagnosticEvent({',
+              '        level: "info",',
+              '        category: "registration",',
+              '        message: "Native PJSIP auto-registration armed",',
+              '        destination: registrationServer,',
+              '        context: {',
+              '          stage: "endpoint.createAccount.regOnAdd",',
+              '          username: account.username,',
+              '          domain: account.domain,',
+              '          proxy: outboundProxy,',
+              '          transport: account.transport,',
+              '          hasPassword: Boolean(account.password),',
+              '          passwordLength: account.password?.length ?? 0,',
+              '        },',
+              '      });',
+              '',
+          ]
+          replacement = "\n".join(replacement_lines) + "\n"
           text = text[:start] + replacement + text[end:]
 
           if 'regOnAdd: true' not in text:

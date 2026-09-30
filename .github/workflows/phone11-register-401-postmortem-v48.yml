@@ -79,7 +79,7 @@ jobs:
           FROM sip_accounts WHERE username='1001' OR extension='1001' ORDER BY id DESC LIMIT 10;
           SELECT 'extensions' AS table_name, extension_number, user_id, tenant_id, sip_username, sip_domain, transport, active
           FROM extensions WHERE extension_number='1001' OR sip_username='1001' ORDER BY id DESC LIMIT 10;
-SQL
+          SQL
 
           PASS="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT coalesce(password,'') FROM subscriber WHERE username = '$USER' AND domain = '$DOMAIN' LIMIT 1;")"
           if [ -z "$PASS" ]; then
@@ -182,7 +182,7 @@ SQL
           print(f'V48_FINAL_REASON={r}')
           print('V48_SYNTH_REGISTER_RESULT=' + ('pass' if c==200 else 'fail'))
           sys.exit(0 if c==200 else 42)
-PY
+          PY
           PY_EXIT=${PIPESTATUS[0]}
           set -e
           echo "synthetic_exit=$PY_EXIT"

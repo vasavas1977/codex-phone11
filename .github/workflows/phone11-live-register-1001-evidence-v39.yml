@@ -81,7 +81,7 @@ jobs:
             (coalesce(ha1b,'') = md5(username || '@' || domain || ':' || domain || ':' || coalesce(password,''))) AS ha1b_matches_password
           FROM subscriber
           WHERE username = '$USER' AND domain = '$DOMAIN';
-SQL
+          SQL
 
           PASS="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT coalesce(password,'') FROM subscriber WHERE username = '$USER' AND domain = '$DOMAIN' LIMIT 1;")"
           if [ -z "$PASS" ]; then
@@ -195,7 +195,7 @@ SQL
               sys.exit(0)
           print('V39_SYNTH_REGISTER_RESULT=fail')
           sys.exit(42)
-PY
+          PY
           PY_EXIT=${PIPESTATUS[0]}
           set -e
           echo "PY_EXIT=$PY_EXIT"
