@@ -30,6 +30,7 @@ pilot = sibling("phone11-parallel-api-pilot.py", "phone11_pilot")
 SCHEMA = "phone11-mainline-ec2-route/v1"
 ROOT = Path("/var/lib/phone11-mainline-release-route")
 PROBE_LABELS = {"existing_phone", "existing_chat", "conference", "mixed_batch", "denied_tenant"}
+READ_ONLY_PROBE_HEADER = "X-Phone11-Read-Only-Probe"
 READ_PATHS = {"existing_phone": {"/api/trpc/phone.getConfig"},
               "existing_chat": {"/api/trpc/chat.list"},
               "conference": {"/api/trpc/conference.capabilities", "/api/trpc/conference.list"},
@@ -99,7 +100,9 @@ def probes(path: Path, expected_sha: str, origin: str) -> None:
                 and parsed.path in READ_PATHS[probe["label"]]
                 and parsed.scheme == parsed.netloc == parsed.fragment == ""
                 and probe["status"] == (403 if probe["label"] == "denied_tenant" else 200), "probe_read_only")
-    pilot.run_probes(pilot.System(), origin, values)
+        require(all(key.lower() != READ_ONLY_PROBE_HEADER.lower() for key in probe["headers"]), "probe_read_only")
+    marked = [{**probe, "headers": {**probe["headers"], READ_ONLY_PROBE_HEADER: "1"}} for probe in values]
+    pilot.run_probes(pilot.System(), origin, marked)
 
 
 def sealed(directory: Path, state: str, pins: dict[str, Any]) -> tuple[dict[str, Any], bytes, bytes]:

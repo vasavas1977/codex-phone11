@@ -339,8 +339,6 @@ export async function getPhoneConfig(userId: number, _openId: string, requestedT
   const db = getPool();
 
   try {
-    await ensurePhoneProvisioningSchema(db);
-
     // An account with multiple workspaces must select the workspace whose SIP
     // identity it is requesting. Recheck that selection against live membership.
     const memberships = await db.query(

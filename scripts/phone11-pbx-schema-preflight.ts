@@ -49,6 +49,7 @@ const integer = ["integer"];
 const text = ["text", "character varying"];
 const boolean = ["boolean"];
 const timestamp = ["timestamp with time zone"];
+const bytes = ["bytea"];
 
 export const baseSchema: Record<string, TableSpec> = {
   tenants: {
@@ -60,6 +61,47 @@ export const baseSchema: Record<string, TableSpec> = {
     extension_number: { types: text, nullable: false },
     display_name: { types: text },
     deleted_at: { types: timestamp },
+  },
+};
+
+// Tables and columns read by phone.getConfig. Keep this separate from the
+// advanced-routing migration check so a release can reject an incomplete
+// provisioning schema even when its routing tables are otherwise compatible.
+export const phoneConfigSchema: Record<string, TableSpec> = {
+  tenant_memberships: {
+    user_id: { types: integer }, tenant_id: { types: integer }, status: { types: text },
+  },
+  tenants: {
+    id: { types: integer }, status: { types: text }, name: { types: text }, plan: { types: text },
+  },
+  extensions: {
+    id: { types: integer }, org_id: { types: integer }, tenant_id: { types: integer },
+    user_id: { types: integer }, extension_number: { types: text }, display_name: { types: text },
+    type: { types: text }, sip_username: { types: text }, sip_domain: { types: text },
+    sip_password: { types: text }, caller_id_name: { types: text }, caller_id_number: { types: text },
+    transport: { types: text }, status: { types: text }, deleted_at: { types: timestamp },
+  },
+  user_extensions: {
+    user_id: { types: integer }, extension_id: { types: integer }, is_primary: { types: boolean },
+  },
+  organizations: {
+    id: { types: integer }, name: { types: text }, plan: { types: text },
+  },
+  sip_accounts: {
+    id: { types: integer }, extension_id: { types: integer }, tenant_id: { types: integer },
+    user_id: { types: integer }, sip_username: { types: text }, sip_domain: { types: text },
+    ha1: { types: text }, ha1b: { types: text }, secret_ciphertext: { types: bytes },
+    secret_iv: { types: bytes }, secret_tag: { types: bytes }, transport_preference: { types: text },
+    status: { types: text }, deleted_at: { types: timestamp },
+  },
+  subscriber: {
+    username: { types: text }, domain: { types: text }, password: { types: text },
+    ha1: { types: text }, ha1b: { types: text },
+  },
+  did_numbers: {
+    tenant_id: { types: integer }, destination_type: { types: text },
+    destination_value: { types: text }, status: { types: text },
+    number: { types: text }, description: { types: text },
   },
 };
 
@@ -261,6 +303,7 @@ export type PbxSchemaPreflight = {
   readOnly: true;
   overall: "ready_for_migration" | "compatible" | "incompatible";
   base: { status: "compatible" | "incompatible"; issues: string[] };
+  phoneConfig: { status: "compatible" | "incompatible"; issues: string[] };
   advanced: {
     status: "absent" | "compatible" | "incompatible";
     presentTables: string[];
@@ -272,10 +315,11 @@ export type PbxSchemaPreflight = {
 export async function inspectPbxSchema(
   client: PreflightClient,
 ): Promise<PbxSchemaPreflight> {
-  const allTables = [
+  const allTables = [...new Set([
     ...Object.keys(baseSchema),
+    ...Object.keys(phoneConfigSchema),
     ...Object.keys(advancedSchema),
-  ];
+  ])];
   let transactionStarted = false;
   try {
     await client.query("BEGIN TRANSACTION READ ONLY");
@@ -325,6 +369,7 @@ export async function inspectPbxSchema(
 
     const rows = columnsResult.rows;
     const baseIssues = checkColumns(rows, baseSchema);
+    const phoneConfigIssues = checkColumns(rows, phoneConfigSchema);
     const presentTables = Object.keys(advancedSchema).filter((table) =>
       rows.some((row) => row.table_name === table),
     );
@@ -380,7 +425,7 @@ export async function inspectPbxSchema(
           : "incompatible";
     const baseStatus = baseIssues.length === 0 ? "compatible" : "incompatible";
     const overall =
-      baseStatus === "incompatible" || advancedStatus === "incompatible"
+      baseStatus === "incompatible" || phoneConfigIssues.length > 0 || advancedStatus === "incompatible"
         ? "incompatible"
         : advancedStatus === "absent"
           ? "ready_for_migration"
@@ -390,6 +435,10 @@ export async function inspectPbxSchema(
       readOnly: true,
       overall,
       base: { status: baseStatus, issues: baseIssues },
+      phoneConfig: {
+        status: phoneConfigIssues.length === 0 ? "compatible" : "incompatible",
+        issues: [...new Set(phoneConfigIssues)].sort(),
+      },
       advanced: {
         status: advancedStatus,
         presentTables,

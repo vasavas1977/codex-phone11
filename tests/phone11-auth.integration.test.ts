@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
 import { Pool } from "pg";
 import { SignJWT } from "jose";
-import { createPhone11Auth, handlePhone11CredentialSignIn, phone11AuthOptions, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "../server/_core/phone11-auth";
+import { createPhone11Auth, handlePhone11CredentialSignIn, isPhone11ReadOnlyProbe, phone11AuthOptions, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "../server/_core/phone11-auth";
 import { registerAuthRoutes, phone11Cors } from "../server/_core/auth-routes";
 import { applyAuthMigration, createExistingUserIdentity, restoreEmptyCanonicalUser } from "../server/_core/phone11-auth-admin";
 
@@ -243,6 +243,83 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
     expect(resolved.role).toBe("admin");
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.has("x-request-id")).toBe(true);
+  });
+  it("keeps probe authentication read-only for due sessions while ordinary requests renew them", async () => {
+    const { token } = await login();
+    const rawToken = token.split(".")[0];
+    const changed = await database.query(
+      `UPDATE phone11_auth_session SET "expiresAt" = NOW() + INTERVAL '5 days',
+        "updatedAt" = NOW() - INTERVAL '2 days' WHERE token = $1`, [rawToken],
+    );
+    expect(changed.rowCount).toBe(1);
+    const before = (await database.query(
+      'SELECT "expiresAt", "updatedAt" FROM phone11_auth_session WHERE token = $1', [rawToken],
+    )).rows[0];
+    const headers = { Authorization: "Bearer " + token, "X-Phone11-Read-Only-Probe": "1" };
+    expect((await request("/api/auth/me", { headers })).status).toBe(200);
+    expect((await database.query(
+      'SELECT "expiresAt", "updatedAt" FROM phone11_auth_session WHERE token = $1', [rawToken],
+    )).rows[0]).toEqual(before);
+    expect((await request("/api/auth/me", { headers: { Authorization: "Bearer " + token } })).status).toBe(200);
+    const after = (await database.query(
+      'SELECT "expiresAt", "updatedAt" FROM phone11_auth_session WHERE token = $1', [rawToken],
+    )).rows[0];
+    expect(after.expiresAt.getTime()).toBeGreaterThan(before.expiresAt.getTime());
+    expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+  });
+  it("rejects expired and forged probe credentials without deleting the expired session", async () => {
+    const { token } = await login();
+    const rawToken = token.split(".")[0];
+    const changed = await database.query(
+      `UPDATE phone11_auth_session SET "expiresAt" = NOW() - INTERVAL '1 hour' WHERE token = $1`,
+      [rawToken],
+    );
+    expect(changed.rowCount).toBe(1);
+    const probeHeader = { "X-Phone11-Read-Only-Probe": "1" };
+    expect((await request("/api/auth/me", {
+      headers: { ...probeHeader, Authorization: "Bearer " + token },
+    })).status).toBe(401);
+    expect((await database.query(
+      'SELECT 1 FROM phone11_auth_session WHERE token = $1', [rawToken],
+    )).rowCount).toBe(1);
+    expect((await request("/api/auth/me", {
+      headers: { ...probeHeader, Authorization: "Bearer invalid-token" },
+    })).status).toBe(401);
+    expect(isPhone11ReadOnlyProbe({ method: "POST", headers: { "x-phone11-read-only-probe": "1" } })).toBe(false);
+    expect((await request("/api/auth/me", {
+      headers: { Authorization: "Bearer " + token },
+    })).status).toBe(401);
+    expect((await database.query(
+      'SELECT 1 FROM phone11_auth_session WHERE token = $1', [rawToken],
+    )).rowCount).toBe(0);
+  });
+  it("authenticates a due probe through a PostgreSQL read-only connection and rejects expiry", async () => {
+    const { token } = await login();
+    const rawToken = token.split(".")[0];
+    const readOnlyDatabase = new Pool({
+      host: socket, database: "phone11_auth_test", user: "phone11_test",
+      options: "-c default_transaction_read_only=on",
+    });
+    const readOnlyAuth = createPhone11Auth(readOnlyDatabase, readAuthConfig());
+    const headers = { authorization: "Bearer " + token };
+    try {
+      await database.query(
+        `UPDATE phone11_auth_session SET "expiresAt" = NOW() + INTERVAL '5 days' WHERE token = $1`,
+        [rawToken],
+      );
+      expect((await resolvePhone11User(headers, readOnlyAuth, readOnlyDatabase, true)).id).toBe(17);
+      await database.query(
+        `UPDATE phone11_auth_session SET "expiresAt" = NOW() - INTERVAL '1 hour' WHERE token = $1`,
+        [rawToken],
+      );
+      await expect(resolvePhone11User(headers, readOnlyAuth, readOnlyDatabase, true))
+        .rejects.toThrow("Not authenticated");
+      expect((await database.query(
+        'SELECT 1 FROM phone11_auth_session WHERE token = $1', [rawToken],
+      )).rowCount).toBe(1);
+    } finally {
+      await readOnlyDatabase.end();
+    }
   });
   it("uses cookies for browser sessions without sharing a parent-domain cookie", async () => {
     const response = await signIn(undefined, { Origin: "http://localhost:8081" });
@@ -732,6 +809,9 @@ suite("Phone11 auth: real PostgreSQL and HTTP", () => {
     const resetToken = (await issueResetToken()).token;
     await database.query("UPDATE phone11_auth_identity SET disabled_at = NOW() WHERE legacy_user_id = 17");
     expect((await request("/api/auth/me", { headers: { Authorization: "Bearer " + token } })).status).toBe(401);
+    expect((await request("/api/auth/me", { headers: {
+      Authorization: "Bearer " + token, "X-Phone11-Read-Only-Probe": "1",
+    } })).status).toBe(401);
     const disabledReset = await resetPassword(resetToken, randomBytes(24).toString("base64url"));
     expect(disabledReset.status).toBe(400);
     expect((await disabledReset.json()).code).toBe("INVALID_TOKEN");

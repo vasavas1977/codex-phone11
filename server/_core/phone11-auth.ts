@@ -352,7 +352,18 @@ export function createPhone11Auth(
   config: Phone11AuthConfig,
   dependencies: Phone11AuthDependencies = {},
 ) {
-  const service = betterAuth(phone11AuthOptions(database, config, dependencies));
+  const options = phone11AuthOptions(database, config, dependencies);
+  const service = betterAuth(options);
+  // Better Auth 1.7.3 can renew a due session or delete an expired one while
+  // servicing GET /get-session. The probe-only instance suppresses those
+  // writes and database-backed rate-limit increments. Ordinary requests retain
+  // sliding session renewal and the existing rate limit.
+  const readOnlyOptions: BetterAuthOptions = {
+    ...options,
+    session: { ...options.session, deferSessionRefresh: true },
+    rateLimit: { ...options.rateLimit, enabled: false },
+  };
+  readOnlySessionAuth.set(service, betterAuth(readOnlyOptions));
   passwordResetAvailability.set(service, dependencies.passwordResetMailer
     ? dependencies.passwordResetAvailability || "general"
     : "disabled");
@@ -361,6 +372,7 @@ export function createPhone11Auth(
 
 export type Phone11Auth = ReturnType<typeof createPhone11Auth>;
 const passwordResetAvailability = new WeakMap<object, Phone11PasswordResetAvailability>();
+const readOnlySessionAuth = new WeakMap<object, Phone11Auth>();
 let auth: Phone11Auth | undefined;
 
 async function credentialSignInLockKey(
@@ -454,13 +466,21 @@ export function sessionHeaders(headers: Request["headers"]): Headers {
   return result;
 }
 
+export function isPhone11ReadOnlyProbe(req: Pick<Request, "method" | "headers">): boolean {
+  return req.method === "GET" && req.headers["x-phone11-read-only-probe"] === "1";
+}
+
 export async function resolvePhone11User(
   headers: Request["headers"],
   authService: Phone11Auth = getPhone11Auth(),
   database: Pool = getPool(),
+  readOnlyProbe = false,
 ): Promise<User> {
-  const session = await authService.api.getSession({
-    headers: sessionHeaders(headers), query: { disableCookieCache: true },
+  const sessionService = readOnlyProbe ? readOnlySessionAuth.get(authService) : authService;
+  if (!sessionService) throw new Error("Read-only Phone11 auth is unavailable");
+  const session = await sessionService.api.getSession({
+    headers: sessionHeaders(headers),
+    query: { disableCookieCache: true, ...(readOnlyProbe ? { disableRefresh: true } : {}) },
   });
   if (!session) throw ForbiddenError("Not authenticated");
   // Explicit operator-approved identity mapping, never an email match or a guessed user ID.

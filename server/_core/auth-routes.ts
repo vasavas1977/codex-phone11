@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response, RequestHandler } from "express";
 import { toNodeHandler } from "better-auth/node";
-import { getPhone11Auth, getPhone11PasswordResetAvailability, handlePhone11CredentialSignIn, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "./phone11-auth";
+import { getPhone11Auth, getPhone11PasswordResetAvailability, handlePhone11CredentialSignIn, isPhone11ReadOnlyProbe, readAuthConfig, resolvePhone11User, revokePhone11Session, type Phone11Auth } from "./phone11-auth";
 import type { Pool } from "pg";
 import { getPool } from "../pbx/db";
 import { HttpError } from "../../shared/_core/errors";
@@ -90,7 +90,7 @@ export function registerAuthRoutes(
 
   app.get("/api/auth/me", async (req: Request, res: Response) => {
     try {
-      const user = await resolvePhone11User(req.headers, getAuth(), getDatabase());
+      const user = await resolvePhone11User(req.headers, getAuth(), getDatabase(), isPhone11ReadOnlyProbe(req));
       res.json({ user: {
         id: user.id, openId: user.openId, name: user.name, email: user.email,
         loginMethod: "phone11", lastSignedIn: user.lastSignedIn.toISOString(),

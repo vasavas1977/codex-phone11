@@ -7,7 +7,14 @@ import {
   advancedSchema,
   baseSchema,
   inspectPbxSchema,
+  phoneConfigSchema,
 } from "../scripts/phone11-pbx-schema-preflight";
+
+const requiredSchema = Object.fromEntries(
+  [...new Set([...Object.keys(baseSchema), ...Object.keys(phoneConfigSchema)])].map((table) => [
+    table, { ...phoneConfigSchema[table], ...baseSchema[table] },
+  ]),
+);
 
 function columnRows(
   schema: Record<
@@ -44,12 +51,13 @@ function mockClient(columnResult: QueryResultRow[]) {
 
 describe("PBX schema preflight", () => {
   it("reports a compatible base and absent advanced schema without issuing writes", async () => {
-    const database = mockClient(columnRows(baseSchema));
+    const database = mockClient(columnRows(requiredSchema));
     const result = await inspectPbxSchema(database as never);
     expect(result).toMatchObject({
       readOnly: true,
       overall: "ready_for_migration",
       base: { status: "compatible", issues: [] },
+      phoneConfig: { status: "compatible", issues: [] },
       advanced: { status: "absent", presentTables: [], issues: [] },
     });
     expect(result.advanced.missingTables).toEqual(Object.keys(advancedSchema));
@@ -60,7 +68,7 @@ describe("PBX schema preflight", () => {
   });
 
   it("reports missing or mistyped base columns and a partial advanced schema as incompatible", async () => {
-    const rows = columnRows(baseSchema).filter(
+    const rows = columnRows(requiredSchema).filter(
       (row) => row.column_name !== "deleted_at",
     );
     rows.find(
@@ -79,6 +87,22 @@ describe("PBX schema preflight", () => {
     expect(result.advanced.status).toBe("incompatible");
     expect(result.advanced.presentTables).toEqual(["ivr_menus"]);
     expect(result.advanced.missingTables).toContain("call_queues");
+  });
+
+  it("blocks release when a phone config dependency is absent or mistyped", async () => {
+    const rows = columnRows(requiredSchema).filter(
+      (row) => row.table_name !== "subscriber" &&
+        !(row.table_name === "tenant_memberships" && row.column_name === "status"),
+    );
+    rows.find((row) => row.table_name === "sip_accounts" && row.column_name === "secret_tag")!.data_type = "text";
+    const result = await inspectPbxSchema(mockClient(rows) as never);
+    expect(result.overall).toBe("incompatible");
+    expect(result.phoneConfig).toMatchObject({ status: "incompatible" });
+    expect(result.phoneConfig.issues).toEqual(expect.arrayContaining([
+      "tenant_memberships.status:missing",
+      "subscriber.password:missing",
+      "sip_accounts.secret_tag:type",
+    ]));
   });
 
   it("rolls back and does not disclose an underlying database error", async () => {
@@ -128,11 +152,22 @@ describe.skipIf(!connectionString)(
     beforeAll(async () => {
       await admin.query(`CREATE SCHEMA ${schema}`);
       await database.query(`
-      CREATE TABLE tenants(id INTEGER PRIMARY KEY,name TEXT);
+      CREATE TABLE tenants(id INTEGER PRIMARY KEY,name TEXT,plan TEXT,status TEXT);
       CREATE TABLE extensions(
         id INTEGER PRIMARY KEY,tenant_id INTEGER NOT NULL REFERENCES tenants(id),
-        extension_number TEXT NOT NULL,display_name TEXT,deleted_at TIMESTAMPTZ
+        org_id INTEGER,user_id INTEGER,extension_number TEXT NOT NULL,display_name TEXT,
+        type TEXT,sip_username TEXT,sip_domain TEXT,sip_password TEXT,caller_id_name TEXT,
+        caller_id_number TEXT,transport TEXT,status TEXT,deleted_at TIMESTAMPTZ
       );
+      CREATE TABLE tenant_memberships(user_id INTEGER,tenant_id INTEGER,status TEXT);
+      CREATE TABLE user_extensions(user_id INTEGER,extension_id INTEGER,is_primary BOOLEAN);
+      CREATE TABLE organizations(id INTEGER,name TEXT,plan TEXT);
+      CREATE TABLE sip_accounts(id INTEGER,extension_id INTEGER,tenant_id INTEGER,user_id INTEGER,
+        sip_username TEXT,sip_domain TEXT,ha1 TEXT,ha1b TEXT,secret_ciphertext BYTEA,
+        secret_iv BYTEA,secret_tag BYTEA,transport_preference TEXT,status TEXT,deleted_at TIMESTAMPTZ);
+      CREATE TABLE subscriber(username TEXT,domain TEXT,password TEXT,ha1 TEXT,ha1b TEXT);
+      CREATE TABLE did_numbers(tenant_id INTEGER,destination_type TEXT,destination_value TEXT,
+        status TEXT,number TEXT,description TEXT);
     `);
     });
 
@@ -148,6 +183,7 @@ describe.skipIf(!connectionString)(
         const before = await inspectPbxSchema(client);
         expect(before).toMatchObject({
           overall: "ready_for_migration",
+          phoneConfig: { status: "compatible", issues: [] },
           advanced: { status: "absent" },
         });
 

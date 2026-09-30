@@ -346,13 +346,42 @@ class RouteGuards(TestCase):
 
     def test_probe_fixture_rejects_mutation_before_http(self):
         raw = b"fixture"
-        values = [{"label": label, "method": "GET", "body": "", "path": path, "status": 403 if label == "denied_tenant" else 200}
+        values = [{"label": label, "method": "GET", "body": "", "path": path,
+                   "headers": {"Cookie": "session=fixture"},
+                   "status": 403 if label == "denied_tenant" else 200}
                   for label, path in (("existing_phone", "/api/trpc/phone.getConfig"),
                                       ("existing_chat", "/api/trpc/chat.list"),
                                       ("conference", "/api/trpc/conference.list"),
                                       ("mixed_batch", "/api/trpc/phone.getConfig,chat.list?batch=1"),
                                       ("denied_tenant", "/api/trpc/phone.getConfig"))]
         values[2]["path"] = "/api/trpc/conference.create"
+        with mock.patch.object(route, "root_file", return_value=raw), \
+             mock.patch.object(route.pilot, "load_probes", return_value=values), \
+             mock.patch.object(route.pilot, "run_probes") as http:
+            with self.assertRaisesRegex(route.start.Refused, "probe_read_only"):
+                route.probes(Path("/fixture"), route.start.digest(raw), "https://api.phone11.ai")
+            http.assert_not_called()
+
+    def test_probes_mark_each_get_without_changing_sealed_fixture(self):
+        raw = b"fixture"
+        values = [{"label": label, "method": "GET", "body": "", "path": path,
+                   "headers": {"Cookie": "session=fixture"},
+                   "status": 403 if label == "denied_tenant" else 200}
+                  for label, path in (("existing_phone", "/api/trpc/phone.getConfig"),
+                                      ("existing_chat", "/api/trpc/chat.list"),
+                                      ("conference", "/api/trpc/conference.list"),
+                                      ("mixed_batch", "/api/trpc/phone.getConfig,chat.list?batch=1"),
+                                      ("denied_tenant", "/api/trpc/phone.getConfig"))]
+        with mock.patch.object(route, "root_file", return_value=raw), \
+             mock.patch.object(route.pilot, "load_probes", return_value=values), \
+             mock.patch.object(route.pilot, "run_probes") as http:
+            route.probes(Path("/fixture"), route.start.digest(raw), "https://api.phone11.ai")
+            sent = http.call_args.args[2]
+            self.assertEqual(len(sent), 5)
+            self.assertTrue(all(probe["headers"][route.READ_ONLY_PROBE_HEADER] == "1" for probe in sent))
+            self.assertTrue(all(route.READ_ONLY_PROBE_HEADER not in probe["headers"] for probe in values))
+
+        values[0]["headers"]["x-phone11-read-only-probe"] = "0"
         with mock.patch.object(route, "root_file", return_value=raw), \
              mock.patch.object(route.pilot, "load_probes", return_value=values), \
              mock.patch.object(route.pilot, "run_probes") as http:

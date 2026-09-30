@@ -59,6 +59,12 @@ const isGlobalExtensionOwnershipQuery = (sql: string) =>
   sql.includes("COALESCE(NULLIF(sip_username, ''), extension_number) = $1") &&
   sql.includes("COALESCE(NULLIF(sip_domain, ''), $2) = $2");
 
+function expectConfigQueriesOnly() {
+  for (const [sql] of state.pool.query.mock.calls) {
+    expect(String(sql).trim()).toMatch(/^SELECT\b/i);
+  }
+}
+
 describe("Phone11 phone provisioning ownership", () => {
   beforeEach(() => {
     state.assignedRows = [];
@@ -94,6 +100,32 @@ describe("Phone11 phone provisioning ownership", () => {
     const assignmentQuery = String(state.pool.query.mock.calls.find(([sql]) => String(sql).includes("ue.is_primary"))?.[0]);
     expect(assignmentQuery).toContain("tm.tenant_id = e.tenant_id AND tm.status = 'active'");
     expect(assignmentQuery).toContain("sa.tenant_id = e.tenant_id");
+    expectConfigQueriesOnly();
+  });
+
+  it("does not initialize schema for an unconfigured member", async () => {
+    await expect(getPhoneConfig(17, "member-open-id")).resolves.toEqual({ configured: false });
+    expectConfigQueriesOnly();
+  });
+
+  it("does not initialize schema before denying an inactive membership", async () => {
+    state.pool.query.mockResolvedValue({ rows: [] });
+    await expect(getPhoneConfig(17, "member-open-id")).resolves.toEqual({ configured: false });
+    expect(state.pool.query).toHaveBeenCalledTimes(1);
+    expectConfigQueriesOnly();
+  });
+
+  it("fails closed without creating missing tables on a fresh read", async () => {
+    const missingSchema = Object.assign(new Error("relation does not exist"), { code: "42P01" });
+    state.pool.query.mockRejectedValue(missingSchema);
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await expect(getPhoneConfig(17, "member-open-id")).rejects.toBe(missingSchema);
+      expect(state.pool.query).toHaveBeenCalledTimes(1);
+      expectConfigQueriesOnly();
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("refuses an account without its encrypted secret", async () => {
