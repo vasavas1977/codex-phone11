@@ -1,20 +1,11 @@
 diff --git a/libs.sh b/libs.sh
+index 7e05596..f2aeb66 100644
 --- a/libs.sh
 +++ b/libs.sh
-@@ -1,15 +1,40 @@
- #!/bin/bash
+@@ -2 +2 @@
 -set -e
 +set -eu
- 
- if ! type "curl" > /dev/null; then 
-     echo "Missed curl dependency" >&2; 
-     exit 1; 
- fi
- if ! type "tar" > /dev/null; then 
-     echo "Missed tar dependency" >&2; 
-     exit 1; 
- fi
- 
+@@ -13,3 +13,28 @@ fi
 -curl -LO https://github.com/datso/react-native-pjsip-builder/releases/download/v2.7.1-with-vialer/release.tar.gz
 -tar -xvf release.tar.gz
 -rm release.tar.gz

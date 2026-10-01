@@ -10,21 +10,23 @@ const root = path.resolve(new URL("..", import.meta.url).pathname);
 const patchPath = path.join(root, "patches/react-native-pjsip@2.7.4.patch");
 const pinnedDigest = "edf2d7a37301ffedf3c4eb41e011d4888fd890a278ffea31e4a2a75bd0dc8bee";
 // Exact libs.sh from the locked npm package, including its missing final newline.
-const upstream = `#!/bin/bash
-set -e
-
-if ! type "curl" > /dev/null; then 
-    echo "Missed curl dependency" >&2; 
-    exit 1; 
-fi
-if ! type "tar" > /dev/null; then 
-    echo "Missed tar dependency" >&2; 
-    exit 1; 
-fi
-
-curl -LO https://github.com/datso/react-native-pjsip-builder/releases/download/v2.7.1-with-vialer/release.tar.gz
-tar -xvf release.tar.gz
-rm release.tar.gz`;
+const upstream = [
+  "#!/bin/bash",
+  "set -e",
+  "",
+  "if ! type \"curl\" > /dev/null; then ",
+  "    echo \"Missed curl dependency\" >&2; ",
+  "    exit 1; ",
+  "fi",
+  "if ! type \"tar\" > /dev/null; then ",
+  "    echo \"Missed tar dependency\" >&2; ",
+  "    exit 1; ",
+  "fi",
+  "",
+  "curl -LO https://github.com/datso/react-native-pjsip-builder/releases/download/v2.7.1-with-vialer/release.tar.gz",
+  "tar -xvf release.tar.gz",
+  "rm release.tar.gz",
+].join("\n");
 const fixture = Buffer.from("verified native SDK fixture\n");
 const fixtureDigest = createHash("sha256").update(fixture).digest("hex");
 
@@ -36,7 +38,7 @@ function runFixture(options = {}) {
     mkdirSync(bin);
     mkdirSync(temporary);
     writeFileSync(path.join(dir, "libs.sh"), upstream);
-    const apply = spawnSync("git", ["apply", patchPath], { cwd: dir, encoding: "utf8" });
+    const apply = spawnSync("git", ["apply", "--unidiff-zero", patchPath], { cwd: dir, encoding: "utf8" });
     assert.equal(apply.status, 0, apply.stderr);
     const patched = readFileSync(path.join(dir, "libs.sh"), "utf8");
     assert.equal(patched.split(pinnedDigest).length, 2, "one committed archive digest");
