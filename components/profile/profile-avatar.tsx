@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { Image, type ImageSource } from "expo-image";
 import { getApiBaseUrl } from "@/constants/oauth";
@@ -128,11 +128,19 @@ export function ProfileAvatar(props: ProfileAvatarProps) {
   const colors = useColors();
   const openProfile = useOpenProfileCard();
   const source = useProfilePhotoSource(props);
-  const [failed, setFailed] = useState(false);
+  // A fresh request identity resets both success and failure immediately, even
+  // when an old image delivers its event after the descriptor has changed.
+  const photoRequest = useMemo(() => ({}), [source?.cacheKey]);
+  const activePhotoRequest = useRef(photoRequest);
+  activePhotoRequest.current = photoRequest;
+  const [photoResult, setPhotoResult] = useState<{
+    request: object;
+    status: "loaded" | "failed";
+  } | null>(null);
+  const failed = photoResult?.request === photoRequest && photoResult.status === "failed";
   const displayName = props.name?.trim() || "Profile";
   const radius = props.rounded ? Math.round(props.size * 0.3) : props.size / 2;
-  useEffect(() => setFailed(false), [source?.cacheKey]);
-  const hasPhoto = !!source && !failed;
+  const hasPhoto = !!source && photoResult?.request === photoRequest && photoResult.status === "loaded";
 
   const avatar = (
     <View
@@ -148,19 +156,26 @@ export function ProfileAvatar(props: ProfileAvatarProps) {
         backgroundColor: colors.primary + "1F",
       }}
     >
-      {hasPhoto ? (
+      {!hasPhoto && (
+        <Text style={{ color: colors.foreground, fontSize: Math.max(11, Math.round(props.size * 0.36)), fontWeight: "700" }}>
+          {profileInitials(props.name)}
+        </Text>
+      )}
+      {source && !failed && (
         <Image
+          key={source.cacheKey}
           source={source}
           cachePolicy="none"
           recyclingKey={source.cacheKey}
           contentFit="cover"
-          onError={() => setFailed(true)}
-          style={{ width: props.size, height: props.size, borderRadius: radius }}
+          onLoad={() => {
+            if (activePhotoRequest.current === photoRequest) setPhotoResult({ request: photoRequest, status: "loaded" });
+          }}
+          onError={() => {
+            if (activePhotoRequest.current === photoRequest) setPhotoResult({ request: photoRequest, status: "failed" });
+          }}
+          style={{ position: "absolute", width: props.size, height: props.size, borderRadius: radius, opacity: hasPhoto ? 1 : 0 }}
         />
-      ) : (
-        <Text style={{ color: colors.foreground, fontSize: Math.max(11, Math.round(props.size * 0.36)), fontWeight: "700" }}>
-          {profileInitials(props.name)}
-        </Text>
       )}
     </View>
   );

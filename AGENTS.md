@@ -2,17 +2,13 @@
 
 ## Owner-approved orchestration policy
 
-Follow the latest owner-provided Global AI Development Orchestration Policy
-and `~/.codex/AGENTS.md`. This section supersedes the older Astra Low / Luna
-allocation and mandatory nine-stage pipeline previously recorded here.
+Follow the latest owner-provided policy and `~/.codex/AGENTS.md`.
 
-- Intended lead: Astra High for scope, architecture, delegation and acceptance.
-  Do not claim a lead model/effort change without environment confirmation.
-- Terra XHigh: bounded routine implementation, frontend, tests and documentation.
-- Sol Medium: difficult existing-code or cross-component implementation; escalate
-  after a Terra attempt exposes incomplete understanding.
-- Sol High: selective lifecycle, telephony, networking, concurrency or security
-  diagnosis and critical review.
+- Every subagent uses `gpt-6.1-sol` with `high` reasoning, explicitly selected.
+  The owner's 1 October 2026 preference supersedes older project/skill routing.
+- Do not claim a model/effort change without environment confirmation. Stop
+  and replace an existing subagent with different or unknown settings while
+  preserving its work and exact handoff.
 - Use at most 2–3 independent workers. No nested delegation or overlapping file
   ownership. Give each worker an objective, context, scope, constraints, expected
   behavior, acceptance criteria, testing and escalation condition. Keep the same

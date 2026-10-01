@@ -8,6 +8,9 @@ patchedDependencies:
   livekit-client@2.22.3:
     hash: 3xvkeotbxeycdqx5fushnmvuie
     path: patches/livekit-client@2.22.3.patch
+  react-native-pjsip@2.7.4:
+    hash: 3g55fq4jxmzwszcxgqelcqmlqm
+    path: patches/react-native-pjsip@2.7.4.patch
 
 importers:
 
@@ -201,7 +204,7 @@ importers:
         version: 2.28.0(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)
       react-native-pjsip:
         specifier: ^2.7.4
-        version: 2.7.4(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))
+        version: 2.7.4(patch_hash=3g55fq4jxmzwszcxgqelcqmlqm)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))
       react-native-reanimated:
         specifier: ~4.1.6
         version: 4.1.6(@babel/core@7.28.5(supports-color@8.1.1))(react-native-worklets@0.5.1(@babel/core@7.28.5(supports-color@8.1.1))(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1))(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)
@@ -12979,7 +12982,7 @@ snapshots:
       react: 19.1.0
       react-native: 0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1)
 
-  react-native-pjsip@2.7.4(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1)):
+  react-native-pjsip@2.7.4(patch_hash=3g55fq4jxmzwszcxgqelcqmlqm)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1)):
     dependencies:
       events: 1.1.0
       react-native: 0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1)
