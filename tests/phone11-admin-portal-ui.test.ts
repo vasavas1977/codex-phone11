@@ -5,8 +5,13 @@ import {
   BUSINESS_WEEK,
   businessHoursFromRules,
   buildBusinessHoursRule,
+  buildScheduleRules,
   describeSchedule,
   isValidBusinessHours,
+  isValidScheduleDate,
+  isValidScheduleTimezone,
+  parseEditableScheduleRules,
+  validateEditableSchedule,
 } from "../lib/pbx/admin-schedules";
 
 describe("enterprise PBX admin schedules", () => {
@@ -43,6 +48,51 @@ describe("enterprise PBX admin schedules", () => {
         { day_of_week: [0], start_time: "09:00", end_time: "17:00" },
       ]),
     ).toEqual({ startTime: "09:00", endTime: "18:00" });
+  });
+
+  it("round trips multiple daily ranges and holiday closures from persisted PBX rules", () => {
+    const persisted = [
+      { id: 1, time_condition_id: 4, day_of_week: [1, 2, 3, 4, 5], start_time: "09:00:00", end_time: "12:00:00", start_date: null, end_date: null, is_holiday: false, label: "Morning", sort_order: 0 },
+      { id: 2, time_condition_id: 4, day_of_week: [1, 2, 3, 4, 5], start_time: "13:00:00", end_time: "18:00:00", start_date: null, end_date: null, is_holiday: false, label: "Afternoon", sort_order: 1 },
+      { id: 3, time_condition_id: 4, day_of_week: null, start_time: null, end_time: null, start_date: "2026-12-31", end_date: "2027-01-02", is_holiday: true, label: "New Year", sort_order: 2 },
+    ];
+    const parsed = parseEditableScheduleRules(persisted);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.schedule.intervals).toEqual([
+      { startTime: "09:00", endTime: "12:00", label: "Morning" },
+      { startTime: "13:00", endTime: "18:00", label: "Afternoon" },
+    ]);
+    expect(parsed.schedule.holidays).toEqual([{ startDate: "2026-12-31", endDate: "2027-01-02", label: "New Year" }]);
+    expect(buildScheduleRules(parsed.schedule)).toMatchObject([
+      { start_time: "09:00", end_time: "12:00", label: "Morning", is_holiday: false },
+      { start_time: "13:00", end_time: "18:00", label: "Afternoon", is_holiday: false },
+      { start_date: "2026-12-31", end_date: "2027-01-02", label: "New Year", is_holiday: true },
+    ]);
+  });
+
+  it("blocks unsupported persisted rules and invalid calendar/timezone inputs", () => {
+    expect(parseEditableScheduleRules([{ day_of_week: [0, 6], start_time: "09:00:00", end_time: "18:00:00" }]).ok).toBe(false);
+    expect(parseEditableScheduleRules([{ day_of_week: [1, 2, 3, 4, 5], start_time: "09:00:00", end_time: "18:00:00", future_field: "keep" }]).ok).toBe(false);
+    expect(isValidScheduleDate("2026-02-29")).toBe(false);
+    expect(isValidScheduleDate("2028-02-29")).toBe(true);
+    expect(isValidScheduleTimezone("Asia/Bangkok")).toBe(true);
+    expect(isValidScheduleTimezone("Mars/Olympus")).toBe(false);
+    expect(validateEditableSchedule({ intervals: [{ startTime: "09:00", endTime: "13:00" }, { startTime: "12:00", endTime: "18:00" }], holidays: [] })).toMatch(/overlap/);
+  });
+
+  it("preserves date-limited weekday ranges and permits separate seasonal windows", () => {
+    const parsed = parseEditableScheduleRules([
+      { day_of_week: [1, 2, 3, 4, 5], start_time: "09:00:00", end_time: "18:00:00", start_date: "2026-06-01", end_date: "2026-08-31", is_holiday: false, label: "Summer" },
+      { day_of_week: [1, 2, 3, 4, 5], start_time: "09:00:00", end_time: "18:00:00", start_date: "2026-09-01", end_date: "2026-12-31", is_holiday: false, label: "Autumn" },
+    ]);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(validateEditableSchedule(parsed.schedule)).toBeUndefined();
+    expect(buildScheduleRules(parsed.schedule)).toMatchObject([
+      { start_date: "2026-06-01", end_date: "2026-08-31", label: "Summer" },
+      { start_date: "2026-09-01", end_date: "2026-12-31", label: "Autumn" },
+    ]);
   });
 
   it("describes open and closed routing without inventing destinations", () => {

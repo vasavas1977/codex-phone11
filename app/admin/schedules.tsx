@@ -29,10 +29,13 @@ import {
   useUpdateTimeCondition,
 } from "@/hooks/use-pbx-admin";
 import {
-  businessHoursFromRules,
-  buildBusinessHoursRule,
+  buildScheduleRules,
   describeSchedule,
-  isValidBusinessHours,
+  isValidScheduleTimezone,
+  parseEditableScheduleRules,
+  validateEditableSchedule,
+  type BusinessInterval,
+  type HolidayRange,
 } from "@/lib/pbx/admin-schedules";
 
 const ROUTES = [
@@ -70,8 +73,10 @@ function AdminSchedulesContent() {
   const scheduleQuery = useTimeCondition(editingId ?? 0, businessHoursAvailable);
   const [name, setName] = useState("");
   const [timezone, setTimezone] = useState("Asia/Bangkok");
-  const [startTime, setStartTime] = useState("09:00");
-  const [endTime, setEndTime] = useState("18:00");
+  const [intervals, setIntervals] = useState<BusinessInterval[]>([{ startTime: "09:00", endTime: "18:00" }]);
+  const [holidays, setHolidays] = useState<HolidayRange[]>([]);
+  const [expandedDateWindows, setExpandedDateWindows] = useState<number[]>([]);
+  const [unsupportedRules, setUnsupportedRules] = useState<string>();
   const [openAction, setOpenAction] = useState<RouteAction>("transfer");
   const [openTarget, setOpenTarget] = useState("");
   const [closedAction, setClosedAction] = useState<RouteAction>("voicemail");
@@ -84,8 +89,10 @@ function AdminSchedulesContent() {
   const resetForm = () => {
     setName("");
     setTimezone(tenantQuery.data?.timezone || "Asia/Bangkok");
-    setStartTime("09:00");
-    setEndTime("18:00");
+    setIntervals([{ startTime: "09:00", endTime: "18:00" }]);
+    setHolidays([]);
+    setExpandedDateWindows([]);
+    setUnsupportedRules(undefined);
     setOpenAction("transfer");
     setOpenTarget("");
     setClosedAction("voicemail");
@@ -95,11 +102,14 @@ function AdminSchedulesContent() {
   useEffect(() => {
     if (!editingId || !scheduleQuery.data) return;
     const schedule = scheduleQuery.data as any;
-    const hours = businessHoursFromRules(schedule.rules);
+    const parsed = parseEditableScheduleRules(schedule.rules);
     setName(schedule.name || "");
     setTimezone(schedule.timezone || "Asia/Bangkok");
-    setStartTime(hours.startTime);
-    setEndTime(hours.endTime);
+    setUnsupportedRules(parsed.ok ? undefined : parsed.reason);
+    if (parsed.ok) {
+      setIntervals(parsed.schedule.intervals);
+      setHolidays(parsed.schedule.holidays);
+    }
     setOpenAction(asRouteAction(schedule.match_action, "transfer"));
     setOpenTarget(schedule.match_target || "");
     setClosedAction(asRouteAction(schedule.nomatch_action, "voicemail"));
@@ -117,15 +127,17 @@ function AdminSchedulesContent() {
       Alert.alert("Missing details", "Enter a schedule name.");
       return;
     }
-    if (!isValidBusinessHours(startTime, endTime)) {
-      Alert.alert(
-        "Invalid hours",
-        "Use 24-hour times such as 09:00 and 18:00. Closing must be later than opening.",
-      );
+    if (unsupportedRules) {
+      Alert.alert("Schedule cannot be edited", unsupportedRules);
       return;
     }
-    if (!timezone.trim()) {
-      Alert.alert("Missing details", "Enter the schedule timezone.");
+    const ruleIssue = validateEditableSchedule({ intervals, holidays });
+    if (ruleIssue) {
+      Alert.alert("Invalid schedule", ruleIssue);
+      return;
+    }
+    if (!isValidScheduleTimezone(timezone.trim())) {
+      Alert.alert("Invalid timezone", "Use a timezone such as Asia/Bangkok.");
       return;
     }
     if (
@@ -143,7 +155,7 @@ function AdminSchedulesContent() {
     try {
       const schedule = {
         name: name.trim(),
-        description: `Monday–Friday, ${startTime}–${endTime}`,
+        description: `Monday–Friday, ${intervals.length} time ${intervals.length === 1 ? "range" : "ranges"}${holidays.length ? `, ${holidays.length} holiday ${holidays.length === 1 ? "closure" : "closures"}` : ""}`,
         timezone: timezone.trim(),
         match_action: openAction,
         match_target: openAction === "hangup" ? undefined : openTarget.trim(),
@@ -151,7 +163,7 @@ function AdminSchedulesContent() {
         nomatch_target:
           closedAction === "hangup" ? undefined : closedTarget.trim(),
       };
-      const rules = [buildBusinessHoursRule(startTime, endTime)];
+      const rules = buildScheduleRules({ intervals, holidays });
       if (editingId) {
         await updateMutation.mutateAsync({ id: editingId, ...schedule, rules });
       } else {
@@ -348,8 +360,7 @@ function AdminSchedulesContent() {
             No business hours
           </Text>
           <Text style={[styles.emptyText, { color: colors.muted }]}>
-            Create weekday hours and choose where calls go when the office is
-            closed.
+            Configure weekday hours and holiday closures, then choose the open and closed destinations.
           </Text>
         </View>
       ) : (
@@ -424,33 +435,50 @@ function AdminSchedulesContent() {
                 placeholderTextColor={colors.muted}
                 autoCapitalize="none"
               />
-              <Text style={[styles.weekdays, { color: colors.foreground }]}>
-                Monday to Friday
-              </Text>
-              <View style={styles.timeRow}>
-                <View style={styles.timeField}>
-                  <Label text="Opens" colors={colors} />
-                  <TextInput
-                    style={inputStyle(colors)}
-                    value={startTime}
-                    onChangeText={setStartTime}
-                    placeholder="09:00"
-                    placeholderTextColor={colors.muted}
-                    keyboardType="numbers-and-punctuation"
-                  />
+              <Text style={[styles.helper, { color: colors.muted }]}>Times and holiday dates use this timezone. Holiday closures take priority over weekday hours.</Text>
+              {unsupportedRules ? <Text style={styles.errorText}>{unsupportedRules} Saving is disabled to protect existing rules.</Text> : null}
+              <Text style={[styles.weekdays, { color: colors.foreground }]}>Monday to Friday</Text>
+              {intervals.map((interval, index) => (
+                <View key={`interval-${index}`}>
+                <View style={styles.timeRow}>
+                  <View style={styles.timeField}>
+                    <Label text={`Opens ${index + 1}`} colors={colors} />
+                    <TextInput style={inputStyle(colors)} value={interval.startTime} onChangeText={(value) => setIntervals((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, startTime: value } : item))} placeholder="09:00" placeholderTextColor={colors.muted} keyboardType="numbers-and-punctuation" />
+                  </View>
+                  <View style={styles.timeField}>
+                    <Label text="Closes" colors={colors} />
+                    <TextInput style={inputStyle(colors)} value={interval.endTime} onChangeText={(value) => setIntervals((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, endTime: value } : item))} placeholder="18:00" placeholderTextColor={colors.muted} keyboardType="numbers-and-punctuation" />
+                  </View>
+                  {intervals.length > 1 ? <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Remove time range ${index + 1}`} onPress={() => { setIntervals((current) => current.filter((_, itemIndex) => itemIndex !== index)); setExpandedDateWindows((current) => current.filter((itemIndex) => itemIndex !== index).map((itemIndex) => itemIndex > index ? itemIndex - 1 : itemIndex)); }} style={styles.removeButton}><Text style={styles.removeText}>Remove</Text></TouchableOpacity> : null}
                 </View>
-                <View style={styles.timeField}>
-                  <Label text="Closes" colors={colors} />
-                  <TextInput
-                    style={inputStyle(colors)}
-                    value={endTime}
-                    onChangeText={setEndTime}
-                    placeholder="18:00"
-                    placeholderTextColor={colors.muted}
-                    keyboardType="numbers-and-punctuation"
-                  />
+                {!interval.startDate && !interval.endDate && !expandedDateWindows.includes(index) ? (
+                  <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Limit time range ${index + 1} to dates`} onPress={() => setExpandedDateWindows((current) => [...current, index])} style={styles.addRowButton}><Text style={{ color: colors.primary }}>Limit to dates</Text></TouchableOpacity>
+                ) : (
+                <>
+                <Text style={[styles.helper, { color: colors.muted }]}>Optional dates for this weekday range; enter both dates to limit it.</Text>
+                <View style={styles.timeRow}>
+                  <View style={styles.timeField}><Label text="First date" colors={colors} /><TextInput style={inputStyle(colors)} value={interval.startDate || ""} onChangeText={(value) => setIntervals((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, startDate: value } : item))} placeholder="YYYY-MM-DD" placeholderTextColor={colors.muted} autoCapitalize="none" /></View>
+                  <View style={styles.timeField}><Label text="Last date" colors={colors} /><TextInput style={inputStyle(colors)} value={interval.endDate || ""} onChangeText={(value) => setIntervals((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, endDate: value } : item))} placeholder="YYYY-MM-DD" placeholderTextColor={colors.muted} autoCapitalize="none" /></View>
                 </View>
-              </View>
+                {!interval.startDate && !interval.endDate ? <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Hide date limit for range ${index + 1}`} onPress={() => setExpandedDateWindows((current) => current.filter((itemIndex) => itemIndex !== index))} style={styles.addRowButton}><Text style={{ color: colors.muted }}>Hide dates</Text></TouchableOpacity> : null}
+                </>
+                )}
+                </View>
+              ))}
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Add time range" onPress={() => setIntervals((current) => [...current, { startTime: "13:00", endTime: "18:00" }])} style={styles.addRowButton}><Text style={{ color: colors.primary }}>+ Add time range</Text></TouchableOpacity>
+              <Text style={[styles.weekdays, { color: colors.foreground }]}>Holiday closures</Text>
+              {holidays.map((holiday, index) => (
+                <View key={`holiday-${index}`}>
+                  <Label text={`Holiday ${index + 1} name (optional)`} colors={colors} />
+                  <TextInput style={inputStyle(colors)} value={holiday.label} onChangeText={(value) => setHolidays((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, label: value } : item))} placeholder="Public holiday" placeholderTextColor={colors.muted} />
+                  <View style={styles.timeRow}>
+                    <View style={styles.timeField}><Label text="First date" colors={colors} /><TextInput style={inputStyle(colors)} value={holiday.startDate} onChangeText={(value) => setHolidays((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, startDate: value } : item))} placeholder="YYYY-MM-DD" placeholderTextColor={colors.muted} autoCapitalize="none" /></View>
+                    <View style={styles.timeField}><Label text="Last date" colors={colors} /><TextInput style={inputStyle(colors)} value={holiday.endDate} onChangeText={(value) => setHolidays((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, endDate: value } : item))} placeholder="YYYY-MM-DD" placeholderTextColor={colors.muted} autoCapitalize="none" /></View>
+                  </View>
+                  <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Remove holiday ${index + 1}`} onPress={() => setHolidays((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.addRowButton}><Text style={styles.removeText}>Remove holiday</Text></TouchableOpacity>
+                </View>
+              ))}
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Add holiday closure" onPress={() => setHolidays((current) => [...current, { startDate: "", endDate: "", label: "" }])} style={styles.addRowButton}><Text style={{ color: colors.primary }}>+ Add holiday closure</Text></TouchableOpacity>
               <RouteEditor
                 label="During business hours"
                 action={openAction}
@@ -486,7 +514,7 @@ function AdminSchedulesContent() {
                 onPress={handleSave}
                 disabled={
                   isSaving ||
-                  (Boolean(editingId) && (scheduleQuery.isLoading || scheduleQuery.isError))
+                  (Boolean(editingId) && (scheduleQuery.isLoading || scheduleQuery.isError || Boolean(unsupportedRules)))
                 }
               >
                 {isSaving ? (
@@ -708,8 +736,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   weekdays: { fontSize: 14, fontWeight: "600", marginTop: 18 },
+  helper: { fontSize: 12, lineHeight: 17, marginTop: 8 },
+  errorText: { color: "#DC2626", fontSize: 12, marginTop: 10 },
   timeRow: { flexDirection: "row", gap: 12 },
   timeField: { flex: 1 },
+  removeButton: { justifyContent: "flex-end", paddingBottom: 15 },
+  removeText: { color: "#DC2626", fontSize: 12 },
+  addRowButton: { alignSelf: "flex-start", paddingVertical: 10 },
   routeChoices: { flexDirection: "row", gap: 8 },
   choice: {
     borderWidth: 1,

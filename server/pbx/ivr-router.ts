@@ -874,7 +874,9 @@ export const ivrRouter = router({
         const tc = await query(`SELECT * FROM time_conditions WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
         if (!tc.rows[0]) throw new Error("Time condition not found");
         const rules = await query(
-          `SELECT * FROM time_condition_rules WHERE time_condition_id = $1 ORDER BY sort_order`,
+          `SELECT *, to_char(start_date, 'YYYY-MM-DD') AS start_date,
+                     to_char(end_date, 'YYYY-MM-DD') AS end_date
+             FROM time_condition_rules WHERE time_condition_id = $1 ORDER BY sort_order, id`,
           [input.id]
         );
         return { ...tc.rows[0], rules: rules.rows };

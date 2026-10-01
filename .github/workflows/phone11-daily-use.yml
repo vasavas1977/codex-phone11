@@ -270,6 +270,7 @@ jobs:
           tests/phone11-extension-tenant-legacy-default-prerequisites-postgres.test.ts
           tests/phone11-pbx-advanced-migration.test.ts
           tests/phone11-pbx-schema-preflight.test.ts
+          tests/phone11-time-condition-postgres.test.ts
 
   chat-postgres-tests:
     runs-on: ubuntu-24.04

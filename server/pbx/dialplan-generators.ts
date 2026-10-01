@@ -299,7 +299,11 @@ export async function evaluateTimeCondition(tcId: number, tenantId: number): Pro
   if (!tc) return { matched: false, action: "hangup", target: "" };
 
   const rulesRes = await query(
-    `SELECT * FROM time_condition_rules WHERE time_condition_id = $1 ORDER BY sort_order`,
+    // Return DATE values as calendar strings, rather than pg's host-local Date
+    // objects. A schedule date is not an instant and must not be UTC-converted.
+    `SELECT *, to_char(start_date, 'YYYY-MM-DD') AS start_date,
+               to_char(end_date, 'YYYY-MM-DD') AS end_date
+       FROM time_condition_rules WHERE time_condition_id = $1 ORDER BY sort_order, id`,
     [tcId]
   );
   const rules = rulesRes.rows;
@@ -307,10 +311,14 @@ export async function evaluateTimeCondition(tcId: number, tenantId: number): Pro
   // Get current time in the tenant's timezone
   const now = new Date();
   const tz = tc.timezone || "Asia/Bangkok";
-  const localTime = new Date(now.toLocaleString("en-US", { timeZone: tz }));
-  const dayOfWeek = localTime.getDay(); // 0=Sun
-  const currentTime = `${String(localTime.getHours()).padStart(2, "0")}:${String(localTime.getMinutes()).padStart(2, "0")}:00`;
-  const currentDate = localTime.toISOString().split("T")[0];
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, calendar: "gregory", numberingSystem: "latn", hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    weekday: "short", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(now).map(({ type, value }) => [type, value]));
+  const dayOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(parts.weekday);
+  const currentTime = `${parts.hour}:${parts.minute}:00`;
+  const currentDate = `${parts.year}-${parts.month}-${parts.day}`;
 
   // Check holidays first (they override regular rules)
   for (const rule of rules.filter((r: any) => r.is_holiday)) {
@@ -323,6 +331,8 @@ export async function evaluateTimeCondition(tcId: number, tenantId: number): Pro
 
   // Check regular time rules
   for (const rule of rules.filter((r: any) => !r.is_holiday)) {
+    if ((rule.start_date && currentDate < rule.start_date)
+        || (rule.end_date && currentDate > rule.end_date)) continue;
     let dayMatch = true;
     let timeMatch = true;
 
