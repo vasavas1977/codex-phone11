@@ -23,9 +23,16 @@ const state = vi.hoisted(() => ({
   webJoin: vi.fn(async () => undefined),
   nativeJoin: vi.fn(async () => undefined),
   push: vi.fn(),
+  createButton: null as any,
+  capabilitiesAvailable: true,
 }));
 
-vi.mock("react-native", () => ({ Platform: { get OS() { return state.platform; } } }));
+vi.mock("react-native", () => ({
+  Platform: { get OS() { return state.platform; } },
+  Text: ({ children }: any) => createElement("span", null, children),
+  Pressable: (props: any) => { state.createButton = props; return createElement("button", null, props.children); },
+}));
+vi.mock("@/hooks/use-colors", () => ({ useColors: () => ({ primary: "#05f" }) }));
 vi.mock("expo-router", () => ({
   router: { push: state.push, back: vi.fn(), replace: vi.fn(), canGoBack: () => false },
   useLocalSearchParams: () => state.params,
@@ -37,14 +44,14 @@ vi.mock("@/lib/_core/auth", () => ({
   getAuthSnapshot: () => ({ user: state.currentUserId === 3001 ? state.user : { id: state.currentUserId } }),
 }));
 vi.mock("@/lib/chat/store", () => ({
-  useChatStore: (selector: (value: unknown) => unknown) => selector({
+  useChatStore: Object.assign((selector: (value: unknown) => unknown) => selector({
     userId: state.chatOwnerId, workspace: { id: state.workspaceId },
-  }),
+  }), { getState: () => ({ userId: state.chatOwnerId, workspace: { id: state.workspaceId } }) }),
 }));
 vi.mock("@/lib/trpc", () => ({
   trpc: { meetings: {
     join: { useMutation: () => ({ mutateAsync: state.admit }) },
-    capabilities: { useQuery: () => ({ data: { available: true }, isLoading: false, isFetching: false }) },
+    capabilities: { useQuery: () => ({ data: { available: state.capabilitiesAvailable }, isLoading: false, isFetching: false }) },
     available: { useQuery: () => ({ data: [{ meetingId: "admitted-id" }], isLoading: false, isFetching: false,
       error: state.generalMeetingsError ? new Error("Global list unavailable") : null }) },
     availableForTenant: { useQuery: () => ({ data: [], isLoading: false, isFetching: false }) },
@@ -80,6 +87,8 @@ beforeEach(() => {
   state.webJoin.mockClear();
   state.nativeJoin.mockClear();
   state.push.mockClear();
+  state.createButton = null;
+  state.capabilitiesAvailable = true;
   const admission = new Promise<{ url: string; token: string }>(resolve => {
     state.resolveAdmission = resolve;
   });
@@ -131,4 +140,31 @@ it("does not open a direct invitation from another selected workspace", () => {
   state.params = { meetingId: "admitted-id", tenantId: "2", source: "direct" };
   renderToStaticMarkup(createElement(ConferenceScreen));
   expect(state.onJoin).toBeUndefined();
+});
+
+it("offers creation before this account has any admitted room", () => {
+  state.capabilitiesAvailable = false;
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  expect(state.createButton.accessibilityLabel).toBe("New meeting");
+  state.createButton.onPress();
+  expect(state.push).toHaveBeenCalledWith("/conference/create");
+  expect(state.onJoin).toBeUndefined();
+});
+
+it.each(["session", "workspace"])(
+  "drops a stale creation tap after %s change",
+  (change) => {
+    renderToStaticMarkup(createElement(ConferenceScreen));
+    if (change === "session") state.currentUserId = 3002;
+    else state.workspaceId = 2;
+    state.createButton.onPress();
+    expect(state.push).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps an exact conversation invitation focused on joining its named room", () => {
+  state.params = { meetingId: "admitted-id", tenantId: "1", source: "channel" };
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  expect(state.createButton).toBeNull();
+  expect(state.onJoin).toBeTypeOf("function");
 });

@@ -72,13 +72,49 @@ describe("enterprise PBX admin schedules", () => {
   });
 
   it("blocks unsupported persisted rules and invalid calendar/timezone inputs", () => {
-    expect(parseEditableScheduleRules([{ day_of_week: [0, 6], start_time: "09:00:00", end_time: "18:00:00" }]).ok).toBe(false);
+    expect(parseEditableScheduleRules([{ day_of_week: [0, 0], start_time: "09:00:00", end_time: "18:00:00" }]).ok).toBe(false);
     expect(parseEditableScheduleRules([{ day_of_week: [1, 2, 3, 4, 5], start_time: "09:00:00", end_time: "18:00:00", future_field: "keep" }]).ok).toBe(false);
     expect(isValidScheduleDate("2026-02-29")).toBe(false);
     expect(isValidScheduleDate("2028-02-29")).toBe(true);
     expect(isValidScheduleTimezone("Asia/Bangkok")).toBe(true);
     expect(isValidScheduleTimezone("Mars/Olympus")).toBe(false);
     expect(validateEditableSchedule({ intervals: [{ startTime: "09:00", endTime: "13:00" }, { startTime: "12:00", endTime: "18:00" }], holidays: [] })).toMatch(/overlap/);
+  });
+
+  it("preserves weekend and individual weekday hours using Sunday-zero numbering", () => {
+    const parsed = parseEditableScheduleRules([
+      { day_of_week: [6, 0], start_time: "10:00:00", end_time: "14:00:00", is_holiday: false, label: "Weekend" },
+      { day_of_week: [2], start_time: "09:00:00", end_time: "18:00:00", is_holiday: false },
+    ]);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect(buildScheduleRules(parsed.schedule)).toMatchObject([
+      { day_of_week: [6, 0], start_time: "10:00", end_time: "14:00", label: "Weekend" },
+      { day_of_week: [2], start_time: "09:00", end_time: "18:00", label: "Tue" },
+    ]);
+  });
+
+  it("permits equal hours on disjoint days but refuses shared-day overlap", () => {
+    const weekday = { days: [1, 2, 3, 4, 5], startTime: "09:00", endTime: "18:00" };
+    const weekend = { days: [0, 6], startTime: "09:00", endTime: "18:00" };
+    expect(validateEditableSchedule({ intervals: [weekday, weekend], holidays: [] })).toBeUndefined();
+    expect(validateEditableSchedule({ intervals: [weekday, { ...weekend, days: [0, 5, 6] }], holidays: [] })).toMatch(/overlap/);
+  });
+
+  it.each([[], [1, 1], [7], [-1], [1.5], ["1"], new Array(1)].map((days) => ({ days })))("refuses empty or malformed day selections $days", ({ days }) => {
+    const interval = { days: days as number[], startTime: "09:00", endTime: "18:00" };
+    expect(validateEditableSchedule({ intervals: [interval], holidays: [] })).toMatch(/Select/);
+    expect(() => buildScheduleRules({ intervals: [interval], holidays: [] })).toThrow();
+    expect(parseEditableScheduleRules([{ day_of_week: days, start_time: "09:00", end_time: "18:00" }]).ok).toBe(false);
+  });
+
+  it("preserves all seven explicit days without turning an empty selection into daily hours", () => {
+    const rules = buildScheduleRules({ intervals: [{ days: [1, 2, 3, 4, 5, 6, 0], startTime: "08:00", endTime: "17:00" }], holidays: [] });
+    expect(rules[0]).toMatchObject({ day_of_week: [1, 2, 3, 4, 5, 6, 0], label: "Every day" });
+    const parsed = parseEditableScheduleRules(rules);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect(buildScheduleRules(parsed.schedule)).toEqual(rules);
   });
 
   it("preserves date-limited weekday ranges and permits separate seasonal windows", () => {

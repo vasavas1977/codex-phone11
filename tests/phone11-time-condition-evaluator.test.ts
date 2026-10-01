@@ -4,6 +4,7 @@ const db = vi.hoisted(() => ({ query: vi.fn() }));
 vi.mock("../server/pbx/db", () => ({ query: db.query }));
 vi.mock("../server/pbx/redis", () => ({ cacheGetOrSet: vi.fn() }));
 import { evaluateTimeCondition } from "../server/pbx/dialplan-generators";
+import { buildScheduleRules } from "../lib/pbx/admin-schedules";
 
 const open = { matched: true, action: "transfer", target: "3001" };
 const closed = { matched: false, action: "voicemail", target: "3001" };
@@ -18,6 +19,25 @@ beforeEach(() => { vi.clearAllMocks(); vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("workspace schedule evaluation", () => {
+  it("evaluates custom weekend editor rules and retains holiday priority", async () => {
+    const rules = buildScheduleRules({
+      intervals: [{ days: [6, 0], startTime: "10:00", endTime: "14:00" }],
+      holidays: [{ startDate: "2026-10-04", endDate: "2026-10-04", label: "Closed Sunday" }],
+    }).map((rule) => ({ ...rule,
+      ...("start_time" in rule ? { start_time: `${rule.start_time}:00`, end_time: `${rule.end_time}:00` } : {}),
+    }));
+    for (const [instant, expected] of [
+      ["2026-10-03T04:00:00Z", open], // Saturday 11:00 Bangkok
+      ["2026-10-03T08:00:00Z", closed],
+      ["2026-10-04T04:00:00Z", closed], // Sunday holiday wins
+      ["2026-10-05T04:00:00Z", closed], // Monday excluded
+      ["2026-10-11T04:00:00Z", open], // next Sunday remains open
+    ] as const) {
+      vi.setSystemTime(new Date(instant));
+      fixture("Asia/Bangkok", rules);
+      expect(await evaluateTimeCondition(5, 1)).toEqual(expected);
+    }
+  });
   it("uses the workspace holiday date across the UTC date boundary", async () => {
     vi.setSystemTime(new Date("2026-09-30T17:30:00Z")); // Bangkok October 1, 00:30
     fixture("Asia/Bangkok", [{ is_holiday: true, start_date: "2026-10-01", end_date: "2026-10-01" }, { is_holiday: false }]);

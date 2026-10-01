@@ -1,6 +1,15 @@
 export const BUSINESS_WEEK = [1, 2, 3, 4, 5] as const;
+export const SCHEDULE_DAYS = [
+  { value: 1, label: "Monday", short: "Mon" },
+  { value: 2, label: "Tuesday", short: "Tue" },
+  { value: 3, label: "Wednesday", short: "Wed" },
+  { value: 4, label: "Thursday", short: "Thu" },
+  { value: 5, label: "Friday", short: "Fri" },
+  { value: 6, label: "Saturday", short: "Sat" },
+  { value: 0, label: "Sunday", short: "Sun" },
+] as const;
 
-export type BusinessInterval = { startTime: string; endTime: string; startDate?: string; endDate?: string; label?: string };
+export type BusinessInterval = { startTime: string; endTime: string; days?: number[]; startDate?: string; endDate?: string; label?: string };
 export type HolidayRange = { startDate: string; endDate: string; label: string };
 export type EditableSchedule = { intervals: BusinessInterval[]; holidays: HolidayRange[] };
 
@@ -9,6 +18,18 @@ const knownRuleKeys = new Set([
   "id", "time_condition_id", "created_at", "day_of_week", "start_time",
   "end_time", "start_date", "end_date", "is_holiday", "label", "sort_order",
 ]);
+
+function validDays(days: unknown): days is number[] {
+  return Array.isArray(days) && days.length > 0 && days.length <= 7 &&
+    Array.from(days).every((day) => Number.isInteger(day) && day >= 0 && day <= 6) &&
+    new Set(days).size === days.length;
+}
+
+export function describeScheduleDays(days: readonly number[] = BUSINESS_WEEK) {
+  if (days.length === 5 && BUSINESS_WEEK.every((day) => days.includes(day))) return "Monday to Friday";
+  if (days.length === 7) return "Every day";
+  return SCHEDULE_DAYS.filter((day) => days.includes(day.value)).map((day) => day.short).join(", ");
+}
 
 export function isValidBusinessHours(startTime: string, endTime: string) {
   return (
@@ -35,8 +56,9 @@ export function isValidScheduleTimezone(value: string) {
 }
 
 export function validateEditableSchedule(schedule: EditableSchedule): string | undefined {
-  if (!schedule.intervals.length) return "Add at least one Monday to Friday time range.";
+  if (!schedule.intervals.length) return "Add at least one time range.";
   for (const interval of schedule.intervals) {
+    if (!validDays(interval.days ?? [...BUSINESS_WEEK])) return "Select at least one day for each time range.";
     if (!isValidBusinessHours(interval.startTime, interval.endTime)) {
       return "Use 24-hour times such as 09:00 and 18:00; closing must be later than opening.";
     }
@@ -52,8 +74,10 @@ export function validateEditableSchedule(schedule: EditableSchedule): string | u
       const second = schedule.intervals[other];
       const dateOverlap = !first.startDate || !first.endDate || !second.startDate || !second.endDate ||
         (first.startDate <= second.endDate && second.startDate <= first.endDate);
-      if (dateOverlap && first.startTime < second.endTime && second.startTime < first.endTime) {
-        return "Monday to Friday time ranges must not overlap.";
+      const secondDays: readonly number[] = second.days ?? BUSINESS_WEEK;
+      const dayOverlap = (first.days ?? BUSINESS_WEEK).some((day) => secondDays.includes(day));
+      if (dayOverlap && dateOverlap && first.startTime < second.endTime && second.startTime < first.endTime) {
+        return "Time ranges on the same days must not overlap.";
       }
     }
   }
@@ -70,12 +94,12 @@ export function buildScheduleRules(schedule: EditableSchedule) {
   if (issue) throw new Error(issue);
   return [
     ...schedule.intervals.map((interval, index) => ({
-      day_of_week: [...BUSINESS_WEEK],
+      day_of_week: [...(interval.days ?? BUSINESS_WEEK)],
       start_time: interval.startTime,
       end_time: interval.endTime,
       ...(interval.startDate && interval.endDate ? { start_date: interval.startDate, end_date: interval.endDate } : {}),
       is_holiday: false,
-      label: interval.label ?? "Monday to Friday",
+      label: interval.label ?? describeScheduleDays(interval.days),
       sort_order: index,
     })),
     ...schedule.holidays.map((holiday, index) => ({
@@ -112,16 +136,17 @@ export function parseEditableScheduleRules(rules: unknown):
       const days = rule.day_of_week;
       const startTime = toHourMinute(rule.start_time);
       const endTime = toHourMinute(rule.end_time);
-      if (!Array.isArray(days) || days.length !== BUSINESS_WEEK.length ||
-        !BUSINESS_WEEK.every((day) => days.includes(day)) ||
+      if (!validDays(days) ||
         !startTime || !endTime ||
         ((rule.start_date != null || rule.end_date != null) &&
           (typeof rule.start_date !== "string" || typeof rule.end_date !== "string")) ||
         (rule.label != null && typeof rule.label !== "string")) {
-        return { ok: false, reason: "This schedule contains a rule outside Monday to Friday hours." };
+        return { ok: false, reason: "This schedule contains an unsupported day or time rule." };
       }
       schedule.intervals.push({
         startTime, endTime,
+        ...(days.length === BUSINESS_WEEK.length && BUSINESS_WEEK.every((day) => days.includes(day))
+          ? {} : { days: [...days] }),
         ...(typeof rule.start_date === "string" && typeof rule.end_date === "string"
           ? { startDate: rule.start_date, endDate: rule.end_date } : {}),
         label: (rule.label as string | null) ?? undefined,

@@ -4,7 +4,8 @@ import { getAuthSnapshot } from "@/lib/_core/auth";
 import { router, useLocalSearchParams } from "expo-router";
 import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
-import { Platform } from "react-native";
+import { Platform, Pressable, Text } from "react-native";
+import { useColors } from "@/hooks/use-colors";
 import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
 import { admittedMeetingsWithTenantTitles, safeMeetingTitle } from "@/lib/meetings/admitted-selection";
 import { useChatStore } from "@/lib/chat/store";
@@ -93,6 +94,7 @@ function EnabledMeetingPrejoin({
 }
 
 export default function ConferenceScreen() {
+  const colors = useColors();
   const params = useLocalSearchParams<{ meetingId?: string; tenantId?: string; source?: string }>();
   const requestedMeeting = typeof params.meetingId === "string" ? params.meetingId : "";
   const { user } = useAuth({ autoFetch: false });
@@ -165,6 +167,41 @@ export default function ConferenceScreen() {
                 : undefined;
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
+      {!fromConversation &&
+        user &&
+        getAuthSnapshot().user === user &&
+        chatOwnerId === user.id &&
+        selectedWorkspaceId && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="New meeting"
+            accessibilityHint="Choose a team channel and participants to invite."
+            onPress={() => {
+              const auth = getAuthSnapshot();
+              const chat = useChatStore.getState();
+              if (
+                !auth.loading &&
+                auth.user === user &&
+                chat.userId === user.id &&
+                chat.workspace?.id === selectedWorkspaceId
+              )
+                router.push("/conference/create");
+            }}
+            style={{
+              minHeight: 48,
+              marginHorizontal: 20,
+              marginTop: 12,
+              justifyContent: "center",
+              alignItems: "center",
+              borderRadius: 12,
+              backgroundColor: colors.primary,
+            }}
+          >
+            <Text style={{ color: "#ffffff", fontSize: 17, fontWeight: "600" }}>
+              New meeting
+            </Text>
+          </Pressable>
+        )}
       {user && !capabilities.error && (fromConversation || !admittedMeetings.error) && capabilities.data?.available && displayedMeetings?.length ? (
         <EnabledMeetingPrejoin
           key={`${user.id}:${requestedMeeting}:${displayedMeetings.map(item => item.meetingId).join(",")}`}

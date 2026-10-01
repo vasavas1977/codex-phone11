@@ -30,7 +30,9 @@ import {
 } from "@/hooks/use-pbx-admin";
 import {
   buildScheduleRules,
+  BUSINESS_WEEK,
   describeSchedule,
+  SCHEDULE_DAYS,
   isValidScheduleTimezone,
   parseEditableScheduleRules,
   validateEditableSchedule,
@@ -155,7 +157,7 @@ function AdminSchedulesContent() {
     try {
       const schedule = {
         name: name.trim(),
-        description: `Monday–Friday, ${intervals.length} time ${intervals.length === 1 ? "range" : "ranges"}${holidays.length ? `, ${holidays.length} holiday ${holidays.length === 1 ? "closure" : "closures"}` : ""}`,
+        description: `${intervals.length} time ${intervals.length === 1 ? "range" : "ranges"}${holidays.length ? `, ${holidays.length} holiday ${holidays.length === 1 ? "closure" : "closures"}` : ""}`,
         timezone: timezone.trim(),
         match_action: openAction,
         match_target: openAction === "hangup" ? undefined : openTarget.trim(),
@@ -437,9 +439,21 @@ function AdminSchedulesContent() {
               />
               <Text style={[styles.helper, { color: colors.muted }]}>Times and holiday dates use this timezone. Holiday closures take priority over weekday hours.</Text>
               {unsupportedRules ? <Text style={styles.errorText}>{unsupportedRules} Saving is disabled to protect existing rules.</Text> : null}
-              <Text style={[styles.weekdays, { color: colors.foreground }]}>Monday to Friday</Text>
+              <Text style={[styles.weekdays, { color: colors.foreground }]}>Business hours</Text>
               {intervals.map((interval, index) => (
                 <View key={`interval-${index}`}>
+                <Label text={`Days for time range ${index + 1}`} colors={colors} />
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                  {SCHEDULE_DAYS.map((day) => {
+                    const intervalDays: readonly number[] = interval.days ?? BUSINESS_WEEK;
+                    const selected = intervalDays.includes(day.value);
+                    return <TouchableOpacity key={day.value} accessibilityRole="checkbox" accessibilityLabel={`${day.label} for time range ${index + 1}`} accessibilityState={{ checked: selected }} onPress={() => setIntervals((current) => current.map((item, itemIndex) => {
+                      if (itemIndex !== index) return item;
+                      const days = item.days ?? [...BUSINESS_WEEK];
+                      return { ...item, days: days.includes(day.value) ? days.filter((value) => value !== day.value) : [...days, day.value] };
+                    }))} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center", paddingHorizontal: 10, borderRadius: 10, borderWidth: 1, borderColor: selected ? colors.primary : colors.border, backgroundColor: selected ? colors.primary : colors.surface }}><Text style={{ color: selected ? "#FFFFFF" : colors.foreground }}>{day.short}</Text></TouchableOpacity>;
+                  })}
+                </View>
                 <View style={styles.timeRow}>
                   <View style={styles.timeField}>
                     <Label text={`Opens ${index + 1}`} colors={colors} />
