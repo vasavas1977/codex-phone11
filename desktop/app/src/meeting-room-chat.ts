@@ -1,5 +1,47 @@
 import { ConnectionState, DataPacket_Kind, RoomEvent, type RemoteParticipant, type Room } from 'livekit-client';
 import { decodeRoomChatMessage, encodeRoomChatMessage, ROOM_CHAT_MAX_MESSAGES, ROOM_CHAT_TOPIC } from '../../../lib/meetings/room-chat-message';
+import { meetingAvatarTenant } from '../../../lib/meetings/participant-avatar';
+import { MAX_MEETING_AVATAR_BYTES, MAX_MEETING_PHOTO_CACHE_BYTES, MAX_MEETING_PHOTO_PEOPLE, meetingPhotoBytesMatch, type MeetingPhotoScope, type MeetingProfilePhoto } from './meeting-channels';
+
+/** Bounded room-local image bytes, never URLs or account credentials. */
+export class DesktopMeetingPhotos {
+  private disposed = false;
+  private bytes = 0;
+  private readonly entries = new Map<string, { participant: unknown; photo: MeetingProfilePhoto | null }>();
+
+  constructor(private readonly room: Room, private readonly scope: MeetingPhotoScope,
+    private readonly current: () => boolean,
+    private readonly fetchPhoto: (localIdentity: string, identity: string) => Promise<MeetingProfilePhoto | null>,
+    private readonly changed: () => void) {}
+
+  private active = () => !this.disposed && this.current() && this.room.state === ConnectionState.Connected;
+  private participant(identity: string) {
+    return this.room.localParticipant.identity === identity ? this.room.localParticipant : this.room.remoteParticipants.get(identity);
+  }
+  get(identity: string): MeetingProfilePhoto | null {
+    if (!this.active() || meetingAvatarTenant(this.room.localParticipant.identity, this.scope.ownerId) !== this.scope.tenantId) return null;
+    const targetId = Number(identity.split('-u')[1]);
+    if (meetingAvatarTenant(identity, targetId) !== this.scope.tenantId) return null;
+    const participant = this.participant(identity);
+    if (!participant) return null;
+    const existing = this.entries.get(identity);
+    if (existing) return existing.participant === participant ? existing.photo : null;
+    if (this.entries.size >= MAX_MEETING_PHOTO_PEOPLE) return null;
+    const entry = { participant, photo: null as MeetingProfilePhoto | null };
+    this.entries.set(identity, entry);
+    void this.fetchPhoto(this.room.localParticipant.identity, identity).then(photo => {
+      if (!this.active() || this.participant(identity) !== participant || this.entries.get(identity) !== entry ||
+          !photo || photo.identity !== identity || photo.bytes.byteLength > MAX_MEETING_AVATAR_BYTES ||
+          photo.mimeType !== 'image/png' || !meetingPhotoBytesMatch(photo.bytes, photo.mimeType) ||
+          this.bytes + photo.bytes.byteLength > MAX_MEETING_PHOTO_CACHE_BYTES) return;
+      this.bytes += photo.bytes.byteLength;
+      entry.photo = photo;
+      this.changed();
+    }).catch(() => undefined);
+    return null;
+  }
+  dispose(): void { this.disposed = true; this.entries.clear(); this.bytes = 0; }
+}
 
 export type DesktopChatEntry = Readonly<{
   id: string; senderIdentity: string; senderName: string; local: boolean; text: string;

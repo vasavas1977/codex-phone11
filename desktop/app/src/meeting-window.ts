@@ -1,10 +1,10 @@
-import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, ipcMain, nativeImage, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AuthenticatedDesktopProvider, DesktopMeetingGrant, DesktopMeetingDirectCursor } from '../../src/authenticated-provider';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
-import { appendDirectMeetingPage, MEETING_CHANNELS, type PublicMeetingState } from './meeting-channels';
+import { appendDirectMeetingPage, MAX_MEETING_AVATAR_BYTES, MAX_MEETING_PHOTO_PEOPLE, MEETING_CHANNELS, type PublicMeetingState, type MeetingPhotoScope, type MeetingProfilePhoto } from './meeting-channels';
 import { permitMeetingMedia, permitMeetingSpeakerSelection, phoneMediaBusy, validMeetingFrame } from './meeting-boundary';
 
 const meetingPath = join(__dirname, 'meeting.html');
@@ -30,6 +30,18 @@ export class DesktopMeetingWindow {
   private startedChannel = false;
   private startRequest: { key: string; requestId: string } | null = null;
   private acceptingClose = false;
+  private photoScope: MeetingPhotoScope | null = null;
+  private photoAbort = new AbortController();
+  private photoPeople = new Set<string>();
+  private photoQueue: Promise<unknown> = Promise.resolve();
+
+  private clearPhotos(): void {
+    this.photoAbort.abort();
+    this.photoAbort = new AbortController();
+    this.photoScope = null;
+    this.photoPeople.clear();
+    this.photoQueue = Promise.resolve();
+  }
 
   constructor(private readonly provider: AuthenticatedDesktopProvider,
     private readonly helper: DesktopHelperSupervisor,
@@ -52,6 +64,7 @@ export class DesktopMeetingWindow {
     if (!session || this.phoneBusy()) throw new Error('Meeting unavailable during a Phone call');
     if (this.win && !this.win.isDestroyed()) { this.win.show(); this.win.focus(); return; }
     this.revision = session.revision;
+    this.clearPhotos();
     this.admitted.clear();
     this.channels.clear();
     this.directChats.clear();
@@ -96,7 +109,7 @@ export class DesktopMeetingWindow {
       void this.close();
     });
     win.on('closed', () => {
-      if (this.win === win) { this.win = null; this.revision = null; this.admitted.clear(); this.channels.clear(); this.joined = false; }
+      if (this.win === win) { this.clearPhotos(); this.win = null; this.revision = null; this.admitted.clear(); this.channels.clear(); this.joined = false; }
     });
     try { await win.loadFile(meetingPath); if (this.win === win && this.current()) win.show(); }
     catch { await this.close(); throw new Error('Meeting window unavailable'); }
@@ -112,6 +125,40 @@ export class DesktopMeetingWindow {
   }
 
   registerIpc(): void {
+    ipcMain.handle(MEETING_CHANNELS.photo, async (event, input: unknown): Promise<MeetingProfilePhoto | null> => {
+      const scope = this.photoScope;
+      if (!scope || !this.valid(event) || !this.joined || !this.revision ||
+          !input || typeof input !== 'object' || Array.isArray(input)) return null;
+      const values = input as Record<string, unknown>;
+      if (Object.keys(values).length !== 4 || values.revision !== this.revision ||
+          values.roomRevision !== scope.roomRevision || typeof values.localIdentity !== 'string' ||
+          typeof values.identity !== 'string' || values.localIdentity.length > 256 || values.identity.length > 256 ||
+          this.photoPeople.has(values.identity) || this.photoPeople.size >= MAX_MEETING_PHOTO_PEOPLE) return null;
+      const identity = values.identity;
+      const localIdentity = values.localIdentity;
+      const revision = this.revision;
+      const signal = this.photoAbort.signal;
+      this.photoPeople.add(identity);
+      // A serialized, bounded room queue keeps concurrent image decoders and fetches bounded.
+      const request = this.photoQueue.then(async () => {
+        if (signal.aborted || this.photoScope !== scope || !this.valid(event)) return null;
+        try {
+          const photo = await this.provider.meetingProfilePhoto(revision, localIdentity, identity, signal);
+          if (!photo || signal.aborted || this.photoScope !== scope || !this.valid(event) || !this.joined) return null;
+          const image = nativeImage.createFromBuffer(Buffer.from(photo.bytes));
+          const { width, height } = image.getSize();
+          // The platform decoder must recognize the bounded raster; SVG and invalid data never reach preload.
+          if (image.isEmpty() || width <= 0 || height <= 0 || width > 2048 || height > 2048) return null;
+          const scale = Math.min(1, 96 / width, 96 / height);
+          const bytes = new Uint8Array(image.resize({ width: Math.max(1, Math.round(width * scale)),
+            height: Math.max(1, Math.round(height * scale)), quality: 'good' }).toPNG());
+          if (!bytes.length || bytes.length > MAX_MEETING_AVATAR_BYTES) return null;
+          return { identity, mimeType: 'image/png' as const, bytes };
+        } catch { return null; }
+      });
+      this.photoQueue = request.catch(() => null);
+      return request;
+    });
     ipcMain.handle(MEETING_CHANNELS.state, async event => {
       if (!this.valid(event) || !this.revision) throw new Error('Meeting session changed');
       const revision = this.revision;
@@ -244,7 +291,7 @@ export class DesktopMeetingWindow {
         return { meetingId };
       } finally { this.starting = false; }
     });
-    ipcMain.handle(MEETING_CHANNELS.join, async (event, input: unknown): Promise<DesktopMeetingGrant> => {
+    ipcMain.handle(MEETING_CHANNELS.join, async (event, input: unknown): Promise<DesktopMeetingGrant & { photoScope: MeetingPhotoScope }> => {
       if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting ||
           !input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Meeting unavailable');
       const { meetingId, revision } = input as Record<string, unknown>;
@@ -257,7 +304,10 @@ export class DesktopMeetingWindow {
         const admission = await this.provider.joinMeeting(expected, meetingId);
         if (!this.valid(event) || this.revision !== expected || this.phoneBusy())
           throw new Error('Meeting session changed');
-        return admission;
+        const session = this.provider.currentSession()!;
+        this.clearPhotos();
+        this.photoScope = { roomRevision: randomUUID(), ownerId: Number(session.userId), tenantId: session.tenantId };
+        return { ...admission, photoScope: this.photoScope };
       } catch {
         this.joined = false;
         throw new Error('Meeting unavailable');
@@ -265,6 +315,7 @@ export class DesktopMeetingWindow {
     });
     ipcMain.handle(MEETING_CHANNELS.joinFailed, event => {
       if (!this.valid(event)) throw new Error('Meeting session changed');
+      this.clearPhotos();
       this.joined = false;
     });
     ipcMain.handle(MEETING_CHANNELS.finished, async event => {
@@ -284,6 +335,7 @@ export class DesktopMeetingWindow {
     const win = this.win;
     if (!win || win.isDestroyed()) return;
     this.closing = (async () => {
+      this.clearPhotos();
       this.admitted.clear();
       this.channels.clear();
       this.directChats.clear();

@@ -1,6 +1,9 @@
 import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, VOICEMAIL_ENABLED, type PublicState, type TaggedSnapshot, type TaggedDirectory, type DirectoryEntry } from './ipc';
 import type { DesktopCallHistory, DesktopCallHistoryCursor, DesktopTenantSelection } from '../../src/authenticated-provider';
 import { VoicemailPlayer } from './voicemail-player';
+import { boundedHistoryQuery, filterHistoryItems, HISTORY_DIRECTIONS, HISTORY_OUTCOMES,
+  historyDirectionLabel, historyOutcome, historyOutcomeLabel, historyScopeKey,
+  type HistoryDirection, type HistoryOutcome } from './history-filter';
 
 declare global { interface Window { phone11: {
   state(): Promise<PublicState>; signIn(email: string, password: string): Promise<PublicState | DesktopTenantSelection>;
@@ -42,7 +45,24 @@ let historyRefreshQueued = false;
 let historyMessage = '';
 let historyItems: DesktopCallHistory[] = [];
 let historyNextCursor: DesktopCallHistoryCursor | null = null;
+let historyScope = '';
+let historyQuery = '';
+let historyDirection: HistoryDirection = 'all';
+let historyResult: HistoryOutcome = 'all';
 let historyReconcileTimers: Array<ReturnType<typeof setTimeout>> = [];
+function clearHistoryFilters(): void {
+  historyQuery = ''; historyDirection = 'all'; historyResult = 'all';
+}
+function resetHistory(): void {
+  cancelHistoryReconciliation();
+  historyRequest++; historyLoading = false; historyRefreshQueued = false; historyLoadedFor = '';
+  historyItems = []; historyNextCursor = null; historyMessage = ''; clearHistoryFilters();
+}
+function syncHistoryScope(): string {
+  const scope = historyScopeKey(state);
+  if (scope !== historyScope) { historyScope = scope; resetHistory(); }
+  return scope;
+}
 function cancelHistoryReconciliation(): void {
   for (const timer of historyReconcileTimers) clearTimeout(timer);
   historyReconcileTimers = [];
@@ -180,53 +200,72 @@ function callbackNumber(item: DesktopCallHistory): string | null {
   return candidate && /^[+0-9*#]{1,32}$/.test(candidate) ? candidate : null;
 }
 function renderHistory(): void {
+  const scope = syncHistoryScope();
+  const search = maybeById('history-search') as HTMLInputElement | null;
+  if (search) { search.value = historyQuery; search.disabled = !scope; }
+  const direction = maybeById('history-direction') as HTMLSelectElement | null;
+  if (direction) { direction.value = historyDirection; direction.disabled = !scope; }
+  const outcome = maybeById('history-outcome') as HTMLSelectElement | null;
+  if (outcome) { outcome.value = historyResult; outcome.disabled = !scope; }
+  const clear = maybeById('history-clear') as HTMLButtonElement | null;
+  if (clear) clear.disabled = !scope || (!historyQuery && historyDirection === 'all' && historyResult === 'all');
+  const visibleItems = filterHistoryItems(historyItems, historyQuery, historyDirection, historyResult);
+  const count = maybeById('history-count');
+  if (count) count.textContent = historyLoadedFor
+    ? `Showing ${visibleItems.length} of ${historyItems.length} loaded calls.` : '';
   const status = maybeById('history-state');
   if (status) status.textContent = historyMessage;
   const refresh = maybeById('history-refresh') as HTMLButtonElement | null;
-  if (refresh) refresh.disabled = historyLoading;
+  if (refresh) refresh.disabled = historyLoading || !scope;
   const more = maybeById('history-more') as HTMLButtonElement | null;
   if (more) { more.hidden = !historyNextCursor; more.disabled = historyLoading || !historyNextCursor; }
   const list = maybeById('history-list');
   if (!list) return;
+  list.setAttribute('aria-busy', String(historyLoading));
   list.replaceChildren();
-  if (!historyMessage && !historyLoading && historyLoadedFor && historyItems.length === 0) {
+  if (!historyMessage && !historyLoading && historyLoadedFor && visibleItems.length === 0) {
     const empty = document.createElement('p'); empty.className = 'empty-message';
-    empty.textContent = 'No calls yet.'; list.append(empty);
+    empty.textContent = historyItems.length === 0 ? 'No calls yet.' : historyNextCursor
+      ? 'No loaded calls match. Clear search and filters, or load more calls.'
+      : 'No loaded calls match. Clear search and filters to see all loaded calls.';
+    list.append(empty);
   }
-  for (const item of historyItems) {
+  for (const item of visibleItems) {
     const number = callbackNumber(item);
-    const missed = ['missed', 'no_answer', 'no-answer', 'busy', 'failed'].includes(item.disposition ?? '');
+    const recordedOutcome = historyOutcome(item);
+    const missed = recordedOutcome === 'missed';
     const row = document.createElement('button'); row.type = 'button'; row.className = 'history-row';
     row.dataset.missed = String(missed);
     const display = number || [item.callerNumber, item.calleeNumber].filter(Boolean).join(' → ') || 'Unknown caller';
-    row.disabled = !number || !!state?.calling.call || busy || state?.calling.dialState !== 'idle';
+    row.disabled = !number || !scope || !!state?.calling.call || busy || state?.calling.dialState !== 'idle';
     row.setAttribute('aria-label', number ? `Use ${number} on dialpad` : display);
     const icon = document.createElement('img'); icon.alt = ''; icon.src = `icons/${missed ? 'phone-missed' : item.direction === 'inbound' ? 'phone-incoming' : 'phone-outgoing'}.svg`;
     const text = document.createElement('span'); const title = document.createElement('strong'); title.textContent = display;
     const meta = document.createElement('small');
-    const outcome = item.disposition === 'busy' ? 'Busy' : item.disposition === 'failed' ? 'Failed'
-      : missed ? 'Missed' : `${item.durationSeconds}s`;
-    meta.textContent = `${item.direction[0].toUpperCase()}${item.direction.slice(1)} · ${outcome} · ${new Date(item.startedAt).toLocaleString()}`;
+    const outcome = historyOutcomeLabel(recordedOutcome) + (recordedOutcome === 'answered' ? ` · ${item.durationSeconds}s` : '');
+    meta.textContent = `${historyDirectionLabel(item.direction)} · ${outcome} · ${new Date(item.startedAt).toLocaleString()}`;
     text.append(title, meta); row.append(icon, text);
     row.addEventListener('click', () => {
-      if (!number || !state?.signedIn || state.calling.call || busy || state.calling.dialState !== 'idle') return;
+      if (!number || !state?.signedIn || state.calling.call || busy || state.calling.dialState !== 'idle' ||
+          historyScopeKey(state) !== scope || historyLoadedFor !== scope) return;
       const field = byId('destination') as HTMLInputElement; field.value = number; field.focus();
     }); list.append(row);
   }
 }
 async function loadHistory(force = false, more = false): Promise<void> {
+  const scope = syncHistoryScope();
   if (historyLoading) { if (force) historyRefreshQueued = true; return; }
-  if (!state?.signedIn || !state.sessionRevision ||
-      (more && (!historyNextCursor || historyLoadedFor !== state.sessionRevision)) ||
-      (!force && !more && historyLoadedFor === state.sessionRevision)) return;
+  if (!scope || !state?.signedIn || !state.sessionRevision ||
+      (more && (!historyNextCursor || historyLoadedFor !== scope)) ||
+      (!force && !more && historyLoadedFor === scope)) return;
   const revision = state.sessionRevision; const request = ++historyRequest;
   const cursor = more ? historyNextCursor! : undefined;
   if (!more) { historyItems = []; historyNextCursor = null; historyLoadedFor = ''; }
-  historyLoading = true; historyMessage = 'Loading call history…'; renderHistory();
+  historyLoading = true; historyMessage = more ? 'Loading older calls…' : 'Loading call history…'; renderHistory();
   try {
     if (!window.phone11.historyList) throw new Error('Unavailable');
     const response = await window.phone11.historyList(revision, cursor);
-    if (request !== historyRequest || state?.sessionRevision !== revision) return;
+    if (request !== historyRequest || historyScopeKey(state) !== scope) return;
     if (response.sessionRevision !== revision) throw new Error('Session changed');
     const existing = new Set(historyItems.map(item => item.id));
     if (response.items.some(item => existing.has(item.id)) ||
@@ -236,12 +275,12 @@ async function loadHistory(force = false, more = false): Promise<void> {
       throw new Error('Invalid call history page');
     historyItems = more ? [...historyItems, ...response.items] : response.items;
     historyNextCursor = response.nextCursor;
-    historyLoadedFor = revision; historyMessage = '';
+    historyLoadedFor = scope; historyMessage = '';
   } catch (error) {
-    if (request === historyRequest && state?.sessionRevision === revision)
+    if (request === historyRequest && historyScopeKey(state) === scope)
       historyMessage = callHistoryFailureMessage(error);
   } finally {
-    if (request === historyRequest && state?.sessionRevision === revision) {
+    if (request === historyRequest && historyScopeKey(state) === scope) {
       historyLoading = false; renderHistory();
       if (historyRefreshQueued) { historyRefreshQueued = false; void loadHistory(true); }
     }
@@ -281,8 +320,8 @@ function render(): void {
     }
   }
   renderDirectory();
-  if (!signed || !state) { player?.stop(); return; }
   renderHistory();
+  if (!signed || !state) { player?.stop(); return; }
   const phoneBusy = !!call || state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle';
   if (phoneBusy) player?.stop();
   (byId('open-meetings') as HTMLButtonElement).disabled = meetingOpening || phoneBusy;
@@ -409,6 +448,7 @@ async function request(input: unknown): Promise<void> {
 byId('login-form').addEventListener('submit', async event => {
   event.preventDefault();
   const epoch = ++accountEpoch;
+  resetHistory(); renderHistory();
   const email = (byId('email') as HTMLInputElement).value;
   const passwordField = byId('password') as HTMLInputElement;
   const password = passwordField.value;
@@ -459,6 +499,7 @@ function renderTenantChoices(): void {
 }
 maybeById('tenant-picker-back')?.addEventListener('click', async () => {
   if (selectionBusy) return;
+  resetHistory();
   ++accountEpoch; pendingSelection = null; selectionBusy = false; message(''); render();
   try { await window.phone11.signOut(); }
   catch { message('Sign-out could not be verified. Restart before calling.'); }
@@ -487,6 +528,23 @@ maybeById('directory-refresh')?.addEventListener('click', () => { void loadDirec
 maybeById('directory-more')?.addEventListener('click', () => { void loadDirectory(true); });
 maybeById('history-refresh')?.addEventListener('click', () => { void loadHistory(true); });
 maybeById('history-more')?.addEventListener('click', () => { void loadHistory(false, true); });
+maybeById('history-search')?.addEventListener('input', () => {
+  historyQuery = boundedHistoryQuery((byId('history-search') as HTMLInputElement).value);
+  renderHistory();
+});
+maybeById('history-direction')?.addEventListener('change', () => {
+  const value = (byId('history-direction') as HTMLSelectElement).value;
+  historyDirection = HISTORY_DIRECTIONS.find(direction => direction === value) ?? 'all';
+  renderHistory();
+});
+maybeById('history-outcome')?.addEventListener('change', () => {
+  const value = (byId('history-outcome') as HTMLSelectElement).value;
+  historyResult = HISTORY_OUTCOMES.find(outcome => outcome === value) ?? 'all';
+  renderHistory();
+});
+maybeById('history-clear')?.addEventListener('click', () => {
+  clearHistoryFilters(); renderHistory(); maybeById('history-search')?.focus();
+});
 maybeById('voicemail-refresh')?.addEventListener('click', () => { void loadVoicemail(true); });
 byId('open-meetings').addEventListener('click', async () => {
   if (!state?.signedIn || !state.sessionRevision || state.calling.call ||
@@ -513,7 +571,7 @@ byId('open-meetings').addEventListener('click', async () => {
 });
 byId('sign-out').addEventListener('click', async () => {
   const epoch = ++accountEpoch;
-  cancelHistoryReconciliation(); player?.stop(); historyRequest++; historyLoading = false; historyRefreshQueued = false; historyLoadedFor = ''; historyItems = []; historyNextCursor = null; historyMessage = ''; resetDirectory();
+  resetHistory(); player?.stop(); resetDirectory();
   state = null; busy = false; meetingOpening = false; meetingMessage = ''; currentTab = 'phone'; currentPhoneSection = 'history'; voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = []; voicemailMessage = 'Open Voicemail to load your messages.'; render();
   try {
     const signedOut = await window.phone11.signOut();
@@ -560,7 +618,7 @@ window.phone11.onUpdate(update => {
   const previousCall = state?.calling.call;
   state = applyTaggedSnapshot(state, update);
   if (previousRevision && previousRevision !== state?.sessionRevision) {
-    cancelHistoryReconciliation(); player?.stop(); historyRequest++; historyLoading = false; historyRefreshQueued = false; historyLoadedFor = ''; historyItems = []; historyNextCursor = null; historyMessage = ''; resetDirectory();
+    resetHistory(); player?.stop(); resetDirectory();
     voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = [];
     voicemailMessage = 'Open Voicemail to load your messages.';
   }

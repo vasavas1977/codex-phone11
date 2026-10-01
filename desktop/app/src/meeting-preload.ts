@@ -1,11 +1,11 @@
 import { ipcRenderer } from 'electron';
 import { Participant, Room, RoomEvent, Track, supportsAudioOutputSelection } from 'livekit-client';
 import { MeetingAudioOutputSequence } from './meeting-audio-output-sequence';
-import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, type PublicMeetingDirectPage } from './meeting-channels';
+import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, type PublicMeetingDirectPage, type MeetingPhotoScope, type MeetingProfilePhoto } from './meeting-channels';
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
-import { DesktopMeetingChat, type DesktopChatSnapshot } from './meeting-room-chat';
+import { DesktopMeetingChat, DesktopMeetingPhotos, type DesktopChatSnapshot } from './meeting-room-chat';
 import { channelInviteMessage, channelInviteSelectionIsValid } from './channel-invite-selection';
 import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingDirectDetails, DesktopMeetingDirectChat } from '../../src/authenticated-provider';
 
@@ -13,6 +13,7 @@ import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingD
 // The static page has no script and no bridge exposing the token or Room.
 let room: Room | null = null;
 let meetingChat: DesktopMeetingChat | null = null;
+let meetingPhotos: DesktopMeetingPhotos | null = null;
 let chatOpen = false;
 let revision: string | null = null;
 let busy = false;
@@ -76,15 +77,21 @@ function renderChat(snapshot: DesktopChatSnapshot): void {
   for (const message of snapshot.messages) {
     const key = `${message.senderIdentity}:${message.id}`;
     keys.add(key);
-    if (existing.has(key)) continue;
+    const retained = existing.get(key) as HTMLElement | undefined;
+    if (retained) { applyAvatar(retained.querySelector('.person-avatar') as HTMLElement, message.senderIdentity, message.senderName); continue; }
     const entry = document.createElement('li');
     entry.dataset.key = key;
     entry.className = 'chat-message';
+    const avatar = document.createElement('span');
+    avatar.className = 'person-avatar';
+    applyAvatar(avatar, message.senderIdentity, message.senderName);
+    const body = document.createElement('div');
     const sender = document.createElement('strong');
     sender.textContent = message.senderName;
     const text = document.createElement('p');
     text.textContent = message.text;
-    entry.append(sender, text);
+    body.append(sender, text);
+    entry.append(avatar, body);
     list.appendChild(entry);
   }
   for (const [key, node] of existing) if (!key || !keys.has(key)) node.remove();
@@ -97,6 +104,8 @@ function renderChat(snapshot: DesktopChatSnapshot): void {
 }
 
 function clearChat(): void {
+  meetingPhotos?.dispose();
+  meetingPhotos = null;
   const previous = meetingChat;
   meetingChat = null;
   previous?.dispose();
@@ -107,6 +116,38 @@ function clearChat(): void {
   el('chat-status').textContent = '';
   el('chat-empty').hidden = false;
   showChat(false, false);
+}
+
+function applyAvatar(avatar: HTMLElement, identity: string, name: string): void {
+  if (!avatar.firstChild) {
+    const fallback = document.createElement('span');
+    fallback.className = 'person-initials';
+    avatar.appendChild(fallback);
+  }
+  const fallback = avatar.querySelector('.person-initials') as HTMLElement;
+  fallback.textContent = initials(name);
+  avatar.setAttribute('role', 'img');
+  avatar.setAttribute('aria-label', `${name} initials`);
+  const photo = meetingPhotos?.get(identity);
+  const image = avatar.querySelector('img');
+  if (!photo) { image?.remove(); fallback.hidden = false; return; }
+  if (image) { if (!image.hidden) avatar.setAttribute('aria-label', `${name} profile photo`); return; }
+  const owner = meetingPhotos;
+  const next = document.createElement('img');
+  next.alt = '';
+  next.hidden = true;
+  next.addEventListener('load', () => {
+    if (meetingPhotos !== owner || owner?.get(identity) !== photo || !avatar.contains(next)) return;
+    if (!next.naturalWidth || !next.naturalHeight || next.naturalWidth > 2048 || next.naturalHeight > 2048) return;
+    next.hidden = false;
+    fallback.hidden = true;
+    avatar.setAttribute('aria-label', `${name} profile photo`);
+  }, { once: true });
+  next.addEventListener('error', () => { if (meetingPhotos === owner && avatar.contains(next)) { next.hidden = true; fallback.hidden = false; } }, { once: true });
+  let binary = '';
+  for (let offset = 0; offset < photo.bytes.length; offset += 8192) binary += String.fromCharCode(...photo.bytes.subarray(offset, offset + 8192));
+  next.src = `data:${photo.mimeType};base64,${btoa(binary)}`;
+  avatar.appendChild(next);
 }
 
 async function sendChat(): Promise<void> {
@@ -382,7 +423,7 @@ function createParticipantTile(participant: Participant): ParticipantTile {
   const media = document.createElement('div');
   media.className = 'tile-media';
   const placeholder = document.createElement('span');
-  placeholder.className = 'tile-placeholder';
+  placeholder.className = 'tile-placeholder person-avatar';
   placeholder.setAttribute('aria-hidden', 'true');
   media.appendChild(placeholder);
   const caption = document.createElement('div');
@@ -396,11 +437,13 @@ function createParticipantTile(participant: Participant): ParticipantTile {
 
   const rosterEntry = document.createElement('li');
   rosterEntry.className = 'roster-entry';
+  const avatar = document.createElement('span');
+  avatar.className = 'person-avatar';
   const rosterName = document.createElement('span');
   rosterName.className = 'roster-name';
   const rosterState = document.createElement('span');
   rosterState.className = 'roster-media';
-  rosterEntry.append(rosterName, rosterState);
+  rosterEntry.append(avatar, rosterName, rosterState);
   return { participant, camera: new MeetingVideoSlot(), tile, media, placeholder, name, audioState, rosterEntry, rosterName, rosterState };
 }
 
@@ -441,7 +484,7 @@ function attachCamera(participant: Participant, item: ParticipantTile): void {
     item.media.appendChild(video);
   });
   item.media.classList.toggle('has-video', Boolean(track));
-  item.placeholder.textContent = initials(participantName(participant));
+  applyAvatar(item.placeholder, participant.identity, participantName(participant));
 }
 
 function syncScreenShares(participants: Participant[]): void {
@@ -505,6 +548,7 @@ function syncParticipants(): void {
     item.tile.setAttribute('aria-label', `${name}${participant.isSpeaking ? ', speaking' : ''}`);
     item.name.textContent = name;
     item.rosterName.textContent = name;
+    applyAvatar(item.rosterEntry.querySelector('.person-avatar') as HTMLElement, participant.identity, name);
     const micState = participant.isMicrophoneEnabled ? 'Mic on' : 'Mic off';
     const cameraState = participant.isCameraEnabled ? 'Camera on' : 'Camera off';
     item.audioState.textContent = `${micState} · ${cameraState}`;
@@ -615,7 +659,7 @@ async function join(): Promise<void> {
     clearPreview();
     await prejoinCamera.stopAndDrain();
     if (!current()) return;
-    const grant = await ipcRenderer.invoke(MEETING_CHANNELS.join, { meetingId, revision }) as DesktopMeetingGrant;
+    const grant = await ipcRenderer.invoke(MEETING_CHANNELS.join, { meetingId, revision }) as DesktopMeetingGrant & { photoScope?: MeetingPhotoScope };
     if (!current()) return;
     if (!grant || typeof grant.url !== 'string' || typeof grant.token !== 'string' ||
         grant.expiresAt <= Math.floor(Date.now() / 1000)) throw new Error('Invalid admission');
@@ -677,6 +721,12 @@ async function join(): Promise<void> {
     canPublish = grant.grantProfile === 'interactive';
     clearChat();
     const chatRoom = next;
+    const photoScope = grant.photoScope;
+    if (photoScope) meetingPhotos = new DesktopMeetingPhotos(chatRoom, photoScope,
+      () => room === chatRoom && current(),
+      (localIdentity, identity) => ipcRenderer.invoke(MEETING_CHANNELS.photo,
+        { revision, roomRevision: photoScope.roomRevision, localIdentity, identity }) as Promise<MeetingProfilePhoto | null>,
+      () => { if (room === chatRoom && current()) { if (meetingChat) renderChat(meetingChat.getSnapshot()); syncParticipants(); } });
     meetingChat = new DesktopMeetingChat(chatRoom, canPublish,
       () => room === chatRoom && current(), renderChat);
     // The Join click supplies the user gesture needed for Chromium audio playback.

@@ -4,6 +4,9 @@ import type { DesktopSession } from "./call-boundary";
 import type { SipAccountSecret } from "./helper-supervisor";
 import { postNativeCredential } from "./native-credential-request";
 import { DesktopCallHistoryError, type DesktopCallHistoryErrorCode } from "./call-history-error";
+import { meetingAvatarPerson, meetingAvatarTenant } from "../../lib/meetings/participant-avatar";
+import { readDirectory } from "../../lib/phone/directory";
+import { MAX_MEETING_PHOTO_BYTES, meetingPhotoBytesMatch, type MeetingProfilePhoto } from "../app/src/meeting-channels";
 export { DesktopCallHistoryError } from "./call-history-error";
 export type { DesktopCallHistoryErrorCode } from "./call-history-error";
 
@@ -122,6 +125,89 @@ export class AuthenticatedDesktopProvider {
   currentSession(): DesktopSession | null { return this.session; }
   /** Public display number from the current authenticated phone grant. */
   currentExtensionNumber(): string | null { return this.session ? this.extensionNumber : null; }
+
+  /** Photo authority stays in main; no caller-supplied URL or credential is accepted. */
+  async meetingProfilePhoto(expectedRevision: string, localIdentity: string,
+    identity: string, roomSignal?: AbortSignal): Promise<MeetingProfilePhoto | null> {
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const session = this.session!;
+    const tenantId = meetingAvatarTenant(localIdentity, Number(session.userId));
+    // Use the existing resolver's exact identity grammar before any directory/photo request.
+    const targetId = typeof identity === 'string' ? Number(identity.split('-u')[1]) : NaN;
+    if (tenantId !== session.tenantId || !positiveId(targetId) ||
+        meetingAvatarTenant(identity, targetId) !== tenantId || roomSignal?.aborted) return null;
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    roomSignal?.addEventListener('abort', cancel, { once: true });
+    this.controllers.add(controller);
+    const timeout = setTimeout(cancel, 10_000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    controller.signal.addEventListener('abort', () => { void reader?.cancel().catch(() => undefined); }, { once: true });
+    const readBytes = async (response: Response, limit: number): Promise<Uint8Array | null> => {
+      this.assertSessionAuthority(expectedRevision, epoch);
+      if (controller.signal.aborted || response.status !== 200 || !response.body) return null;
+      const declared = response.headers.get('content-length');
+      if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > limit)) return null;
+      reader = response.body.getReader();
+      try {
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          this.assertSessionAuthority(expectedRevision, epoch);
+          if (controller.signal.aborted) return null;
+          if (done) break;
+          total += value.byteLength;
+          if (total > limit) return null;
+          chunks.push(value);
+        }
+        if (declared !== null && Number(declared) !== total) return null;
+        const bytes = new Uint8Array(total);
+        let offset = 0;
+        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+        return bytes;
+      } finally {
+        try { await reader.cancel(); } catch { /* Cleanup never exposes provider diagnostics. */ }
+        try { reader.releaseLock(); } catch { /* Already cancelled. */ }
+        reader = undefined;
+      }
+    };
+    const request = (path: string) => this.request(`${this.origin}${path}`, {
+      headers: { authorization: `Bearer ${token}` }, signal: controller.signal,
+      cache: 'no-store', credentials: 'omit', redirect: 'error',
+    });
+    try {
+      // One room-scoped deadline covers metadata headers/body and raster headers/body.
+      const route = targetId === Number(session.userId) ? 'profile.self' : 'chat.directory';
+      const metadata = await readBytes(await request(`/api/trpc/${route}?input=${encodeURIComponent(JSON.stringify({ json: { tenantId } }))}`), 65536);
+      if (!metadata) return null;
+      const value = this.unwrapTrpc(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(metadata)) as unknown);
+      let photoUrl: unknown;
+      if (route === 'profile.self') {
+        if (!isRecord(value) || value.tenantId !== tenantId || value.userId !== targetId) return null;
+        photoUrl = value.photoUrl;
+      } else {
+        if (!Array.isArray(value) || value.length > 500) return null;
+        photoUrl = meetingAvatarPerson(identity, tenantId, readDirectory(value))?.photoUrl;
+      }
+      // No normalization may turn an arbitrary URL into an authorized descriptor.
+      if (typeof photoUrl !== 'string' || !new RegExp(`^/api/profile/photo/${tenantId}/${targetId}\\?v=[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, 'i').test(photoUrl) ||
+          controller.signal.aborted) return null;
+      const response = await request(photoUrl);
+      const mimeType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+      if (!mimeType || !['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) return null;
+      const bytes = await readBytes(response, MAX_MEETING_PHOTO_BYTES);
+      if (!bytes || !meetingPhotoBytesMatch(bytes, mimeType) || controller.signal.aborted) return null;
+      this.assertSessionAuthority(expectedRevision, epoch);
+      return { identity, mimeType: mimeType as MeetingProfilePhoto['mimeType'], bytes };
+    } catch { return null; }
+    finally {
+      cancel();
+      clearTimeout(timeout);
+      roomSignal?.removeEventListener('abort', cancel);
+      this.controllers.delete(controller);
+    }
+  }
 
   /** Public extension labels from the currently selected, authorized tenant. */
   async listDirectory(expectedRevision: string, search: string, offset: number): Promise<DesktopDirectoryPage> {

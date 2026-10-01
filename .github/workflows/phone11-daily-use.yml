@@ -19,6 +19,7 @@ on:
       - "hooks/**"
       - "lib/**"
       - "server/**"
+      - "desktop/**"
       - "tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -42,6 +43,7 @@ on:
       - "hooks/**"
       - "lib/**"
       - "server/**"
+      - "desktop/**"
       - "tests/**"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -184,6 +186,15 @@ jobs:
             bash tests/fixtures/phone11-outbound-recording-fs/run.sh
       - name: Compile backend with esbuild
         run: pnpm run build:backend
+      # Source tests and cross-platform JS compilation only. Native helper and
+      # signed distribution acceptance remain separate macOS/Windows gates.
+      - name: Test and compile the isolated desktop app
+        run: |
+          ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm --prefix desktop/app ci --no-audit --no-fund
+          node --import tsx --test desktop/tests/authenticated-provider.node.ts
+          npm --prefix desktop/app test
+          npm --prefix desktop/app run typecheck
+          PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build
 
   cloud-recording-postgres-tests:
     runs-on: ubuntu-24.04

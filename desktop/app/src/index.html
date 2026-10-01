@@ -69,9 +69,37 @@
                 <span class="small">Call history</span>
                 <button id="history-refresh" class="icon-button" type="button" aria-label="Refresh call history" title="Refresh"><img src="icons/refresh-cw.svg" alt=""></button>
               </div>
-              <p id="history-state" class="panel-state" role="status"></p>
+              <div class="history-controls">
+                <label class="sr-only" for="history-search">Search loaded calls by number, direction or outcome</label>
+                <input id="history-search" type="search" placeholder="Search loaded calls" maxlength="64" autocomplete="off" aria-describedby="history-scope">
+                <div class="history-filters">
+                  <label for="history-direction">Direction
+                    <select id="history-direction">
+                      <option value="all">All directions</option>
+                      <option value="inbound">Incoming</option>
+                      <option value="outbound">Outgoing</option>
+                      <option value="internal">Internal</option>
+                      <option value="emergency">Emergency</option>
+                    </select>
+                  </label>
+                  <label for="history-outcome">Outcome
+                    <select id="history-outcome">
+                      <option value="all">All outcomes</option>
+                      <option value="answered">Answered</option>
+                      <option value="missed">Missed / no answer</option>
+                      <option value="busy">Busy</option>
+                      <option value="failed">Failed</option>
+                      <option value="other">Other / unknown</option>
+                    </select>
+                  </label>
+                </div>
+                <button id="history-clear" class="text-button" type="button" disabled>Clear search and filters</button>
+              </div>
+              <p id="history-scope" class="history-scope">Search and filters apply to loaded calls only. Load more to include older calls.</p>
+              <p id="history-count" class="history-count" role="status" aria-live="polite"></p>
+              <p id="history-state" class="panel-state" role="status" aria-live="polite"></p>
               <div id="history-list" class="history-list"></div>
-              <button id="history-more" type="button" hidden>Load more</button>
+              <button id="history-more" class="history-more" type="button" aria-describedby="history-scope" hidden>Load more calls</button>
             </section>
 
             <section id="directory-panel" class="phone-panel directory-panel" hidden aria-labelledby="directory-heading">

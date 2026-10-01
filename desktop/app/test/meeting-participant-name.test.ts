@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { test } from 'node:test';
+import { ConnectionState, DataPacket_Kind } from 'livekit-client';
 
 test('desktop participant labels keep human names and replace provider identities', async () => {
   const temporary = await mkdtemp(join(tmpdir(), 'phone11-participant-name-'));
@@ -33,7 +34,7 @@ test('desktop participant labels keep human names and replace provider identitie
             loader: 'js',
             contents: args.path === 'electron'
               ? 'export const ipcRenderer = {};'
-              : 'export class Participant {} export class Room {} export const RoomEvent = {}; export const Track = { Kind: { Audio: "audio", Video: "video" } }; export const supportsAudioOutputSelection = () => false;',
+              : `export class Participant {} export class Room {} export const RoomEvent = {}; export const Track = { Kind: { Audio: "audio", Video: "video" } }; export const supportsAudioOutputSelection = () => false; export const ConnectionState = ${JSON.stringify(ConnectionState)}; export const DataPacket_Kind = ${JSON.stringify(DataPacket_Kind)};`,
           }));
         },
       }],
