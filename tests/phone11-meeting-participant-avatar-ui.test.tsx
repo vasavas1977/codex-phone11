@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   workspaceId: 7,
   stateIndex: 0,
   openParticipants: false,
+  authOwner: { id: 3001, name: "Current Person" },
   people: [
     {
       id: 1020,
@@ -62,7 +63,10 @@ vi.mock("../hooks/use-colors", () => ({
   }),
 }));
 vi.mock("../hooks/use-auth", () => ({
-  useAuth: () => ({ user: { id: 3001, name: "Current Person" } }),
+  useAuth: () => ({ user: mocks.authOwner }),
+}));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: mocks.authOwner }),
 }));
 vi.mock("../hooks/use-directory", () => ({
   useDirectory: () => ({

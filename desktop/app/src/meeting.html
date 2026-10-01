@@ -43,7 +43,7 @@
       <button id="layout-gallery" type="button" aria-pressed="true">Gallery</button>
       <button id="layout-speaker" type="button" aria-pressed="false">Speaker</button>
     </div>
-    <div class="meeting-content">
+    <div id="meeting-content" class="meeting-content">
       <div id="stage" aria-label="Meeting video">
         <section id="screen-shares" aria-label="Shared screens" hidden></section>
         <div id="gallery-grid"></div>
@@ -54,11 +54,21 @@
         <h2>Participants <span id="roster-count">1</span></h2>
         <ul id="participant-list" aria-live="polite"></ul>
       </aside>
+      <aside id="chat-panel" aria-labelledby="chat-title" hidden>
+        <div class="chat-heading"><h2 id="chat-title">Chat</h2><button id="close-chat" type="button" aria-label="Close meeting chat">Close</button></div>
+        <p id="chat-access">Everyone in this meeting</p>
+        <p id="chat-empty">No messages yet.</p>
+        <ol id="chat-messages" role="log" aria-label="Meeting messages" aria-live="polite" aria-relevant="additions" tabindex="0"></ol>
+        <div class="chat-compose"><label for="chat-text">Message</label><textarea id="chat-text" rows="3" maxlength="1000" aria-describedby="chat-help chat-status" placeholder="Message everyone" disabled></textarea>
+          <div class="chat-send-row"><span id="chat-help">Enter to send · Shift+Enter for a new line</span><button id="chat-send" type="button" disabled>Send</button></div>
+          <p id="chat-status" role="status" aria-live="polite"></p><p class="chat-retention">Live messages clear when you leave.</p>
+        </div>
+      </aside>
     </div>
     <div id="remote-audio" hidden></div>
     <div class="meeting-bottom"><div><strong id="participant-count">You</strong><span id="media-note">Connecting audio…</span></div><nav aria-label="Meeting controls">
       <label class="meeting-output" for="audio-output">Speaker <select id="audio-output" aria-label="Meeting speaker" disabled><option value="default">System default</option></select></label>
-      <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="leave" class="danger" type="button">Leave</button>
+      <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="chat" type="button" aria-pressed="false" aria-controls="chat-panel">Chat</button><button id="leave" class="danger" type="button">Leave</button>
     </nav></div><p id="audio-output-status" role="status" aria-live="polite"></p>
   </section>
 </main></body></html>

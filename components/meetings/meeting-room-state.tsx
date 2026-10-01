@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -13,11 +13,13 @@ import {
 import { useColors } from "@/hooks/use-colors";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { NativeVideoStage } from "@/components/meetings/native-video-stage";
+import { MeetingRoomChat } from "@/components/meetings/meeting-room-chat";
 import {
   ProfileAvatar,
   useProfilePhotoCacheScope,
 } from "@/components/profile/profile-avatar";
 import { useAuth } from "@/hooks/use-auth";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 import { useDirectory, useDirectoryFocusRefresh } from "@/hooks/use-directory";
 import { useWorkspaceProfile } from "@/lib/profile/use-workspace-profile";
 import {
@@ -177,6 +179,9 @@ export function MeetingRoomState({
     "microphone" | "camera" | null
   >(null);
   const [leaving, setLeaving] = useState(false);
+  const leavingNow = useRef(false);
+  const chatEpoch = useRef(0);
+  const chatScopeEpoch = chatEpoch.current;
   const [feedback, setFeedback] = useState<string | null>(null);
   const [panel, setPanel] = useState<"participants" | "more" | "audio" | null>(null);
   const [audioOutputs, setAudioOutputs] = useState<string[]>([]);
@@ -279,7 +284,9 @@ export function MeetingRoomState({
   }
 
   async function leave() {
-    if (!session || leaving) return;
+    if (!session || leaving || leavingNow.current) return;
+    leavingNow.current = true;
+    chatEpoch.current++;
     setLeaving(true);
     setFeedback(null);
     try {
@@ -288,6 +295,7 @@ export function MeetingRoomState({
     } catch {
       setFeedback("Could not leave the meeting. Please try again.");
     } finally {
+      leavingNow.current = false;
       setLeaving(false);
     }
   }
@@ -545,6 +553,30 @@ export function MeetingRoomState({
             <IconSymbol name="ellipsis" size={22} color="#FFFFFF" />
             <Text style={styles.controlText}>More</Text>
           </Pressable>
+          <MeetingRoomChat
+            room={nativeRoom}
+            session={session}
+            receiveOnly={receiveOnly}
+            connected={snapshot.status === "connected"}
+            interrupted={sipInterrupted}
+            leaving={leaving}
+            scopeEpoch={chatScopeEpoch}
+            isCurrent={() => !!user && getAuthSnapshot().user === user && !leavingNow.current && chatEpoch.current === chatScopeEpoch &&
+              !(isSipInterrupted?.() ?? false) && !!session && session.getRoom() === nativeRoom &&
+              session.getSnapshot().status === "connected"}
+            onOpen={() => setPanel(null)}
+            participantName={entry => participantLabels.get(entry.senderIdentity) ?? entry.senderName}
+            renderAvatar={entry => <ProfileAvatar
+              name={participantLabels.get(entry.senderIdentity) ?? entry.senderName}
+              photoUrl={entry.local && ownPhoto && ownPhoto.userId === user?.id && meetingTenantId
+                ? ownPhoto.photoUrl : meetingAvatarPerson(entry.senderIdentity, photoTenantId, photoPeople)?.photoUrl}
+              photoVersion={entry.local && ownPhoto?.userId === user?.id ? ownPhoto?.photoVersion : undefined}
+              tenantId={entry.local ? meetingTenantId : photoTenantId}
+              userId={entry.local ? user?.id : meetingAvatarPerson(entry.senderIdentity, photoTenantId, photoPeople)?.id}
+              size={32}
+              interactive={false}
+            />}
+          />
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={
@@ -823,10 +855,10 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     textAlign: "center",
   },
-  controlRow: { flexDirection: "row", gap: 4, justifyContent: "space-between" },
+  controlRow: { flexDirection: "row", flexWrap: "wrap", gap: 4, justifyContent: "space-between" },
   controlButton: {
     flex: 1,
-    minWidth: 0,
+    minWidth: 60,
     minHeight: 58,
     borderWidth: 1,
     borderColor: "#FFFFFF2B",
@@ -846,7 +878,7 @@ const styles = StyleSheet.create({
   },
   leaveButton: {
     flex: 1,
-    minWidth: 0,
+    minWidth: 60,
     minHeight: 58,
     borderRadius: 14,
     alignItems: "center",

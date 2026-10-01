@@ -5,12 +5,15 @@ import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, ty
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
 import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
+import { DesktopMeetingChat, type DesktopChatSnapshot } from './meeting-room-chat';
 import { channelInviteMessage, channelInviteSelectionIsValid } from './channel-invite-selection';
 import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingDirectDetails, DesktopMeetingDirectChat } from '../../src/authenticated-provider';
 
 // This isolated preload is the only Chromium world that receives a media grant.
 // The static page has no script and no bridge exposing the token or Room.
 let room: Room | null = null;
+let meetingChat: DesktopMeetingChat | null = null;
+let chatOpen = false;
 let revision: string | null = null;
 let busy = false;
 let canPublish = false;
@@ -54,6 +57,69 @@ let activeSpeakerSid: string | null = null;
 const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const status = (message: string) => { el('status').textContent = message; };
 const error = (message: string) => { el('prejoin-error').textContent = message; };
+
+function showChat(open: boolean, focus = true): void {
+  chatOpen = open;
+  el('chat-panel').hidden = !open;
+  el('participant-roster').hidden = open;
+  el('meeting-content').classList.toggle('chat-open', open);
+  el('chat').setAttribute('aria-pressed', String(open));
+  if (focus) (open ? el<HTMLTextAreaElement>('chat-text').disabled ? el('chat-messages') : el('chat-text') : el('chat')).focus();
+}
+
+function renderChat(snapshot: DesktopChatSnapshot): void {
+  const list = el('chat-messages');
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  // Retain existing entries so permission updates do not re-announce the log.
+  const existing = new Map(Array.from(list.children).map(node => [(node as HTMLElement).dataset.key, node]));
+  const keys = new Set<string>();
+  for (const message of snapshot.messages) {
+    const key = `${message.senderIdentity}:${message.id}`;
+    keys.add(key);
+    if (existing.has(key)) continue;
+    const entry = document.createElement('li');
+    entry.dataset.key = key;
+    entry.className = 'chat-message';
+    const sender = document.createElement('strong');
+    sender.textContent = message.senderName;
+    const text = document.createElement('p');
+    text.textContent = message.text;
+    entry.append(sender, text);
+    list.appendChild(entry);
+  }
+  for (const [key, node] of existing) if (!key || !keys.has(key)) node.remove();
+  if (nearBottom) list.scrollTop = list.scrollHeight;
+  el('chat-empty').hidden = snapshot.messages.length > 0;
+  el<HTMLTextAreaElement>('chat-text').disabled = !snapshot.canSend || snapshot.sending;
+  el<HTMLButtonElement>('chat-send').disabled = !snapshot.canSend || snapshot.sending || !el<HTMLTextAreaElement>('chat-text').value.trim();
+  el('chat-access').textContent = snapshot.canSend ? 'Everyone in this meeting' : 'Chat is receive-only while sending is unavailable.';
+  el('chat-status').textContent = snapshot.error ?? (snapshot.sending ? 'Sending…' : '');
+}
+
+function clearChat(): void {
+  const previous = meetingChat;
+  meetingChat = null;
+  previous?.dispose();
+  el('chat-messages').replaceChildren();
+  el<HTMLTextAreaElement>('chat-text').value = '';
+  el<HTMLTextAreaElement>('chat-text').disabled = true;
+  el<HTMLButtonElement>('chat-send').disabled = true;
+  el('chat-status').textContent = '';
+  el('chat-empty').hidden = false;
+  showChat(false, false);
+}
+
+async function sendChat(): Promise<void> {
+  const active = meetingChat;
+  const input = el<HTMLTextAreaElement>('chat-text');
+  if (!active || input.disabled) return;
+  const text = input.value;
+  const sent = await active.send(text);
+  if (meetingChat !== active) return;
+  if (sent && input.value === text) input.value = '';
+  renderChat(active.getSnapshot());
+  if (chatOpen && !input.disabled) input.focus();
+}
 
 function updatePrejoinState(): void {
   const mic = el<HTMLInputElement>('start-mic').checked ? 'on' : 'off';
@@ -504,6 +570,7 @@ function leave(): Promise<void> {
   const active = room;
   room = null;
   canPublish = false;
+  clearChat();
   resetAudioOutput();
   clearPreview();
   stopPrejoinAudio();
@@ -608,6 +675,10 @@ async function join(): Promise<void> {
     await next.connect(grant.url, grant.token, { autoSubscribe: true });
     if (!current() || room !== next) return;
     canPublish = grant.grantProfile === 'interactive';
+    clearChat();
+    const chatRoom = next;
+    meetingChat = new DesktopMeetingChat(chatRoom, canPublish,
+      () => room === chatRoom && current(), renderChat);
     // The Join click supplies the user gesture needed for Chromium audio playback.
     try { await next.startAudio(); }
     catch { if (current()) status('Connected. Tap Enable audio to hear participants.'); }
@@ -631,6 +702,7 @@ async function join(): Promise<void> {
     if (!current()) return;
     room = null;
     canPublish = false;
+    clearChat();
     if (next) {
       try { await next.disconnect(true); }
       catch {
@@ -966,6 +1038,19 @@ async function load(): Promise<void> {
   });
   el<HTMLButtonElement>('mic').addEventListener('click', () => { void toggle('mic'); });
   el<HTMLButtonElement>('camera').addEventListener('click', () => { void toggle('camera'); });
+  el<HTMLButtonElement>('chat').addEventListener('click', () => { if (meetingChat) showChat(!chatOpen); });
+  el<HTMLButtonElement>('close-chat').addEventListener('click', () => showChat(false));
+  el('chat-panel').addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); showChat(false); }
+  });
+  el<HTMLTextAreaElement>('chat-text').addEventListener('input', () => {
+    if (meetingChat) renderChat(meetingChat.getSnapshot());
+  });
+  el<HTMLTextAreaElement>('chat-text').addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void sendChat(); }
+  });
+  el<HTMLButtonElement>('chat-send').addEventListener('click', () => { void sendChat(); });
+  window.addEventListener('beforeunload', clearChat, { once: true });
   el<HTMLButtonElement>('leave').addEventListener('click', () => {
     void (async () => { await leave(); await ipcRenderer.invoke(MEETING_CHANNELS.finished); })();
   });
