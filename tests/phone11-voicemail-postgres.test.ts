@@ -12,6 +12,7 @@ vi.mock("../server/pbx/db", () => ({
 import { getVoicemails, requireVoicemailStorage, VoicemailStorageUnavailableError } from "../server/pbx/cdr-processor";
 import { findOwnedVoicemail } from "../server/pbx/media-access";
 import { countVoicemails, deleteVoicemail, markVoicemailRead } from "../server/pbx/voicemail-access";
+import { createVoicemailAdmission } from "../server/pbx/recording-storage";
 
 const socket = process.env.PHONE11_VOICEMAIL_TEST_SOCKET;
 const schema = `phone11_voicemail_${randomUUID().replaceAll("-", "")}`;
@@ -32,7 +33,7 @@ describe.skipIf(!socket)("voicemail isolated PostgreSQL", () => {
       CREATE TABLE tenants (id integer PRIMARY KEY, status text NOT NULL);
       CREATE TABLE extensions (
         id integer PRIMARY KEY, tenant_id integer NOT NULL REFERENCES tenants(id),
-        user_id integer REFERENCES users(id), extension_number text NOT NULL, status text NOT NULL,
+        user_id integer REFERENCES users(id), extension_number text NOT NULL, type text NOT NULL DEFAULT 'user', status text NOT NULL,
         deleted_at timestamptz, voicemail_enabled boolean NOT NULL DEFAULT false
       );
       CREATE TABLE user_extensions (user_id integer NOT NULL, extension_id integer NOT NULL REFERENCES extensions(id));
@@ -184,5 +185,40 @@ describe.skipIf(!socket)("voicemail isolated PostgreSQL", () => {
       updater.release();
       admitter.release();
     }
+  });
+
+  it("converges UUID retries on one admission and rejects tenant or owner-epoch replay", async () => {
+    const id = "22222222-2222-4222-8222-222222222222";
+    const admit = async (tenantId: number, extension: string, uuid?: string) => {
+      const client = await state.pool!.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await createVoicemailAdmission(client, tenantId, extension, uuid);
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally { client.release(); }
+    };
+    const concurrent = await Promise.all([admit(12, "3001", id), admit(12, "3001", id)]);
+    expect(concurrent).toEqual([{ messageUuid: id, conflict: false }, { messageUuid: id, conflict: false }]);
+    const first = await state.pool!.query("SELECT tenant_id, owner_user_id, owner_epoch, created_at FROM voicemail_deposit_admissions WHERE message_uuid = $1", [id]);
+    expect(first.rows).toHaveLength(1);
+    expect((await state.pool!.query("SELECT count(*)::int AS count FROM voicemail_deposit_admissions WHERE message_uuid = $1", [id])).rows[0].count).toBe(1);
+    expect(await admit(12, "3001", id)).toEqual({ messageUuid: id, conflict: false });
+    expect((await state.pool!.query("SELECT created_at FROM voicemail_deposit_admissions WHERE message_uuid = $1", [id])).rows[0].created_at)
+      .toEqual(first.rows[0].created_at);
+    expect(await admit(13, "3001", id)).toEqual({ messageUuid: id, conflict: true });
+    await state.pool!.query("DELETE FROM user_extensions WHERE extension_id = 42");
+    await state.pool!.query("INSERT INTO tenant_memberships VALUES (19, 12, 'active')");
+    await state.pool!.query("INSERT INTO user_extensions VALUES (19, 42)");
+    await state.pool!.query("UPDATE extensions SET user_id = 19 WHERE id = 42");
+    expect(await admit(12, "3001", id)).toEqual({ messageUuid: id, conflict: true });
+    expect((await state.pool!.query("SELECT owner_user_id, owner_epoch FROM voicemail_deposit_admissions WHERE message_uuid = $1", [id])).rows[0])
+      .toEqual({ owner_user_id: 17, owner_epoch: first.rows[0].owner_epoch });
+    const legacy = await admit(12, "3001");
+    expect(legacy?.conflict).toBe(false);
+    expect(legacy?.messageUuid).toMatch(/^[0-9a-f-]{36}$/);
   });
 });

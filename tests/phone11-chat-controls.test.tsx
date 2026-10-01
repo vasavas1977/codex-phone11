@@ -8,6 +8,7 @@ vi.mock("../components/chat/received-media", () => ({ ReceivedMedia: () => null 
 vi.mock("../components/chat/conversation-rail", () => ({ ConversationRail: () => null }));
 vi.mock("../components/chat/peer-call", () => ({ ChatPeerCall: () => null }));
 vi.mock("../components/chat/meeting-action", () => ({ ChatMeetingAction: () => null }));
+vi.mock("../components/chat/direct-meeting-action", () => ({ DirectMeetingAction: () => null }));
 vi.mock("../components/profile/profile-card-provider", () => ({
   ProfileCardProvider: ({ children }: any) => createElement("div", null, children),
 }));
@@ -39,6 +40,7 @@ const mocks = vi.hoisted(() => ({
   meetingCapability: vi.fn(),
   meetingStart: vi.fn(),
   meetingInvitations: vi.fn(),
+  directMeetingInvitations: vi.fn(),
   focusCallbacks: [] as Array<() => void | (() => void)>,
   navigate: vi.fn(),
   send: vi.fn(),
@@ -128,7 +130,7 @@ vi.mock("expo-router", () => ({
 }));
 vi.mock("../lib/chat/transport", async () => {
   const actual = await vi.importActual<typeof import("../lib/chat/transport")>("../lib/chat/transport");
-  return { createChatTransport: () => ({ ...actual.createChatTransport(), channelMeetingCapabilities: (...args: any[]) => mocks.meetingCapability(...args), startChannelMeeting: (...args: any[]) => mocks.meetingStart(...args), channelMeetingInvitations: (...args: any[]) => mocks.meetingInvitations(...args) }) };
+  return { createChatTransport: () => ({ ...actual.createChatTransport(), channelMeetingCapabilities: (...args: any[]) => mocks.meetingCapability(...args), startChannelMeeting: (...args: any[]) => mocks.meetingStart(...args), channelMeetingInvitations: (...args: any[]) => mocks.meetingInvitations(...args), directMeetingInvitations: (...args: any[]) => mocks.directMeetingInvitations(...args) }) };
 });
 vi.mock("../components/screen-container", () => ({ ScreenContainer: element }));
 vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: mocks.user }) }));
@@ -161,6 +163,7 @@ beforeEach(() => {
   mocks.meetingCapability.mockReset().mockResolvedValue({ available: false, canStart: false, maxSelectedMembers: 50 });
   mocks.meetingStart.mockReset();
   mocks.meetingInvitations.mockReset().mockResolvedValue([]);
+  mocks.directMeetingInvitations.mockReset().mockResolvedValue([]);
   mocks.focusCallbacks = [];
   mocks.send.mockReset();
   mocks.retry.mockReset();
@@ -320,6 +323,72 @@ it("opens a channel invitation with its verified workspace scope", async () => {
   join();
   expect(mocks.navigate).not.toHaveBeenCalled();
   if (typeof cleanup === "function") cleanup();
+});
+it("lets a direct-chat recipient join only the admitted invitation room", async () => {
+  mocks.state.channels[0].kind = "direct";
+  const meetingId = "b407bc84-63ef-48a0-bceb-b29b16043555";
+  mocks.directMeetingInvitations.mockResolvedValue([
+    { invitationId: "direct-invitation-1", meetingId, expiresAt: Date.now() + 60_000 },
+  ]);
+  render();
+  const cleanup = mocks.focusCallbacks[2]?.();
+  await vi.waitFor(() => {
+    render();
+    expect(mocks.press.has("Join contact meeting")).toBe(true);
+  });
+
+  expect(mocks.directMeetingInvitations).toHaveBeenCalledWith(10, "room");
+  mocks.press.get("Join contact meeting")!.press();
+  expect(mocks.navigate).toHaveBeenCalledWith({
+    pathname: "/conference", params: { meetingId, tenantId: "10", source: "direct" },
+  });
+
+  mocks.navigate.mockClear();
+  mocks.state.workspace = { id: 11, name: "Other" };
+  mocks.press.get("Join contact meeting")!.press();
+  expect(mocks.navigate).not.toHaveBeenCalled();
+  if (typeof cleanup === "function") cleanup();
+});
+it("does not offer Join for expired or absent direct invitations", async () => {
+  vi.useFakeTimers();
+  mocks.state.channels[0].kind = "direct";
+  mocks.directMeetingInvitations
+    .mockResolvedValueOnce([{ invitationId: "expired", meetingId: "expired-room", expiresAt: Date.now() - 1 }])
+    .mockResolvedValueOnce([{ invitationId: "active", meetingId: "active-room", expiresAt: Date.now() + 60_000 }])
+    .mockResolvedValueOnce([]);
+  render();
+  expect(mocks.directMeetingInvitations).not.toHaveBeenCalled();
+  const cleanup = mocks.focusCallbacks[2]?.();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(mocks.directMeetingInvitations).toHaveBeenCalledTimes(1);
+  render();
+  expect(mocks.press.has("Join contact meeting")).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(15_000);
+  render();
+  expect(mocks.press.has("Join contact meeting")).toBe(true);
+  await vi.advanceTimersByTimeAsync(15_000);
+  render();
+  expect(mocks.directMeetingInvitations).toHaveBeenCalledTimes(3);
+  expect(mocks.press.has("Join contact meeting")).toBe(false);
+  if (typeof cleanup === "function") cleanup();
+  vi.useRealTimers();
+});
+it("does not surface a direct invitation response after its chat loses focus", async () => {
+  mocks.state.channels[0].kind = "direct";
+  let resolve!: (value: any) => void;
+  mocks.directMeetingInvitations.mockReturnValue(new Promise(done => { resolve = done; }));
+  render();
+  expect(mocks.directMeetingInvitations).not.toHaveBeenCalled();
+  const cleanup = mocks.focusCallbacks[2]?.();
+  expect(mocks.directMeetingInvitations).toHaveBeenCalledWith(10, "room");
+  if (typeof cleanup === "function") cleanup();
+  resolve([{ invitationId: "late", meetingId: "late-room", expiresAt: Date.now() + 60_000 }]);
+  await Promise.resolve();
+  await Promise.resolve();
+  render();
+  expect(mocks.press.has("Join contact meeting")).toBe(false);
 });
 it("offers and sends @all only with the server capability", async () => {
   mocks.state.channels[0].kind = "channel";

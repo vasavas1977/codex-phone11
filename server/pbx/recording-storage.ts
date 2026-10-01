@@ -3,6 +3,7 @@ import { ingestStoredRecording } from "../cloud-recordings/ingestion";
 /** Authenticated recording storage. Unsupported voicemail storage fails closed. */
 import { Router, raw, type Request, type Response } from "express";
 import { query, withTransaction } from "./db";
+import type { PoolClient } from "pg";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { sdk } from "../_core/sdk";
@@ -190,37 +191,74 @@ storageRouter.post("/upload", verifyFsAuth, raw({ type: ["audio/wav", "audio/x-w
   }
 });
 
+/** Caller owns the transaction so the mailbox lock covers the insert/replay. */
+export async function createVoicemailAdmission(
+  client: Pick<PoolClient, "query">, tenantId: number, extension: string, suppliedUuid?: string,
+): Promise<{ messageUuid: string; conflict: boolean } | null> {
+  // The row lock serializes this admission with an admin reassignment.
+  const mailbox = await client.query(`${ACTIVE_VOICEMAIL_MAILBOX} FOR SHARE OF e`, [tenantId, extension]);
+  if (mailbox.rows.length !== 1) return null;
+  const id = suppliedUuid ?? randomUUID();
+  const values = [id, tenantId, mailbox.rows[0].id, mailbox.rows[0].user_id, mailbox.rows[0].voicemail_owner_epoch];
+  if (suppliedUuid === undefined) {
+    // Older producers omit the UUID and retain the original response contract.
+    await client.query(
+      `INSERT INTO voicemail_deposit_admissions
+       (message_uuid, tenant_id, extension_id, owner_user_id, owner_epoch)
+       VALUES ($1, $2, $3, $4, $5)`, values,
+    );
+    return { messageUuid: id, conflict: false };
+  }
+  const inserted = await client.query(
+    `INSERT INTO voicemail_deposit_admissions
+     (message_uuid, tenant_id, extension_id, owner_user_id, owner_epoch)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (message_uuid) DO NOTHING
+     RETURNING tenant_id, extension_id, owner_user_id, owner_epoch`, values,
+  );
+  // A conflict waits for the first transaction. A separate SELECT sees its
+  // committed row without changing its created_at or deposit-time owner.
+  const existing = inserted.rows[0] ?? (await client.query(
+    `SELECT tenant_id, extension_id, owner_user_id, owner_epoch
+       FROM voicemail_deposit_admissions WHERE message_uuid = $1`, [id],
+  )).rows[0];
+  const conflict = !existing || existing.tenant_id !== values[1] ||
+    existing.extension_id !== values[2] || existing.owner_user_id !== values[3] ||
+    existing.owner_epoch !== values[4];
+  return { messageUuid: id, conflict };
+}
+
 /** Obtain and persist mailbox ownership before FreeSWITCH begins recording. */
-storageRouter.post("/voicemail/admission", verifyFsAuth, async (req, res) => {
+const admissionHandler = (requireClientUuid: boolean) => async (req: Request, res: Response) => {
   const tenantId = typeof req.query.tenant_id === "string" ? Number(req.query.tenant_id) : NaN;
   const extension = req.query.extension;
-  if (!validTenant(tenantId) || !validExtension(extension)) {
+  const suppliedUuid = req.query.message_uuid;
+  if (!validTenant(tenantId) || !validExtension(extension) ||
+      (requireClientUuid ? !validDepositUuid(suppliedUuid) : suppliedUuid !== undefined)) {
     res.status(400).json({ error: "Provide a valid tenant and personal mailbox" });
     return;
   }
   try {
-    const messageUuid = await withTransaction(async client => {
-      // The row lock serializes this admission with an admin reassignment.
-      const mailbox = await client.query(`${ACTIVE_VOICEMAIL_MAILBOX} FOR SHARE OF e`, [tenantId, extension]);
-      if (mailbox.rows.length !== 1) return null;
-      const id = randomUUID();
-      await client.query(
-        `INSERT INTO voicemail_deposit_admissions
-         (message_uuid, tenant_id, extension_id, owner_user_id, owner_epoch)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [id, tenantId, mailbox.rows[0].id, mailbox.rows[0].user_id, mailbox.rows[0].voicemail_owner_epoch],
-      );
-      return id;
-    });
-    if (!messageUuid) {
+    const admission = await withTransaction(client =>
+      createVoicemailAdmission(client, tenantId, extension, requireClientUuid ? suppliedUuid as string : undefined));
+    if (!admission) {
       res.status(404).json({ error: "Voicemail mailbox not found" });
       return;
     }
-    res.status(201).json({ message_uuid: messageUuid });
+    if (admission.conflict) {
+      res.status(409).json({ error: "Voicemail admission identity changed" });
+      return;
+    }
+    res.status(201).json({ message_uuid: admission.messageUuid });
   } catch {
     res.status(503).json({ error: "Voicemail admission is unavailable" });
   }
-});
+};
+
+// Older producers use the UUID-free endpoint. New producers use only the
+// versioned path, which an older backend cannot mistake for the legacy insert.
+storageRouter.post("/voicemail/admission", verifyFsAuth, admissionHandler(false));
+storageRouter.post("/voicemail/admission/idempotent", verifyFsAuth, admissionHandler(true));
 
 /** Retire one exact old admission only after the producer's reviewed handoff. */
 storageRouter.post("/voicemail/admission/expire", verifyFsAuth, async (req, res) => {

@@ -26,7 +26,7 @@ the message was already stored. Neither command deletes WAVs or manifests.
 
 The fixed runner serializes `admit`, `complete`, `inspect`, and `retire` with a
 kernel `flock`. All production use must go through that runner;
-calling the producer directly bypasses the admission-cap race protection. The
+calling the producer directly bypasses the `flock` serialization. The
 producer rejects new admissions before contacting the backend at 1,000 pending
 files or 5,000 total private evidence entries. An unreadable, unfamiliar, or
 symlinked evidence layout also fails closed. This caps unattended growth by
@@ -34,13 +34,40 @@ making new deposits unavailable; it does not silently discard evidence.
 Archived evidence needs an approved retention/export procedure before removal.
 
 No global prune endpoint is exposed through the shared FreeSWITCH integration
-secret. Admissions with no matching local pending file, including a failure
-between backend admission and private-file persistence, require a separate
-operator-authorized database retention procedure. A changed backend schema,
+secret. The producer now durably records a private pending intent with a client
+message UUID before contacting the backend. It POSTs only to
+`/api/recordings/voicemail/admission/idempotent` with that exact UUID. An older
+backend returns 404 on this path and cannot mistake it for a legacy insert,
+including after a rollback between uncertain admission attempts. The backend inserts once
+under the existing admission primary key. A retry can acknowledge the same row
+only while its tenant, extension, owner, and owner epoch still match the locked
+active mailbox. It does not renew the row's age. A lost response, malformed
+response, or private acknowledgement write failure retains the same intent and
+does not release the call into `mod_voicemail`. The acknowledged pending record
+is atomically replaced and directory-synced before recording begins.
+
+The unacknowledged intent has `requestMessageUuid` and deliberately omits
+`messageUuid`, so an older producer's pending parser refuses it during a
+producer rollback. Existing acknowledged pending files without an `admitted`
+flag and older admission clients remain supported. `inspect` reports whether
+each stale record is acknowledged; reviewed `retire` uses the same exact UUID
+for either state. No pending file or WAV is removed automatically. Historical
+admissions with no matching local pending file, including those created by an
+older producer before this change, still require a separate operator-authorized
+database retention procedure. A changed backend schema,
 FreeSWITCH lifecycle, clock, runtime path, or volume mount requires a fresh
 commissioning review. If the original SQL migration was already applied, its
 age-gated trigger guard needs an explicit reviewed `CREATE OR REPLACE FUNCTION`
 deployment; editing this source file does not update a live database.
+
+The private producer recognizes only an exact two-link crash state: a pending
+file linked to its private producer temp file, or a reviewed pending file
+linked to the matching `retired-pending` entry. It verifies both names refer
+to the same private regular inode before recovery. An unrelated hardlink,
+third link, symlink, or conflicting archive target blocks the operation. An
+`inspect` call remains read-only; a retry cleans the matching producer temp
+link and syncs the directory. Retirement repeats the backend's idempotent
+exact-UUID expiry before completing the interrupted private move.
 
 The source checks exercise missing final paths, interruption-age retention,
 exact review, backend outage retry, stored-message conflict, and the hard cap.
@@ -79,8 +106,11 @@ and that abandoned/interrupted deposits retain pending evidence without
 inventing a completion. Then verify backend owner-epoch rejection and replay
 against an isolated tenant, plus authenticated playback on a signed device.
 
-On 30 September, the focused lifecycle, producer and relay suites passed
-18 cases; TypeScript passed. After installing the official Homebrew Lua
+On 1 October, the focused producer, storage, and lifecycle suites passed 44
+cases; the isolated local PostgreSQL suite passed eight cases, including
+concurrent same-UUID admission and owner-epoch replay. TypeScript passed.
+These checks are local source/rehearsal evidence, not a deployed backend or
+FreeSWITCH acceptance. After installing the official Homebrew Lua
 package locally, `lua tests/phone11-voicemail-hook.lua` passed 12 cases.
 The Lua harness supplies simulated FreeSWITCH objects; it does not establish
 the actual host's `mod_voicemail` callback or completed deposit behavior.

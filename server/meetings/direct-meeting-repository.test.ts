@@ -86,6 +86,9 @@ describe("direct meeting repository", () => {
     expect(select?.[1]).toEqual([41, 8, input.conversationId]);
     expect(select?.[0]).toContain("invitation.recipient_id=$2");
     expect(select?.[0]).toContain("source.origin_kind='direct'");
+    expect(select?.[0]).toContain("room.state='open' AND room.ended_at IS NULL");
+    expect(select?.[0]).toContain("admission.lobby_state='admitted' AND admission.revoked_at IS NULL");
+    expect(select?.[0]).toContain("source.expires_at>clock_timestamp()+INTERVAL '5 minutes'");
     expect(select?.[0]).toContain("phone11_chat_blocks");
   });
 });

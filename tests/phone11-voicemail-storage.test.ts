@@ -72,6 +72,59 @@ describe("voicemail storage", () => {
     expect(mocks.query.mock.calls[1][1]).toEqual([body.message_uuid, 12, 42, 17, epoch]);
   });
 
+  it("inserts a supplied UUID once and returns the same identity on replay without refreshing age", async () => {
+    const messageUuid = "22222222-2222-4222-8222-222222222222";
+    const row = { tenant_id: 12, extension_id: 42, owner_user_id: 17, owner_epoch: epoch };
+    const url = `${base}/recordings/voicemail/admission/idempotent?tenant_id=12&extension=3001&message_uuid=${messageUuid}`;
+    const post = () => fetch(url, { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [row] });
+    const created = await post();
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual({ message_uuid: messageUuid });
+    expect(mocks.query.mock.calls[1][0]).toContain("ON CONFLICT (message_uuid) DO NOTHING");
+    expect(mocks.query.mock.calls[1][0]).not.toContain("UPDATE");
+    expect(mocks.query.mock.calls[1][1]).toEqual([messageUuid, 12, 42, 17, epoch]);
+
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [row] });
+    const replay = await post();
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual({ message_uuid: messageUuid });
+    expect(mocks.query.mock.calls[4][0]).toContain("FROM voicemail_deposit_admissions WHERE message_uuid = $1");
+    expect(mocks.query.mock.calls[4][1]).toEqual([messageUuid]);
+  });
+
+  it("rejects supplied UUID replay after owner epoch or mailbox identity changes", async () => {
+    const messageUuid = "22222222-2222-4222-8222-222222222222";
+    const url = `${base}/recordings/voicemail/admission/idempotent?tenant_id=12&extension=3001&message_uuid=${messageUuid}`;
+    for (const existing of [
+      { tenant_id: 13, extension_id: 42, owner_user_id: 17, owner_epoch: epoch },
+      { tenant_id: 12, extension_id: 43, owner_user_id: 17, owner_epoch: epoch },
+      { tenant_id: 12, extension_id: 42, owner_user_id: 18, owner_epoch: epoch },
+      { tenant_id: 12, extension_id: 42, owner_user_id: 17, owner_epoch: "30000000-0000-4000-8000-000000000003" },
+    ]) {
+      mocks.query.mockReset();
+      mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+        .mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [existing] });
+      const response = await fetch(url, { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+      expect(response.status).toBe(409);
+    }
+  });
+
+  it("requires exact UUID on the versioned path and keeps legacy UUID-free admission separate", async () => {
+    for (const suffix of ["", "&message_uuid=", "&message_uuid=bad", `&message_uuid=${epoch}&message_uuid=${epoch}`]) {
+      const response = await fetch(`${base}/recordings/voicemail/admission/idempotent?tenant_id=12&extension=3001${suffix}`,
+        { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+      expect(response.status).toBe(400);
+    }
+    expect((await fetch(`${base}/recordings/voicemail/admission/idempotent?tenant_id=12&extension=3001&message_uuid=${epoch}`,
+      { method: "POST" })).status).toBe(403);
+    expect((await fetch(`${base}/recordings/voicemail/admission?tenant_id=12&extension=3001&message_uuid=${epoch}`,
+      { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } })).status).toBe(400);
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
   it("retires only an exact expired admission and rejects an active or mismatched one", async () => {
     const url = `${base}/recordings/voicemail/admission/expire?tenant_id=12&extension=3001&message_uuid=${epoch}`;
     const post = () => fetch(url, { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });

@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { admitVoicemail, completeVoicemail, type ProducerConfig } from "../scripts/phone11-voicemail-producer";
+import { admitVoicemail as admitWithUuid, completeVoicemail, type AdmissionInput, type ProducerConfig } from "../scripts/phone11-voicemail-producer";
 import { relayOnce } from "../scripts/phone11-voicemail-relay";
 
 const channelUuid = "11111111-1111-4111-8111-111111111111";
 const messageUuid = "22222222-2222-4222-8222-222222222222";
+const admitVoicemail = (config: ProducerConfig, input: AdmissionInput, send: typeof fetch) =>
+  admitWithUuid(config, input, send, () => messageUuid);
 const audio = Buffer.from("RIFF\x04\x00\x00\x00WAVEfixture audio");
 const fixtures: string[] = [];
 
@@ -33,9 +35,10 @@ async function fixture() {
   const manifest = path.join(outboxRoot, `${messageUuid}.json`);
   const admit = vi.fn(async (url: string, init: RequestInit) => {
     const endpoint = new URL(url);
-    expect(endpoint.pathname).toBe("/api/recordings/voicemail/admission");
+    expect(endpoint.pathname).toBe("/api/recordings/voicemail/admission/idempotent");
     expect(endpoint.searchParams.get("tenant_id")).toBe("12");
     expect(endpoint.searchParams.get("extension")).toBe("3001");
+    expect(endpoint.searchParams.get("message_uuid")).toBe(messageUuid);
     expect(init.headers).toEqual({ "x-fs-secret": config.integrationSecret });
     return new Response(JSON.stringify({ message_uuid: messageUuid }), { status: 201 });
   });
@@ -51,7 +54,7 @@ describe("isolated voicemail lifecycle rehearsal", () => {
     const { config, wav, pending, manifest, admit } = await fixture();
     expect(await admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001" }, admit as typeof fetch)).toBe(messageUuid);
     expect(await relayOnce(config, vi.fn() as typeof fetch)).toEqual({ delivered: 0, quarantined: 0, retry: 0 });
-    expect(JSON.parse(await readFile(pending, "utf8"))).toEqual({ channelUuid, tenantId: 12, extension: "3001", messageUuid });
+    expect(JSON.parse(await readFile(pending, "utf8"))).toEqual({ channelUuid, tenantId: 12, extension: "3001", messageUuid, admitted: true });
 
     await completeVoicemail(config, { channelUuid, voicemailFilePath: wav, durationSeconds: 7 });
     await expect(stat(pending)).rejects.toMatchObject({ code: "ENOENT" });

@@ -5,8 +5,8 @@
  * final voicemail_file_path. This module intentionally does not infer a
  * deposit from a delayed filesystem scan or CDR.
  */
-import { constants } from "node:fs";
-import { lstat, mkdir, open, opendir, realpath, link, unlink } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import { lstat, mkdir, open, opendir, realpath, link, rename, unlink } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,17 @@ export type ProducerConfig = {
 
 export type AdmissionInput = { channelUuid: string; tenantId: number; extension: string };
 export type CompletionInput = { channelUuid: string; voicemailFilePath: string; callerNumber?: string; callerName?: string; durationSeconds?: number };
-type Pending = AdmissionInput & { messageUuid: string };
+type Pending = AdmissionInput & { messageUuid: string; admitted?: boolean };
+
+// Old producers require messageUuid in every pending file. An intent omits it
+// so rolling back the producer cannot start recording before acknowledgement.
+function pendingFile(pending: Pending): object {
+  if (pending.admitted === false) {
+    const { messageUuid, ...identity } = pending;
+    return { ...identity, requestMessageUuid: messageUuid };
+  }
+  return pending;
+}
 
 function validConfig(config: ProducerConfig): URL {
   if (!config.integrationSecret || config.integrationSecret.length < 32) throw new Error("Integration secret is missing");
@@ -91,24 +101,105 @@ async function publishJson(directory: string, name: string, value: object): Prom
   const temporary = path.join(directory, `.${randomUUID()}.tmp`);
   const target = path.join(directory, name);
   const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
   try {
+    try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
     try { await link(temporary, target); }
     catch (error: any) {
       if (error?.code !== "EEXIST") throw error;
-      const existing = await readPrivateJson(target);
+      const existing = await readPublishedPrivateJson(target, true);
       if (JSON.stringify(existing) !== bytes.toString("utf8")) throw new Error("Conflicting voicemail producer identity");
     }
     await syncDirectory(directory);
-  } finally { await unlink(temporary); }
+  } finally { await unlink(temporary); await syncDirectory(directory); }
 }
 
-async function readPrivateJson(file: string): Promise<unknown> {
+/** Advance a durable intent only after an exact backend acknowledgement. */
+async function markAdmitted(directory: string, name: string, expected: Pending): Promise<void> {
+  const target = path.join(directory, name);
+  const original = await lstat(target);
+  if (!original.isFile() || original.nlink !== 1 || (original.mode & 0o777) !== 0o600 ||
+      JSON.stringify(await readPrivateJson(target)) !== JSON.stringify(pendingFile(expected)))
+    throw new Error("Conflicting voicemail admission identity");
+  const temporary = path.join(directory, `.${randomUUID()}.tmp`);
+  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    try {
+      const created = await handle.stat();
+      if (!created.isFile() || created.nlink !== 1 || (created.mode & 0o777) !== 0o600)
+        throw new Error("Voicemail admission acknowledgement is not private");
+      await handle.writeFile(Buffer.from(JSON.stringify({ ...expected, admitted: true })));
+      await handle.sync();
+    } finally { await handle.close(); }
+    const current = await lstat(target);
+    if (!current.isFile() || current.dev !== original.dev || current.ino !== original.ino ||
+        current.size !== original.size || current.mtimeMs !== original.mtimeMs ||
+        JSON.stringify(await readPrivateJson(target)) !== JSON.stringify(pendingFile(expected)))
+      throw new Error("Conflicting voicemail admission identity");
+    await rename(temporary, target);
+    await syncDirectory(directory);
+  } finally { await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  }); }
+}
+
+async function readPrivateJson(file: string, expectedLinks = 1): Promise<unknown> {
   const stat = await lstat(file);
-  if (!stat.isFile() || stat.size < 1 || stat.size > 8192 || (stat.mode & 0o077) !== 0) throw new Error("Admission is not a private regular file");
+  if (!stat.isFile() || stat.nlink !== expectedLinks || stat.size < 1 || stat.size > 8192 || (stat.mode & 0o077) !== 0)
+    throw new Error("Admission is not a private regular file");
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try { return JSON.parse(await handle.readFile({ encoding: "utf8" })); }
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino ||
+        opened.size !== stat.size || opened.mode !== stat.mode || opened.nlink !== expectedLinks)
+      throw new Error("Voicemail admission evidence changed");
+    return JSON.parse(await handle.readFile({ encoding: "utf8" }));
+  }
   finally { await handle.close(); }
+}
+
+function matchingPrivateTwoLinks(source: Stats, retained: Stats): boolean {
+  return source.isFile() && retained.isFile() && source.nlink === 2 && retained.nlink === 2 &&
+    source.dev === retained.dev && source.ino === retained.ino &&
+    (source.mode & 0o777) === 0o600 && (retained.mode & 0o777) === 0o600;
+}
+
+const PRODUCER_TEMP = /^\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/i;
+
+/** Recover only a producer temp hardlink to this exact private target. */
+async function readPublishedPrivateJson(file: string, recover: boolean): Promise<unknown> {
+  const target = await lstat(file);
+  if (target.nlink === 1) return readPrivateJson(file);
+  if (target.nlink !== 2) throw new Error("Admission is not a private regular file");
+  const directory = path.dirname(file);
+  let temporary: string | undefined;
+  for await (const entry of await opendir(directory)) {
+    if (!PRODUCER_TEMP.test(entry.name)) continue;
+    const candidate = path.join(directory, entry.name);
+    if (matchingPrivateTwoLinks(target, await lstat(candidate))) {
+      if (temporary) throw new Error("Conflicting voicemail producer evidence");
+      temporary = candidate;
+    }
+  }
+  if (!temporary) throw new Error("Admission is not a private regular file");
+  const value = await readPrivateJson(file, 2);
+  if (recover) {
+    if (!matchingPrivateTwoLinks(await lstat(file), await lstat(temporary)))
+      throw new Error("Conflicting voicemail producer evidence");
+    await unlink(temporary);
+    await syncDirectory(directory);
+  }
+  return value;
+}
+
+/** Only retirement may read the exact two-link state left by an interrupted move. */
+async function readRetirablePrivateJson(source: string, retainedPath: string): Promise<unknown> {
+  const original = await lstat(source);
+  let retained: Stats | undefined;
+  try { retained = await lstat(retainedPath); }
+  catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+  if (!retained) return readPublishedPrivateJson(source, true);
+  if (!matchingPrivateTwoLinks(original, retained)) throw new Error("Conflicting voicemail retirement evidence");
+  return readPrivateJson(source, 2);
 }
 
 /** Count private evidence before any remote admission; an unavailable sweep fails closed. */
@@ -129,11 +220,29 @@ async function countEvidence(directory: string, limit = MAX_EVIDENCE_ENTRIES, de
 
 async function pendingNames(directory: string): Promise<string[]> {
   const names: string[] = [];
+  const temporaryNames: string[] = [];
   for await (const entry of await opendir(directory)) {
+    if (entry.isFile() && PRODUCER_TEMP.test(entry.name)) {
+      temporaryNames.push(entry.name);
+      continue;
+    }
     if (!entry.isFile() || !entry.name.endsWith(".json") || !UUID.test(entry.name.slice(0, -5)))
       throw new Error("Unrecognized voicemail pending evidence");
     names.push(entry.name);
     if (names.length > MAX_PENDING_ADMISSIONS) throw new Error("Voicemail pending admission limit reached");
+  }
+  if (temporaryNames.length) {
+    const targetByInode = new Map<string, Stats>();
+    for (const name of names) {
+      const target = await lstat(path.join(directory, name));
+      if (target.nlink === 2) targetByInode.set(`${target.dev}:${target.ino}`, target);
+    }
+    for (const name of temporaryNames) {
+      const temporary = await lstat(path.join(directory, name));
+      const target = targetByInode.get(`${temporary.dev}:${temporary.ino}`);
+      if (!target || !matchingPrivateTwoLinks(target, temporary))
+        throw new Error("Unrecognized voicemail pending evidence");
+    }
   }
   return names.sort();
 }
@@ -144,7 +253,7 @@ async function movePrivateEvidence(source: string, destinationDirectory: string)
   catch (error: any) {
     if (error?.code !== "EEXIST") throw error;
     const [original, retained] = await Promise.all([lstat(source), lstat(target)]);
-    if (original.dev !== retained.dev || original.ino !== retained.ino)
+    if (!matchingPrivateTwoLinks(original, retained))
       throw new Error("Conflicting voicemail retirement evidence");
   }
   await syncDirectory(destinationDirectory);
@@ -154,14 +263,21 @@ async function movePrivateEvidence(source: string, destinationDirectory: string)
 
 function pendingFrom(value: unknown, channelUuid: string): Pending {
   if (!value || typeof value !== "object") throw new Error("Invalid voicemail admission record");
-  const input = value as Partial<Pending>;
+  const input = value as Partial<Pending> & { requestMessageUuid?: unknown };
   validateAdmission(input as AdmissionInput);
-  if (input.channelUuid !== channelUuid || typeof input.messageUuid !== "string" || !UUID.test(input.messageUuid)) throw new Error("Voicemail admission identity mismatch");
-  return input as Pending;
+  const intent = input.admitted === false;
+  const messageUuid = intent ? input.requestMessageUuid : input.messageUuid;
+  if (input.channelUuid !== channelUuid || typeof messageUuid !== "string" || !UUID.test(messageUuid) ||
+      (input.admitted !== undefined && typeof input.admitted !== "boolean") ||
+      (intent ? input.messageUuid !== undefined : input.requestMessageUuid !== undefined))
+    throw new Error("Voicemail admission identity mismatch");
+  return { channelUuid, tenantId: input.tenantId!, extension: input.extension!, messageUuid,
+    ...(input.admitted !== undefined ? { admitted: input.admitted } : {}) };
 }
 
 /** Must complete before the call flow invokes mod_voicemail. */
-export async function admitVoicemail(config: ProducerConfig, input: AdmissionInput, send: typeof fetch = fetch): Promise<string> {
+export async function admitVoicemail(config: ProducerConfig, input: AdmissionInput, send: typeof fetch = fetch,
+                                    newMessageUuid: () => string = randomUUID): Promise<string> {
   const endpoint = validConfig(config);
   validateAdmission(input);
   mailboxRootFor(config, input.tenantId, input.extension);
@@ -169,30 +285,46 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
   await privateDirectory(config.outboxRoot);
   await privateDirectory(pendingDir);
   const pendingPath = path.join(pendingDir, `${input.channelUuid}.json`);
+  let pending: Pending | undefined;
   try {
-    const existing = pendingFrom(await readPrivateJson(pendingPath), input.channelUuid);
+    const existing = pendingFrom(await readPublishedPrivateJson(pendingPath, true), input.channelUuid);
     if (existing.tenantId !== input.tenantId || existing.extension !== input.extension) throw new Error("Conflicting voicemail admission identity");
-    return existing.messageUuid;
+    if (existing.admitted !== false) {
+      // If the prior acknowledgement rename succeeded but directory sync
+      // failed, a retry must establish its durability before recording.
+      if (existing.admitted === true) await syncDirectory(pendingDir);
+      return existing.messageUuid;
+    }
+    pending = existing;
   } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
 
-  // The fixed flock runner serializes this check with other deposits. A full
-  // or uninspectable private outbox rejects new recording before API admission.
-  const pendingCount = (await pendingNames(pendingDir)).length;
-  if (voicemailEvidenceAtCapacity(pendingCount, 0) ||
-      voicemailEvidenceAtCapacity(pendingCount, await countEvidence(config.outboxRoot)))
-    throw new Error("Voicemail evidence capacity reached");
+  if (!pending) {
+    // The fixed flock runner serializes this check with other deposits. A full
+    // or uninspectable private outbox rejects new recording before API admission.
+    const pendingCount = (await pendingNames(pendingDir)).length;
+    if (voicemailEvidenceAtCapacity(pendingCount, 0) ||
+        voicemailEvidenceAtCapacity(pendingCount, await countEvidence(config.outboxRoot)))
+      throw new Error("Voicemail evidence capacity reached");
+    const messageUuid = newMessageUuid();
+    if (!UUID.test(messageUuid)) throw new Error("Invalid voicemail admission UUID");
+    pending = { ...input, messageUuid, admitted: false };
+    await publishJson(pendingDir, `${input.channelUuid}.json`, pendingFile(pending));
+  }
 
-  endpoint.pathname += "/admission";
+  // This path does not exist on older backends. A rollback between attempts
+  // therefore fails closed instead of silently ignoring the supplied UUID.
+  endpoint.pathname += "/admission/idempotent";
   endpoint.searchParams.set("tenant_id", String(input.tenantId));
   endpoint.searchParams.set("extension", input.extension);
+  endpoint.searchParams.set("message_uuid", pending.messageUuid);
   const response = await send(endpoint.toString(), {
     method: "POST", headers: { "x-fs-secret": config.integrationSecret }, signal: AbortSignal.timeout(10_000),
   });
   if (response.status !== 201) throw new Error(`Voicemail admission denied: ${response.status}`);
   const body = await response.json() as { message_uuid?: unknown };
-  if (typeof body.message_uuid !== "string" || !UUID.test(body.message_uuid)) throw new Error("Invalid voicemail admission response");
-  await publishJson(pendingDir, `${input.channelUuid}.json`, { ...input, messageUuid: body.message_uuid });
-  return body.message_uuid;
+  if (body.message_uuid !== pending.messageUuid) throw new Error("Invalid voicemail admission response");
+  await markAdmitted(pendingDir, `${input.channelUuid}.json`, pending);
+  return pending.messageUuid;
 }
 
 async function completedWavPath(root: string, mailboxRoot: string, requested: string): Promise<string> {
@@ -233,7 +365,8 @@ export async function completeVoicemail(config: ProducerConfig, input: Completio
   await privateDirectory(config.outboxRoot);
   const pendingDir = path.join(config.outboxRoot, "pending");
   const pendingPath = path.join(pendingDir, `${input.channelUuid}.json`);
-  const pending = pendingFrom(await readPrivateJson(pendingPath), input.channelUuid);
+  const pending = pendingFrom(await readPublishedPrivateJson(pendingPath, true), input.channelUuid);
+  if (pending.admitted === false) throw new Error("Voicemail admission has not been acknowledged");
   const relative = await completedWavPath(config.sourceRoot,
     mailboxRootFor(config, pending.tenantId, pending.extension), input.voicemailFilePath);
   const manifest = {
@@ -260,16 +393,16 @@ export async function inspectStaleVoicemailPending(config: ProducerConfig, now =
   const pendingDir = path.join(config.outboxRoot, "pending");
   await assertPrivateDirectory(config.outboxRoot);
   await assertPrivateDirectory(pendingDir);
-  const stale: Array<{ channelUuid: string; messageUuid: string; tenantId: number; extension: string }> = [];
+  const stale: Array<{ channelUuid: string; messageUuid: string; tenantId: number; extension: string; admitted: boolean }> = [];
   let total = 0;
   for (const name of await pendingNames(pendingDir)) {
     const file = path.join(pendingDir, name);
     if ((await lstat(file)).mtimeMs > now - REVIEW_AGE_MS) continue;
     total++;
     if (stale.length >= REVIEW_BATCH) continue;
-    const pending = pendingFrom(await readPrivateJson(file), name.slice(0, -5));
+    const pending = pendingFrom(await readPublishedPrivateJson(file, false), name.slice(0, -5));
     stale.push({ channelUuid: pending.channelUuid, messageUuid: pending.messageUuid,
-      tenantId: pending.tenantId, extension: pending.extension });
+      tenantId: pending.tenantId, extension: pending.extension, admitted: pending.admitted !== false });
   }
   return { stale, total, more: total > stale.length };
 }
@@ -292,7 +425,8 @@ export async function retireReviewedVoicemailPending(
   const retiredDir = path.join(config.outboxRoot, "retired-pending");
   for (const directory of [config.outboxRoot, pendingDir, retiredDir]) await privateDirectory(directory);
   const source = path.join(pendingDir, `${input.channelUuid}.json`);
-  const pending = pendingFrom(await readPrivateJson(source), input.channelUuid);
+  const pending = pendingFrom(await readRetirablePrivateJson(source,
+    path.join(retiredDir, `${input.channelUuid}.json`)), input.channelUuid);
   if ((await lstat(source)).mtimeMs > now - REVIEW_AGE_MS)
     throw new Error("Voicemail pending admission is too recent to retire");
   for (const file of [path.join(config.outboxRoot, `${pending.messageUuid}.json`),
