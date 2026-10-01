@@ -7,7 +7,7 @@ security/source review is required before operator use.
 `scripts/phone11-mainline-fixture-builder.py` creates the one candidate-only
 five-GET probe bundle consumed by `phone11-mainline-release-route.py` at the
 loopback candidate port pinned in the root-owned release-start manifest. The
-builder accepts only isolated candidate ports 3019 and 3020 and only the fixed
+builder accepts only isolated candidate ports 3019, 3020 and 3021 and only the fixed
 host `127.0.0.1`; it refuses other ports. Before any credential prompt, it
 validates the root-owned start receipt against the manifest and reuses the
 release-start checks for the exact candidate container ID, image, build, role,

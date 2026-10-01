@@ -77,7 +77,7 @@ class FixtureBuilderTests(unittest.TestCase):
         self.assertIn("network=NOT_RUN", output.getvalue())
 
     def test_http_target_is_allowlisted_loopback_and_uses_manifest_port(self):
-        for port in (3019, 3020):
+        for port in (3019, 3020, 3021):
             connection = mock.Mock()
             response = mock.Mock(status=200, read=mock.Mock(return_value=b"ok"))
             response.getheaders.return_value = []
@@ -87,8 +87,12 @@ class FixtureBuilderTests(unittest.TestCase):
                 self.assertEqual(builder.request("GET", "/health", port=port),
                                  (200, {}, b"ok"))
             http.assert_called_once_with("127.0.0.1", port, timeout=5)
-        with self.assertRaisesRegex(builder.Refused, "candidate_port"):
-            builder.request("GET", "/health", port=3016)
+        for port in (80, 443, 3016, 3022, 8080):
+            with self.subTest(rejected_port=port), \
+                 mock.patch.object(builder.http.client, "HTTPConnection") as http, \
+                 self.assertRaisesRegex(builder.Refused, "candidate_port"):
+                builder.request("GET", "/health", port=port)
+            http.assert_not_called()
 
     def test_http_rechecks_candidate_before_opening_connection(self):
         events = []
@@ -194,7 +198,7 @@ class FixtureBuilderTests(unittest.TestCase):
                                         "user", "user", 73, 74, "3001")
 
     def test_database_runtime_is_manifest_pinned_and_container_id_scoped(self):
-        for port in (3019, 3020):
+        for port in (3019, 3020, 3021):
             database = mock.Mock(returncode=0, stdout=f"{DB_ID}|/cp11-postgres|true|phone11ai_default\n")
             with self.subTest(port=port), \
                  mock.patch.object(builder, "pinned_candidate",
@@ -218,7 +222,7 @@ class FixtureBuilderTests(unittest.TestCase):
 
     def test_candidate_runtime_rejects_unapproved_port_and_delegates_full_runtime_pin(self):
         start = mock.Mock()
-        for port in (3019, 3020):
+        for port in (3019, 3020, 3021):
             pins = {"candidate": {"image": IMAGE, "port": port}}
             start.manifest.return_value = pins
             source = object()
@@ -234,7 +238,7 @@ class FixtureBuilderTests(unittest.TestCase):
             start.check_candidate.assert_called_with(pins, start.source_runtime.return_value,
                                                      CONTAINER_ID)
 
-        for port in (3016, 3021):
+        for port in (80, 443, 3016, 3022, 8080):
             start.manifest.return_value = {"candidate": {"image": IMAGE, "port": port}}
             start.source_runtime.reset_mock()
             with self.subTest(port=port), \
@@ -283,9 +287,9 @@ class FixtureBuilderTests(unittest.TestCase):
              mock.patch("builtins.input", return_value="fixture@example.test"), \
              mock.patch.object(builder.getpass, "getpass", side_effect=[
                  "postgresql://fixture:db-secret@127.0.0.1:5432/phone11ai", "password-secret"]), \
-             mock.patch.object(builder, "pinned_runtime", return_value=(IMAGE, DB_ID, 3020, CONTAINER_ID)), \
+             mock.patch.object(builder, "pinned_runtime", return_value=(IMAGE, DB_ID, 3021, CONTAINER_ID)), \
              mock.patch.object(builder, "pinned_candidate",
-                               return_value=(IMAGE, 3020, CONTAINER_ID)) as recheck, \
+                               return_value=(IMAGE, 3021, CONTAINER_ID)) as recheck, \
              mock.patch.object(builder, "verify_identity", return_value="auth-test"), \
              mock.patch.object(builder, "sign_in", return_value=("bearer-secret", "auth-test")) as sign_in, \
              mock.patch.object(builder, "verify_session") as verify_session, \
@@ -301,9 +305,9 @@ class FixtureBuilderTests(unittest.TestCase):
         sign_in.assert_called_once()
         self.assertEqual(sign_in.call_args.args,
                          ("fixture@example.test", "password-secret"))
-        self.assertEqual(sign_in.call_args.kwargs["port"], 3020)
+        self.assertEqual(sign_in.call_args.kwargs["port"], 3021)
         verify_session.assert_called_once_with("bearer-secret", "auth-test",
-                                               "fixture@example.test", port=3020,
+                                               "fixture@example.test", port=3021,
                                                before_request=sign_in.call_args.kwargs["before_request"])
         self.assertIn(b"bearer-secret", write.call_args.args[2])
         self.assertEqual(output.getvalue(),

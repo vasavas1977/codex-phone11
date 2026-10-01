@@ -22,7 +22,7 @@ from typing import Callable
 from urllib.parse import parse_qs, quote, urlsplit
 
 HOST = "127.0.0.1"
-ALLOWED_CANDIDATE_PORTS = {3019, 3020}
+ALLOWED_CANDIDATE_PORTS = {3019, 3020, 3021}
 ROOT = Path("/var/lib/phone11-mainline-fixtures")
 EXTENSIONS = {"3001", "1020"}
 NAME = re.compile(r"candidate-[a-z0-9][a-z0-9-]{0,62}\.json\Z")
