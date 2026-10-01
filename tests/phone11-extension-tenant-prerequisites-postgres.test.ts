@@ -106,6 +106,116 @@ describe.skipIf(!connectionString)("Phone11 extension tenant prerequisite on iso
     expect(await catalog()).toMatchObject({ attnotnull: false, conname: null });
   });
 
+  it("checks the captured target pin with catalog operators despite a hostile schema path", async () => {
+    await fixture();
+    await pool!.query(`CREATE FUNCTION ${schema}.phone11_false_text_comparison(text,text)
+      RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT true'`);
+    await pool!.query(`CREATE OPERATOR ${schema}.<> (
+      LEFTARG = text, RIGHTARG = text, PROCEDURE = ${schema}.phone11_false_text_comparison)`);
+    const client = await clientForTarget();
+    try {
+      await client.query(`SET search_path TO ${schema}, pg_catalog`);
+      await apply(client);
+    } finally { client.release(); }
+    expect(await catalog()).toMatchObject({ attnotnull: true, convalidated: true });
+  });
+
+  for (const base of ["extensions", "tenants"] as const) {
+    it(`refuses an inheritance child of ${base} without changing the catalog`, async () => {
+      await fixture();
+      await pool!.query(`CREATE TABLE ${schema}.${base}_child() INHERITS (${schema}.${base})`);
+      const before = await catalog();
+      const client = await clientForTarget();
+      try { await expect(apply(client)).rejects.toMatchObject({ code: "55000" }); }
+      finally { client.release(); }
+      expect(await catalog()).toEqual(before);
+    });
+  }
+
+  it("refuses an extensions inheritance child without changing the catalog", async () => {
+    await fixture();
+    await pool!.query(`CREATE TABLE ${schema}.extensions_parent(
+      id INTEGER, tenant_id INTEGER, extension_number TEXT NOT NULL)`);
+    await pool!.query(`ALTER TABLE ${schema}.extensions INHERIT ${schema}.extensions_parent`);
+    const before = await catalog();
+    const client = await clientForTarget();
+    try { await expect(apply(client)).rejects.toMatchObject({ code: "55000" }); }
+    finally { client.release(); }
+    expect(await catalog()).toEqual(before);
+  });
+
+  it("refuses an extensions partition leaf without changing the catalog", async () => {
+    await fixture();
+    await pool!.query(`CREATE TABLE ${schema}.extensions_root(
+      id INTEGER PRIMARY KEY, tenant_id INTEGER, extension_number TEXT NOT NULL)
+      PARTITION BY RANGE(id)`);
+    await pool!.query(`ALTER TABLE ${schema}.extensions_root ATTACH PARTITION ${schema}.extensions
+      FOR VALUES FROM (0) TO (1000)`);
+    const before = await catalog();
+    const client = await clientForTarget();
+    try { await expect(apply(client)).rejects.toMatchObject({ code: "55000" }); }
+    finally { client.release(); }
+    expect(await catalog()).toEqual(before);
+  });
+
+  it("refuses replay with disabled internal FK triggers", async () => {
+    await fixture();
+    const client = await clientForTarget();
+    try { await apply(client); }
+    finally { client.release(); }
+    await pool!.query(`ALTER TABLE ${schema}.extensions DISABLE TRIGGER ALL`);
+    const before = await catalog();
+    const replay = await clientForTarget();
+    try { await expect(apply(replay)).rejects.toMatchObject({ code: "55000" }); }
+    finally { replay.release(); }
+    expect(await catalog()).toEqual(before);
+  });
+
+  it("refuses replay under replica session behavior", async () => {
+    await fixture();
+    const client = await clientForTarget();
+    try {
+      await apply(client);
+      await client.query("SET session_replication_role = replica");
+      await expect(apply(client)).rejects.toMatchObject({ code: "55000" });
+    } finally {
+      await client.query("SET session_replication_role = origin");
+      client.release();
+    }
+  });
+
+  it("refuses replay after a replica-mode orphan insert with catalog and rows unchanged", async () => {
+    await fixture();
+    const client = await clientForTarget();
+    try {
+      await apply(client);
+      await client.query("SET session_replication_role = replica");
+      await client.query(`INSERT INTO ${schema}.extensions VALUES (301,99,'3001')`);
+      await client.query("SET session_replication_role = origin");
+      const beforeCatalog = await catalog();
+      const beforeRows = (await pool!.query(`SELECT * FROM ${schema}.extensions ORDER BY id`)).rows;
+      await expect(apply(client)).rejects.toMatchObject({ code: "23514" });
+      expect(await catalog()).toEqual(beforeCatalog);
+      expect((await pool!.query(`SELECT * FROM ${schema}.extensions ORDER BY id`)).rows).toEqual(beforeRows);
+    } finally {
+      await client.query("SET session_replication_role = origin");
+      client.release();
+    }
+  });
+
+  for (const isolation of ["REPEATABLE READ", "SERIALIZABLE"] as const) {
+    it(`refuses a stale ${isolation} transaction before catalog changes`, async () => {
+      await fixture();
+      const client = await clientForTarget();
+      try {
+        await client.query(`BEGIN ISOLATION LEVEL ${isolation}`);
+        await client.query(`SELECT count(*) FROM ${schema}.extensions`);
+        await expect(apply(client)).rejects.toMatchObject({ code: "55000" });
+      } finally { client.release(); }
+      expect(await catalog()).toMatchObject({ attnotnull: false, conname: null });
+    });
+  }
+
   it("refuses an unexpected primary key and a partially applied constraint", async () => {
     await fixture({ extensionPk: false });
     let client = await clientForTarget();

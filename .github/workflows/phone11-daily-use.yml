@@ -267,6 +267,7 @@ jobs:
           tests/phone11-personal-call-history-postgres.test.ts
           tests/phone11-self-service-usage-postgres.test.ts
           tests/phone11-extension-tenant-prerequisites-postgres.test.ts
+          tests/phone11-extension-tenant-legacy-default-prerequisites-postgres.test.ts
           tests/phone11-pbx-advanced-migration.test.ts
           tests/phone11-pbx-schema-preflight.test.ts
 

@@ -32,7 +32,7 @@ deployment or successful provider execution.
 | Area | Existing source | Gap / next change |
 | --- | --- | --- |
 | Admin navigation | `app/admin/index.tsx` groups People/workspace, Phone system, Meetings and Insights. Personal navigation is separate in `components/portal/portal-shell.tsx`. | Add persistent desktop admin navigation; current pages are independent Back screens. Preserve mobile navigation and authorization checks. |
-| People | `app/admin/users.tsx` edits membership role and active state. `app/admin/extensions.tsx` creates and assigns extensions. | Join these views through member detail. Invitation and coordinated provisioning/deprovisioning are separate functional work; deactivation currently does not revoke SIP assignment. |
+| People | `app/admin/users.tsx` edits membership role and active state. `app/admin/extensions.tsx` creates and assigns extensions. Current `pbx-router.ts` source revokes SIP authentication, suspends active extensions/SIP accounts and removes user-extension mappings when an active membership is deactivated. | Join these views through member detail. Invitation and provisioning remain separate workflows. Source deactivation behavior still needs deployed-runtime and device acceptance; this reference is not a live revocation receipt. |
 | Numbers and routing | `app/admin/dids.tsx` inventories carrier-provisioned DIDs and destination routing. `app/admin/ivr.tsx` provides TTS/key actions. | Show readable destination summaries and linked details. Number purchase/porting and uploaded greeting preview are not present here. |
 | Ring groups and queues | `app/admin/ring-groups.tsx`; `app/admin/queues.tsx` expose membership, timeout and overflow. | Preserve honest runtime limits: legacy queue strategies normalize to Ring All under current FIFO runtime. Do not add unsupported strategy choices for appearance. |
 | Hours | `app/admin/schedules.tsx` provides one Mon–Fri block and open/closed destinations. | Dated holidays, multiple daily periods and exceptions need backend/runtime support. Workspace timezone changes do not currently change routing schedules. |
@@ -46,8 +46,9 @@ deployment or successful provider execution.
    authorized routes. Retain workspace identity, responsive navigation, selected
    page, breadcrumbs, loading/error/empty states and keyboard focus.
 2. Connect people to extensions and existing call-handling views. Add search and
-   explicit assignment state. Do not imply that membership deactivation revokes
-   calling until that coordinated operation is implemented and tested.
+   explicit assignment state. Deactivation now coordinates SIP revocation in
+   source; verify deployment and device behavior before claiming live calling
+   access is revoked.
 3. Apply the same structure to numbers, queues, IVR and schedules. Show a concise
    call-path summary before editing. Validate persisted routing and fallback
    behavior against the PBX before calling these flows accepted.

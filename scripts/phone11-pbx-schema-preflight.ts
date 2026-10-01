@@ -54,6 +54,20 @@ type TriggerRow = {
   definition: string;
 };
 
+type RelationRow = {
+  table_name: string;
+  relkind: string;
+  relpersistence: string;
+  relispartition: boolean;
+  has_inheritance: boolean;
+};
+
+type RoutingIndexRow = {
+  table_name: string;
+  index_name: string;
+  valid_shape: boolean | null;
+};
+
 const integer = ["integer"];
 const text = ["text", "character varying"];
 const boolean = ["boolean"];
@@ -344,6 +358,44 @@ export async function inspectPbxSchema(
         ORDER BY table_name,ordinal_position`,
       [allTables],
     );
+    const relationsResult = await client.query<RelationRow>(
+      `
+        SELECT c.relname AS table_name,c.relkind AS relkind,
+               c.relpersistence AS relpersistence,c.relispartition AS relispartition,
+               EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i
+                 WHERE i.inhrelid=c.oid OR i.inhparent=c.oid) AS has_inheritance
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=pg_catalog.current_schema() AND c.relname=ANY($1::text[])`,
+      [[...new Set([...Object.keys(baseSchema), ...Object.keys(advancedSchema)])]],
+    );
+    const routingIndexesResult = await client.query<RoutingIndexRow>(
+      `
+        SELECT required.table_name,required.index_name,
+               idx.relkind='i' AND idx.relpersistence='p' AND NOT idx.relispartition
+               AND ix.indrelid=tbl.oid AND ix.indisunique AND ix.indisvalid
+               AND ix.indisready AND ix.indislive AND ix.indnkeyatts=2 AND ix.indnatts=2
+               AND ix.indexprs IS NULL AND ix.indkey[0]=tenant_att.attnum
+               AND ix.indkey[1]=extension_att.attnum
+               AND pg_catalog.pg_get_expr(ix.indpred,ix.indrelid)='(extension IS NOT NULL)'
+               AND am.amname='btree' AND ix.indoption::text='0 0' AS valid_shape
+        FROM pg_catalog.pg_namespace n
+        CROSS JOIN (VALUES
+          ('ring_groups','ring_groups_tenant_extension'),
+          ('call_queues','call_queues_tenant_extension')
+        ) AS required(table_name,index_name)
+        LEFT JOIN pg_catalog.pg_class tbl ON tbl.relnamespace=n.oid
+          AND tbl.relname=required.table_name
+        LEFT JOIN pg_catalog.pg_class idx ON idx.relnamespace=n.oid
+          AND idx.relname=required.index_name
+        LEFT JOIN pg_catalog.pg_index ix ON ix.indexrelid=idx.oid
+        LEFT JOIN pg_catalog.pg_am am ON am.oid=idx.relam
+        LEFT JOIN pg_catalog.pg_attribute tenant_att ON tenant_att.attrelid=tbl.oid
+          AND tenant_att.attname='tenant_id' AND NOT tenant_att.attisdropped
+        LEFT JOIN pg_catalog.pg_attribute extension_att ON extension_att.attrelid=tbl.oid
+          AND extension_att.attname='extension' AND NOT extension_att.attisdropped
+        WHERE n.nspname=pg_catalog.current_schema()`,
+    );
     const foreignKeysResult = await client.query<ForeignKeyRow>(
       `
         SELECT child.relname AS table_name,child_attr.attname AS column_name,
@@ -397,8 +449,17 @@ export async function inspectPbxSchema(
     const rows = columnsResult.rows;
     const baseIssues = checkColumns(rows, baseSchema);
     const phoneConfigIssues = checkColumns(rows, phoneConfigSchema);
+    const relations = new Map(relationsResult.rows.map((row) => [row.table_name, row]));
+    const relationIssue = (table: string) => {
+      const relation = relations.get(table);
+      return !relation || relation.relkind !== "r" || relation.relpersistence !== "p" ||
+        relation.relispartition || relation.has_inheritance;
+    };
+    for (const table of Object.keys(baseSchema)) {
+      if (relationIssue(table)) baseIssues.push(`${table}:relation`);
+    }
     const presentTables = Object.keys(advancedSchema).filter((table) =>
-      rows.some((row) => row.table_name === table),
+      relations.has(table) || rows.some((row) => row.table_name === table),
     );
     const missingTables = Object.keys(advancedSchema).filter(
       (table) => !presentTables.includes(table),
@@ -406,6 +467,13 @@ export async function inspectPbxSchema(
     const advancedIssues: string[] = [];
 
     if (presentTables.length > 0) {
+      for (const table of presentTables) {
+        if (relationIssue(table)) advancedIssues.push(`${table}:relation`);
+      }
+      for (const index of routingIndexesResult.rows) {
+        if (presentTables.includes(index.table_name) && index.valid_shape !== true)
+          advancedIssues.push(`${index.index_name}:index`);
+      }
       advancedIssues.push(...checkColumns(rows, advancedSchema));
       advancedIssues.push(
         ...checkColumns(rows, { extensions: advancedExtensionColumns }),

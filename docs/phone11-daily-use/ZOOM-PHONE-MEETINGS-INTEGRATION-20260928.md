@@ -132,3 +132,34 @@ The [tenant repair gate](PBX-EXTENSION-TENANT-REPAIR-20260930.md) still refuses
 the actual target's implicit tenant default. No production DDL ran.
 The [internal/emergency ownership handoff](INTERNAL-EMERGENCY-OWNERSHIP-DESIGN-20260930.md)
 records the distinct call-routing and completion work; it is design only.
+
+## Source and release progress on 2026-10-01
+
+The PBX operator migrations now resolve target checks through trusted catalog
+operators, reject inherited and partitioned base/routing tables under lock,
+and verify enabled FK enforcement on prerequisite replay. Read-only preflight
+rejects the same unsupported relation shapes. The separate
+[legacy-default candidate](LEGACY-TENANT-DEFAULT-UPGRADE-CANDIDATE-20261001.md)
+handles only the reviewed `DEFAULT 1` prestate with explicit pins and an
+operator acknowledgement; it does not close the
+[writer and rollback inventory](EXTENSION-WRITER-INVENTORY-20261001.md).
+The SQL files own their transactions and require standalone idle connections.
+
+Root's combined six-suite synthetic PostgreSQL run passed 109 tests. The full
+repository test command passed 2,350 Vitest cases (447 environment-gated
+skips) and 69 native Node cases. TypeScript, backend bundle, focused ESLint, workflow
+YAML parse and diff check passed. These are source and synthetic-database
+checks; no production DDL or route switch ran.
+
+[Signed daily-pilot Build 111](SIGNED-PILOT-BUILD-20261001.md) finished from
+source `11cd1f199cd4cd79d133637ad59271a21014d9e8` and passed the native and
+22-check package verifiers. Its private IPA is staged; Builds 110 and 109
+remain retained. Build 111 has not been installed or accepted on a handset.
+The later operator SQL/preflight corrections do not change its mobile bytes.
+
+The [runtime history audit](INTERNAL-EMERGENCY-RUNTIME-AUDIT-20261001.md)
+confirms that direct internal calls lack a general durable completion event
+source and emergency calls lack proven initiating-user correlation. The
+history-only ledger remains design work. Voicemail lifecycle/playback,
+authenticated candidate isolation, signed two-device meeting audio/invites,
+background wake and Windows media/package acceptance remain open gates.

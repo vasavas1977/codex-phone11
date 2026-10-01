@@ -2,6 +2,8 @@
 -- application startup. Requires existing tenants and extensions tables in the
 -- PostgreSQL database selected by server/pbx/db.ts. It creates no tenants,
 -- extensions, routes, assignments, or sample data.
+-- Run standalone on a fresh idle connection: this file owns BEGIN/COMMIT.
+-- Never wrap it in a caller transaction; COMMIT would also commit caller work.
 BEGIN ISOLATION LEVEL READ COMMITTED;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
@@ -9,34 +11,107 @@ SET LOCAL statement_timeout = '30s';
 -- Refuse an unintended database/schema before any DDL. The operator supplies
 -- these session settings after independent target review, as for the extension
 -- prerequisite. Keep pg_temp last so temporary relation shadows cannot change
--- any unqualified migration DDL or catalog/data validation below.
+-- unqualified migration DDL. Omitting pg_catalog from the explicit path makes
+-- PostgreSQL resolve its built-ins/operators first while creating in the
+-- pinned application schema.
 DO $phone11_target$
 DECLARE
   expected_database text := pg_catalog.current_setting('phone11.expected_database', true);
   expected_schema text := pg_catalog.current_setting('phone11.expected_schema', true);
+  actual_schema text;
+  extensions_oid oid;
+  tenants_oid oid;
+  locked_extensions_oid oid;
+  locked_tenants_oid oid;
+  advanced_table text;
+  advanced_oid oid;
+  locked_advanced_oid oid;
+  advanced_kind "char";
+  advanced_persistence "char";
+  advanced_partition boolean;
 BEGIN
+  actual_schema := pg_catalog.current_schema();
+  PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
   IF expected_database IS NULL OR expected_database = ''
      OR expected_schema IS NULL OR expected_schema = ''
      OR pg_catalog.current_database() <> expected_database
-     OR pg_catalog.current_schema() <> expected_schema
+     OR actual_schema <> expected_schema
      OR pg_catalog.current_setting('transaction_isolation') <> 'read committed' THEN
     RAISE EXCEPTION 'Phone11 advanced PBX migration target pin mismatch'
       USING ERRCODE = '55000';
   END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_catalog.pg_class c
+  SELECT c.oid INTO tenants_oid FROM pg_catalog.pg_class c
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = expected_schema AND c.relname = 'tenants' AND c.relkind = 'r'
-  ) OR NOT EXISTS (
-    SELECT 1 FROM pg_catalog.pg_class c
+   WHERE n.nspname = expected_schema AND c.relname = 'tenants'
+     AND c.relkind = 'r' AND c.relpersistence = 'p';
+  SELECT c.oid INTO extensions_oid FROM pg_catalog.pg_class c
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = expected_schema AND c.relname = 'extensions' AND c.relkind = 'r'
-  ) THEN
+   WHERE n.nspname = expected_schema AND c.relname = 'extensions'
+     AND c.relkind = 'r' AND c.relpersistence = 'p';
+  IF tenants_oid IS NULL OR extensions_oid IS NULL THEN
     RAISE EXCEPTION 'Phone11 advanced PBX migration requires pinned ordinary tenants and extensions tables'
       USING ERRCODE = '55000';
   END IF;
+  -- Lock the exact base relations before inspecting inheritance or starting
+  -- DDL. Concurrent attachment/replacement cannot invalidate this proof.
+  EXECUTE pg_catalog.format('LOCK TABLE %I.extensions IN ACCESS EXCLUSIVE MODE', expected_schema);
+  EXECUTE pg_catalog.format('LOCK TABLE %I.tenants IN SHARE ROW EXCLUSIVE MODE', expected_schema);
+  SELECT c.oid INTO locked_extensions_oid FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = expected_schema AND c.relname = 'extensions'
+     AND c.relkind = 'r' AND c.relpersistence = 'p';
+  SELECT c.oid INTO locked_tenants_oid FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = expected_schema AND c.relname = 'tenants'
+     AND c.relkind = 'r' AND c.relpersistence = 'p';
+  IF locked_extensions_oid IS DISTINCT FROM extensions_oid
+     OR locked_tenants_oid IS DISTINCT FROM tenants_oid THEN
+    RAISE EXCEPTION 'Phone11 advanced PBX migration relation identity changed while locking'
+      USING ERRCODE = '55000';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_catalog.pg_inherits i
+     WHERE i.inhrelid IN (extensions_oid, tenants_oid)
+        OR i.inhparent IN (extensions_oid, tenants_oid)
+  ) OR EXISTS (
+    SELECT 1 FROM pg_catalog.pg_class c
+     WHERE c.oid IN (extensions_oid, tenants_oid) AND c.relispartition
+  ) THEN
+    RAISE EXCEPTION 'Phone11 advanced PBX migration refuses inherited or partitioned base tables'
+      USING ERRCODE = '55000';
+  END IF;
+  -- CREATE TABLE IF NOT EXISTS does not validate an existing relation. Lock
+  -- and reject every existing advanced name before any migration DDL.
+  FOR advanced_table IN SELECT pg_catalog.unnest(ARRAY[
+    'ivr_menus','ivr_actions','ring_groups','ring_group_members','call_queues',
+    'queue_agents','queue_stats','time_conditions','time_condition_rules'
+  ]) LOOP
+    SELECT c.oid, c.relkind, c.relpersistence, c.relispartition
+      INTO advanced_oid, advanced_kind, advanced_persistence, advanced_partition
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = expected_schema AND c.relname = advanced_table;
+    IF advanced_oid IS NULL THEN CONTINUE; END IF;
+    IF advanced_kind <> 'r' OR advanced_persistence <> 'p' OR advanced_partition THEN
+      RAISE EXCEPTION 'Phone11 advanced PBX migration refuses incompatible existing relation %', advanced_table
+        USING ERRCODE = '55000';
+    END IF;
+    EXECUTE pg_catalog.format('LOCK TABLE %I.%I IN ACCESS EXCLUSIVE MODE', expected_schema, advanced_table);
+    SELECT c.oid, c.relkind, c.relpersistence, c.relispartition
+      INTO locked_advanced_oid, advanced_kind, advanced_persistence, advanced_partition
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = expected_schema AND c.relname = advanced_table;
+    IF locked_advanced_oid IS DISTINCT FROM advanced_oid
+       OR advanced_kind <> 'r' OR advanced_persistence <> 'p' OR advanced_partition
+       OR EXISTS (
+         SELECT 1 FROM pg_catalog.pg_inherits i
+          WHERE i.inhrelid = advanced_oid OR i.inhparent = advanced_oid
+       ) THEN
+      RAISE EXCEPTION 'Phone11 advanced PBX migration refuses inherited or replaced relation %', advanced_table
+        USING ERRCODE = '55000';
+    END IF;
+  END LOOP;
   PERFORM pg_catalog.set_config(
-    'search_path', pg_catalog.format('%I,pg_catalog,pg_temp', expected_schema), true
+    'search_path', pg_catalog.format('%I,pg_temp', expected_schema), true
   );
 END;
 $phone11_target$;
@@ -69,7 +144,7 @@ CREATE INDEX IF NOT EXISTS ivr_menus_tenant_name ON ivr_menus(tenant_id, name);
 CREATE TABLE IF NOT EXISTS ivr_actions (
   id SERIAL PRIMARY KEY,
   menu_id INTEGER NOT NULL REFERENCES ivr_menus(id) ON DELETE CASCADE,
-  digit VARCHAR(5) NOT NULL CHECK (length(digit) BETWEEN 1 AND 5),
+  digit VARCHAR(5) NOT NULL CHECK (pg_catalog.length(digit) BETWEEN 1 AND 5),
   action_type TEXT NOT NULL CHECK (action_type IN (
     'transfer_ext', 'transfer_queue', 'transfer_ringgroup', 'sub_menu',
     'voicemail', 'hangup', 'repeat', 'dial_by_name', 'time_condition',
@@ -219,6 +294,83 @@ CREATE TABLE IF NOT EXISTS time_condition_rules (
 );
 CREATE INDEX IF NOT EXISTS time_condition_rules_order
   ON time_condition_rules(time_condition_id, sort_order);
+
+-- A missing name at the first check could be created concurrently before
+-- CREATE TABLE IF NOT EXISTS reaches it. Verify and lock all final identities
+-- before any trigger/function installation; a refusal rolls back this file.
+DO $phone11_advanced_relations$
+DECLARE
+  expected_schema text := pg_catalog.current_setting('phone11.expected_schema');
+  advanced_table text;
+  advanced_oid oid;
+  locked_advanced_oid oid;
+  advanced_kind "char";
+  advanced_persistence "char";
+  advanced_partition boolean;
+  guarded_index record;
+  index_ok boolean;
+BEGIN
+  FOR advanced_table IN SELECT pg_catalog.unnest(ARRAY[
+    'ivr_menus','ivr_actions','ring_groups','ring_group_members','call_queues',
+    'queue_agents','queue_stats','time_conditions','time_condition_rules'
+  ]) LOOP
+    SELECT c.oid, c.relkind, c.relpersistence, c.relispartition
+      INTO advanced_oid, advanced_kind, advanced_persistence, advanced_partition
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = expected_schema AND c.relname = advanced_table;
+    IF advanced_oid IS NULL OR advanced_kind <> 'r'
+       OR advanced_persistence <> 'p' OR advanced_partition THEN
+      RAISE EXCEPTION 'Phone11 advanced PBX migration requires a persistent ordinary relation %', advanced_table
+        USING ERRCODE = '55000';
+    END IF;
+    EXECUTE pg_catalog.format('LOCK TABLE %I.%I IN ACCESS EXCLUSIVE MODE', expected_schema, advanced_table);
+    SELECT c.oid, c.relkind, c.relpersistence, c.relispartition
+      INTO locked_advanced_oid, advanced_kind, advanced_persistence, advanced_partition
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = expected_schema AND c.relname = advanced_table;
+    IF locked_advanced_oid IS DISTINCT FROM advanced_oid
+       OR advanced_kind <> 'r' OR advanced_persistence <> 'p' OR advanced_partition
+       OR EXISTS (
+         SELECT 1 FROM pg_catalog.pg_inherits i
+          WHERE i.inhrelid = advanced_oid OR i.inhparent = advanced_oid
+       ) THEN
+      RAISE EXCEPTION 'Phone11 advanced PBX migration refuses inherited or replaced relation %', advanced_table
+        USING ERRCODE = '55000';
+    END IF;
+  END LOOP;
+  -- IF NOT EXISTS compares names only. Require the two routing uniqueness
+  -- indexes to have their exact protective shape on first run and replay.
+  FOR guarded_index IN SELECT * FROM (VALUES
+    ('ring_groups', 'ring_groups_tenant_extension'),
+    ('call_queues', 'call_queues_tenant_extension')
+  ) AS required(table_name, index_name) LOOP
+    SELECT idx.relkind = 'i' AND idx.relpersistence = 'p' AND NOT idx.relispartition
+       AND ix.indrelid = tbl.oid AND ix.indisunique AND ix.indisvalid AND ix.indisready
+       AND ix.indislive AND ix.indnkeyatts = 2 AND ix.indnatts = 2
+       AND ix.indexprs IS NULL AND ix.indkey[0] = tenant_att.attnum
+       AND ix.indkey[1] = extension_att.attnum
+       AND pg_catalog.pg_get_expr(ix.indpred, ix.indrelid) = '(extension IS NOT NULL)'
+       AND am.amname = 'btree' AND ix.indoption::text = '0 0'
+      INTO index_ok
+      FROM pg_catalog.pg_namespace n
+      JOIN pg_catalog.pg_class tbl ON tbl.relnamespace = n.oid
+        AND tbl.relname = guarded_index.table_name
+      LEFT JOIN pg_catalog.pg_class idx ON idx.relnamespace = n.oid
+        AND idx.relname = guarded_index.index_name
+      LEFT JOIN pg_catalog.pg_index ix ON ix.indexrelid = idx.oid
+      LEFT JOIN pg_catalog.pg_am am ON am.oid = idx.relam
+      LEFT JOIN pg_catalog.pg_attribute tenant_att ON tenant_att.attrelid = tbl.oid
+        AND tenant_att.attname = 'tenant_id' AND NOT tenant_att.attisdropped
+      LEFT JOIN pg_catalog.pg_attribute extension_att ON extension_att.attrelid = tbl.oid
+        AND extension_att.attname = 'extension' AND NOT extension_att.attisdropped
+     WHERE n.nspname = expected_schema;
+    IF index_ok IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'Phone11 advanced PBX migration refuses incompatible routing index %', guarded_index.index_name
+        USING ERRCODE = '55000';
+    END IF;
+  END LOOP;
+END;
+$phone11_advanced_relations$;
 
 -- Keep member rows tenant-safe even if a maintenance script bypasses the API's
 -- workspace checks. The trigger derives tenancy from the selected parent.

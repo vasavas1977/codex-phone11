@@ -516,6 +516,26 @@ describe.skipIf(!connectionString)(
       await database.query(migration);
     });
 
+    it("refuses replay when an inherited member child bypasses the parent FK and trigger", async () => {
+      const group = await database.query<{ id: number }>(
+        "INSERT INTO ring_groups(tenant_id,name) VALUES(10,'Inherited bypass') RETURNING id",
+      );
+      await database.query("CREATE TABLE ring_group_members_child() INHERITS (ring_group_members)");
+      try {
+        await database.query(
+          "INSERT INTO ring_group_members_child(ring_group_id,extension_id) VALUES($1,201)",
+          [group.rows[0].id],
+        );
+        expect((await database.query("SELECT count(*)::int AS n FROM ONLY ring_group_members WHERE ring_group_id=$1", [group.rows[0].id])).rows[0].n).toBe(0);
+        expect((await database.query("SELECT count(*)::int AS n FROM ring_group_members WHERE ring_group_id=$1", [group.rows[0].id])).rows[0].n).toBe(1);
+        await expect(database.query(await readFile(migrationUrl, "utf8"))).rejects.toMatchObject({ code: "55000" });
+        expect((await database.query("SELECT count(*)::int AS n FROM ring_group_members_child WHERE ring_group_id=$1", [group.rows[0].id])).rows[0].n).toBe(1);
+      } finally {
+        await database.query("DROP TABLE ring_group_members_child");
+      }
+      await database.query(await readFile(migrationUrl, "utf8"));
+    });
+
     it("replays with an archived member, but refuses new membership on a deleted extension", async () => {
       const group = await database.query<{ id: number }>("INSERT INTO ring_groups(tenant_id,name) VALUES(10,'Archived member') RETURNING id");
       const queue = await database.query<{ id: number }>("INSERT INTO call_queues(tenant_id,name) VALUES(10,'Archived new') RETURNING id");
@@ -528,3 +548,159 @@ describe.skipIf(!connectionString)(
     });
   },
 );
+
+describe.skipIf(!connectionString)("advanced PBX migration target hardening", () => {
+  async function withBaseSchema(
+    run: (database: Pool, schema: string, migration: string) => Promise<void>,
+  ) {
+    const schema = `pbx_hardening_${randomBytes(8).toString("hex")}`;
+    const admin = new Pool({ connectionString, ssl: false });
+    const database = new Pool({
+      connectionString,
+      ssl: false,
+      options: `-c search_path=${schema} -c phone11.expected_database=phone11_pbx_test -c phone11.expected_schema=${schema}`,
+    });
+    try {
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      await database.query(`
+        CREATE TABLE tenants(id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+        CREATE TABLE extensions(
+          id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+          extension_number TEXT NOT NULL, deleted_at TIMESTAMPTZ);
+        INSERT INTO tenants VALUES (10,'A');
+        INSERT INTO extensions VALUES (101,10,'1001',NULL);
+      `);
+      await run(database, schema, await readFile(migrationUrl, "utf8"));
+    } finally {
+      await database.end();
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
+  }
+
+  async function expectUnchangedRefusal(database: Pool, schema: string, migration: string) {
+    const before = (await database.query(`SELECT * FROM ${schema}.extensions`)).rows;
+    const catalogCount = async () => (await database.query(`SELECT count(*)::int AS n FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=$1 AND c.relname='ivr_menus'`, [schema])).rows[0].n as number;
+    const beforeCatalogCount = await catalogCount();
+    await expect(database.query(migration)).rejects.toMatchObject({ code: "55000" });
+    expect((await database.query(`SELECT * FROM ${schema}.extensions`)).rows).toEqual(before);
+    expect(await catalogCount()).toBe(beforeCatalogCount);
+    const contactColumn = await database.query(`SELECT count(*)::int AS n FROM pg_catalog.pg_attribute a
+      JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=$1 AND c.relname='extensions' AND a.attname='first_name'`, [schema]);
+    expect(contactColumn.rows[0].n).toBe(0);
+  }
+
+  it("uses catalog operators and functions while creating in the pinned schema", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      await database.query(`CREATE FUNCTION ${schema}.phone11_wrong_text_comparison(text,text)
+        RETURNS boolean LANGUAGE sql IMMUTABLE AS 'SELECT true'`);
+      await database.query(`CREATE OPERATOR ${schema}.<> (
+        LEFTARG=text, RIGHTARG=text, PROCEDURE=${schema}.phone11_wrong_text_comparison)`);
+      await database.query(`CREATE FUNCTION ${schema}.clock_timestamp()
+        RETURNS timestamptz LANGUAGE sql STABLE AS 'SELECT ''2001-01-01''::timestamptz'`);
+      const client = await database.connect();
+      try {
+        await client.query(`SET search_path TO ${schema}, pg_catalog`);
+        await client.query(migration);
+      } finally { client.release(); }
+      const created = await database.query(`INSERT INTO ${schema}.ivr_menus(tenant_id,name)
+        VALUES(10,'Trusted default') RETURNING created_at`);
+      expect(new Date(created.rows[0].created_at).getUTCFullYear()).toBeGreaterThan(2025);
+      const catalog = await database.query(`SELECT count(*)::int AS n FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=$1 AND c.relname='ivr_menus'`, [schema]);
+      expect(catalog.rows[0].n).toBe(1);
+    });
+  });
+
+  it("binds the digit-length constraint to pg_catalog despite a varchar overload", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      await database.query(`CREATE FUNCTION ${schema}.length(varchar)
+        RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT 1'`);
+      await database.query(migration);
+      const menu = await database.query<{ id: number }>(
+        `INSERT INTO ${schema}.ivr_menus(tenant_id,name) VALUES(10,'Length guard') RETURNING id`,
+      );
+      await expect(database.query(
+        `INSERT INTO ${schema}.ivr_actions(menu_id,digit,action_type)
+         VALUES($1,'','hangup')`, [menu.rows[0].id],
+      )).rejects.toMatchObject({ code: "23514" });
+    });
+  });
+
+  for (const base of ["extensions", "tenants"] as const) {
+    it(`refuses an inheritance child of ${base} before DDL`, async () => {
+      await withBaseSchema(async (database, schema, migration) => {
+        await database.query(`CREATE TABLE ${schema}.${base}_child() INHERITS (${schema}.${base})`);
+        await expectUnchangedRefusal(database, schema, migration);
+      });
+    });
+  }
+
+  it("refuses a base-table inheritance child before DDL", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      await database.query(`CREATE TABLE ${schema}.extensions_parent(
+        id INTEGER, tenant_id INTEGER, extension_number TEXT NOT NULL, deleted_at TIMESTAMPTZ)`);
+      await database.query(`ALTER TABLE ${schema}.extensions INHERIT ${schema}.extensions_parent`);
+      await expectUnchangedRefusal(database, schema, migration);
+    });
+  });
+
+  it("refuses a base-table partition leaf before DDL", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      await database.query(`CREATE TABLE ${schema}.extensions_root(
+        id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL,
+        extension_number TEXT NOT NULL, deleted_at TIMESTAMPTZ) PARTITION BY RANGE(id)`);
+      await database.query(`ALTER TABLE ${schema}.extensions_root ATTACH PARTITION ${schema}.extensions
+        FOR VALUES FROM (0) TO (1000)`);
+      await expectUnchangedRefusal(database, schema, migration);
+    });
+  });
+
+  it("refuses a preexisting unlogged member table before DDL", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      await database.query(`CREATE UNLOGGED TABLE ${schema}.ring_group_members(
+        ring_group_id INTEGER, extension_id INTEGER)`);
+      await expectUnchangedRefusal(database, schema, migration);
+    });
+  });
+
+  it("refuses a preexisting advanced partition leaf before DDL", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      await database.query(`CREATE TABLE ${schema}.ring_group_members_root(
+        ring_group_id INTEGER, extension_id INTEGER) PARTITION BY RANGE(ring_group_id)`);
+      await database.query(`CREATE TABLE ${schema}.ring_group_members PARTITION OF
+        ${schema}.ring_group_members_root FOR VALUES FROM (0) TO (1000)`);
+      await expectUnchangedRefusal(database, schema, migration);
+    });
+  });
+
+  it("refuses a preexisting advanced view before DDL", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      await database.query(`CREATE VIEW ${schema}.ivr_menus AS SELECT 1 AS id`);
+      await expectUnchangedRefusal(database, schema, migration);
+    });
+  });
+
+  it("times out behind a base-table reader before creating any routing objects", async () => {
+    await withBaseSchema(async (database, schema, migration) => {
+      const blocker = await database.connect();
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query(`SELECT id FROM ${schema}.extensions LIMIT 1`);
+        await expect(database.query(migration)).rejects.toMatchObject({ code: "55P03" });
+      } finally {
+        await blocker.query("ROLLBACK");
+        blocker.release();
+      }
+      const catalog = await database.query(`SELECT count(*)::int AS n FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=$1 AND c.relname='ivr_menus'`, [schema]);
+      expect(catalog.rows[0].n).toBe(0);
+    });
+  }, 15000);
+});

@@ -40,10 +40,26 @@ function columnRows(
   );
 }
 
-function mockClient(columnResult: QueryResultRow[]) {
+function mockClient(
+  columnResult: QueryResultRow[],
+  relationOverrides: Record<string, Partial<{
+    relkind: string; relpersistence: string; relispartition: boolean; has_inheritance: boolean;
+  }>> = {},
+) {
   const query = vi.fn(async (sql: string) => {
     if (sql.includes("information_schema.columns"))
       return { rows: columnResult };
+    if (sql.includes("c.relkind AS relkind"))
+      return { rows: [...new Set(columnResult.map((row) => row.table_name))].map((table_name) => ({
+        table_name, relkind: "r", relpersistence: "p", relispartition: false,
+        has_inheritance: false,
+        ...relationOverrides[table_name],
+      })) };
+    if (sql.includes("AS valid_shape"))
+      return { rows: [
+        { table_name: "ring_groups", index_name: "ring_groups_tenant_extension", valid_shape: true },
+        { table_name: "call_queues", index_name: "call_queues_tenant_extension", valid_shape: true },
+      ] };
     return { rows: [] };
   });
   return { query };
@@ -103,6 +119,23 @@ describe("PBX schema preflight", () => {
       "subscriber.password:missing",
       "sip_accounts.secret_tag:type",
     ]));
+  });
+
+  it("rejects nonpersistent, partitioned, and inherited base or advanced relations", async () => {
+    const rows = columnRows({ ...requiredSchema, ...advancedSchema });
+    const overrides: NonNullable<Parameters<typeof mockClient>[1]> = Object.fromEntries(Object.keys(advancedSchema).map((table) => [
+      table, { relpersistence: "u" },
+    ]));
+    overrides.extensions = { has_inheritance: true };
+    overrides.tenants = { relispartition: true };
+    const result = await inspectPbxSchema(mockClient(rows, overrides) as never);
+    expect(result.base.issues).toEqual(expect.arrayContaining([
+      "extensions:relation", "tenants:relation",
+    ]));
+    for (const table of Object.keys(advancedSchema)) {
+      expect(result.advanced.issues).toContain(`${table}:relation`);
+    }
+    expect(result.overall).toBe("incompatible");
   });
 
   it("rolls back and does not disclose an underlying database error", async () => {
@@ -225,6 +258,74 @@ describe.skipIf(!connectionString)(
         }
         expect((await inspectPbxSchema(client)).advanced.status).toBe("compatible");
       } finally { client.release(); }
+    });
+
+    for (const [table, indexName, unique, columns] of [
+      ["ring_groups", "ring_groups_tenant_extension", false, "tenant_id,extension"],
+      ["call_queues", "call_queues_tenant_extension", true, "extension,tenant_id"],
+    ] as const) {
+      it(`rejects a same-named malformed ${indexName} on preflight and migration replay`, async () => {
+        const client = await database.connect();
+        try {
+          await client.query(`DROP INDEX ${schema}.${indexName}`);
+          await client.query(`CREATE ${unique ? "UNIQUE " : ""}INDEX ${indexName}
+            ON ${schema}.${table} (${columns}) WHERE extension IS NOT NULL`);
+          const before = (await client.query<{ definition: string }>(
+            "SELECT pg_catalog.pg_get_indexdef($1::pg_catalog.regclass) AS definition",
+            [`${schema}.${indexName}`],
+          )).rows[0].definition;
+          const preflight = await inspectPbxSchema(client);
+          expect(preflight.overall).toBe("incompatible");
+          expect(preflight.advanced.issues).toContain(`${indexName}:index`);
+          await expect(client.query(await readFile(
+            new URL("../server/pbx/advanced-routing-migration.sql", import.meta.url), "utf8",
+          ))).rejects.toMatchObject({ code: "55000" });
+          await client.query("ROLLBACK");
+          expect((await client.query<{ definition: string }>(
+            "SELECT pg_catalog.pg_get_indexdef($1::pg_catalog.regclass) AS definition",
+            [`${schema}.${indexName}`],
+          )).rows[0].definition).toBe(before);
+        } finally {
+          await client.query("ROLLBACK");
+          await client.query(`DROP INDEX IF EXISTS ${schema}.${indexName}`);
+          await client.query(`CREATE UNIQUE INDEX ${indexName} ON ${schema}.${table}
+            (tenant_id,extension) WHERE extension IS NOT NULL`);
+          client.release();
+        }
+      });
+    }
+
+    it("rejects an inherited member child that bypasses the parent tenant guard", async () => {
+      const client = await database.connect();
+      try {
+        await client.query("CREATE TABLE ring_group_members_child() INHERITS (ring_group_members)");
+        await client.query("INSERT INTO tenants(id,name) VALUES(10,'Main tenant'),(20,'Other tenant') ON CONFLICT DO NOTHING");
+        const group = await client.query<{ id: number }>(
+          "INSERT INTO ring_groups(tenant_id,name) VALUES(10,'Preflight inherited bypass') RETURNING id",
+        );
+        await client.query("INSERT INTO extensions(id,tenant_id,extension_number) VALUES(201,20,'2001') ON CONFLICT DO NOTHING");
+        await client.query("INSERT INTO ring_group_members_child(ring_group_id,extension_id) VALUES($1,201)", [group.rows[0].id]);
+        const result = await inspectPbxSchema(client);
+        expect(result.overall).toBe("incompatible");
+        expect(result.advanced.issues).toContain("ring_group_members:relation");
+        expect((await client.query("SELECT count(*)::int AS n FROM ring_group_members_child WHERE ring_group_id=$1", [group.rows[0].id])).rows[0].n).toBe(1);
+      } finally {
+        await client.query("DROP TABLE IF EXISTS ring_group_members_child");
+        client.release();
+      }
+    });
+
+    it("rejects an inherited base table even before advanced routing is considered", async () => {
+      const client = await database.connect();
+      try {
+        await client.query("CREATE TABLE extensions_child() INHERITS (extensions)");
+        const result = await inspectPbxSchema(client);
+        expect(result.base.issues).toContain("extensions:relation");
+        expect(result.overall).toBe("incompatible");
+      } finally {
+        await client.query("DROP TABLE IF EXISTS extensions_child");
+        client.release();
+      }
     });
 
     it("rejects a same-named foreign key target in another schema", async () => {
