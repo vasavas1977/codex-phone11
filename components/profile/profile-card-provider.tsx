@@ -8,6 +8,7 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { getAuthSnapshot } from "@/lib/_core/auth";
+import { useChatStore } from "@/lib/chat/store";
 import { ProfileCardContext, validProfileCardTarget, type ProfileCardTarget } from "./profile-card-context";
 
 /** One inline card per native surface: picker modals use their own boundary so
@@ -17,22 +18,30 @@ export function ProfileCardProvider({ children, selectionOnly = false }: { child
   const insets = useSafeAreaInsets();
   const { user } = useAuth({ autoFetch: false });
   const pathname = usePathname();
-  const [target, setTarget] = useState<(ProfileCardTarget & { ownerId: number; pathname: string }) | null>(null);
+  const [target, setTarget] = useState<(ProfileCardTarget & { owner: NonNullable<typeof user>; ownerId: number; pathname: string }) | null>(null);
   const close = useCallback(() => setTarget(null), []);
+  const actionsEnabled = !selectionOnly && !pathname.startsWith("/call/") && !pathname.startsWith("/conference");
   const open = useCallback((next: ProfileCardTarget) => {
-    const owner = getAuthSnapshot().user?.id;
-    if (!owner || !validProfileCardTarget(next.tenantId, next.userId)) return;
+    const auth = getAuthSnapshot();
+    const owner = auth.user;
+    if (!owner || auth.loading || owner !== user || !validProfileCardTarget(next.tenantId, next.userId)) return;
     Keyboard.dismiss();
-    setTarget({ ...next, ownerId: owner, pathname });
-  }, [pathname]);
-  const visible = target?.ownerId === user?.id && target?.pathname === pathname ? target : null;
-  useEffect(close, [user?.id, pathname, close]);
+    if (next.userId === owner.id && actionsEnabled) {
+      const chat = useChatStore.getState();
+      if (chat.userId !== owner.id || chat.workspace?.id !== next.tenantId) return;
+      close();
+      router.push({ pathname: "/profile", params: { view: "details", ownerId: String(owner.id), tenantId: String(next.tenantId) } });
+      return;
+    }
+    setTarget({ ...next, owner, ownerId: owner.id, pathname });
+  }, [actionsEnabled, close, pathname, user]);
+  const visible = target?.owner === user && getAuthSnapshot().user === user && target?.pathname === pathname ? target : null;
+  useEffect(close, [user, pathname, close]);
   useEffect(() => {
     if (!visible) return;
     const handler = BackHandler.addEventListener("hardwareBackPress", () => { close(); return true; });
     return () => handler.remove();
   }, [visible, close]);
-  const actionsEnabled = !selectionOnly && !pathname.startsWith("/call/") && !pathname.startsWith("/conference");
 
   // Ringing must always leave Answer and Decline immediately accessible.
   return <ProfileCardContext.Provider value={pathname === "/call/incoming" ? null : open}>
@@ -40,11 +49,11 @@ export function ProfileCardProvider({ children, selectionOnly = false }: { child
       <View style={styles.surface} pointerEvents={visible ? "none" : "auto"} accessibilityElementsHidden={!!visible} importantForAccessibility={visible ? "no-hide-descendants" : "auto"}>{children}</View>
       {visible && <View accessibilityViewIsModal style={[StyleSheet.absoluteFill, styles.card, { backgroundColor: colors.background, paddingTop: insets.top, paddingBottom: insets.bottom }]}>
         {visible.userId === user?.id ? <AccountDetails
-          identity={{ name: user.name ?? visible.name ?? null, email: user.email ?? null }}
+          identity={{ name: user.name ?? null, email: user.email ?? null }}
           phone={null} workspaceName={null} workspaceId={visible.tenantId}
           photo={{ userId: visible.userId, photoUrl: visible.photoUrl ?? null, photoVersion: visible.photoVersion ?? null }}
-          canEditPhoto={false} photoSaving={false} photoOptionsEnabled={actionsEnabled} onClose={close}
-          onEditPhoto={() => { if (!actionsEnabled) return; close(); router.push("/profile"); }}
+          canEditPhoto={false} photoSaving={false} photoOptionsEnabled={false} onClose={close}
+          onEditPhoto={() => {}}
         /> : <>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back from profile" onPress={close} style={styles.back}><IconSymbol name="chevron.left" size={23} color={colors.primary} /></Pressable>

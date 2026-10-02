@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as { renderToStaticMarkup(node: ReactNode): string };
 const m = vi.hoisted(() => ({
   owner: null as any,
+  params: {} as any,
+  pickerPending: null as Promise<any> | null,
   authListeners: [] as Array<() => void>,
   chat: null as any,
   sip: null as any,
@@ -59,7 +61,7 @@ vi.mock("expo-image-picker", () => ({
   requestCameraPermissionsAsync: async () => ({ granted: m.cameraGranted }),
   requestMediaLibraryPermissionsAsync: async () => ({ granted: m.libraryGranted }),
   launchCameraAsync: async () => m.pickerResult,
-  launchImageLibraryAsync: async () => m.pickerResult,
+  launchImageLibraryAsync: vi.fn(async () => m.pickerPending ? await m.pickerPending : m.pickerResult),
   CameraType: { front: "front" },
   UIImagePickerPreferredAssetRepresentationMode: { Compatible: "compatible" },
 }));
@@ -76,7 +78,7 @@ vi.mock("../lib/sip/account-store", () => ({ useSipAccountStore: (select: any) =
 vi.mock("../components/profile/account-hub", () => ({ AccountHub: (props: any) => { m.hub = props; return createElement("div", null, props.workspaceName); } }));
 vi.mock("../components/profile/profile-avatar", () => ({ useProfilePhotoCacheScope: vi.fn() }));
 vi.mock("../components/screen-container", () => ({ ScreenContainer: ({ children }: any) => createElement("div", null, children) }));
-vi.mock("expo-router", () => ({ router: { back: vi.fn(), push: vi.fn() } }));
+vi.mock("expo-router", () => ({ router: { back: vi.fn(), push: vi.fn() }, useLocalSearchParams: () => m.params }));
 
 import ProfileScreen from "../app/profile/index";
 import { useWorkspaceProfile } from "../lib/profile/use-workspace-profile";
@@ -100,7 +102,7 @@ beforeEach(() => {
   m.owner = owner(1); m.chat = { userId: 1, workspace: { id: 20, name: "Selected work" }, loading: false, error: null, loadChannels: m.loadChannels };
   m.authListeners.forEach((listener) => listener());
   m.sip = { ownerUserId: 1, tenantId: 10, username: "3001" };
-  m.queryInputs = []; m.queryOptions = []; m.hub = null;
+  m.queryInputs = []; m.queryOptions = []; m.hub = null; m.params = {}; m.pickerPending = null;
   m.frame = { values: [], index: 0, effectIndex: 0, effects: [] };
   m.photoStorage.clear();
   m.photoStorageFails = false; m.photoStorageRead = null;
@@ -181,10 +183,10 @@ it("gives a new chat hook the confirmed result while its local write is pending"
 
 it("uses the authenticated selected Team Chat workspace instead of the SIP tenant", () => {
   const route = ProfileScreen() as ReactElement<{ children: ReactElement }>;
-  expect(route.props.children.key).toBe("1:20");
+  expect(route.props.children.key).toBe("1:20:0:hub");
   renderProfile();
   expect(m.queryInputs.at(-1)).toEqual({ tenantId: 20 });
-  expect(m.hub).toMatchObject({ workspaceName: "Selected work", phone: { extension: "3001" } });
+  expect(m.hub).toMatchObject({ workspaceName: "Selected work", phone: null });
   m.chat = { userId: 2, workspace: { id: 30, name: "Another owner" }, loading: false, error: null, loadChannels: m.loadChannels };
   m.frame = { values: [], index: 0, effectIndex: 0, effects: [] };
   renderProfile();
@@ -372,4 +374,57 @@ it("does not revive an obsolete pending photo action after an A to B to A scope 
   const resumed = useRenderedWorkspaceProfile(ownerA, 20);
   expect(resumed.photoSaving).toBe(false);
   expect(resumed.photoDescriptor).toBeNull();
+});
+
+it("shows an extension only for the current owner and selected phone tenant", () => {
+  m.sip = { ownerUserId: 1, tenantId: 20, username: "3001" }; renderProfile();
+  expect(m.hub.phone).toEqual({ extension: "3001" });
+  m.sip = { ...m.sip, ownerUserId: 2 }; renderProfile(); expect(m.hub.phone).toBeNull();
+  m.sip = null; renderProfile(); expect(m.hub.phone).toBeNull();
+});
+it.each(["details", "photo"])("accepts a scoped self %s entry without granting photo capability", view => {
+  m.params = { view, ownerId: "1", tenantId: "20" }; renderProfile();
+  expect(m.hub.entryView).toBe(view); expect(m.hub.profilePhotoAvailable).toBe(false);
+});
+it.each([
+  { view: "edit", ownerId: "1", tenantId: "20" },
+  { view: ["photo"], ownerId: "1", tenantId: "20" },
+  { view: "photo", ownerId: "2", tenantId: "20" },
+  { view: "photo", ownerId: "1", tenantId: "30" },
+  { view: "photo", ownerId: "01", tenantId: "20" },
+  { view: "photo" },
+])("rejects an unrecognized or non-owned entry: %j", params => {
+  m.params = params; renderProfile(); expect(m.hub.entryView).toBeUndefined();
+});
+it.each(["session", "workspace", "owner"])("does not revive a photo entry after %s replacement", kind => {
+  m.params = { view: "photo", ownerId: "1", tenantId: "20" }; renderProfile();
+  const originalOwner = m.owner;
+  if (kind === "session") m.owner = { ...m.owner };
+  if (kind === "workspace") m.chat = { ...m.chat, workspace: { id: 30, name: "Other" } };
+  if (kind === "owner") m.owner = owner(2);
+  renderProfile(); expect(m.hub.entryView).toBeUndefined();
+  m.owner = originalOwner; m.chat = { ...m.chat, userId: 1, workspace: { id: 20, name: "Selected work" } };
+  renderProfile(); expect(m.hub.entryView).toBeUndefined();
+});
+it.each(["session", "workspace", "cancel", "unmount", "late-error"])("ignores a pending photo picker after %s", async kind => {
+  m.photoQuery = { ...m.photoQuery, data: { available: true } };
+  const pending = deferred(); m.pickerPending = pending.promise;
+  renderProfile(); const request = m.hub.onChangeProfilePhoto("library");
+  const picker = await import("expo-image-picker");
+  await vi.waitFor(() => expect(picker.launchImageLibraryAsync).toHaveBeenCalled());
+  if (kind === "session") m.owner = { ...m.owner };
+  if (kind === "workspace") m.chat = { ...m.chat, workspace: { id: 30, name: "Other" } };
+  renderProfile();
+  if (kind === "unmount") m.frame.effects.forEach(effect => effect.cleanup?.());
+  if (kind === "late-error") { m.owner = { ...m.owner }; renderProfile(); pending.reject(new Error("old picker failure")); }
+  else pending.resolve(kind === "cancel" ? { canceled: true } : { canceled: false, assets: [{ uri: "file://photo.jpg", mimeType: "image/jpeg" }] });
+  expect(await request).toBe(false); expect(m.uploadPhoto).not.toHaveBeenCalled();
+  renderProfile(); expect(m.hub.profilePhotoError).toBeNull();
+});
+
+it("does not start an image picker or upload from an unavailable photo capability", async () => {
+  m.params = { view: "photo", ownerId: "1", tenantId: "20" }; renderProfile();
+  expect(await m.hub.onChangeProfilePhoto("library")).toBe(false);
+  const picker = await import("expo-image-picker"); expect(picker.launchImageLibraryAsync).not.toHaveBeenCalled();
+  expect(m.uploadPhoto).not.toHaveBeenCalled();
 });

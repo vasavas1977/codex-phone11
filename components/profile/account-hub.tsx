@@ -82,6 +82,8 @@ type AccountHubProps = {
   onChangeProfilePhoto?: (source: "camera" | "library") => Promise<boolean>;
   onRemoveProfilePhoto?: () => Promise<unknown>;
   onRetryProfilePhoto?: () => Promise<unknown>;
+  /** Validated by the canonical owner route; never grants photo capability. */
+  entryView?: "details" | "photo";
 };
 
 function MenuRow({ icon, title, detail, onPress, last = false }: { icon: IconName; title: string; detail: string; onPress: () => void; last?: boolean }) {
@@ -231,10 +233,10 @@ export function AccountDetails({ identity, phone, workspaceName, photo, workspac
 }
 
 /** Shows auth-owned identity and server-persisted workspace preferences. */
-export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileLoading = false, profileLoadError = false, profileUnavailable = false, onRetryWorkspaceProfile, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoDescriptor, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto }: AccountHubProps) {
+export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceProfile, profileAvailable = false, profileLoading = false, profileLoadError = false, profileUnavailable = false, onRetryWorkspaceProfile, profileSaving = false, profileError = null, onUpdateWorkspaceProfile, workspaceName = null, isPreview = false, workspaceId, profilePhotoAvailable = false, profilePhotoDescriptor, profilePhotoChecking = false, profilePhotoCheckError = false, profilePhotoSaving = false, profilePhotoError = null, onChangeProfilePhoto, onRemoveProfilePhoto, onRetryProfilePhoto, entryView }: AccountHubProps) {
   const colors = useColors();
-  const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "photo" | null>(null);
-  const [showDetails, setShowDetails] = useState(false);
+  const [sheet, setSheet] = useState<"availability" | "availabilityDuration" | "status" | "location" | "photo" | null>(entryView === "photo" ? "photo" : null);
+  const [showDetails, setShowDetails] = useState(!!entryView);
   const [dndDuration, setDndDuration] = useState<DndDurationMinutes>(60);
   const name = identity?.name?.trim() || "Your work account";
   const email = identity?.email?.trim() || "Sign in to view your account";
@@ -269,7 +271,7 @@ export function AccountHub({ identity, phone, onBack, onOpenSettings, workspaceP
   };
   return <View style={[styles.screen, { backgroundColor: colors.background }]}>
     {showDetails ? <AccountDetails identity={identity} phone={phone} workspaceName={workspaceName} photo={photo} workspaceId={workspaceId}
-      canEditPhoto={canChangePhoto} photoSaving={profilePhotoSaving} onClose={() => setShowDetails(false)} onEditPhoto={() => setSheet("photo")} /> : <>
+      canEditPhoto={canChangePhoto} photoSaving={profilePhotoSaving} onClose={entryView ? onBack : () => setShowDetails(false)} onEditPhoto={() => setSheet("photo")} /> : <>
     <View style={[styles.header, { borderBottomColor: colors.border }]}>
       <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} style={styles.back}><IconSymbol name="chevron.left" size={23} color={colors.primary} /></Pressable>
       <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Profile</Text><View style={styles.back} />

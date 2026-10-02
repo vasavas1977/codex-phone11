@@ -249,3 +249,46 @@ it("keeps preview profile edits local while reflecting saved values", () => {
   expect(applyPreviewWorkspaceProfile(renamed, { status: { text: null } })).toMatchObject({ statusText: null, statusExpiresAt: null });
   expect(applyPreviewWorkspaceProfile(renamed, { workLocation: "remote" })).toMatchObject({ workLocation: "remote" });
 });
+
+it("opens canonical details directly with real contact data and reachable photo capability status", () => {
+  const html = renderToStaticMarkup(createElement(AccountHub, {
+    identity: { name: "Owned person", email: "owned@example.com" },
+    phone: { extension: "3001" }, workspaceName: "Selected work", workspaceId: 20,
+    entryView: "details", onBack: vi.fn(), onOpenSettings: vi.fn(),
+  }));
+  expect(html).toContain("CONTACT INFO"); expect(html).toContain("3001"); expect(html).toContain("Selected work");
+  expect(html).toContain('aria-label="Profile photo options"');
+  expect(html).not.toMatch(/Department|Job title|Personal meeting ID/);
+});
+it("keeps photo-entry cancellation on details and details Back returns to the originating screen", () => {
+  const values: any[] = []; let index = 0;
+  const internals = (React as any).__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+  const previousDispatcher = internals.H;
+  internals.H = { useState(initial: any) {
+    const position = index++; if (position >= values.length) values[position] = initial;
+    return [values[position], (next: any) => { values[position] = typeof next === "function" ? next(values[position]) : next; }];
+  } };
+  try {
+    const onBack = vi.fn();
+    const render = () => { index = 0; return AccountHub({ identity: { name: "Owned person", email: null }, phone: null,
+      workspaceId: 20, entryView: "photo", onBack, onOpenSettings: vi.fn(), profilePhotoCheckError: true,
+      onRetryProfilePhoto: vi.fn(async () => undefined) }); };
+    const first = render();
+    const sheet = findElement(first, element => element.props.title === "Profile photo");
+    expect(sheet.props.visible).toBe(true);
+    expect(sheet.props.children.props.children[0].props.children).toBe("Could not check profile photo settings.");
+    sheet.props.onClose();
+    const closed = render(); expect(findElement(closed, element => element.props.title === "Profile photo").props.visible).toBe(false);
+    const details = findElement(closed, element => element.type === AccountDetails); expect(details).not.toBeNull();
+    expect(onBack).not.toHaveBeenCalled(); details.props.onClose(); expect(onBack).toHaveBeenCalledOnce();
+  } finally { internals.H = previousDispatcher; }
+});
+it("photo entry uses the commissioned photo workflow independently of workspace status", () => {
+  const html = renderToStaticMarkup(createElement(AccountHub, {
+    identity: { name: "Owned person", email: null }, phone: null, workspaceId: 20, entryView: "photo",
+    onBack: vi.fn(), onOpenSettings: vi.fn(), profileAvailable: false, profilePhotoAvailable: true,
+    onChangeProfilePhoto: vi.fn(async () => false), onRemoveProfilePhoto: vi.fn(async () => undefined),
+  }));
+  expect(html).toContain("Take photo"); expect(html).toContain("Choose photo");
+  expect(html).toContain('aria-label="Change profile photo"');
+});

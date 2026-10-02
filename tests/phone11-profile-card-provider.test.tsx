@@ -2,7 +2,7 @@ import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 import { beforeEach, expect, it, vi } from "vitest";
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as { renderToStaticMarkup(node: ReactNode): string };
-const m = vi.hoisted(() => ({ target: null as any, owner: 7 as number | undefined, path: "/chat/room", open: null as any, detail: null as any, self: null as any, close: null as any, dismissKeyboard: vi.fn() }));
+const m = vi.hoisted(() => ({ target: null as any, owner: 7 as number | undefined, path: "/chat/room", open: null as any, detail: null as any, self: null as any, close: null as any, user: null as any, loading: false, chat: null as any, navigate: vi.fn(), dismissKeyboard: vi.fn() }));
 vi.mock("react", async original => {
   const actual = await original<typeof import("react")>();
   return { ...actual, useState: () => [m.target, (value: any) => { m.target = value; }] };
@@ -17,10 +17,11 @@ vi.mock("react-native", () => ({
     return createElement("button", null, children);
   },
 }));
-vi.mock("expo-router", () => ({ router: { push: vi.fn() }, usePathname: () => m.path }));
+vi.mock("expo-router", () => ({ router: { push: m.navigate }, usePathname: () => m.path }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 10, bottom: 10 }) }));
-vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: m.owner ? { id: m.owner, name: "Signed-in person", email: "owner@example.com" } : null }) }));
-vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.owner ? { id: m.owner } : null }) }));
+vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: m.owner ? (m.user?.id === m.owner ? m.user : (m.user = { id: m.owner, name: "Signed-in person", email: "owner@example.com" })) : (m.user = null) }) }));
+vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: m.user, loading: m.loading }) }));
+vi.mock("../lib/chat/store", () => ({ useChatStore: { getState: () => m.chat } }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({}) }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
 vi.mock("../components/contact-details", () => ({ ContactDetails: (props: any) => { m.detail = props; return createElement("span", null, "Resolved contact"); } }));
@@ -29,7 +30,7 @@ import { ProfileCardProvider } from "../components/profile/profile-card-provider
 import { useOpenProfileCard } from "../components/profile/profile-card-context";
 function Child() { m.open = useOpenProfileCard(); return createElement("span", null, "Existing meeting or picker"); }
 function render(selectionOnly = false) { m.detail = null; m.self = null; return renderToStaticMarkup(<ProfileCardProvider selectionOnly={selectionOnly}><Child /></ProfileCardProvider>); }
-beforeEach(() => { m.target = null; m.owner = 7; m.path = "/chat/room"; vi.clearAllMocks(); });
+beforeEach(() => { m.target = null; m.owner = 7; m.path = "/chat/room"; m.user = null; m.loading = false; m.chat = { userId: 7, workspace: { id: 20 } }; vi.clearAllMocks(); });
 
 it("opens an exact tenant/user card without removing the source screen", () => {
   render(); m.open({ tenantId: 20, userId: 8 });
@@ -45,14 +46,21 @@ it("keeps picker cards informational and returns to the retained selection", () 
   expect(m.detail.actionsEnabled).toBe(false);
   m.close(); expect(render(true)).toContain("Existing meeting or picker");
 });
-it("opens the signed-in user's own profile without querying the coworker directory", () => {
-  render(); m.open({ tenantId: 20, userId: 7, name: "Someone else", photoUrl: "/api/profile/photo/20/7?v=123", photoVersion: "123" });
-  const html = render();
-  expect(html).toContain("My profile details");
-  expect(html).not.toContain("Resolved contact");
-  expect(m.detail).toBeNull();
-  expect(m.self).toMatchObject({ identity: { name: "Signed-in person", email: "owner@example.com" }, workspaceId: 20, photo: { userId: 7, photoUrl: "/api/profile/photo/20/7?v=123" } });
-  m.self.onClose(); expect(render()).not.toContain("My profile details");
+it("opens canonical self details without querying the coworker directory or using avatar labels", () => {
+  render(); m.open({ tenantId: 20, userId: 7, name: "Someone else", photoUrl: "/api/profile/photo/20/7?v=123" });
+  render();
+  expect(m.navigate).toHaveBeenCalledOnce();
+  expect(m.navigate).toHaveBeenCalledWith({ pathname: "/profile", params: { view: "details", ownerId: "7", tenantId: "20" } });
+  expect(m.detail).toBeNull(); expect(m.self).toBeNull(); expect(m.target).toBeNull();
+});
+it.each(["workspace", "owner", "loading", "session"])("rejects a stale own-avatar navigation after %s changes", kind => {
+  render(); const open = m.open;
+  if (kind === "workspace") m.chat.workspace = { id: 30 };
+  if (kind === "owner") m.chat.userId = 8;
+  if (kind === "loading") m.loading = true;
+  if (kind === "session") m.user = { ...m.user };
+  open({ tenantId: 20, userId: 7 });
+  expect(m.navigate).not.toHaveBeenCalled(); expect(m.target).toBeNull();
 });
 it("keeps a picker mounted when the signed-in user taps their own avatar", () => {
   render(true); m.open({ tenantId: 20, userId: 7 });
@@ -81,4 +89,14 @@ it("hides a card when the route changes and rejects invalid identities", () => {
   render(); m.open({ tenantId: 20, userId: 8 }); m.path = "/auth/sign-in";
   expect(render()).not.toContain("Resolved contact");
   m.target = null; m.open({ tenantId: 20, userId: NaN }); expect(m.target).toBeNull();
+});
+
+it.each(["/call/active", "/conference/room"])("keeps self cards readonly during %s", path => {
+  m.path = path; render(); m.open({ tenantId: 20, userId: 7 }); render();
+  expect(m.self.photoOptionsEnabled).toBe(false); m.self.onEditPhoto();
+  expect(m.navigate).not.toHaveBeenCalled();
+});
+it("retires a card when the same numeric owner has a replacement session", () => {
+  render(true); m.open({ tenantId: 20, userId: 7 }); render(true);
+  m.user = { ...m.user }; expect(render(true)).not.toContain("My profile details");
 });
