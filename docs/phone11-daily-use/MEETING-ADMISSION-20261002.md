@@ -31,3 +31,33 @@ profile navigation on 3001 passed. Meeting transport and physical two-phone
 audio/video acceptance remain blocked. Resolve the exact billing mapping or
 wallet/trial condition before another controlled Join; no top-up or billing
 change follows merely from HTTP 402.
+
+## Server-only refusal follow-up
+
+The reviewed server patch recognizes only token POST HTTP 402 envelopes with
+`error.code: http_error` and one of the three exact categories above. Error
+reading is bounded to 4 KiB, 64 chunks and the existing ten-second abort signal.
+A provenance-protected diagnostic passes through the tenant provider; the
+meeting service logs only a fixed event, category and HTTP status. Public 412
+behavior, membership checks, token validation and lease confirmation remain
+unchanged. Unknown responses remain generic. No raw body, cause or credential
+is logged.
+
+Integration commit: `ad9b0386075601d3e802ce947df2d2558f28fe1a`. Isolated release
+candidate: `c5140f4cb0caebce1225b8e45d41c5b9a40af9a9`, based on the actual live
+`6180658` plus only five changed files (three server modules and two tests).
+[Draft PR 8](https://github.com/vasavas1977/codex-phone11/pull/8) targets that
+pinned baseline. Independent GPT-6.1 Sol high review: APPROVE_SOURCE_ONLY.
+Root candidate validation: 59 focused tests, lint, backend build and whitespace
+checks passed. Full TypeScript fails at `server/pbx/pbx-router.ts:894` with the
+same TS2339 on the unpatched baseline; this hotfix does not repair that unrelated
+error. No hosted CI result is claimed.
+
+The image extends the immutable deployed image with one backend bundle layer.
+Both the base image and candidate actually run Node 22.23.2; the predecessor's
+22.22.3 environment metadata is stale. Runtime readback verified the actual
+version before pinning the candidate. The workerless candidate has started on
+loopback 3023, with live traffic still on 3016. A separate narrow route operator
+is under independent review because the newer mainline authenticated probes
+could initialize schema on the baseline. No new authenticated Join, billing
+change or physical media acceptance follows from these preparation checks.
