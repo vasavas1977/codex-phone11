@@ -121,5 +121,31 @@ The standalone reader passed 12 offline tests and independent GPT-6.1 Sol high
 source review before execution. Its reviewed SHA256 was
 `567b6fd66b41a459096030ae057f1f90b1c6465fd2df07b6406d85fa0711ff67`.
 This confirms current Phone11 configuration custody. Durable Connect11 key
-binding, trial state, committed top-up state and meeting recovery remain
-unproven pending the separate reviewed database diagnostic.
+binding and trial/top-up state were subsequently checked by the separate
+reviewed database diagnostic below. Meeting recovery remains unverified.
+
+## Verified current durable billing state
+
+The single standalone read-only diagnostic completed on 2026-10-03 (Bangkok).
+It verified the current effective credential's durable key/account/namespace
+binding, exactly one owner wallet and exactly one trial, TLS certificate and
+hostname verification, and a read-only repeatable-read transaction. The trial
+expiry was present, supported and past the observation time. Its stored status
+was `active`, but it was unconverted, had no conversion timestamp, and the unique
+durable owner wallet had no `TOPUP` entry. This supports the current trial-gate
+rejection; no existing durable top-up was found for a stale-cache repair.
+
+The operator used one task-launch attempt with SDK retries disabled and a
+protected attempt record. Actual image/network/definition and zero exit status
+passed, and terminal task cleanup was verified. All 70 offline packet, renderer,
+diagnostic and operator tests passed before execution, with separate independent
+GPT-6.1 Sol high reviews. No application startup, schema change, provider Join,
+payment, credit, trial grant or billing-gate change was performed.
+
+This snapshot does not prove the historical process-selected wallet or cache,
+past admission, payment provenance, a SELECT-only database role, or device/media
+success. An absent recorded top-up does not prove no payment was made. The next
+action is legitimate funding or reconciliation of an existing payment for the
+exact Connect11 service account/wallet bound to Phone11. Funding a different
+personal console account would not resolve this binding. Do not bypass the gate
+or manufacture a paid top-up from trial/adjustment credit.
