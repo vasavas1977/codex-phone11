@@ -104,3 +104,22 @@ Builder TypeScript and changed-file lint passed (four existing test warnings).
 Independent GPT-6.1 Sol high review: APPROVE_SOURCE_ONLY, no P0–P2 findings.
 This is a source correction, not an installed update or billing repair. Build114
 still has its previous headline; successful meeting connection is unverified.
+
+All 14 hosted checks passed for the correction at
+`e8145ad6ea6515bd9295ceb74f053b94fa041318`. No newer native build was installed.
+
+## Current credential binding readback
+
+On 2026-10-03 (Bangkok), the lead verified the running Phone11 candidate's
+meeting configuration against its protected configuration and credential
+metadata. The canonical account was pinned to the existing installer's owner;
+roles, scopes and namespace matched. The readback exported only protected
+identifiers and derived credential hashes to a private proof, never bearer
+values, and made no provider or authenticated Join requests.
+
+The standalone reader passed 12 offline tests and independent GPT-6.1 Sol high
+source review before execution. Its reviewed SHA256 was
+`567b6fd66b41a459096030ae057f1f90b1c6465fd2df07b6406d85fa0711ff67`.
+This confirms current Phone11 configuration custody. Durable Connect11 key
+binding, trial state, committed top-up state and meeting recovery remain
+unproven pending the separate reviewed database diagnostic.
