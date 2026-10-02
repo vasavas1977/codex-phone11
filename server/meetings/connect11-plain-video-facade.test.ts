@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createConnect11PlainVideoFacade } from "./connect11-plain-video-facade";
+import {
+  createConnect11PlainVideoFacade,
+  readConnect11PlainVideoTokenRefusal,
+} from "./connect11-plain-video-facade";
 
 const config = {
   baseUrl: "https://connect11.example",
@@ -34,6 +37,119 @@ function responses(...bodies: unknown[]) {
 }
 
 describe("Connect11 plain video facade", () => {
+  async function rejectedToken(response: Response) {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(capability)))
+      .mockResolvedValueOnce(response);
+    const error = await createConnect11PlainVideoFacade(config, request).admit(admission)
+      .catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Plain video service is unavailable");
+    expect((error as Error).cause).toBeUndefined();
+    expect(request).toHaveBeenCalledTimes(2);
+    return error;
+  }
+
+  it.each(["no_billable_wallet", "insufficient_balance", "trial_expired"] as const)(
+    "preserves only the exact token 402 category %s", async (category) => {
+      const error = await rejectedToken(new Response(JSON.stringify({
+        error: { code: "http_error", message: category, token: "private-token", url: "https://secret.example" },
+        tenantId: 987,
+      }), { status: 402 }));
+      expect(readConnect11PlainVideoTokenRefusal(error)).toEqual({ category, httpStatus: 402 });
+      expect(JSON.stringify(error)).not.toMatch(/private-token|secret.example|987/);
+    },
+  );
+
+  it("keeps unknown, non-JSON, secret-shaped and unrelated statuses generic", async () => {
+    for (const [status, body] of [
+      [402, "not JSON token=private"],
+      [402, ""],
+      [402, JSON.stringify({ error: { code: "http_error", message: "trial_expired token=private" } })],
+      [402, JSON.stringify({ error: { code: "trial_expired", message: "private" } })],
+      [402, JSON.stringify({ error: { code: "other", message: "trial_expired" } })],
+      [402, JSON.stringify({ __proto__: { error: { code: "http_error", message: "trial_expired" } } })],
+      [401, JSON.stringify({ error: { code: "http_error", message: "trial_expired" } })],
+      [500, JSON.stringify({ error: { code: "http_error", message: "trial_expired" } })],
+    ] as const) {
+      expect(readConnect11PlainVideoTokenRefusal(await rejectedToken(new Response(body, { status })))).toBeUndefined();
+    }
+  });
+
+  it("does not classify capability refusals or read their bodies as token errors", async () => {
+    const json = vi.fn();
+    const body = vi.fn();
+    const response = { ok: false, status: 402, json, get body() { body(); throw new Error("private"); } };
+    const request = vi.fn().mockResolvedValue(response);
+    const error = await createConnect11PlainVideoFacade(config, request).admit(admission).catch((error) => error);
+    expect(readConnect11PlainVideoTokenRefusal(error)).toBeUndefined();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(json).not.toHaveBeenCalled();
+    expect(body).not.toHaveBeenCalled();
+  });
+
+  it("bounds bytes and chunks, cancels oversized streams and releases locks", async () => {
+    for (const mode of ["bytes", "header", "chunks"] as const) {
+      const cancel = vi.fn().mockRejectedValue(new Error("secret cleanup"));
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) { controller.enqueue(new Uint8Array(mode === "bytes" ? 4_097 : 0)); },
+        cancel,
+      });
+      const response = new Response(body, { status: 402,
+        ...(mode === "header" ? { headers: { "content-length": "4097" } } : {}) });
+      expect(readConnect11PlainVideoTokenRefusal(await rejectedToken(response))).toBeUndefined();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(body.locked).toBe(false);
+    }
+    const oversized = `${JSON.stringify({ error: { code: "http_error", message: "trial_expired" } })}${" ".repeat(4_096)}`;
+    expect(readConnect11PlainVideoTokenRefusal(await rejectedToken(new Response(oversized, { status: 402 })))).toBeUndefined();
+  });
+
+  it("recognizes a bounded streamed envelope only after the complete body", async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ error: { code: "http_error", message: "trial_expired" } }));
+    const body = new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(bytes.subarray(0, 25));
+      controller.enqueue(bytes.subarray(25));
+      controller.close();
+    } });
+    expect(readConnect11PlainVideoTokenRefusal(await rejectedToken(new Response(body, { status: 402 }))))
+      .toEqual({ category: "trial_expired", httpStatus: 402 });
+    expect(body.locked).toBe(false);
+    const unparseable = new Uint8Array([...bytes, 0xff]);
+    expect(readConnect11PlainVideoTokenRefusal(await rejectedToken(new Response(unparseable, { status: 402 })))).toBeUndefined();
+  });
+
+  it("bounds stalled reads by the request signal without waiting for cancellation", async () => {
+    const controller = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+    const cancel = vi.fn(() => new Promise<void>(() => {}));
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    try {
+      const pending = rejectedToken(new Response(body, { status: 402 }));
+      await vi.waitFor(() => expect(body.locked).toBe(true));
+      controller.abort(new Error("secret abort reason"));
+      expect(readConnect11PlainVideoTokenRefusal(await pending)).toBeUndefined();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(body.locked).toBe(false);
+    } finally { timeout.mockRestore(); }
+  });
+
+  it("handles errored streams and hostile response getters without retained causes", async () => {
+    const errored = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("private stream")); } });
+    expect(readConnect11PlainVideoTokenRefusal(await rejectedToken(new Response(errored, { status: 402 })))).toBeUndefined();
+    expect(errored.locked).toBe(false);
+    for (const response of [
+      { ok: false, get status() { throw new Error("private status"); } },
+      { ok: false, status: 402, get body() { throw new Error("private body"); } },
+      { ok: false, status: 402, body: { get getReader() { throw new Error("private reader"); } } },
+    ]) {
+      expect(readConnect11PlainVideoTokenRefusal(await rejectedToken(response as unknown as Response))).toBeUndefined();
+    }
+    const getter = vi.fn(() => { throw new Error("private metadata"); });
+    expect(readConnect11PlainVideoTokenRefusal({ get category() { return getter(); } })).toBeUndefined();
+    expect(getter).not.toHaveBeenCalled();
+  });
+
   it("uses isolated credentials and sends the exact three-field token body", async () => {
     const request = responses(capability, token);
     await expect(

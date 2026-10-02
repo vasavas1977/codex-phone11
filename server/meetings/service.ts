@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { readConnect11PlainVideoTokenRefusal } from "./connect11-plain-video-facade";
 export const joinMeetingSchema = z
   .object({
     meetingId: z.string().uuid(),
@@ -207,7 +208,17 @@ export function createMeetingService(
         const result = safeJoinResult(await provider.join(grant));
         if (!result) throw new Error("Invalid meeting token response");
         return result;
-      } catch {
+      } catch (error) {
+        const diagnostic = readConnect11PlainVideoTokenRefusal(error);
+        if (diagnostic) {
+          try {
+            console.error(JSON.stringify({
+              event: "phone11.meeting.provider.token-refused",
+              category: diagnostic.category,
+              http_status: diagnostic.httpStatus,
+            }));
+          } catch { /* Logging must not alter the public refusal. */ }
+        }
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
           message: "Meeting provider is unavailable",

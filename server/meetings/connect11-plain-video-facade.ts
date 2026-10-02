@@ -82,6 +82,84 @@ function unavailable(): Error {
   return new Error("Plain video service is unavailable");
 }
 
+type TokenRefusalCategory = "no_billable_wallet" | "insufficient_balance" | "trial_expired";
+type TokenRefusalDiagnostic = Readonly<{ category: TokenRefusalCategory; httpStatus: 402 }>;
+const tokenRefusals = new WeakMap<object, TokenRefusalDiagnostic>();
+
+function refusalCategory(value: unknown): TokenRefusalCategory | undefined {
+  switch (value) {
+    case "no_billable_wallet": return "no_billable_wallet";
+    case "insufficient_balance": return "insufficient_balance";
+    case "trial_expired": return "trial_expired";
+    default: return undefined;
+  }
+}
+
+/** Internal provenance prevents arbitrary provider errors/getters reaching logs. */
+export class Connect11PlainVideoTokenRefusalError extends Error {
+  constructor(category: TokenRefusalCategory) {
+    super("Plain video service is unavailable");
+    const safeCategory = refusalCategory(category);
+    if (!safeCategory) throw unavailable();
+    tokenRefusals.set(this, Object.freeze({ category: safeCategory, httpStatus: 402 }));
+  }
+}
+
+export function readConnect11PlainVideoTokenRefusal(error: unknown): TokenRefusalDiagnostic | undefined {
+  return typeof error === "object" && error !== null ? tokenRefusals.get(error) : undefined;
+}
+
+/** Read only a small error envelope; never retain a response or its raw body. */
+async function tokenRefusal(response: Response, signal: AbortSignal): Promise<TokenRefusalCategory | undefined> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    if (response.status !== 402 || !response.body) return undefined;
+    reader = response.body.getReader();
+    const declaredLength = response.headers.get("content-length");
+    if (declaredLength !== null && (!/^\d{1,10}$/.test(declaredLength) || Number(declaredLength) > 4_096))
+      return undefined;
+    const bytes = new Uint8Array(4_096);
+    let length = 0;
+    for (let chunks = 0; chunks < 64; chunks++) {
+      if (signal.aborted) return undefined;
+      let abort: (() => void) | undefined;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(unavailable());
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await Promise.race([reader.read(), aborted]);
+      } finally {
+        if (abort) signal.removeEventListener("abort", abort);
+      }
+      if (chunk.done) {
+        const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)));
+        // JSON.parse supplies plain own data properties, never response getters.
+        if (!body || Array.isArray(body) || typeof body !== "object" ||
+            !Object.hasOwn(body, "error") || !body.error || Array.isArray(body.error) ||
+            typeof body.error !== "object" || !Object.hasOwn(body.error, "code") ||
+            !Object.hasOwn(body.error, "message") || body.error.code !== "http_error") return undefined;
+        return refusalCategory(body.error.message);
+      }
+      if (!(chunk.value instanceof Uint8Array) || chunk.value.byteLength > bytes.length - length)
+        return undefined;
+      bytes.set(chunk.value, length);
+      length += chunk.value.byteLength;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    // Cancellation can reject or remain pending: it must not delay denial.
+    try {
+      if (reader) void Promise.resolve(reader.cancel()).catch(() => {});
+      else if (response.body) void Promise.resolve(response.body.cancel()).catch(() => {});
+    } catch { /* Cleanup failures carry no diagnostic. */ }
+    try { reader?.releaseLock(); } catch { /* A hostile/errored stream stays generic. */ }
+  }
+}
+
 function safeBaseUrl(raw: string): URL {
   try {
     const url = new URL(raw);
@@ -134,19 +212,27 @@ export function createConnect11PlainVideoFacade(
     init: RequestInit = {},
   ) => {
     try {
+      const signal = AbortSignal.timeout(10_000);
       const response = await request(new URL(path, base), {
         ...init,
         redirect: "error",
-        signal: AbortSignal.timeout(10_000),
+        signal,
         headers: {
           accept: "application/json",
           authorization: `Bearer ${credential}`,
           ...init.headers,
         },
       });
-      if (!response.ok) throw unavailable();
+      if (!response.ok) {
+        if (path === "tokens" && init.method === "POST") {
+          const category = await tokenRefusal(response, signal);
+          if (category) throw new Connect11PlainVideoTokenRefusalError(category);
+        }
+        throw unavailable();
+      }
       return await response.json();
-    } catch {
+    } catch (error) {
+      if (readConnect11PlainVideoTokenRefusal(error)) throw error;
       throw unavailable();
     }
   };
