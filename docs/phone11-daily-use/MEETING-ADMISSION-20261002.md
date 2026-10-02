@@ -25,8 +25,8 @@ TypeScript passed. Changed-file ESLint reported zero errors and four existing
 prejoin-test warnings; whitespace checks passed. Independent GPT-6.1 Sol high
 review approved the frozen six-file source delta with no P0–P2 findings.
 
-The diagnostics source is newer than signed Build 114 and has not been
-installed or deployed. Both phones have verified Build 114 installations;
+The native diagnostics source is newer than signed Build 114 and has not been
+installed. The separate server-only follow-up below has its own release evidence. Both phones have verified Build 114 installations;
 profile navigation on 3001 passed. Meeting transport and physical two-phone
 audio/video acceptance remain blocked. Resolve the exact billing mapping or
 wallet/trial condition before another controlled Join; no top-up or billing
@@ -56,8 +56,29 @@ error. No hosted CI result is claimed.
 The image extends the immutable deployed image with one backend bundle layer.
 Both the base image and candidate actually run Node 22.23.2; the predecessor's
 22.22.3 environment metadata is stale. Runtime readback verified the actual
-version before pinning the candidate. The workerless candidate has started on
-loopback 3023, with live traffic still on 3016. A separate narrow route operator
-is under independent review because the newer mainline authenticated probes
-could initialize schema on the baseline. No new authenticated Join, billing
-change or physical media acceptance follows from these preparation checks.
+version before pinning the candidate. The workerless candidate was started on
+loopback 3023. On 2026-10-02 at 16:25 UTC, the reviewed narrow route operator
+activated only the two tRPC directives from 3016 to 3023. The original 3016
+process remains running for rollback; baseline worker health stays on its
+existing route. The operator uses fixed health and anonymous 401 probes,
+because newer mainline authenticated probes could initialize schema on the
+baseline. Public probes, exact runtime/image/bundle pins and the sealed active
+receipt passed; no authenticated Join or provider request was made by release.
+
+Independent review approved operator SHA256
+`fd12361207fcab8dcb3209b5b0cce18d19e61d0d732cca44eace4a4da5f9d553`
+after a P2 correction added a five-second total HTTP deadline. Root ran all
+22 new regression tests and 30 inherited release tests successfully, including
+post-switch deadline failure restoring the exact predecessor configuration.
+Active receipt directory:
+`/var/lib/phone11-admission-hotfix-release-route/20261002T162437Z-e131fc321a0653319cfa05642a9d22f5d48bb14149c4d212c1ab27b1c47dfca2`.
+Site SHA256 changed from
+`aa31a27c3d65a0167fb3f8d2aca08b059f86cbec824c0777e73b278169737485` to
+`1eebf1ec8738be9b585a68ad031e188bb3a8aede41d9d4f4fff085843accbe86`.
+
+One human-controlled 3001 Test-channel Join with camera and microphone off
+is pending to identify the actual refusal category. The diagnostic does not
+repair wallet/trial state. No billing change or physical media acceptance is
+established by these release checks. Hosted integration checks passed at
+`1b128a2c3dd484eec802aa98fee6d5834aacb5ba` (14 checks); those are distinct from
+the isolated hotfix's local tests and its PR, which has no hosted CI result.
