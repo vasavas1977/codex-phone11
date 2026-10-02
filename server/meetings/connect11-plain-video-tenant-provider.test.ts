@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { PlainVideoAdmissionLease } from "./plain-video-admission-lease-repository";
-import { createConnect11PlainVideoFacade } from "./connect11-plain-video-facade";
+import { createConnect11PlainVideoFacade, readConnect11PlainVideoTokenRefusal } from "./connect11-plain-video-facade";
 import { createPlainVideoAdmissionResolver } from "./plain-video-admission-resolver";
 import {
   createConnect11PlainVideoTenantProvider,
@@ -9,6 +9,7 @@ import {
   readConnect11PlainVideoTenantConfiguration,
 } from "./connect11-plain-video-tenant-provider";
 import type { Connect11PlainVideoTenantExternalConfig } from "./connect11-plain-video-tenant-provider";
+import { createMeetingService } from "./service";
 
 const firstGrant = {
   meetingId: "12345678-1234-4234-8234-123456789012",
@@ -90,6 +91,113 @@ const capabilities = {
 };
 
 describe("Connect11 plain-video tenant provider", () => {
+  it.each(["no_billable_wallet", "insufficient_balance", "trial_expired"] as const)(
+    "logs only %s and provider status while keeping the public error generic", async (category) => {
+      const request = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify(capabilities)))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ error: {
+          code: "http_error", message: category,
+          token: "private-token", api_key: "private-api-key", url: "https://private.example",
+        }, tenant_id: firstGrant.tenantId, meeting_id: firstGrant.meetingId }), { status: 402 }));
+      const { resolver, prepare, confirm } = resolverFor();
+      const provider = createConnect11PlainVideoTenantProvider(
+        readConnect11PlainVideoTenantConfiguration(configuration), resolver,
+        { create: (tenant) => createConnect11PlainVideoFacade({ baseUrl: tenant.apiBaseUrl,
+          statusCredential: tenant.statusCredential, joinCredential: tenant.joinCredential }, request) },
+      );
+      const logger = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const service = createMeetingService({ authorize: vi.fn().mockResolvedValue(firstGrant) }, provider);
+        const error = await service.join(firstGrant.userId, { meetingId: firstGrant.meetingId }).catch((error) => error);
+        expect(error).toMatchObject({ code: "PRECONDITION_FAILED", message: "Meeting provider is unavailable" });
+        expect(error.cause).toBeUndefined();
+        expect(readConnect11PlainVideoTokenRefusal(error)).toBeUndefined();
+        expect(JSON.stringify(error)).not.toMatch(/trial_expired|insufficient_balance|no_billable_wallet|private/);
+        expect(logger.mock.calls).toEqual([[JSON.stringify({
+          event: "phone11.meeting.provider.token-refused", category, http_status: 402,
+        })]]);
+        expect(prepare).toHaveBeenCalledWith(firstGrant);
+        expect(confirm).not.toHaveBeenCalled();
+        expect(request).toHaveBeenCalledTimes(2);
+      } finally { logger.mockRestore(); }
+    },
+  );
+
+  it("discards arbitrary client errors without reading or logging their diagnostic-shaped getters", async () => {
+    const getter = vi.fn(() => { throw new Error("private getter"); });
+    const rawError = { get category() { return getter(); }, get httpStatus() { return getter(); },
+      message: "private cause", cause: new Error("private cause") };
+    const { resolver, confirm } = resolverFor();
+    const provider = createConnect11PlainVideoTenantProvider(
+      readConnect11PlainVideoTenantConfiguration(configuration), resolver,
+      { create: () => ({ admit: vi.fn().mockRejectedValue(rawError) }) },
+    );
+    const logger = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const error = await provider.join(firstGrant).catch((error) => error);
+      expect(error).toBeInstanceOf(PlainVideoTenantProviderUnavailableError);
+      expect(error.cause).toBeUndefined();
+      const service = createMeetingService({ authorize: vi.fn().mockResolvedValue(firstGrant) }, provider);
+      await expect(service.join(firstGrant.userId, { meetingId: firstGrant.meetingId }))
+        .rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: "Meeting provider is unavailable", cause: undefined });
+      expect(logger).not.toHaveBeenCalled();
+      expect(getter).not.toHaveBeenCalled();
+      expect(confirm).not.toHaveBeenCalled();
+    } finally { logger.mockRestore(); }
+  });
+
+  it("keeps unknown transport refusals quiet and returns normal joins only after confirmation", async () => {
+    const logger = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const succeeds of [false, true]) {
+        const request = vi.fn()
+          .mockResolvedValueOnce(new Response(JSON.stringify(capabilities)))
+          .mockResolvedValueOnce(succeeds
+            ? new Response(JSON.stringify({ contract_version: "phone11-plain-video.v1",
+              rtc_url: "wss://media-41.connect11.example/join", access_token: "synthetic-token",
+              expires_at: Math.floor(Date.now() / 1_000) + 300 }))
+            : new Response(JSON.stringify({ error: { code: "http_error", message: "unknown private-token" } }), { status: 402 }));
+        const { resolver, confirm } = resolverFor();
+        const provider = createConnect11PlainVideoTenantProvider(
+          readConnect11PlainVideoTenantConfiguration(configuration), resolver,
+          { create: (tenant) => createConnect11PlainVideoFacade({ baseUrl: tenant.apiBaseUrl,
+            statusCredential: tenant.statusCredential, joinCredential: tenant.joinCredential }, request) },
+        );
+        const service = createMeetingService({ authorize: vi.fn().mockResolvedValue(firstGrant) }, provider);
+        const pending = service.join(firstGrant.userId, { meetingId: firstGrant.meetingId, tenantId: firstGrant.tenantId });
+        if (succeeds) {
+          await expect(pending).resolves.toMatchObject({ token: "synthetic-token", grant_profile: "interactive" });
+          expect(confirm).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(pending).rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: "Meeting provider is unavailable" });
+          expect(confirm).not.toHaveBeenCalled();
+        }
+        expect(request).toHaveBeenCalledTimes(2);
+        expect(logger).not.toHaveBeenCalled();
+      }
+    } finally { logger.mockRestore(); }
+  });
+
+  it("keeps a recognized refusal generic if structured logging throws", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(capabilities)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: {
+        code: "http_error", message: "trial_expired",
+      } }), { status: 402 }));
+    const { resolver } = resolverFor();
+    const provider = createConnect11PlainVideoTenantProvider(
+      readConnect11PlainVideoTenantConfiguration(configuration), resolver,
+      { create: (tenant) => createConnect11PlainVideoFacade({ baseUrl: tenant.apiBaseUrl,
+        statusCredential: tenant.statusCredential, joinCredential: tenant.joinCredential }, request) },
+    );
+    const logger = vi.spyOn(console, "error").mockImplementation(() => { throw new Error("private logging error"); });
+    try {
+      const service = createMeetingService({ authorize: vi.fn().mockResolvedValue(firstGrant) }, provider);
+      await expect(service.join(firstGrant.userId, { meetingId: firstGrant.meetingId }))
+        .rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: "Meeting provider is unavailable", cause: undefined });
+    } finally { logger.mockRestore(); }
+  });
+
   it("defaults disabled without preparing admission or constructing a client", async () => {
     for (const raw of [undefined, { enabled: false }]) {
       const prepare = vi.fn();
