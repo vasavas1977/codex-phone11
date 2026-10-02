@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { connect11PlainVideoTokenSchema } from "./connect11-plain-video-facade";
+import {
+  Connect11PlainVideoTokenRefusalError,
+  connect11PlainVideoTokenSchema,
+  readConnect11PlainVideoTokenRefusal,
+} from "./connect11-plain-video-facade";
 import { normalizePlainVideoDisplayName } from "./plain-video-display-name";
 import type {
   Connect11PlainVideoAdmissionClient,
@@ -196,9 +200,15 @@ export function createConnect11PlainVideoTenantProvider(
       if (!admission || (tenant.displayNameEnabled !== true && admission.displayName !== undefined))
         throw new PlainVideoTenantProviderUnavailableError();
 
-      const token = connect11PlainVideoTokenSchema.safeParse(
-        await clientFactory.create(tenant).admit(admission),
-      );
+      let rawToken: unknown;
+      try {
+        rawToken = await clientFactory.create(tenant).admit(admission);
+      } catch (error) {
+        const diagnostic = readConnect11PlainVideoTokenRefusal(error);
+        if (diagnostic) throw new Connect11PlainVideoTokenRefusalError(diagnostic.category);
+        throw new PlainVideoTenantProviderUnavailableError();
+      }
+      const token = connect11PlainVideoTokenSchema.safeParse(rawToken);
       if (
         !token.success ||
         !matchingRtcOrigin(token.data.rtc_url, tenant.rtcUrl) ||
