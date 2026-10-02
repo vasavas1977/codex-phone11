@@ -15,7 +15,29 @@ import {
   safeMeetingTitle,
   type AdmittedMeeting,
 } from "@/lib/meetings/admitted-selection";
-import { meetingJoinFailureReference } from "@/lib/meetings/join-failure";
+import { MeetingJoinFailure, meetingJoinFailureReference } from "@/lib/meetings/join-failure";
+
+/** Fixed copy from typed milestones only; never inspect a raw error or cause. */
+function joinFailureMessage(error: unknown): string {
+  if (error instanceof MeetingJoinFailure) {
+    switch (error.stage) {
+      case "admission":
+        if (error.reason === "unavailable")
+          return "This meeting is currently unavailable. Try again later or contact your administrator.";
+        break;
+      case "signal_connect":
+        return "Could not join. Check your connection and try again.";
+      case "native_setup":
+      case "bindings":
+      case "audio_start":
+      case "room_cleanup":
+      case "room_create":
+      case "event_bind":
+        return "Could not prepare this meeting on your device. Try again.";
+    }
+  }
+  return "Could not join this meeting. Try again.";
+}
 
 export interface MeetingJoinPreferences {
   meetingCode: string;
@@ -87,11 +109,7 @@ export function MeetingPrejoin({
       });
     } catch (cause) {
       setFailureReference(meetingJoinFailureReference(cause) ?? null);
-      setError(
-        admittedMeetings === undefined
-          ? "Could not open this meeting. Check the meeting code and your connection, then try again."
-          : "Could not join. Check your connection and try again.",
-      );
+      setError(joinFailureMessage(cause));
     } finally {
       joinInFlight.current = false;
       setJoining(false);

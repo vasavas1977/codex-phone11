@@ -76,9 +76,31 @@ Site SHA256 changed from
 `aa31a27c3d65a0167fb3f8d2aca08b059f86cbec824c0777e73b278169737485` to
 `1eebf1ec8738be9b585a68ad031e188bb3a8aede41d9d4f4fff085843accbe86`.
 
-One human-controlled 3001 Test-channel Join with camera and microphone off
-is pending to identify the actual refusal category. The diagnostic does not
-repair wallet/trial state. No billing change or physical media acceptance is
-established by these release checks. Hosted integration checks passed at
+The subsequent human retry failed with Reference: admission. Bounded redacted
+capture identified `trial_expired`, HTTP 402, with three recorded refusals from
+2026-10-02T16:37:13.016348966Z through 16:37:38.045494457Z. This establishes the
+provider gate category, not whether the durable account is genuinely unconverted
+or the serving process has stale trial/top-up state. Exact owner-scoped durable
+state and serving-process correlation are under read-only investigation with
+Connect11. The diagnostic does not repair wallet/trial state. No billing change
+or physical media acceptance is established by these release checks. The capture
+itself performed no provider requests. Hosted integration checks passed at
 `1b128a2c3dd484eec802aa98fee6d5834aacb5ba` (14 checks); those are distinct from
 the isolated hotfix's local tests and its PR, which has no hosted CI result.
+
+## Prejoin error wording correction
+
+The signed Build 114 error headline advises checking the connection even when
+its typed failure stage is admission. The reviewed two-file source correction
+selects fixed wording only from the existing `MeetingJoinFailure` stage/reason.
+Recognized admission/unavailable uses availability and administrator guidance;
+unknown admission remains neutral; local setup uses device preparation wording;
+only signal connection retains connection advice. Raw messages, provider bodies
+and billing reasons never select user-facing copy. Redacted references, join
+preferences, duplicate-join guards and media/session lifecycle remain unchanged.
+
+Root reran all 74 focused prejoin/classifier/conference-auth-race tests, passing.
+Builder TypeScript and changed-file lint passed (four existing test warnings).
+Independent GPT-6.1 Sol high review: APPROVE_SOURCE_ONLY, no P0–P2 findings.
+This is a source correction, not an installed update or billing repair. Build114
+still has its previous headline; successful meeting connection is unverified.

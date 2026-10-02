@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 import { beforeEach, expect, it, vi } from "vitest";
+import { meetingAdmissionFailure } from "../lib/meetings/admission-failure";
 
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
@@ -82,7 +83,7 @@ vi.mock("../hooks/use-colors", () => ({
   }),
 }));
 
-import { MeetingPrejoin } from "../components/meetings/meeting-prejoin";
+import { MeetingPrejoin, type MeetingPrejoinProps } from "../components/meetings/meeting-prejoin";
 import {
   MeetingJoinFailure,
   meetingJoinFailureReference,
@@ -99,7 +100,7 @@ beforeEach(() => {
   mocks.switches = {};
 });
 
-function render(onJoin: () => Promise<void>) {
+function render(onJoin: () => Promise<void>, props: Partial<MeetingPrejoinProps> = {}) {
   mocks.stateIndex = 0;
   mocks.refIndex = 0;
   mocks.joinButton = undefined;
@@ -111,6 +112,7 @@ function render(onJoin: () => Promise<void>) {
       admittedMeetings: [{ meetingId: "12345678-1234-4234-8234-123456789012" }],
       onJoin,
       onBack: () => undefined,
+      ...props,
     }),
   );
 }
@@ -334,6 +336,81 @@ it.each(["unauthorized", "forbidden", "not_found", "unavailable", "timeout"] as 
     render(onJoin); await mocks.joinButton?.onPress();
     const html = render(onJoin);
     expect(html).toContain(`Reference: admission / ${reason}`);
-    expect(html).toContain("Could not join. Check your connection and try again.");
+    expect(html).toContain(reason === "unavailable"
+      ? "This meeting is currently unavailable. Try again later or contact your administrator."
+      : "Could not join this meeting. Try again.");
+    expect(html).not.toContain("Check your connection");
   },
 );
+
+it.each([false, true])("shows service availability copy for a public 412 with manual entry %s", async manual => {
+  const failure = meetingAdmissionFailure({
+    data: { code: "PRECONDITION_FAILED", httpStatus: 412 },
+    message: "trial_expired token=private-token billing=no_billable_wallet",
+    meta: { responseJSON: { email: "private@example.test", provider_status: 402 } },
+  });
+  const onJoin = vi.fn().mockRejectedValue(failure);
+  const props = manual ? { admittedMeetings: undefined,
+    initialMeetingCode: "12345678-1234-4234-8234-123456789012" } : {};
+  render(onJoin, props);
+  await mocks.joinButton?.onPress();
+  const html = render(onJoin, props);
+  expect(html).toContain("This meeting is currently unavailable. Try again later or contact your administrator.");
+  expect(html).toContain("Reference: admission / unavailable / 412");
+  expect(html).not.toMatch(/Check your connection|trial_expired|no_billable_wallet|billing=|private-token|private@example|provider_status|402/);
+  expect(onJoin).toHaveBeenCalledTimes(1);
+  expect(onJoin).toHaveBeenCalledWith({ meetingCode: "12345678-1234-4234-8234-123456789012",
+    microphoneEnabled: false, cameraEnabled: false });
+});
+
+it.each([
+  new MeetingJoinFailure("admission"),
+  new Error("trial_expired private-token connection problem"),
+  { stage: "admission", reason: "unavailable", message: "private-token" },
+])("keeps unknown or untyped failures neutral without inferring a provider gate", async error => {
+  const onJoin = vi.fn().mockRejectedValue(error);
+  render(onJoin);
+  await mocks.joinButton?.onPress();
+  const html = render(onJoin);
+  expect(html).toContain("Could not join this meeting. Try again.");
+  expect(html).not.toMatch(/Check your connection|currently unavailable|private-token|trial_expired/);
+});
+
+it.each(["native_setup", "bindings", "audio_start", "room_cleanup", "room_create", "event_bind"] as const)(
+  "uses device preparation copy for typed %s without permission or billing inference", async stage => {
+    const onJoin = vi.fn().mockRejectedValue(new MeetingJoinFailure(stage, {},
+      new Error("permission denied trial_expired token=private-token wss://private.invalid")));
+    render(onJoin);
+    await mocks.joinButton?.onPress();
+    const html = render(onJoin);
+    expect(html).toContain("Could not prepare this meeting on your device. Try again.");
+    expect(html).toContain(`Reference: ${stage}`);
+    expect(html).not.toMatch(/Check your connection|permission denied|trial_expired|private-token|wss:\/\//);
+  },
+);
+
+it("clears availability copy and reference on a successful retry while preventing duplicate joins", async () => {
+  let finish: (() => void) | undefined;
+  const onJoin = vi.fn()
+    .mockRejectedValueOnce(new MeetingJoinFailure("admission", { reason: "unavailable", httpStatus: 412 }))
+    .mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  render(onJoin);
+  await mocks.joinButton?.onPress();
+  let html = render(onJoin);
+  expect(html).toContain("This meeting is currently unavailable.");
+  expect(html).toContain("Reference: admission / unavailable / 412");
+  expect(mocks.joinButton?.disabled).toBe(false);
+  const retry = mocks.joinButton!.onPress();
+  await mocks.joinButton!.onPress();
+  expect(onJoin).toHaveBeenCalledTimes(2);
+  html = render(onJoin);
+  expect(html).not.toContain("currently unavailable");
+  expect(html).not.toContain("Reference:");
+  expect(mocks.joinButton?.disabled).toBe(true);
+  finish!();
+  await retry;
+  html = render(onJoin);
+  expect(html).not.toContain("Could not join");
+  expect(html).not.toContain("Reference:");
+  expect(mocks.joinButton?.disabled).toBe(false);
+});
