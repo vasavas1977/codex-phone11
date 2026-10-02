@@ -1,6 +1,7 @@
 /** Safe, non-diagnostic join milestones that can be shown to an operator. */
 export const meetingJoinStages = [
   "admission",
+  "native_setup",
   "bindings",
   "audio_start",
   "room_cleanup",
@@ -14,8 +15,12 @@ export const meetingJoinStages = [
 
 export type MeetingJoinStage = (typeof meetingJoinStages)[number];
 
-/** Coarse SDK categories only. Raw errors can contain URLs and credentials. */
+/** Coarse admission/SDK categories only. Raw errors can contain credentials. */
 export const meetingJoinReasons = [
+  "unauthorized",
+  "forbidden",
+  "not_found",
+  "unavailable",
   "not_allowed",
   "server_unreachable",
   "internal",

@@ -9,6 +9,7 @@ import { useColors } from "@/hooks/use-colors";
 import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
 import { admittedMeetingsWithTenantTitles, safeMeetingTitle } from "@/lib/meetings/admitted-selection";
 import { useChatStore } from "@/lib/chat/store";
+import { meetingAdmissionFailure } from "@/lib/meetings/admission-failure";
 import {
   MeetingJoinFailure,
   meetingJoinFailureStage,
@@ -40,7 +41,8 @@ function EnabledMeetingPrejoin({
             throw new MeetingJoinFailure("admission");
           if (Platform.OS === "web") {
             stage = "admission";
-            const admission = await join.mutateAsync({ meetingId: preferences.meetingCode });
+            const admission = await join.mutateAsync({ meetingId: preferences.meetingCode })
+              .catch(error => { throw meetingAdmissionFailure(error); });
             if (getAuthSnapshot().user?.id !== joiningOwnerId)
               throw new MeetingJoinFailure("admission");
             stage = "bindings";
@@ -74,9 +76,10 @@ function EnabledMeetingPrejoin({
           stage = "admission";
           const admission = await join.mutateAsync({
             meetingId: preferences.meetingCode,
-          });
+          }).catch(error => { throw meetingAdmissionFailure(error); });
           if (getAuthSnapshot().user?.id !== joiningOwnerId)
             throw new MeetingJoinFailure("admission");
+          stage = "native_setup";
           await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
             microphone: preferences.microphoneEnabled,
             camera: preferences.cameraEnabled,

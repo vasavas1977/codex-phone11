@@ -24,8 +24,8 @@ P0–P2 findings.
 
 This source is in signed daily-pilot Build 114 at `d69eede`, and is not in
 Build 113. Build 114's original package passed all 22 signed-package checks
-and deep strict code signing. Physical profile navigation/photo acceptance
-remains required. Preserve Build 113 and the retained rollback packages.
+and deep strict code signing. Physical photo-write acceptance remains required.
+Preserve Build 113 and the retained rollback packages.
 No backend rollout, customer message, meeting invitation or media acceptance
 is established by this source follow-up.
 
@@ -49,9 +49,25 @@ version `1.0.0`, bundle version `114`. This establishes installation of the
 verified Build 114 package from `d69eede`. Official normal launch then exited
 zero; signed-in profile/photo behavior and media acceptance remain unverified. The private evidence is
 `/var/folders/g2/3tqvv3ds1jbbyz4d9zlmk_y40000gn/T/phone11-install114-13-tztw5xwh/apps-readback.json`.
-Before the update attempt, fresh iPhone 17 app readback confirmed the same
-bundle, version `1.0.0`, bundle version `113`. After the user confirmed it was
-idle, the wireless installation failed with a CoreDevice tunnel timeout.
-Build 114 installation there is not confirmed; USB reconnection is requested.
-Historical Build 113 acceptance remains separate from pending Build 114
-installation and media acceptance.
+The iPhone 17's initial wireless installation failed with a CoreDevice tunnel
+timeout. After the owner connected it by USB, installation and normal launch
+both exited zero. Fresh app readback confirms the same bundle, version `1.0.0`,
+bundle version `114`. The failure evidence and rollback packages remain retained.
+
+On the updated iPhone 17, signed in as extension 3001, tapping the own-message
+avatar in Test opened canonical My profile with the saved photo, Phone11
+workspace and extension 3001. The photo editor exposed Take photo, Choose photo
+and Remove photo without a settings error. Back returned to Test and preserved
+the unsent Hi draft. No photo was changed or removed in this check. The iPhone
+13's signed-in UI and physical media behavior remain unverified.
+
+The Test meeting picker selected extension 1020 by default and starting the
+meeting reached one Test prejoin. One Join attempt with microphone and camera
+off failed with `Reference: admission`. Phone11 Nginx recorded HTTP 412 at
+14:42:58 UTC; Connect11 independently recorded capabilities HTTP 200 followed
+by token issuance HTTP 402 at the same second. This places the observed refusal
+at provider wallet/trial admission before RTC connection. The exact wallet
+condition remains under investigation; no billing change or second mint was
+performed. Installation and profile UI proof do not establish meeting media
+acceptance. Camera and microphone tests require physical phones because iPhone
+Mirroring does not provide those inputs.

@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { beforeEach, expect, it, vi } from "vitest";
 import ConferenceScreen from "../app/conference/index";
 import type { MeetingJoinPreferences } from "../components/meetings/meeting-prejoin";
+import { MeetingJoinFailure, meetingJoinFailureReference } from "../lib/meetings/join-failure";
 
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as {
   renderToStaticMarkup(node: ReactNode): string;
@@ -167,4 +168,55 @@ it("keeps an exact conversation invitation focused on joining its named room", (
   renderToStaticMarkup(createElement(ConferenceScreen));
   expect(state.createButton).toBeNull();
   expect(state.onJoin).toBeTypeOf("function");
+});
+
+it.each(["web", "ios"] as const)("classifies rejected %s admission without loading a room", async platform => {
+  state.platform = platform;
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  state.admit.mockRejectedValueOnce({ data: { code: "FORBIDDEN", httpStatus: 403 }, message: "private-token" });
+  const failure = await state.onJoin!(preferences).catch(error => error);
+  expect(meetingJoinFailureReference(failure)).toBe("admission / forbidden / 403");
+  expect(failure).not.toHaveProperty("cause");
+  expect(state.nativeJoin).not.toHaveBeenCalled(); expect(state.webJoin).not.toHaveBeenCalled();
+  expect(state.push).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["UNAUTHORIZED", 401, "unauthorized"], ["NOT_FOUND", 404, "not_found"],
+  ["PRECONDITION_FAILED", 412, "unavailable"], ["TIMEOUT", 408, "timeout"],
+])("preserves safe %s admission labels on native join", async (code, httpStatus, reason) => {
+  state.platform = "ios"; renderToStaticMarkup(createElement(ConferenceScreen));
+  state.admit.mockRejectedValueOnce({ data: { code, httpStatus } });
+  const failure = await state.onJoin!(preferences).catch(error => error);
+  expect(meetingJoinFailureReference(failure)).toBe(`admission / ${reason} / ${httpStatus}`);
+  expect(state.nativeJoin).not.toHaveBeenCalled(); expect(state.push).not.toHaveBeenCalled();
+});
+
+it("labels an unclassified native preamble error after successful admission as native setup", async () => {
+  state.platform = "ios"; renderToStaticMarkup(createElement(ConferenceScreen));
+  state.admit.mockResolvedValueOnce({ url: "wss://private.invalid", token: "private-token" });
+  state.nativeJoin.mockRejectedValueOnce(new Error("private SIP/lease details"));
+  const failure = await state.onJoin!(preferences).catch(error => error);
+  expect(meetingJoinFailureReference(failure)).toBe("native_setup");
+  expect(JSON.stringify(failure)).not.toContain("private"); expect(failure).not.toHaveProperty("cause");
+  expect(state.push).not.toHaveBeenCalled();
+});
+
+it("keeps malformed successful admission failures out of the request stage", async () => {
+  state.platform = "ios"; renderToStaticMarkup(createElement(ConferenceScreen));
+  state.admit.mockResolvedValueOnce(null);
+  state.nativeJoin.mockRejectedValueOnce(new TypeError("Cannot read grant_profile of null"));
+  const failure = await state.onJoin!(preferences).catch(error => error);
+  expect(meetingJoinFailureReference(failure)).toBe("native_setup");
+  expect(state.nativeJoin).toHaveBeenCalledWith("admitted-id", null, { microphone: false, camera: false });
+  expect(state.push).not.toHaveBeenCalled();
+});
+
+it("preserves a classified native SDK stage after admission", async () => {
+  state.platform = "ios"; renderToStaticMarkup(createElement(ConferenceScreen));
+  state.admit.mockResolvedValueOnce({ url: "wss://private.invalid", token: "private-token" });
+  state.nativeJoin.mockRejectedValueOnce(new MeetingJoinFailure("signal_connect", { reason: "not_allowed", httpStatus: 401 }));
+  const failure = await state.onJoin!(preferences).catch(error => error);
+  expect(meetingJoinFailureReference(failure)).toBe("signal_connect / not_allowed / 401");
+  expect(state.push).not.toHaveBeenCalled();
 });

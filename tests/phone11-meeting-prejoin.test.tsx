@@ -327,3 +327,13 @@ it("drops non-allowlisted reason text and invalid numeric codes at construction"
 
   expect(meetingJoinFailureReference(failure)).toBe("signal_connect");
 });
+
+it.each(["unauthorized", "forbidden", "not_found", "unavailable", "timeout"] as const)(
+  "renders only the allowlisted admission %s reference", async reason => {
+    const onJoin = vi.fn().mockRejectedValue(new MeetingJoinFailure("admission", { reason }));
+    render(onJoin); await mocks.joinButton?.onPress();
+    const html = render(onJoin);
+    expect(html).toContain(`Reference: admission / ${reason}`);
+    expect(html).toContain("Could not join. Check your connection and try again.");
+  },
+);
