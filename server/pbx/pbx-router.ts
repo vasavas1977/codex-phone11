@@ -2232,16 +2232,19 @@ export const pbxRouter = router({
 
     /** Delete voicemail */
     delete: protectedProcedure
-      .input(z.object({ id: z.number().int().positive() }))
+      .input(z.object({
+        id: z.number().int().positive(),
+        tenantId: z.number().int().positive().optional(),
+      }))
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantCtx(ctx);
+        const tc = await getTenantCtx(ctx, input.tenantId);
         try {
           await requireVoicemailStorage();
-          await deleteVoicemail(tc.tenantId, ctx.user.id, input.id);
+          const deleted = await deleteVoicemail(tc.tenantId, ctx.user.id, input.id);
+          return { success: deleted };
         } catch (error) {
           voicemailUnavailable(error);
         }
-        return { success: true };
       }),
 
     /** Get voicemail count (new/total) */

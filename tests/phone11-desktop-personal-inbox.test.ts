@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const db = vi.hoisted(() => ({ query: vi.fn(), markRead: vi.fn(), storage: vi.fn(), voicemails: vi.fn() }));
+const db = vi.hoisted(() => ({ query: vi.fn(), markRead: vi.fn(), remove: vi.fn(), storage: vi.fn(), voicemails: vi.fn() }));
 
 vi.mock("../server/pbx/db", () => ({ query: db.query, withTransaction: vi.fn() }));
 vi.mock("../server/pbx/redis", () => ({
@@ -13,14 +13,16 @@ vi.mock("../server/pbx/sip-secrets", () => ({
 }));
 vi.mock("../server/pbx/cdr-processor", () => ({
   getCallStats: vi.fn(), getVoicemails: db.voicemails, requireVoicemailStorage: db.storage,
+  VoicemailStorageUnavailableError: class extends Error {},
 }));
 vi.mock("../server/pbx/voicemail-access", () => ({
-  countVoicemails: vi.fn(), deleteVoicemail: vi.fn(),
+  countVoicemails: vi.fn(), deleteVoicemail: db.remove,
   markVoicemailRead: db.markRead, voicemailStorageStatus: vi.fn(),
 }));
 vi.mock("../server/profile/photo", () => ({ profilePhotoDescriptors: vi.fn() }));
 
 import { pbxRouter } from "../server/pbx/pbx-router";
+import { VoicemailStorageUnavailableError } from "../server/pbx/cdr-processor";
 
 const ctx = () => ({ user: { id: 9, role: "user" }, req: { ip: "127.0.0.1", headers: {} }, res: {} }) as any;
 const membership = (tenantId: number) => ({
@@ -32,10 +34,12 @@ const summary = { total_calls: "1", answered_calls: "1", missed_calls: "0", tota
 beforeEach(() => {
   db.query.mockReset();
   db.markRead.mockReset();
+  db.remove.mockReset();
   db.storage.mockReset();
   db.voicemails.mockReset();
   db.storage.mockResolvedValue(undefined);
   db.markRead.mockResolvedValue(true);
+  db.remove.mockResolvedValue(true);
 });
 
 describe("pbx.selfService.usage tenant selection", () => {
@@ -179,5 +183,47 @@ describe("pbx.voicemail.list authoritative workspace", () => {
     await expect(pbxRouter.createCaller(ctx()).voicemail.list({ tenantId: 8 }))
       .rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(db.voicemails).not.toHaveBeenCalled();
+  });
+});
+
+describe("pbx.voicemail.delete tenant selection and acknowledgment", () => {
+  it("uses the selected workspace while preserving omitted-tenant clients", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership(7), membership(8)] });
+    await expect(pbxRouter.createCaller(ctx()).voicemail.delete({ id: 41, tenantId: 8 }))
+      .resolves.toEqual({ success: true });
+    expect(db.remove).toHaveBeenCalledWith(8, 9, 41);
+    db.query.mockResolvedValueOnce({ rows: [membership(7), membership(8)] });
+    await expect(pbxRouter.createCaller(ctx()).voicemail.delete({ id: 42 }))
+      .resolves.toEqual({ success: true });
+    expect(db.remove).toHaveBeenLastCalledWith(7, 9, 42);
+  });
+
+  it("returns false without disclosing why no owned row changed", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership(7)] });
+    db.remove.mockResolvedValueOnce(false);
+    await expect(pbxRouter.createCaller(ctx()).voicemail.delete({ id: 41 }))
+      .resolves.toEqual({ success: false });
+  });
+
+  it("denies a nonmember before accessing storage or deleting", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership(7)] });
+    await expect(pbxRouter.createCaller(ctx()).voicemail.delete({ id: 41, tenantId: 8 }))
+      .rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.storage).not.toHaveBeenCalled();
+    expect(db.remove).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid tenant selection before database access", async () => {
+    await expect(pbxRouter.createCaller(ctx()).voicemail.delete({ id: 41, tenantId: 0 }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(db.query).not.toHaveBeenCalled();
+    expect(db.remove).not.toHaveBeenCalled();
+  });
+
+  it("does not acknowledge a failed storage operation", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership(7)] });
+    db.remove.mockRejectedValueOnce(new VoicemailStorageUnavailableError("storage unavailable"));
+    await expect(pbxRouter.createCaller(ctx()).voicemail.delete({ id: 41 }))
+      .rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
   });
 });
