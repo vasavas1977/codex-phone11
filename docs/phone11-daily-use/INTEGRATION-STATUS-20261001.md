@@ -49,9 +49,26 @@ existing warnings. Independent server/profile reviews cover source only. The
 voicemail account-switch follow-up at `b8f9e54` binds actions, feedback and
 expanded playback selection to the initiating authenticated owner; a stale
 delete confirmation cannot submit under a replacement account. All 35 focused
-mobile/caller tests passed after integration. Its final type check and review
-must close before the next signed candidate. Later checks and release receipts
-must name their own source rather than inherit earlier results.
+mobile/caller tests passed after integration. Final full TypeScript passed and
+the independent review closed the stale-account feedback finding with
+`APPROVE_SOURCE_ONLY`; the reviewed file hashes match the integration.
+Later checks and release receipts must name their own source rather than
+inherit earlier results.
+
+Signed daily-pilot workflow [37142011158](https://github.com/vasavas1977/codex-phone11/actions/runs/37142011158)
+was dispatched for exact source `1dfda34846d5b002866a6554a2ba74a9012430f7`
+with profile `preview-ios-siprix-daily-pilot`. Dispatch is not a completed build,
+package verification or installation. The owner explicitly deferred physical
+two-phone testing while source and release work continues; retain Build 114
+on the phones until a separately verified update is installed.
+
+The desktop-only follow-up at `64eb19c` clears autoplay guidance only after the
+current authorized voicemail source emits actual playback. Old-source events
+cannot clear another account's guidance or mark its voicemail read; synchronous
+teardown during feedback also prevents queued read work. Its isolated worker
+reproduced three baseline failures, then passed all 10 focused player tests and
+desktop TypeScript. This follow-up is outside the iOS candidate source above;
+desktop voicemail remains gated off pending storage commissioning.
 
 The retained daily-pilot Build 111 comes from source `11cd1f199cd4cd79d133637ad59271a21014d9e8`. Earlier Mirroring verified navigation, default member selection, deselection/cancel, own-avatar profile and persisted Away/Automatic settings. Builds 110/109 remain available; the historical Build 112/113 signed-package evidence remains recorded above.
 
