@@ -122,6 +122,18 @@ export default function ProfileScreen() {
     }
     if (isCurrent()) await workspaceProfile.refetchPhotoSettings();
   };
+  const workspaceLoading = !!owner && chatOwnerId === owner.id && !workspace && chat.loading;
+  const workspaceLoadError = !!owner && chatOwnerId === owner.id && !workspace && !!chat.error;
+  const retryWorkspaceProfile = async () => {
+    const currentAuth = getAuthSnapshot();
+    const state = useChatStore.getState();
+    if (scope.current !== action || !owner || currentAuth.user !== owner || currentAuth.loading || state.userId !== owner.id) return;
+    if (!state.workspace) {
+      await state.loadChannels();
+      return;
+    }
+    if (isCurrent()) await workspaceProfile.refetchProfile();
+  };
 
   return (
     <ScreenContainer edges={["top", "left", "right", "bottom"]}>
@@ -135,10 +147,10 @@ export default function ProfileScreen() {
         onOpenSettings={() => router.push("/(tabs)/settings")}
         workspaceProfile={workspaceProfile.profile}
         profileAvailable={workspaceProfile.profileAvailable}
-        profileLoading={workspaceProfile.loading}
-        profileLoadError={workspaceProfile.loadError}
+        profileLoading={workspaceLoading || workspaceProfile.loading}
+        profileLoadError={(!workspaceLoading && workspaceLoadError) || workspaceProfile.loadError}
         profileUnavailable={workspaceProfile.profileUnavailable}
-        onRetryWorkspaceProfile={workspaceProfile.refetchProfile}
+        onRetryWorkspaceProfile={retryWorkspaceProfile}
         profileSaving={workspaceProfile.saving}
         profileError={workspaceProfile.error ? "Could not save profile settings. Try again." : null}
         onUpdateWorkspaceProfile={workspaceProfile.save}

@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createElement, type ReactElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 
@@ -112,6 +112,86 @@ beforeEach(() => {
   m.photoQuery = { data: { available: false }, isLoading: false, error: null, refetch: vi.fn().mockResolvedValue({ data: { available: false } }) };
   m.query = { data: { userId: 1 }, isSuccess: true, isLoading: false, error: null, refetch: vi.fn().mockResolvedValue({ data: { userId: 1 } }) };
   m.mutation = { mutateAsync: vi.fn().mockResolvedValue({ userId: 1 }) };
+});
+
+afterEach(() => {
+  m.frame.effects.forEach((effect) => effect.cleanup?.());
+  vi.useRealTimers();
+});
+
+it("retires cached DND and status at their deadlines without waiting for another server poll", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-04T02:00:00Z"));
+  m.query = { ...m.query, data: { userId: 1, dndAvailable: true,
+    manualAvailability: "dnd", manualAvailabilityExpiresAt: new Date(Date.now() + 20_000),
+    statusText: "In a review", statusExpiresAt: new Date(Date.now() + 40_000), workLocation: "remote" } };
+  const current = useRenderedWorkspaceProfile();
+  expect(current.profile).toMatchObject({ manualAvailability: "dnd", statusText: "In a review" });
+  expect(vi.getTimerCount()).toBe(1);
+  vi.advanceTimersByTime(20_000);
+  expect(useRenderedWorkspaceProfile().profile).toMatchObject({ manualAvailability: null,
+    manualAvailabilityExpiresAt: null, statusText: "In a review", dndAvailable: true, workLocation: "remote" });
+  expect(vi.getTimerCount()).toBe(1);
+  vi.advanceTimersByTime(20_000);
+  expect(useRenderedWorkspaceProfile().profile).toMatchObject({ statusText: null, statusExpiresAt: null });
+  expect(vi.getTimerCount()).toBe(0);
+  expect(m.query.data).toMatchObject({ manualAvailability: "dnd", statusText: "In a review" });
+  expect(m.query.refetch).not.toHaveBeenCalled();
+  expect(m.mutation.mutateAsync).not.toHaveBeenCalled();
+});
+
+it("clears already expired cached preferences while retaining indefinite settings and photo data", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-04T02:00:00Z"));
+  m.query = { ...m.query, data: { userId: 1, manualAvailability: "dnd",
+    manualAvailabilityExpiresAt: new Date(Date.now()), statusText: "Expired", statusExpiresAt: new Date(Date.now() - 1),
+    workLocation: "office", photoUrl: "/api/profile/photo/20/1", photoVersion: "photo-version" } };
+  expect(useRenderedWorkspaceProfile().profile).toMatchObject({ manualAvailability: null, statusText: null,
+    workLocation: "office", photoUrl: "/api/profile/photo/20/1" });
+  m.query = { ...m.query, data: { ...m.query.data, manualAvailability: "away",
+    manualAvailabilityExpiresAt: null, statusText: "On leave", statusExpiresAt: null } };
+  expect(useRenderedWorkspaceProfile().profile).toMatchObject({ manualAvailability: "away", statusText: "On leave" });
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("retires expiry timers when the workspace changes or the consumer unmounts", () => {
+  vi.useFakeTimers();
+  m.query = { ...m.query, data: { userId: 1, manualAvailability: "dnd",
+    manualAvailabilityExpiresAt: new Date(Date.now() + 20_000), statusText: null, statusExpiresAt: null } };
+  useRenderedWorkspaceProfile();
+  expect(vi.getTimerCount()).toBe(1);
+  m.chat = { ...m.chat, workspace: { id: 30, name: "Other work" } };
+  m.query = { ...m.query, data: undefined, isSuccess: false };
+  useRenderedWorkspaceProfile(m.owner, 30);
+  expect(vi.getTimerCount()).toBe(0);
+  m.query = { ...m.query, data: { userId: 1, manualAvailability: "dnd",
+    manualAvailabilityExpiresAt: new Date(Date.now() + 20_000), statusText: null, statusExpiresAt: null } };
+  useRenderedWorkspaceProfile(m.owner, 30);
+  expect(vi.getTimerCount()).toBe(1);
+  m.frame.effects.forEach((effect) => effect.cleanup?.());
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("exposes workspace loading and failed hydration to status with an owner-bound retry", async () => {
+  m.chat = { ...m.chat, workspace: null, loading: true };
+  renderProfile();
+  expect(m.hub.profileLoading).toBe(true);
+  m.chat = { ...m.chat, loading: false, error: "Could not load workspace" };
+  renderProfile();
+  expect(m.hub).toMatchObject({ profileLoading: false, profileLoadError: true });
+  const retry = m.hub.onRetryWorkspaceProfile;
+  m.loadChannels.mockClear();
+  await retry();
+  expect(m.loadChannels).toHaveBeenCalledOnce();
+  m.owner = owner(2); m.chat = { ...m.chat, userId: 2 };
+  await retry();
+  expect(m.loadChannels).toHaveBeenCalledOnce();
+});
+
+it("shows an explicit workspace status retry in progress without retaining the old error state", () => {
+  m.query = { ...m.query, data: undefined, isSuccess: false, isFetching: true, error: new Error("old failure") };
+  renderProfile();
+  expect(m.hub).toMatchObject({ profileLoading: true, profileLoadError: false });
 });
 
 it("broadcasts a confirmed upload and removal to a separately mounted chat hook when storage fails", async () => {

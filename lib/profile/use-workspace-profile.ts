@@ -87,9 +87,36 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
   const currentPhotoSave = !!photoSaveState && enabled && photoSaveState.scope === scope.current;
   // The status endpoint uses PRECONDITION_FAILED while workspace status is
   // not commissioned. This is a capability state, not a transient failure.
-  const profileUnavailable = (profile.error as { data?: { code?: unknown } } | null)?.data?.code === "PRECONDITION_FAILED";
-  const ownedProfile = enabled && profile.data?.userId === owner!.id
+  const profileUnavailable = enabled && (profile.error as { data?: { code?: unknown } } | null)?.data?.code === "PRECONDITION_FAILED";
+  const fetchedProfile = enabled && profile.data?.userId === owner!.id
     ? profile.data as WorkspaceProfileStatus : undefined;
+  const [expiryTick, setExpiryTick] = useState(0);
+  useEffect(() => {
+    const action = activeScope;
+    if (!action || !fetchedProfile) return;
+    const now = Date.now();
+    const deadlines = [fetchedProfile.manualAvailabilityExpiresAt, fetchedProfile.statusExpiresAt]
+      .filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()) && value.getTime() > now)
+      .map((value) => value.getTime());
+    if (!deadlines.length) return;
+    // Expiry is already server-owned. Retire its cached display at the supplied
+    // deadline even if the next poll fails; do not write a reset or invent presence.
+    const timer = setTimeout(() => {
+      if (mounted.current && scope.current === action) setExpiryTick((tick) => tick + 1);
+    }, Math.min(Math.min(...deadlines) - now, 2_147_483_647));
+    return () => clearTimeout(timer);
+  }, [activeScope, fetchedProfile, expiryTick]);
+  const now = Date.now();
+  const availabilityExpired = fetchedProfile?.manualAvailabilityExpiresAt instanceof Date &&
+    fetchedProfile.manualAvailabilityExpiresAt.getTime() <= now;
+  const statusExpired = fetchedProfile?.statusExpiresAt instanceof Date &&
+    fetchedProfile.statusExpiresAt.getTime() <= now;
+  const ownedProfile = fetchedProfile && (availabilityExpired || statusExpired)
+    ? { ...fetchedProfile,
+        ...(availabilityExpired ? { manualAvailability: null, manualAvailabilityExpiresAt: null } : {}),
+        ...(statusExpired ? { statusText: null, statusExpiresAt: null } : {}),
+      }
+    : fetchedProfile;
   const scopedLocalPhoto = enabled && localPhoto?.scope === scope.current
     ? localPhoto : null;
   const statusPhoto: ProfilePhotoDescriptor | null = ownedProfile && ownedProfile.photoUrl !== undefined
@@ -110,8 +137,8 @@ export function useWorkspaceProfile(owner: User | null | undefined, tenantId: nu
     profile: ownedProfile,
     profileAvailable: !!ownedProfile && profile.isSuccess,
     photoDescriptor,
-    loading: enabled && profile.isLoading,
-    loadError: !!profile.error && !profileUnavailable,
+    loading: enabled && (profile.isLoading || profile.isFetching),
+    loadError: enabled && !!profile.error && !profileUnavailable && !profile.isFetching,
     profileUnavailable,
     photoCapabilityError: !!photoCapability.error,
     photoCapabilityLoading: enabled && photoCapability.isLoading,
