@@ -1,9 +1,11 @@
-import { View, Text, Pressable, ScrollView, StyleSheet } from "react-native";
+import { View, Text, Pressable, ScrollView, StyleSheet, Platform } from "react-native";
 import { router } from "expo-router";
+import Constants from "expo-constants";
 
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
+import { useVideoCapability } from "@/hooks/use-video-capability";
 
 const AVAILABILITY = [
   {
@@ -16,20 +18,58 @@ const AVAILABILITY = [
   },
   {
     title: "Background and closed-app calls",
-    detail: "Requires commissioned native incoming-call support and is unavailable in this preview.",
+    detail: "Not available in this preview. Requires native incoming-call setup.",
   },
   {
-    title: "Video, transfers and conference calls",
-    detail: "Not available yet.",
+    title: "Team Chat video meetings",
+    detail: "Use Meet when meetings are enabled for your workspace and conversation.",
   },
   {
-    title: "SMS and live presence",
-    detail: "Not available yet.",
+    title: "Call transfers",
+    detail: "Not available in this preview.",
+  },
+  {
+    title: "PBX conference calls",
+    detail: "Not available in this preview.",
+  },
+  {
+    title: "SMS",
+    detail: "Not available in this preview.",
+  },
+  {
+    title: "Workspace presence",
+    detail: "Team Chat shows status when presence is enabled for your workspace.",
   },
 ] as const;
 
 export default function AboutScreen() {
   const colors = useColors();
+  const phoneVideo = useVideoCapability();
+  const availability = [
+    ...AVAILABILITY.slice(0, 3),
+    {
+      title: "Phone video calls",
+      detail: phoneVideo === null
+        ? "Checking this build’s video support…"
+        : phoneVideo
+          ? "This build supports phone video controls. Compatible callers and camera permission are required."
+          : "Not available in this build.",
+    },
+    ...AVAILABILITY.slice(3),
+  ];
+  const version = Constants.expoConfig?.version?.trim();
+  // Use the installed binary's native value, never the updateable Expo config.
+  const nativeBuild = Platform.OS === "ios"
+    ? Constants.platform?.ios?.buildNumber?.trim()
+    : Platform.OS === "android"
+      ? Constants.platform?.android?.versionCode
+      : undefined;
+  const build = typeof nativeBuild === "string" && nativeBuild
+    ? nativeBuild
+    : typeof nativeBuild === "number" && Number.isInteger(nativeBuild) && nativeBuild > 0
+      ? String(nativeBuild)
+      : undefined;
+  const versionLabel = `${version ? `Version ${version}` : "Version unavailable"}${build ? ` · Build ${build}` : ""}`;
 
   return (
     <ScreenContainer>
@@ -51,7 +91,7 @@ export default function AboutScreen() {
         <View style={[styles.appCard, { backgroundColor: colors.primary }]}>
           <Text style={styles.appName}>Phone11</Text>
           <Text style={styles.appTagline}>Work calls and team conversations</Text>
-          <Text style={styles.appVersion}>Version 1.0.0</Text>
+          <Text style={styles.appVersion}>{versionLabel}</Text>
         </View>
 
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -61,8 +101,8 @@ export default function AboutScreen() {
 
         <Text style={[styles.sectionHeader, { color: colors.muted }]}>CURRENT AVAILABILITY</Text>
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          {AVAILABILITY.map((item, index) => (
-            <View key={item.title} style={[styles.availabilityRow, index < AVAILABILITY.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: 0.5 }]}>
+          {availability.map((item, index) => (
+            <View key={item.title} style={[styles.availabilityRow, index < availability.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: 0.5 }]}>
               <View style={[styles.dot, { backgroundColor: index < 2 ? colors.success : colors.warning }]} />
               <View style={styles.availabilityText}>
                 <Text style={[styles.itemTitle, { color: colors.foreground }]}>{item.title}</Text>
