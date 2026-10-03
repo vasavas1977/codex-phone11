@@ -28,7 +28,11 @@ No public route, production schema, provider mapping or credential changed. The 
 
 ## Installed handset and media acceptance
 
-The retained daily-pilot Build 111 comes from source `11cd1f199cd4cd79d133637ad59271a21014d9e8`. Mirroring previously verified navigation, default member selection, deselection/cancel, own-avatar profile and persisted Away/Automatic settings. Builds 110/109 remain available. Builds 112 and 113 remain staged; 113 is the current signed mobile candidate. The 17 Pro Max was in use, ended Mirroring and subsequently reset its paired device connection; no installation was attempted during that state. Charge and lock the device before the installation/acceptance check.
+The retained daily-pilot Build 111 comes from source `11cd1f199cd4cd79d133637ad59271a21014d9e8`. Earlier Mirroring verified navigation, default member selection, deselection/cancel, own-avatar profile and persisted Away/Automatic settings. Builds 110/109 remain available; the historical Build 112/113 signed-package evidence remains recorded above.
+
+The [newer installation receipts](OWN-AVATAR-PROFILE-20261002.md) confirm signed daily-pilot Build 114 from `d69eede` on both the iPhone 13 (1020) and iPhone 17 (3001): official installation and normal launch succeeded, and app readback verified version `1.0.0`, bundle version `114`. The iPhone 17's own-avatar profile navigation passed without changing a photo; the iPhone 13's signed-in UI remains unverified. Installation and profile UI do not establish successful meeting admission or two-phone audio/video acceptance.
+
+The [reviewed prejoin wording correction](MEETING-ADMISSION-20261002.md#prejoin-error-wording-correction) at `e8145ad6ea6515bd9295ceb74f053b94fa041318` passed all 14 hosted checks, but no newer native build was installed. Both phones still have Build 114's previous error headline. Source and CI success do not establish an installed update or meeting connection.
 
 A fresh source review found no concrete native audio defect explaining the historical two-way silence. The audio path is unchanged from Build 111. Sixty-four focused mocked lifecycle/media tests passed; they cannot prove capture or audibility. Next acceptance must record both build/account identities, test time, each direction's speech and remote Speaking indicator, selected Speaker route, volume/accessories and private native logs. A subscribed audio track badge does not establish decoded or audible audio.
 

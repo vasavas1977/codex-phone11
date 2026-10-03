@@ -149,3 +149,41 @@ action is legitimate funding or reconciliation of an existing payment for the
 exact Connect11 service account/wallet bound to Phone11. Funding a different
 personal console account would not resolve this binding. Do not bypass the gate
 or manufacture a paid top-up from trial/adjustment credit.
+
+## 3 October follow-up: owner funding and one-phone retry
+
+Production Connect11 staff sign-in completed as superadmin. One owner-approved
+5,000 THB internal noncash credit was submitted through the authenticated UI.
+Its confirmation was validated, and a fresh authenticated reload of the canonical
+Phone11 service wallet showed 5,100 THB. These are UI observations; full receipt
+fields, trial conversion and accounting effects were not independently verified.
+The internal credit is not evidence of a bank payment or paid top-up.
+
+The retry observation window began at 15:40:31 UTC. On the retained installed
+Build 114, one Join from the global Team Chat Meet entry was then initiated
+with microphone and camera off. The phone
+showed green Connected, one participant, and Meeting details / Connection:
+Connected. No room was created and no invitations were sent. Bounded provider
+logs recorded capabilities GET 200 at 15:40:40.904Z and tokens POST 200 at
+15:40:40.948Z. This is temporal correlation, not exact tenant, room, participant
+or admission-lease identity proof.
+
+The retry observably succeeded through one-phone admission and signaling.
+The global entry selected its sole admitted meeting; its generic name does not
+establish that it was the earlier Test room. At 22:43 Bangkok time, Leave was
+clicked and the visible prejoin returned. Transport and lease cleanup were not
+independently inspected. No newer native build was installed, so Build 114
+still has the earlier error copy.
+
+Back then returned to Team Chat with the Hi draft preserved. Normal Settings UI
+identified extension 3001 and displayed Ready to call; About showed version
+1.0.0 without a build number. This verifies the current account label through
+ordinary UI; Build 114 provenance remains based on the retained installation
+receipts, rather than a new build-number readback.
+
+Same-Test-room identity, the second phone's join, two-way audio/video, reconnect,
+background recovery and SIP interruption remain pending. Physical readiness of
+the second phone remains unconfirmed. [Apple's iPhone Mirroring guidance](https://support.apple.com/en-gb/120421)
+states that the iPhone camera and mic cannot be accessed through Mirroring;
+these media checks require physical handset use. This follow-up does not close
+Goal 36 or establish complete Phone11 meeting acceptance.
