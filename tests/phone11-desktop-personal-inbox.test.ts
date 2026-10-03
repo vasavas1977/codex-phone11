@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { VoicemailStorageUnavailableError } from "../server/pbx/cdr-processor";
 
 const db = vi.hoisted(() => ({ query: vi.fn(), markRead: vi.fn(), remove: vi.fn(), storage: vi.fn(), voicemails: vi.fn() }));
 
@@ -22,7 +23,6 @@ vi.mock("../server/pbx/voicemail-access", () => ({
 vi.mock("../server/profile/photo", () => ({ profilePhotoDescriptors: vi.fn() }));
 
 import { pbxRouter } from "../server/pbx/pbx-router";
-import { VoicemailStorageUnavailableError } from "../server/pbx/cdr-processor";
 
 const ctx = () => ({ user: { id: 9, role: "user" }, req: { ip: "127.0.0.1", headers: {} }, res: {} }) as any;
 const membership = (tenantId: number) => ({
