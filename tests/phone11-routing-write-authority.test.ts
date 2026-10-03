@@ -50,6 +50,21 @@ beforeEach(() => {
 });
 
 describe("routing writes hold current administrator authority", () => {
+  it.each([
+    ["ivr", "IVR", cases[0][1]],
+    ["ringGroups", "Ring groups", cases[4][1]],
+    ["queues", "Call queues", cases[8][1]],
+    ["businessHours", "Business hours", cases[14][1]],
+  ] as const)("uses the friendly %s label when its schema is unavailable", async (facility, label, invoke) => {
+    state.capabilities.mockResolvedValue({ ivr: true, ringGroups: true, queues: true, businessHours: true, [facility]: false });
+    await expect(invoke(ivrRouter.createCaller(context()))).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED", message: `${label} is unavailable on this server`,
+    });
+    expect(state.transactionQuery.mock.calls[0][0]).toContain("FOR UPDATE OF tm, t");
+    expect(state.transactionQuery.mock.calls.some(([sql]) => dml(sql))).toBe(false);
+    expect(state.committed).toBe(false);
+    expect(state.audit).not.toHaveBeenCalled(); expect(state.invalidate).not.toHaveBeenCalled();
+  });
   it.each(cases)("%s refuses a revoked actor despite a cached administrator", async (_name, invoke) => {
     state.actor = [];
     await expect(invoke(ivrRouter.createCaller(context()))).rejects.toMatchObject({ code: "FORBIDDEN" });

@@ -13,6 +13,12 @@ import { readManagementCapabilities, type ManagementCapabilities } from "./schem
 import type { PoolClient } from "pg";
 
 type RoutingFacility = "ivr" | "ringGroups" | "queues" | "businessHours";
+const routingFacilityLabels: Record<RoutingFacility, string> = {
+  ivr: "IVR",
+  ringGroups: "Ring groups",
+  queues: "Call queues",
+  businessHours: "Business hours",
+};
 type RoutingWriteTools = {
   query: typeof query;
   runInTransaction: <T>(operation: (client: PoolClient) => Promise<T>) => Promise<T>;
@@ -45,7 +51,7 @@ async function withRoutingMutation<T>(
       throw new TRPCError({ code: "FORBIDDEN" });
     }
     const capabilities = await readManagementCapabilities();
-    if (!capabilities[facility]) unavailableFacility(facility);
+    if (!capabilities[facility]) unavailableFacility(routingFacilityLabels[facility]);
     const tools: RoutingWriteTools = {
       query: (sql, parameters) => client.query(sql, parameters),
       // Existing replacements reuse this client; no nested BEGIN/COMMIT.
