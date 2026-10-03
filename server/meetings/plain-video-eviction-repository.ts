@@ -50,7 +50,7 @@ export type PlainVideoEvictionObservation = {
   evictionId: string;
   state: PlainVideoEvictionState;
   revokeTokenTs: number;
-  createdAt: Date;
+  createdAt: Date | null;
   completedAt: Date | null;
 };
 

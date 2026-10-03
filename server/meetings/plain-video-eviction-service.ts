@@ -1,6 +1,7 @@
-import type {
-  Connect11PlainVideoEviction,
-  createConnect11PlainVideoFacade,
+import {
+  connect11PlainVideoEvictionSchema,
+  type Connect11PlainVideoEviction,
+  type createConnect11PlainVideoFacade,
 } from "./connect11-plain-video-facade";
 import {
   plainVideoEvictionTargetSchema,
@@ -25,7 +26,7 @@ export interface PlainVideoEvictionRepository {
       evictionId: string;
       state: "pending" | "completed" | "failed";
       revokeTokenTs: number;
-      createdAt: Date;
+      createdAt: Date | null;
       completedAt: Date | null;
     },
   ): Promise<PlainVideoEvictionOperation | null>;
@@ -49,6 +50,10 @@ export type PlainVideoRemovalStatus = {
   providerAcknowledged: boolean;
   providerEvictionId: string | null;
   completedAt: Date | null;
+  /** Present only for a fresh observation; processing remains locally pending. */
+  providerState?: Connect11PlainVideoEviction["status"];
+  /** The durable local denial survives an uncertain provider request. */
+  providerError?: "unavailable";
 };
 
 function status(operation: PlainVideoEvictionOperation): PlainVideoRemovalStatus {
@@ -66,9 +71,9 @@ function status(operation: PlainVideoEvictionOperation): PlainVideoRemovalStatus
 function observation(response: Connect11PlainVideoEviction) {
   return {
     evictionId: response.eviction_id,
-    state: response.status,
+    state: response.status === "processing" ? ("pending" as const) : response.status,
     revokeTokenTs: response.revoke_token_ts,
-    createdAt: new Date(response.created_at),
+    createdAt: response.created_at ? new Date(response.created_at) : null,
     completedAt: response.completed_at ? new Date(response.completed_at) : null,
   };
 }
@@ -102,23 +107,25 @@ export function createPlainVideoEvictionService(
       const claimed = await repository.begin(target, key);
       if (!claimed) throw new PlainVideoEvictionUnavailableError();
 
-      // No second POST for a durable pending request. If Connect11 did receive
-      // an earlier request, the future reconciliation path must use its status.
+      // A stored provider ID is reconciled through GET only. An uncertain POST
+      // without an ID may be replayed later using this exact durable key/body.
       if (claimed.state !== "pending" || claimed.providerEvictionId) return status(claimed);
 
       try {
-        const response = await client.requestEviction(
-          { meetingId: target.meetingId, participantId: target.participantId },
-          key,
+        const response = connect11PlainVideoEvictionSchema.parse(
+          await client.requestEviction(
+            { meetingId: target.meetingId, participantId: target.participantId },
+            key,
+          ),
         );
         const recorded = await repository.record(claimed, observation(response));
         if (!recorded) throw new PlainVideoEvictionUnavailableError();
-        return status(recorded);
+        return { ...status(recorded), providerState: response.status };
       } catch (error) {
         if (error instanceof PlainVideoEvictionUnavailableError) throw error;
         // The local durable denial remains pending. Do not reinterpret a
-        // transport failure as either a provider acknowledgement or a retry.
-        return status(claimed);
+        // transport failure as a provider acknowledgement. No automatic retry occurs.
+        return { ...status(claimed), providerError: "unavailable" };
       }
     },
 
@@ -129,13 +136,15 @@ export function createPlainVideoEvictionService(
       if (!existing) throw new PlainVideoEvictionUnavailableError();
       if (existing.state !== "pending" || !existing.providerEvictionId) return status(existing);
 
-      const response = await client.evictionStatus(existing.providerEvictionId);
+      const response = connect11PlainVideoEvictionSchema.parse(
+        await client.evictionStatus(existing.providerEvictionId),
+      );
       if (response.eviction_id !== existing.providerEvictionId) {
         throw new PlainVideoEvictionUnavailableError();
       }
       const recorded = await repository.record(existing, observation(response));
       if (!recorded) throw new PlainVideoEvictionUnavailableError();
-      return status(recorded);
+      return { ...status(recorded), providerState: response.status };
     },
   };
 }

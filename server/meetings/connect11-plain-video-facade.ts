@@ -41,20 +41,20 @@ export const connect11PlainVideoTokenSchema = z
   })
   .strict();
 
-const evictionStatusSchema = z.enum(["pending", "completed", "failed"]);
+const evictionStatusSchema = z.enum(["pending", "processing", "completed", "failed"]);
 const evictionRequestSchema = z
   .object({
     meetingId: identifier,
     participantId: identifier,
   })
   .strict();
-const evictionSchema = z
+export const connect11PlainVideoEvictionSchema = z
   .object({
     eviction_id: z.string().uuid(),
     contract_version: z.literal(contractVersion),
     status: evictionStatusSchema,
     revoke_token_ts: z.number().int().positive(),
-    created_at: z.string().datetime({ offset: true }),
+    created_at: z.string().datetime({ offset: true }).nullable(),
     completed_at: z.string().datetime({ offset: true }).nullable(),
   })
   .strict()
@@ -70,7 +70,7 @@ export type Connect11PlainVideoAdmission = z.infer<typeof admissionSchema>;
 export type Connect11PlainVideoToken = z.infer<
   typeof connect11PlainVideoTokenSchema
 >;
-export type Connect11PlainVideoEviction = z.infer<typeof evictionSchema>;
+export type Connect11PlainVideoEviction = z.infer<typeof connect11PlainVideoEvictionSchema>;
 
 export type Connect11PlainVideoConfig = {
   baseUrl: string;
@@ -324,7 +324,7 @@ export function createConnect11PlainVideoFacade(
           participant_id: eviction.data.participantId,
         }),
       });
-      const parsed = evictionSchema.safeParse(response.body);
+      const parsed = connect11PlainVideoEvictionSchema.safeParse(response.body);
       if (response.status !== 202 || !parsed.success) throw unavailable();
       return parsed.data;
     },
@@ -335,7 +335,7 @@ export function createConnect11PlainVideoFacade(
       const response = await evictionCall(
         `evictions/${encodeURIComponent(evictionId.data)}`,
       );
-      const parsed = evictionSchema.safeParse(response.body);
+      const parsed = connect11PlainVideoEvictionSchema.safeParse(response.body);
       if (response.status !== 200 || !parsed.success || parsed.data.eviction_id !== evictionId.data) {
         throw unavailable();
       }
