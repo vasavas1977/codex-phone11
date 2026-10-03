@@ -34,6 +34,13 @@ when part of that row has passed. No test suite or build was run for this note.
 
 ## Completion checklist
 
+The owner has deferred physical phone testing while source/release work
+continues. The [desktop transfer and meeting/admin follow-up](DESKTOP-TRANSFER-ADMIN-COMPLETION-20261004.md)
+adds optional callback-confirmed desktop blind transfer, retired direct-meeting
+callbacks and safe web membership confirmation. Earlier installed/signed
+packages do not include this follow-up; its integration, CI and package receipts
+remain distinct. These changes do not close unchecked acceptance rows below.
+
 | Complete | Workflow / Zoom baseline | Phone11 source and recorded checks | Released API/client evidence | Remaining acceptance or implementation |
 | --- | --- | --- | --- | --- |
 | [ ] | Calling: dial, answer, mute, hold, keypad, audio route ([Z1]) | `lib/sip/siprix-engine.ts`, `app/call/active.tsx`; native pilot/control source in [PBX delivery](PBX-DELIVERY-STATUS-20260924.md). | Build 114 installed; older pilot call evidence is retained in [gap audit](ZOOM-GAP-AUDIT.md), not current-build acceptance. | On exact build/accounts, prove foreground/locked incoming and outgoing calls, two-way speech, all controls, Wi-Fi/cellular recovery and long-call behavior; production SDK licensing remains a separate gate. |

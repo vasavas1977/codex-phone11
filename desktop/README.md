@@ -63,6 +63,15 @@ call. A helper restart invalidates the prior call and requires a new trusted
 binding.
 
 Dial, Answer, and End reserve their call action before awaiting the helper.
+Blind transfer additionally requires the verified helper's optional
+`callback-v1-once` init capability. It allows one invocation per call, including
+a refused request; only callback status `0` confirms success. Timeout or nonzero
+status remains uncertain, and retired call IDs fail closed. End and Mute remain
+usable, Hold is blocked after an attempt, and the client never auto-ends the
+original call. These source controls require fresh verified helper packages and
+separate real REFER/audio acceptance. See
+[the completion boundary](../docs/phone11-daily-use/DESKTOP-TRANSFER-ADMIN-COMPLETION-20261004.md).
+
 Helper command acceptance does not release the reservation: matching call
 callbacks do. If a callback is absent after 30 seconds, the public snapshot
 reports `reconcile` and duplicate actions remain blocked until a matching
