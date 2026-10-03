@@ -1,5 +1,6 @@
 """Hold callback races and missing callbacks must not permit an unsafe toggle."""
 
+import itertools
 import json
 import pathlib
 import subprocess
@@ -8,6 +9,56 @@ import time
 
 
 NATIVE = pathlib.Path(__file__).resolve().parent
+
+
+def assert_late_recovery(trace: list[dict]) -> None:
+    errors = [i for i, item in enumerate(trace) if item.get("event") == "hold_error"]
+    recoveries = [i for i, item in enumerate(trace) if item.get("event") == "hold_recovered"]
+    held = [i for i, item in enumerate(trace) if item.get("event") == "call" and
+            item.get("state") == "held"]
+    assert len(errors) == len(recoveries) == 1 and len(held) == 2, trace
+    error_index, recovery_index = errors[0], recoveries[0]
+    # This fake mode emits Remote before Local. The timer thread can report
+    # uncertainty before or after Remote, but only Local may restore control.
+    remote_index, local_index = held
+    assert error_index < recovery_index and remote_index < recovery_index < local_index, trace
+    assert all(trace[i].get("callId") == "200" for i in
+               (error_index, remote_index, recovery_index, local_index)), trace
+    assert trace[error_index].get("code") == "state_unconfirmed", trace
+    assert trace[error_index].get("holdControl") == "blocked", trace
+    assert trace[recovery_index].get("code") == "state_confirmed", trace
+    assert trace[recovery_index].get("holdControl") == "ready", trace
+
+
+def test_late_recovery_orderings() -> None:
+    error = dict(event="hold_error", callId="200", code="state_unconfirmed", holdControl="blocked")
+    remote = dict(event="call", callId="200", state="held")
+    recovery = dict(event="hold_recovered", callId="200", code="state_confirmed", holdControl="ready")
+    local = dict(event="call", callId="200", state="held")
+    accepted = 0
+    for prefix in itertools.permutations((error, remote, recovery)):
+        valid = prefix[2] is recovery
+        try:
+            assert_late_recovery([*prefix, local])
+        except AssertionError:
+            assert not valid, prefix
+        else:
+            assert valid, prefix
+            accepted += 1
+    assert accepted == 2  # Both timer/Remote orders; all premature recoveries refused.
+    for trace in (
+        [error, remote, local, recovery],
+        [{**error, "holdControl": "ready"}, remote, recovery, local],
+        [error, remote, {**recovery, "holdControl": "blocked"}, local],
+        [error, remote, {**recovery, "callId": "201"}, local],
+        [error, remote, recovery],
+    ):
+        try:
+            assert_late_recovery(trace)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("Unsafe recovery trace was accepted")
 
 
 def run_case(flags: list[str], phases: list[tuple[str, float]]) -> list[dict]:
@@ -42,11 +93,14 @@ def run_case(flags: list[str], phases: list[tuple[str, float]]) -> list[dict]:
         errors = process.stderr.read()
         assert process.wait(timeout=5) == 0
         assert errors == "", errors
-        assert "fake-secret" not in output
-        return initial + [json.loads(line) for line in output.splitlines()]
+        trace = initial + [json.loads(line) for line in output.splitlines()]
+        assert all(private not in json.dumps(trace) for private in
+                   ("fake-secret", "private-from", "private-to"))
+        return trace
 
 
 def main() -> None:
+    test_late_recovery_orderings()
     remote = run_case(["-DPHONE11_FAKE_REMOTE_FIRST"], [
         ("v1 hold 200 1\nv1 hold 200 0\n", 0.25),
         ("v1 hold 200 0\n", 0.15),
@@ -80,13 +134,7 @@ def main() -> None:
         ("v1 hold 200 0\n", 0.02),
     ])
     assert [item["ok"] for item in late if "ok" in item] == [True, True, True, True, False, True, True], late
-    error_index = next(i for i, item in enumerate(late) if item.get("event") == "hold_error")
-    recovery_index = next(i for i, item in enumerate(late) if item.get("event") == "hold_recovered")
-    remote_index = next(i for i, item in enumerate(late) if i > error_index and
-                        item.get("event") == "call" and item.get("state") == "held")
-    assert error_index < remote_index < recovery_index, late
-    assert late[recovery_index]["code"] == "state_confirmed"
-    assert late[recovery_index]["holdControl"] == "ready"
+    assert_late_recovery(late)
     print("Phone11 Siprix hold reconciliation protocol test passed")
 
 
