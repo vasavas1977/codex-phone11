@@ -222,7 +222,7 @@ describe("pbx.voicemail.delete tenant selection and acknowledgment", () => {
 
   it("does not acknowledge a failed storage operation", async () => {
     db.query.mockResolvedValueOnce({ rows: [membership(7)] });
-    db.remove.mockRejectedValueOnce(new VoicemailStorageUnavailableError("storage unavailable"));
+    db.remove.mockRejectedValueOnce(new VoicemailStorageUnavailableError());
     await expect(pbxRouter.createCaller(ctx()).voicemail.delete({ id: 41 }))
       .rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
   });
