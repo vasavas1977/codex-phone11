@@ -73,11 +73,13 @@ pins source, hosted CI, signed iOS and both producers/independent package review
 It contains the private artifact locations; those artifacts are not public
 distribution links. No credentials or device identifiers are copied here.
 
-The independently reviewed PBX routing authority candidate
-`80269a865e716fefec03cf4584e44b1b71e8a815` follows this frozen release source.
-Its 45 source and seven actual disposable PG17 cases passed locally; the new
-hosted CI job's proof is pending. It is not included in the Build 116 source pin
-and does not authorize migration, deployment or commissioning.
+The [PBX routing authority follow-up](PBX-ROUTING-AUTHORITY-20261004.md) follows
+this frozen release source. Its final isolated source is
+`2eedcf780e79012ba0173b5327c83319fb4b4648`, including friendly facility labels
+and transaction-client capability reads. Local checks include eight actual
+disposable PG17 cases; the new hosted job's proof is pending at this document's
+commit. It is not included in the Build 116 source pin and does not authorize
+migration, deployment or commissioning.
 
 For physical acceptance, record the installed build, authenticated extensions
 and shared room, then both directions of media, reconnect, SIP interruption and

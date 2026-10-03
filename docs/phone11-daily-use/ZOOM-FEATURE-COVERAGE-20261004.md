@@ -71,10 +71,11 @@ These changes do not close unchecked acceptance rows below.
    history and photo checks; retain baseline calling and rollback packages.
 3. **Phone11 + telephony operator:** close PBX writer/clone/rollback gates before
    advanced routing and voicemail activation; accept real deposits and transfers.
-   The routing writer authority follow-up is an independently reviewed source
-   candidate (`80269a865e716fefec03cf4584e44b1b71e8a815`), with 45 source and
-   seven disposable PG17 checks recorded. Its new hosted CI proof is pending;
-   it is outside the Build 116 source pin and does not commission routing.
+   The [routing writer authority follow-up](PBX-ROUTING-AUTHORITY-20261004.md)
+   holds live authority through each mutation and reuses its transaction client
+   for capability reads. Eight disposable PG17 checks are recorded. Its new
+   hosted CI proof is pending at this document's commit; it is outside the
+   Build 116 source pin and does not commission routing.
 4. **Connect11:** own provider admission, media capability and authoritative
    host controls. Its 4 October read-only inventory of current main establishes
    plain-video permanent-member eviction source, but no end-for-all, remote

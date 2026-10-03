@@ -237,6 +237,115 @@ jobs:
           npm --prefix desktop/app run typecheck
           PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build
 
+  routing-authority-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: p11_routing_auth_fixture
+          POSTGRES_PASSWORD: p11-routing-fixture-ci-only
+          POSTGRES_DB: phone11_routing_auth_test
+        ports:
+          - "127.0.0.1:55443:5432"
+        options: >-
+          --health-cmd "pg_isready -U p11_routing_auth_fixture -d phone11_routing_auth_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Synthetic dedicated job service. No deployment URL or ambient PG fallback.
+      PHONE11_ROUTING_AUTH_REQUIRE_POSTGRES: "1"
+      PHONE11_ROUTING_AUTH_TEST_DATABASE_URL: postgres://p11_routing_auth_runtime:p11-routing-runtime-ci-only@127.0.0.1:55443/phone11_routing_auth_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Admit and initialize only the disposable routing authority service
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import pg from 'pg';
+          const id = process.env.PG_CONTAINER_ID;
+          assert.match(id ?? '', /^[a-f0-9]{64}$/);
+          for (const key of ['PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD','PGSSLMODE','PGSERVICE','PGSERVICEFILE']) {
+            assert.equal(process.env[key], undefined, 'Unexpected PostgreSQL fallback: ' + key);
+          }
+          assert.equal(process.env.PHONE11_ROUTING_AUTH_REQUIRE_POSTGRES, '1');
+          const [container] = JSON.parse(execFileSync('docker', ['inspect', id], { encoding: 'utf8' }));
+          assert.equal(container.Id, id);
+          assert.equal(container.State.Running, true);
+          assert.equal(container.Config.Image, 'postgres:17-bookworm');
+          const env = new Map(container.Config.Env.map(value => {
+            const at = value.indexOf('='); return [value.slice(0, at), value.slice(at + 1)];
+          }));
+          assert.equal(env.get('POSTGRES_USER'), 'p11_routing_auth_fixture');
+          assert.equal(env.get('POSTGRES_DB'), 'phone11_routing_auth_test');
+          assert.equal(env.get('POSTGRES_PASSWORD'), 'p11-routing-fixture-ci-only');
+          assert.deepEqual(container.NetworkSettings.Ports['5432/tcp'], [{ HostIp: '127.0.0.1', HostPort: '55443' }]);
+          const url = new URL(process.env.PHONE11_ROUTING_AUTH_TEST_DATABASE_URL);
+          assert.equal(url.protocol, 'postgres:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '55443');
+          assert.equal(url.pathname, '/phone11_routing_auth_test');
+          assert.equal(url.username, 'p11_routing_auth_runtime');
+          assert.equal(url.password, 'p11-routing-runtime-ci-only');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          const client = new pg.Client({
+            host: '127.0.0.1', port: 55443, database: 'phone11_routing_auth_test',
+            user: 'p11_routing_auth_fixture', password: 'p11-routing-fixture-ci-only',
+            ssl: false, connectionTimeoutMillis: 3000, query_timeout: 10000,
+          });
+          try {
+            await client.connect();
+            const { rows: [identity] } = await client.query(
+              "SELECT current_database() db,current_user role,current_setting('server_version_num') version");
+            assert.equal(identity.db, 'phone11_routing_auth_test');
+            assert.equal(identity.role, 'p11_routing_auth_fixture');
+            assert.ok(Number(identity.version) >= 170000 && Number(identity.version) < 180000);
+            await client.query(`
+              CREATE SCHEMA p11_routing_auth_test;
+              SET search_path=p11_routing_auth_test,pg_catalog;
+              CREATE TABLE tenants(id integer PRIMARY KEY,status text NOT NULL);
+              CREATE TABLE tenant_memberships(
+                user_id integer,tenant_id integer REFERENCES tenants(id),role text,status text,
+                created_at timestamptz,PRIMARY KEY(user_id,tenant_id));
+              CREATE TABLE extensions(
+                id integer PRIMARY KEY,tenant_id integer NOT NULL REFERENCES tenants(id),deleted_at timestamptz);
+              SET phone11.expected_database='phone11_routing_auth_test';
+              SET phone11.expected_schema='p11_routing_auth_test';
+            `);
+            // The migration owns BEGIN/COMMIT; this connection has no caller transaction.
+            await client.query(readFileSync('server/pbx/advanced-routing-migration.sql', 'utf8'));
+            await client.query(`
+              CREATE ROLE p11_routing_auth_runtime LOGIN PASSWORD 'p11-routing-runtime-ci-only'
+                NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+              GRANT CONNECT ON DATABASE phone11_routing_auth_test TO p11_routing_auth_runtime;
+              GRANT USAGE ON SCHEMA p11_routing_auth_test TO p11_routing_auth_runtime;
+              GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA p11_routing_auth_test TO p11_routing_auth_runtime;
+              GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA p11_routing_auth_test TO p11_routing_auth_runtime;
+            `);
+          } finally {
+            await client.end();
+          }
+          JS
+      - name: Require actual routing authorization and revocation race checks
+        run: pnpm exec vitest run tests/phone11-routing-write-authority.test.ts
+
+
   host-eviction-postgres-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

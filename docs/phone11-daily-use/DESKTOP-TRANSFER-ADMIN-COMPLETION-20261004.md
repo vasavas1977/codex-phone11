@@ -51,6 +51,12 @@ separate workflow. New native helpers, manifests and platform packages are
 required for transfer; reusing an earlier helper does not establish support.
 The mobile component changed, so Build 115 does not contain the route fix.
 
+[Build 116 and fresh desktop packages](BUILD-116-RELEASE-20261004.md) now contain
+this follow-up at frozen source `b5a97e6`; their exact-source CI and independent
+package verification are recorded separately. Installation remains deferred.
+The later [PBX mutation-authority fix](PBX-ROUTING-AUTHORITY-20261004.md) changes
+backend/tests and CI/documentation only, preserving those client/native trees.
+
 Physical phone testing remains owner-deferred. Real transfer success/rejection,
 two-way audio, meeting media, locked-screen calling/push and Windows runtime
 acceptance remain open. Formal signing, SDK redistribution terms, voicemail
