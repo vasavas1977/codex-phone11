@@ -54,10 +54,14 @@ describe("workspace member administration", () => {
 
   it("makes membership limits visible before a destructive status change", () => {
     expect(members).toContain("Deactivate membership?");
-    expect(members).toContain("do not suspend SIP credentials or remove");
     expect(members).toContain(
-      "extension assignments. Manage extensions separately.",
+      "revokes SIP access for their assigned active extensions",
     );
+    expect(members).toContain(
+      "removes their permission to use assigned extensions",
+    );
+    expect(members).toContain("Reactivating membership does not restore");
+    expect(members).not.toContain("do not suspend SIP credentials or remove");
     expect(members).toContain(
       "Only a workspace owner can change administrator roles.",
     );

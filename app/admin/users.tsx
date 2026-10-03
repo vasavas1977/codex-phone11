@@ -3,7 +3,7 @@
  *
  * Existing membership management and capability-gated invitations.
  */
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import { AdminInvitations } from "@/components/admin/admin-invitations";
 import * as Auth from "@/lib/_core/auth";
@@ -12,6 +12,7 @@ import {
   Alert,
   Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -40,6 +41,26 @@ type MembershipStatus = "active" | "inactive";
 
 type TenantMember = AdminPeopleMember;
 
+type MemberEditScope = {
+  actor: Auth.User;
+  tenantId: number;
+  memberId: number;
+  memberRole: string;
+  memberStatus: MembershipStatus;
+  actorRole: string;
+  revision: number;
+};
+type MemberChanges = {
+  tenantId: number;
+  userId: number;
+  role?: "admin" | "user";
+  status?: MembershipStatus;
+};
+type MemberConfirmation = { scope: MemberEditScope; changes: MemberChanges };
+
+const deactivationConsequences =
+  "Deactivation removes this person's workspace access, revokes SIP access for their assigned active extensions, suspends those extensions and SIP accounts, and removes their permission to use assigned extensions. Reactivating membership does not restore extension or SIP access; manage extensions separately.";
+
 function displayName(member: TenantMember) {
   return member.name?.trim() || member.email?.trim() || `Member ${member.id}`;
 }
@@ -60,6 +81,7 @@ function AdminUsersContent() {
   const colors = useColors();
   const { width } = useWindowDimensions();
   const wideWeb = Platform.OS === "web" && width >= 1000;
+  const EditorContainer = Platform.OS === "web" ? ScrollView : View;
   const { user } = useAuth({ autoFetch: false });
   const workspace = usePbxAdminWorkspace();
   const tenantQuery = useTenant();
@@ -77,11 +99,36 @@ function AdminUsersContent() {
   const [selectedStatus, setSelectedStatus] =
     useState<MembershipStatus>("active");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<MemberConfirmation | null>(
+    null,
+  );
+  const [saving, setSaving] = useState(false);
+  const editorRevision = useRef(0);
+  const editScope = useRef<MemberEditScope | null>(null);
+  const pendingConfirmation = useRef<MemberConfirmation | null>(null);
+  const busy = useRef<MemberConfirmation | null>(null);
+  const mounted = useRef(true);
+  const current = useRef({
+    user,
+    tenantId,
+    workspace,
+    canManage,
+    actorRole,
+    members: [] as TenantMember[],
+  });
 
   const members = useMemo(
     () => (membersQuery.data || []) as TenantMember[],
     [membersQuery.data],
   );
+  current.current = {
+    user,
+    tenantId,
+    workspace,
+    canManage,
+    actorRole,
+    members,
+  };
   const directoryPhotos = useMemo(() => {
     if (
       !user?.id ||
@@ -108,31 +155,136 @@ function AdminUsersContent() {
     tenantId,
     user?.id,
   ]);
-  const closeEditor = () => {
+  const closeEditor = useCallback(() => {
+    editorRevision.current += 1;
+    editScope.current = null;
+    pendingConfirmation.current = null;
     setEditing(null);
+    setConfirmation(null);
     setSaveError(null);
+  }, []);
+
+  useEffect(() => {
+    closeEditor();
+    busy.current = null;
+    setSaving(false);
+  }, [
+    user,
+    tenantId,
+    workspace.selectedTenantId,
+    canManage,
+    actorRole,
+    closeEditor,
+  ]);
+
+  useEffect(() => {
+    mounted.current = true;
+    const unsubscribe = Auth.addAuthChangeListener(() => {
+      if (
+        editScope.current &&
+        Auth.getAuthSnapshot().user !== editScope.current.actor
+      ) {
+        closeEditor();
+        busy.current = null;
+        setSaving(false);
+      }
+    });
+    return () => {
+      mounted.current = false;
+      editorRevision.current += 1;
+      editScope.current = null;
+      unsubscribe();
+    };
+  }, [closeEditor]);
+
+  const scopeIsCurrent = (scope: MemberEditScope, beforeSubmit = true) => {
+    const live = current.current;
+    const member = live.members.find((row) => row.id === scope.memberId);
+    return (
+      mounted.current &&
+      editScope.current === scope &&
+      scope.revision === editorRevision.current &&
+      Auth.getAuthSnapshot().user === scope.actor &&
+      live.user === scope.actor &&
+      live.canManage &&
+      live.actorRole === scope.actorRole &&
+      live.tenantId === scope.tenantId &&
+      live.workspace.selectedTenantId === scope.tenantId &&
+      live.workspace.membershipsQuery.isSuccess &&
+      (!beforeSubmit ||
+        (!live.workspace.membershipsQuery.isFetching &&
+          member?.role === scope.memberRole &&
+          member?.status === scope.memberStatus))
+    );
   };
 
   const openEditor = (member: TenantMember) => {
+    if (
+      busy.current ||
+      !user ||
+      !tenantId ||
+      !canManage ||
+      workspace.selectedTenantId !== tenantId ||
+      Auth.getAuthSnapshot().user !== user
+    )
+      return;
+    editorRevision.current += 1;
+    editScope.current = {
+      actor: user,
+      tenantId,
+      memberId: member.id,
+      memberRole: member.role,
+      memberStatus: member.status,
+      actorRole,
+      revision: editorRevision.current,
+    };
     setEditing(member);
+    pendingConfirmation.current = null;
+    setConfirmation(null);
     setSelectedRole(member.role === "admin" ? "admin" : "user");
     setRoleChanged(false);
     setSelectedStatus(member.status);
     setSaveError(null);
   };
 
-  const save = async () => {
-    if (!editing) return;
-    const changes: {
-      tenantId: number;
-      userId: number;
-      role?: "admin" | "user";
-      status?: MembershipStatus;
-    } = { tenantId: tenantId ?? 0, userId: editing.id };
-    if (!tenantId) {
-      setSaveError("Select a workspace before changing a member.");
+  const save = async (request: MemberConfirmation) => {
+    if (
+      busy.current ||
+      !scopeIsCurrent(request.scope) ||
+      (request.changes.status === "inactive" &&
+        pendingConfirmation.current !== request)
+    )
       return;
+    busy.current = request;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await updateMember.mutateAsync(request.changes);
+      // The mutation hook invalidates membership queries on success. That
+      // refresh may already show this change; only editor/session replacement
+      // should prevent its completion from closing this same editor.
+      if (!scopeIsCurrent(request.scope, false)) return;
+      closeEditor();
+      void membersQuery.refetch().catch(() => undefined);
+    } catch (error) {
+      if (scopeIsCurrent(request.scope, false))
+        setSaveError(readableError(error));
+    } finally {
+      if (busy.current === request) {
+        busy.current = null;
+        if (mounted.current) setSaving(false);
+      }
     }
+  };
+
+  const renderedScope = editScope.current;
+  const requestSave = () => {
+    const scope = renderedScope;
+    if (!editing || !scope || busy.current || !scopeIsCurrent(scope)) return;
+    const changes: MemberChanges = {
+      tenantId: scope.tenantId,
+      userId: scope.memberId,
+    };
     if (
       canManageAdministrators &&
       editing.role !== "owner" &&
@@ -151,33 +303,36 @@ function AdminUsersContent() {
       closeEditor();
       return;
     }
-    try {
-      await updateMember.mutateAsync(changes);
-      closeEditor();
-      void membersQuery.refetch().catch(() => undefined);
-    } catch (error) {
-      setSaveError(readableError(error));
-    }
-  };
-
-  const requestSave = () => {
-    if (!editing) return;
+    const request = { scope, changes };
     if (editing.status === "active" && selectedStatus === "inactive") {
+      pendingConfirmation.current = request;
+      if (Platform.OS === "web") {
+        setSaveError(null);
+        setConfirmation(request);
+        return;
+      }
       Alert.alert(
         "Deactivate membership?",
-        `${displayName(editing)} will no longer appear as an active workspace member. Their extension assignment and SIP credentials are not changed here.`,
+        `${displayName(editing)}: ${deactivationConsequences}`,
         [
-          { text: "Cancel", style: "cancel" },
+          {
+            text: "Cancel",
+            style: "cancel",
+            onPress: () => {
+              if (pendingConfirmation.current === request)
+                pendingConfirmation.current = null;
+            },
+          },
           {
             text: "Deactivate",
             style: "destructive",
-            onPress: () => void save(),
+            onPress: () => void save(request),
           },
         ],
       );
       return;
     }
-    void save();
+    void save(request);
   };
 
   const body = tenantQuery.isLoading ? (
@@ -290,9 +445,13 @@ function AdminUsersContent() {
           tenantId={tenantId ?? null}
           actorRole={actorRole}
           userId={typeof user?.id === "number" ? user.id : null}
-          workspaceValid={Boolean(tenantId && workspace.selectedTenantId === tenantId &&
-            workspace.membershipsQuery.isSuccess && !workspace.membershipsQuery.isFetching &&
-            Auth.getAuthSnapshot().user?.id === user?.id)}
+          workspaceValid={Boolean(
+            tenantId &&
+            workspace.selectedTenantId === tenantId &&
+            workspace.membershipsQuery.isSuccess &&
+            !workspace.membershipsQuery.isFetching &&
+            Auth.getAuthSnapshot().user?.id === user?.id,
+          )}
         />
       ) : null}
 
@@ -312,7 +471,7 @@ function AdminUsersContent() {
               : undefined,
           ]}
         >
-          <View
+          <EditorContainer
             style={[
               styles.modal,
               wideWeb ? { width: 540, borderRadius: 16 } : undefined,
@@ -349,7 +508,8 @@ function AdminUsersContent() {
             <View style={styles.options}>
               {(["user", "admin"] as const).map((role) => {
                 const selected = selectedRole === role;
-                const disabled = !roleCanChange;
+                const disabled =
+                  !roleCanChange || saving || confirmation !== null;
                 return (
                   <TouchableOpacity
                     key={role}
@@ -357,6 +517,7 @@ function AdminUsersContent() {
                     accessibilityState={{ selected, disabled }}
                     disabled={disabled}
                     onPress={() => {
+                      if (busy.current || pendingConfirmation.current) return;
                       setSelectedRole(role);
                       setRoleChanged(true);
                     }}
@@ -397,14 +558,18 @@ function AdminUsersContent() {
             <View style={styles.options}>
               {(["active", "inactive"] as const).map((status) => {
                 const selected = selectedStatus === status;
-                const disabled = !statusCanChange;
+                const disabled =
+                  !statusCanChange || saving || confirmation !== null;
                 return (
                   <TouchableOpacity
                     key={status}
                     accessibilityRole="radio"
                     accessibilityState={{ selected, disabled }}
                     disabled={disabled}
-                    onPress={() => setSelectedStatus(status)}
+                    onPress={() => {
+                      if (!busy.current && !pendingConfirmation.current)
+                        setSelectedStatus(status);
+                    }}
                     style={[
                       styles.option,
                       {
@@ -424,49 +589,105 @@ function AdminUsersContent() {
                     <Text style={[styles.optionText, { color: colors.muted }]}>
                       {status === "active"
                         ? "Included in the workspace membership directory."
-                        : "Hidden from active workspace member lists."}
+                        : "Workspace access removed; assigned active extensions and SIP access suspended."}
                     </Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
-            <Text style={[styles.help, { color: colors.muted }]}>
-              Membership changes do not suspend SIP credentials or remove
-              extension assignments. Manage extensions separately.
-            </Text>
+            {!confirmation ? (
+              <Text style={[styles.help, { color: colors.muted }]}>
+                {deactivationConsequences}
+              </Text>
+            ) : null}
+            {confirmation ? (
+              <View
+                accessibilityRole="alert"
+                accessibilityLiveRegion="assertive"
+              >
+                <Text style={[styles.label, { color: colors.foreground }]}>
+                  Deactivate membership?
+                </Text>
+                <Text style={[styles.help, { color: colors.muted }]}>
+                  Confirm deactivation for{" "}
+                  {editing ? displayName(editing) : "this member"}.{" "}
+                  {deactivationConsequences}
+                </Text>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel member deactivation"
+                  disabled={saving}
+                  style={[
+                    styles.saveButton,
+                    { borderWidth: 1, borderColor: colors.border },
+                  ]}
+                  onPress={() => {
+                    if (
+                      busy.current ||
+                      pendingConfirmation.current !== confirmation
+                    )
+                      return;
+                    pendingConfirmation.current = null;
+                    setConfirmation(null);
+                    setSaveError(null);
+                  }}
+                >
+                  <Text style={[styles.retry, { color: colors.primary }]}>
+                    Cancel
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirm member deactivation"
+                  disabled={saving || !scopeIsCurrent(confirmation.scope)}
+                  onPress={() => void save(confirmation)}
+                  style={[styles.saveButton, { backgroundColor: colors.error }]}
+                >
+                  {saving ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.saveText}>Deactivate member</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ) : null}
             {saveError ? (
               <Text accessibilityRole="alert" style={styles.error}>
                 {saveError}
               </Text>
             ) : null}
-            <TouchableOpacity
-              accessibilityRole="button"
-              accessibilityLabel="Save membership changes"
-              disabled={
-                updateMember.isPending ||
-                !editing ||
-                (!roleCanChange && !statusCanChange)
-              }
-              onPress={requestSave}
-              style={[
-                styles.saveButton,
-                {
-                  backgroundColor: colors.primary,
-                  opacity:
-                    updateMember.isPending ||
-                    (!roleCanChange && !statusCanChange)
-                      ? 0.6
-                      : 1,
-                },
-              ]}
-            >
-              {updateMember.isPending ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.saveText}>Save changes</Text>
-              )}
-            </TouchableOpacity>
-          </View>
+            {!confirmation ? (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Save membership changes"
+                disabled={
+                  saving ||
+                  updateMember.isPending ||
+                  !editing ||
+                  (!roleCanChange && !statusCanChange)
+                }
+                onPress={requestSave}
+                style={[
+                  styles.saveButton,
+                  {
+                    backgroundColor: colors.primary,
+                    opacity:
+                      saving ||
+                      updateMember.isPending ||
+                      (!roleCanChange && !statusCanChange)
+                        ? 0.6
+                        : 1,
+                  },
+                ]}
+              >
+                {saving || updateMember.isPending ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <Text style={styles.saveText}>Save changes</Text>
+                )}
+              </TouchableOpacity>
+            ) : null}
+          </EditorContainer>
         </View>
       </Modal>
     </ScreenContainer>
