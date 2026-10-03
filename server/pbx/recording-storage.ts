@@ -60,6 +60,17 @@ export async function storeRecording(tenantId: number, callUuid: string, fileBuf
   return { filePath, fileSize: fileBuffer.length };
 }
 
+/** Persist every directory link up to the pre-provisioned durable media root. */
+async function syncVoicemailDirectories(directory: string, base: string): Promise<void> {
+  if (directory !== base && !directory.startsWith(base + path.sep))
+    throw new Error("Invalid voicemail directory");
+  for (let current = directory; ; current = path.dirname(current)) {
+    const handle = await fs.promises.open(current, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+    try { await handle.sync(); } finally { await handle.close(); }
+    if (current === base) return;
+  }
+}
+
 /** Store a completed voicemail under a tenant-only directory. Metadata remains in PostgreSQL. */
 export async function storeVoicemail(
   tenantId: number,
@@ -75,6 +86,9 @@ export async function storeVoicemail(
   ) {
     throw new Error("Invalid voicemail upload");
   }
+  // The configured root must already be a provisioned durable mount. Do not
+  // implicitly create it in a container layer or under an unsynced parent.
+  const base = await fs.promises.realpath(VOICEMAIL_BASE);
   const now = new Date();
   const dir = path.join(
     VOICEMAIL_BASE,
@@ -82,29 +96,34 @@ export async function storeVoicemail(
     `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`,
   );
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
-  const base = await fs.promises.realpath(VOICEMAIL_BASE);
   const realDir = await fs.promises.realpath(dir);
   if (!realDir.startsWith(path.join(base, String(tenantId)) + path.sep))
     throw new Error("Invalid voicemail directory");
   const filePath = path.join(realDir, `${messageUuid}.wav`);
-  try {
-    await fs.promises.writeFile(filePath, fileBuffer, { flag: "wx", mode: 0o600 });
-    return { filePath, fileSize: fileBuffer.length, created: true };
-  } catch (error) {
+  let created = true;
+  let handle;
+  try { handle = await fs.promises.open(filePath, "wx", 0o600); }
+  catch (error) {
     if (!idempotent || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-    try {
+    created = false;
+    handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  }
+  try {
+    if (created) await handle.writeFile(fileBuffer);
+    else {
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size !== fileBuffer.length)
         throw new Error("Voicemail identity mismatch");
       const bytes = await handle.readFile();
       if (!createHash("sha256").update(bytes).digest().equals(createHash("sha256").update(fileBuffer).digest()))
         throw new Error("Voicemail identity mismatch");
-    } finally {
-      await handle.close();
     }
-    return { filePath, fileSize: fileBuffer.length, created: false };
-  }
+    // A receipt lets the relay retire its manifest. Close/write completion is
+    // insufficient: sync both new audio and a verified uncertain prior write.
+    await handle.sync();
+  } finally { await handle.close(); }
+  await syncVoicemailDirectories(realDir, base);
+  return { filePath, fileSize: fileBuffer.length, created };
 }
 
 /**
@@ -133,10 +152,14 @@ async function verifyStoredVoicemail(
     const bytes = await handle.readFile();
     if (!createHash("sha256").update(bytes).digest().equals(createHash("sha256").update(fileBuffer).digest()))
       throw new Error("Voicemail identity mismatch");
-    return { filePath, fileSize: stat.size };
+    // Replays of already-indexed objects must cross the same durability
+    // barrier, including objects left by an older backend before a crash.
+    await handle.sync();
   } finally {
     await handle.close();
   }
+  await syncVoicemailDirectories(path.dirname(filePath), base);
+  return { filePath, fileSize: fileBuffer.length };
 }
 
 async function authenticate(req: Request, res: Response): Promise<number | null> {
