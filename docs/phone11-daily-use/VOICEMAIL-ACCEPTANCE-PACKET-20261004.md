@@ -48,6 +48,31 @@ SIP/audio, SDK redistribution or signed-distribution acceptance.
 
 ## Missing target pins and prerequisites
 
+### Read-only target refresh, 4 October at 01:29 Bangkok
+
+Fresh metadata access pinned the expected AWS account, running Thailand EC2
+instance and existing SSH host key. Two bounded read-only catalog transactions
+and Docker/Nginx metadata reads made no API calls, deposits, schema changes,
+route changes or flag activation. Full receipts remain private.
+
+- The host had 31 running containers. The retained `c5140f4` admission candidate
+  still binds loopback 3023, while the broad `7984cee` candidate binds 3022.
+  Both report the voicemail flag `false`; FreeSWITCH has the flag absent.
+  These observations do not pin a new voicemail bundle or authorize a switch.
+- PostgreSQL 16.13 contains both voicemail tables, non-null owner/epoch columns,
+  and both enabled owner-epoch and extension/tenant guard triggers. Inspecting
+  their actual definitions exposed drift: the deployed deposit guard still
+  requires admission age under seven days. Current reviewed source removes
+  that cutoff so older uncertain completed deposits can reconcile. Trigger
+  names alone would miss this mismatch; activation remains blocked pending the
+  reviewed migration/rollback process and exact definition comparison.
+- Exactly one tenant is active. There is still no eligible active denied-tenant
+  fixture. `extensions.tenant_id` remains nullable with default `1`; writer and
+  protected-clone gates remain open. No tenant or membership was created.
+- Build 115 is a verified signed candidate; installation and physical tests
+  remain owner-deferred. Its package receipt does not close server or producer
+  commissioning.
+
 | Required before acceptance | Current packet state |
 | --- | --- |
 | Exact backend source, lockfile/Dockerfile and packaged dependency digests, image digest, running bundle hash, container ID/name, build/role, port and sealed start receipt | Missing for the new voicemail server correction. The historical workerless `7984cee` candidate on loopback 3022 does not establish this contract. Do not reuse its source/bundle receipt for `8ba5aff`. |
@@ -55,7 +80,7 @@ SIP/audio, SDK redistribution or signed-distribution acceptance.
 | Canonical database/schema, current catalogs, migration ledger/receipts, function definitions, enabled guard/epoch triggers, role/ACL and writer inventory | Missing current voicemail-specific target evidence. Source SQL and earlier clone results do not establish live deployment. |
 | Existing approved identities, active memberships, exact tenant/extension/deposit-owner mapping, disposable messages with deposit-time provenance, and protected fixture receipt | Missing for mutation acceptance. Historical observations map 3001/user 1 and 1020/user 2 to tenant 1; revalidate rather than assume. Never assign ownership from the current extension assignee. |
 | Eligible active denied tenant, plus an approved distinct non-owner message and revoked-member case | Last recorded target had one active tenant and no eligible active denied-tenant fixture. This remains blocked absent a fresh authorized inventory or separately approved fixture creation. |
-| Completed signed candidate, EAS ID, exact IPA SHA/size/bundle version and installed source; both account identities and observed test times | Missing. Retain Build 114 and rollback packages until a separately verified update is installed. |
+| Completed signed candidate, EAS ID, exact IPA SHA/size/bundle version and installed source; both account identities and observed test times | Build 115 package and registered-device coverage are verified in the linked release receipt. Installation, exact installed-source readback and physical acceptance remain deferred. Retain Build 114 and rollback packages. |
 
 Use the [existing release plan](EC2-CANDIDATE-RELEASE-PLAN-20260929.md) and
 [owned-auth contract](../PHONE11-OWNED-AUTH.md). Ordinary owner-operated sign-in
