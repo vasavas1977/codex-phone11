@@ -638,6 +638,14 @@ function leave(): Promise<void> {
   return leaving;
 }
 
+function closeMeeting(): void {
+  status('Leaving…');
+  // Invalidate pending admission/media now. The main owner bounds the cleanup
+  // wait and destroys this window if an OS prompt or connection never settles.
+  void leave();
+  void ipcRenderer.invoke(MEETING_CHANNELS.finished).catch(() => undefined);
+}
+
 async function join(): Promise<void> {
   if (busy || room || !revision) return;
   const select = el<HTMLSelectElement>('meeting-select');
@@ -646,6 +654,7 @@ async function join(): Promise<void> {
   const wantsMic = el<HTMLInputElement>('start-mic').checked;
   const wantsCamera = el<HTMLInputElement>('start-camera').checked;
   busy = true;
+  select.disabled = true;
   el<HTMLButtonElement>('join').disabled = true;
   el<HTMLInputElement>('start-mic').disabled = true;
   el<HTMLInputElement>('start-camera').disabled = true;
@@ -655,6 +664,7 @@ async function join(): Promise<void> {
   stopPrejoinAudio();
   await mediaLifecycle.run(async current => {
   let next: Room | null = null;
+  let connected = false;
   try {
     clearPreview();
     await prejoinCamera.stopAndDrain();
@@ -669,8 +679,9 @@ async function join(): Promise<void> {
       if (room === next && current()) attachRemote(track, participant);
     });
     next.on(RoomEvent.TrackUnsubscribed, (track, _publication, participant) => {
+      if (room !== next || !current()) return;
       detachTrack(track);
-      if (room === next && current()) syncParticipants();
+      syncParticipants();
       void participant;
     });
     next.on(RoomEvent.TrackPublished, (_publication, participant) => {
@@ -678,8 +689,9 @@ async function join(): Promise<void> {
       void participant;
     });
     next.on(RoomEvent.TrackUnpublished, (publication, participant) => {
+      if (room !== next || !current()) return;
       detachTrack(publication.track);
-      if (room === next && current()) syncParticipants();
+      syncParticipants();
       void participant;
     });
     next.on(RoomEvent.TrackMuted, (_publication, participant) => {
@@ -692,6 +704,7 @@ async function join(): Promise<void> {
     });
     next.on(RoomEvent.ParticipantConnected, () => { if (room === next && current()) syncParticipants(); });
     next.on(RoomEvent.ParticipantDisconnected, participant => {
+      if (room !== next || !current()) return;
       const item = participantTiles.get(participantKey(participant));
       for (const publication of participant.trackPublications.values()) {
         detachTrack(publication.track);
@@ -700,7 +713,7 @@ async function join(): Promise<void> {
       item?.tile.remove();
       item?.rosterEntry.remove();
       participantTiles.delete(participantKey(participant));
-      if (room === next && current()) syncParticipants();
+      syncParticipants();
     });
     next.on(RoomEvent.ActiveSpeakersChanged, speakers => {
       if (room !== next || !current()) return;
@@ -711,13 +724,17 @@ async function join(): Promise<void> {
       if (room === next && current()) syncParticipants();
     });
     next.on(RoomEvent.Disconnected, () => {
-      if (room === next) {
+      // LiveKit also emits Disconnected before rejecting an initial connect.
+      // That failure belongs to the retry path below, not permanent teardown.
+      if (connected && room === next && current()) {
         status('Meeting disconnected');
-        void leave().then(() => ipcRenderer.invoke(MEETING_CHANNELS.finished)).catch(() => undefined);
+        void leave();
+        void ipcRenderer.invoke(MEETING_CHANNELS.finished).catch(() => undefined);
       }
     });
     await next.connect(grant.url, grant.token, { autoSubscribe: true });
     if (!current() || room !== next) return;
+    connected = true;
     canPublish = grant.grantProfile === 'interactive';
     clearChat();
     const chatRoom = next;
@@ -762,6 +779,8 @@ async function join(): Promise<void> {
       }
     }
     if (!current()) return;
+    clearParticipantUi();
+    el('remote-audio').replaceChildren();
     try { await ipcRenderer.invoke(MEETING_CHANNELS.joinFailed); } catch { /* The window may be closing. */ }
     if (!current()) return;
     el<HTMLInputElement>('start-camera').checked = false;
@@ -772,6 +791,7 @@ async function join(): Promise<void> {
   } finally {
     busy = false;
     if (current()) {
+      select.disabled = false;
       el<HTMLButtonElement>('join').disabled = false;
       el<HTMLInputElement>('start-mic').disabled = false;
       el<HTMLInputElement>('start-camera').disabled = false;
@@ -1061,6 +1081,7 @@ async function startDirectMeeting(): Promise<void> {
 
 async function load(): Promise<void> {
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
+  el<HTMLButtonElement>('cancel').addEventListener('click', closeMeeting);
   el<HTMLSelectElement>('channel-select').addEventListener('change', () => { void loadChannelDetails(); });
   el('invite-members').addEventListener('change', updateChannelInviteSelection);
   el<HTMLButtonElement>('start-channel-meeting').addEventListener('click', () => { void startChannelMeeting(); });
@@ -1101,9 +1122,7 @@ async function load(): Promise<void> {
   });
   el<HTMLButtonElement>('chat-send').addEventListener('click', () => { void sendChat(); });
   window.addEventListener('beforeunload', clearChat, { once: true });
-  el<HTMLButtonElement>('leave').addEventListener('click', () => {
-    void (async () => { await leave(); await ipcRenderer.invoke(MEETING_CHANNELS.finished); })();
-  });
+  el<HTMLButtonElement>('leave').addEventListener('click', closeMeeting);
   el<HTMLButtonElement>('enable-audio').addEventListener('click', () => {
     const active = room;
     if (!active) return;
