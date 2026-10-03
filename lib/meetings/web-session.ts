@@ -7,6 +7,8 @@ import type { NativeMeetingAdmission, NativeMeetingPreferences } from "./native-
 
 /** Browser media uses LiveKit's web Room; it never starts a native audio or SIP session. */
 export class WebMeetingLifecycle {
+  private static joinGeneration = 0;
+  private static pendingJoin?: Promise<WebMeetingLifecycle>;
   readonly session: BrowserMeetingSession;
   readonly wasInterruptedBySip = false;
   private unsubscribeOwner?: () => void;
@@ -29,7 +31,33 @@ export class WebMeetingLifecycle {
 
   get room(): BrowserRoom | undefined { return this.session.getRoom(); }
 
-  static async join(
+  static join(
+    expectedOwnerId: number,
+    meetingId: string,
+    admission: NativeMeetingAdmission,
+    preferences: NativeMeetingPreferences,
+  ): Promise<WebMeetingLifecycle> {
+    if (!expectedOwnerId || !meetingId || getAuthSnapshot().user?.id !== expectedOwnerId)
+      return Promise.reject(new MeetingJoinFailure("admission"));
+    const generation = ++this.joinGeneration;
+    const previous = this.pendingJoin;
+    // A connecting room is not yet in the active registry. Wait for its
+    // guarded completion and teardown before another room can capture media.
+    const task = (async () => {
+      await previous?.catch(() => undefined);
+      if (generation !== this.joinGeneration)
+        throw new MeetingJoinFailure("post_connect_guard");
+      return this.joinCurrent(generation, expectedOwnerId, meetingId, admission, preferences);
+    })();
+    this.pendingJoin = task;
+    void task.finally(() => {
+      if (this.pendingJoin === task) this.pendingJoin = undefined;
+    }).catch(() => undefined);
+    return task;
+  }
+
+  private static async joinCurrent(
+    generation: number,
     expectedOwnerId: number,
     meetingId: string,
     admission: NativeMeetingAdmission,
@@ -45,6 +73,7 @@ export class WebMeetingLifecycle {
       const client = await import("livekit-client");
       if (typeof client.Room !== "function") throw new Error("Web meeting client unavailable");
       if (getAuthSnapshot().user?.id !== ownerId) throw new MeetingJoinFailure("admission");
+      if (generation !== this.joinGeneration) throw new MeetingJoinFailure("post_connect_guard");
       lifecycle = new WebMeetingLifecycle(ownerId, admission.grant_profile === "listener", () => new client.Room() as unknown as BrowserRoom);
       stage = "signal_connect";
       await lifecycle.session.connect({
@@ -54,7 +83,8 @@ export class WebMeetingLifecycle {
         camera: preferences.camera,
         receiveOnly: lifecycle.receiveOnly,
       });
-      if (getAuthSnapshot().user?.id !== ownerId) throw new MeetingJoinFailure("post_connect_guard");
+      if (generation !== this.joinGeneration || getAuthSnapshot().user?.id !== ownerId)
+        throw new MeetingJoinFailure("post_connect_guard");
       setActiveNativeMeeting(lifecycle);
       return lifecycle;
     } catch (error) {

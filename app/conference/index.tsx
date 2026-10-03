@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
 import { getAuthSnapshot } from "@/lib/_core/auth";
@@ -28,6 +29,23 @@ function EnabledMeetingPrejoin({
   onBack: () => void;
 }) {
   const join = trpc.meetings.join.useMutation();
+  const routeActive = useRef(true);
+  useEffect(() => {
+    routeActive.current = true;
+    return () => { routeActive.current = false; };
+  }, []);
+  const requireActiveRoute = () => {
+    if (!routeActive.current) throw new MeetingJoinFailure("post_connect_guard");
+  };
+  const openConnectedMeeting = async (meeting: { leave(): Promise<void> }) => {
+    if (!routeActive.current || getAuthSnapshot().user?.id !== user.id) {
+      // Stop only this attempt's session. Failed teardown remains owned by its
+      // lifecycle for retry; never clear a newer meeting from the registry.
+      await meeting.leave().catch(() => { throw new MeetingJoinFailure("room_cleanup"); });
+      throw new MeetingJoinFailure("post_connect_guard");
+    }
+    router.push("/conference/room");
+  };
   return (
     <MeetingPrejoin
       authenticatedDisplayName={user.name ?? ""}
@@ -37,6 +55,7 @@ function EnabledMeetingPrejoin({
         let stage: MeetingJoinStage = "bindings";
         const joiningOwnerId = user.id;
         try {
+          requireActiveRoute();
           if (getAuthSnapshot().user?.id !== joiningOwnerId)
             throw new MeetingJoinFailure("admission");
           if (Platform.OS === "web") {
@@ -45,14 +64,16 @@ function EnabledMeetingPrejoin({
               .catch(error => { throw meetingAdmissionFailure(error); });
             if (getAuthSnapshot().user?.id !== joiningOwnerId)
               throw new MeetingJoinFailure("admission");
+            requireActiveRoute();
             stage = "bindings";
             const { WebMeetingLifecycle } = await import("@/lib/meetings/web-session");
-            await WebMeetingLifecycle.join(joiningOwnerId, preferences.meetingCode, admission, {
+            requireActiveRoute();
+            const meeting = await WebMeetingLifecycle.join(joiningOwnerId, preferences.meetingCode, admission, {
               microphone: preferences.microphoneEnabled,
               camera: preferences.cameraEnabled,
             });
             stage = "connected";
-            router.push("/conference/room");
+            await openConnectedMeeting(meeting);
             return;
           }
           // Default-off builds never load a native meeting/SIP implementation
@@ -62,6 +83,7 @@ function EnabledMeetingPrejoin({
               import("@/lib/sip/call-store"),
               import("@/lib/meetings/native-session"),
             ]);
+          requireActiveRoute();
           stage = "audio_start";
           const calls = useSipCallStore.getState();
           const sipBusy =
@@ -79,19 +101,23 @@ function EnabledMeetingPrejoin({
           }).catch(error => { throw meetingAdmissionFailure(error); });
           if (getAuthSnapshot().user?.id !== joiningOwnerId)
             throw new MeetingJoinFailure("admission");
+          requireActiveRoute();
           stage = "native_setup";
-          await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
+          const meeting = await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
             microphone: preferences.microphoneEnabled,
             camera: preferences.cameraEnabled,
           });
           stage = "connected";
-          router.push("/conference/room");
+          await openConnectedMeeting(meeting);
         } catch (error) {
           if (meetingJoinFailureStage(error)) throw error;
           throw new MeetingJoinFailure(stage);
         }
       }}
-      onBack={onBack}
+      onBack={() => {
+        routeActive.current = false;
+        onBack();
+      }}
     />
   );
 }

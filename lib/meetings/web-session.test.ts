@@ -127,3 +127,47 @@ it("retains a failed teardown for a later retry", async () => {
   await meeting.leave();
   expect(getActiveNativeMeeting()).toBeUndefined();
 });
+
+it("retires a superseded pending join before a replacement room can start", async () => {
+  let finishFirst!: () => void;
+  state.connectWait = new Promise<void>(resolve => { finishFirst = resolve; });
+  const first = WebMeetingLifecycle.join(3001, "first-room", admission, { microphone: true, camera: true });
+  // Observe the rejection immediately so a cancellation cannot be unhandled.
+  const firstResult = first.catch(error => error);
+  await vi.waitFor(() => expect(state.rooms[0]?.connect).toHaveBeenCalledOnce());
+  state.connectWait = undefined;
+  const replacement = WebMeetingLifecycle.join(3001, "replacement-room", admission, { microphone: false, camera: false });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const roomsBeforeFirstStopped = state.rooms.length;
+  finishFirst();
+  const [failure, meeting] = await Promise.all([firstResult, replacement]);
+  expect(roomsBeforeFirstStopped).toBe(1);
+  expect(failure).toMatchObject({ name: "MeetingJoinFailure", stage: "post_connect_guard" });
+  expect(state.rooms[0].disconnect).toHaveBeenCalledWith(true);
+  expect(getActiveNativeMeeting(3001)).toBe(meeting);
+  await meeting.leave();
+  expect(state.listeners.size).toBe(0);
+  expect(getActiveNativeMeeting()).toBeUndefined();
+});
+
+it("blocks replacement media when superseded join cleanup still fails, then allows a clean retry", async () => {
+  let finishFirst!: () => void;
+  state.connectWait = new Promise<void>(resolve => { finishFirst = resolve; });
+  const first = WebMeetingLifecycle.join(3001, "first-room", admission, { microphone: true, camera: true }).catch(error => error);
+  await vi.waitFor(() => expect(state.rooms[0]?.connect).toHaveBeenCalledOnce());
+  state.connectWait = undefined;
+  state.disconnectError = new Error("temporary SDK stop failure");
+  const replacement = WebMeetingLifecycle.join(3001, "replacement-room", admission, { microphone: true, camera: true }).catch(error => error);
+  finishFirst();
+  const [firstFailure, replacementFailure] = await Promise.all([first, replacement]);
+  expect(firstFailure).toMatchObject({ name: "MeetingJoinFailure", stage: "post_connect_guard" });
+  expect(replacementFailure).toMatchObject({ name: "MeetingJoinFailure", stage: "bindings" });
+  expect(state.rooms).toHaveLength(1);
+  expect(getActiveNativeMeeting(3001)).toBeDefined();
+  state.disconnectError = undefined;
+  const retried = await WebMeetingLifecycle.join(3001, "replacement-room", admission, { microphone: false, camera: false });
+  expect(state.rooms).toHaveLength(2);
+  expect(getActiveNativeMeeting(3001)).toBe(retried);
+  await retried.leave();
+  expect(state.listeners.size).toBe(0);
+});

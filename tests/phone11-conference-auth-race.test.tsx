@@ -19,13 +19,26 @@ const state = vi.hoisted(() => ({
   generalMeetingsError: false,
   exactMeeting: { meetingId: "admitted-id", tenantId: 1 } as { meetingId: string; tenantId: number } | null,
   onJoin: undefined as ((preferences: MeetingJoinPreferences) => Promise<void>) | undefined,
+  onBack: undefined as (() => void) | undefined,
   resolveAdmission: undefined as ((admission: { url: string; token: string }) => void) | undefined,
   admit: vi.fn(),
-  webJoin: vi.fn(async () => undefined),
-  nativeJoin: vi.fn(async () => undefined),
+  completedMeeting: { leave: vi.fn(async () => undefined) },
+  webJoin: vi.fn(async () => ({ leave: vi.fn(async () => undefined) })),
+  nativeJoin: vi.fn(async () => ({ leave: vi.fn(async () => undefined) })),
   push: vi.fn(),
   createButton: null as any,
   capabilitiesAvailable: true,
+  routeCleanups: [] as (() => void)[],
+}));
+
+// Static rendering does not run effects. Capture this route's lifecycle cleanup
+// so the same harness can exercise removal by gestures or external navigation.
+vi.mock("react", async importOriginal => ({
+  ...await importOriginal<typeof import("react")>(),
+  useEffect: (setup: () => void | (() => void)) => {
+    const cleanup = setup();
+    if (cleanup) state.routeCleanups.push(cleanup);
+  },
 }));
 
 vi.mock("react-native", () => ({
@@ -60,8 +73,9 @@ vi.mock("@/lib/trpc", () => ({
   } },
 }));
 vi.mock("@/components/meetings/meeting-prejoin", () => ({
-  MeetingPrejoin: ({ onJoin }: { onJoin?: typeof state.onJoin }) => {
+  MeetingPrejoin: ({ onJoin, onBack }: { onJoin?: typeof state.onJoin; onBack: () => void }) => {
     state.onJoin = onJoin;
+    state.onBack = onBack;
     return createElement("div", null, "Meeting prejoin");
   },
 }));
@@ -83,13 +97,16 @@ beforeEach(() => {
   state.generalMeetingsError = false;
   state.exactMeeting = { meetingId: "admitted-id", tenantId: 1 };
   state.onJoin = undefined;
+  state.onBack = undefined;
   state.resolveAdmission = undefined;
   state.admit.mockReset();
-  state.webJoin.mockClear();
-  state.nativeJoin.mockClear();
+  state.completedMeeting.leave.mockClear();
+  state.webJoin.mockReset().mockResolvedValue(state.completedMeeting);
+  state.nativeJoin.mockReset().mockResolvedValue(state.completedMeeting);
   state.push.mockClear();
   state.createButton = null;
   state.capabilitiesAvailable = true;
+  state.routeCleanups = [];
   const admission = new Promise<{ url: string; token: string }>(resolve => {
     state.resolveAdmission = resolve;
   });
@@ -101,6 +118,60 @@ const preferences: MeetingJoinPreferences = {
   microphoneEnabled: false,
   cameraEnabled: false,
 };
+
+const cancelledRoutes = [
+  ["web", "Back"], ["ios", "Back"],
+  ["web", "unmount"], ["ios", "unmount"],
+] as const;
+const cancelRoute = (action: "Back" | "unmount") => {
+  if (action === "Back") state.onBack!();
+  else state.routeCleanups.forEach(cleanup => cleanup());
+};
+
+it.each(cancelledRoutes)("cancels %s joining before media starts on %s during admission", async (platform, action) => {
+  state.platform = platform;
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  const pendingJoin = state.onJoin!(preferences);
+  await vi.waitFor(() => expect(state.admit).toHaveBeenCalledOnce());
+  cancelRoute(action);
+  state.resolveAdmission!({ url: "wss://tenant-a.invalid", token: "tenant-a-token" });
+  await expect(pendingJoin).rejects.toMatchObject({ name: "MeetingJoinFailure", stage: "post_connect_guard" });
+  expect(state.webJoin).not.toHaveBeenCalled();
+  expect(state.nativeJoin).not.toHaveBeenCalled();
+  expect(state.push).not.toHaveBeenCalled();
+});
+
+it.each(cancelledRoutes)("stops a late %s connection without returning to the meeting after %s", async (platform, action) => {
+  state.platform = platform;
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  state.admit.mockResolvedValueOnce({ url: "wss://tenant-a.invalid", token: "tenant-a-token" });
+  let finishConnection!: (meeting: typeof state.completedMeeting) => void;
+  const connecting = new Promise<typeof state.completedMeeting>(resolve => { finishConnection = resolve; });
+  const join = platform === "web" ? state.webJoin : state.nativeJoin;
+  join.mockReturnValueOnce(connecting);
+  const pendingJoin = state.onJoin!(preferences);
+  await vi.waitFor(() => expect(join).toHaveBeenCalledOnce());
+  cancelRoute(action);
+  finishConnection(state.completedMeeting);
+  await expect(pendingJoin).rejects.toMatchObject({ name: "MeetingJoinFailure", stage: "post_connect_guard" });
+  expect(state.completedMeeting.leave).toHaveBeenCalledOnce();
+  expect(state.push).not.toHaveBeenCalled();
+});
+
+it("preserves failed cancellation cleanup for the lifecycle to retry", async () => {
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  state.admit.mockResolvedValueOnce({ url: "wss://tenant-a.invalid", token: "tenant-a-token" });
+  let finishConnection!: (meeting: typeof state.completedMeeting) => void;
+  state.webJoin.mockReturnValueOnce(new Promise(resolve => { finishConnection = resolve; }));
+  state.completedMeeting.leave.mockRejectedValueOnce(new Error("temporary private teardown failure"));
+  const pendingJoin = state.onJoin!(preferences);
+  await vi.waitFor(() => expect(state.webJoin).toHaveBeenCalledOnce());
+  state.onBack!();
+  finishConnection(state.completedMeeting);
+  await expect(pendingJoin).rejects.toMatchObject({ name: "MeetingJoinFailure", stage: "room_cleanup" });
+  expect(state.completedMeeting.leave).toHaveBeenCalledOnce();
+  expect(state.push).not.toHaveBeenCalled();
+});
 
 it.each(["web", "ios"] as const)("rejects %s join when the account changes while admission is pending", async platform => {
   state.platform = platform;
