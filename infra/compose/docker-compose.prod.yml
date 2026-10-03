@@ -86,6 +86,7 @@ services:
     restart: always
     environment:
       FREESWITCH_DOMAIN: ${SIP_DOMAIN}
+      PHONE11_VOICEMAIL_HOOK_READY: ${PHONE11_VOICEMAIL_HOOK_READY:-false}
       EXTERNAL_RTP_IP: ${EXTERNAL_IP}
       EXTERNAL_SIP_IP: ${EXTERNAL_IP}
     ports:

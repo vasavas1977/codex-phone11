@@ -20,7 +20,7 @@ import { cacheGetOrSet, rateLimitCheck, invalidateCache } from "./redis";
 import { normalizeToE164, THAI_EMERGENCY_NUMBERS } from "./e164";
 import { processCdr } from "./cdr-processor";
 import { generateIvrDialplan, generateRingGroupDialplan, generateQueueDialplan, evaluateTimeCondition } from "./dialplan-generators";
-import { voicemailDialplanActions } from "./voicemail-dialplan";
+import { legacyVoicemailAction, protectedVoicemailAction, voicemailDialplanActions, voicemailHookReady } from "./voicemail-dialplan";
 
 const router = Router();
 
@@ -320,7 +320,7 @@ function notFoundXml(): string {
 }
 
 function extensionDialplanXml(ext: any, callerIdNumber: string): string {
-  const voicemail = voicemailDialplanActions(ext, process.env.PHONE11_VOICEMAIL_HOOK_READY === "true");
+  const voicemail = voicemailDialplanActions(ext, voicemailHookReady());
   const beforeBridge = voicemail.beforeBridge ? `${voicemail.beforeBridge}\n          ` : "";
   return `<?xml version="1.0" encoding="UTF-8"?>
 <document type="freeswitch/xml">
@@ -408,7 +408,7 @@ async function timeConditionDialplanXml(tcId: number, tenantId: number, domain: 
   } else if (result.action === "ivr" && result.target) {
     return generateIvrDialplan(parseInt(result.target), tenantId);
   } else if (result.action === "voicemail") {
-    return voicemailDialplanXml(result.target || "1000", domain || "phone11.cloud");
+    return voicemailDialplanXml(result.target, domain || "phone11.cloud", tenantId);
   }
   return busyDialplanXml("Outside business hours");
 }
@@ -456,14 +456,17 @@ async function getTenantIdFromCaller(fromUser: string, domain: string): Promise<
   return result.rows.length === 1 ? result.rows[0].tenant_id : null;
 }
 
-function voicemailDialplanXml(extension: string, domain: string): string {
+async function voicemailDialplanXml(extension: string, domain: string, tenantId: number): Promise<string> {
+  const action = voicemailHookReady()
+    ? await protectedVoicemailAction(tenantId, extension, "direct")
+    : legacyVoicemailAction(domain, extension || "1000");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <document type="freeswitch/xml">
   <section name="dialplan">
     <context name="default">
-      <extension name="voicemail_${extension}">
+      <extension name="voicemail_${extension || "1000"}">
         <condition>
-          <action application="voicemail" data="default ${domain} ${extension}"/>
+          ${action}
         </condition>
       </extension>
     </context>

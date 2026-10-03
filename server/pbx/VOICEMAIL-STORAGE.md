@@ -54,7 +54,9 @@ through the normal deployment process:
    admission never starts an inbox recording. The flag remains **off** until
    the Lua script, fixed runner, Node producer, durable outbox, relay, exact
    mailbox map, and final-file lifecycle have been commissioned on the active
-   FreeSWITCH host. The active FreeSWITCH path and completed event have not
+   FreeSWITCH host. See `VOICEMAIL-ROUTING.md` for all deposit entry routes,
+   host/backend mode agreement, and the exact helper staging prerequisite.
+   The active FreeSWITCH path and completed event have not
    been observed. Do not enable the consumer alone or claim end-to-end readiness.
    The checked-in `phone11-voicemail-runner.sh` must be installed at the hook's
    fixed path and run the compiled producer under one `flock` for admission,

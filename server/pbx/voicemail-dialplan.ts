@@ -1,3 +1,5 @@
+import { query } from "./db";
+
 /**
  * The Phone11 inbox deposit path is opt-in.  FreeSWITCH must not be asked to
  * record for that inbox until its durable producer and relay are commissioned.
@@ -15,6 +17,7 @@ export type VoicemailExtensionRoute = {
 export function voicemailDialplanActions(
   extension: VoicemailExtensionRoute,
   hookReady: boolean,
+  entry: "bridge" | "direct" = "bridge",
 ): { beforeBridge: string; afterBridge: string } {
   if (extension.voicemail_enabled !== true) return { beforeBridge: "", afterBridge: "" };
 
@@ -22,7 +25,7 @@ export function voicemailDialplanActions(
     // Preserve the existing PBX route until the new producer is commissioned.
     return {
       beforeBridge: "",
-      afterBridge: `<action application="voicemail" data="default ${extension.sip_domain} ${extension.sip_username}"/>`,
+      afterBridge: legacyVoicemailAction(extension.sip_domain, extension.sip_username),
     };
   }
 
@@ -45,7 +48,48 @@ export function voicemailDialplanActions(
   return {
     // A completed answered call hangs up after the bridge.  A failed bridge
     // may continue, but the Lua hook admits only the expected failure causes.
-    beforeBridge: `<action application="set" data="continue_on_fail=true"/>`,
-    afterBridge: `<action application="lua" data="/etc/freeswitch/scripts/phone11_voicemail_deposit.lua ${extension.tenant_id} ${extension.extension_number} ${extension.sip_username} ${extension.sip_domain}"/>`,
+    beforeBridge: entry === "bridge" ? `<action application="set" data="continue_on_fail=true"/>` : "",
+    afterBridge: `<action application="lua" data="/etc/freeswitch/scripts/phone11_voicemail_deposit.lua ${extension.tenant_id} ${extension.extension_number} ${extension.sip_username} ${extension.sip_domain}${entry === "direct" ? " direct" : ""}"/>`,
   };
+}
+
+/** Backend legacy mode is fixed by the generated application path. FreeSWITCH
+ * checks its own process flag at execution time, including for cached XML. */
+export function legacyVoicemailAction(domain: string, account: string): string {
+  return `<action application="lua" data="/etc/freeswitch/scripts/phone11_legacy_voicemail.lua ${account} ${domain}"/>`;
+}
+
+export function voicemailHookReady(): boolean {
+  return process.env.PHONE11_VOICEMAIL_HOOK_READY === "true";
+}
+
+/** Resolve only current personal mailbox assignments; never use call variables
+ * as the tenant or domain for a protected deposit. The producer rechecks
+ * ownership under its admission lock before allowing any recording. */
+export async function protectedVoicemailAction(
+  tenantId: number,
+  target: string,
+  entry: "bridge" | "direct",
+): Promise<string> {
+  const refused = '<action application="hangup" data="NORMAL_TEMPORARY_FAILURE"/>';
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0 ||
+      typeof target !== "string" || !/^[1-9][0-9]{0,15}$/.test(target)) return refused;
+  const result = await query(
+    `SELECT e.tenant_id, e.extension_number, e.type, e.user_id, e.voicemail_enabled,
+            sa.sip_username, sa.sip_domain
+     FROM extensions e
+     JOIN tenants t ON t.id = e.tenant_id AND t.status = 'active'
+     JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = e.user_id
+     JOIN tenant_memberships tm ON tm.user_id = e.user_id AND tm.tenant_id = e.tenant_id AND tm.status = 'active'
+     JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.tenant_id = e.tenant_id
+       AND sa.user_id = e.user_id AND sa.status = 'active' AND sa.deleted_at IS NULL
+     WHERE e.tenant_id = $1 AND e.extension_number = $2
+       AND e.type = 'user' AND e.user_id IS NOT NULL AND e.status = 'active'
+       AND e.deleted_at IS NULL AND e.voicemail_enabled = true`,
+    [tenantId, target],
+  );
+  // Ambiguous identities and reassigned SIP accounts must not pick a mailbox.
+  if (result.rows.length !== 1 || result.rows[0].tenant_id !== tenantId ||
+      result.rows[0].extension_number !== target) return refused;
+  return voicemailDialplanActions(result.rows[0], true, entry).afterBridge || refused;
 }

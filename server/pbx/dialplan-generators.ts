@@ -5,6 +5,7 @@
  */
 import { query } from "./db";
 import { cacheGetOrSet } from "./redis";
+import { legacyVoicemailAction, protectedVoicemailAction, voicemailHookReady } from "./voicemail-dialplan";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // IVR Dialplan XML
@@ -131,7 +132,8 @@ async function resolveRingGroupFallback(group: any, tenantId: number): Promise<R
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function generateRingGroupDialplan(groupId: number, tenantId: number): Promise<string> {
-  return cacheGetOrSet(`dialplan:ringgroup:${tenantId}:${groupId}`, 300, async () => {
+  const hookReady = voicemailHookReady();
+  const generate = async () => {
     const groupRes = await query(`SELECT * FROM ring_groups WHERE id = $1 AND tenant_id = $2`, [groupId, tenantId]);
     const group = groupRes.rows[0];
     if (!group) return generateNotFoundXml();
@@ -168,11 +170,15 @@ export async function generateRingGroupDialplan(groupId: number, tenantId: numbe
     }
 
     // Fallback action
-    const fallback = await resolveRingGroupFallback(group, tenantId);
+    const fallback = hookReady && group.fallback_action === "voicemail"
+      ? { action: "voicemail", target: group.fallback_target }
+      : await resolveRingGroupFallback(group, tenantId);
     let fallbackXml = "";
     switch (fallback.action) {
       case "voicemail":
-        fallbackXml = `          <action application="voicemail" data="default \${domain_name} ${fallback.target}"/>`;
+        fallbackXml = hookReady
+          ? `          ${await protectedVoicemailAction(tenantId, fallback.target, "bridge")}`
+          : `          ${legacyVoicemailAction("${domain_name}", fallback.target)}`;
         break;
       case "transfer":
         fallbackXml = `          <action application="transfer" data="${fallback.target} XML default"/>`;
@@ -206,7 +212,12 @@ ${fallbackXml}
     </context>
   </section>
 </document>`;
-  });
+  };
+  // Never reuse legacy XML or a stale mailbox assignment after commissioning.
+  if (hookReady) return generate();
+  const cached = await cacheGetOrSet(`dialplan:ringgroup:${tenantId}:${groupId}`, 300, generate);
+  // A prior backend version may have cached a direct mod_voicemail action.
+  return cached.includes('application="voicemail"') ? generate() : cached;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -214,7 +225,8 @@ ${fallbackXml}
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function generateQueueDialplan(queueId: number, tenantId: number): Promise<string> {
-  return cacheGetOrSet(`dialplan:queue:${tenantId}:${queueId}`, 120, async () => {
+  const hookReady = voicemailHookReady();
+  const generate = async () => {
     const queueRes = await query(`SELECT * FROM call_queues WHERE id = $1 AND tenant_id = $2`, [queueId, tenantId]);
     const queue = queueRes.rows[0];
     if (!queue) return generateNotFoundXml();
@@ -255,7 +267,7 @@ ${queue.announce_position ? `          <action application="playback" data="ivr/
       </extension>
       <extension name="queue-overflow-${tenantId}-${queue.name}">
         <condition field="destination_number" expression="^queue_overflow_${tenantId}_${queueId}$">
-${getOverflowXml(queue)}
+${await getOverflowXml(queue, tenantId, hookReady)}
         </condition>
       </extension>
     </context>
@@ -270,13 +282,18 @@ ${agents.map((a: any) => `          <member simo="1" timeout="${queue.wrap_up_ti
     </configuration>
   </section>
 </document>`;
-  });
+  };
+  if (hookReady) return generate();
+  const cached = await cacheGetOrSet(`dialplan:queue:${tenantId}:${queueId}`, 120, generate);
+  return cached.includes('application="voicemail"') ? generate() : cached;
 }
 
-function getOverflowXml(queue: any): string {
+async function getOverflowXml(queue: any, tenantId: number, hookReady: boolean): Promise<string> {
   switch (queue.overflow_action) {
     case "voicemail":
-      return `          <action application="voicemail" data="default \${domain_name} ${queue.overflow_target || "1000"}"/>`;
+      return hookReady
+        ? `          ${await protectedVoicemailAction(tenantId, queue.overflow_target, "direct")}`
+        : `          ${legacyVoicemailAction("${domain_name}", queue.overflow_target || "1000")}`;
     case "transfer":
       return `          <action application="transfer" data="${queue.overflow_target} XML default"/>`;
     case "ivr":

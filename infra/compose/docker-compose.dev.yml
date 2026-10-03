@@ -57,6 +57,7 @@ services:
     restart: unless-stopped
     environment:
       FREESWITCH_DOMAIN: ${SIP_DOMAIN:-sip.cloudphone11.local}
+      PHONE11_VOICEMAIL_HOOK_READY: ${PHONE11_VOICEMAIL_HOOK_READY:-false}
       EXTERNAL_RTP_IP: ${EXTERNAL_IP:-127.0.0.1}
       EXTERNAL_SIP_IP: ${EXTERNAL_IP:-127.0.0.1}
     ports:

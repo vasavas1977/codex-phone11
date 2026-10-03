@@ -45,12 +45,12 @@ beforeEach(() => {
     .mockResolvedValueOnce({ rows: [extension] });
 });
 
-async function dialplan(): Promise<string> {
+async function dialplan(destination = "3001"): Promise<string> {
   const response = await fetch(`${base}/fs/dialplan`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-fs-secret": secret },
     body: JSON.stringify({
-      "Caller-Destination-Number": "3001",
+      "Caller-Destination-Number": destination,
       "variable_sip_from_user": "3002",
       "variable_domain_name": "phone11.cloud",
     }),
@@ -60,7 +60,7 @@ async function dialplan(): Promise<string> {
 }
 
 describe("FreeSWITCH personal voicemail handoff", () => {
-  it("keeps the legacy route exactly while the opt-in flag is off", async () => {
+  it("keeps the legacy call actions guarded while the opt-in flag is off", async () => {
     const xml = await dialplan();
     expect(xml).toBe(`<?xml version="1.0" encoding="UTF-8"?>
 <document type="freeswitch/xml">
@@ -72,7 +72,7 @@ describe("FreeSWITCH personal voicemail handoff", () => {
           <action application="set" data="hangup_after_bridge=true"/>
           <action application="set" data="call_timeout=30"/>
           <action application="bridge" data="user/3001@phone11.cloud"/>
-          <action application="voicemail" data="default phone11.cloud 3001"/>
+          <action application="lua" data="/etc/freeswitch/scripts/phone11_legacy_voicemail.lua 3001 phone11.cloud"/>
         </condition>
       </extension>
     </context>
@@ -106,5 +106,50 @@ describe("FreeSWITCH personal voicemail handoff", () => {
     const xml = await dialplan();
     expect(xml).not.toContain('application="bridge"');
     expect(xml).not.toContain("phone11_voicemail_deposit.lua");
+  });
+});
+
+
+describe("time-condition deposits", () => {
+  function timeCondition(target: string, rows = [extension]) {
+    db.query.mockReset().mockResolvedValueOnce({ rows: [{ tenant_id: 12 }] })
+      .mockResolvedValueOnce({ rows: [{ timezone: "Asia/Bangkok", nomatch_action: "voicemail", nomatch_target: target }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows });
+  }
+
+  it("preserves the legacy domain and default target with the hook off", async () => {
+    timeCondition("");
+    const xml = await dialplan("*6001");
+    expect(xml).toContain('extension name="voicemail_1000"');
+    expect(xml).toContain('phone11_legacy_voicemail.lua 1000 phone11.cloud"');
+    expect(db.query).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses the resolved mailbox domain for a protected direct deposit", async () => {
+    vi.stubEnv("PHONE11_VOICEMAIL_HOOK_READY", "true");
+    timeCondition("3001", [{ ...extension, sip_domain: "tenant.phone11.cloud" }]);
+    const xml = await dialplan("*6001");
+    expect(xml).toContain("12 3001 3001 tenant.phone11.cloud direct");
+    expect(xml).not.toContain('application="voicemail"');
+    expect(db.query.mock.calls[3][1]).toEqual([12, "3001"]);
+  });
+
+  it("refuses a reassigned or unavailable destination", async () => {
+    vi.stubEnv("PHONE11_VOICEMAIL_HOOK_READY", "true");
+    timeCondition("3001", []);
+    const xml = await dialplan("*6001");
+    expect(xml).toContain('application="hangup"');
+    expect(xml).not.toContain("phone11_voicemail_deposit.lua");
+    expect(xml).not.toContain('application="voicemail"');
+  });
+
+  it("does not infer mailbox 1000 when no protected target is configured", async () => {
+    vi.stubEnv("PHONE11_VOICEMAIL_HOOK_READY", "true");
+    timeCondition("");
+    const xml = await dialplan("*6001");
+    expect(xml).toContain('application="hangup"');
+    expect(xml).not.toContain("phone11_voicemail_deposit.lua");
+    expect(db.query).toHaveBeenCalledTimes(3);
   });
 });

@@ -1,11 +1,13 @@
 -- Run with Lua 5.3+ or a compatible parser/runtime. No FreeSWITCH or network
 -- access is needed: the producer process and channel are deliberately mocked.
 local hook = "infra/configs/freeswitch/scripts/phone11_voicemail_deposit.lua"
+local getenv = os.getenv
 local uuid = "11111111-1111-4111-8111-111111111111"
 
 local function run_case(options)
   local events = {}
-  local variables = { uuid = uuid, bridge_hangup_cause = options.cause or "NO_ANSWER" }
+  local variables = { uuid = uuid, bridge_hangup_cause = options.cause ~= false and (options.cause or "NO_ANSWER") or nil }
+  os.getenv = function(name) assert(name == "PHONE11_VOICEMAIL_HOOK_READY"); if options.uncommissioned then return nil end; return options.flag or "true" end
   argv = options.argv or { "12", "3001", "3001", "phone11.cloud" }
   freeswitch = { consoleLog = function() end }
   session = {
@@ -62,4 +64,12 @@ assert(run_case({ executeError = true }) == "admit,voicemail")
 assert(run_case({ path = "/private/a.wav", account = "other" }) == "admit,voicemail")
 assert(run_case({ path = "/private/a.wav", cause = "NORMAL_CLEARING" }) == "")
 assert(run_case({ path = "/private/a.wav", argv = { "0", "3001", "3001", "phone11.cloud" } }) == "")
-print("Phone11 Lua hook: 12 cases passed")
+assert(run_case({ path = "/private/a.wav", cause = false, argv = { "12", "3001", "3001", "phone11.cloud", "direct" } }) == "admit,voicemail,complete")
+assert(run_case({ admit = false, cause = false, argv = { "12", "3001", "3001", "phone11.cloud", "direct" } }) == "admit,hangup")
+assert(run_case({ cause = false }) == "")
+assert(run_case({ argv = { "12", "3001", "3001", "phone11.cloud", "invalid" } }) == "")
+assert(run_case({ flag = "false" }) == "hangup")
+assert(run_case({ flag = "false", cause = false, argv = { "12", "3001", "3001", "phone11.cloud", "direct" } }) == "hangup")
+assert(run_case({ uncommissioned = true }) == "hangup")
+os.getenv = getenv
+print("Phone11 Lua hook: 20 cases passed")

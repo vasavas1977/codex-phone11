@@ -14,6 +14,9 @@
     - PSTN breakout via Kamailio → Dinstar SBC
 
   Place in: /etc/freeswitch/dialplan/cloudphone11.xml
+  Install scripts/phone11_legacy_voicemail.lua before loading this dialplan.
+  Static deposits have no trusted tenant/owner mapping and refuse when the
+  FreeSWITCH process PHONE11_VOICEMAIL_HOOK_READY flag is true.
   ============================================================================
 -->
 
@@ -64,8 +67,7 @@
         <action application="bridge" data="user/$1@${domain_name}"/>
 
         <!-- If no answer, go to voicemail -->
-        <action application="answer"/>
-        <action application="voicemail" data="default ${domain_name} $1"/>
+        <action application="lua" data="/etc/freeswitch/scripts/phone11_legacy_voicemail.lua $1 ${domain_name} answer"/>
       </condition>
     </extension>
 
@@ -95,7 +97,7 @@
         <!-- Ring all sales extensions simultaneously -->
         <action application="bridge" data="user/1001@${domain_name},user/1002@${domain_name},user/1003@${domain_name}"/>
         <!-- Fallback to sales voicemail -->
-        <action application="voicemail" data="default ${domain_name} 7001"/>
+        <action application="lua" data="/etc/freeswitch/scripts/phone11_legacy_voicemail.lua 7001 ${domain_name}"/>
       </condition>
     </extension>
 
@@ -105,7 +107,7 @@
         <action application="set" data="call_timeout=20"/>
         <action application="set" data="continue_on_fail=true"/>
         <action application="bridge" data="user/2001@${domain_name},user/2002@${domain_name},user/2003@${domain_name}"/>
-        <action application="voicemail" data="default ${domain_name} 7002"/>
+        <action application="lua" data="/etc/freeswitch/scripts/phone11_legacy_voicemail.lua 7002 ${domain_name}"/>
       </condition>
     </extension>
 
