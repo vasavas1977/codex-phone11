@@ -165,8 +165,67 @@ test('autoplay rejection leaves local controls available and does not mark read'
     audio.emit('playing');
     await Promise.resolve();
     assert.equal(reads, 0);
+    assert.equal(player.state.error, 'Press play to listen.');
+    audio.playErrorName = null;
+    await audio.play();
+    assert.equal(player.state.error, 'Press play to listen.');
+    audio.emit('playing');
+    assert.equal(player.state.error, null);
+    await Promise.resolve();
+    assert.equal(reads, 1);
     player.stop();
     assert.deepEqual(revoked, created);
+  });
+});
+
+test('playing from an old source cannot clear current autoplay guidance or mark a different revision read', async () => {
+  await withUrls(async () => {
+    const audio = new FakeAudio();
+    audio.playErrorName = 'NotAllowedError';
+    const reads: [string, number][] = [];
+    const player = new VoicemailPlayer({
+      audio: audio as unknown as HTMLAudioElement,
+      fetchAudio: async (revision, id) => download(revision, id),
+      markRead: async (revision, id) => { reads.push([revision, id]); },
+      onState: () => undefined,
+    });
+    await player.play('old-account', 1);
+    const oldSource = audio.src;
+    await player.play('current-account', 2);
+    audio.paused = false;
+    audio.overrideCurrentSrc = oldSource;
+    audio.emit('playing');
+    await Promise.resolve();
+    assert.equal(player.state.error, 'Press play to listen.');
+    assert.deepEqual(reads, []);
+    audio.overrideCurrentSrc = null;
+    audio.emit('playing');
+    await Promise.resolve();
+    assert.equal(player.state.error, null);
+    assert.deepEqual(reads, [['current-account', 2]]);
+  });
+});
+
+test('teardown during the cleared-guidance state callback prevents queued mark-read work', async () => {
+  await withUrls(async () => {
+    const audio = new FakeAudio();
+    audio.playErrorName = 'NotAllowedError';
+    let reads = 0;
+    const player = new VoicemailPlayer({
+      audio: audio as unknown as HTMLAudioElement,
+      fetchAudio: async (revision, id) => download(revision, id),
+      markRead: async () => { reads++; },
+      onState: state => {
+        if (state.id === 1 && !state.loading && state.error === null) player.stop();
+      },
+    });
+    await player.play('r1', 1);
+    audio.playErrorName = null;
+    await audio.play();
+    audio.emit('playing');
+    await Promise.resolve();
+    assert.equal(reads, 0);
+    assert.deepEqual(player.state, { id: null, loading: false, error: null });
   });
 });
 
@@ -188,6 +247,8 @@ test('decode rejection and current-source media error show playback retry instea
     audio.emit('error');
     assert.equal(player.state.error, 'This voicemail could not be played. Try again.');
     assert.equal(player.state.loading, false);
+    audio.emit('playing');
+    assert.equal(player.state.error, 'This voicemail could not be played. Try again.');
   });
 });
 

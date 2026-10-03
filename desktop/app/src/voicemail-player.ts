@@ -21,6 +21,7 @@ type VoicemailPlayerOptions = {
 const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 const LOAD_ERROR = 'Could not load voicemail. Try again.';
 const PLAYBACK_ERROR = 'This voicemail could not be played. Try again.';
+const AUTOPLAY_GUIDANCE = 'Press play to listen.';
 
 /** Owns one local voicemail blob; callers stop it on account or route changes. */
 export class VoicemailPlayer {
@@ -94,7 +95,7 @@ export class VoicemailPlayer {
         const permissionDenied = error instanceof Error && error.name === 'NotAllowedError';
         this.publish({ id, loading: false,
           error: this.currentState.error === PLAYBACK_ERROR ? PLAYBACK_ERROR :
-            permissionDenied ? 'Press play to listen.' : PLAYBACK_ERROR });
+            permissionDenied ? AUTOPLAY_GUIDANCE : PLAYBACK_ERROR });
       }
     }
   }
@@ -140,7 +141,14 @@ export class VoicemailPlayer {
         this.audio.paused || this.audio.currentSrc !== url) return;
     this.readMarked = true;
     const epoch = this.epoch;
-    void Promise.resolve().then(() => this.markRead(revision, id)).catch(() => {
+    if (this.currentState.error === AUTOPLAY_GUIDANCE) {
+      this.publish({ id, loading: false, error: null });
+    }
+    void Promise.resolve().then(() => {
+      // Publishing feedback can synchronously stop or replace this media session.
+      if (this.current(epoch) && this.currentState.id === id &&
+          this.sourceUrl === url && this.sourceRevision === revision) return this.markRead(revision, id);
+    }).catch(() => {
       if (this.current(epoch) && this.currentState.id === id && this.sourceUrl === url) {
         this.publish({ id, loading: false,
           error: this.currentState.error === PLAYBACK_ERROR ? PLAYBACK_ERROR :
