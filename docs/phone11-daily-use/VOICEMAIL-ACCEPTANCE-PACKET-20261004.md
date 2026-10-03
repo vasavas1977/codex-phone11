@@ -2,8 +2,9 @@
 
 **PREPARATION_ONLY — blocked on target pins, eligible fixtures and separately
 authorized acceptance.** This packet is not an executable deployment approval.
-No authentication, API probe, mutation, deposit, migration, route change, storage
-commissioning, installation or handset check was performed to prepare it.
+The original packet preparation performed no authentication, API probe, mutation,
+deposit, migration, route change, storage commissioning, installation or handset
+check. The separate authenticated metadata refresh below has its own boundary.
 Do not enable `PHONE11_VOICEMAIL_HOOK_READY` from this document.
 
 Subsequent source/release addendum: [Build 115](BUILD-115-RELEASE-20261004.md)
@@ -52,7 +53,7 @@ SIP/audio, SDK redistribution or signed-distribution acceptance.
 
 Fresh metadata access pinned the expected AWS account, running Thailand EC2
 instance and existing SSH host key. Two bounded read-only catalog transactions
-and Docker/Nginx metadata reads made no API calls, deposits, schema changes,
+and Docker/Nginx metadata reads made no application/media API calls, deposits, schema changes,
 route changes or flag activation. Full receipts remain private.
 
 - The host had 31 running containers. The retained `c5140f4` admission candidate
@@ -72,6 +73,15 @@ route changes or flag activation. Full receipts remain private.
 - Build 115 is a verified signed candidate; installation and physical tests
   remain owner-deferred. Its package receipt does not close server or producer
   commissioning.
+
+A second FreeSWITCH metadata read at 01:37 found the new legacy helper absent
+from the mounted runtime. The installed deposit helper hashes to
+`bbd3d515ead48e327b5b5010c0bd5bc331b920182b32d49355869c9a8def51ae`.
+The local read-only `module_exists mod_lua` command failed with exit 255;
+loaded-module status is **unknown**, not a confirmed missing module. Exact
+helper staging and loaded-module proof are required before releasing the new
+backend, including with the ingestion flag off. No helper was installed or
+FreeSWITCH configuration changed during this refresh.
 
 | Required before acceptance | Current packet state |
 | --- | --- |

@@ -49,6 +49,12 @@ On the integrated source tree, the lead ran:
 - Independent reviewers approved the desktop, host-removal and voicemail
   changes as source only. No live provider or physical-media acceptance is
   inferred from their mocked lifecycle checks.
+- The daily-use workflow now explicitly runs the new host/voicemail suites and
+  all three Lua runners, including runtime/packaging path filters. Its 13
+  selected TypeScript suites passed locally (114 tests); YAML structure, shell
+  syntax and exact test paths passed. Local Lua is 5.5.1; hosted execution uses
+  explicitly installed 5.4. Real PostgreSQL coverage remains a separate local
+  disposable harness, not a fabricated hosted check.
 
 Hosted CI and new package receipts must be pinned separately after the final
 source push; an older green workflow is not evidence for this batch.
