@@ -53,7 +53,7 @@ export const connect11PlainVideoEvictionSchema = z
     eviction_id: z.string().uuid(),
     contract_version: z.literal(contractVersion),
     status: evictionStatusSchema,
-    revoke_token_ts: z.number().int().positive(),
+    revoke_token_ts: z.number().int().positive().refine(Number.isSafeInteger),
     created_at: z.string().datetime({ offset: true }).nullable(),
     completed_at: z.string().datetime({ offset: true }).nullable(),
   })

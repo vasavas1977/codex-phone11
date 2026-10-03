@@ -73,4 +73,31 @@ describe("host control eviction transport compatibility", () => {
       createConnect11PlainVideoFacade(config, request).evictionStatus(id),
     ).resolves.toEqual(completed);
   });
+  it.each([0, -1, Number.MAX_SAFE_INTEGER + 1, 1.5, "1790000001", null])(
+    "refuses nonpositive, unsafe or malformed revocation cutoff: %s",
+    async (revoke_token_ts) => {
+      const malformed = {
+        ...receipt,
+        status: "completed",
+        completed_at: "2026-10-04T00:00:01.123456+00:00",
+        revoke_token_ts,
+      };
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify(malformed), { status: 202 }),
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify(malformed), { status: 200 }),
+        );
+      const facade = createConnect11PlainVideoFacade(config, request);
+      await expect(
+        facade.requestEviction(
+          { meetingId: id, participantId: "stable_member" },
+          "phone11_removal_key_0001",
+        ),
+      ).rejects.toThrow("unavailable");
+      await expect(facade.evictionStatus(id)).rejects.toThrow("unavailable");
+    },
+  );
 });
