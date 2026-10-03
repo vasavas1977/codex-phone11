@@ -232,7 +232,7 @@ jobs:
       - name: Test and compile the isolated desktop app
         run: |
           ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm --prefix desktop/app ci --no-audit --no-fund
-          node --import tsx --test desktop/tests/authenticated-provider.node.ts
+          node --import tsx --test desktop/tests/*.node.ts
           npm --prefix desktop/app test
           npm --prefix desktop/app run typecheck
           PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build

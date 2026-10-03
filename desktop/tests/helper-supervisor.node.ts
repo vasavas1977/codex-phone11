@@ -332,10 +332,11 @@ test("verified optional init capability permits callback-confirmed transfer; old
   }
 });
 
-test("late transfer callback after End cannot mark a new call transferred", async () => {
+test("late transfer callback after End cannot restore a retired call", async () => {
   const h = harness("transfer-late");
   try {
     const generation = await h.supervisor.start();
+    await waitFor(() => h.supervisor.snapshot().registered);
     await h.supervisor.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" });
     await waitFor(() => h.supervisor.snapshot().call?.state === "connected");
     const action = { sessionRevision: binding.revision, generation, callId: "201" };

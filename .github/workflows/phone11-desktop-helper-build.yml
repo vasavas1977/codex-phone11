@@ -11,6 +11,22 @@ permissions:
   contents: read
 
 jobs:
+  call-control-protocol:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require the native protocol test compiler
+        shell: bash
+        run: clang++ --version
+      - name: Test callback-confirmed controls with the isolated fake SDK
+        shell: bash
+        run: |
+          python3 desktop/native/test_accept_end.py
+          python3 desktop/native/test_controls.py
+          python3 desktop/native/test_hold_reconcile.py
+          python3 desktop/native/test_transfer.py
+
   macos-arm64:
     runs-on: macos-15
     steps:
