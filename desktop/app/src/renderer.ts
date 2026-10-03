@@ -25,6 +25,9 @@ const byId = (id: string): HTMLElement => document.getElementById(id)!;
 const maybeById = (id: string): HTMLElement | null => document.getElementById(id);
 let state: PublicState | null = null;
 let busy = false;
+// IPC replies can arrive after newer push snapshots or action replies.
+let callingSnapshotEpoch = 0;
+let callingRequestEpoch = 0;
 let accountEpoch = 0;
 let pendingSelection: DesktopTenantSelection | null = null;
 let selectionBusy = false;
@@ -445,19 +448,26 @@ async function request(input: unknown): Promise<void> {
   if (!state?.sessionRevision || !state.generation) return;
   const sessionRevision = state.sessionRevision;
   const generation = state.generation;
+  const epoch = accountEpoch;
+  const snapshotEpoch = callingSnapshotEpoch;
+  const requestEpoch = ++callingRequestEpoch;
+  const currentRequest = () => accountEpoch === epoch && callingRequestEpoch === requestEpoch &&
+    state?.sessionRevision === sessionRevision && state.generation === generation;
   busy = true; render();
   try {
     const response = await window.phone11.action({ ...input as object, sessionRevision });
-    if (state?.sessionRevision === sessionRevision && state.generation === generation &&
+    // A command reply is acceptance only. Never replace a newer authoritative
+    // callback snapshot, or the result of a command that superseded this one.
+    if (currentRequest() && callingSnapshotEpoch === snapshotEpoch &&
         response.sessionRevision === sessionRevision && response.generation === generation) {
       state = applyTaggedSnapshot(state, response); message('');
     }
   } catch {
-    if (state?.sessionRevision === sessionRevision && state.generation === generation)
+    if (currentRequest() && callingSnapshotEpoch === snapshotEpoch)
       message('Calling action unavailable. Check call state and try again.');
   }
   finally {
-    if (state?.sessionRevision === sessionRevision && state.generation === generation) busy = false;
+    if (currentRequest()) busy = false;
     render();
   }
 }
@@ -640,7 +650,9 @@ byId('keypad').addEventListener('click', event => {
 window.phone11.onUpdate(update => {
   const previousRevision = state?.sessionRevision;
   const previousCall = state?.calling.call;
-  state = applyTaggedSnapshot(state, update);
+  const updated = applyTaggedSnapshot(state, update);
+  if (updated !== state) callingSnapshotEpoch += 1;
+  state = updated;
   if (previousRevision && previousRevision !== state?.sessionRevision) {
     resetHistory(); player?.stop(); resetDirectory();
     voicemailRequest += 1; voicemailLoading = false; voicemailLoadingFor = ''; voicemailLoadedFor = ''; voicemailItems = [];
