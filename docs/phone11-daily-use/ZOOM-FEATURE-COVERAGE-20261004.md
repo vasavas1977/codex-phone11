@@ -5,20 +5,24 @@ profile, administration and meeting workflows. Several services, release gates
 and physical-device checks remain open. This checklist compares user outcomes;
 it does not claim complete Zoom parity or a Zoom API integration.
 
-This is a repository evidence summary with a read-only Windows artifact refresh,
-not a fresh production or device audit.
+This is a repository and signed-package evidence summary, not a fresh production
+or device audit.
 “Source” includes only the pinned checks recorded in the linked reports.
 “Released” requires its own API/client receipt; “accepted” requires observed
 behavior on the intended endpoints. An unchecked row remains incomplete even
-when part of that row has passed. No test suite or build was run for this note.
+when part of that row has passed. This documentation update did not rerun
+implementation tests or builds; the linked release reports record the checks
+actually run on their pinned source and artifacts.
 
 ## Latest confirmed boundary
 
 - [Installed-client receipts](OWN-AVATAR-PROFILE-20261002.md) establish signed
   daily-pilot **Build 114 (`d69eede`)** installed and normally launched on 3001
-  and 1020. [Build 115 (`1dfda34`)](BUILD-115-RELEASE-20261004.md) is now a
-  verified signed candidate covering all three retained registered phones;
-  installation and physical acceptance are owner-deferred.
+  and 1020. [Build 116 and fresh desktop packages](BUILD-116-RELEASE-20261004.md)
+  are verified candidates from source
+  `b5a97e6bdf41c66347547dfb8340f954d8318bce`. Build 116 covers all three
+  retained registered phones; installation and physical acceptance are
+  owner-deferred. Build 115 and earlier packages remain retained.
 - On 3 October, one owner-approved **THB 5,000 internal noncash credit** was
   submitted; confirmation and a fresh wallet UI reload showed **THB 5,100**.
   Full receipt fields, trial conversion and accounting effects were not
@@ -37,9 +41,11 @@ when part of that row has passed. No test suite or build was run for this note.
 The owner has deferred physical phone testing while source/release work
 continues. The [desktop transfer and meeting/admin follow-up](DESKTOP-TRANSFER-ADMIN-COMPLETION-20261004.md)
 adds optional callback-confirmed desktop blind transfer, retired direct-meeting
-callbacks and safe web membership confirmation. Earlier installed/signed
-packages do not include this follow-up; its integration, CI and package receipts
-remain distinct. These changes do not close unchecked acceptance rows below.
+callbacks and safe web membership confirmation. The exact-source Build 116 and
+fresh macOS/Windows packages now include this follow-up and have recorded source,
+CI and package checks. The installed Build 114 remains the earlier baseline;
+no backend deployment or physical acceptance follows from these new candidates.
+These changes do not close unchecked acceptance rows below.
 
 | Complete | Workflow / Zoom baseline | Phone11 source and recorded checks | Released API/client evidence | Remaining acceptance or implementation |
 | --- | --- | --- | --- | --- |
@@ -54,7 +60,7 @@ remain distinct. These changes do not close unchecked acceptance rows below.
 | [ ] | Meetings: create/invite, join, media and leave ([Z7]) | `server/meetings/service.ts`, `lib/meetings/native-session.ts`, `app/conference/room.tsx`; pinned source/CI and mocked lifecycle checks in [integration state](INTEGRATION-STATUS-20261001.md). | Server refusal hotfix released separately; Build 114 installed; 3001 one-phone muted/camera-off join and visible Leave observed on 3 October. | Confirm both identities and exact shared room, second join, both-direction speech/video, routes, reconnect, background recovery, SIP interruption and cleanup. No full meeting acceptance yet. |
 | [ ] | Meeting chat, host moderation and collaboration ([Z7]) | Reviewed plaintext room chat/mobile/desktop and avatar checks in [meeting chat](IN-MEETING-CHAT-20261001.md); consumer/provider limits in [integration state](INTEGRATION-STATUS-20261001.md). | Build 114 and local desktop candidate include reviewed chat source; real peer delivery is unaccepted. Connect11 lacks authoritative end-for-all, remote mute and waiting-room admission. | Prove real room-chat delivery/permission loss/teardown. Reserve shared backend host-authority work before exposing missing controls. Screen share, captions, recording/AI and advanced meeting features still need explicit capability/release/device evidence. |
 | [ ] | Future scheduling, callbacks and calendar handoff ([Z8]) | [Shared adapter contract](SHARED-CALENDAR-PHONE11-ADAPTER-20260916.md) has recorded contract tests; immediate rooms and task focus intervals are not scheduled meetings. | [Current coordination](INTEGRATION-STATUS-20261001.md) confirms no deployed shared event/provider service. | Super Number owns canonical events, invitations, timezone/recurrence/provider sync; Phone11 adds its authorized projection/adapter when that service is pinned. Do not create a duplicate Phone11 event store. |
-| [ ] | macOS, Windows and mobile distribution ([Z1], [Z7]) | Native desktop helper/Electron boundary and tests recorded in [integration state](INTEGRATION-STATUS-20261001.md); [Windows helper retention](WINDOWS-ARTIFACT-RETENTION-20261002.md) verifies artifact/package custody; runtime remains unverified. | macOS ad-hoc trial package opens to sign-in; no notarized distribution. Windows manual helper artifact and retained portable trial package are verified read-only on 4 October; Windows runtime remains unverified; Build 114 iOS installed. | Prove desktop sign-in/SIP/media/lifecycle on each OS, reuse the verified Windows artifact/package, and close SDK terms and formal signing/distribution. Android native acceptance is a separate outstanding mobile gate. |
+| [ ] | macOS, Windows and mobile distribution ([Z1], [Z7]) | Native helper/Electron source and hosted checks are pinned to `b5a97e6bdf41c66347547dfb8340f954d8318bce` in [Build 116 release](BUILD-116-RELEASE-20261004.md). | Build 116 passed 22 signed and 42 supplemental checks and covers all three registered phones. Fresh macOS arm64 and Windows x64 trial packages passed independent package review; macOS is ad-hoc signed, Windows own binaries are unsigned. These candidates were not launched or installed; Build 114 remains the recorded installed iOS version. | Prove matching-build sign-in/SIP/media/lifecycle on each OS and close SDK terms and formal signing/distribution; macOS notarization remains open. Physical acceptance is owner-deferred. Android native acceptance is a separate outstanding mobile gate. |
 
 ## Next work and ownership
 
@@ -65,6 +71,10 @@ remain distinct. These changes do not close unchecked acceptance rows below.
    history and photo checks; retain baseline calling and rollback packages.
 3. **Phone11 + telephony operator:** close PBX writer/clone/rollback gates before
    advanced routing and voicemail activation; accept real deposits and transfers.
+   The routing writer authority follow-up is an independently reviewed source
+   candidate (`80269a865e716fefec03cf4584e44b1b71e8a815`), with 45 source and
+   seven disposable PG17 checks recorded. Its new hosted CI proof is pending;
+   it is outside the Build 116 source pin and does not commission routing.
 4. **Connect11:** own provider admission, media capability and authoritative
    host controls. Its 4 October read-only inventory of current main establishes
    plain-video permanent-member eviction source, but no end-for-all, remote
