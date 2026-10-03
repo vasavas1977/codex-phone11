@@ -51,3 +51,18 @@ describe("bundled route indirections and packaging", () => {
     expect(service).toContain("../configs/freeswitch:/etc/freeswitch:ro");
   });
 });
+
+describe("guarded-deposit interpreter packaging", () => {
+  it("explicitly installs and verifies the Lua module used by mounted routes", () => {
+    const dockerfile = readFileSync("infra/docker/freeswitch/Dockerfile", "utf8").replace(/\\\r?\n/g, " ");
+    const moduleInstall = dockerfile.split("\n").find(line => line.startsWith("RUN apt-get update") && line.includes("freeswitch-mod-voicemail"));
+    expect(moduleInstall).toContain("--no-install-recommends");
+    expect(moduleInstall?.split(/\s+/)).toContain("freeswitch-mod-lua");
+    expect(dockerfile).toContain("RUN test -r /usr/lib/freeswitch/mod/mod_lua.so");
+    const modules: string[] = [];
+    const parser = new SaxesParser();
+    parser.on("opentag", tag => { if (tag.name === "load") modules.push(String(tag.attributes.module)); });
+    parser.write(readFileSync("infra/configs/freeswitch/autoload_configs/modules.conf.xml", "utf8")).close();
+    expect(modules).toContain("mod_lua");
+  });
+});

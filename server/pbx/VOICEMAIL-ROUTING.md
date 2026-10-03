@@ -53,8 +53,17 @@ is off. Newly generated legacy cached XML is guarded by the host at execution.
    static scripts mount and the infrastructure full-config mounts include
    both helpers. Their runner/producer/outbox dependencies still require the
    explicit commissioning contract.
-2. Verify both helper versions on the exact host before any backend release
-   can emit their paths. A missing helper prevents deposits and is not a
+2. Verify both helper versions and the loaded `mod_lua` interpreter on the
+   exact host before any backend release can emit their paths. The
+   infrastructure Dockerfile explicitly installs `freeswitch-mod-lua` and
+   fails its build if `/usr/lib/freeswitch/mod/mod_lua.so` is unreadable;
+   the mounted `modules.conf.xml` enables `mod_lua`. The standalone deployment
+   uses a vendor image and must verify its actual module rather than assume
+   a tag includes it. An eventual image build must also confirm the published
+   package is available for that distribution/architecture and the approved
+   repository credentials. Package installation and source tests do not prove
+   the module loads in the active FreeSWITCH process. A missing helper or
+   interpreter prevents deposits and is not a
    usable flag-off release. Rehearse normal legacy calling/deposit behavior
    and rollback with the flags off.
 3. Before eventual commissioning, invalidate already compiled/cached
@@ -71,3 +80,11 @@ Disabling the flag returns guarded legacy deposits. Previously admitted WAVs
 and pending/outbox evidence remain subject to the existing retention/replay
 contract. No flag change, purge, host restart or deployment is authorized by
 this source document.
+
+SignalWire's [Debian packaging source](https://github.com/signalwire/freeswitch/blob/master/debian/bootstrap.sh)
+lists `freeswitch-mod-lua` separately in the default and vanilla meta packages.
+Its [module packaging definitions](https://github.com/signalwire/freeswitch/blob/master/debian/control-modules)
+include `languages/mod_lua` with Bookworm support. The infrastructure image uses
+core plus explicit modules instead of those meta packages, so the Lua dependency
+must be explicit. No authenticated repository download or image build was run
+for this source change.

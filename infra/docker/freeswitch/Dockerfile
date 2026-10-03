@@ -11,7 +11,7 @@ RUN curl -fsSL https://freeswitch.signalwire.com/repo/deb/debian-release/signalw
 RUN apt-get update && apt-get install -y --no-install-recommends \
     freeswitch freeswitch-mod-commands freeswitch-mod-console freeswitch-mod-dptools \
     freeswitch-mod-dialplan-xml freeswitch-mod-event-socket freeswitch-mod-sofia \
-    freeswitch-mod-loopback freeswitch-mod-conference freeswitch-mod-voicemail \
+    freeswitch-mod-loopback freeswitch-mod-conference freeswitch-mod-voicemail freeswitch-mod-lua \
     freeswitch-mod-say-en freeswitch-mod-tone-stream freeswitch-mod-local-stream \
     freeswitch-mod-native-file freeswitch-mod-sndfile freeswitch-mod-shout \
     freeswitch-mod-png freeswitch-mod-spandsp freeswitch-mod-opus \
@@ -22,6 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     freeswitch-mod-callcenter freeswitch-mod-fifo freeswitch-mod-valet-parking \
     freeswitch-sounds-en-us-callie-8000 freeswitch-sounds-en-us-callie-16000 \
     freeswitch-music-default && rm -rf /var/lib/apt/lists/*
+# Guarded legacy deposits require the Lua interpreter even with the hook off.
+RUN test -r /usr/lib/freeswitch/mod/mod_lua.so
 RUN mkdir -p /var/lib/freeswitch/recordings /var/lib/freeswitch/voicemail \
     /etc/freeswitch/tls /var/log/freeswitch /var/run/freeswitch
 EXPOSE 5060/udp 5060/tcp 5061/tcp 8021/tcp
