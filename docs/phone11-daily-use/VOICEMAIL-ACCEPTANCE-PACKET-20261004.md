@@ -34,8 +34,10 @@ These are independently reviewed **source** changes, not deployed API proof.
 The [integration record](INTEGRATION-STATUS-20261001.md#4-october-consumer-corrections)
 retains 35 focused mobile/caller passes, final TypeScript and independent
 `APPROVE_SOURCE_ONLY`. Those checks were not repeated for this packet. The signed
-iOS workflow `37142011158` was dispatched for
-`1dfda34846d5b002866a6554a2ba74a9012430f7`; dispatch is not package completion.
+iOS workflow `37142011158` succeeded for
+`1dfda34846d5b002866a6554a2ba74a9012430f7`; signed Build 115 subsequently
+finished and passed all 22 package checks. Its [retained release receipt](BUILD-115-RELEASE-20261004.md)
+pins the IPA and provisioning coverage; package completion is not installation.
 Build 114 from `d69eede` remains the recorded installed build. It does not include
 these later client corrections. Physical testing is owner-deferred.
 
