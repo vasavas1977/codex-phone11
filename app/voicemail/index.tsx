@@ -12,6 +12,7 @@ import { trpc } from "@/lib/trpc";
 
 type Voicemail = {
   id: number;
+  tenant_id?: number;
   extension_number: string;
   caller_number: string;
   caller_name: string | null;
@@ -27,6 +28,13 @@ const formatDuration = (seconds: number) => {
 
 const voicemailTitle = (message: Voicemail) =>
   message.caller_name?.trim() || message.caller_number || "Unknown caller";
+
+const voicemailMutationInput = (message: Voicemail) => ({
+  id: message.id,
+  ...(Number.isSafeInteger(message.tenant_id) && message.tenant_id! > 0
+    ? { tenantId: message.tenant_id }
+    : {}),
+});
 
 export function voicemailCallbackTarget(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -103,7 +111,7 @@ export default function VoicemailScreen() {
   const openMessage = (message: Voicemail) => {
     setOpenId((current) => (current === message.id ? undefined : message.id));
     if (message.status === "new" && !markRead.isPending)
-      void markRead.mutateAsync({ id: message.id }).catch(() => {});
+      void markRead.mutateAsync(voicemailMutationInput(message)).catch(() => {});
   };
   const confirmDelete = (message: Voicemail) => {
     Alert.alert("Delete voicemail?", "This removes it from your inbox.", [
@@ -112,8 +120,7 @@ export default function VoicemailScreen() {
         text: "Delete",
         style: "destructive",
         onPress: () => {
-          setOpenId(undefined);
-          void remove.mutateAsync({ id: message.id }).catch(() => {});
+          void remove.mutateAsync(voicemailMutationInput(message)).catch(() => {});
         },
       },
     ]);
@@ -123,6 +130,10 @@ export default function VoicemailScreen() {
     : inbox.error
       ? voicemailInboxErrorMessage(inbox.error)
       : undefined;
+  const deleteFailed = Boolean(remove.error) || (remove.data?.success === false &&
+    messages.some((message) => message.id === remove.variables?.id));
+  const markReadFailed = Boolean(markRead.error) || (markRead.data?.success === false &&
+    messages.some((message) => message.id === markRead.variables?.id && message.status === "new"));
 
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
@@ -139,6 +150,14 @@ export default function VoicemailScreen() {
           <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Voicemail</Text>
           <Text style={[styles.count, { color: colors.muted }]}>{unread ? `${unread} new` : ""}</Text>
         </View>
+
+        {!unavailable && (deleteFailed || markReadFailed) && (
+          <Text accessibilityRole="alert" style={[styles.message, { color: colors.error }]}>
+            {deleteFailed
+              ? "Could not delete voicemail. Try again."
+              : "Could not mark voicemail as read. Open it again to retry."}
+          </Text>
+        )}
 
         {inbox.isLoading ? (
           <Text style={[styles.message, { color: colors.muted }]}>Loading voicemail…</Text>
