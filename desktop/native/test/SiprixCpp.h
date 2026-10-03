@@ -82,7 +82,14 @@ inline DestData* Dest_GetDefault() { return &destination; }
 inline void Dest_SetAccountId(DestData*, AccountId) {}
 inline void Dest_SetExtension(DestData*, const char*) {}
 inline void Dest_SetVideoCall(DestData*, bool) {}
-inline ErrorCode Call_Invite(ISiprixModule*, DestData*, CallId* id) { *id = 201; return ErrorCode::EOK; }
+inline ErrorCode Call_Invite(ISiprixModule*, DestData*, CallId* id) {
+#ifdef PHONE11_FAKE_OUTGOING_REUSED_ID
+  *id = 200;
+#else
+  *id = 201;
+#endif
+  return ErrorCode::EOK;
+}
 inline ErrorCode Call_Accept(ISiprixModule* m, CallId id, bool) {
   if (id != 200) return ErrorCode::ENotIncoming;
   m->accepted = true;
