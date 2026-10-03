@@ -1,0 +1,202 @@
+name: Phone11 EC2 Redeploy Mobile Branch V4
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-ec2-redeploy-mobile-branch-v4.yml'
+      - 'infra/docker/backend/Dockerfile'
+      - 'infra/compose/docker-compose.prod.yml'
+      - 'server/_core/**'
+      - 'server/pbx/db.ts'
+      - 'ops/scripts/redeploy-mobile-branch.sh'
+
+concurrency:
+  group: phone11-ec2-redeploy-mobile-branch-v4-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: '43.209.112.208'
+  EC2_USER: 'ubuntu'
+  DEPLOY_CHECKOUT: '/opt/phone11ai/codex-phone11-deploy'
+  PILOT_USER_ID: '1'
+  RDS_SECRET_FILE: '/tmp/phone11-rds-master-secret.json'
+  PHONE11_RDS_MASTER_SECRET_ARN: ${{ secrets.PHONE11_RDS_MASTER_SECRET_ARN }}
+  PHONE11_RDS_MASTER_SECRET_JSON: ${{ secrets.PHONE11_RDS_MASTER_SECRET_JSON }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  redeploy-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate EC2 instance through AWS
+        id: ec2
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured."
+            exit 30
+          fi
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find a running EC2 instance with public IP $EC2_HOST"
+            exit 31
+          fi
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+      - name: Prepare RDS master secret for deploy
+        id: rds_secret
+        shell: bash
+        run: |
+          set +e
+          rm -f "$RDS_SECRET_FILE"
+
+          if [ -n "${PHONE11_RDS_MASTER_SECRET_JSON:-}" ]; then
+            printf '%s' "$PHONE11_RDS_MASTER_SECRET_JSON" > "$RDS_SECRET_FILE"
+            echo "::add-mask::$PHONE11_RDS_MASTER_SECRET_JSON"
+            chmod 600 "$RDS_SECRET_FILE"
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Prepared RDS master secret from GitHub secret JSON."
+            exit 0
+          fi
+
+          SECRET_ARN="${PHONE11_RDS_MASTER_SECRET_ARN:-}"
+          if [ -z "$SECRET_ARN" ]; then
+            SECRET_ARN=$(aws rds describe-db-instances \
+              --query "DBInstances[?contains(DBInstanceIdentifier, 'phone11')].MasterUserSecret.SecretArn | [0]" \
+              --output text 2>/tmp/phone11-rds-secret-error.log || true)
+          fi
+          if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+            SECRET_ARN=$(aws rds describe-db-instances \
+              --query "DBInstances[?MasterUserSecret.SecretArn!=null].MasterUserSecret.SecretArn | [0]" \
+              --output text 2>/tmp/phone11-rds-secret-error.log || true)
+          fi
+          if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+            SECRET_ARN=$(aws secretsmanager list-secrets \
+              --query "SecretList[?contains(Name, 'phone11') && (contains(Name, 'postgres') || contains(Name, 'rds') || contains(Name, 'database'))].ARN | [0]" \
+              --output text 2>/tmp/phone11-rds-secret-error.log || true)
+          fi
+          if [ -z "$SECRET_ARN" ] || [ "$SECRET_ARN" = "None" ]; then
+            SECRET_ARN=$(aws secretsmanager list-secrets \
+              --query "SecretList[?contains(Name, 'rds!db-')].ARN | [0]" \
+              --output text 2>/tmp/phone11-rds-secret-error.log || true)
+          fi
+
+          if [ -n "$SECRET_ARN" ] && [ "$SECRET_ARN" != "None" ]; then
+            echo "Discovered RDS master secret ARN."
+            if aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text > "$RDS_SECRET_FILE" 2>/tmp/phone11-rds-secret-error.log; then
+              if [ -s "$RDS_SECRET_FILE" ] && ! grep -qx 'None' "$RDS_SECRET_FILE"; then
+                echo "::add-mask::$(cat "$RDS_SECRET_FILE")"
+                chmod 600 "$RDS_SECRET_FILE"
+                echo "available=true" >> "$GITHUB_OUTPUT"
+                echo "Prepared RDS master secret for deploy."
+                exit 0
+              fi
+            fi
+          fi
+
+          rm -f "$RDS_SECRET_FILE"
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "RDS master secret was not available to this workflow."
+          echo "Required fix: add PHONE11_RDS_MASTER_SECRET_ARN or PHONE11_RDS_MASTER_SECRET_JSON as GitHub Actions secrets if automatic discovery cannot identify the database secret."
+          if [ -s /tmp/phone11-rds-secret-error.log ]; then
+            sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
+          fi
+          exit 0
+
+      - name: Redeploy through EC2 Instance Connect
+        id: deploy
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          if [ '${{ steps.rds_secret.outputs.available }}' != 'true' ]; then
+            {
+              echo "ERROR: RDS master secret is not available; skipping deploy to avoid the known phone11ai DB password failure."
+              echo "Set PHONE11_RDS_MASTER_SECRET_ARN or PHONE11_RDS_MASTER_SECRET_JSON, then rerun this workflow."
+              if [ -s /tmp/phone11-rds-secret-error.log ]; then
+                sed -E 's/(AccessKeyId|SecretAccessKey|SessionToken|password|secret)[^ ]*/<redacted>/Ig' /tmp/phone11-rds-secret-error.log || true
+              fi
+            } | tee /tmp/phone11-redeploy-output.log
+            echo "status=41" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          INSTANCE_ID='${{ steps.ec2.outputs.instance_id }}'
+          AZ='${{ steps.ec2.outputs.az }}'
+          REMOTE_RDS_SECRET_FILE=''
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no ops/scripts/redeploy-mobile-branch.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-redeploy-mobile-branch.sh"
+          if [ -s "$RDS_SECRET_FILE" ]; then
+            REMOTE_RDS_SECRET_FILE='/tmp/phone11-rds-master-secret.json'
+            scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$RDS_SECRET_FILE" "$EC2_USER@$EC2_HOST:$REMOTE_RDS_SECRET_FILE"
+          fi
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "AWS_DEFAULT_REGION='$AWS_DEFAULT_REGION' GITHUB_SHA='$GITHUB_SHA' DEPLOY_CHECKOUT='$DEPLOY_CHECKOUT' PILOT_USER_ID='$PILOT_USER_ID' RDS_MASTER_SECRET_FILE='$REMOTE_RDS_SECRET_FILE' bash /tmp/phone11-redeploy-mobile-branch.sh" 2>&1 | tee /tmp/phone11-redeploy-output.log
+          status=${PIPESTATUS[0]}
+          rm -f "$RDS_SECRET_FILE"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit sanitized redeploy status
+        if: always()
+        shell: bash
+        run: |
+          git fetch origin "$GITHUB_REF_NAME"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          mkdir -p ops
+          status='${{ steps.deploy.outputs.status }}'
+          if [ -z "$status" ]; then status=99; fi
+          result="success"
+          if [ "$status" != "0" ]; then result="failure"; fi
+          {
+            echo "# Phone11 Mobile Branch Deploy Status"
+            echo ""
+            echo "- Time UTC: $(date -u -Iseconds)"
+            echo "- Workflow commit: $GITHUB_SHA"
+            echo "- Branch: $GITHUB_REF_NAME"
+            echo "- EC2 host: $EC2_HOST"
+            echo "- Pilot user id: $PILOT_USER_ID"
+            echo "- Result: $result"
+            echo "- Exit code: $status"
+            echo ""
+            echo "## Sanitized output"
+            echo '```text'
+            sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(password authentication failed for user )"[^"]+"#\1"<db-user>"#g; s#(PGPASSWORD|DB_PASSWORD|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)=([^[:space:]]+)#\1=<redacted>#g' /tmp/phone11-redeploy-output.log 2>/dev/null || true
+            echo '```'
+          } > ops/phone11-mobile-branch-deploy-status.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ops/phone11-mobile-branch-deploy-status.md
+          if git diff --cached --quiet; then
+            echo "No status file changes to commit."
+          else
+            git commit -m "Update Phone11 mobile branch deploy status"
+            git push
+          fi
+
+      - name: Fail if redeploy failed
+        if: always()
+        shell: bash
+        run: |
+          status='${{ steps.deploy.outputs.status }}'
+          if [ -z "$status" ]; then status=99; fi
+          exit "$status"

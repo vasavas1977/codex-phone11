@@ -1,0 +1,63 @@
+# Phone11 Team Chat
+
+This replaces the sample channels and local-only messages with authenticated, persisted text conversations. The mobile app supports a workspace directory, direct/group/private-channel creation, conversation search/filtering, search within saved messages, unread counts, paged history, and sending/failed/retry states. A message becomes **Sent** only after the backend confirms its database transaction. This is server acceptance, not a recipient delivery/read receipt.
+
+Read receipts require `read-receipts-migration.sql` after the base and collaboration migrations. They record explicit, server-time per-message visibility and remain separate from `last_read_sequence`, which continues to drive unread badges. Older servers or databases without this migration fail closed and the client shows no inferred receipt state.
+
+## Data and access
+
+- Uses `server/pbx/db.ts` and the same PostgreSQL database as Phone11 owned authentication.
+- The authenticated `ctx.user.id` is the `users.id` mapped by `phone11_auth_identity.legacy_user_id`. The client cannot select a sender.
+- The current service requires both an explicit `user_extensions` assignment to an active, undeleted extension and an active `tenant_memberships` row in an active tenant. No tenant 1 fallback, guessed organization, or `extensions.user_id` fallback is used. A chat-only user without an extension is not admitted by this source contract.
+- Every request reads current assignment and membership state; access does not rely on the older PBX membership cache. Every room read/write also checks conversation membership in that tenant.
+- Directory results expose only user ID, display name, and the primary active extension within the selected tenant. They never include SIP credentials.
+- Desktop Meet uses `chat.directMeetingChats({ tenantId, search?, after? })` for pages of up to 50 eligible two-member direct chats, ordered by peer ID then conversation ID. Each result is `{ id, name, peerId, extension }`; `extension` is the peer's active primary extension number in the selected tenant, with assignment ID breaking equal-priority ties. Pass the last result as `{ after: { peerId, id } }` to reach later pages. A 2–100 character literal peer-name search checks all of the caller's chats, including those outside `chat.list`'s latest 200. The query rechecks workspace assignment, active peer membership and assignment, both block directions, and exact chat membership; meeting capability and start still make their own authoritative checks. It uses the caller-membership index with a local 2-second statement timeout. No schema change is required.
+- Composite foreign keys bind all messages and conversation memberships to one tenant. A nullable reply parent is also bound to the same tenant and conversation; sends recheck the authorized parent while holding a key-share lock. Sender/client-key uniqueness makes retries idempotent, including simultaneous retries. A retry with changed content or parent is rejected.
+- History and message search return a small parent preview only for messages in the already-authorized conversation. A bounded thread request returns one root plus at most 50 direct replies; it never exposes a cross-room tree.
+- A workspace member can file a bounded-category report about an authorized conversation or message. Reports are immutable and deduplicated per reporter, target, and category; Team Chat client APIs return only a generic recorded result and never expose reporter identity.
+- A block is a soft, tenant-scoped relationship. It hides both people from each other's directory, rejects new direct-chat creation and sends in an existing direct chat in both directions, and keeps saved direct/group history intact. Group and channel messages continue for audit continuity.
+- Read markers advance only through saved messages in that conversation; future messages cannot be pre-marked as read.
+
+## Deployment
+
+1. Confirm the backend's actual PostgreSQL database contains `users`, `tenants`, `tenant_memberships`, `user_extensions`, and `extensions` with the columns and active assignments queried by `service.ts`.
+2. Review/apply `migration.sql`, `collaboration-migration.sql`, then `read-receipts-migration.sql` to that database. They create only the `phone11_chat_*` tables and indexes. They grant no users or assignments and insert no sample messages. These source migrations are never run by the app; an existing deployment cannot be assumed to include them.
+3. Deploy the backend containing `chatRouter` registered in `fullRouter` before releasing the updated mobile build. A new client fails closed when the receipt endpoints or table are absent.
+4. Use two explicitly authorized test accounts with active memberships and assignments in the same tenant. Create one conversation; send, receive, leave a message visibly on screen, and confirm the sender sees its receipt. Also confirm an unrelated tenant/account cannot list or read it and that search/notification previews do not publish receipts.
+
+## Verification
+
+`tests/phone11-chat-persistence.test.ts` covers restart recovery, explicit retry, storage failure, and logout/write ordering. `tests/phone11-chat-state.test.ts` covers network acknowledgement, failed retry, refresh deduplication, pagination, unread acknowledgement, logout/account switching, and revoked access. The PostgreSQL test uses real transactions and multiple concurrent connections; it never targets the configured application database.
+
+The September 11 reliability candidate also checks account/workspace changes with the same mounted conversation/composer, abandoned pending actions, and late directory/create/search responses. Saved messages follow server sequence even when timestamps regress. Read acknowledgments refresh the authoritative remaining unread count; they do not erase newer unreads. Losing room access removes received history and send controls while preserving the owner's draft and failed outbox for recovery. A failed teammate refresh preserves the group name and selection.
+
+`tests/phone11-chat-transport.test.ts` exercises the actual tRPC transport with synthetic responses: native bearer credentials are captured for the initiating owner before request batching, then identity is checked again before dispatch and after response. A queued old message cannot acquire the next account's token. `tests/phone11-chat-controls.test.tsx` and `tests/phone11-chat-scope-ui.test.tsx` verify captured controls cannot write or navigate in a replacement scope, and old pending operations cannot disable or release new controls.
+
+The candidate sends `X-Phone11-Chat-Owner` on every chat request. The chat router compares it with the authenticated user before invoking any conversation service. This also prevents another browser tab's changed HttpOnly cookie from applying a queued message as a different user while the original tab still displays the old account. The header grants no authority. Trusted-origin CORS explicitly permits it; untrusted origins remain rejected. `tests/phone11-chat-owner.test.ts` covers all seven procedures, malformed assertions, and CORS.
+
+**Rollout order:** deploy the updated chat router and CORS policy before releasing the new browser client. The currently deployed September 10 backend does not enforce this new assertion. Header omission remains accepted for compatibility with installed older clients; those clients do not receive the new actor-binding guarantee and must upgrade. No chat schema migration is needed for these September 11 fixes.
+
+```sh
+# Start a dedicated disposable local database. Pick an unused loopback port.
+docker run --detach --rm --name phone11-chat-test \
+  -e POSTGRES_PASSWORD=phone11-local-test-only -e POSTGRES_DB=phone11_chat_test \
+  -p 127.0.0.1:57951:5432 postgres:16-alpine
+PHONE11_CHAT_TEST_DATABASE_URL=postgresql://postgres:phone11-local-test-only@127.0.0.1:57951/phone11_chat_test \
+  node_modules/.bin/vitest run tests/phone11-chat-state.test.ts tests/phone11-chat-persistence.test.ts tests/phone11-chat-postgres.test.ts
+docker stop phone11-chat-test
+```
+
+The integration suite refuses non-loopback URLs or a database not named `phone11_chat_test`. Without that environment variable, only the database-dependent tests are skipped; authentication and mobile state tests still run.
+
+## Scope and remaining work
+
+The foreground chat refreshes every five seconds while its screen is focused, and on returning to the app. It supports quoted replies, a compact root-plus-50 direct-reply view, a confirmation-based Safety panel for report/block/unblock actions, and short-lived tenant/member/thread-authorized typing indicators with no content storage or push notification. Company presence uses separate 90-second device-session leases after a version capability check; clients poll viewed coworkers every five seconds only in the foreground, and failed queries render as unknown. It does not promise manual DND, calendar-derived state, public channel discovery, or recipient receipts. A deleted parent is rendered as an ordinary saved reply without a quote; a stale parent selected for a new reply is rejected. Drafts and unacknowledged text are saved in AsyncStorage under authenticated user and tenant keys. They survive a restart and restore only after workspace access is checked; interrupted sends appear as Failed and require explicit Retry. Saves complete before network sending begins. Only pending text is stored locally, never a full server-message cache. Logout removes that owner's pending data with writes/deletion serialized; other accounts cannot reuse it. AsyncStorage is app-private local storage, not an additional encrypted message vault. Storage failures are visible and block sending until the pending text can be saved. Account changes clear all in-memory chat content and discard stale asynchronous responses. Conversations are currently limited to the latest 200 in the list, 500 directory contacts, 50 participants, 4,000 characters per message, and 50 direct replies in a thread view.
+
+The Zoom mobile baseline includes direct/group/channel messaging, directory, files, searching, unread handling, channel management, and richer replies. These establish subsequent acceptance milestones rather than justify showing simulated features:
+
+- [Zoom Chat getting started](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0059918)
+- [Zoom Chat comparison by platform](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0060777)
+- [Creating and using channels](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0063548)
+- [Channel management](https://support.zoom.com/hc/en/article?id=zm_kb&sysparm_article=KB0063707)
+
+Saved-message search is limited to a freshly authorized conversation, literal substring matching (including Thai), 2–100 input characters, and the latest 50 results. It uses bound SQL parameters; no client-supplied pattern is executed as SQL.

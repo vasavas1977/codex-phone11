@@ -1,131 +1,99 @@
-import * as Linking from "expo-linking";
-import * as ReactNative from "react-native";
+import { Platform } from "react-native";
 
-// Extract scheme from bundle ID (last segment timestamp, prefixed with "manus")
-// e.g., "space.manus.my.app.t20240115103045" -> "manus20240115103045"
-const bundleId = "space.manus.cloudphone11.t20260425073427";
-const timestamp = bundleId.split(".").pop()?.replace(/^t/, "") ?? "";
-const schemeFromBundleId = `manus${timestamp}`;
+// Keep this module path for existing API consumers; sign-in is owned by Phone11.
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? "";
+export const SIGN_IN_ROUTE = "/auth/sign-in" as const;
+export const PASSWORD_RESET_REQUEST_ROUTE = "/auth/forgot-password" as const;
+export const PASSWORD_RESET_ROUTE = "/auth/reset-password" as const;
+export const PASSWORD_RESET_PUBLIC_ORIGIN = "https://1toall.phone11.ai";
+export const SESSION_TOKEN_KEY = "phone11_session_token";
+export const USER_INFO_KEY = "phone11_user_info";
 
-const env = {
-  portal: process.env.EXPO_PUBLIC_OAUTH_PORTAL_URL ?? "",
-  server: process.env.EXPO_PUBLIC_OAUTH_SERVER_URL ?? "",
-  appId: process.env.EXPO_PUBLIC_APP_ID ?? "",
-  ownerId: process.env.EXPO_PUBLIC_OWNER_OPEN_ID ?? "",
-  ownerName: process.env.EXPO_PUBLIC_OWNER_NAME ?? "",
-  apiBaseUrl: process.env.EXPO_PUBLIC_API_BASE_URL ?? "",
-  deepLinkScheme: schemeFromBundleId,
-};
+const portalReturnTargets = [
+  "/portal",
+  "/portal/dids",
+  "/portal/usage",
+  "/admin",
+] as const;
 
-export const OAUTH_PORTAL_URL = env.portal;
-export const OAUTH_SERVER_URL = env.server;
-export const APP_ID = env.appId;
-export const OWNER_OPEN_ID = env.ownerId;
-export const OWNER_NAME = env.ownerName;
-export const API_BASE_URL = env.apiBaseUrl;
+export type PortalReturnTarget = (typeof portalReturnTargets)[number];
 
 /**
- * Get the API base URL, deriving from current hostname if not set.
- * Metro runs on 8081, API server runs on 3000.
- * URL pattern: https://PORT-sandboxid.region.domain
+ * Sign-in is shared with the native app, so only browser portal routes may be
+ * carried through it. Keep this list explicit to prevent URL-controlled
+ * redirects to arbitrary routes or origins.
  */
-export function getApiBaseUrl(): string {
-  // If API_BASE_URL is set, use it
-  if (API_BASE_URL) {
-    return API_BASE_URL.replace(/\/$/, "");
+export function getSafePortalReturnTarget(
+  value: unknown,
+): PortalReturnTarget | null {
+  if (
+    typeof value === "string" &&
+    (portalReturnTargets as readonly string[]).includes(value)
+  ) {
+    return value as PortalReturnTarget;
   }
-
-  // On web, derive from current hostname by replacing port 8081 with 3000
-  if (ReactNative.Platform.OS === "web" && typeof window !== "undefined" && window.location) {
-    const { protocol, hostname } = window.location;
-    // Pattern: 8081-sandboxid.region.domain -> 3000-sandboxid.region.domain
-    const apiHostname = hostname.replace(/^8081-/, "3000-");
-    if (apiHostname !== hostname) {
-      return `${protocol}//${apiHostname}`;
-    }
-  }
-
-  // Fallback to empty (will use relative URL)
-  return "";
+  return null;
 }
 
-export const SESSION_TOKEN_KEY = "app_session_token";
-export const USER_INFO_KEY = "manus-runtime-user-info";
+export function portalSignInRoute(returnTo: PortalReturnTarget) {
+  return {
+    pathname: SIGN_IN_ROUTE,
+    params: { returnTo },
+  };
+}
 
-const encodeState = (value: string) => {
-  if (typeof globalThis.btoa === "function") {
-    return globalThis.btoa(value);
-  }
-  const BufferImpl = (globalThis as Record<string, any>).Buffer;
-  if (BufferImpl) {
-    return BufferImpl.from(value, "utf-8").toString("base64");
-  }
-  return value;
-};
+export function passwordResetRequestRoute(returnTo: PortalReturnTarget | null) {
+  return returnTo
+    ? { pathname: PASSWORD_RESET_REQUEST_ROUTE, params: { returnTo } }
+    : PASSWORD_RESET_REQUEST_ROUTE;
+}
+
+export function passwordResetRoute(returnTo: PortalReturnTarget | null) {
+  return returnTo
+    ? { pathname: PASSWORD_RESET_ROUTE, params: { returnTo } }
+    : PASSWORD_RESET_ROUTE;
+}
+
+export function passwordResetPathWithoutToken(
+  returnTo: PortalReturnTarget | null,
+): string {
+  return returnTo
+    ? `${PASSWORD_RESET_ROUTE}?returnTo=${encodeURIComponent(returnTo)}`
+    : PASSWORD_RESET_ROUTE;
+}
+
+export function resetTokenFromFragment(hash: string | undefined): string | null {
+  if (!hash?.startsWith("#")) return null;
+  const token = new URLSearchParams(hash.slice(1)).get("token")?.trim();
+  return token || null;
+}
 
 /**
- * Get the redirect URI for OAuth callback.
- * - Web: uses API server callback endpoint
- * - Native: uses deep link scheme
+ * Browser recovery stays on the current portal origin. Native recovery must
+ * open the trusted public portal rather than the API origin, where there is no
+ * reset UI. A caller can choose a portal destination only from the allowlist
+ * above; reset tokens are added by Better Auth, never by this client.
  */
-export const getRedirectUri = () => {
-  if (ReactNative.Platform.OS === "web") {
-    return `${getApiBaseUrl()}/api/oauth/callback`;
-  } else {
-    return Linking.createURL("/oauth/callback", {
-      scheme: env.deepLinkScheme,
-    });
-  }
-};
-
-export const getLoginUrl = () => {
-  const redirectUri = getRedirectUri();
-  const state = encodeState(redirectUri);
-
-  const url = new URL(`${OAUTH_PORTAL_URL}/app-auth`);
-  url.searchParams.set("appId", APP_ID);
-  url.searchParams.set("redirectUri", redirectUri);
-  url.searchParams.set("state", state);
-  url.searchParams.set("type", "signIn");
-
+export function passwordResetRedirectUrl(
+  returnTo: PortalReturnTarget | null,
+): string {
+  const origin =
+    Platform.OS === "web" && typeof window !== "undefined"
+      ? window.location.origin
+      : PASSWORD_RESET_PUBLIC_ORIGIN;
+  const url = new URL(PASSWORD_RESET_ROUTE, origin);
+  if (returnTo) url.searchParams.set("returnTo", returnTo);
   return url.toString();
-};
+}
 
-/**
- * Start OAuth login flow.
- *
- * On native platforms (iOS/Android), open the system browser directly so
- * the OAuth callback returns via deep link to the app.
- *
- * On web, this simply redirects to the login URL.
- *
- * @returns Always null, the callback is handled via deep link.
- */
-export async function startOAuthLogin(): Promise<string | null> {
-  const loginUrl = getLoginUrl();
+export function getApiBaseUrl(): string {
+  if (API_BASE_URL) return API_BASE_URL.replace(/\/+$/, "");
+  if (Platform.OS !== "web") return "https://api.phone11.ai";
 
-  if (ReactNative.Platform.OS === "web") {
-    // On web, just redirect
-    if (typeof window !== "undefined") {
-      window.location.href = loginUrl;
-    }
-    return null;
+  if (typeof window !== "undefined" && window.location) {
+    const { protocol, hostname } = window.location;
+    const apiHostname = hostname.replace(/^8081-/, "3000-");
+    if (apiHostname !== hostname) return `${protocol}//${apiHostname}`;
   }
-
-  const supported = await Linking.canOpenURL(loginUrl);
-  if (!supported) {
-    console.warn("[OAuth] Cannot open login URL: URL scheme not supported");
-    // 可考虑抛出错误或返回错误状态，让调用方处理
-    return null;
-  }
-
-  try {
-    await Linking.openURL(loginUrl);
-  } catch (error) {
-    console.error("[OAuth] Failed to open login URL:", error);
-    // 可考虑抛出错误让调用方处理
-  }
-
-  // The OAuth callback will reopen the app via deep link.
-  return null;
+  return "";
 }

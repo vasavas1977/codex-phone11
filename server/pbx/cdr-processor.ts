@@ -1,3 +1,5 @@
+import { createCloudRecordingRepository } from "../cloud-recordings/repository";
+import { trustedCdrRecordingRoute } from "../cloud-recordings/correlation";
 /**
  * CDR Processor Module
  * 
@@ -28,6 +30,7 @@
  */
 import { query, withTransaction } from "./db";
 import { normalizeToE164 } from "./e164";
+import { ownershipFromTrustedRoute } from "./cdr-ownership";
 
 /**
  * Disposition mapping from FreeSWITCH hangup causes
@@ -105,7 +108,7 @@ function parseCdrData(cdr: any) {
   const writeCodec = vars.write_codec || null;
 
   // Tenant info
-  const tenantId = parseInt(vars.tenant_id || "1");
+  const tenantId = Number(vars.tenant_id);
 
   // SIP call ID
   const sipCallId = vars.sip_call_id || null;
@@ -153,6 +156,10 @@ function tsExpr(epoch: number, stamp: string | null): { sql: string; val: any } 
  */
 export async function processCdr(cdr: any): Promise<{ callRecordId: number; callLegId: number }> {
   const parsed = parseCdrData(cdr);
+  if (!Number.isSafeInteger(parsed.tenantId) || parsed.tenantId <= 0) throw new Error("Explicit CDR tenant required");
+  const recordingRoute = await trustedCdrRecordingRoute(parsed.callUuid,parsed.sipCallId);
+  if (recordingRoute && recordingRoute.tenantId !== parsed.tenantId) throw new Error("Trusted call tenant mismatch");
+  const ownership = ownershipFromTrustedRoute(recordingRoute);
 
   const result = await withTransaction(async (client) => {
     // 1. Upsert call_record (parent)
@@ -165,16 +172,24 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
     const recordResult = await client.query(
       `INSERT INTO call_records 
         (tenant_id, call_uuid, direction, from_number, to_number,
-         disposition, started_at, answered_at, ended_at, 
+         caller_user_id, callee_user_id, disposition, started_at, answered_at, ended_at,
          total_duration_seconds, total_billable_seconds,
          recording_url, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        ON CONFLICT (call_uuid) DO UPDATE SET
          disposition = EXCLUDED.disposition,
+         answered_at = COALESCE(EXCLUDED.answered_at, call_records.answered_at),
+         metadata = call_records.metadata || EXCLUDED.metadata,
          ended_at = EXCLUDED.ended_at,
          total_duration_seconds = EXCLUDED.total_duration_seconds,
          total_billable_seconds = EXCLUDED.total_billable_seconds,
-         recording_url = COALESCE(EXCLUDED.recording_url, call_records.recording_url)
+         recording_url = COALESCE(EXCLUDED.recording_url, call_records.recording_url),
+         caller_user_id = COALESCE(call_records.caller_user_id, EXCLUDED.caller_user_id),
+         callee_user_id = COALESCE(call_records.callee_user_id, EXCLUDED.callee_user_id)
+       WHERE call_records.tenant_id = EXCLUDED.tenant_id
+         AND (call_records.ended_at IS NULL OR EXCLUDED.ended_at IS NOT NULL)
+         AND (EXCLUDED.caller_user_id IS NULL OR (call_records.caller_user_id IS NULL OR call_records.caller_user_id = EXCLUDED.caller_user_id) AND call_records.callee_user_id IS NULL)
+         AND (EXCLUDED.callee_user_id IS NULL OR (call_records.callee_user_id IS NULL OR call_records.callee_user_id = EXCLUDED.callee_user_id) AND call_records.caller_user_id IS NULL)
        RETURNING id`,
       [
         parsed.tenantId,           // $1
@@ -182,37 +197,69 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.direction,          // $3
         parsed.callerNumber,       // $4 → from_number
         parsed.calleeNumber,       // $5 → to_number
-        parsed.disposition,        // $6
-        startedAt,                 // $7 → started_at
-        answeredAt,                // $8 → answered_at
-        endedAt,                   // $9 → ended_at
-        parsed.duration,           // $10 → total_duration_seconds
-        parsed.billSeconds,        // $11 → total_billable_seconds
-        parsed.recordingPath,      // $12 → recording_url
-        JSON.stringify({           // $13 → metadata
+        ownership.callerUserId,    // $6 → immutable call-time caller
+        ownership.calleeUserId,    // $7 → immutable call-time callee
+        parsed.disposition,        // $8
+        startedAt,                 // $9 → started_at
+        answeredAt,                // $10 → answered_at
+        endedAt,                   // $11 → ended_at
+        parsed.duration,           // $12 → total_duration_seconds
+        parsed.billSeconds,        // $13 → total_billable_seconds
+        process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" ? null : parsed.recordingPath, // Cloud media only comes from authenticated storage.
+        JSON.stringify({           // $15 → metadata
+          completion: endedAt ? "complete" : "unknown",
+          source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,
           hangup_cause: parsed.hangupCause,
           sip_response_code: parsed.sipResponseCode,
         }),
       ]
     );
+    if (!recordResult.rows.length) throw new Error("Call tenant collision");
     const callRecordId = recordResult.rows[0].id;
 
-    // 2. Insert call_leg
+    // The parent upsert holds its row lock until commit, serializing CDR retries
+    // with each other and with authenticated ESL snapshots for this channel.
+    const existingLegs = await client.query(
+      "SELECT id, call_record_id, tenant_id, extension_id, sip_call_id, caller_user_id, callee_user_id, ended_at FROM call_legs WHERE leg_uuid=$1 FOR UPDATE",
+      [parsed.callUuid]
+    );
+    if (existingLegs.rows.length > 1) throw new Error("Ambiguous existing call legs");
+    const existingLeg = existingLegs.rows[0];
+    if (existingLeg && (Number(existingLeg.tenant_id) !== parsed.tenantId || Number(existingLeg.call_record_id) !== Number(callRecordId)
+      || (existingLeg.sip_call_id && existingLeg.sip_call_id !== parsed.sipCallId)
+      || (existingLeg.caller_user_id != null && ownership.callerUserId != null && Number(existingLeg.caller_user_id) !== ownership.callerUserId)
+      || (existingLeg.callee_user_id != null && ownership.calleeUserId != null && Number(existingLeg.callee_user_id) !== ownership.calleeUserId)
+      || (ownership.callerUserId != null && existingLeg.callee_user_id != null)
+      || (ownership.calleeUserId != null && existingLeg.caller_user_id != null)
+      || (recordingRoute && existingLeg.extension_id != null && Number(existingLeg.extension_id) !== recordingRoute.extensionId))) {
+      throw new Error("Call leg ownership mismatch");
+    }
+
+    // 2. Complete the exact snapshot leg or insert the channel's first leg.
     const ringingAt = parsed.progressEpoch > 0 ? new Date(parsed.progressEpoch * 1000) : null;
     const pddMs = parsed.progressEpoch > 0 && parsed.startEpoch > 0
       ? (parsed.progressEpoch - parsed.startEpoch) * 1000
       : null;
 
     const legResult = await client.query(
-      `INSERT INTO call_legs
-        (call_record_id, leg_uuid, tenant_id, from_uri, to_uri,
+      existingLeg ? `UPDATE call_legs SET
+        from_uri=$4, to_uri=$5,
+        caller_user_id=COALESCE(caller_user_id,$6), callee_user_id=COALESCE(callee_user_id,$7),
+        started_at=$8, ringing_at=$9, answered_at=COALESCE($10,answered_at), ended_at=$11,
+        duration_seconds=$12, billable_seconds=$13, pdd_ms=$14,
+        codec=$15, codec_read=$16, codec_write=$17,
+        hangup_cause=$18, hangup_disposition=$19, sip_response_code=$20,
+        sip_call_id=$21, metadata=metadata || $22::jsonb
+       WHERE call_record_id=$1 AND leg_uuid=$2 AND tenant_id=$3 AND id=$23 RETURNING id`
+      : `INSERT INTO call_legs
+        (call_record_id, leg_uuid, tenant_id, from_uri, to_uri, caller_user_id, callee_user_id,
          started_at, ringing_at, answered_at, ended_at, 
          duration_seconds, billable_seconds, pdd_ms,
          codec, codec_read, codec_write,
          hangup_cause, hangup_disposition, sip_response_code,
          sip_call_id, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        RETURNING id`,
       [
         callRecordId,              // $1
@@ -220,30 +267,41 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
         parsed.tenantId,           // $3
         `sip:${parsed.callerNumber}@phone11.ai`,  // $4 → from_uri
         `sip:${parsed.calleeNumber}@phone11.ai`,  // $5 → to_uri
-        startedAt,                 // $6 → started_at (Date object)
-        ringingAt,                 // $7 → ringing_at (Date or null)
-        answeredAt,                // $8 → answered_at (Date or null)
-        endedAt,                   // $9 → ended_at (Date or null)
-        parsed.duration,           // $10 → duration_seconds
-        parsed.billSeconds,        // $11 → billable_seconds
-        pddMs,                     // $12 → pdd_ms
-        parsed.readCodec || parsed.writeCodec,  // $13 → codec (primary)
-        parsed.readCodec,          // $14 → codec_read
-        parsed.writeCodec,         // $15 → codec_write
-        parsed.hangupCause,        // $16 → hangup_cause
-        parsed.disposition,        // $17 → hangup_disposition
-        parsed.sipResponseCode,    // $18 → sip_response_code
-        parsed.sipCallId,          // $19 → sip_call_id
-        JSON.stringify({           // $20 → metadata
+        ownership.callerUserId,    // $6
+        ownership.calleeUserId,    // $7
+        startedAt,                 // $8 → started_at (Date object)
+        ringingAt,                 // $9 → ringing_at (Date or null)
+        answeredAt,                // $10 → answered_at (Date or null)
+        endedAt,                   // $11 → ended_at (Date or null)
+        parsed.duration,           // $12 → duration_seconds
+        parsed.billSeconds,        // $13 → billable_seconds
+        pddMs,                     // $14 → pdd_ms
+        parsed.readCodec || parsed.writeCodec,  // $15 → codec (primary)
+        parsed.readCodec,          // $16 → codec_read
+        parsed.writeCodec,         // $17 → codec_write
+        parsed.hangupCause,        // $18 → hangup_cause
+        parsed.disposition,        // $19 → hangup_disposition
+        parsed.sipResponseCode,    // $20 → sip_response_code
+        parsed.sipCallId,          // $21 → sip_call_id
+        JSON.stringify({           // $22 → metadata
+          completion: endedAt ? "complete" : "unknown",
+          source: "authenticated_freeswitch_cdr",
           caller_name: parsed.callerName,
           raw_direction: parsed.direction,
         }),
+        ...(existingLeg ? [existingLeg.id] : []),
       ]
     );
     const callLegId = legResult.rows[0].id;
+    if(recordingRoute) await client.query("UPDATE call_legs SET extension_id=$2 WHERE id=$1 AND tenant_id=$3",[callLegId,recordingRoute.extensionId,recordingRoute.tenantId]);
 
-    return { callRecordId, callLegId };
+    return { callRecordId, callLegId, previouslyCompleted: existingLeg?.ended_at != null };
   });
+
+  if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" && recordingRoute) {
+    try { await createCloudRecordingRepository().registerCall(parsed.callUuid); }
+    catch { /* CDR already committed; recording reconciliation retries separately. */ }
+  }
 
   // 3. Insert call_events OUTSIDE the transaction (fire-and-forget)
   // call_events is partitioned and may fail if partition doesn't exist.
@@ -255,7 +313,7 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
   if (parsed.bridgeEpoch > 0) events.push(["bridge", parsed.bridgeEpoch]);
   if (parsed.endEpoch > 0) events.push(["hangup", parsed.endEpoch, parsed.hangupCause]);
 
-  for (const [eventType, epoch, detail] of events) {
+  for (const [eventType, epoch, detail] of result.previouslyCompleted ? [] : events) {
     try {
       await query(
         `INSERT INTO call_events (tenant_id, call_record_id, call_leg_id, event_type, event_timestamp, metadata)
@@ -269,13 +327,16 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
     }
   }
 
-  return result;
+  return { callRecordId: result.callRecordId, callLegId: result.callLegId };
 }
 
 /**
  * Get call statistics for dashboard
  */
 export async function getCallStats(tenantId: number, period: "today" | "week" | "month" = "today") {
+  // These boundaries and EXTRACT(HOUR) use the database session timezone. The
+  // current API has no validated workspace-timezone input, so clients must not
+  // label this distribution as local workspace time.
   const dateFilter = period === "today" 
     ? "started_at >= CURRENT_DATE"
     : period === "week"
@@ -352,19 +413,57 @@ export async function getCallStats(tenantId: number, period: "today" | "week" | 
 /**
  * Get voicemail messages for an extension
  */
-export async function getVoicemails(tenantId: number, extension?: string) {
-  const conditions = ["tenant_id = $1", "status != 'deleted'"];
-  const vals: any[] = [tenantId];
+export class VoicemailStorageUnavailableError extends Error {
+  constructor() {
+    super("Voicemail inbox storage is not configured on this server");
+  }
+}
+
+/** Do not treat an absent migration as an empty inbox. */
+export async function requireVoicemailStorage() {
+  const result = await query(`SELECT to_regclass('voicemail_messages') AS name,
+    to_regclass('voicemail_deposit_admissions') AS admissions,
+    (SELECT COUNT(*) FROM pg_attribute
+      WHERE attrelid = to_regclass('voicemail_messages')
+        AND attname IN ('owner_user_id', 'owner_epoch')
+        AND attnotnull AND NOT attisdropped) AS owner_columns,
+    EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('voicemail_messages')
+      AND tgname='phone11_voicemail_extension_tenant_guard' AND tgenabled='O'
+      AND tgfoid=to_regprocedure('phone11_voicemail_extension_tenant_guard()')) AS guard_trigger,
+    EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('extensions')
+      AND tgname='phone11_voicemail_owner_epoch_rotate' AND tgenabled='O'
+      AND tgfoid=to_regprocedure('phone11_voicemail_owner_epoch_rotate()')) AS epoch_trigger`);
+  if (!result.rows[0]?.name || !result.rows[0]?.admissions || Number(result.rows[0].owner_columns) !== 2
+    || result.rows[0].guard_trigger !== true || result.rows[0].epoch_trigger !== true)
+    throw new VoicemailStorageUnavailableError();
+}
+
+export async function getVoicemails(
+  tenantId: number,
+  userId: number,
+  extension?: string,
+) {
+  await requireVoicemailStorage();
+  const conditions = ["vm.tenant_id = $1", "vm.owner_user_id = $2", "vm.status != 'deleted'"];
+  const vals: Array<number | string> = [tenantId, userId];
 
   if (extension) {
-    conditions.push("extension_number = $2");
+    conditions.push("e.extension_number = $3");
     vals.push(extension);
   }
 
   const result = await query(
-    `SELECT * FROM voicemail_messages 
+    `SELECT vm.id, vm.extension_id, e.extension_number, vm.caller_number,
+            vm.caller_name, vm.duration_seconds, vm.status, vm.created_at,
+            vm.read_at
+     FROM voicemail_messages vm
+     LEFT JOIN extensions e
+       ON e.id = vm.extension_id AND e.tenant_id = vm.tenant_id
+     JOIN tenant_memberships tm
+       ON tm.user_id = vm.owner_user_id AND tm.tenant_id = vm.tenant_id AND tm.status = 'active'
+     JOIN tenants t ON t.id = vm.tenant_id AND t.status = 'active'
      WHERE ${conditions.join(" AND ")}
-     ORDER BY created_at DESC
+     ORDER BY vm.created_at DESC
      LIMIT 100`,
     vals
   );

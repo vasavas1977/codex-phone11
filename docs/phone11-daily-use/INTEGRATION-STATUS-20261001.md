@@ -1,0 +1,105 @@
+# Phone11 integration state — 2 October 2026
+
+## Reviewed source
+
+Feature source `9c0f9827b001dce0c76a261ceb5dcea6855258df` adds the protected mobile/web New meeting entry flow and custom business weekdays. Earlier source includes exact direct/channel invitation rooms, selected-workspace SIP/directory/history, avatar loading guards, status, administration and private voicemail admission. These are selected Zoom-style workflows; complete Zoom parity is not claimed.
+
+Local validation on that source: 2,432 Vitest cases passed, 451 environment-gated cases skipped; 78 native Node cases passed. TypeScript, backend compilation, focused changed-code ESLint and staged diff checks passed. Independently reviewed meeting, weekday and fixture hashes matched integration. Backend compilation produces the same SHA-256 as the separately reviewed `7984cee` image: `4c879ba349e17a2d1292d726ed501c3ca6dbd6b035ae6dca755a083bdb0e1297`. Frontend/source identity remains distinct.
+
+All 14 hosted PR checks passed on this source. The recording job initially timed out during Ubuntu package-index retrieval before test execution; only that job was retried, and its actual tests then passed. [Signed iOS workflow 36889086165](https://github.com/vasavas1977/codex-phone11/actions/runs/36889086165) also passed. Native and all seven daily-use prerequisite jobs passed, and signed daily-pilot Build 112 finished using existing credentials. EAS ID: `46b041f1-678d-4fbb-8b96-bb2fca30ae93`. Its IPA is 26,300,681 bytes, SHA-256 `a0215f92e05ee9b0c958332c4049816a29c2683fa7689f37b9d01a9a02c25046`; native verification and all 22 signed-package checks passed. It is not installed or handset-accepted.
+
+Meeting-chat source `ae54c8a9c8f81aef6e56d98ff869d3a98dcb7924` adds a bounded plaintext data channel to the exact authenticated desktop/mobile room, with SDK-owned sender identity, live grant checks and teardown guards. Local integration validation passed 2,475 Vitest cases with 451 environment-gated skips, 78 native Node cases, and full TypeScript. Desktop focused checks and a synthetic isolated Chromium transport rehearsal passed. Independent desktop and mobile reviews approved the pinned source only; mobile review independently passed 111 focused cases, TypeScript and focused ESLint. All 14 hosted PR checks passed on this source.
+
+[Signed iOS workflow 36894651452](https://github.com/vasavas1977/codex-phone11/actions/runs/36894651452) passed on `ae54c8a`. Signed daily-pilot Build 113 finished using existing credentials, including native and all seven prerequisite jobs. EAS ID: `05db8fff-e03f-4cda-8630-92183d6207f5`. Its IPA is 26,310,829 bytes, SHA-256 `b3d525fa4905a45474554bb40b8b671ce8b2fd4083b11f462175d92e7f596f6d`; native verification and all 22 signed-package checks passed. It includes mobile meeting chat and authorized avatars, but is not installed or handset-accepted. Synthetic delivery does not establish real peer audio, data or photo acceptance.
+
+The desktop follow-up adds authenticated participant photos in meeting chat, the roster and camera-off tiles, plus loaded-call history search and independent direction/outcome filters. Photo identity uses the existing authorized tenant directory and admitted SDK identity. Bearer authentication stays in main; raster size, IPC, cache, total request deadline and room/account teardown are bounded. Unknown or failed images retain initials. History uses only loaded owned records and explicit dispositions; it does not infer call-time contact identity. Scope replacement clears requests and hidden DOM. Independent avatar review approved the exact twelve-file aggregate `e829b4cfa77afbf7b61a51720e0afff333404e4b8ef7b54b368541986df6a996`; lead review found no concrete P0–P2 history issue. The shared resolver, codec, mobile source and meeting CSP remain unchanged from `ae54c8a`.
+
+Closing local integration checks passed 2,475 Vitest cases (451 environment-gated skips), 78 native Node cases, 93 desktop app cases including the opt-in isolated history browser rehearsal, and 33 authenticated-provider cases: 126 desktop cases passed with zero skips. Standalone isolated meeting-chat/avatar Chromium rehearsal passed. Root/desktop TypeScript, desktop build and diff checks passed; focused ESLint has zero errors and three existing renderer array-type warnings. A missing SDK enum export in the synthetic participant-name fixture was repaired without weakening its assertions. CI now installs the desktop app from its own lockfile, tests both desktop suites and compiles the JavaScript client on Ubuntu with an explicit supported platform target. Independent review approved workflow SHA-256 `07cfff259e7ac3e626a164b0e2ddd045dfd6e77067951dc21e76f64ee4b0b488`. All 14 hosted checks passed on desktop/documentation source `5f2dfbde6383586487092615b9e5af82b5c1c276`, including the clean desktop installation/test/compile step in run `36899182940`. Independent history review approved exact aggregate `278f8f8cb62535f81ef1f93159124c2f4c414efc5c66e03dc564c37f9e02597b`, with 12 targeted cases passed and one opt-in browser case skipped; the lead's separate browser run passed. Native helper, signed distribution and device gates remain separate.
+
+The macOS arm64 local trial package at `~/Library/Application Support/Phone11/desktop-meeting-packages/avatar-history-5f2dfbd-20261002/Phone11-Desktop-Trial-darwin-arm64/Phone11-Desktop-Trial.app` was built from committed `5f2dfbd`. Helper integrity before/after signing, embedded manifest pin, all eight bundled file comparisons and deep strict ad-hoc code signing passed. Its `app.asar` SHA-256 is `212624761fe2343421bac32cb8c522d6ca44de13f08c2e6b9499fb55171a9f45`; it opens at the observed sign-in screen. It is not notarized, and authenticated calling/media acceptance has not occurred. Older packages remain retained. Windows helper compilation passes in CI, but no executable was previously retained. [Helper-only retention](WINDOWS-ARTIFACT-RETENTION-20261002.md) adds a checked manual-build artifact without uploading vendor files; hosted retention, local packaging and Windows runtime remain separate gates.
+
+The local PBX writer rehearsal passed 31 checks using actual restricted SCRAM login roles and four synthetic rows. Five observed compatibility/authority boundaries remain explicitly documented. Independent review accepted its exact source and captured synthetic evidence only. It is not a protected production clone and does not close real writer, trigger, schema or rollback admission.
+
+## Isolated backend candidate
+
+At 16:03 UTC, the independently reviewed locked operator started `cp11-api-candidate-mainline-7984cee` on loopback 3022. Its exact image, bundle, binding, runtime and health checks passed; four anonymous protected endpoints returned 401. All 35 pre-existing containers were preserved (36 total). Public 3016, baseline 3000, recovery 3004, Nginx, Kamailio and direct wake health remained unchanged. Independent captured-evidence review accepted these observations only.
+
+No public route, production schema, provider mapping or credential changed. The candidate does not establish authenticated acceptance or deployment readiness. No eligible active denied-tenant fixture exists on the current one-active-tenant target. [Current writer audit](PBX-WRITER-AUDIT-FOLLOWUP-20261001.md) records why advanced PBX migration cannot be admitted from this inventory alone.
+
+## Installed handset and media acceptance
+
+### 4 October consumer corrections
+
+The integration now includes truthful About capability labels and the installed
+native build number; canceled prejoin routes cannot navigate after a late join;
+browser joins serialize and retain failed teardown for retry; cached profile
+availability/status retire at their server-supplied expiry; and an absent
+workspace exposes loading and an authenticated retry. Voicemail deletion uses
+the selected authorized workspace and returns its actual mutation receipt.
+These are source corrections, not a new backend activation or installed build.
+
+The first combined Vitest run passed 2,608 cases, skipped 451 environment-gated
+cases and timed out the API-startup case under concurrent compiler load. That
+case passed individually with its original limit; all 18 deletion caller tests
+also passed after the independent review's constructor correction. Native
+checks passed 23 cases and timed out the Swift import check; that exact check
+passed individually without changing its 60-second limit. Full TypeScript on
+`4854985` passed after the test correction. Focused lint has zero errors with
+existing warnings. Independent server/profile reviews cover source only. The
+voicemail account-switch follow-up at `b8f9e54` binds actions, feedback and
+expanded playback selection to the initiating authenticated owner; a stale
+delete confirmation cannot submit under a replacement account. All 35 focused
+mobile/caller tests passed after integration. Final full TypeScript passed and
+the independent review closed the stale-account feedback finding with
+`APPROVE_SOURCE_ONLY`; the reviewed file hashes match the integration.
+Later checks and release receipts must name their own source rather than
+inherit earlier results.
+
+Signed daily-pilot workflow [37142011158](https://github.com/vasavas1977/codex-phone11/actions/runs/37142011158)
+was dispatched for exact source `1dfda34846d5b002866a6554a2ba74a9012430f7`
+with profile `preview-ios-siprix-daily-pilot`. Dispatch is not a completed build,
+package verification or installation. The owner explicitly deferred physical
+two-phone testing while source and release work continues; retain Build 114
+on the phones until a separately verified update is installed.
+
+That workflow subsequently succeeded. [Build 115's release receipt](BUILD-115-RELEASE-20261004.md)
+records the finished exact-source package, all 22 signed checks and independent
+coverage of all three retained Build 114 phones. Installation and physical
+acceptance remain deferred; the package does not deploy the server corrections.
+
+The desktop-only follow-up at `64eb19c` clears autoplay guidance only after the
+current authorized voicemail source emits actual playback. Old-source events
+cannot clear another account's guidance or mark its voicemail read; synchronous
+teardown during feedback also prevents queued read work. Its isolated worker
+reproduced three baseline failures, then passed all 10 focused player tests and
+desktop TypeScript. This follow-up is outside the iOS candidate source above;
+desktop voicemail remains gated off pending storage commissioning.
+
+Server-only durability follow-up `194cae9` resolves an additional commissioning
+blocker: a successful voicemail receipt now follows synchronization of the WAV
+and its month/tenant/root directory links. Existing-file, indexed and concurrent
+winner retries cross the same barrier; missing configured roots fail closed.
+Failures preserve uncertain media and the relay retry evidence. The isolated
+worker passed 107 tests across nine suites, full TypeScript and targeted lint;
+independent review returned `APPROVE_SOURCE_ONLY`. The lead reran all 22 new
+durability cases after integration and compiled the backend successfully.
+This change is outside Build 115 and is not deployed; production filesystem,
+database commit, producer callbacks and owner playback remain unverified.
+
+The retained daily-pilot Build 111 comes from source `11cd1f199cd4cd79d133637ad59271a21014d9e8`. Earlier Mirroring verified navigation, default member selection, deselection/cancel, own-avatar profile and persisted Away/Automatic settings. Builds 110/109 remain available; the historical Build 112/113 signed-package evidence remains recorded above.
+
+The [newer installation receipts](OWN-AVATAR-PROFILE-20261002.md) confirm signed daily-pilot Build 114 from `d69eede` on both the iPhone 13 (1020) and iPhone 17 (3001): official installation and normal launch succeeded, and app readback verified version `1.0.0`, bundle version `114`. The iPhone 17's own-avatar profile navigation passed without changing a photo; the iPhone 13's signed-in UI remains unverified. Installation and profile UI do not establish successful meeting admission or two-phone audio/video acceptance.
+
+The [reviewed prejoin wording correction](MEETING-ADMISSION-20261002.md#prejoin-error-wording-correction) at `e8145ad6ea6515bd9295ceb74f053b94fa041318` passed all 14 hosted checks, but no newer native build was installed. Both phones still have Build 114's previous error headline. Source and CI success do not establish an installed update or meeting connection.
+
+A fresh source review found no concrete native audio defect explaining the historical two-way silence. The audio path is unchanged from Build 111. Sixty-four focused mocked lifecycle/media tests passed; they cannot prove capture or audibility. Next acceptance must record both build/account identities, test time, each direction's speech and remote Speaking indicator, selected Speaker route, volume/accessories and private native logs. A subscribed audio track badge does not establish decoded or audible audio.
+
+Current live checks need the signed-in Phone11 portal and both phones, 3001 and 1020. Do not replace ordinary account authentication with extracted browser credentials or fabricated actor/tenant fixtures.
+
+## Remaining product ownership
+
+Super Number confirmed its canonical task service contracts are not a deployed event scheduling service. Reuse its reviewed authenticated task/event service when available; task focus intervals and immediate Phone11 rooms are not future meetings. The shared event/provider service remains unbuilt. Connect11 owns media/provider admission and visible-bot lifecycle; Phone11 owns consumer invitations, media controls and physical-device acceptance. Neither source coordination nor a provider probe substitutes for a Phone11 meeting test.
+
+Connect11 confirmed its current provider contract supports interactive/listener admission and permanent eviction, but does not implement authoritative end-for-all, remote mute or waiting-room admission. Those capabilities require a separately reserved backend objective with verified provider primitives and persisted host/membership authority; no implementation was reserved or started through peer coordination. Keep unsupported consumer controls unavailable.
+
+Voicemail ingestion stays off pending real admitted deposit and signed-device playback. Advanced PBX commissioning requires protected-clone rehearsal, accountable writer/rollback ownership and reviewed target changes. Fuller host moderation/waiting room, shared future-event scheduling, general collaboration beyond the reviewed meeting chat, transfer, emergency completion attribution and signed Windows distribution remain unfinished. Keep PR7 draft until its concrete release gates are met.

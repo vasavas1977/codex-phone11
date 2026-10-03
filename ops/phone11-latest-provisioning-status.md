@@ -24,3 +24,15 @@ Found pilot extension 1020 for user 1 on sip.phone11.ai
 {"ok":true,"timestamp":1778589348131}
 Pilot provisioning is ready for the iPhone to sync.
 ```
+
+## 2026-09-28 source-integration gate
+
+The status above is historical live evidence from May, not validation of the
+merged Phone11 candidate. The integrated source requires an explicit selected
+tenant and an assigned, active extension with matching SIP account and Kamailio
+subscriber credentials. `phone.ensurePilotConfig` is now a read of that
+assignment: it does not allocate an extension, claim 1020 through
+`OWNER_OPEN_ID`, or repair missing credentials. Before any release, an operator
+must provision and verify the intended tenant/user mapping and registrar state
+through a separately reviewed workflow. Admin password reset also fails closed
+when the subscriber is missing; repair needs its own privileged, audited path.

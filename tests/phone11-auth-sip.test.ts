@@ -1,0 +1,405 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const state = vi.hoisted(() => ({
+  secure: new Map<string, string>(),
+  plain: new Map<string, string>(),
+  nativeModules: {} as Record<string, unknown>,
+  user: { id: 17 } as { id: number } | null,
+}));
+vi.mock("react-native", () => ({ Platform: { OS: "ios" }, NativeModules: state.nativeModules }));
+vi.mock("expo-secure-store", () => ({
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY: 7,
+  getItemAsync: vi.fn(async (key: string) => state.secure.get(key) ?? null),
+  setItemAsync: vi.fn(async (key: string, value: string) => { state.secure.set(key, value); }),
+  deleteItemAsync: vi.fn(async (key: string) => { state.secure.delete(key); }),
+}));
+vi.mock("@react-native-async-storage/async-storage", () => ({
+  default: {
+    getItem: vi.fn(async (key: string) => state.plain.get(key) ?? null),
+    removeItem: vi.fn(async (key: string) => { state.plain.delete(key); }),
+  },
+}));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: state.user }),
+  addAuthChangeListener: vi.fn(() => () => {}),
+}));
+vi.mock("../lib/sip/diagnostics-store", () => ({
+  formatSipError: () => "Test error",
+  recordPersistentSipDiagnosticEvent: vi.fn(),
+  useSipDiagnosticsStore: { getState: () => ({ addEvent: vi.fn() }) },
+}));
+vi.mock("../lib/sip/siprix-engine", () => ({ siprixEngine: { destroy: vi.fn(async () => {}) },
+  nativeAccount: (account: SipAccount) => ({ sipServer: account.domain, sipExtension: account.username,
+    sipPassword: account.password, transport: account.transport }) }));
+
+import * as SecureStore from "expo-secure-store";
+import { useSipAccountStore, type SipAccount } from "../lib/sip/account-store";
+import { sipEngine } from "../lib/sip/pjsip-engine";
+import { siprixEngine } from "../lib/sip/siprix-engine";
+import { useSipCallStore } from "../lib/sip/call-store";
+
+const account: SipAccount = {
+  ownerUserId: 17, id: "test", username: "1001", password: "not-a-live-SIP-secret",
+  domain: "sip.example.test", displayName: "Test", port: 5061,
+  transport: "TLS", srtp: true, enabled: true,
+};
+
+describe("Phone11 auth and SIP account isolation", () => {
+  beforeEach(async () => {
+    state.user = { id: 17 };
+    await useSipAccountStore.getState().clearAccount();
+    state.secure.clear();
+    state.plain.clear();
+    delete state.nativeModules.Phone11Siprix;
+    useSipCallStore.setState({ activeCalls: {}, incomingCall: null });
+    vi.clearAllMocks();
+  });
+  it("stores the account only in device secure storage", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    expect(state.secure.size).toBe(1);
+    expect(state.plain.size).toBe(0);
+    expect(SecureStore.setItemAsync).toHaveBeenCalledWith(
+      "phone11_sip_account_v2", expect.any(String), { keychainAccessible: 7 },
+    );
+  });
+  it.each(["incoming", "calling", "active", "held"] as const)("keeps a %s call on its registered account until it ends", async status => {
+    await useSipAccountStore.getState().setAccount(account);
+    const changed = { ...account, password: "replacement-secret" };
+    const call = { id: "ring-1", status, direction: "inbound", remoteNumber: "3001",
+      isMuted: false, isHeld: status === "held", isSpeaker: false, isVideo: false } as const;
+    if (status === "incoming") useSipCallStore.setState({ incomingCall: call });
+    else useSipCallStore.setState({ activeCalls: { [call.id]: call } });
+    await expect(useSipAccountStore.getState().setAccount({ ...account })).resolves.toBeUndefined();
+    await expect(useSipAccountStore.getState().setAccount(changed)).rejects.toThrow("Finish the current phone call");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+    useSipCallStore.setState({ activeCalls: {}, incomingCall: null });
+    await useSipAccountStore.getState().setAccount(changed);
+    expect(useSipAccountStore.getState().account).toEqual(changed);
+  });
+
+  it("restores the previous secure account when a call starts during a credential write", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    vi.mocked(SecureStore.setItemAsync).mockClear();
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value) => {
+      await blocked; state.secure.set(key, value);
+    });
+    const write = useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" });
+    await vi.waitFor(() => expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1));
+    useSipCallStore.setState({ incomingCall: { id: "ring-2", status: "incoming", direction: "inbound",
+      remoteNumber: "3001", isMuted: false, isHeld: false, isSpeaker: false, isVideo: false } });
+    finish();
+    await expect(write).rejects.toThrow("Finish the current phone call");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("preserves a native wake that rings before JS has received a call event", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    let nativeWake = true;
+    state.nativeModules.Phone11Siprix = { beginAccountChange: vi.fn(async () => {
+        if (nativeWake) throw new Error("wake armed");
+        return "lease";
+      }),
+      endAccountChange: vi.fn(async () => {}), getSnapshot: vi.fn(async () => ({
+      calls: [], nativeWake: nativeWake ? { ownerUserId: 17, tenantId: 1 } : undefined,
+    })) };
+    const changed = { ...account, password: "replacement-secret" };
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+    expect(useSipCallStore.getState().activeCalls).toEqual({});
+    await expect(useSipAccountStore.getState().setAccount(changed)).rejects.toThrow("Finish the current phone call");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+    nativeWake = false;
+    await useSipAccountStore.getState().setAccount(changed);
+    expect(useSipAccountStore.getState().account).toEqual(changed);
+  });
+
+  it("restores the account if native wake arrives during the secure-store write", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    vi.mocked(SecureStore.setItemAsync).mockClear();
+    let nativeWake = false;
+    state.nativeModules.Phone11Siprix = { beginAccountChange: vi.fn(async () => {
+        if (nativeWake) throw new Error("wake armed");
+        return "lease";
+      }),
+      endAccountChange: vi.fn(async () => {}), getSnapshot: vi.fn(async () => ({
+      calls: [], nativeWake: nativeWake ? { ownerUserId: 17, tenantId: 1 } : undefined,
+    })) };
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value) => {
+      await blocked; state.secure.set(key, value);
+    });
+    const write = useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" });
+    await vi.waitFor(() => expect(SecureStore.setItemAsync).toHaveBeenCalledTimes(1));
+    nativeWake = true;
+    finish();
+    await expect(write).rejects.toThrow("Finish the current phone call");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("fails closed when an installed native bridge cannot atomically reserve the idle runtime", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    state.nativeModules.Phone11Siprix = { getSnapshot: vi.fn(async () => ({ calls: [] })) };
+    await expect(useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" }))
+      .rejects.toThrow("Install the latest Phone11 app");
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("rolls back a credential write when native wake wins lease acquisition", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => { throw Object.assign(new Error("wake armed"), { code: "E_CALL_ACTIVE" }); }),
+      endAccountChange: vi.fn(async () => {}) };
+    state.nativeModules.Phone11Siprix = bridge;
+    await expect(useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" }))
+      .rejects.toThrow("Finish the current phone call");
+    expect(bridge.beginAccountChange).toHaveBeenCalledOnce();
+    expect(bridge.endAccountChange).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    expect(JSON.parse(state.secure.get("phone11_sip_account_v2")!)).toEqual(account);
+  });
+  it("holds native wake admission through old runtime retirement and new account publication", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    let finishDestroy!: () => void;
+    const blocked = new Promise<void>(resolve => { finishDestroy = resolve; });
+    vi.mocked(siprixEngine.destroy).mockImplementationOnce(async () => { await blocked; });
+    let leaseHeld = false;
+    let wakeQueued = false;
+    let wakeResumed = false;
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => { leaseHeld = true; return "lease"; }),
+      endAccountChange: vi.fn(async (_token: string, _config: unknown, resume: boolean) => {
+        expect(useSipAccountStore.getState().account?.password).toBe("replacement-secret");
+        expect(resume).toBe(true);
+        leaseHeld = false;
+        wakeResumed = wakeQueued;
+      }) };
+    state.nativeModules.Phone11Siprix = bridge;
+    const write = useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" });
+    await vi.waitFor(() => expect(siprixEngine.destroy).toHaveBeenCalledOnce());
+    expect(leaseHeld).toBe(true);
+    expect(useSipAccountStore.getState().account).toEqual(account);
+    wakeQueued = true;
+    finishDestroy();
+    await write;
+    expect(bridge.endAccountChange).toHaveBeenCalledWith("lease", expect.objectContaining({ sipPassword: "replacement-secret" }), true);
+    expect(wakeResumed).toBe(true);
+    expect(leaseHeld).toBe(false);
+  });
+  it("does not resume a deferred wake for a different extension", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => "lease"), endAccountChange: vi.fn(async () => {}) };
+    state.nativeModules.Phone11Siprix = bridge;
+    await useSipAccountStore.getState().setAccount({ ...account, username: "2002" });
+    expect(bridge.endAccountChange).toHaveBeenCalledWith("lease", expect.any(Object), false);
+  });
+  it("releases the lease without resuming wake after sign-out interrupts publication", async () => {
+    await useSipAccountStore.getState().setAccount(account);
+    let finishDestroy!: () => void;
+    const blocked = new Promise<void>(resolve => { finishDestroy = resolve; });
+    vi.mocked(siprixEngine.destroy).mockImplementationOnce(async () => { await blocked; });
+    const bridge = { getSnapshot: vi.fn(async () => ({ calls: [] })),
+      beginAccountChange: vi.fn(async () => "lease"), endAccountChange: vi.fn(async () => {}) };
+    state.nativeModules.Phone11Siprix = bridge;
+    const write = useSipAccountStore.getState().setAccount({ ...account, password: "replacement-secret" });
+    await vi.waitFor(() => expect(siprixEngine.destroy).toHaveBeenCalledOnce());
+    const clear = useSipAccountStore.getState().clearAccount();
+    finishDestroy();
+    await Promise.all([write, clear]);
+    expect(bridge.endAccountChange).toHaveBeenCalledWith("lease", null, false);
+    expect(useSipAccountStore.getState().account).toBeNull();
+    expect(state.secure.size).toBe(0);
+  });
+  it("discards old unbound plaintext credentials instead of assigning them to the next user", async () => {
+    state.plain.set("phone11_sip_account", JSON.stringify(account));
+    await useSipAccountStore.getState().loadAccount();
+    expect(state.plain.size).toBe(0);
+    expect(useSipAccountStore.getState().account).toBeNull();
+  });
+  it("refuses to store credentials for another user", async () => {
+    await expect(useSipAccountStore.getState().setAccount({ ...account, ownerUserId: 29 })).rejects.toThrow();
+    expect(state.secure.size).toBe(0);
+  });
+  it("does not load another user's secure account", async () => {
+    state.secure.set("phone11_sip_account_v2", JSON.stringify({ ...account, ownerUserId: 29 }));
+    await useSipAccountStore.getState().loadAccount();
+    expect(useSipAccountStore.getState().account).toBeNull();
+  });
+  it("does not let an in-flight store restore credentials after sign-out", async () => {
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value) => {
+      await blocked; state.secure.set(key, value);
+    });
+    const write = useSipAccountStore.getState().setAccount(account);
+    await Promise.resolve();
+    const clear = useSipAccountStore.getState().clearAccount();
+    finish();
+    await Promise.all([write, clear]);
+    expect(useSipAccountStore.getState().account).toBeNull();
+    expect(state.secure.size).toBe(0);
+  });
+  it("does not publish or retain a keychain write if the verified owner changes during it", async () => {
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    vi.mocked(SecureStore.setItemAsync).mockImplementationOnce(async (key, value) => {
+      await blocked; state.secure.set(key, value);
+    });
+    const write = useSipAccountStore.getState().setAccount(account);
+    await Promise.resolve();
+    state.user = { id: 29 };
+    finish(); await write;
+    expect(useSipAccountStore.getState().account).toBeNull();
+    expect(state.secure.size).toBe(0);
+  });
+  it("blocks native registration without a verified matching Phone11 user", async () => {
+    useSipAccountStore.setState({ account, registrationState: "registered" });
+    state.user = null;
+    await sipEngine.initialize();
+    expect(useSipAccountStore.getState().registrationState).toBe("unregistered");
+  });
+  it("deletes the native account even when legacy PJSIP has no stop method", async () => {
+    const endpoint = { deleteAccount: vi.fn(), removeAllListeners: vi.fn() };
+    const nativeAccount = { getId: () => 4 };
+    const engine = sipEngine as unknown as { endpoint: unknown; pjsipAccount: unknown; initialized: boolean };
+    engine.endpoint = endpoint;
+    engine.pjsipAccount = nativeAccount;
+    engine.initialized = true;
+    await sipEngine.destroy();
+    expect(endpoint.deleteAccount).toHaveBeenCalledWith(nativeAccount);
+    expect(endpoint.removeAllListeners).toHaveBeenCalled();
+    expect(engine.endpoint).toBeNull();
+    expect(engine.initialized).toBe(false);
+  });
+  it("ends an active call before removing its native account", async () => {
+    const order: string[] = [];
+    const call = { getId: () => 5 };
+    useSipCallStore.getState().addOutgoingCall(call, "sip:test@example.test");
+    const endpoint = {
+      hangupCall: vi.fn(async () => { order.push("hangup"); }),
+      deleteAccount: vi.fn(async () => { order.push("delete"); }),
+      removeAllListeners: vi.fn(),
+    };
+    Object.assign(sipEngine, { endpoint, pjsipAccount: { getId: () => 4 }, initialized: true });
+    await sipEngine.destroy();
+    expect(order).toEqual(["hangup", "delete"]);
+    expect(endpoint.hangupCall).toHaveBeenCalledWith(call);
+  });
+  it("retains failed cleanup for retry instead of reporting successful sign-out", async () => {
+    const endpoint = { deleteAccount: vi.fn().mockRejectedValueOnce(new Error("native failure")), removeAllListeners: vi.fn() };
+    Object.assign(sipEngine, { endpoint, pjsipAccount: { getId: () => 4 }, initialized: true });
+    await expect(sipEngine.destroy()).rejects.toThrow("could not stop");
+    expect(endpoint.removeAllListeners).not.toHaveBeenCalled();
+    await sipEngine.destroy();
+    expect(endpoint.deleteAccount).toHaveBeenCalledTimes(2);
+    expect(endpoint.removeAllListeners).toHaveBeenCalledOnce();
+  });
+  it("serializes logout behind an in-flight native startup", async () => {
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    const endpoint = { deleteAccount: vi.fn(), removeAllListeners: vi.fn() };
+    const internals = sipEngine as unknown as { initializeEndpoint: () => Promise<void> };
+    const initialize = vi.spyOn(internals, "initializeEndpoint").mockImplementationOnce(async () => {
+      await blocked;
+      Object.assign(sipEngine, { endpoint, pjsipAccount: { getId: () => 4 }, initialized: true });
+    });
+    const start = sipEngine.initialize();
+    const stop = sipEngine.destroy();
+    expect(endpoint.deleteAccount).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([start, stop]);
+    expect(endpoint.deleteAccount).toHaveBeenCalledOnce();
+    initialize.mockRestore();
+  });
+});
+
+describe("Phone11 CallKit audio ownership", () => {
+  const internals = sipEngine as unknown as {
+    _activateAudioSession: (callId: string, reason: string) => Promise<void>;
+    endpoint: unknown;
+  };
+  const endpoint = () => ({
+    activateAudioSession: vi.fn().mockResolvedValue(undefined),
+    deactivateAudioSession: vi.fn().mockResolvedValue(undefined),
+  });
+  beforeEach(async () => {
+    await sipEngine.handleNativeAudioSession(false);
+    internals.endpoint = null;
+  });
+  it("does not open iOS audio at call creation or confirmation before CallKit grants it", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await internals._activateAudioSession("1", "outbound_call_created");
+    await internals._activateAudioSession("1", "call_changed");
+    expect(native.activateAudioSession).not.toHaveBeenCalled();
+    await sipEngine.handleNativeAudioSession(true);
+    expect(native.activateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("does not tear down and reopen an already activated sound device on confirmation", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await Promise.all([
+      internals._activateAudioSession("1", "call_changed"),
+      sipEngine.handleNativeAudioSession(true),
+    ]);
+    expect(native.activateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("reopens after a CallKit deactivation and later reactivation", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await sipEngine.handleNativeAudioSession(false);
+    await internals._activateAudioSession("1", "call_changed");
+    expect(native.activateAudioSession).toHaveBeenCalledOnce();
+    await sipEngine.handleNativeAudioSession(true);
+    expect(native.activateAudioSession).toHaveBeenCalledTimes(2);
+    expect(native.deactivateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("serializes deactivation behind an in-flight activation", async () => {
+    const native = endpoint();
+    let finish!: () => void;
+    native.activateAudioSession.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    internals.endpoint = native;
+    const start = sipEngine.handleNativeAudioSession(true);
+    await Promise.resolve();
+    const stop = sipEngine.handleNativeAudioSession(false);
+    expect(native.deactivateAudioSession).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([start, stop]);
+    expect(native.deactivateAudioSession).toHaveBeenCalledOnce();
+  });
+  it("does not treat failed activation as an active sound device", async () => {
+    const native = endpoint();
+    native.activateAudioSession.mockRejectedValueOnce(new Error("audio unavailable"));
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await internals._activateAudioSession("1", "call_changed");
+    expect(native.activateAudioSession).toHaveBeenCalledTimes(2);
+  });
+  it("cycles the sound device when deactivation and reactivation arrive together", async () => {
+    const native = endpoint();
+    internals.endpoint = native;
+    await sipEngine.handleNativeAudioSession(true);
+    await Promise.all([
+      sipEngine.handleNativeAudioSession(false),
+      sipEngine.handleNativeAudioSession(true),
+    ]);
+    expect(native.deactivateAudioSession).toHaveBeenCalledOnce();
+    expect(native.activateAudioSession).toHaveBeenCalledTimes(2);
+  });
+  it("does not activate an endpoint replaced before the queued callback runs", async () => {
+    const old = endpoint();
+    internals.endpoint = old;
+    const start = sipEngine.handleNativeAudioSession(true);
+    const next = endpoint();
+    internals.endpoint = next;
+    await start;
+    expect(old.activateAudioSession).not.toHaveBeenCalled();
+    expect(next.activateAudioSession).not.toHaveBeenCalled();
+  });
+});

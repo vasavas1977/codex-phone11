@@ -1,0 +1,111 @@
+name: Phone11 Grant Scoped RDS Modify Permission
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-grant-rds-modify-permission.yml'
+      - 'server/_core/.phone11-iam-grant-rds-modify-trigger-*'
+
+concurrency:
+  group: phone11-grant-rds-modify-permission-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  PHONE11_DEPLOY_USER: 'phone11-github-deploy'
+  PHONE11_RDS_ARN: 'arn:aws:rds:ap-southeast-7:326786006484:db:phone11ai-production-postgres'
+  PHONE11_POLICY_NAME: 'Phone11ScopedRdsModifyInstance'
+
+permissions:
+  contents: write
+
+jobs:
+  grant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Grant scoped RDS modify permission
+        id: grant
+        shell: bash
+        run: |
+          set +e
+          LOG=/tmp/phone11-iam-grant-rds-modify.log
+          STATUS=0
+          exec > >(tee "$LOG") 2>&1
+
+          finish() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 IAM Grant RDS Modify Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- IAM user: $PHONE11_DEPLOY_USER"
+              echo "- RDS resource: $PHONE11_RDS_ARN"
+              echo "- Policy name: $PHONE11_POLICY_NAME"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sed -E 's#(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SESSION_TOKEN)=([^[:space:]]+)#\1=<redacted>#g; s#(AccessKeyId|SecretAccessKey|SessionToken)[^[:space:]]*#<redacted>#Ig' "$LOG" 2>/dev/null || true
+              echo '```'
+            } > ops/phone11-iam-grant-rds-modify-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-iam-grant-rds-modify-status.md
+            if git diff --cached --quiet; then
+              echo 'No status file changes to commit.'
+            else
+              git commit -m "Update Phone11 IAM RDS modify grant status"
+              git push
+            fi
+            exit "$STATUS"
+          }
+          trap finish EXIT
+
+          echo '=== Phone11 scoped IAM RDS modify grant ==='
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            STATUS=30
+            exit 30
+          fi
+
+          cat > /tmp/phone11-rds-modify-policy.json <<POLICY
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "AllowModifyPhone11ProductionPostgresOnly",
+                "Effect": "Allow",
+                "Action": "rds:ModifyDBInstance",
+                "Resource": "$PHONE11_RDS_ARN"
+              }
+            ]
+          }
+          POLICY
+
+          echo "Applying scoped inline policy $PHONE11_POLICY_NAME to IAM user $PHONE11_DEPLOY_USER."
+          aws iam put-user-policy \
+            --user-name "$PHONE11_DEPLOY_USER" \
+            --policy-name "$PHONE11_POLICY_NAME" \
+            --policy-document file:///tmp/phone11-rds-modify-policy.json
+          STATUS=$?
+          if [ "$STATUS" = '0' ]; then
+            echo 'Scoped RDS modify permission granted.'
+          else
+            echo "ERROR: AWS denied or failed the IAM policy update with status $STATUS."
+          fi

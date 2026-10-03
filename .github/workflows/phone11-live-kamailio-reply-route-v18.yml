@@ -1,0 +1,122 @@
+name: Phone11 Live Kamailio Reply Route Patch V18
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-kamailio-reply-route-v18.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  patch-reply-route:
+    name: Make Kamailio reply routes end successfully
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_reply_route_v18_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_reply_route_v18_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Patch live reply routes and restart safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_reply_route_v18_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          CFG=/opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg
+          STAMP="$(date -u +%Y%m%d%H%M%S)"
+          BACKUP="${CFG}.bak-v18-${STAMP}"
+
+          echo "===== Reply routes before patch ====="
+          nl -ba "$CFG" | sed -n '420,450p'
+          cp "$CFG" "$BACKUP"
+
+          python3 - "$CFG" <<'PY'
+          import pathlib, sys
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+          before = text
+          text = text.replace(
+          '''onreply_route {
+              if (nat_uac_test("1")) {
+                  fix_nated_contact();
+              }
+          }''',
+          '''onreply_route {
+              if (nat_uac_test("1")) {
+                  fix_nated_contact();
+              }
+              xlog("L_DBG", "REPLY_ROUTE_OK status=$rs call=$ci from=$si:$sp\\\\n");
+          }'''
+          )
+          text = text.replace(
+          '''        xlog("L_ALERT", "AFTER_ANSWER SDP=$rb\\n");
+              }
+          }''',
+          '''        xlog("L_ALERT", "AFTER_ANSWER SDP=$rb\\n");
+              }
+              xlog("L_DBG", "FREESWITCH_REPLY_OK status=$rs call=$ci from=$si:$sp\\\\n");
+          }'''
+          )
+          if text == before:
+              raise SystemExit("reply_route_patch=no_matching_block")
+          path.write_text(text)
+          print("reply_route_patch=updated")
+          PY
+
+          echo "===== Reply routes after patch ====="
+          nl -ba "$CFG" | sed -n '420,455p'
+
+          echo "===== Syntax check ====="
+          if ! docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg; then
+            echo "Syntax check failed; restoring backup."
+            cp "$BACKUP" "$CFG"
+            docker restart p11-kamailio >/dev/null
+            exit 41
+          fi
+
+          echo "===== Restart Kamailio ====="
+          docker restart p11-kamailio >/dev/null
+          sleep 4
+          docker ps --filter name=p11-kamailio --format '{{.Names}} {{.Status}}'
+          docker inspect -f 'kamailio_running={{.State.Running}} exit={{.State.ExitCode}}' p11-kamailio
+
+          echo "===== Fresh Kamailio startup errors ====="
+          docker logs --since 20s --timestamps p11-kamailio 2>&1 | grep -Eia 'error|critical|fatal|parse|failed' | tail -n 80 || true
+
+          if [ "$(docker inspect -f '{{.State.Running}}' p11-kamailio)" != "true" ]; then
+            echo "Kamailio did not remain running; restoring backup."
+            cp "$BACKUP" "$CFG"
+            docker restart p11-kamailio >/dev/null
+            exit 42
+          fi
+
+          echo "KAMAILIO_REPLY_ROUTE_PATCH_RESULT=pass"
+          REMOTE

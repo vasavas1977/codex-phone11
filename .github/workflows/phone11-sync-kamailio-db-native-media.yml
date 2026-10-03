@@ -1,0 +1,135 @@
+name: Phone11 Sync Kamailio DB and Native Media
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-sync-kamailio-db-native-media.yml"
+      - "ops/scripts/sync-kamailio-db-and-native-media.sh"
+  workflow_dispatch:
+    inputs:
+      backend_host:
+        description: Backend EC2 host with working DB env
+        required: true
+        default: 43.209.112.208
+      sip_host:
+        description: SIP/media EC2 host running Kamailio
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  sync-kamailio:
+    name: Sync Kamailio DB URL and native PJSIP media
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync live Kamailio config
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          BACKEND_HOST="${{ github.event.inputs.backend_host || '43.209.112.208' }}"
+          SIP_HOST="${{ github.event.inputs.sip_host || '43.210.122.111' }}"
+          LOG_DIR="$RUNNER_TEMP/phone11-kamailio-sync"
+          LOG_FILE="$LOG_DIR/phone11-kamailio-sync.txt"
+          mkdir -p "$LOG_DIR"
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          locate_instance() {
+            local host="$1"
+            local out="$2"
+            local json
+            json=$(aws ec2 describe-instances \
+              --filters "Name=ip-address,Values=$host" "Name=instance-state-name,Values=running" \
+              --query 'Reservations[0].Instances[0]' \
+              --output json)
+            local instance_id az
+            instance_id=$(echo "$json" | jq -r '.InstanceId // empty')
+            az=$(echo "$json" | jq -r '.Placement.AvailabilityZone // empty')
+            if [ -z "$instance_id" ] || [ "$instance_id" = 'null' ]; then
+              echo "ERROR: Could not find running EC2 instance for $host"
+              exit 32
+            fi
+            printf -v "$out" '%s %s' "$instance_id" "$az"
+          }
+
+          echo '=== Locate EC2 instances ==='
+          locate_instance "$BACKEND_HOST" BACKEND_INSTANCE
+          locate_instance "$SIP_HOST" SIP_INSTANCE
+          BACKEND_INSTANCE_ID="${BACKEND_INSTANCE%% *}"
+          BACKEND_AZ="${BACKEND_INSTANCE#* }"
+          SIP_INSTANCE_ID="${SIP_INSTANCE%% *}"
+          SIP_AZ="${SIP_INSTANCE#* }"
+          echo "Backend EC2: $BACKEND_INSTANCE_ID in $BACKEND_AZ"
+          echo "SIP EC2: $SIP_INSTANCE_ID in $SIP_AZ"
+
+          echo '=== Prepare temporary SSH access ==='
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_kamailio_sync_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$BACKEND_INSTANCE_ID" \
+            --availability-zone "$BACKEND_AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_kamailio_sync_key.pub" >/dev/null
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$SIP_INSTANCE_ID" \
+            --availability-zone "$SIP_AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_kamailio_sync_key.pub" >/dev/null
+
+          echo '=== Read DB env from backend host ==='
+          REMOTE_ENV=$(ssh -i ~/.ssh/phone11_kamailio_sync_key -o StrictHostKeyChecking=no "$EC2_USER@$BACKEND_HOST" 'for candidate in "/opt/phone11ai/codex-phone11-deploy/.env" "/opt/phone11ai/phone11ai/deploy/backend/.env" "/opt/phone11ai/cloudphone11/infra/compose/.env" "/opt/phone11ai/cloudphone11/.env" "/opt/phone11ai/.env" "/home/ubuntu/phone11ai/.env" "/home/ubuntu/cloudphone11/.env" "/home/ubuntu/codex-phone11/.env"; do if [ -f "$candidate" ]; then echo "ENV_FILE=$candidate"; awk -F= '\''/^(PG_HOST|DB_HOST|POSTGRES_HOST|PG_PORT|DB_PORT|POSTGRES_PORT|PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB|PG_USER|DB_USER|POSTGRES_USER|PG_PASSWORD|DB_PASSWORD|POSTGRES_PASSWORD)=/ {print $1"="$2}'\'' "$candidate"; exit 0; fi; done')
+          DB_HOST=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_HOST|DB_HOST|POSTGRES_HOST)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_PORT=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_PORT|DB_PORT|POSTGRES_PORT)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_NAME=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_DATABASE|DB_NAME|DB_DATABASE|POSTGRES_DB)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_USER_VALUE=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_USER|DB_USER|POSTGRES_USER)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          DB_PASSWORD_VALUE=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^(PG_PASSWORD|DB_PASSWORD|POSTGRES_PASSWORD)=/ {print $2; exit}' | tr -d '\r' | sed -E 's/^["'"'"']//; s/["'"'"']$//')
+          ENV_FILE=$(printf '%s\n' "$REMOTE_ENV" | awk -F= '/^ENV_FILE=/ {print $2; exit}' | tr -d '\r')
+          if [ -z "$DB_HOST" ] || [ -z "$DB_NAME" ] || [ -z "$DB_USER_VALUE" ] || [ -z "$DB_PASSWORD_VALUE" ]; then
+            echo 'ERROR: Missing required DB env values from backend host.'
+            printf '%s\n' "$REMOTE_ENV" | sed -E 's/(PG_USER|DB_USER|POSTGRES_USER)=.*/\1=<db-user>/g; s/(PG_PASSWORD|DB_PASSWORD|POSTGRES_PASSWORD)=.*/\1=<redacted>/g'
+            exit 35
+          fi
+          echo "::add-mask::$DB_PASSWORD_VALUE"
+          DB_PASSWORD_B64=$(printf '%s' "$DB_PASSWORD_VALUE" | base64 -w0)
+          echo "::add-mask::$DB_PASSWORD_B64"
+          echo "Backend env file: $ENV_FILE"
+          echo "DB host: $DB_HOST"
+          echo "DB port: ${DB_PORT:-5432}"
+          echo "DB name: $DB_NAME"
+          echo "DB user: <db-user>"
+
+          echo '=== Upload and run SIP host sync script ==='
+          scp -i ~/.ssh/phone11_kamailio_sync_key -o StrictHostKeyChecking=no \
+            ops/scripts/sync-kamailio-db-and-native-media.sh \
+            "$EC2_USER@$SIP_HOST:/tmp/phone11-sync-kamailio-db-and-native-media.sh"
+
+          ssh -i ~/.ssh/phone11_kamailio_sync_key -o StrictHostKeyChecking=no "$EC2_USER@$SIP_HOST" \
+            "DB_HOST='$DB_HOST' DB_PORT='${DB_PORT:-5432}' DB_NAME='$DB_NAME' DB_USER='$DB_USER_VALUE' DB_PASSWORD_B64='$DB_PASSWORD_B64' bash /tmp/phone11-sync-kamailio-db-and-native-media.sh" \
+            | tee "$LOG_FILE"
+
+      - name: Upload Kamailio sync log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-kamailio-db-native-media-sync-log
+          path: ${{ runner.temp }}/phone11-kamailio-sync/phone11-kamailio-sync.txt
+          if-no-files-found: warn

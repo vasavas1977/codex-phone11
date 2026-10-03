@@ -1,0 +1,193 @@
+name: Phone11 live current media proof v37
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-current-media-proof-v37.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  current-media-proof-v37:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v37_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v37_key.pub" >/dev/null
+
+      - name: Prove current SIP answer and RTP echo path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_v37_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN=sip.phone11.ai
+          USER=1999
+          PASS="$(openssl rand -hex 16)"
+          OUT=/tmp/phone11-v37.out
+          CID=/tmp/phone11-v37.cid
+          sudo rm -f "$OUT" "$CID" /tmp/phone11-v37.pcap.txt
+
+          echo "===== Current Kamailio media route proof ====="
+          docker exec p11-kamailio sh -lc "grep -n -A30 'route\\[TO_FREESWITCH\\]' /etc/kamailio/kamailio.cfg | sed -n '1,80p'"
+          if docker exec p11-kamailio sh -lc "grep -n 'msg_apply_changes' /etc/kamailio/kamailio.cfg"; then
+            echo "V37_UNSAFE_MSG_APPLY_PRESENT=yes"
+            exit 41
+          fi
+          docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg >/dev/null
+
+          echo "===== Ensure FreeSWITCH echo target and temporary subscriber ====="
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/public/00_phone11_media_self_test.xml' <<'XML'
+          <include>
+            <extension name="phone11_media_echo_9196">
+              <condition field="destination_number" expression="^(\*9196|9196|%2A9196)$" break="on-true">
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+            <extension name="phone11_media_echo_9196_to_user">
+              <condition field="${sip_to_user}" expression="^(\*9196|9196|%2A9196)$" break="on-true">
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+          </include>
+          XML
+          docker exec p11-freeswitch fs_cli -x reloadxml >/dev/null
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES ('$USER', '$DOMAIN', '$PASS', md5('$USER:$DOMAIN:$PASS'), md5('$USER@$DOMAIN:$DOMAIN:$PASS'))
+          ON CONFLICT (username, domain) DO UPDATE SET password=EXCLUDED.password, ha1=EXCLUDED.ha1, ha1b=EXCLUDED.ha1b;
+          SQL
+
+          sudo sh -lc 'nohup timeout 90 tcpdump -i any -nn -s0 -A "(udp port 5060) or (udp port 5080) or (udp portrange 20000-20150) or (udp portrange 30000-32050)" > /tmp/phone11-v37.pcap.txt 2>&1 &' || true
+          sleep 2
+
+          set +e
+          PHONE11_TEST_USER="$USER" PHONE11_TEST_PASS="$PASS" python3 - <<'PY' | tee "$OUT"
+          import hashlib, os, random, re, secrets, select, socket, struct, sys, time
+          DOMAIN='sip.phone11.ai'; SERVER=('10.0.1.69',5060); USER=os.environ['PHONE11_TEST_USER']; PASS=os.environ['PHONE11_TEST_PASS']; TARGET='*9196'; IP='10.0.1.69'
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def h(txt,n):
+              m=re.search(rf'^{re.escape(n)}:\s*(.+)$',txt,re.I|re.M); return m.group(1).strip() if m else ''
+          def code(txt):
+              m=re.match(r'SIP/2.0\s+(\d+)',txt.splitlines()[0] if txt.splitlines() else ''); return int(m.group(1)) if m else 0
+          def auth(ch,method,uri):
+              d={k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))',ch.replace('Digest','',1))}
+              realm=d.get('realm',DOMAIN); nonce=d['nonce']; qop='auth' if 'auth' in d.get('qop','') else ''; nc='00000001'; cnonce=secrets.token_hex(8)
+              ha1=md5(f'{USER}:{realm}:{PASS}'); ha2=md5(f'{method}:{uri}')
+              resp=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+              parts=[f'username="{USER}"',f'realm="{realm}"',f'nonce="{nonce}"',f'uri="{uri}"',f'response="{resp}"','algorithm=MD5']
+              if qop: parts += [f'qop={qop}',f'nc={nc}',f'cnonce="{cnonce}"']
+              return 'Digest '+', '.join(parts)
+          def recv(cid,timeout=12):
+              end=time.time()+timeout
+              while time.time()<end:
+                  r,_,_=select.select([sip],[],[],0.2)
+                  if r:
+                      data,addr=sip.recvfrom(65535); txt=data.decode(errors='replace')
+                      if cid in txt: return txt,addr
+              raise TimeoutError(cid)
+          def wait_invite_response(cid, timeout=24):
+              end=time.time()+timeout
+              while time.time()<end:
+                  txt,addr=recv(cid, max(0.2, end-time.time()))
+                  c=code(txt)
+                  print(f'v37_invite_status={c} from={addr[0]}:{addr[1]}')
+                  if c in (100,180,183):
+                      continue
+                  return c,txt,addr
+              raise TimeoutError(cid)
+          def media_from_sdp(txt):
+              s=txt.split('\r\n\r\n',1)[1] if '\r\n\r\n' in txt else ''; ip=''; port=0
+              for line in s.splitlines():
+                  if line.startswith('c=IN IP4 '): ip=line.split()[-1]
+                  if line.startswith('m=audio '): port=int(line.split()[1])
+              return ip,port
+          def rtp_pkt(seq,ts,ssrc): return struct.pack('!BBHII',0x80,0x00,seq&0xffff,ts&0xffffffff,ssrc)+bytes([0xff])*160
+          sip=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); sip.bind((IP,random.randint(26000,26999))); sip.setblocking(False); sport=sip.getsockname()[1]
+          rtp=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); rtp.bind((IP,random.randrange(30000,31998,2))); rtp.setblocking(False); rport=rtp.getsockname()[1]
+          contact=f'<sip:{USER}@{IP}:{sport};transport=udp>'
+          def send(msg): sip.sendto(msg.encode(),SERVER)
+          reg_cid=f'phone11-v37-register-{secrets.token_hex(8)}@ec2'; reg_uri=f'sip:{DOMAIN}'; tag=secrets.token_hex(5)
+          def reg(cseq,ah=''):
+              lines=[f'REGISTER {reg_uri} SIP/2.0',f'Via: SIP/2.0/UDP {IP}:{sport};branch=z9hG4bKv37r{secrets.token_hex(6)};rport','Max-Forwards: 70',f'From: <sip:{USER}@{DOMAIN}>;tag={tag}',f'To: <sip:{USER}@{DOMAIN}>',f'Call-ID: {reg_cid}',f'CSeq: {cseq} REGISTER',f'Contact: {contact};expires=300','Expires: 300','User-Agent: Phone11V37']
+              if ah: lines.append(ah)
+              return '\r\n'.join(lines+['Content-Length: 0','',''])
+          send(reg(1)); txt,_=recv(reg_cid); c=code(txt); print(f'v37_register_first={c}')
+          if c in (401,407):
+              send(reg(2,('Proxy-Authorization' if c==407 else 'Authorization')+': '+auth(h(txt,'WWW-Authenticate') or h(txt,'Proxy-Authenticate'),'REGISTER',reg_uri)))
+              txt,_=recv(reg_cid); c=code(txt)
+          print(f'v37_register_final={c}')
+          if c!=200: sys.exit(60)
+          cid=f'phone11-v37-kam-{secrets.token_hex(8)}@ec2'; open('/tmp/phone11-v37.cid','w').write(cid); req=f'sip:{TARGET}@{DOMAIN}'; ftag=secrets.token_hex(6)
+          sdp='\r\n'.join(['v=0',f'o=phone11-v37 1 1 IN IP4 {IP}','s=Phone11 V37',f'c=IN IP4 {IP}','t=0 0',f'm=audio {rport} RTP/AVP 0','a=rtpmap:0 PCMU/8000','a=sendrecv',''])
+          def inv(cseq,ah=''):
+              lines=[f'INVITE {req} SIP/2.0',f'Via: SIP/2.0/UDP {IP}:{sport};branch=z9hG4bKv37i{secrets.token_hex(6)};rport','Max-Forwards: 70',f'From: Phone11 V37 <sip:{USER}@{DOMAIN}>;tag={ftag}',f'To: <{req}>',f'Call-ID: {cid}',f'CSeq: {cseq} INVITE',f'Contact: {contact}','Allow: INVITE, ACK, CANCEL, BYE, OPTIONS','User-Agent: Phone11V37']
+              if ah: lines.append(ah)
+              return '\r\n'.join(lines+['Content-Type: application/sdp',f'Content-Length: {len(sdp.encode())}','',sdp])
+          cseq=1; ah=''; answer=''
+          for _ in range(3):
+              send(inv(cseq,ah))
+              c,txt,addr=wait_invite_response(cid)
+              if c in (401,407):
+                  ah=('Proxy-Authorization' if c==407 else 'Authorization')+': '+auth(h(txt,'WWW-Authenticate') or h(txt,'Proxy-Authenticate'),'INVITE',req); cseq+=1; continue
+              if c==200 and 'application/sdp' in txt.lower(): answer=txt; break
+              print(f'V37_UNEXPECTED_FINAL_INVITE_STATUS={c}')
+              sys.exit(70)
+          if not answer: print('V37_NO_200_WITH_SDP'); sys.exit(70)
+          mip,mport=media_from_sdp(answer); print(f'v37_answer_media={mip}:{mport}')
+          send('\r\n'.join([f'ACK {req} SIP/2.0',f'Via: SIP/2.0/UDP {IP}:{sport};branch=z9hG4bKv37a{secrets.token_hex(6)};rport','Max-Forwards: 70',f'From: Phone11 V37 <sip:{USER}@{DOMAIN}>;tag={ftag}',f'To: {h(answer,"To")}',f'Call-ID: {cid}',f'CSeq: {cseq} ACK',f'Contact: {contact}','Content-Length: 0','','']))
+          tx=rx=0; seq=random.randint(1,65000); ts=random.randint(1,0xffffffff); ssrc=random.randint(1,0xffffffff); end=time.time()+10; nxt=0
+          while time.time()<end:
+              if time.time()>=nxt:
+                  rtp.sendto(rtp_pkt(seq,ts,ssrc),(mip,mport)); tx+=1; seq+=1; ts+=160; nxt=time.time()+0.02
+              r,_,_=select.select([rtp],[],[],0.01)
+              if r and len(rtp.recvfrom(4096)[0])>=12: rx+=1
+          print(f'v37_rtp_tx={tx}')
+          print(f'v37_rtp_rx={rx}')
+          print('V37_CURRENT_MEDIA_RESULT='+('pass' if tx>=100 and rx>=5 else 'fail'))
+          sys.exit(0 if tx>=100 and rx>=5 else 71)
+          PY
+          PY_EXIT=${PIPESTATUS[0]}
+          set -e
+          CALL_ID=""; [ -s "$CID" ] && CALL_ID="$(cat "$CID")"
+          echo "PY_EXIT=$PY_EXIT"
+          echo "===== Python summary ====="; cat "$OUT" || true
+          echo "===== Relevant server logs ====="
+          docker logs --since 220s --timestamps p11-kamailio 2>&1 | grep -Eia "$CALL_ID|phone11-v37|1999|9196|RTPENGINE|FREESWITCH|INVITE|ACK|407|401|200 OK|auth|error|warning" | tail -n 500 || true
+          docker logs --since 220s --timestamps p11-freeswitch 2>&1 | grep -Eia "$CALL_ID|phone11-v37|1999|9196|echo|RTP|Codec|media|hangup|407|401|200 OK|auth|error|warning" | tail -n 500 || true
+          echo "===== Packet capture summary ====="
+          if [ -s /tmp/phone11-v37.pcap.txt ]; then
+            grep -aE "SIP/2.0|INVITE|REGISTER|ACK|BYE|Call-ID:|CSeq:|WWW-Authenticate|Proxy-Authenticate|Authorization|Proxy-Authorization|c=IN IP4|m=audio|phone11-v37|9196|1999" /tmp/phone11-v37.pcap.txt | tail -n 900 || true
+          else
+            echo no_server_capture
+          fi
+          echo V37_SERVER_EVIDENCE_PRINTED=yes
+          exit "$PY_EXIT"
+          REMOTE

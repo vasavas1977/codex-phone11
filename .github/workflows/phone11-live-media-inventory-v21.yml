@@ -1,0 +1,90 @@
+name: Phone11 Live Media Inventory V21
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-media-inventory-v21.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  media-inventory:
+    name: Capture live SIP and media inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_media_inventory_v21_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_media_inventory_v21_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Capture read-only media inventory
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_media_inventory_v21_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "===== Host and containers ====="
+          hostname -I || true
+          docker ps --format '{{.Names}} {{.Status}} {{.Ports}}' | grep -E 'p11-kamailio|p11-rtpengine|p11-freeswitch|cp11-postgres|p11-redis' || true
+
+          echo "===== Listening UDP/TCP ports ====="
+          sudo ss -lunpt | grep -E ':(5060|5080|5066|8088)|:(10000|20000|30000)' || true
+
+          echo "===== Kamailio routing snippets ====="
+          CFG=/opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg
+          if [ -f "$CFG" ]; then
+            grep -nE 'listen=|alias=|route\[RTPENGINE|route\[FREESWITCH|FREESWITCH_REPLY|LOCAL_EXTENSION_REPLY|rtpengine_(offer|answer|manage)|t_on_reply|dispatcher|record_route|loose_route|INVITE|RELAY|fs|5080' "$CFG" \
+              | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' \
+              | tail -n 260 || true
+          else
+            echo "kamailio_cfg_missing=$CFG"
+          fi
+
+          echo "===== FreeSWITCH status ====="
+          docker exec p11-freeswitch sh -lc 'command -v fs_cli || true' || true
+          docker exec p11-freeswitch sh -lc 'fs_cli -x "status"' || true
+          docker exec p11-freeswitch sh -lc 'fs_cli -x "sofia status"' || true
+          docker exec p11-freeswitch sh -lc 'fs_cli -x "show calls"' || true
+
+          echo "===== FreeSWITCH profiles and gateways ====="
+          docker exec p11-freeswitch sh -lc 'fs_cli -x "sofia status profile internal" 2>/dev/null | head -n 180' || true
+          docker exec p11-freeswitch sh -lc 'fs_cli -x "sofia status gateway" 2>/dev/null | head -n 180' || true
+
+          echo "===== FreeSWITCH dialplan/config search ====="
+          docker exec p11-freeswitch sh -lc 'find /etc/freeswitch -type f 2>/dev/null | grep -E "(dialplan|directory|vars|autoload|sip_profiles)" | head -n 220' || true
+          docker exec p11-freeswitch sh -lc 'grep -RInE "echo|park|playback|bridge|loopback|conference|ivr|media|rtp|proxy_media|bypass_media|public|default|extension name|condition field|destination_number|020303988|1001|999|919|5000" /etc/freeswitch 2>/dev/null | head -n 320' || true
+
+          echo "===== RTPEngine quick state ====="
+          docker logs --since 10m --timestamps p11-rtpengine 2>&1 | grep -Eia 'call|created|delete|offer|answer|warning|error|unknown|port|RTP' | tail -n 220 || true
+          docker exec p11-rtpengine sh -lc 'command -v rtpengine-ctl || command -v ngcp-rtpengine-ctl || true' || true
+          docker exec p11-rtpengine sh -lc 'rtpengine-ctl list 2>/dev/null || ngcp-rtpengine-ctl list 2>/dev/null || true' || true
+
+          echo "MEDIA_INVENTORY_RESULT=pass"
+          REMOTE

@@ -1,0 +1,1387 @@
+"""Hermetic safety checks for the candidate-only blue/green operator."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+import importlib.util
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+
+SCRIPT = Path(__file__).parents[1] / "scripts" / "phone11-candidate-bluegreen.py"
+SPEC = importlib.util.spec_from_file_location("phone11_candidate_bluegreen", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+blue = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = blue
+SPEC.loader.exec_module(blue)
+
+RECOVERY_SCRIPT = Path(__file__).parents[1] / "scripts" / "phone11-recovery-rollout.py"
+RECOVERY_SPEC = importlib.util.spec_from_file_location("phone11_recovery_rollout_fixture", RECOVERY_SCRIPT)
+assert RECOVERY_SPEC is not None and RECOVERY_SPEC.loader is not None
+recovery = importlib.util.module_from_spec(RECOVERY_SPEC)
+sys.modules[RECOVERY_SPEC.name] = recovery
+RECOVERY_SPEC.loader.exec_module(recovery)
+
+SHA = "1" * 64
+BASE_IMAGE = "sha256:" + "2" * 64
+CURRENT_IMAGE = "sha256:" + "3" * 64
+RELEASE_IMAGE = "sha256:" + "4" * 64
+
+
+def manifest(**changes):
+    value = {
+        "schema": blue.SCHEMA,
+        "baseline": {"container_id": "a" * 64, "image": BASE_IMAGE, "runtime_sha256": SHA, "build": "baseline-a131764"},
+        "current_candidate": {
+            "container_id": "b" * 64, "image": CURRENT_IMAGE, "runtime_sha256": SHA,
+            "build": "read-receipts-a0f5c46-0c3c4e227148", "compose_file": "/root/current.json",
+            "compose_sha256": SHA, "rendered_sha256": SHA,
+        },
+        "release": {"image": RELEASE_IMAGE, "build": "release-44815d1", "source_sha": "5" * 40, "bundle_sha256": SHA, "lock_sha256": SHA},
+        "target": {"project": "phone11-api-candidate-next", "tenant_id": 1, "denied_tenant_id": 2_147_483_647},
+        "probes": {"file": "/root/probes.json", "sha256": SHA},
+        "nginx": {"site": "/etc/nginx/sites-enabled/phone11ai", "site_sha256": SHA, "dump_sha256": SHA,
+                  "marker": "# PHONE11_PARALLEL_API_INSERT reviewed-123"},
+        "kamailio": {"config_path": "/etc/kamailio/kamailio.cfg", "config_sha256": SHA, "wake_occurrences": 4},
+        "public_origin": blue.PUBLIC_ORIGIN,
+    }
+    for dotted, replacement in changes.items():
+        section, key = dotted.split("__", 1)
+        value[section][key] = replacement
+    return value
+
+
+def pins(**changes):
+    return blue.parse_manifest(manifest(**changes))
+
+
+def settings_manifest():
+    return {
+        "schema": blue.SETTINGS_SCHEMA,
+        "topology": blue.settings_topology_document(),
+        "baseline": {"container_id": "a" * 64, "image": BASE_IMAGE, "runtime_sha256": SHA, "build": "baseline-a131764"},
+        "retained_candidate": {"container_id": "b" * 64, "image": CURRENT_IMAGE, "runtime_sha256": SHA, "build": "retained-a0f5c46"},
+        "active_candidate": {
+            "container_id": "c" * 64, "image": "sha256:" + "5" * 64, "runtime_sha256": SHA,
+            "build": "management-39523ae", "compose_file": "/root/active-3003.json",
+            "compose_sha256": SHA, "rendered_sha256": SHA,
+        },
+        "recovery_candidate": {"container_id": "d" * 64, "image": "sha256:" + "6" * 64, "runtime_sha256": SHA, "build": "recovery-bbd14cf"},
+        "release": {"image": RELEASE_IMAGE, "build": "settings-9804c2f", "source_sha": "7" * 40, "bundle_sha256": SHA, "lock_sha256": SHA},
+        "target": {"project": blue.SETTINGS_TARGET_PROJECT, "tenant_id": 1, "denied_tenant_id": 2_147_483_647},
+        "probes": {"file": "/root/probes.json", "sha256": SHA},
+        "nginx": {"site": "/etc/nginx/sites-enabled/phone11ai", "site_sha256": SHA, "dump_sha256": SHA,
+                  "marker": "# PHONE11_PARALLEL_API_INSERT read-receipts-a0f5c46-0c3c4e227148"},
+        "kamailio": {"config_path": "/etc/kamailio/kamailio.cfg", "config_sha256": SHA, "wake_occurrences": 4},
+        "public_origin": blue.PUBLIC_ORIGIN,
+    }
+
+
+def settings_pins():
+    return blue.parse_manifest(settings_manifest())
+
+
+def channel_manifest():
+    value = json.loads(json.dumps(settings_manifest()))
+    value["schema"] = blue.CHANNEL_SCHEMA
+    value["topology"] = blue.channel_topology_document()
+    value["retained_candidate"] = {
+        "container_id": "b" * 64, "image": CURRENT_IMAGE, "runtime_sha256": SHA,
+        "build": "retained-a0f5c46",
+    }
+    value["predecessor_candidate"] = {
+        "container_id": "c" * 64, "image": "sha256:" + "5" * 64, "runtime_sha256": SHA,
+        "build": "predecessor-39523ae",
+    }
+    value["recovery_candidate"] = {
+        "container_id": "d" * 64, "image": "sha256:" + "6" * 64, "runtime_sha256": SHA,
+        "build": "recovery-bbd14cf",
+    }
+    value["active_candidate"] = {
+        "container_id": "e" * 64, "image": "sha256:" + "7" * 64, "runtime_sha256": SHA,
+        "build": "settings-9804c2f", "compose_file": "/root/active-3005.json",
+        "compose_sha256": SHA, "rendered_sha256": SHA,
+    }
+    value["target"]["project"] = blue.CHANNEL_TARGET_PROJECT
+    value["channel_meetings"] = {
+        "enabled": True,
+        "tenant_id": value["target"]["tenant_id"],
+        "migration_inventory": {
+            "file": str(blue.CHANNEL_MIGRATION_INVENTORY_PATH),
+            "sha256": blue.sha256_bytes(channel_migration_inventory()),
+        },
+        "migration_receipt": {
+            "file": str(blue.CHANNEL_MIGRATION_RECEIPT_PATH),
+            "sha256": blue.sha256_bytes(channel_migration_receipt()),
+        },
+    }
+    return value
+
+
+def channel_pins():
+    return blue.parse_manifest(channel_manifest())
+
+
+def channel_migration_inventory():
+    return json.dumps({
+        "schema": blue.CHANNEL_MIGRATION_INVENTORY_SCHEMA,
+        "created_at_unix": 1,
+        "target": {
+            "container_id": "e" * 64,
+            "container_name": blue.CHANNEL_CURRENT_CONTAINER,
+            "image": "sha256:" + "7" * 64,
+            "container_port": 3005,
+            "host_port": 3005,
+        },
+        "release": {
+            "source_sha": "8" * 40,
+            "bundle_sha256": "3" * 64,
+            "lock_sha256": "4" * 64,
+        },
+        "database_identity_sha256": SHA,
+        "before_catalog_sha256": "1" * 64,
+        "sql_sha256": SHA,
+    }, sort_keys=True, separators=(",", ":")).encode()
+
+
+def channel_migration_receipt():
+    receipt = {
+        "schema": blue.CHANNEL_MIGRATION_RECEIPT_SCHEMA,
+        "manifest_sha256": SHA,
+        "sql_sha256": SHA,
+        "database_identity_sha256": SHA,
+        "before_catalog_sha256": "1" * 64,
+        "after_catalog_sha256": "2" * 64,
+        "container_id": "e" * 64,
+        "image": "sha256:" + "7" * 64,
+        "source_sha": "8" * 40,
+        "bundle_sha256": "3" * 64,
+        "lock_sha256": "4" * 64,
+        "backup_proof_sha256": "5" * 64,
+        "restore_proof_sha256": "6" * 64,
+        "status": "applied",
+    }
+    receipt["verification_sha256"] = blue.sha256_bytes(json.dumps({
+        "database_identity_sha256": receipt["database_identity_sha256"],
+        "before_catalog_sha256": receipt["before_catalog_sha256"],
+        "after_catalog_sha256": receipt["after_catalog_sha256"],
+        "sql_sha256": receipt["sql_sha256"],
+    }, sort_keys=True, separators=(",", ":")).encode())
+    return json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+
+
+def inspect(current_pins):
+    return {
+        "Id": current_pins.current.container_id,
+        "Image": current_pins.current.image,
+        "Config": {
+            "Image": "phone11-backend:read-receipts",
+            "Env": [
+                "PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3002",
+                f"PHONE11_BUILD_SHA={current_pins.current.build}", "DATABASE_URL=postgres://user:pa$$word@db/live",
+            ],
+        },
+    }
+
+
+def settings_inspect(current_pins):
+    return {
+        "Id": current_pins.current.container_id,
+        "Image": current_pins.current.image,
+        "Config": {
+            "Image": "phone11-backend:management-39523ae",
+            "Env": [
+                "PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3003",
+                f"PHONE11_BUILD_SHA={current_pins.current.build}", "DATABASE_URL=postgres://user:pa$$word@db/live",
+            ],
+        },
+    }
+
+
+def channel_inspect(current_pins):
+    return {
+        "Id": current_pins.current.container_id,
+        "Image": current_pins.current.image,
+        "Config": {
+            "Image": "phone11-backend:settings-9804c2f",
+            "Env": [
+                "PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3005",
+                f"PHONE11_BUILD_SHA={current_pins.current.build}", "DATABASE_URL=postgres://user:pa$$word@db/live",
+            ],
+        },
+    }
+
+
+def settings_inventory_arguments():
+    return blue.parse_args([
+        "--inventory", "--settings-topology", "--output", "/root/settings.json",
+        "--current-compose-file", "/root/active-3003.json", "--probes-file", "/root/probes.json",
+        "--nginx-site", "/etc/nginx/sites-enabled/phone11ai", "--release-image", RELEASE_IMAGE,
+        "--release-build", "settings-9804c2f", "--release-source-sha", "7" * 40,
+        "--tenant-id", "1", "--denied-tenant-id", "2147483647",
+    ])
+
+
+def channel_inventory_arguments():
+    return blue.parse_args([
+        "--inventory", "--channel-topology", "--output", "/root/channel.json",
+        "--current-compose-file", "/root/active-3005.json", "--probes-file", "/root/probes.json",
+        "--nginx-site", "/etc/nginx/sites-enabled/phone11ai", "--release-image", RELEASE_IMAGE,
+        "--release-build", "channel-0d3b701", "--release-source-sha", "8" * 40,
+        "--tenant-id", "1", "--denied-tenant-id", "2147483647",
+        "--channel-migration-inventory", str(blue.CHANNEL_MIGRATION_INVENTORY_PATH),
+        "--channel-migration-receipt", str(blue.CHANNEL_MIGRATION_RECEIPT_PATH),
+    ])
+
+
+def settings_inventory_runtimes(document):
+    active = settings_inspect(settings_pins())
+    return [
+        ({"Id": "a" * 64}, document["baseline"]),
+        ({"Id": "b" * 64}, document["retained_candidate"]),
+        (active, {key: value for key, value in document["active_candidate"].items()
+                  if key in {"container_id", "image", "runtime_sha256", "build"}}),
+        ({"Id": "d" * 64}, document["recovery_candidate"]),
+    ]
+
+
+def settings_inventory_system():
+    document = settings_manifest()
+    system = Mock()
+    system.json_command.side_effect = [settings_rendered(), [{
+        "Id": RELEASE_IMAGE,
+        "Config": {"Labels": {
+            "com.phone11.source-sha": "7" * 40,
+            "com.phone11.bundle-sha256": SHA,
+            "com.phone11.lock-sha256": SHA,
+        }},
+    }]]
+    system.command.side_effect = [
+        b"cp11-backend\ncp11-api-candidate\ncp11-api-candidate-next\ncp11-password-recovery\n",
+        blue.pilot.WAKE_URL.encode(),
+        b"nginx dump",
+    ]
+    return document, system
+
+
+def channel_inventory_runtimes(document):
+    active = channel_inspect(channel_pins())
+    return [
+        ({"Id": "a" * 64}, document["baseline"]),
+        ({"Id": "b" * 64}, document["retained_candidate"]),
+        ({"Id": "c" * 64}, document["predecessor_candidate"]),
+        (active, {key: value for key, value in document["active_candidate"].items()
+                  if key in {"container_id", "image", "runtime_sha256", "build"}}),
+        ({"Id": "d" * 64}, document["recovery_candidate"]),
+    ]
+
+
+def channel_inventory_system():
+    document = channel_manifest()
+    system = Mock()
+    system.json_command.side_effect = [channel_rendered(), [{
+        "Id": RELEASE_IMAGE,
+        "Config": {"Labels": {
+            "com.phone11.source-sha": "8" * 40,
+            "com.phone11.bundle-sha256": SHA,
+            "com.phone11.lock-sha256": SHA,
+        }},
+    }]]
+    system.command.side_effect = [
+        b"cp11-backend\ncp11-api-candidate\ncp11-api-candidate-next\ncp11-password-recovery\ncp11-api-candidate-settings\n",
+        blue.pilot.WAKE_URL.encode(),
+        channel_inventory_site(document),
+    ]
+    return document, system
+
+
+def settings_inventory_reader(arguments, site):
+    raw_probes = json.dumps(probe_document(), separators=(",", ":")).encode()
+
+    def protected_read(path, **_kwargs):
+        if path == arguments.current_compose_file:
+            return b"active compose"
+        if path == arguments.probes_file:
+            return raw_probes
+        if path == arguments.nginx_site:
+            return site
+        if path == arguments.channel_migration_inventory:
+            return channel_migration_inventory()
+        if path == arguments.channel_migration_receipt:
+            return channel_migration_receipt()
+        raise AssertionError(path)
+
+    return protected_read
+
+
+def settings_inventory_site(document):
+    marker = document["nginx"]["marker"]
+    original = f"server {{\n    {marker}\n}}\n".encode()
+    with_trpc = original.replace(
+        marker.encode(),
+        blue.proxy_fragment(
+            marker, document["active_candidate"]["build"], 3003, {3003, 3005}
+        ).rstrip(b"\n"),
+    )
+    return with_trpc.replace(
+        marker.encode(),
+        recovery.proxy_fragment(marker, document["recovery_candidate"]["build"]).rstrip(b"\n"),
+    )
+
+
+def channel_inventory_site(document):
+    marker = document["nginx"]["marker"]
+    original = f"server {{\n    {marker}\n}}\n".encode()
+    with_trpc = original.replace(
+        marker.encode(),
+        blue.proxy_fragment(
+            marker, document["active_candidate"]["build"], 3005, {3005, 3006}
+        ).rstrip(b"\n"),
+    )
+    return with_trpc.replace(
+        marker.encode(),
+        recovery.proxy_fragment(marker, document["recovery_candidate"]["build"]).rstrip(b"\n"),
+    )
+
+
+def rendered():
+    return {
+        "name": "phone11-api-candidate",
+        "services": {
+            "candidate": {
+                "container_name": blue.CURRENT_CONTAINER,
+                "image": "phone11-backend:read-receipts",
+                "environment": {"PHONE11_RUNTIME_ROLE": "api-candidate", "PORT": "3002"},
+                "ports": [{"host_ip": "127.0.0.1", "published": 3002, "target": 3002, "protocol": "tcp"}],
+                "command": ["node", "dist/index.js"],
+                "volumes": [{"type": "bind", "source": "/tmp", "target": "/mnt"}],
+                "healthcheck": {"test": ["CMD-SHELL", "curl http://127.0.0.1:3002/api/health && test read-receipts-a0f5c46-0c3c4e227148"]},
+                "restart": "unless-stopped",
+            },
+        },
+        "networks": {"default": {"name": "phone11-owned-auth_default"}},
+    }
+
+
+def settings_rendered():
+    value = rendered()
+    service = value["services"]["candidate"]
+    service["container_name"] = blue.SETTINGS_CURRENT_CONTAINER
+    service["image"] = "phone11-backend:management-39523ae"
+    service["environment"]["PORT"] = "3003"
+    service["ports"][0].update({"published": 3003, "target": 3003})
+    service["healthcheck"]["test"][1] = "curl http://127.0.0.1:3003/api/health && test management-39523ae"
+    return value
+
+
+def channel_rendered():
+    value = settings_rendered()
+    service = value["services"]["candidate"]
+    service["container_name"] = blue.CHANNEL_CURRENT_CONTAINER
+    service["image"] = "phone11-backend:settings-9804c2f"
+    service["environment"]["PORT"] = "3005"
+    service["ports"][0].update({"published": 3005, "target": 3005})
+    service["healthcheck"]["test"][1] = "curl http://127.0.0.1:3005/api/health && test settings-9804c2f"
+    return value
+
+
+def probe_document():
+    probes = []
+    for label in sorted(blue.SOURCE_PROBES):
+        path, method = "/api/trpc/chat.typingPublish", "POST"
+        if label == "existing_phone":
+            path, method = "/api/trpc/phone.getConfig?input=%7B%22json%22%3Anull%7D", "GET"
+        elif label == "mixed_batch":
+            path = "/api/trpc/phone.getConfig,chat.list?batch=1&input=%7B%7D"
+        probes.append({"label": label, "method": method, "path": path,
+                       "headers": {"Authorization": "Bearer protected"}, "body": "" if method == "GET" else "{}",
+                       "status": 200, "required": ["result"], "forbidden": ["credential"]})
+    return {"schema": "phone11-parallel-api-probes/v1", "probes": probes}
+
+
+class BlueGreenTests(unittest.TestCase):
+    def test_manifest_pins_distinct_release_and_literal_origin(self):
+        self.assertEqual(pins().release_image, RELEASE_IMAGE)
+        with self.assertRaises(blue.GuardError):
+            pins(release__image=CURRENT_IMAGE)
+        changed = manifest()
+        changed["public_origin"] = "https://evil.example"
+        with self.assertRaises(blue.GuardError):
+            blue.parse_manifest(changed)
+
+    def test_settings_manifest_requires_the_fixed_four_retained_ports_and_3005_target(self):
+        current = settings_pins()
+        self.assertEqual(current.schema, blue.SETTINGS_SCHEMA)
+        self.assertEqual(
+            (current.topology.baseline_port, current.topology.retained_port,
+             current.topology.current_port, current.topology.recovery_port,
+             current.topology.target_port),
+            (3000, 3002, 3003, 3004, 3005),
+        )
+        self.assertEqual(current.topology.current_container, blue.SETTINGS_CURRENT_CONTAINER)
+        self.assertEqual(current.topology.target_container, blue.SETTINGS_TARGET_CONTAINER)
+        self.assertEqual(current.topology.target_service, blue.SETTINGS_TARGET_SERVICE)
+        self.assertEqual(current.topology.state_root, blue.SETTINGS_STATE_ROOT)
+        changed = settings_manifest()
+        changed["topology"]["target_candidate"]["port"] = 3006
+        with self.assertRaises(blue.GuardError):
+            blue.parse_manifest(changed)
+        changed = settings_manifest()
+        changed["topology"]["recovery_candidate"]["container"] = "cp11-api-candidate-recovery"
+        with self.assertRaises(blue.GuardError):
+            blue.parse_manifest(changed)
+
+    def test_settings_clone_starts_only_the_explicit_3005_candidate_from_3003(self):
+        current = settings_pins()
+        target = blue.cloned_config(settings_rendered(), settings_inspect(current), current)
+        self.assertEqual(set(target["services"]), {blue.SETTINGS_TARGET_SERVICE})
+        service = target["services"][blue.SETTINGS_TARGET_SERVICE]
+        self.assertEqual(service["container_name"], blue.SETTINGS_TARGET_CONTAINER)
+        self.assertEqual(service["environment"]["PORT"], "3005")
+        self.assertEqual(service["ports"], [{
+            "host_ip": "127.0.0.1", "published": "3005", "target": 3005,
+            "protocol": "tcp", "mode": "ingress",
+        }])
+        self.assertIn(":3005", service["healthcheck"]["test"][1])
+        self.assertNotIn(":3003", service["healthcheck"]["test"][1])
+        self.assertEqual(service["environment"]["DATABASE_URL"], "postgres://user:pa$$$$word@db/live")
+
+    def test_settings_target_absence_never_claims_the_live_3003_port(self):
+        operator = blue.Operator(settings_pins(), Mock())
+        operator.system.command.return_value = b"cp11-backend\ncp11-api-candidate\ncp11-api-candidate-next\ncp11-password-recovery\n"
+        fake_socket = Mock()
+        with patch.object(blue.socket, "socket", return_value=fake_socket):
+            operator.target_absent()
+        fake_socket.bind.assert_called_once_with(("127.0.0.1", 3005))
+
+    def test_settings_preservation_rechecks_baseline_retained_active_and_recovery(self):
+        operator = blue.Operator(settings_pins(), Mock())
+        operator.runtime = Mock(return_value={"Id": "pinned"})
+        operator.preserved_runtimes()
+        self.assertEqual(
+            [call.args[0] for call in operator.runtime.call_args_list],
+            [blue.BASELINE_CONTAINER, blue.SETTINGS_CURRENT_CONTAINER,
+             blue.SETTINGS_RETAINED_CONTAINER, blue.SETTINGS_RECOVERY_CONTAINER],
+        )
+
+    def test_settings_inventory_argument_selects_only_the_fixed_project(self):
+        arguments = settings_inventory_arguments()
+        self.assertTrue(arguments.settings_topology)
+        self.assertEqual(arguments.target_project, blue.SETTINGS_TARGET_PROJECT)
+
+    def test_settings_inventory_seals_all_retained_slots_before_writing_a_v2_manifest(self):
+        arguments = settings_inventory_arguments()
+        document, system = settings_inventory_system()
+        fake_socket = Mock()
+
+        with patch.object(blue, "inventory_runtime", side_effect=settings_inventory_runtimes(document)) as inventory, \
+             patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, settings_inventory_site(document))), \
+             patch.object(blue, "atomic_write") as write, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            blue.emit_settings_inventory(arguments, system)
+
+        fake_socket.bind.assert_called_once_with(("127.0.0.1", 3005))
+        self.assertEqual(inventory.call_args_list[1].args[1:4], (blue.SETTINGS_RETAINED_CONTAINER, blue.ROLE, 3002))
+        self.assertEqual(inventory.call_args_list[2].args[1:4], (blue.SETTINGS_CURRENT_CONTAINER, blue.ROLE, 3003))
+        self.assertEqual(inventory.call_args_list[3].args[1:4], (blue.SETTINGS_RECOVERY_CONTAINER, blue.ROLE, 3004))
+        sealed = json.loads(write.call_args.args[1])
+        self.assertEqual(sealed["schema"], blue.SETTINGS_SCHEMA)
+        self.assertEqual(sealed["topology"], blue.settings_topology_document())
+        self.assertEqual(sealed["target"]["project"], blue.SETTINGS_TARGET_PROJECT)
+
+    def test_settings_inventory_blocks_existing_3005_target_before_any_runtime_reads(self):
+        arguments = settings_inventory_arguments()
+        system = Mock()
+        system.command.return_value = b"cp11-api-candidate-settings\n"
+        with patch.object(blue, "inventory_runtime") as inventory, \
+             patch.object(blue.os, "geteuid", return_value=0):
+            with self.assertRaises(blue.GuardError) as error:
+                blue.emit_settings_inventory(arguments, system)
+        self.assertEqual(error.exception.stage, "target_absent")
+        inventory.assert_not_called()
+
+    def test_settings_inventory_blocks_an_occupied_3005_port_before_any_runtime_reads(self):
+        arguments = settings_inventory_arguments()
+        system = Mock()
+        system.command.return_value = b""
+        fake_socket = Mock()
+        fake_socket.bind.side_effect = OSError("occupied")
+        with patch.object(blue, "inventory_runtime") as inventory, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            with self.assertRaises(blue.GuardError) as error:
+                blue.emit_settings_inventory(arguments, system)
+        self.assertEqual(error.exception.stage, "target_port")
+        inventory.assert_not_called()
+
+    def test_channel_manifest_pins_all_existing_slots_and_only_allows_3005_to_3006(self):
+        current = channel_pins()
+        self.assertEqual(current.schema, blue.CHANNEL_SCHEMA)
+        self.assertEqual(
+            (
+                current.topology.baseline_port,
+                current.topology.retained_port,
+                current.topology.predecessor_port,
+                current.topology.recovery_port,
+                current.topology.current_port,
+                current.topology.target_port,
+            ),
+            (3000, 3002, 3003, 3004, 3005, 3006),
+        )
+        self.assertEqual(current.topology.current_container, blue.CHANNEL_CURRENT_CONTAINER)
+        self.assertEqual(current.topology.target_container, blue.CHANNEL_TARGET_CONTAINER)
+        self.assertEqual(current.topology.target_service, blue.CHANNEL_TARGET_SERVICE)
+        self.assertEqual(current.topology.state_root, blue.CHANNEL_STATE_ROOT)
+        self.assertIsNotNone(current.channel_meetings)
+        self.assertEqual(current.channel_meetings.tenant_id, current.tenant_id)
+        self.assertEqual(current.channel_meetings.migration_inventory, blue.CHANNEL_MIGRATION_INVENTORY_PATH)
+        self.assertEqual(current.channel_meetings.migration_receipt, blue.CHANNEL_MIGRATION_RECEIPT_PATH)
+        changed = channel_manifest()
+        changed["topology"]["target_candidate"]["port"] = 3007
+        with self.assertRaises(blue.GuardError):
+            blue.parse_manifest(changed)
+        changed = channel_manifest()
+        changed["topology"]["predecessor_candidate"]["container"] = "cp11-api-candidate-old"
+        with self.assertRaises(blue.GuardError):
+            blue.parse_manifest(changed)
+        for key, value in (
+            ("enabled", False), ("tenant_id", 2),
+            ("migration_inventory", {"file": "/root/inventory.json", "sha256": SHA}),
+            ("migration_receipt", {"file": "/root/receipt.json", "sha256": SHA}),
+        ):
+            changed = channel_manifest()
+            changed["channel_meetings"][key] = value
+            with self.subTest(channel_meetings_key=key), self.assertRaises(blue.GuardError):
+                blue.parse_manifest(changed)
+
+    def test_channel_clone_starts_only_the_explicit_3006_target_from_settings_3005(self):
+        current = channel_pins()
+        target = blue.cloned_config(channel_rendered(), channel_inspect(current), current)
+        self.assertEqual(set(target["services"]), {blue.CHANNEL_TARGET_SERVICE})
+        service = target["services"][blue.CHANNEL_TARGET_SERVICE]
+        self.assertEqual(service["container_name"], blue.CHANNEL_TARGET_CONTAINER)
+        self.assertEqual(service["environment"]["PORT"], "3006")
+        self.assertEqual(service["ports"], [{
+            "host_ip": "127.0.0.1", "published": "3006", "target": 3006,
+            "protocol": "tcp", "mode": "ingress",
+        }])
+        self.assertIn(":3006", service["healthcheck"]["test"][1])
+        self.assertNotIn(":3005", service["healthcheck"]["test"][1])
+        self.assertEqual(service["environment"]["DATABASE_URL"], "postgres://user:pa$$$$word@db/live")
+        self.assertEqual(service["environment"][blue.CHANNEL_MEETINGS_ENABLED], "1")
+        self.assertEqual(service["environment"][blue.CHANNEL_MEETING_TENANT_IDS], "1")
+        expected = blue.target_environment(channel_inspect(current), current, "test")
+        self.assertEqual(expected[blue.CHANNEL_MEETINGS_ENABLED], "1")
+        self.assertEqual(expected[blue.CHANNEL_MEETING_TENANT_IDS], "1")
+        for unexpected in ("PHONE11_CHANNEL_MEETING_USER_IDS", "PHONE11_CHANNEL_MEETINGS_CAN_START"):
+            self.assertNotIn(unexpected, expected)
+        for key, value in ((blue.CHANNEL_MEETINGS_ENABLED, "1"), (blue.CHANNEL_MEETING_TENANT_IDS, "1")):
+            source = channel_inspect(current)
+            source["Config"]["Env"].append(f"{key}={value}")
+            with self.subTest(source_feature=key), self.assertRaises(blue.GuardError):
+                blue.cloned_config(channel_rendered(), source, current)
+
+    def test_channel_prepare_refuses_drifted_protected_3005_compose_source(self):
+        current = replace(
+            channel_pins(),
+            current_compose_sha256=blue.sha256_bytes(b"sealed-3005-compose"),
+        )
+        operator = blue.Operator(current, Mock())
+        with patch.object(blue, "secure_read", return_value=b"drifted-3005-compose"):
+            with self.assertRaises(blue.GuardError) as error:
+                operator.rendered_current(channel_inspect(current))
+        self.assertEqual(error.exception.stage, "candidate_config")
+        operator.system.json_command.assert_not_called()
+
+    def test_channel_inventory_seals_all_five_preserved_slots_before_writing_a_v3_manifest(self):
+        arguments = channel_inventory_arguments()
+        self.assertTrue(arguments.channel_topology)
+        self.assertFalse(arguments.settings_topology)
+        self.assertEqual(arguments.target_project, blue.CHANNEL_TARGET_PROJECT)
+        document, system = channel_inventory_system()
+        fake_socket = Mock()
+        with patch.object(blue, "inventory_runtime", side_effect=channel_inventory_runtimes(document)) as inventory, \
+             patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, channel_inventory_site(document))), \
+             patch.object(blue, "atomic_write") as write, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            blue.emit_channel_inventory(arguments, system)
+
+        fake_socket.bind.assert_called_once_with(("127.0.0.1", 3006))
+        self.assertEqual(
+            [call.args[1] for call in inventory.call_args_list],
+            [
+                blue.BASELINE_CONTAINER,
+                blue.SETTINGS_RETAINED_CONTAINER,
+                blue.CHANNEL_PREDECESSOR_CONTAINER,
+                blue.CHANNEL_CURRENT_CONTAINER,
+                blue.SETTINGS_RECOVERY_CONTAINER,
+            ],
+        )
+        sealed = json.loads(write.call_args.args[1])
+        self.assertEqual(sealed["schema"], blue.CHANNEL_SCHEMA)
+        self.assertEqual(sealed["topology"], blue.channel_topology_document())
+        self.assertEqual(sealed["target"]["project"], blue.CHANNEL_TARGET_PROJECT)
+        self.assertEqual(sealed["channel_meetings"]["tenant_id"], sealed["target"]["tenant_id"])
+        self.assertEqual(sealed["channel_meetings"]["migration_inventory"], {
+            "file": str(blue.CHANNEL_MIGRATION_INVENTORY_PATH),
+            "sha256": blue.sha256_bytes(channel_migration_inventory()),
+        })
+        self.assertEqual(sealed["channel_meetings"]["migration_receipt"], {
+            "file": str(blue.CHANNEL_MIGRATION_RECEIPT_PATH),
+            "sha256": blue.sha256_bytes(channel_migration_receipt()),
+        })
+
+    def test_channel_inventory_rejects_an_existing_or_occupied_3006_target_before_runtime_reads(self):
+        arguments = channel_inventory_arguments()
+        existing = Mock()
+        existing.command.return_value = b"cp11-api-candidate-channel\n"
+        with patch.object(blue, "inventory_runtime") as inventory, \
+             patch.object(blue.os, "geteuid", return_value=0):
+            with self.assertRaises(blue.GuardError) as error:
+                blue.emit_channel_inventory(arguments, existing)
+        self.assertEqual(error.exception.stage, "target_absent")
+        inventory.assert_not_called()
+
+        occupied = Mock()
+        occupied.command.return_value = b""
+        fake_socket = Mock()
+        fake_socket.bind.side_effect = OSError("occupied")
+        with patch.object(blue, "inventory_runtime") as inventory, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            with self.assertRaises(blue.GuardError) as error:
+                blue.emit_channel_inventory(arguments, occupied)
+        self.assertEqual(error.exception.stage, "target_port")
+        inventory.assert_not_called()
+
+    def test_channel_preservation_rechecks_settings_source_and_every_older_slot(self):
+        operator = blue.Operator(channel_pins(), Mock())
+        operator.runtime = Mock(return_value={"Id": "pinned"})
+        operator.preserved_runtimes()
+        self.assertEqual(
+            [call.args[0] for call in operator.runtime.call_args_list],
+            [
+                blue.BASELINE_CONTAINER,
+                blue.CHANNEL_CURRENT_CONTAINER,
+                blue.SETTINGS_RETAINED_CONTAINER,
+                blue.SETTINGS_RECOVERY_CONTAINER,
+                blue.CHANNEL_PREDECESSOR_CONTAINER,
+            ],
+        )
+
+    def test_channel_inventory_rejects_conflicting_or_missing_current_routes(self):
+        arguments = channel_inventory_arguments()
+        document = channel_manifest()
+        valid = channel_inventory_site(document)
+        candidates = {
+            "missing_current": valid.replace(b"127.0.0.1:3005", b"127.0.0.1:3003", 1),
+            "conflicting_trpc": valid[:-2] + b"    location ^~ /api/trpc/debug { proxy_pass http://127.0.0.1:3005; }\n}\n",
+            "competing_target": valid[:-2] + b"    location = /unrelated { proxy_pass http://127.0.0.1:3006; }\n}\n",
+            "localhost_target": valid[:-2] + b"    location = /unrelated { proxy_pass http://localhost:3006; }\n}\n",
+            "zero_padded_localhost_target": valid[:-2] + b"    location = /unrelated { proxy_pass http://localhost:03006; }\n}\n",
+            "upstream_target": valid + b"upstream blocked_target { server localhost:3006; }\n",
+            "zero_padded_upstream_target": valid + b"upstream blocked_target { server localhost:03006; }\n",
+        }
+        for name, site in candidates.items():
+            with self.subTest(name=name):
+                _, system = channel_inventory_system()
+                fake_socket = Mock()
+                with patch.object(blue, "inventory_runtime", side_effect=channel_inventory_runtimes(document)), \
+                     patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, site)), \
+                     patch.object(blue, "atomic_write") as write, \
+                     patch.object(blue.os, "geteuid", return_value=0), \
+                     patch.object(blue.socket, "socket", return_value=fake_socket):
+                    with self.assertRaises(blue.GuardError) as error:
+                        blue.emit_channel_inventory(arguments, system)
+                self.assertEqual(error.exception.stage, "inventory")
+                write.assert_not_called()
+
+    def test_channel_inventory_rejects_target_hidden_in_effective_upstream(self):
+        arguments = channel_inventory_arguments()
+        document, system = channel_inventory_system()
+        valid = channel_inventory_site(document)
+        system.command.side_effect = [
+            b"cp11-backend\ncp11-api-candidate\ncp11-api-candidate-next\ncp11-password-recovery\ncp11-api-candidate-settings\n",
+            blue.pilot.WAKE_URL.encode(),
+            valid + b"upstream hidden_target { server [::1]:03006; }\n",
+        ]
+        fake_socket = Mock()
+        with patch.object(blue, "inventory_runtime", side_effect=channel_inventory_runtimes(document)), \
+             patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, valid)), \
+             patch.object(blue, "atomic_write") as write, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            with self.assertRaises(blue.GuardError) as error:
+                blue.emit_channel_inventory(arguments, system)
+        self.assertEqual(error.exception.stage, "inventory")
+        write.assert_not_called()
+
+    def test_channel_prepare_nginx_rejects_a_sealed_effective_upstream_to_3006(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory) / "phone11ai"
+            document = channel_manifest()
+            source = channel_inventory_site(document)
+            effective = source + b"upstream hidden_target { server localhost:03006; }\n"
+            site.write_bytes(source)
+            site.chmod(0o600)
+            current = replace(
+                channel_pins(),
+                nginx_site=site,
+                nginx_site_sha256=blue.sha256_bytes(source),
+                nginx_dump_sha256=blue.sha256_bytes(effective),
+            )
+            operator = blue.Operator(current, Mock())
+            operator.system.command.return_value = effective
+            with patch.object(blue, "secure_read", return_value=source):
+                with self.assertRaises(blue.GuardError) as error:
+                    operator.nginx()
+        self.assertEqual(error.exception.stage, "nginx")
+
+    def test_channel_migration_receipt_requires_the_pinned_applied_journal(self):
+        current = channel_pins()
+        migration_inventory = blue.validate_channel_migration_inventory(
+            channel_migration_inventory(), current, "test",
+        )
+        blue.validate_channel_migration_receipt(
+            channel_migration_receipt(), current, migration_inventory, "test",
+        )
+        for change in (
+            {"status": "intent"},
+            {"verification_sha256": SHA},
+            {"extra": "field"},
+        ):
+            receipt = json.loads(channel_migration_receipt())
+            receipt.update(change)
+            raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+            mutated = replace(current, channel_meetings=replace(
+                current.channel_meetings,
+                migration_receipt_sha256=blue.sha256_bytes(raw),
+            ))
+            with self.subTest(change=change), self.assertRaises(blue.GuardError):
+                blue.validate_channel_migration_receipt(raw, mutated, migration_inventory, "test")
+
+    def test_channel_receipt_binds_the_independent_3005_runtime_and_database_identity(self):
+        current = channel_pins()
+        migration_inventory = blue.validate_channel_migration_inventory(
+            channel_migration_inventory(), current, "test",
+        )
+        self.assertNotEqual(current.release_source_sha, migration_inventory["release"]["source_sha"])
+
+        def receipt_with(change):
+            receipt = json.loads(channel_migration_receipt())
+            receipt.update(change)
+            if {"database_identity_sha256", "before_catalog_sha256", "after_catalog_sha256", "sql_sha256"} & set(change):
+                receipt["verification_sha256"] = blue.sha256_bytes(json.dumps({
+                    key: receipt[key] for key in (
+                        "database_identity_sha256", "before_catalog_sha256",
+                        "after_catalog_sha256", "sql_sha256",
+                    )
+                }, sort_keys=True, separators=(",", ":")).encode())
+            return json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+
+        for name, change in (
+            ("different_source_container", {"container_id": "f" * 64}),
+            ("different_source_image", {"image": "sha256:" + "f" * 64}),
+            ("different_database", {"database_identity_sha256": "a" * 64}),
+        ):
+            raw = receipt_with(change)
+            mutated = replace(current, channel_meetings=replace(
+                current.channel_meetings,
+                migration_receipt_sha256=blue.sha256_bytes(raw),
+            ))
+            with self.subTest(receipt=name), self.assertRaises(blue.GuardError):
+                blue.validate_channel_migration_receipt(raw, mutated, migration_inventory, "test")
+
+        stale_inventory = json.loads(channel_migration_inventory())
+        stale_inventory["target"]["container_id"] = "f" * 64
+        stale_raw = json.dumps(stale_inventory, sort_keys=True, separators=(",", ":")).encode()
+        stale_pins = replace(current, channel_meetings=replace(
+            current.channel_meetings,
+            migration_inventory_sha256=blue.sha256_bytes(stale_raw),
+        ))
+        with self.assertRaises(blue.GuardError):
+            blue.validate_channel_migration_inventory(stale_raw, stale_pins, "test")
+
+        different_database = json.loads(channel_migration_inventory())
+        different_database["database_identity_sha256"] = "a" * 64
+        different_database_raw = json.dumps(different_database, sort_keys=True, separators=(",", ":")).encode()
+        database_pins = replace(current, channel_meetings=replace(
+            current.channel_meetings,
+            migration_inventory_sha256=blue.sha256_bytes(different_database_raw),
+        ))
+        validated_stale_database = blue.validate_channel_migration_inventory(
+            different_database_raw, database_pins, "test",
+        )
+        with self.assertRaises(blue.GuardError):
+            blue.validate_channel_migration_receipt(
+                channel_migration_receipt(), database_pins, validated_stale_database, "test",
+            )
+
+    def test_channel_prepare_refuses_missing_or_invalid_migration_receipt_before_image_or_target(self):
+        current = channel_pins()
+        operator = blue.Operator(current, Mock())
+        operator.preserved_runtimes = Mock(return_value=(
+            {"Id": current.baseline.container_id}, {"Id": current.current.container_id},
+        ))
+        operator.target_absent = Mock()
+        operator.image = Mock()
+        operator.rendered_current = Mock()
+        def protected_read(path, **_kwargs):
+            if path == current.channel_meetings.migration_inventory:
+                return channel_migration_inventory()
+            if path == current.channel_meetings.migration_receipt:
+                return b"{}"
+            raise AssertionError(path)
+
+        with patch.object(blue, "secure_read", side_effect=protected_read):
+            with self.assertRaises(blue.GuardError) as error:
+                operator.prepare()
+        self.assertEqual(error.exception.stage, "migration_receipt")
+        operator.target_absent.assert_not_called()
+        operator.image.assert_not_called()
+        operator.rendered_current.assert_not_called()
+
+    def test_channel_rollback_receipt_is_isolated_and_binds_the_3005_source(self):
+        legacy = blue.Operator(pins(), Mock())
+        settings = blue.Operator(settings_pins(), Mock())
+        channel = blue.Operator(channel_pins(), Mock())
+        self.assertEqual(channel.rollback_site, blue.CHANNEL_STATE_ROOT / "nginx.before")
+        self.assertNotEqual(channel.rollback_receipt, legacy.rollback_receipt)
+        self.assertNotEqual(channel.rollback_receipt, settings.rollback_receipt)
+        receipt = json.loads(channel.rollback_document(b"before", b"active"))
+        self.assertEqual(receipt["schema"], blue.CHANNEL_SCHEMA)
+        self.assertEqual(receipt["topology"], "channel-3005-to-3006")
+        self.assertEqual(receipt["target_container"], blue.CHANNEL_TARGET_CONTAINER)
+
+    def test_channel_rollback_restores_the_exact_sealed_3005_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory) / "phone11ai"
+            document = channel_manifest()
+            original = channel_inventory_site(document)
+            current_trpc = blue.trpc_route_fragment(
+                document["nginx"]["marker"], document["active_candidate"]["build"], 3005, {3005, 3006}
+            ).rstrip(b"\n")
+            target_trpc = blue.trpc_route_fragment(
+                document["nginx"]["marker"], document["release"]["build"], 3006, {3005, 3006}
+            ).rstrip(b"\n")
+            active = original.replace(current_trpc, target_trpc, 1)
+            site.write_bytes(active)
+            raw_probes = json.dumps(probe_document(), separators=(",", ":")).encode()
+            current = replace(
+                channel_pins(), nginx_site=site,
+                nginx_site_sha256=blue.sha256_bytes(original),
+                probes_sha256=blue.sha256_bytes(raw_probes),
+            )
+            operator = blue.Operator(current, Mock())
+            operator.probes = blue.load_probes(raw_probes, current)
+            operator.preserved_runtimes = Mock()
+            operator.wake = Mock()
+            receipt = operator.rollback_document(original, active)
+            written = {}
+
+            def protected_read(path, **_kwargs):
+                if path == operator.rollback_receipt:
+                    return receipt
+                if path == operator.rollback_site:
+                    return original
+                if path == site:
+                    return active
+                raise AssertionError(path)
+
+            def capture_write(path, raw, **_kwargs):
+                written["path"] = path
+                written["raw"] = raw
+
+            with patch.object(blue, "secure_read", side_effect=protected_read), \
+                 patch.object(blue, "atomic_write", side_effect=capture_write), \
+                 patch.object(blue, "wait_for_route") as wait:
+                operator.restore(expected=active)
+
+            self.assertEqual((written["path"], written["raw"]), (site, original))
+            self.assertEqual(original.replace(current_trpc, target_trpc, 1), active)
+            self.assertEqual(original.count(blue.recovery_route_fragment(
+                current.nginx_marker, current.recovery.build
+            ).rstrip(b"\n")), 1)
+            self.assertEqual([call.args[3] for call in wait.call_args_list], [current.current.build] * 2)
+
+    def test_channel_probe_retains_settings_schema_readiness_without_requiring_a_saved_timezone(self):
+        raw = json.dumps(probe_document(), separators=(",", ":")).encode()
+        current = replace(channel_pins(), probes_sha256=blue.sha256_bytes(raw))
+        tenant = next(item for item in blue.load_probes(raw, current) if item["label"] == "management_tenant")
+        self.assertEqual(
+            tenant["required"],
+            ['"settingsAvailable":true', '"supportedSettings":["businessHoursTimezone"]', '"userRole"'],
+        )
+        self.assertFalse(any("business_hours_timezone" in item for item in tenant["required"]))
+
+    def test_channel_prepare_requires_live_settings_readiness_before_target_creation(self):
+        raw = json.dumps(probe_document(), separators=(",", ":")).encode()
+        current = replace(channel_pins(), probes_sha256=blue.sha256_bytes(raw))
+        operator = blue.Operator(current, Mock())
+        operator.preserved_runtimes = Mock(return_value=(
+            {"Id": current.baseline.container_id}, {"Id": current.current.container_id},
+        ))
+        operator.target_absent = Mock()
+        operator.image = Mock()
+        operator.rendered_current = Mock()
+        operator.photos_absent = Mock()
+        operator.nginx = Mock()
+        operator.wake = Mock()
+        operator.system.request.side_effect = [
+            (200, b'{"result":true}'),
+            (200, b'{"result":{"data":{"json":{"settingsAvailable":false,"supportedSettings":[],"userRole":"admin"}}}}'),
+        ]
+        def protected_read(path, **_kwargs):
+            if path == current.channel_meetings.migration_inventory:
+                return channel_migration_inventory()
+            if path == current.channel_meetings.migration_receipt:
+                return channel_migration_receipt()
+            if path == current.probes_file:
+                return raw
+            raise AssertionError(path)
+
+        with patch.object(blue, "secure_read", side_effect=protected_read):
+            with self.assertRaises(blue.GuardError) as error:
+                operator.prepare()
+        self.assertEqual(error.exception.stage, "probes")
+        operator.photos_absent.assert_not_called()
+        operator.nginx.assert_not_called()
+
+    def test_channel_activation_changes_only_trpc_and_preserves_generated_recovery_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory) / "phone11ai"
+            document = channel_manifest()
+            original = channel_inventory_site(document)
+            site.write_bytes(original)
+            current = replace(
+                channel_pins(), nginx_site=site,
+                nginx_site_sha256=blue.sha256_bytes(original),
+            )
+            operator = blue.Operator(current, Mock())
+            operator.prepare = Mock()
+            operator.target_config = channel_rendered()
+            operator.probes = []
+            operator.wait_target = Mock()
+            operator.photos_absent = Mock()
+            operator.wake = Mock()
+            operator.preserved_runtimes = Mock(return_value=(
+                {"Id": current.baseline.container_id}, {"Id": current.current.container_id},
+            ))
+            operator.target = Mock()
+            operator.nginx = Mock(return_value=original)
+            operator.save_rollback = Mock()
+            operator.restore = Mock()
+            operator.system.command.return_value = b""
+            context = Mock()
+            context.__enter__ = Mock(return_value=Path("/root/frozen-3006.json"))
+            context.__exit__ = Mock(return_value=False)
+            written = {}
+
+            def capture_write(_path, raw, **_kwargs):
+                written["site"] = raw
+
+            with patch.object(blue, "frozen_candidate_config", return_value=context), \
+                 patch.object(blue, "atomic_write", side_effect=capture_write), \
+                 patch.object(blue, "secure_read", side_effect=lambda _path, **_kwargs: written["site"]), \
+                 patch.object(blue, "wait_for_route", side_effect=blue.GuardError("readiness")), \
+                 self.assertRaises(blue.GuardError):
+                operator.activate()
+
+            current_trpc = blue.trpc_route_fragment(
+                current.nginx_marker, current.current.build, 3005, {3005, 3006}
+            ).rstrip(b"\n")
+            target_trpc = blue.trpc_route_fragment(
+                current.nginx_marker, current.release_build, 3006, {3005, 3006}
+            ).rstrip(b"\n")
+            expected = original.replace(current_trpc, target_trpc, 1)
+            self.assertEqual(written["site"], expected)
+            self.assertEqual(expected.replace(target_trpc, current_trpc, 1), original)
+            recovery_fragment = recovery.proxy_fragment(
+                current.nginx_marker, current.recovery.build
+            ).rstrip(b"\n")
+            self.assertEqual(original.count(recovery_fragment), 1)
+            self.assertEqual(expected.count(recovery_fragment), 1)
+            operator.restore.assert_called_once_with(expected=expected)
+
+    def test_settings_inventory_rejects_comment_lookalike_and_missing_recovery_fragments(self):
+        document = settings_manifest()
+        valid = settings_inventory_site(document)
+        def additional_route(fragment):
+            self.assertTrue(valid.endswith(b"}\n"))
+            return valid[:-2] + fragment + b"}\n"
+
+        candidates = {
+            "comment": valid.replace(
+                b"        proxy_pass http://127.0.0.1:3004;",
+                b"        # proxy_pass http://127.0.0.1:3004;", 1,
+            ),
+            "lookalike": valid.replace(
+                b"X-Phone11-Recovery-Candidate recovery-bbd14cf",
+                b"X-Phone11-Recovery-Candidate unrelated-recovery", 1,
+            ),
+            "missing_route": valid.replace(
+                b"location = /api/mobile/config {",
+                b"location = /api/mobile/config-missing {", 1,
+            ),
+            "longer_trpc_prefix": additional_route(
+                b"    location /api/trpc/special {\n"
+                b"        proxy_pass http://127.0.0.1:3003;\n"
+                b"    }\n"
+            ),
+            "fifth_recovery_route": additional_route(
+                b"    location = /api/auth/recovery-status {\n"
+                b"        proxy_pass http://127.0.0.1:3004$request_uri;\n"
+                b"    }\n"
+            ),
+            "nested_regex_trpc": additional_route(
+                b"    location /outer {\n"
+                b"        location ~ \"^\\/api\\/(trpc)(?:\\/|$)\" {\n"
+                b"            proxy_pass http://127.0.0.1:3000;\n"
+                b"        }\n"
+                b"    }\n"
+            ),
+        }
+        for name, site in candidates.items():
+            with self.subTest(name=name):
+                arguments = settings_inventory_arguments()
+                inventory_document, system = settings_inventory_system()
+                fake_socket = Mock()
+                with patch.object(blue, "inventory_runtime", side_effect=settings_inventory_runtimes(inventory_document)), \
+                     patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, site)), \
+                     patch.object(blue, "atomic_write") as write, \
+                     patch.object(blue.os, "geteuid", return_value=0), \
+                     patch.object(blue.socket, "socket", return_value=fake_socket):
+                    with self.assertRaises(blue.GuardError) as error:
+                        blue.emit_settings_inventory(arguments, system)
+                self.assertEqual(error.exception.stage, "inventory")
+                write.assert_not_called()
+
+    def test_settings_inventory_ignores_comments_and_non_directive_lookalikes(self):
+        document = settings_manifest()
+        valid = settings_inventory_site(document)
+        site = valid[:-2] + (
+            b"    # location /api/trpc/special { proxy_pass http://127.0.0.1:3003; }\n"
+            b"    # proxy_pass http://127.0.0.1:3004;\n"
+            b"    add_header X-Route-Lookalike \"location /api/trpc/special; proxy_pass http://127.0.0.1:3004;\";\n"
+            b"}\n"
+        )
+        arguments = settings_inventory_arguments()
+        inventory_document, system = settings_inventory_system()
+        fake_socket = Mock()
+        with patch.object(blue, "inventory_runtime", side_effect=settings_inventory_runtimes(inventory_document)), \
+             patch.object(blue, "secure_read", side_effect=settings_inventory_reader(arguments, site)), \
+             patch.object(blue, "atomic_write") as write, \
+             patch.object(blue.os, "geteuid", return_value=0), \
+             patch.object(blue.socket, "socket", return_value=fake_socket):
+            blue.emit_settings_inventory(arguments, system)
+        write.assert_called_once()
+
+    def test_settings_inventory_fixture_uses_exact_recovery_operator_generation(self):
+        document = settings_manifest()
+        marker = document["nginx"]["marker"]
+        expected = recovery.proxy_fragment(marker, document["recovery_candidate"]["build"])
+        self.assertEqual(
+            blue.recovery_route_fragment(marker, document["recovery_candidate"]["build"]),
+            expected,
+        )
+        site = settings_inventory_site(document)
+        self.assertLess(site.index(b"location = /api/trpc"), site.index(b"location = /api/auth/sign-in/email"))
+        self.assertIn(b"\n        location = /api/trpc {\n", site)
+        self.assertIn(b"\n    location ^~ /api/trpc/ {\n", site)
+        self.assertIn(b"\n        location = /api/auth/sign-in/email {\n", site)
+        self.assertIn(b"\n    location = /api/mobile/config {\n", site)
+        self.assertEqual(site.count(b"127.0.0.1:3003"), 2)
+        self.assertEqual(site.count(b"127.0.0.1:3004"), 4)
+        self.assertEqual(site.count(marker.encode()), 1)
+
+    def test_settings_rollback_receipt_is_separate_and_topology_bound(self):
+        legacy = blue.Operator(pins(), Mock())
+        settings = blue.Operator(settings_pins(), Mock())
+        self.assertEqual(legacy.rollback_site, blue.ROLLBACK_SITE)
+        self.assertEqual(settings.rollback_site, blue.SETTINGS_STATE_ROOT / "nginx.before")
+        self.assertNotEqual(settings.rollback_receipt, legacy.rollback_receipt)
+        receipt = json.loads(settings.rollback_document(b"before", b"active"))
+        self.assertEqual(receipt["schema"], blue.SETTINGS_SCHEMA)
+        self.assertEqual(receipt["topology"], "settings-3003-to-3005")
+        self.assertEqual(receipt["target_container"], blue.SETTINGS_TARGET_CONTAINER)
+
+    def test_clone_keeps_secret_environment_in_memory_and_changes_only_candidate_identity(self):
+        current = pins()
+        target = blue.cloned_config(rendered(), inspect(current), current)
+        service = target["services"][blue.TARGET_SERVICE]
+        self.assertEqual(service["container_name"], blue.TARGET_CONTAINER)
+        self.assertEqual(service["image"], RELEASE_IMAGE)
+        self.assertEqual(service["environment"]["DATABASE_URL"], "postgres://user:pa$$$$word@db/live")
+        self.assertEqual(service["environment"]["PHONE11_RUNTIME_ROLE"], "api-candidate")
+        self.assertEqual(service["environment"]["PORT"], "3003")
+        self.assertEqual(service["ports"], [{
+            "host_ip": "127.0.0.1", "published": "3003", "target": 3003,
+            "protocol": "tcp", "mode": "ingress",
+        }])
+        self.assertIn(":3003", service["healthcheck"]["test"][1])
+        self.assertIn(current.release_build, service["healthcheck"]["test"][1])
+        self.assertNotIn(current.current.build, service["healthcheck"]["test"][1])
+        self.assertEqual(target["networks"], rendered()["networks"])
+
+    def test_compose_roundtrip_requires_exact_env_mount_command_and_health_model(self):
+        current = pins()
+        target = blue.cloned_config(rendered(), inspect(current), current)
+        blue.validate_target_roundtrip(target, json.loads(json.dumps(target)))
+        for key in ("environment", "healthcheck", "ports", "command", "volumes"):
+            changed = json.loads(json.dumps(target))
+            changed["services"][blue.TARGET_SERVICE][key] = {} if key in {"environment", "healthcheck"} else []
+            with self.assertRaises(blue.GuardError):
+                blue.validate_target_roundtrip(target, changed)
+
+    def test_proxy_changes_only_exact_and_prefix_trpc(self):
+        fragment = blue.proxy_fragment("# PHONE11_PARALLEL_API_INSERT reviewed-123", "release-44815d1", 3003)
+        self.assertEqual(fragment.count(b"proxy_pass http://127.0.0.1:3003;"), 2)
+        self.assertEqual(fragment.count(b"location = /api/trpc"), 1)
+        self.assertEqual(fragment.count(b"location ^~ /api/trpc/"), 1)
+        self.assertNotIn(b"/api/profile", fragment)
+        self.assertNotIn(b"/api/chat/media", fragment)
+
+    def test_photo_catalog_check_uses_application_database_config_read_only(self):
+        self.assertIn("process.env.DATABASE_URL", blue.PHOTO_CATALOG_NODE)
+        self.assertIn("BEGIN TRANSACTION READ ONLY", blue.PHOTO_CATALOG_NODE)
+        self.assertNotIn("new pg.Client()", blue.PHOTO_CATALOG_NODE)
+
+    def test_probe_contract_derives_seven_read_only_checks_from_existing_auth(self):
+        raw = json.dumps(probe_document(), separators=(",", ":")).encode()
+        current = pins(probes__sha256=blue.sha256_bytes(raw))
+        loaded = blue.load_probes(raw, current)
+        self.assertEqual({item["label"] for item in loaded}, blue.EXPECTED_PROBES)
+        self.assertTrue(all(item["method"] == "GET" and item["body"] == "" for item in loaded))
+        self.assertEqual({item["headers"]["Authorization"] for item in loaded}, {"Bearer protected"})
+        photo = next(item for item in loaded if item["label"] == "profile_photo_unavailable")
+        tenant = next(item for item in loaded if item["label"] == "management_tenant")
+        denied = next(item for item in loaded if item["label"] == "denied_tenant")
+        self.assertIn('"available":false', photo["required"])
+        self.assertEqual(
+            (tenant["path"].split("?", 1)[0], tenant["status"]),
+            ("/api/trpc/pbx.tenant.get", 200),
+        )
+        self.assertIn('"settingsAvailable":false', tenant["required"])
+        self.assertNotIn('"settingsAvailable":true', tenant["required"])
+        self.assertEqual((denied["status"], denied["required"]), (403, ["FORBIDDEN"]))
+        changed = probe_document()
+        phone = next(item for item in changed["probes"] if item["label"] == "existing_phone")
+        phone["method"], phone["body"] = "POST", "{}"
+        bad = json.dumps(changed, separators=(",", ":")).encode()
+        with self.assertRaises(blue.GuardError):
+            blue.load_probes(bad, pins(probes__sha256=blue.sha256_bytes(bad)))
+
+    def test_settings_v2_management_probe_requires_schema_capability_without_a_saved_timezone(self):
+        raw = json.dumps(probe_document(), separators=(",", ":")).encode()
+        current = replace(settings_pins(), probes_sha256=blue.sha256_bytes(raw))
+        tenant = next(item for item in blue.load_probes(raw, current) if item["label"] == "management_tenant")
+        self.assertEqual(
+            tenant["required"],
+            ['"settingsAvailable":true', '"supportedSettings":["businessHoursTimezone"]', '"userRole"'],
+        )
+        self.assertFalse(any("business_hours_timezone" in item for item in tenant["required"]))
+        system = Mock()
+        system.request.return_value = (
+            200,
+            b'{"result":{"data":{"json":{"settingsAvailable":true,"supportedSettings":["businessHoursTimezone"],"userRole":"admin","business_hours_timezone":null}}}}',
+        )
+        blue.run_probes(system, "http://127.0.0.1:3005", [tenant])
+        for body in (
+            b'{"settingsAvailable":false,"supportedSettings":[],"userRole":"admin"}',
+            b'{"settingsAvailable":true,"supportedSettings":[],"userRole":"admin"}',
+            b'{"settingsAvailable":true,"supportedSettings":["businessHoursTimezone"]}',
+        ):
+            system.request.return_value = (200, body)
+            with self.assertRaises(blue.GuardError) as error:
+                blue.run_probes(system, "http://127.0.0.1:3005", [tenant])
+            self.assertEqual(error.exception.stage, "probes")
+
+    def test_settings_v2_schema_probe_failure_stops_before_any_nginx_route_change(self):
+        raw = json.dumps(probe_document(), separators=(",", ":")).encode()
+        current = replace(settings_pins(), probes_sha256=blue.sha256_bytes(raw))
+        operator = blue.Operator(current, Mock())
+        operator.prepare = Mock()
+        operator.target_config = settings_rendered()
+        operator.wait_target = Mock()
+        operator.probes = blue.load_probes(raw, current)
+        operator.nginx = Mock()
+        operator.system.request.return_value = (200, b'{"settingsAvailable":false,"supportedSettings":[],"userRole":"admin"}')
+        context = Mock()
+        context.__enter__ = Mock(return_value=Path("/root/frozen-3005.json"))
+        context.__exit__ = Mock(return_value=False)
+        with patch.object(blue, "frozen_candidate_config", return_value=context), \
+             patch.object(blue, "atomic_write") as write, \
+             self.assertRaises(blue.GuardError) as error:
+            operator.activate()
+        self.assertEqual(error.exception.stage, "probes")
+        operator.nginx.assert_not_called()
+        write.assert_not_called()
+        self.assertFalse(any(command[:2] == ["nginx", "-s"] for command in operator.system.command.call_args_list))
+
+    def test_inventory_mode_requires_all_inputs_and_exact_source_sha(self):
+        with self.assertRaises(SystemExit):
+            blue.parse_args(["--inventory"])
+        arguments = blue.parse_args([
+            "--inventory", "--output", "/root/manifest.json",
+            "--current-compose-file", "/root/candidate.compose.json",
+            "--probes-file", "/root/probes.json", "--nginx-site", "/etc/nginx/sites-enabled/phone11ai",
+            "--release-image", RELEASE_IMAGE, "--release-build", "release-e7270a6",
+            "--release-source-sha", "5" * 40, "--tenant-id", "1", "--denied-tenant-id", "2147483647",
+        ])
+        self.assertTrue(arguments.inventory)
+        self.assertEqual(arguments.release_source_sha, "5" * 40)
+
+    def test_target_absence_checks_dedicated_name_and_port(self):
+        operator = blue.Operator(pins(), Mock())
+        operator.system.command.return_value = b"cp11-backend\ncp11-api-candidate\n"
+        fake_socket = Mock()
+        with patch.object(blue.socket, "socket", return_value=fake_socket):
+            operator.target_absent()
+        fake_socket.bind.assert_called_once_with(("127.0.0.1", 3003))
+
+    def test_target_start_wait_tolerates_transient_unhealthy_state(self):
+        operator = blue.Operator(pins(), Mock())
+        ready = {"Id": "ready"}
+        operator.target = Mock(side_effect=[blue.GuardError("target_runtime"), ready])
+        with patch.object(blue.time, "sleep"):
+            self.assertEqual(operator.wait_target(), ready)
+        self.assertEqual(operator.target.call_count, 2)
+
+    def test_restore_proves_local_and_public_routes_return_current_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory) / "phone11ai"
+            original, active = b"old nginx", b"new nginx"
+            site.write_bytes(active)
+            raw_probes = json.dumps(probe_document(), separators=(",", ":")).encode()
+            current = pins(
+                nginx__site=str(site), nginx__site_sha256=blue.sha256_bytes(original),
+                probes__sha256=blue.sha256_bytes(raw_probes),
+            )
+            receipt = json.dumps({
+                "schema": blue.SCHEMA, "site": str(site), "before": blue.sha256_bytes(original),
+                "active": blue.sha256_bytes(active), "target_container": blue.TARGET_CONTAINER,
+                "target_build": current.release_build,
+            }, sort_keys=True, separators=(",", ":")).encode()
+            operator = blue.Operator(current, Mock())
+            operator.probes = blue.load_probes(raw_probes, current)
+            operator.runtime = Mock()
+            operator.wake = Mock()
+
+            def protected_read(path, **_kwargs):
+                if path == blue.ROLLBACK_RECEIPT:
+                    return receipt
+                if path == blue.ROLLBACK_SITE:
+                    return original
+                if path == site:
+                    return active
+                raise AssertionError(path)
+
+            with patch.object(blue, "secure_read", side_effect=protected_read), \
+                 patch.object(blue, "atomic_write"), \
+                 patch.object(blue, "wait_for_route") as wait:
+                operator.restore(expected=active)
+            self.assertEqual(wait.call_count, 2)
+            self.assertEqual(wait.call_args_list[0].args[1], "http://127.0.0.1")
+            self.assertEqual(wait.call_args_list[1].args[1], blue.PUBLIC_ORIGIN)
+            self.assertTrue(all(call.args[3] == current.current.build for call in wait.call_args_list))
+
+    def test_activation_failure_after_route_restores_exact_old_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory) / "phone11ai"
+            site.write_bytes(b"placeholder")
+            current = pins(nginx__site=str(site))
+            operator = blue.Operator(current, Mock())
+            operator.prepare = Mock()
+            operator.target_config = rendered()
+            operator.probes = []
+            operator.target = Mock()
+            operator.photos_absent = Mock()
+            operator.wake = Mock()
+            operator.runtime = Mock(side_effect=lambda name, *_args: {
+                "Id": current.baseline.container_id if name == blue.BASELINE_CONTAINER else current.current.container_id,
+            })
+            original = b"server {\n" + blue.proxy_fragment(current.nginx_marker, current.current.build, 3002) + b"}\n"
+            routed = original.replace(
+                blue.proxy_fragment(current.nginx_marker, current.current.build, 3002).rstrip(b"\n"),
+                blue.proxy_fragment(current.nginx_marker, current.release_build, 3003).rstrip(b"\n"),
+            )
+            operator.nginx = Mock(return_value=original)
+            operator.save_rollback = Mock()
+            operator.restore = Mock()
+            operator.system.command.return_value = b""
+            operator.system.request.side_effect = blue.GuardError("readiness")
+            context = Mock()
+            context.__enter__ = Mock(return_value=Path("/root/frozen.json"))
+            context.__exit__ = Mock(return_value=False)
+            with patch.object(blue, "frozen_candidate_config", return_value=context), \
+                 patch.object(blue, "atomic_write"), \
+                 patch.object(blue, "secure_read", return_value=routed), \
+                 self.assertRaises(blue.GuardError):
+                operator.activate()
+            operator.restore.assert_called_once_with(expected=routed)
+
+    def test_settings_activation_changes_only_trpc_and_keeps_generated_recovery_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory) / "phone11ai"
+            document = settings_manifest()
+            original = settings_inventory_site(document)
+            site.write_bytes(original)
+            current = replace(
+                settings_pins(), nginx_site=site,
+                nginx_site_sha256=blue.sha256_bytes(original),
+            )
+            operator = blue.Operator(current, Mock())
+            operator.prepare = Mock()
+            operator.target_config = settings_rendered()
+            operator.probes = []
+            operator.wait_target = Mock()
+            operator.photos_absent = Mock()
+            operator.wake = Mock()
+            operator.preserved_runtimes = Mock(return_value=(
+                {"Id": current.baseline.container_id}, {"Id": current.current.container_id},
+            ))
+            operator.target = Mock()
+            operator.nginx = Mock(return_value=original)
+            operator.save_rollback = Mock()
+            operator.restore = Mock()
+            operator.system.command.return_value = b""
+            context = Mock()
+            context.__enter__ = Mock(return_value=Path("/root/frozen-3005.json"))
+            context.__exit__ = Mock(return_value=False)
+            written = {}
+
+            def capture_write(_path, raw, **_kwargs):
+                written["site"] = raw
+
+            with patch.object(blue, "frozen_candidate_config", return_value=context), \
+                 patch.object(blue, "atomic_write", side_effect=capture_write), \
+                 patch.object(blue, "secure_read", side_effect=lambda _path, **_kwargs: written["site"]), \
+                 patch.object(blue, "wait_for_route", side_effect=blue.GuardError("readiness")), \
+                 self.assertRaises(blue.GuardError):
+                operator.activate()
+
+            current_trpc = blue.trpc_route_fragment(
+                current.nginx_marker, current.current.build, 3003, {3003, 3005}
+            ).rstrip(b"\n")
+            target_trpc = blue.trpc_route_fragment(
+                current.nginx_marker, current.release_build, 3005, {3003, 3005}
+            ).rstrip(b"\n")
+            expected = original.replace(current_trpc, target_trpc, 1)
+            self.assertEqual(written["site"], expected)
+            self.assertEqual(expected.replace(target_trpc, current_trpc, 1), original)
+            recovery_fragment = recovery.proxy_fragment(
+                current.nginx_marker, current.recovery.build
+            ).rstrip(b"\n")
+            self.assertEqual(original.count(recovery_fragment), 1)
+            self.assertEqual(expected.count(recovery_fragment), 1)
+            operator.restore.assert_called_once_with(expected=expected)
+
+
+if __name__ == "__main__":
+    unittest.main()

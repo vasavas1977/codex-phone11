@@ -1,0 +1,633 @@
+// Runs the actual bridge implementation against a fake SDK, never a SIP service.
+#import "../ios/Phone11Siprix.m"
+#include <stdio.h>
+#include <stdlib.h>
+
+NSString *const AVAudioSessionPortBuiltInSpeaker = @"Speaker";
+NSString *const AVAudioSessionPortBuiltInReceiver = @"Receiver";
+NSString *const AVAudioSessionPortHeadphones = @"Headphones";
+NSString *const AVAudioSessionPortHeadsetMic = @"HeadsetMic";
+NSString *const AVAudioSessionPortBluetoothA2DP = @"BluetoothA2DP";
+NSString *const AVAudioSessionPortBluetoothHFP = @"BluetoothHFP";
+NSString *const AVAudioSessionPortBluetoothLE = @"BluetoothLE";
+NSString *const AVAudioSessionPortAirPlay = @"AirPlay";
+NSString *const AVAudioSessionPortUSBAudio = @"USBAudio";
+NSString *const AVAudioSessionPortHDMI = @"HDMI";
+NSString *const AVAudioSessionCategoryPlayAndRecord = @"playAndRecord";
+NSString *const AVAudioSessionCategoryPlayback = @"playback";
+NSString *const AVAudioSessionModeVoiceChat = @"voiceChat";
+NSString *const AVAudioSessionModeDefault = @"default";
+NSString *const AVAudioSessionModeSpokenAudio = @"spokenAudio";
+NSString *const AVAudioSessionRouteChangeNotification = @"routeChange";
+static int playbackCategories, playbackOverrides, playbackActivations;
+static NSString *lastPlaybackMode;
+static AVAudioSessionCategoryOptions lastPlaybackOptions;
+NSString *const UIApplicationDidEnterBackgroundNotification = @"background";
+NSString *const AVMediaTypeVideo = @"video";
+static AVAuthorizationStatus cameraAuthorization = AVAuthorizationStatusDenied;
+@implementation AVCaptureDevice
++ (AVAuthorizationStatus)authorizationStatusForMediaType:(NSString *)type { return cameraAuthorization; }
++ (void)requestAccessForMediaType:(NSString *)type completionHandler:(void (^)(BOOL))handler { handler(cameraAuthorization == AVAuthorizationStatusAuthorized); }
+@end
+@implementation UIEvent
+@end
+@implementation UIColor
++ (instancetype)clearColor { static UIColor *color; if (!color) color=[UIColor new]; return color; }
+@end
+@implementation UIView
+- (instancetype)initWithFrame:(CGRect)frame { return [self init]; }
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event { return point.x < 0 ? nil : self; }
+- (BOOL)accessibilityActivate { return YES; }
+- (void)didMoveToWindow {}
+- (void)layoutSubviews {}
+- (void)addSubview:(UIView *)view {}
+- (void)removeFromSuperview {}
+@end
+@implementation AVRoutePickerView
+@end
+@implementation RCTViewManager
+- (UIView *)view { return [UIView new]; }
+@end
+@implementation AVAudioSessionPortDescription
+@end
+@implementation AVAudioSessionRouteDescription
+@end
+@implementation AVAudioSession
+@synthesize category = _category;
+@synthesize mode = _mode;
+@synthesize categoryOptions = _categoryOptions;
++ (instancetype)sharedInstance {
+  static AVAudioSession *session;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    session = [AVAudioSession new];
+    session.currentRoute = [AVAudioSessionRouteDescription new];
+    session.currentRoute.outputs = @[];
+  });
+  return session;
+}
+- (BOOL)setCategory:(NSString *)category mode:(NSString *)mode options:(AVAudioSessionCategoryOptions)options error:(NSError **)error {
+  playbackCategories++;
+  lastPlaybackMode = mode;
+  lastPlaybackOptions = options;
+  _category = category;
+  _mode = mode;
+  _categoryOptions = options;
+  return YES;
+}
+- (BOOL)overrideOutputAudioPort:(AVAudioSessionPortOverride)portOverride error:(NSError **)error {
+  playbackOverrides++;
+  AVAudioSessionPortDescription *output = [AVAudioSessionPortDescription new];
+  output.portType = portOverride == AVAudioSessionPortOverrideSpeaker ? AVAudioSessionPortBuiltInSpeaker : AVAudioSessionPortBuiltInReceiver;
+  self.currentRoute.outputs = @[output];
+  return YES;
+}
+- (BOOL)setActive:(BOOL)active error:(NSError **)error { if (active) playbackActivations++; return YES; }
+@end
+static void (^testEmitHook)(id);
+@implementation RCTEventEmitter
+- (instancetype)init {
+  if ((self = [super init])) self.testEvents = [NSMutableArray new];
+  return self;
+}
+- (void)sendEventWithName:(NSString *)name body:(id)body { [self.testEvents addObject:body]; if (testEmitHook) testEmitHook(body); }
+- (void)invalidate {}
+@end
+
+@implementation SiprixIniData
+@end
+@implementation SiprixAccData
+@end
+@implementation SiprixDestData
+@end
+@implementation SiprixHoldData
+@end
+
+static int sdkCode, initCode, shutdownCode, initializes, shutdowns, registrations;
+static int inlineRegistrationState = -1;
+static BOOL inlineCallProceeding;
+static int pushRegistrationState = -1;
+static int registrationCode;
+static int invites, rejects, byes, accepts, holds, mutes, dtmfs, activations, deactivations;
+static int nextAccount = 10, nextCall = 20, lastMuteCall;
+static BOOL lastMuteValue, lastAcceptVideo;
+static int cameraMutes, cameraSwitches, videoAttaches, videoDetaches;
+static BOOL sdkInitialized, speakerOK = YES, callKitEnabled;
+static HoldState mockHold = HoldStateNone;
+static NSString *wakeHeader;
+static int incomingPushes, headerReads;
+static NSString *mockVersion = @"siprix 1.0.40 from 20260620_1419";
+static SiprixIniData *lastInit;
+static SiprixDestData *lastDestination;
+static id<SiprixEventDelegate> sdkDelegate;
+
+@implementation SiprixModule
+- (int)initialize:(id<SiprixEventDelegate>)delegate iniData:(SiprixIniData *)iniData {
+  initializes++;
+  lastInit = iniData;
+  sdkDelegate = delegate;
+  sdkInitialized = initCode == 0;
+  return initCode;
+}
+- (int)unInitialize { shutdowns++; if (!shutdownCode) sdkInitialized = NO; return shutdownCode; }
+- (BOOL)isInitialized { return sdkInitialized; }
+- (NSString *)version { return mockVersion; }
+- (void)handleIncomingPush {
+  incomingPushes++;
+  if (pushRegistrationState >= 0) [sdkDelegate onAccountRegState:10 regState:(RegState)pushRegistrationState response:@"private non-SIP response"];
+}
+- (NSString *)callGetSipHeader:(int)callId hdrName:(NSString *)hdrName { headerReads++; if (![hdrName isEqual:@"X-Phone11-Wake-ID"]) abort(); return wakeHeader; }
+- (void)enableCallKit:(BOOL)enabled { callKitEnabled = enabled; }
+- (int)accountAdd:(SiprixAccData *)data {
+  if (sdkCode) return sdkCode;
+  if (data.expireTime.intValue != 0) abort();
+  data.myAccId = nextAccount;
+  return 0;
+}
+- (int)accountRegister:(int)accId expireTime:(int)expireTime {
+  registrations++;
+  if (registrationCode) return registrationCode;
+  if (!sdkCode && inlineRegistrationState >= 0) {
+    [sdkDelegate onAccountRegState:accId regState:(RegState)inlineRegistrationState
+                         response:inlineRegistrationState == RegStateSuccess ? @"200 OK" : @"403 Forbidden"];
+  }
+  return sdkCode;
+}
+- (int)accountUnRegister:(int)accId { return sdkCode; }
+- (int)accountDelete:(int)accId { return sdkCode; }
+- (int)callInvite:(SiprixDestData *)data {
+  invites++;
+  lastDestination = data;
+  if (!sdkCode) {
+    data.myCallId = nextCall++;
+    if (inlineCallProceeding)
+      [sdkDelegate onCallProceeding:data.myCallId response:@"180 Ringing"];
+  }
+  return sdkCode;
+}
+- (int)callAccept:(int)callId withVideo:(BOOL)video { accepts++; lastAcceptVideo=video; return sdkCode; }
+- (int)callMuteCam:(int)callId mute:(BOOL)mute { cameraMutes++; return sdkCode; }
+- (int)switchCamera { cameraSwitches++; return sdkCode; }
+- (UIView *)createVideoWindow { return [UIView new]; }
+- (int)callSetVideoWindow:(int)callId view:(UIView *)view { if (view) videoAttaches++; else videoDetaches++; return sdkCode; }
+- (int)callReject:(int)callId statusCode:(int)statusCode { rejects++; return sdkCode; }
+- (int)callBye:(int)callId { byes++; return sdkCode; }
+- (int)callTransferBlind:(int)callId toExt:(NSString *)toExt { return sdkCode; }
+- (int)callMuteMic:(int)callId mute:(BOOL)mute { mutes++; lastMuteCall = callId; lastMuteValue = mute; return sdkCode; }
+- (int)callGetHoldState:(int)callId holdState:(SiprixHoldData *)data { data.holdState = mockHold; return sdkCode; }
+- (int)callHold:(int)callId { holds++; return sdkCode; }
+- (int)callSendDtmf:(int)callId dtmfs:(NSString *)digits durationMs:(int)duration intertoneGapMs:(int)gap method:(DtmfMethod)method {
+  dtmfs++; if (duration != 160 || gap != 80 || method != DtmfMethodRtp) abort(); return sdkCode;
+}
+- (void)activateSession:(AVAudioSession *)session { activations++; }
+- (void)deactivateSession:(AVAudioSession *)session { deactivations++; }
+- (BOOL)overrideAudioOutputToSpeaker:(BOOL)on { return speakerOK; }
+@end
+
+static int assertions;
+#define CHECK(condition) do { assertions++; if (!(condition)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #condition); exit(1); } } while (0)
+
+static void flush(void) {
+  __block BOOL done = NO;
+  dispatch_async(dispatch_get_main_queue(), ^{ done = YES; });
+  while (!done) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+}
+
+int main(void) {
+  @autoreleasepool {
+#if !PHONE11_VOIP_WAKE_COMMISSIONED
+    __block BOOL disabled = NO;
+    [Phone11Siprix prepareIncomingWake:@{} sip:@{} event:^(NSDictionary *event) { abort(); } completion:^(NSError *error) { disabled = error != nil; }];
+    CHECK(disabled && initializes == 0 && incomingPushes == 0);
+#endif
+    SiprixIniData *licenseProbe = [SiprixIniData new];
+    P11ApplyBuildLicense(licenseProbe, nil);
+    CHECK(licenseProbe.license == nil);
+    P11ApplyBuildLicense(licenseProbe, @" \n\t ");
+    CHECK(licenseProbe.license == nil);
+    P11ApplyBuildLicense(licenseProbe, @123);
+    CHECK(licenseProbe.license == nil);
+    P11ApplyBuildLicense(licenseProbe, @"  fake-test-license-not-valid  ");
+    CHECK([licenseProbe.license isEqualToString:@"fake-test-license-not-valid"]);
+    __block id result;
+    __block NSString *error;
+    __block int resolved = 0;
+    RCTPromiseResolveBlock resolve = ^(id value) { result = value; error = nil; resolved++; };
+    RCTPromiseRejectBlock reject = ^(NSString *code, NSString *message, NSError *err) { error = code; result = nil; };
+    NSDictionary *config = @{@"sipServer": @"invalid.example", @"sipExtension": @"test", @"sipPassword": @"test-only-secret", @"transport": @"TLS"};
+    Phone11Siprix *bridge = [Phone11Siprix new];
+    [bridge startObserving];
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK(![result[@"initialized"] boolValue]);
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_NOT_INITIALIZED"]);
+    [bridge initialize:@{@"license": @"not-allowed"} resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_INVALID_ARGUMENT"] && initializes == 0);
+    [bridge initialize:@{} resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"initialized"] boolValue] && initializes == 1);
+    CHECK([result[@"sdkVersion"] isEqualToString:@"siprix 1.0.40 from 20260620_1419"] && callKitEnabled);
+    CHECK(lastInit.logLevelFile.intValue == LogLevelNoLog && lastInit.logLevelIde.intValue == LogLevelNoLog);
+    CHECK(lastInit.tlsVerifyServer.boolValue && lastInit.singleCallMode.boolValue && lastInit.enableVideoCall.boolValue);
+    CHECK(lastInit.license == nil && lastInit.homeFolder == nil);
+    NSUInteger generation = [result[@"generation"] unsignedIntegerValue];
+    [bridge initialize:@{} resolver:resolve rejecter:reject];
+    CHECK(initializes == 1 && [result[@"generation"] unsignedIntegerValue] == generation);
+    Phone11Siprix *other = [Phone11Siprix new];
+    [other initialize:@{} resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_RUNTIME_IN_USE"] && initializes == 1);
+    [other destroy:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_RUNTIME_IN_USE"] && shutdowns == 0);
+    int categoriesBeforePlayback = playbackCategories;
+    [bridge resetPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK(!error && playbackCategories == categoriesBeforePlayback);
+    [bridge setPlaybackAudioRoute:@"earpiece" resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"route"] isEqual:@"earpiece"] && playbackCategories == categoriesBeforePlayback + 1);
+    CHECK(playbackOverrides == 1 && playbackActivations == 1 && P11SiprixRuntime.shared.playbackRouteActive);
+    AVAudioSessionPortDescription *bluetooth = [AVAudioSessionPortDescription new];
+    bluetooth.portType = AVAudioSessionPortBluetoothA2DP;
+    AVAudioSession.sharedInstance.currentRoute.outputs = @[bluetooth];
+    [bridge getPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK([result[@"route"] isEqual:@"external"] && [result[@"label"] isEqual:@"Bluetooth"]);
+    [bridge setPlaybackAudioRoute:@"system" resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"route"] isEqual:@"external"] && playbackOverrides == 1);
+    CHECK([lastPlaybackMode isEqual:AVAudioSessionModeDefault]);
+    CHECK((lastPlaybackOptions & AVAudioSessionCategoryOptionAllowBluetooth) != 0);
+    CHECK((lastPlaybackOptions & AVAudioSessionCategoryOptionAllowBluetoothA2DP) != 0);
+    int categoriesDuringSystemRoute = playbackCategories;
+    [bridge setPlaybackAudioRoute:@"system" resolver:resolve rejecter:reject];
+    CHECK(!error && playbackCategories == categoriesDuringSystemRoute && playbackOverrides == 1);
+    // A call/wake can change AVAudioSession without traversing the JS playback
+    // API. The next picker request must detect and repair that stale session.
+    [AVAudioSession.sharedInstance setCategory:AVAudioSessionCategoryPlayAndRecord
+                                          mode:AVAudioSessionModeVoiceChat
+                                       options:AVAudioSessionCategoryOptionAllowBluetooth
+                                         error:nil];
+    int categoriesAfterForeignSession = playbackCategories;
+    [bridge setPlaybackAudioRoute:@"system" resolver:resolve rejecter:reject];
+    CHECK(!error && playbackCategories == categoriesAfterForeignSession + 1);
+    CHECK([lastPlaybackMode isEqual:AVAudioSessionModeDefault] &&
+          (lastPlaybackOptions & AVAudioSessionCategoryOptionAllowBluetoothA2DP) != 0);
+    [bridge setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"route"] isEqual:@"speaker"] && playbackOverrides == 2);
+    [bridge resetPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK(!error && !P11SiprixRuntime.shared.playbackRouteActive && playbackCategories == categoriesBeforePlayback + 6);
+    Phone11AudioRoutePickerManager *pickerManager = [Phone11AudioRoutePickerManager new];
+    P11AudioRoutePickerView *picker = (P11AudioRoutePickerView *)[pickerManager view];
+    CHECK([picker isKindOfClass:P11AudioRoutePickerView.class]);
+    CHECK(picker.delegate == picker && !picker.prioritizesVideoDevices);
+    picker.disabled = YES;
+    UIEvent *touch = [UIEvent new]; touch.type = UIEventTypeTouches;
+    CGPoint insidePicker = {0, 0};
+    CGPoint outsidePicker = {-1, 0};
+    int categoriesBeforeDisabledPicker = playbackCategories;
+    CHECK([picker hitTest:insidePicker withEvent:touch] == nil && playbackCategories == categoriesBeforeDisabledPicker);
+    picker.disabled = NO;
+    CHECK([picker hitTest:outsidePicker withEvent:touch] == nil && playbackCategories == categoriesBeforeDisabledPicker);
+    AVAudioSession.sharedInstance.currentRoute.outputs = @[bluetooth];
+    __block NSDictionary *pickerOpened;
+    picker.onPickerOpened = ^(NSDictionary *event) { pickerOpened = event; };
+    CHECK([picker hitTest:insidePicker withEvent:touch] == picker && playbackOverrides == 3);
+    int categoriesDuringPicker = playbackCategories;
+    CHECK([picker accessibilityActivate] && playbackCategories == categoriesDuringPicker);
+    [picker routePickerViewWillBeginPresentingRoutes:picker];
+    CHECK([pickerOpened[@"route"] isEqual:@"external"] && [pickerOpened[@"label"] isEqual:@"Bluetooth"]);
+    [bridge resetPlaybackAudioRoute:resolve rejecter:reject];
+    CHECK(!error && !P11SiprixRuntime.shared.playbackRouteActive);
+    [bridge createAccount:config resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"id"] isEqualToString:@"10"] && [result[@"registrationState"] isEqualToString:@"unregistered"]);
+    CHECK(!result[@"sipPassword"] && !result[@"sipAuthId"]);
+    [bridge makeCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_NOT_REGISTERED"] && invites == 0);
+    [bridge registerAccount:@"10" expireTime:@0 resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_INVALID_ARGUMENT"] && registrations == 0);
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    CHECK(!error && registrations == 1);
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"registering"]);
+    CHECK(!result[@"accounts"][0][@"regState"] && !result[@"accounts"][0][@"sipStatusCode"]);
+    [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"401 Unauthorized"];
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"account"][@"sipStatusCode"] intValue] == 401);
+    CHECK([bridge.testEvents.lastObject[@"account"][@"regState"] intValue] == RegStateFailed);
+    CHECK([bridge.testEvents.lastObject[@"account"][@"registrationState"] isEqualToString:@"failed"]);
+    [sdkDelegate onAccountRegState:10 regState:RegStateFailed response:@"408 Request Timeout"];
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"account"][@"sipStatusCode"] intValue] == 408);
+    [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"];
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"account"][@"registrationState"] isEqualToString:@"registered"]);
+    // Inline SDK callbacks must win after the queued delegate delivery.
+    inlineRegistrationState = RegStateFailed;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    flush();
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"failed"]);
+    CHECK([result[@"accounts"][0][@"sipStatusCode"] intValue] == 403);
+    inlineRegistrationState = -1;
+    sdkCode = -77;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-77"]);
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"failed"]);
+    CHECK([result[@"accounts"][0][@"sipStatusCode"] intValue] == 403);
+    sdkCode = 0;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"registering"]);
+    CHECK(!result[@"accounts"][0][@"regState"] && !result[@"accounts"][0][@"sipStatusCode"]);
+    inlineRegistrationState = RegStateSuccess;
+    [bridge registerAccount:@"10" expireTime:@300 resolver:resolve rejecter:reject];
+    flush();
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"registered"]);
+    CHECK([result[@"accounts"][0][@"regState"] intValue] == RegStateSuccess);
+    inlineRegistrationState = -1;
+    sdkCode = -77;
+    [bridge makeCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-77"] && P11SiprixRuntime.shared.calls.count == 0);
+    sdkCode = 0;
+    inlineCallProceeding = YES;
+    [bridge makeCall:@"10" destination:@"sip:123:private@invalid.example;password=secret" resolver:resolve rejecter:reject];
+    inlineCallProceeding = NO;
+    CHECK(!error && [result[@"remoteUri"] isEqualToString:@"sip:123@invalid.example"]);
+    NSString *callId = result[@"id"];
+    NSString *outboundHeader = lastDestination.xheaders[@"X-Phone11-Outbound-ID"];
+    NSString *outboundHistoryId = result[@"historyId"];
+    NSNumber *outboundStartedAt = result[@"startedAt"];
+    CHECK(lastDestination.xheaders.count == 1 && [[NSUUID alloc] initWithUUIDString:outboundHeader]);
+    CHECK([outboundHeader isEqualToString:outboundHeader.lowercaseString]);
+    CHECK([outboundHistoryId isEqualToString:[@"native-outbound:" stringByAppendingString:outboundHeader]]);
+    CHECK(outboundStartedAt.doubleValue > 0 && [result[@"state"] isEqualToString:@"dialing"]);
+    int categoriesDuringCall = playbackCategories;
+    [bridge setPlaybackAudioRoute:@"speaker" resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CALL_AUDIO_ACTIVE"] && playbackCategories == categoriesDuringCall);
+    CHECK([picker hitTest:insidePicker withEvent:touch] == nil && playbackCategories == categoriesDuringCall);
+    // Even when the SDK calls its delegate inside callInvite, delivery is
+    // queued until after the returned call has its correlation identity.
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"call"][@"state"] isEqualToString:@"proceeding"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"historyId"] isEqualToString:outboundHistoryId]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"startedAt"] isEqual:outboundStartedAt]);
+    [bridge makeCall:@"10" destination:@"456" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_ACTIVE"]);
+    [bridge deleteAccount:@"10" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_ACTIVE"]);
+    [sdkDelegate onCallConnected:callId.intValue hdrFrom:@"" hdrTo:@"" withVideo:NO];
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"call"][@"state"] isEqualToString:@"connected"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"historyId"] isEqualToString:outboundHistoryId]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"answeredAt"] doubleValue] >= outboundStartedAt.doubleValue);
+    sdkCode = -33;
+    [bridge setMute:callId muted:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-33"] && ![P11SiprixRuntime.shared.calls[callId][@"muted"] boolValue]);
+    sdkCode = 0;
+    [bridge setMute:callId muted:YES resolver:resolve rejecter:reject];
+    CHECK(!error && [bridge.testEvents.lastObject[@"call"][@"muted"] boolValue]);
+    CHECK(lastMuteCall == callId.intValue && lastMuteValue);
+    sdkCode = -33;
+    [bridge setMute:callId muted:NO resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-33"] && [P11SiprixRuntime.shared.calls[callId][@"muted"] boolValue]);
+    sdkCode = 0;
+    [bridge setMute:callId muted:NO resolver:resolve rejecter:reject];
+    CHECK(!error && !lastMuteValue && lastMuteCall == callId.intValue);
+    CHECK(![bridge.testEvents.lastObject[@"call"][@"muted"] boolValue]);
+    int beforeInvalidMute = mutes;
+    [bridge setMute:@"999999" muted:YES resolver:resolve rejecter:reject];
+    CHECK(error && mutes == beforeInvalidMute);
+
+    mockHold = HoldStateRemote;
+    [bridge setHold:callId held:NO resolver:resolve rejecter:reject];
+    CHECK(!error && holds == 0);
+    [bridge setHold:callId held:YES resolver:resolve rejecter:reject];
+    CHECK(!error && holds == 1 && ![P11SiprixRuntime.shared.calls[callId][@"held"] boolValue]);
+    [bridge setHold:callId held:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_HOLD_PENDING"] && holds == 1);
+    mockHold = HoldStateLocalAndRemote;
+    [sdkDelegate onCallHeld:callId.intValue holdState:mockHold];
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"call"][@"holdState"] intValue] == 3);
+    [bridge setHold:callId held:YES resolver:resolve rejecter:reject];
+    CHECK(!error && holds == 1);
+    [bridge setHold:callId held:NO resolver:resolve rejecter:reject];
+    CHECK(!error && holds == 2);
+    [bridge sendDtmf:callId digits:@"12;private" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_INVALID_ARGUMENT"] && dtmfs == 0);
+    [bridge sendDtmf:callId digits:@"12*#ABCD" resolver:resolve rejecter:reject];
+    CHECK(!error && dtmfs == 1);
+    [bridge setSpeaker:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_AUDIO_INACTIVE"]);
+    [bridge handleNativeAudioSession:YES resolver:resolve rejecter:reject];
+    [bridge handleNativeAudioSession:YES resolver:resolve rejecter:reject];
+    CHECK(!error && activations == 1);
+    speakerOK = NO;
+    [bridge setSpeaker:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_AUDIO_ROUTE"]);
+    speakerOK = YES;
+    [bridge setSpeaker:YES resolver:resolve rejecter:reject];
+    CHECK(!error);
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK(![result[@"speaker"] boolValue]); // Route request is not physical route proof.
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-1" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_STATE"]); // A prior hold command is still pending.
+    mockHold = HoldStateNone;
+    [sdkDelegate onCallHeld:callId.intValue holdState:mockHold]; flush();
+    [bridge createTransferRequestId:resolve rejecter:reject];
+    NSString *transferRequest1 = result;
+    CHECK(!error && [[NSUUID alloc] initWithUUIDString:transferRequest1] != nil);
+    [bridge createTransferRequestId:resolve rejecter:reject];
+    CHECK(!error && ![transferRequest1 isEqualToString:result]);
+    // Transfer command acceptance preserves the call until the SDK's outcome.
+    [bridge transferCall:callId destination:@"sip:3003@external.example" requestId:@"1-1" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_INVALID_ARGUMENT"]);
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-2" resolver:resolve rejecter:reject];
+    CHECK(!error && [P11SiprixRuntime.shared.calls[callId][@"transferPending"] boolValue]);
+    [bridge setHold:callId held:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_TRANSFER_PENDING"]);
+    [bridge transferCall:callId destination:@"4004" requestId:@"1-3" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_TRANSFER_PENDING"]);
+    [sdkDelegate onCallTransferred:callId.intValue statusCode:486]; flush();
+    CHECK(![P11SiprixRuntime.shared.calls[callId][@"transferPending"] boolValue]);
+    CHECK([bridge.testEvents.lastObject[@"type"] isEqualToString:@"callTransferred"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"transferStatusCode"] intValue] == 486);
+    CHECK(P11SiprixRuntime.shared.calls.count == 1 && byes == 0);
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-2" resolver:resolve rejecter:reject];
+    CHECK(!error);
+    [sdkDelegate onCallTransferred:callId.intValue statusCode:0]; flush();
+    CHECK([P11SiprixRuntime.shared.calls[callId][@"transferStatusCode"] isEqual:@0]);
+    CHECK(P11SiprixRuntime.shared.calls.count == 1 && byes == 0);
+    [bridge transferCall:callId destination:@"3003" requestId:@"1-2" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_TRANSFER_PENDING"]);
+    [bridge hangupCall:callId resolver:resolve rejecter:reject];
+    CHECK(!error && byes == 1 && P11SiprixRuntime.shared.calls.count == 1);
+    [sdkDelegate onCallTerminated:callId.intValue statusCode:200];
+    flush();
+    CHECK(P11SiprixRuntime.shared.calls.count == 0 && [bridge.testEvents.lastObject[@"call"][@"state"] isEqualToString:@"terminated"]);
+    CHECK([bridge.testEvents.lastObject[@"call"][@"historyId"] isEqualToString:outboundHistoryId]);
+    CHECK(P11WakeHistory.shared.pending.count == 0);
+    [sdkDelegate onCallIncoming:50 accId:10 withVideo:NO hdrFrom:@"Test <sip:caller:password@invalid.example>" hdrTo:@""];
+    flush();
+    CHECK([bridge.testEvents.lastObject[@"call"][@"remoteUri"] isEqualToString:@"sip:caller@invalid.example"]);
+    [sdkDelegate onCallIncoming:51 accId:10 withVideo:NO hdrFrom:@"sip:extra@invalid.example" hdrTo:@""];
+    flush();
+    CHECK(rejects == 1 && P11SiprixRuntime.shared.calls.count == 1);
+    [bridge answerCall:@"50" resolver:resolve rejecter:reject];
+    CHECK(!error && accepts == 1 && [P11SiprixRuntime.shared.calls[@"50"][@"state"] isEqualToString:@"ringing"]);
+    [bridge answerCall:@"50" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CALL_STATE"] && accepts == 1);
+    [bridge hangupCall:@"50" resolver:resolve rejecter:reject];
+    CHECK(!error && byes == 2 && rejects == 1);
+    [sdkDelegate onCallTerminated:50 statusCode:200];
+    flush();
+    [sdkDelegate onCallIncoming:52 accId:10 withVideo:NO hdrFrom:@"sip:caller@invalid.example" hdrTo:@""];
+    flush();
+    [bridge hangupCall:@"52" resolver:resolve rejecter:reject];
+    CHECK(!error && rejects == 2 && byes == 2);
+    [sdkDelegate onCallTerminated:52 statusCode:486];
+    flush();
+    // Explicit video intent and negotiated state are distinct from camera permission.
+    int priorInvites=invites;
+    [bridge makeVideoCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CAMERA_PERMISSION"] && invites == priorInvites);
+    cameraAuthorization=AVAuthorizationStatusAuthorized;
+    [bridge makeVideoCall:@"10" destination:@"123" resolver:resolve rejecter:reject];
+    CHECK(!error && lastDestination.withVideo.boolValue && ![result[@"hasVideo"] boolValue]);
+    NSString *videoId=result[@"id"];
+    [bridge setCameraMuted:videoId muted:YES resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CALL_STATE"] && cameraMutes == 0);
+    [sdkDelegate onCallConnected:videoId.intValue hdrFrom:@"" hdrTo:@"" withVideo:YES]; flush();
+    CHECK([bridge.testEvents.lastObject[@"call"][@"hasVideo"] boolValue]);
+    P11VideoView *remote=[[P11VideoView alloc] initWithFrame:(CGRect){0}];
+    P11VideoView *local=[[P11VideoView alloc] initWithFrame:(CGRect){0}];
+    UIView *window=[UIView new]; remote.window=window; local.window=window;
+    local.local=YES; remote.callId=videoId; local.callId=videoId;
+    CHECK(videoAttaches == 2 && remote.attachedId == videoId.intValue && local.attachedId == 0);
+    [bridge setCameraMuted:videoId muted:YES resolver:resolve rejecter:reject];
+    CHECK(!error && [bridge.testEvents.lastObject[@"call"][@"cameraMuted"] boolValue]);
+    sdkCode=-7;
+    [bridge setCameraMuted:videoId muted:NO resolver:resolve rejecter:reject];
+    CHECK(error && [P11SiprixRuntime.shared.calls[videoId][@"cameraMuted"] boolValue]);
+    sdkCode=0; cameraAuthorization=AVAuthorizationStatusDenied;
+    int priorMutes=cameraMutes;
+    [bridge setCameraMuted:videoId muted:NO resolver:resolve rejecter:reject];
+    CHECK([error isEqual:@"E_CAMERA_PERMISSION"] && cameraMutes == priorMutes);
+    cameraAuthorization=AVAuthorizationStatusAuthorized;
+    [bridge switchCamera:videoId resolver:resolve rejecter:reject]; CHECK(!error && cameraSwitches == 1);
+    [bridge setCameraMuted:videoId muted:NO resolver:resolve rejecter:reject]; CHECK(!error);
+    [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidEnterBackgroundNotification object:nil];
+    CHECK([P11SiprixRuntime.shared.calls[videoId][@"cameraMuted"] boolValue]);
+    [sdkDelegate onCallTerminated:videoId.intValue statusCode:200]; flush();
+    CHECK(videoDetaches == 2 && !remote.attachedSDK && !local.attachedSDK);
+    [sdkDelegate onCallVideoUpgraded:videoId.intValue withVideo:YES]; flush();
+    CHECK(P11SiprixRuntime.shared.calls.count == 0);
+    [sdkDelegate onCallIncoming:61 accId:10 withVideo:YES hdrFrom:@"sip:video@invalid.example" hdrTo:@""]; flush();
+    CHECK([P11SiprixRuntime.shared.calls[@"61"][@"videoOffered"] boolValue] && ![P11SiprixRuntime.shared.calls[@"61"][@"hasVideo"] boolValue]);
+    [bridge prepareVideoAnswer:@"61" resolver:resolve rejecter:reject]; CHECK(!error);
+    [[NSNotificationCenter defaultCenter] postNotificationName:UIApplicationDidEnterBackgroundNotification object:nil];
+    CHECK(!P11SiprixRuntime.shared.calls[@"61"][@"videoAnswerPrepared"]);
+    [bridge cancelVideoAnswer:@"61" resolver:resolve rejecter:reject]; CHECK(!error);
+    [bridge answerCall:@"61" resolver:resolve rejecter:reject]; CHECK(!error && !lastAcceptVideo);
+    [sdkDelegate onCallTerminated:61 statusCode:200]; flush();
+    [sdkDelegate onCallIncoming:62 accId:10 withVideo:YES hdrFrom:@"sip:video@invalid.example" hdrTo:@""]; flush();
+    [bridge prepareVideoAnswer:@"62" resolver:resolve rejecter:reject]; CHECK(!error);
+    cameraAuthorization=AVAuthorizationStatusDenied;
+    [bridge answerCall:@"62" resolver:resolve rejecter:reject]; CHECK([error isEqual:@"E_CAMERA_PERMISSION"]);
+    cameraAuthorization=AVAuthorizationStatusAuthorized;
+    [bridge prepareVideoAnswer:@"62" resolver:resolve rejecter:reject];
+    [bridge answerCall:@"62" resolver:resolve rejecter:reject]; CHECK(!error && lastAcceptVideo);
+    [sdkDelegate onCallConnected:62 hdrFrom:@"" hdrTo:@"" withVideo:NO]; flush();
+    CHECK(![P11SiprixRuntime.shared.calls[@"62"][@"hasVideo"] boolValue]); // Remote may negotiate audio only.
+    [sdkDelegate onCallTerminated:62 statusCode:200]; flush();
+    [bridge unregisterAccount:@"10" resolver:resolve rejecter:reject];
+    CHECK(!error && [P11SiprixRuntime.shared.accounts[@"10"][@"registrationState"] isEqualToString:@"registered"]);
+    [sdkDelegate onAccountRegState:10 regState:RegStateRemoved response:@"200 OK"];
+    flush();
+    CHECK([P11SiprixRuntime.shared.accounts[@"10"][@"registrationState"] isEqualToString:@"unregistered"]);
+    sdkCode = -14;
+    [bridge deleteAccount:@"10" resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-14"] && P11SiprixRuntime.shared.accounts.count == 1);
+    sdkCode = 0;
+    [bridge deleteAccount:@"10" resolver:resolve rejecter:reject];
+    CHECK(!error && P11SiprixRuntime.shared.accounts.count == 0);
+    [bridge createAccount:config resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_ACCOUNT_EXISTS"]);
+    id<SiprixEventDelegate> oldDelegate = sdkDelegate;
+    [oldDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"];
+    shutdownCode = -55;
+    [bridge destroy:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-55"] && P11SiprixRuntime.shared.quarantined);
+    CHECK(deactivations == 1 && P11SiprixRuntime.shared.sdk != nil);
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_CLEANUP_REQUIRED"]);
+    shutdownCode = 0;
+    [bridge destroy:resolve rejecter:reject];
+    CHECK(!error && !P11SiprixRuntime.shared.sdk && !P11SiprixRuntime.shared.lease);
+    [bridge initialize:@{} resolver:resolve rejecter:reject];
+    CHECK(!error && [result[@"generation"] unsignedIntegerValue] > generation);
+    [bridge createAccount:config resolver:resolve rejecter:reject];
+    CHECK(!error);
+    NSUInteger events = bridge.testEvents.count;
+    [oldDelegate onCallIncoming:80 accId:10 withVideo:NO hdrFrom:@"sip:old@invalid.example" hdrTo:@""];
+    flush();
+    CHECK(bridge.testEvents.count == events && P11SiprixRuntime.shared.calls.count == 0);
+    CHECK([P11SiprixRuntime.shared.accounts[@"10"][@"registrationState"] isEqualToString:@"unregistered"]);
+    [bridge stopObserving];
+    [sdkDelegate onAccountRegState:10 regState:RegStateSuccess response:@"200 OK"];
+    flush();
+    CHECK(bridge.testEvents.count == events);
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"accounts"][0][@"registrationState"] isEqualToString:@"registered"]);
+    [bridge startObserving];
+    [sdkDelegate onTrialModeNotified];
+    flush();
+    [bridge getSnapshot:resolve rejecter:reject];
+    CHECK([result[@"trialNotified"] boolValue]);
+    NSUInteger lastSequence = 0;
+    for (NSDictionary *event in bridge.testEvents) {
+      CHECK([event[@"sequence"] unsignedIntegerValue] > lastSequence);
+      lastSequence = [event[@"sequence"] unsignedIntegerValue];
+    }
+    NSData *json = [NSJSONSerialization dataWithJSONObject:bridge.testEvents options:0 error:nil];
+    NSString *text = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    CHECK(![text containsString:@"test-only-secret"] && ![text containsString:@"sensitive text"] && ![text containsString:@"password"]);
+    [bridge invalidate];
+    flush();
+    CHECK(!P11SiprixRuntime.shared.initialized && !P11SiprixRuntime.shared.lease);
+    initCode = -12;
+    [bridge initialize:@{} resolver:resolve rejecter:reject];
+    CHECK([error isEqualToString:@"E_SIPRIX_-12"] && !P11SiprixRuntime.shared.quarantined);
+    initCode = 0;
+    for (NSString *version in @[@"1.0.41", @"1.0.400", @"invalid", @"", @"   ", @"1.0.40garbage",
+        @"1.0.40 from 20260621_1419", @"siprix 1.0.40 from 20260620_1419 extra",
+        @"siprix 1.0.41 from 20260620_1419", @"siprix 1.0.40"]) {
+      mockVersion = version;
+      [bridge initialize:@{} resolver:resolve rejecter:reject];
+      CHECK([error isEqualToString:@"E_SDK_VERSION"] && !P11SiprixRuntime.shared.sdk);
+    }
+    for (NSString *version in @[@"1.0.40", @"1.0.40 from 20260620_1419",
+        @" 1.0.40 from 20260620_1419", @" \tsiprix 1.0.40 from 20260620_1419\n",
+        @"siprix 1.0.40 from 20260620_1419"]) {
+      mockVersion = version;
+      [bridge initialize:@{} resolver:resolve rejecter:reject];
+      CHECK(!error && [result[@"initialized"] boolValue]);
+      CHECK([result[@"sdkVersion"] isEqualToString:version]);
+      [bridge getSnapshot:resolve rejecter:reject];
+      CHECK(!error && [result[@"sdkVersion"] isEqualToString:version]);
+      [bridge destroy:resolve rejecter:reject];
+      CHECK(!error && !P11SiprixRuntime.shared.sdk);
+    }
+    int count = shutdowns;
+    [bridge destroy:resolve rejecter:reject];
+    CHECK(!error && shutdowns == count);
+    CHECK([P11StatusCode(@"SIP/2.0 401 Unauthorized\r\nAuthorization: private") intValue] == 401);
+    CHECK([P11StatusCode(@"408 Request Timeout") intValue] == 408);
+    CHECK(P11StatusCode(@"private password 401") == nil);
+    CHECK([P11StatusCode(@"401 Unauthorized; private") intValue] == 401);
+    CHECK(P11StatusCode(@"4011 private") == nil);
+    CHECK(P11StatusCode(@"099 private") == nil);
+    CHECK(P11StatusCode(@"４０１ private") == nil);
+    CHECK(P11StatusCode(@"SIP/2.0 4011") == nil);
+    CHECK(P11StatusCode(@"SIP/2.0 999 Bad") == nil);
+    printf("PASS: %d native bridge assertions (mock SDK; no iOS runtime or SIP traffic)\n", assertions);
+  }
+  return 0;
+}

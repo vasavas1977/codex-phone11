@@ -1,0 +1,87 @@
+name: Phone11 EAS iOS auth realm v71
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-eas-ios-auth-realm-v71.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-preview-build:
+    name: Queue iOS preview build with auth realm patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Require EXPO_TOKEN secret
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "V71_ERROR=Missing EXPO_TOKEN repository secret."
+            exit 1
+          fi
+          echo "V71_EXPO_TOKEN=present"
+
+      - name: Checkout patched branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Prove build source and auth realm patch
+        run: |
+          set -euo pipefail
+          echo "V71_BUILD_SOURCE_COMMIT=$(git rev-parse HEAD)"
+          git log -1 --oneline
+          echo "V71_REGSERVER_LINES"
+          grep -n "regServer:" lib/sip/engine.ts
+          if ! grep -Fq "regServer: null," lib/sip/engine.ts; then
+            echo "V71_ERROR=Patched regServer null line is missing. Refusing to queue iOS build."
+            exit 1
+          fi
+          if grep -Fq "regServer: registrationServer," lib/sip/engine.ts; then
+            echo "V71_ERROR=Old full registrar regServer line is still present. Refusing to queue iOS build."
+            exit 1
+          fi
+          echo "V71_AUTH_REALM_PATCH=present"
+          echo "V71_REASON=iOS react-native-pjsip uses config.regServer as digest credential realm when non-empty; null lets native use wildcard realm."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.10.0 --activate
+          pnpm --version
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Expo config
+        run: pnpm exec expo config --type public
+
+      - name: Confirm EAS account
+        run: eas whoami
+
+      - name: Queue iOS preview build
+        run: |
+          set -euo pipefail
+          eas build --platform ios --profile preview-ios-existing-credentials --non-interactive --no-wait
+          echo "V71_IOS_BUILD=queued"

@@ -1,0 +1,98 @@
+name: Phone11 Live Runtime Environment Probe
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-runtime-env-probe.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  probe:
+    name: Find live env files and DB variable names
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 31
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_runtime_probe_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://$HOME/.ssh/phone11_runtime_probe_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Probe runtime env and compose source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ steps.ec2.outputs.ec2_host }}"
+          ssh -i ~/.ssh/phone11_runtime_probe_key \
+            -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=20 \
+            "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "===== containers ====="
+          docker ps --format 'container={{.Names}} image={{.Image}} status={{.Status}}'
+          echo "===== inspect compose labels and mounts ====="
+          for c in p11-kamailio cp11-backend; do
+            echo "--- $c labels ---"
+            docker inspect "$c" --format 'compose_project={{ index .Config.Labels "com.docker.compose.project" }} compose_file={{ index .Config.Labels "com.docker.compose.project.config_files" }} compose_service={{ index .Config.Labels "com.docker.compose.service" }} working_dir={{ index .Config.Labels "com.docker.compose.project.working_dir" }}' || true
+            echo "--- $c mounts ---"
+            docker inspect "$c" --format '{{range .Mounts}}mount={{.Source}} -> {{.Destination}} type={{.Type}}{{println}}{{end}}' || true
+            echo "--- $c env keys and safe hashes ---"
+            docker exec "$c" sh -lc 'env | sort | while IFS= read -r line; do key=${line%%=*}; val=${line#*=}; case "$key" in *PASS*|*PASSWORD*|*SECRET*|*TOKEN*|*KEY*) printf "%s_sha256=%s\n" "$key" "$(printf %s "$val" | sha256sum | awk "{print \\$1}")";; *URL*|*URI*) printf "%s_present=yes length=%s\n" "$key" "${#val}";; DB_*|PG*|POSTGRES*|DATABASE*|SIP*|KAMAILIO*|NODE_ENV|PORT) printf "%s=%s\n" "$key" "$val" | sed -E "s#(postgres://)[^:@/]+:[^@]+@#\\1<redacted>:<redacted>@#g; s#(postgresql://)[^:@/]+:[^@]+@#\\1<redacted>:<redacted>@#g";; esac; done' || true
+          done
+          echo "===== candidate env and compose files ====="
+          for path in \
+            /opt/phone11ai/codex-phone11-deploy/.env \
+            /opt/phone11ai/codex-phone11-deploy/docker-compose.yml \
+            /opt/phone11ai/codex-phone11-deploy/infra/compose/.env \
+            /opt/phone11ai/codex-phone11-deploy/infra/compose/docker-compose.yml \
+            /opt/phone11ai/cloudphone11/.env \
+            /opt/phone11ai/cloudphone11/docker-compose.yml \
+            /opt/phone11ai/cloudphone11/infra/compose/.env \
+            /opt/phone11ai/cloudphone11/infra/compose/docker-compose.yml \
+            /opt/phone11ai/phone11ai/deploy/backend/.env \
+            /opt/phone11ai/phone11ai/deploy/backend/docker-compose.yml; do
+            if [ -f "$path" ]; then
+              echo "file=$path"
+              awk -F= '/^(DB_|PG_|POSTGRES_|DATABASE_|SIP_|KAMAILIO_|NODE_ENV|PORT)/ { k=$1; v=$2; if (k ~ /(PASS|PASSWORD|SECRET|TOKEN|KEY)/) print k"_present=yes"; else print k"="v }' "$path" \
+                | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g; s#(postgresql://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' || true
+            fi
+          done
+          REMOTE

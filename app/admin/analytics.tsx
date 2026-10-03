@@ -1,573 +1,264 @@
 /**
- * Call Analytics Dashboard — AI-Powered Insights
- *
- * Aggregated call analytics with sentiment trends, topic frequency,
- * call volume charts, speaker stats, action item summaries, and
- * hourly/direction distributions. Replaces the old CDR-only dashboard.
+ * Tenant-admin call reporting. This displays persisted CDR aggregates; it is
+ * not a statement about PBX health, real-time activity, or CDR completeness.
  */
-
-import { useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
-  ScrollView,
-  Text,
-  View,
-  TouchableOpacity,
-  StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+  useWindowDimensions,
 } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { IconSymbol } from "@/components/ui/icon-symbol";
+import {
+  type PbxAnalyticsPeriod,
+  usePbxCallAnalytics,
+} from "@/hooks/use-pbx-admin";
 import { useColors } from "@/hooks/use-colors";
-import { useAnalyticsStore } from "@/lib/analytics/store";
-import type { AnalyticsTimeRange } from "@/lib/analytics/types";
+import { normalizeCallAnalytics } from "@/lib/pbx/call-analytics";
 
-const TIME_RANGES: { key: AnalyticsTimeRange; label: string }[] = [
-  { key: "today", label: "Today" },
-  { key: "7d", label: "7 Days" },
-  { key: "30d", label: "30 Days" },
-  { key: "90d", label: "90 Days" },
-  { key: "all", label: "All" },
+const PERIODS: { value: PbxAnalyticsPeriod; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "week", label: "7 days" },
+  { value: "month", label: "30 days" },
 ];
 
-const SENTIMENT_COLORS = {
-  positive: "#22C55E",
-  neutral: "#6B7280",
-  negative: "#EF4444",
-  mixed: "#F59E0B",
-};
-
-function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
+function formatDuration(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
-export default function AnalyticsDashboard() {
+function formatHour(hour: number) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function NumberRanking({
+  title,
+  entries,
+  colors,
+}: {
+  title: string;
+  entries: { number: string; calls: number; totalSeconds: number }[];
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={[styles.ranking, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <Text style={[styles.cardTitle, { color: colors.foreground }]}>{title}</Text>
+      {entries.length === 0 ? (
+        <Text style={[styles.emptyText, { color: colors.muted }]}>No recorded calls in this period.</Text>
+      ) : (
+        entries.map((entry, index) => (
+          <View
+            key={`${entry.number}-${index}`}
+            style={[styles.rankingRow, index > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }]}
+            accessible
+            accessibilityLabel={`${title}, ${entry.number}, ${entry.calls} calls, ${formatDuration(entry.totalSeconds)} total duration`}
+          >
+            <Text style={[styles.rank, { color: colors.muted }]}>{index + 1}</Text>
+            <Text numberOfLines={1} style={[styles.number, { color: colors.foreground }]}>{entry.number}</Text>
+            <View style={styles.rankingMetric}>
+              <Text style={[styles.rankingValue, { color: colors.foreground }]}>{entry.calls}</Text>
+              <Text style={[styles.rankingLabel, { color: colors.muted }]}>calls · {formatDuration(entry.totalSeconds)}</Text>
+            </View>
+          </View>
+        ))
+      )}
+    </View>
+  );
+}
+
+export default function CallAnalyticsScreen() {
+  return (
+    <AdminWorkspaceBoundary requiresImplicitTenant>
+      <CallAnalyticsScreenContent />
+    </AdminWorkspaceBoundary>
+  );
+}
+
+function CallAnalyticsScreenContent() {
   const colors = useColors();
-  const { dashboard, timeRange, isLoading, setTimeRange, fetchDashboard, refresh } =
-    useAnalyticsStore();
+  const { width } = useWindowDimensions();
+  const wide = width >= 900;
+  const [period, setPeriod] = useState<PbxAnalyticsPeriod>("today");
   const [refreshing, setRefreshing] = useState(false);
+  const analyticsQuery = usePbxCallAnalytics(period);
+  const analytics = useMemo(
+    () => normalizeCallAnalytics(analyticsQuery.data),
+    [analyticsQuery.data],
+  );
 
-  useEffect(() => {
-    fetchDashboard();
-  }, []);
-
-  const handleRefresh = async () => {
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await refresh();
-    setRefreshing(false);
-  };
+    try {
+      await analyticsQuery.refetch();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [analyticsQuery]);
+
+  const summaryCards = [
+    { label: "Total calls", value: analytics.summary.totalCalls, color: "#0057FF" },
+    { label: "Answered", value: analytics.summary.answered, color: "#00A878" },
+    { label: "Missed", value: analytics.summary.missed, color: "#E5484D" },
+    { label: "Average duration", value: formatDuration(analytics.summary.averageDurationSeconds), color: "#F59E0B" },
+  ];
 
   return (
     <ScreenContainer>
       <ScrollView
+        contentContainerStyle={[styles.content, { paddingHorizontal: wide ? 24 : 16 }]}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.primary} />}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />
-        }
       >
-        {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <TouchableOpacity
+            accessibilityLabel="Back to admin portal"
+            accessibilityRole="button"
+            onPress={() => router.back()}
+            style={styles.backButton}
+          >
             <IconSymbol name="chevron.left" size={22} color={colors.primary} />
           </TouchableOpacity>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.title, { color: colors.foreground }]}>Call Analytics</Text>
-            <Text style={[styles.subtitle, { color: colors.muted }]}>
-              AI-Powered Insights · Recording Analysis
-            </Text>
+          <View style={styles.headerCopy}>
+            <Text style={[styles.title, { color: colors.foreground }]}>Call analytics</Text>
+            <Text style={[styles.subtitle, { color: colors.muted }]}>Recorded call data for the selected period</Text>
           </View>
-          <TouchableOpacity onPress={handleRefresh} style={styles.refreshBtn}>
-            <IconSymbol name="arrow.clockwise" size={18} color={colors.primary} />
-          </TouchableOpacity>
         </View>
 
-        {/* Time Range Selector */}
-        <View style={styles.timeSelector}>
-          {TIME_RANGES.map((t) => (
-            <TouchableOpacity
-              key={t.key}
-              style={[styles.timeChip, timeRange === t.key && { backgroundColor: colors.primary }]}
-              onPress={() => setTimeRange(t.key)}
-            >
-              <Text style={[styles.timeText, { color: timeRange === t.key ? "#fff" : colors.muted }]}>
-                {t.label}
-              </Text>
+        <View accessibilityRole="tablist" style={styles.periods}>
+          {PERIODS.map((option) => {
+            const selected = option.value === period;
+            return (
+              <TouchableOpacity
+                key={option.value}
+                accessibilityRole="tab"
+                accessibilityState={{ selected }}
+                accessibilityLabel={`${option.label} call analytics`}
+                onPress={() => setPeriod(option.value)}
+                style={[
+                  styles.periodButton,
+                  { borderColor: selected ? colors.primary : colors.border, backgroundColor: selected ? colors.primary : colors.surface },
+                ]}
+              >
+                <Text style={[styles.periodLabel, { color: selected ? "#FFFFFF" : colors.foreground }]}>{option.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {analyticsQuery.isLoading ? (
+          <View style={styles.loadingState}>
+            <ActivityIndicator color={colors.primary} />
+            <Text style={[styles.stateText, { color: colors.muted }]}>Loading call analytics…</Text>
+          </View>
+        ) : analyticsQuery.isError ? (
+          <View style={[styles.stateCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Text accessibilityRole="alert" style={[styles.stateText, { color: colors.muted }]}>Call analytics could not be loaded.</Text>
+            <TouchableOpacity accessibilityRole="button" onPress={() => void analyticsQuery.refetch()} style={styles.retryButton}>
+              <Text style={{ color: colors.primary }}>Try again</Text>
             </TouchableOpacity>
-          ))}
-        </View>
-
-        {/* Loading State */}
-        {isLoading && !dashboard && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.primary} />
-            <Text style={[styles.loadingText, { color: colors.muted }]}>Computing analytics...</Text>
           </View>
-        )}
-
-        {dashboard && (
+        ) : (
           <>
-            {/* ═══════════════════════════════════════ */}
-            {/* METRICS GRID                           */}
-            {/* ═══════════════════════════════════════ */}
-            <View style={styles.metricsGrid}>
-              {dashboard.metrics.map((m, i) => {
-                const changeColor = (m.change > 0 && m.increaseIsGood) || (m.change < 0 && !m.increaseIsGood)
-                  ? "#22C55E"
-                  : m.change === 0
-                  ? colors.muted
-                  : "#EF4444";
-                const changeText = m.change > 0 ? `+${Math.round(m.change * 100)}%` : `${Math.round(m.change * 100)}%`;
-                return (
-                  <View key={i} style={[styles.metricCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    <View style={[styles.metricDot, { backgroundColor: m.color }]} />
-                    <Text style={[styles.metricValue, { color: colors.foreground }]}>{m.displayValue}</Text>
-                    <Text style={[styles.metricLabel, { color: colors.muted }]}>{m.label}</Text>
-                    <Text style={[styles.metricChange, { color: changeColor }]}>{changeText}</Text>
-                  </View>
-                );
-              })}
-            </View>
-
-            {/* ═══════════════════════════════════════ */}
-            {/* CALL VOLUME CHART                      */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>CALL VOLUME</Text>
-            <View style={[styles.chartContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {(() => {
-                const maxVal = Math.max(...dashboard.callVolume.map((p) => p.value), 1);
-                return dashboard.callVolume.map((p, i) => (
-                  <View key={i} style={styles.chartRow}>
-                    <Text style={[styles.chartLabel, { color: colors.muted }]}>{p.label}</Text>
-                    <View style={styles.chartBarBg}>
-                      <View
-                        style={[
-                          styles.chartBar,
-                          {
-                            width: `${(p.value / maxVal) * 100}%`,
-                            backgroundColor: colors.primary,
-                          },
-                        ]}
-                      />
-                    </View>
-                    <Text style={[styles.chartValue, { color: colors.foreground }]}>{p.value}</Text>
-                  </View>
-                ));
-              })()}
-            </View>
-
-            {/* ═══════════════════════════════════════ */}
-            {/* SENTIMENT TREND                        */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>SENTIMENT TREND</Text>
-            <View style={[styles.chartContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {dashboard.sentimentTrend.map((p, i) => {
-                const barWidth = Math.abs(p.value) * 100;
-                const isPositive = p.value >= 0;
-                return (
-                  <View key={i} style={styles.chartRow}>
-                    <Text style={[styles.chartLabel, { color: colors.muted }]}>{p.label}</Text>
-                    <View style={styles.chartBarBg}>
-                      <View
-                        style={[
-                          styles.chartBar,
-                          {
-                            width: `${Math.min(barWidth, 100)}%`,
-                            backgroundColor: isPositive ? "#22C55E" : "#EF4444",
-                          },
-                        ]}
-                      />
-                    </View>
-                    <Text style={[styles.chartValue, { color: isPositive ? "#22C55E" : "#EF4444" }]}>
-                      {p.value > 0 ? "+" : ""}{p.value.toFixed(2)}
-                    </Text>
-                  </View>
-                );
-              })}
-            </View>
-
-            {/* ═══════════════════════════════════════ */}
-            {/* SENTIMENT DISTRIBUTION                 */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>SENTIMENT DISTRIBUTION</Text>
-            <View style={[styles.distContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {/* Stacked bar */}
-              <View style={styles.stackedBar}>
-                {(["positive", "neutral", "negative", "mixed"] as const).map((key) => {
-                  const val = dashboard.sentimentDistribution[key];
-                  return (
-                    <View
-                      key={key}
-                      style={[
-                        styles.stackedSegment,
-                        {
-                          width: `${val}%`,
-                          backgroundColor: SENTIMENT_COLORS[key],
-                        },
-                      ]}
-                    />
-                  );
-                })}
-              </View>
-              <View style={styles.distLegend}>
-                {(["positive", "neutral", "negative", "mixed"] as const).map((key) => (
-                  <View key={key} style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: SENTIMENT_COLORS[key] }]} />
-                    <Text style={[styles.legendText, { color: colors.foreground }]}>
-                      {key.charAt(0).toUpperCase() + key.slice(1)}
-                    </Text>
-                    <Text style={[styles.legendPct, { color: colors.muted }]}>
-                      {dashboard.sentimentDistribution[key]}%
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            {/* ═══════════════════════════════════════ */}
-            {/* TOP TOPICS                             */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>TOP TOPICS</Text>
-            <View style={[styles.topicsContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {dashboard.topTopics.map((topic, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.topicRow,
-                    i < dashboard.topTopics.length - 1 && { borderBottomWidth: 0.5, borderBottomColor: colors.border },
-                  ]}
-                >
-                  <View style={styles.topicInfo}>
-                    <Text style={[styles.topicRank, { color: colors.muted }]}>#{i + 1}</Text>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.topicName, { color: colors.foreground }]}>{topic.topic}</Text>
-                      <View style={styles.topicMeta}>
-                        <Text style={[styles.topicCount, { color: colors.muted }]}>{topic.count} calls</Text>
-                        <View style={[styles.topicSentimentDot, {
-                          backgroundColor: topic.avgSentiment > 0.1 ? "#22C55E" : topic.avgSentiment < -0.1 ? "#EF4444" : "#6B7280",
-                        }]} />
-                        <Text style={[styles.topicSentiment, {
-                          color: topic.avgSentiment > 0.1 ? "#22C55E" : topic.avgSentiment < -0.1 ? "#EF4444" : "#6B7280",
-                        }]}>
-                          {topic.avgSentiment > 0 ? "+" : ""}{topic.avgSentiment.toFixed(1)}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                  <View style={styles.topicBarContainer}>
-                    <View style={[styles.topicBarBg, { backgroundColor: colors.border }]}>
-                      <View style={[styles.topicBarFill, { width: `${topic.percentage}%`, backgroundColor: colors.primary }]} />
-                    </View>
-                    <Text style={[styles.topicPct, { color: colors.muted }]}>{topic.percentage}%</Text>
-                  </View>
+            <View style={styles.summaryGrid}>
+              {summaryCards.map((card) => (
+                <View key={card.label} style={[styles.summaryCard, wide && styles.summaryCardWide, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <Text style={[styles.summaryValue, { color: card.color }]}>{card.value}</Text>
+                  <Text style={[styles.summaryLabel, { color: colors.muted }]}>{card.label}</Text>
                 </View>
               ))}
             </View>
 
-            {/* ═══════════════════════════════════════ */}
-            {/* ACTION ITEMS SUMMARY                   */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>ACTION ITEMS</Text>
-            <View style={[styles.actionSummary, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.actionRow}>
-                <View style={styles.actionStat}>
-                  <Text style={[styles.actionStatValue, { color: colors.foreground }]}>
-                    {dashboard.actionItemSummary.total}
-                  </Text>
-                  <Text style={[styles.actionStatLabel, { color: colors.muted }]}>Total</Text>
-                </View>
-                <View style={styles.actionStat}>
-                  <Text style={[styles.actionStatValue, { color: "#22C55E" }]}>
-                    {dashboard.actionItemSummary.completed}
-                  </Text>
-                  <Text style={[styles.actionStatLabel, { color: colors.muted }]}>Done</Text>
-                </View>
-                <View style={styles.actionStat}>
-                  <Text style={[styles.actionStatValue, { color: "#F59E0B" }]}>
-                    {dashboard.actionItemSummary.pending}
-                  </Text>
-                  <Text style={[styles.actionStatLabel, { color: colors.muted }]}>Pending</Text>
-                </View>
+            {analytics.summary.totalCalls === 0 ? (
+              <View style={[styles.stateCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <Text style={[styles.stateText, { color: colors.muted }]}>No recorded calls for this period.</Text>
               </View>
-              {/* Completion bar */}
-              <View style={styles.completionBar}>
-                <View style={[styles.completionBarBg, { backgroundColor: colors.border }]}>
-                  <View
-                    style={[
-                      styles.completionBarFill,
-                      {
-                        width: `${dashboard.actionItemSummary.total > 0
-                          ? Math.round((dashboard.actionItemSummary.completed / dashboard.actionItemSummary.total) * 100)
-                          : 0}%`,
-                        backgroundColor: "#22C55E",
-                      },
-                    ]}
-                  />
-                </View>
-                <Text style={[styles.completionPct, { color: colors.muted }]}>
-                  {dashboard.actionItemSummary.total > 0
-                    ? Math.round((dashboard.actionItemSummary.completed / dashboard.actionItemSummary.total) * 100)
-                    : 0}% complete
-                </Text>
-              </View>
-              {/* Urgency breakdown */}
-              <View style={styles.urgencyRow}>
-                <View style={[styles.urgencyChip, { backgroundColor: "#EF444415" }]}>
-                  <Text style={[styles.urgencyChipText, { color: "#EF4444" }]}>
-                    {dashboard.actionItemSummary.highUrgency} High
-                  </Text>
-                </View>
-                <View style={[styles.urgencyChip, { backgroundColor: "#F59E0B15" }]}>
-                  <Text style={[styles.urgencyChipText, { color: "#F59E0B" }]}>
-                    {dashboard.actionItemSummary.mediumUrgency} Med
-                  </Text>
-                </View>
-                <View style={[styles.urgencyChip, { backgroundColor: "#22C55E15" }]}>
-                  <Text style={[styles.urgencyChipText, { color: "#22C55E" }]}>
-                    {dashboard.actionItemSummary.lowUrgency} Low
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            {/* ═══════════════════════════════════════ */}
-            {/* TOP SPEAKERS                           */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>TOP SPEAKERS</Text>
-            <View style={[styles.speakersContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {dashboard.topSpeakers.map((sp, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.speakerRow,
-                    i < dashboard.topSpeakers.length - 1 && { borderBottomWidth: 0.5, borderBottomColor: colors.border },
-                  ]}
-                >
-                  <View style={[styles.speakerAvatar, { backgroundColor: colors.primary + "20" }]}>
-                    <Text style={[styles.speakerAvatarText, { color: colors.primary }]}>
-                      {sp.name.charAt(0)}
-                    </Text>
+            ) : (
+              <>
+                <View style={[styles.distribution, { backgroundColor: colors.surface, borderColor: colors.border }]} accessible accessibilityLabel="Hourly call distribution">
+                  <Text style={[styles.cardTitle, { color: colors.foreground }]}>Hourly distribution</Text>
+                  <View style={[styles.hourHeader, { borderBottomColor: colors.border }]} accessible={false}>
+                    <Text style={[styles.hourHeading, { color: colors.muted }]}>HOUR</Text>
+                    <Text style={[styles.hourHeading, styles.callsColumn, { color: colors.muted }]}>CALLS</Text>
+                    <Text style={[styles.hourHeading, styles.callsColumn, { color: colors.muted }]}>ANSWERED</Text>
                   </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.speakerName, { color: colors.foreground }]}>{sp.name}</Text>
-                    <View style={styles.speakerMeta}>
-                      <Text style={[styles.speakerMetaText, { color: colors.muted }]}>
-                        {sp.totalCalls} calls
-                      </Text>
-                      <Text style={[styles.speakerMetaText, { color: colors.muted }]}>
-                        {formatDuration(sp.totalDuration)}
-                      </Text>
-                      <Text style={[styles.speakerMetaText, {
-                        color: sp.avgSentiment > 0.1 ? "#22C55E" : sp.avgSentiment < -0.1 ? "#EF4444" : colors.muted,
-                      }]}>
-                        {sp.avgSentiment > 0 ? "+" : ""}{sp.avgSentiment.toFixed(2)}
-                      </Text>
-                    </View>
-                  </View>
-                  <View style={styles.speakerTalkPct}>
-                    <Text style={[styles.speakerTalkPctValue, { color: colors.foreground }]}>
-                      {sp.avgTalkPercentage}%
-                    </Text>
-                    <Text style={[styles.speakerTalkPctLabel, { color: colors.muted }]}>talk</Text>
-                  </View>
-                </View>
-              ))}
-            </View>
-
-            {/* ═══════════════════════════════════════ */}
-            {/* DIRECTION DISTRIBUTION                 */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>CALL DIRECTION</Text>
-            <View style={[styles.distContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <View style={styles.stackedBar}>
-                <View style={[styles.stackedSegment, { width: `${dashboard.directionDistribution.inbound}%`, backgroundColor: "#0A7EA4" }]} />
-                <View style={[styles.stackedSegment, { width: `${dashboard.directionDistribution.outbound}%`, backgroundColor: "#8B5CF6" }]} />
-                <View style={[styles.stackedSegment, { width: `${dashboard.directionDistribution.conference}%`, backgroundColor: "#F59E0B" }]} />
-              </View>
-              <View style={styles.distLegend}>
-                {[
-                  { label: "Inbound", value: dashboard.directionDistribution.inbound, color: "#0A7EA4" },
-                  { label: "Outbound", value: dashboard.directionDistribution.outbound, color: "#8B5CF6" },
-                  { label: "Conference", value: dashboard.directionDistribution.conference, color: "#F59E0B" },
-                ].map((d, i) => (
-                  <View key={i} style={styles.legendItem}>
-                    <View style={[styles.legendDot, { backgroundColor: d.color }]} />
-                    <Text style={[styles.legendText, { color: colors.foreground }]}>{d.label}</Text>
-                    <Text style={[styles.legendPct, { color: colors.muted }]}>{d.value}%</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            {/* ═══════════════════════════════════════ */}
-            {/* HOURLY DISTRIBUTION                    */}
-            {/* ═══════════════════════════════════════ */}
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>HOURLY DISTRIBUTION</Text>
-            <View style={[styles.chartContainer, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              {(() => {
-                const maxH = Math.max(...dashboard.hourlyDistribution.map((h) => h.count), 1);
-                // Show only business-relevant hours (6AM-10PM)
-                const filtered = dashboard.hourlyDistribution.filter((h) => h.hour >= 6 && h.hour <= 22);
-                return filtered.map((h, i) => {
-                  const isPeak = h.count >= maxH * 0.7;
-                  return (
-                    <View key={i} style={styles.chartRow}>
-                      <Text style={[styles.chartLabel, { color: colors.muted }]}>
-                        {h.hour.toString().padStart(2, "0")}:00
-                      </Text>
-                      <View style={styles.chartBarBg}>
-                        <View
-                          style={[
-                            styles.chartBar,
-                            {
-                              width: `${(h.count / maxH) * 100}%`,
-                              backgroundColor: isPeak ? colors.primary : colors.primary + "50",
-                            },
-                          ]}
-                        />
+                  {analytics.hourlyDistribution.length === 0 ? (
+                    <Text style={[styles.emptyText, { color: colors.muted }]}>No hourly distribution is available for these records.</Text>
+                  ) : (
+                    analytics.hourlyDistribution.map((row) => (
+                      <View
+                        key={row.hour}
+                        style={[styles.hourRow, { borderBottomColor: colors.border }]}
+                        accessible
+                        accessibilityLabel={`${formatHour(row.hour)}, ${row.calls} calls, ${row.answered} answered`}
+                      >
+                        <Text style={[styles.hourValue, { color: colors.foreground }]}>{formatHour(row.hour)}</Text>
+                        <Text style={[styles.hourValue, styles.callsColumn, { color: colors.foreground }]}>{row.calls}</Text>
+                        <Text style={[styles.hourValue, styles.callsColumn, { color: colors.foreground }]}>{row.answered}</Text>
                       </View>
-                      <Text style={[styles.chartValue, { color: isPeak ? colors.foreground : colors.muted }]}>
-                        {h.count}
-                      </Text>
-                    </View>
-                  );
-                });
-              })()}
-            </View>
+                    ))
+                  )}
+                </View>
+
+                <View style={[styles.rankings, wide && styles.rankingsWide]}>
+                  <NumberRanking title="Top callers" entries={analytics.topCallers} colors={colors} />
+                  <NumberRanking title="Top destinations" entries={analytics.topDestinations} colors={colors} />
+                </View>
+              </>
+            )}
           </>
         )}
 
-        <View style={{ height: 40 }} />
+        <Text style={[styles.note, { color: colors.muted }]}>This report is based on available call detail records and may update after call processing.</Text>
+        <View style={{ height: 32 }} />
       </ScrollView>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 0.5,
-    gap: 12,
-  },
-  backBtn: { padding: 4 },
-  title: { fontSize: 20, fontWeight: "700" },
-  subtitle: { fontSize: 12, marginTop: 2 },
-  refreshBtn: { padding: 8 },
-  timeSelector: { flexDirection: "row", paddingHorizontal: 16, marginTop: 12, gap: 6 },
-  timeChip: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 10,
-    alignItems: "center",
-    backgroundColor: "rgba(128,128,128,0.1)",
-  },
-  timeText: { fontSize: 12, fontWeight: "600" },
-  loadingContainer: { alignItems: "center", justifyContent: "center", paddingVertical: 60, gap: 12 },
-  loadingText: { fontSize: 14 },
-
-  // Metrics Grid
-  metricsGrid: { flexDirection: "row", flexWrap: "wrap", padding: 12, gap: 8 },
-  metricCard: {
-    width: "48%",
-    flexGrow: 1,
-    flexBasis: "46%",
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 0.5,
-  },
-  metricDot: { width: 6, height: 6, borderRadius: 3, marginBottom: 8 },
-  metricValue: { fontSize: 22, fontWeight: "700" },
-  metricLabel: { fontSize: 12, fontWeight: "600", marginTop: 2 },
-  metricChange: { fontSize: 12, fontWeight: "600", marginTop: 4 },
-
-  // Section Title
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: "600",
-    letterSpacing: 0.5,
-    paddingHorizontal: 20,
-    marginTop: 20,
-    marginBottom: 8,
-  },
-
-  // Chart Container (bar charts)
-  chartContainer: { marginHorizontal: 16, borderRadius: 14, borderWidth: 0.5, padding: 12 },
-  chartRow: { flexDirection: "row", alignItems: "center", marginVertical: 3, gap: 8 },
-  chartLabel: { width: 40, fontSize: 10, textAlign: "right" },
-  chartBarBg: {
-    flex: 1,
-    height: 14,
-    borderRadius: 4,
-    backgroundColor: "rgba(128,128,128,0.1)",
-  },
-  chartBar: { height: 14, borderRadius: 4 },
-  chartValue: { width: 40, fontSize: 11, fontWeight: "600", textAlign: "right" },
-
-  // Distribution (stacked bar + legend)
-  distContainer: { marginHorizontal: 16, borderRadius: 14, borderWidth: 0.5, padding: 14, gap: 12 },
-  stackedBar: {
-    flexDirection: "row",
-    height: 16,
-    borderRadius: 8,
-    overflow: "hidden",
-  },
-  stackedSegment: { height: 16 },
-  distLegend: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },
-  legendDot: { width: 8, height: 8, borderRadius: 4 },
-  legendText: { fontSize: 12 },
-  legendPct: { fontSize: 12, fontWeight: "600" },
-
-  // Topics
-  topicsContainer: { marginHorizontal: 16, borderRadius: 14, borderWidth: 0.5, overflow: "hidden" },
-  topicRow: { padding: 14, gap: 8 },
-  topicInfo: { flexDirection: "row", alignItems: "center", gap: 10 },
-  topicRank: { fontSize: 12, fontWeight: "700", width: 24 },
-  topicName: { fontSize: 14, fontWeight: "600" },
-  topicMeta: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 2 },
-  topicCount: { fontSize: 12 },
-  topicSentimentDot: { width: 6, height: 6, borderRadius: 3 },
-  topicSentiment: { fontSize: 12, fontWeight: "600" },
-  topicBarContainer: { flexDirection: "row", alignItems: "center", gap: 8 },
-  topicBarBg: { flex: 1, height: 6, borderRadius: 3, overflow: "hidden" },
-  topicBarFill: { height: 6, borderRadius: 3 },
-  topicPct: { fontSize: 12, fontWeight: "600", width: 32, textAlign: "right" },
-
-  // Action Items Summary
-  actionSummary: { marginHorizontal: 16, borderRadius: 14, borderWidth: 0.5, padding: 16, gap: 12 },
-  actionRow: { flexDirection: "row", justifyContent: "space-around" },
-  actionStat: { alignItems: "center", gap: 2 },
-  actionStatValue: { fontSize: 24, fontWeight: "700" },
-  actionStatLabel: { fontSize: 12 },
-  completionBar: { gap: 4 },
-  completionBarBg: { height: 8, borderRadius: 4, overflow: "hidden" },
-  completionBarFill: { height: 8, borderRadius: 4 },
-  completionPct: { fontSize: 11, textAlign: "center" },
-  urgencyRow: { flexDirection: "row", justifyContent: "center", gap: 8 },
-  urgencyChip: { paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 },
-  urgencyChipText: { fontSize: 12, fontWeight: "600" },
-
-  // Speakers
-  speakersContainer: { marginHorizontal: 16, borderRadius: 14, borderWidth: 0.5, overflow: "hidden" },
-  speakerRow: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
-  speakerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  speakerAvatarText: { fontSize: 16, fontWeight: "700" },
-  speakerName: { fontSize: 14, fontWeight: "600" },
-  speakerMeta: { flexDirection: "row", gap: 10, marginTop: 2 },
-  speakerMetaText: { fontSize: 12 },
-  speakerTalkPct: { alignItems: "center" },
-  speakerTalkPctValue: { fontSize: 16, fontWeight: "700" },
-  speakerTalkPctLabel: { fontSize: 10 },
+  content: { width: "100%", maxWidth: 1200, alignSelf: "center" },
+  header: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth },
+  backButton: { minHeight: 44, minWidth: 44, justifyContent: "center", alignItems: "center" },
+  headerCopy: { flex: 1 },
+  title: { fontSize: 22, fontWeight: "700" },
+  subtitle: { fontSize: 13, marginTop: 2 },
+  periods: { flexDirection: "row", gap: 8, paddingVertical: 16 },
+  periodButton: { minHeight: 44, paddingHorizontal: 16, justifyContent: "center", borderWidth: 1, borderRadius: 10 },
+  periodLabel: { fontSize: 14, fontWeight: "600" },
+  loadingState: { minHeight: 180, alignItems: "center", justifyContent: "center", gap: 10 },
+  stateCard: { padding: 20, borderRadius: 12, borderWidth: 1, alignItems: "center", gap: 8 },
+  stateText: { fontSize: 14, textAlign: "center" },
+  retryButton: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12 },
+  summaryGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 16 },
+  summaryCard: { width: "48%", flexGrow: 1, padding: 16, borderRadius: 12, borderWidth: 1 },
+  summaryCardWide: { width: "23%", flexBasis: "23%" },
+  summaryValue: { fontSize: 24, fontWeight: "700" },
+  summaryLabel: { fontSize: 13, marginTop: 5 },
+  distribution: { padding: 16, borderRadius: 12, borderWidth: 1 },
+  cardTitle: { fontSize: 16, fontWeight: "700", marginBottom: 12 },
+  hourHeader: { flexDirection: "row", paddingBottom: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  hourHeading: { flex: 1, fontSize: 11, fontWeight: "700", letterSpacing: 0.4 },
+  hourRow: { flexDirection: "row", minHeight: 44, alignItems: "center", borderBottomWidth: StyleSheet.hairlineWidth },
+  hourValue: { flex: 1, fontSize: 14 },
+  callsColumn: { textAlign: "right" },
+  rankings: { gap: 12, marginTop: 16 },
+  rankingsWide: { flexDirection: "row" },
+  ranking: { flex: 1, padding: 16, borderRadius: 12, borderWidth: 1 },
+  rankingRow: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 10 },
+  rank: { width: 18, fontSize: 13, fontWeight: "600" },
+  number: { flex: 1, fontSize: 14 },
+  rankingMetric: { alignItems: "flex-end" },
+  rankingValue: { fontSize: 15, fontWeight: "700" },
+  rankingLabel: { fontSize: 11, marginTop: 2 },
+  emptyText: { fontSize: 13, paddingVertical: 8 },
+  note: { fontSize: 12, lineHeight: 18, textAlign: "center", marginTop: 16, paddingHorizontal: 8 },
 });

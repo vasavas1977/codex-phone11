@@ -86,6 +86,7 @@ services:
     restart: always
     environment:
       FREESWITCH_DOMAIN: ${SIP_DOMAIN}
+      PHONE11_VOICEMAIL_HOOK_READY: ${PHONE11_VOICEMAIL_HOOK_READY:-false}
       EXTERNAL_RTP_IP: ${EXTERNAL_IP}
       EXTERNAL_SIP_IP: ${EXTERNAL_IP}
     ports:
@@ -212,6 +213,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      PHONE11_BUILD_SHA: ${PHONE11_BUILD_SHA:-unknown}
       DATABASE_URL: postgres://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}?sslmode=disable
       PG_HOST: postgres
       PG_PORT: 5432
@@ -221,12 +223,31 @@ services:
       PG_SSL: "false"
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       SIP_DOMAIN: ${SIP_DOMAIN}
-      FREESWITCH_ESL_HOST: freeswitch
+      # The all-in-one Compose layout resolves the service name. Production
+      # installations that keep FreeSWITCH on the host network must override
+      # this with the backend bridge gateway (for example, 172.18.0.1).
+      FREESWITCH_ESL_HOST: ${FREESWITCH_ESL_HOST:-freeswitch}
       FREESWITCH_ESL_PORT: 8021
       FREESWITCH_ESL_PASSWORD: ${FS_ESL_PASSWORD}
       FCM_API_KEY: ${FCM_API_KEY}
+      # Recording analysis and translation stay server-side. Keep the key in
+      # the private runtime .env; never put it in the mobile bundle.
+      PHONE11_RECORDING_AI_ENABLED: ${PHONE11_RECORDING_AI_ENABLED:-false}
+      PHONE11_RECORDING_GEMINI_MODEL: ${PHONE11_RECORDING_GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       JWT_SECRET: ${JWT_SECRET}
+      PHONE11_AUTH_SECRET: ${PHONE11_AUTH_SECRET:?Set a new Phone11 auth secret}
+      PHONE11_AUTH_BASE_URL: ${PHONE11_AUTH_BASE_URL:-https://api.phone11.ai}
+      PHONE11_AUTH_TRUSTED_ORIGINS: ${PHONE11_AUTH_TRUSTED_ORIGINS:-}
+      PHONE11_TRUSTED_PROXY_CIDRS: ${PHONE11_TRUSTED_PROXY_CIDRS:?Set exact trusted reverse-proxy addresses}
+      # Server-only JSON mapping. Empty preserves unavailable meeting capability.
+      PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS: ${PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS:-}
       STORAGE_BUCKET: ${STORAGE_BUCKET}
+      PHONE11_CHAT_MEDIA_PATH: /var/lib/phone11/chat-media
+      PHONE11_CHAT_AI_ENABLED: ${PHONE11_CHAT_AI_ENABLED:-false}
+      PHONE11_CHAT_GEMINI_MODEL: ${PHONE11_CHAT_GEMINI_MODEL:-gemini-2.5-flash}
+    volumes:
+      - chat_media:/var/lib/phone11/chat-media
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
@@ -277,6 +298,7 @@ services:
         max-file: "5"
 
 volumes:
+  chat_media:
   pg_data:
     driver: local
   redis_data:

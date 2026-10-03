@@ -57,6 +57,7 @@ services:
     restart: unless-stopped
     environment:
       FREESWITCH_DOMAIN: ${SIP_DOMAIN:-sip.cloudphone11.local}
+      PHONE11_VOICEMAIL_HOOK_READY: ${PHONE11_VOICEMAIL_HOOK_READY:-false}
       EXTERNAL_RTP_IP: ${EXTERNAL_IP:-127.0.0.1}
       EXTERNAL_SIP_IP: ${EXTERNAL_IP:-127.0.0.1}
     ports:
@@ -154,6 +155,9 @@ services:
       FREESWITCH_ESL_PORT: 8021
       FREESWITCH_ESL_PASSWORD: ${FS_ESL_PASSWORD:-ClueCon}
       FCM_API_KEY: ${FCM_API_KEY:-}
+      PHONE11_RECORDING_AI_ENABLED: ${PHONE11_RECORDING_AI_ENABLED:-false}
+      PHONE11_RECORDING_GEMINI_MODEL: ${PHONE11_RECORDING_GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
       - "3000:3000"
     depends_on:

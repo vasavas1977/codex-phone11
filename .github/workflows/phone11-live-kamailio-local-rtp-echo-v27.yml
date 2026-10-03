@@ -1,0 +1,337 @@
+name: Phone11 Live Kamailio Local RTP Echo V27
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-kamailio-local-rtp-echo-v27.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+  SIP_DOMAIN: sip.phone11.ai
+  TEST_EXTENSION: "1998"
+  TEST_PASSWORD: phone11-v24-external-runner
+  TEST_TARGET: "*9196"
+
+jobs:
+  kamailio-local-echo:
+    name: Prove Kamailio to FreeSWITCH SIP answer and RTP echo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_kam_local_echo_v27_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_kam_local_echo_v27_key.pub" >/dev/null
+
+      - name: Run local Kamailio SIP and RTP echo self-test on EC2
+        id: rtp
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_kam_local_echo_v27_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          TEST_EXTENSION="1998"
+          TEST_PASSWORD="phone11-v24-external-runner"
+
+          echo "===== Service inventory ====="
+          docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep -E 'p11-kamailio|p11-rtpengine|p11-freeswitch|cp11-postgres' || true
+          echo "===== Kamailio listening sockets ====="
+          docker exec p11-kamailio sh -lc 'ss -lunpt 2>/dev/null || netstat -lunp 2>/dev/null || true' | sed -n '1,160p' || true
+          echo "===== FreeSWITCH profile ====="
+          docker exec p11-freeswitch fs_cli -x "sofia status profile external" | grep -E "Name|URL|BIND-URL|RUNNING|RTP-IP|SIP-IP|Ext-RTP-IP|Ext-SIP-IP" | sed -n '1,140p' || true
+          docker exec p11-freeswitch sh -lc 'grep -n "auth-calls\|sip-port\|context" /etc/freeswitch/sip_profiles/external.xml | sed -n "1,120p"' || true
+
+          echo "===== Ensure local echo dialplan and test subscriber ====="
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/public/00_phone11_media_self_test.xml' <<'XML'
+          <include>
+            <extension name="phone11_media_echo_destination_9196">
+              <condition field="destination_number" expression="^(\*9196|9196|%2A9196)$" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+            <extension name="phone11_media_echo_to_user_9196">
+              <condition field="${sip_to_user}" expression="^(\*9196|9196|%2A9196)$" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+            <extension name="phone11_media_echo_req_uri_9196">
+              <condition field="${sip_req_uri}" expression="9196" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+          </include>
+          XML
+          docker exec p11-freeswitch fs_cli -x reloadxml
+          docker exec p11-freeswitch fs_cli -x "sofia profile external siptrace on" || true
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES ('$TEST_EXTENSION', '$DOMAIN', '$TEST_PASSWORD', md5('$TEST_EXTENSION:$DOMAIN:$TEST_PASSWORD'), md5('$TEST_EXTENSION@$DOMAIN:$DOMAIN:$TEST_PASSWORD'))
+          ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b;
+          SELECT username, domain, length(ha1) AS ha1_len FROM subscriber WHERE username = '$TEST_EXTENSION' AND domain = '$DOMAIN';
+          SQL
+
+          sudo rm -f /tmp/phone11-v27-kamailio-local.pcap.txt
+          if command -v tcpdump >/dev/null 2>&1; then
+            sudo sh -lc 'nohup timeout 95 tcpdump -i any -nn -s0 -A "(udp port 5060) or (udp port 5080) or (udp portrange 20000-20150) or (udp portrange 30000-32050)" > /tmp/phone11-v27-kamailio-local.pcap.txt 2>&1 &' || true
+            sleep 2
+          fi
+          echo "SERVER_LOG_MARKER_EPOCH=$(date +%s)"
+
+          python3 - <<'PY'
+          import hashlib, os, random, re, secrets, select, socket, struct, sys, time
+          DOMAIN="sip.phone11.ai"
+          SERVER=("10.0.1.69", 5060)
+          USER="1998"
+          PASSWORD="phone11-v24-external-runner"
+          TARGET="*9196"
+
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def status_code(text):
+              first=text.splitlines()[0] if text.splitlines() else ""
+              m=re.match(r"SIP/2.0\s+(\d+)", first)
+              return int(m.group(1)) if m else 0
+          def header(text, name):
+              m=re.search(rf"^{re.escape(name)}:\s*(.+)$", text, re.I|re.M)
+              return m.group(1).strip() if m else ""
+          def body(text):
+              return text.split("\r\n\r\n", 1)[1] if "\r\n\r\n" in text else ""
+          def parse_auth(value):
+              value=value.replace("Digest", "", 1).strip()
+              return {k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', value)}
+          def digest_value(username, password, challenge, method, uri):
+              d=parse_auth(challenge)
+              realm=d.get("realm", DOMAIN)
+              nonce=d["nonce"]
+              qop="auth" if "auth" in d.get("qop", "") else ""
+              cnonce=secrets.token_hex(8)
+              nc="00000001"
+              ha1=md5(f"{username}:{realm}:{password}")
+              ha2=md5(f"{method}:{uri}")
+              resp=md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}") if qop else md5(f"{ha1}:{nonce}:{ha2}")
+              parts=[f'username="{username}"', f'realm="{realm}"', f'nonce="{nonce}"', f'uri="{uri}"', f'response="{resp}"', "algorithm=MD5"]
+              if d.get("opaque"): parts.append(f'opaque="{d["opaque"]}"')
+              if qop: parts.extend([f"qop={qop}", f"nc={nc}", f'cnonce="{cnonce}"'])
+              return "Digest " + ", ".join(parts)
+          def parse_sdp_media(sdp):
+              ip=""
+              port=0
+              for line in sdp.splitlines():
+                  if line.startswith("c=IN IP4 "):
+                      ip=line.split()[-1].strip()
+                  if line.startswith("m=audio "):
+                      port=int(line.split()[1])
+              return ip, port
+          def rtp_packet(seq, ts, ssrc, payload_byte):
+              return struct.pack("!BBHII", 0x80, 0x00, seq & 0xffff, ts & 0xffffffff, ssrc) + bytes([payload_byte]) * 160
+
+          local_ip="10.0.1.69"
+          sip=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sip.bind((local_ip, random.randint(26000, 26999)))
+          sip.setblocking(False)
+          sip_port=sip.getsockname()[1]
+          rtp=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          rtp.bind((local_ip, random.randrange(30000, 31998, 2)))
+          rtp.setblocking(False)
+          rtp_port=rtp.getsockname()[1]
+          contact=f"<sip:{USER}@{local_ip}:{sip_port};transport=udp>"
+
+          def send(payload):
+              sip.sendto(payload.encode(), SERVER)
+          def recv_for(call_id, timeout):
+              deadline=time.time()+timeout
+              while time.time()<deadline:
+                  ready,_,_=select.select([sip], [], [], 0.2)
+                  if not ready:
+                      continue
+                  data,addr=sip.recvfrom(65535)
+                  text=data.decode(errors="replace")
+                  if call_id in text:
+                      return text, addr
+              raise TimeoutError(f"no SIP response for {call_id}")
+          def register():
+              uri=f"sip:{DOMAIN}"
+              call_id=f"phone11-v27-register-{secrets.token_hex(8)}@ec2"
+              tag=secrets.token_hex(5)
+              def msg(cseq, auth_header=""):
+                  lines=[
+                      f"REGISTER {uri} SIP/2.0",
+                      f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch=z9hG4bKv27reg{secrets.token_hex(8)};rport",
+                      "Max-Forwards: 70",
+                      f"From: <sip:{USER}@{DOMAIN}>;tag={tag}",
+                      f"To: <sip:{USER}@{DOMAIN}>",
+                      f"Call-ID: {call_id}",
+                      f"CSeq: {cseq} REGISTER",
+                      f"Contact: {contact};expires=300",
+                      "Expires: 300",
+                      "User-Agent: Phone11KamailioLocalRtpEcho/27",
+                  ]
+                  if auth_header:
+                      lines.append(auth_header)
+                  lines += ["Content-Length: 0", "", ""]
+                  return "\r\n".join(lines)
+              send(msg(1))
+              first,_=recv_for(call_id, 10)
+              code=status_code(first)
+              print(f"kam_register_first_status={code}")
+              if code in (401,407):
+                  challenge=header(first,"WWW-Authenticate") or header(first,"Proxy-Authenticate")
+                  name="Proxy-Authorization" if code == 407 else "Authorization"
+                  send(msg(2, f"{name}: {digest_value(USER, PASSWORD, challenge, 'REGISTER', uri)}"))
+                  final,_=recv_for(call_id, 10)
+                  code=status_code(final)
+              print(f"kam_register_final_status={code}")
+              if code != 200:
+                  raise RuntimeError(f"registration failed status={code}")
+          def invite():
+              call_id=f"phone11-v27-kam-local-{secrets.token_hex(8)}@ec2"
+              print(f"call_id={call_id}")
+              req_uri=f"sip:{TARGET}@{DOMAIN}"
+              from_tag=secrets.token_hex(6)
+              offer="\r\n".join([
+                  "v=0",
+                  f"o=phone11-kam-local 1 1 IN IP4 {local_ip}",
+                  "s=Phone11 Kamailio Local RTP Echo",
+                  f"c=IN IP4 {local_ip}",
+                  "t=0 0",
+                  f"m=audio {rtp_port} RTP/AVP 0",
+                  "a=rtpmap:0 PCMU/8000",
+                  "a=sendrecv",
+                  "",
+              ])
+              def msg(cseq, auth_header=""):
+                  lines=[
+                      f"INVITE {req_uri} SIP/2.0",
+                      f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch=z9hG4bKv27inv{secrets.token_hex(8)};rport",
+                      "Max-Forwards: 70",
+                      f"From: Phone11 V27 <sip:{USER}@{DOMAIN}>;tag={from_tag}",
+                      f"To: <{req_uri}>",
+                      f"Call-ID: {call_id}",
+                      f"CSeq: {cseq} INVITE",
+                      f"Contact: {contact}",
+                      "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS",
+                      "User-Agent: Phone11KamailioLocalRtpEcho/27",
+                  ]
+                  if auth_header:
+                      lines.append(auth_header)
+                  lines += ["Content-Type: application/sdp", f"Content-Length: {len(offer.encode())}", "", offer]
+                  return "\r\n".join(lines)
+              cseq=1
+              auth_attempts=0
+              got_200=""
+              send(msg(cseq))
+              deadline=time.time()+35
+              while time.time()<deadline and not got_200:
+                  text,addr=recv_for(call_id, max(0.5, deadline-time.time()))
+                  code=status_code(text)
+                  print(f"kam_invite_rx_status={code} from={addr[0]}:{addr[1]}")
+                  if code in (401,407):
+                      auth_attempts += 1
+                      print(f"KAM_INVITE_AUTH_CHALLENGE={auth_attempts}")
+                      if auth_attempts > 5:
+                          raise RuntimeError("too many Kamailio-path INVITE auth challenges")
+                      challenge=header(text,"WWW-Authenticate") or header(text,"Proxy-Authenticate")
+                      name="Proxy-Authorization" if code == 407 else "Authorization"
+                      cseq += 1
+                      send(msg(cseq, f"{name}: {digest_value(USER, PASSWORD, challenge, 'INVITE', req_uri)}"))
+                  elif code == 200 and "application/sdp" in text.lower():
+                      got_200=text
+              if not got_200:
+                  raise RuntimeError("Kamailio path did not return 200 OK with SDP")
+              media_ip, media_port=parse_sdp_media(body(got_200))
+              print(f"kam_answer_media={media_ip}:{media_port}")
+              to_value=header(got_200, "To")
+              ack="\r\n".join([
+                  f"ACK {req_uri} SIP/2.0",
+                  f"Via: SIP/2.0/UDP {local_ip}:{sip_port};branch=z9hG4bKv27ack{secrets.token_hex(8)};rport",
+                  "Max-Forwards: 70",
+                  f"From: Phone11 V27 <sip:{USER}@{DOMAIN}>;tag={from_tag}",
+                  f"To: {to_value}",
+                  f"Call-ID: {call_id}",
+                  f"CSeq: {cseq} ACK",
+                  f"Contact: {contact}",
+                  "Content-Length: 0",
+                  "",
+                  "",
+              ])
+              send(ack)
+              return call_id, media_ip, media_port
+          def media(media_ip, media_port):
+              print(f"kam_rtp_destination={media_ip}:{media_port}")
+              tx=0
+              rx=0
+              ssrc=random.randint(1, 0xffffffff)
+              seq=random.randint(1, 65000)
+              ts=random.randint(1, 0xffffffff)
+              deadline=time.time()+10
+              next_send=time.time()
+              while time.time()<deadline:
+                  now=time.time()
+                  if now >= next_send:
+                      rtp.sendto(rtp_packet(seq, ts, ssrc, 0xff if tx % 2 == 0 else 0x7f), (media_ip, media_port))
+                      tx += 1
+                      seq += 1
+                      ts += 160
+                      next_send=now+0.02
+                  ready,_,_=select.select([rtp], [], [], 0.01)
+                  for sock in ready:
+                      data,addr=sock.recvfrom(4096)
+                      if len(data) >= 12:
+                          rx += 1
+              print(f"kam_rtp_tx={tx}")
+              print(f"kam_rtp_rx={rx}")
+              print("KAMAILIO_MEDIA_SELF_TEST_RESULT=" + ("pass" if tx >= 100 and rx >= 5 else "fail"))
+              return tx, rx
+
+          register()
+          call_id, media_ip, media_port = invite()
+          tx, rx = media(media_ip, media_port)
+          print(f"V27_CALL_ID={call_id}")
+          sys.exit(0 if tx >= 100 and rx >= 5 else 71)
+          PY
+
+          echo "===== Kamailio path evidence ====="
+          docker exec p11-freeswitch fs_cli -x "show calls" || true
+          echo "===== Kamailio recent logs ====="
+          docker logs --since 180s --timestamps p11-kamailio 2>&1 | grep -Eia "phone11-v27|1998|9196|RTPENGINE|FREESWITCH|INVITE|ACK|407|200 OK|error|warning" | tail -n 420 || true
+          echo "===== RTPEngine recent logs ====="
+          docker logs --since 180s --timestamps p11-rtpengine 2>&1 | grep -Eia "phone11-v27|1998|9196|offer|answer|packet|created|delete|RTP|warning|error" | tail -n 420 || true
+          echo "===== FreeSWITCH recent logs ====="
+          docker logs --since 180s --timestamps p11-freeswitch 2>&1 | grep -Eia "phone11-v27|1998|9196|phone11_media_self_test|echo|RTP|Codec|media|hangup|407|200 OK|error|warning" | tail -n 420 || true
+          echo "===== Packet capture summary ====="
+          if [ -s /tmp/phone11-v27-kamailio-local.pcap.txt ]; then
+            grep -aE "SIP/2.0|INVITE|ACK|BYE|Call-ID:|CSeq:|c=IN IP4|m=audio|phone11-v27|9196|1998" /tmp/phone11-v27-kamailio-local.pcap.txt | tail -n 500 || true
+          else
+            echo "no_server_capture"
+          fi
+          echo "V27_SERVER_EVIDENCE_RESULT=pass"
+          REMOTE

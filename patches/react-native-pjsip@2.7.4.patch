@@ -1,0 +1,40 @@
+diff --git a/libs.sh b/libs.sh
+index 7e05596..f2aeb66 100644
+--- a/libs.sh
++++ b/libs.sh
+@@ -2 +2 @@
+-set -e
++set -eu
+@@ -13,3 +13,28 @@ fi
+-curl -LO https://github.com/datso/react-native-pjsip-builder/releases/download/v2.7.1-with-vialer/release.tar.gz
+-tar -xvf release.tar.gz
+-rm release.tar.gz
+\ No newline at end of file
++# Pin the audited native SDK bytes before extracting into the package directory.
++expected_sha256="edf2d7a37301ffedf3c4eb41e011d4888fd890a278ffea31e4a2a75bd0dc8bee"
++if command -v shasum > /dev/null 2>&1; then
++    checksum_tool="shasum"
++elif command -v sha256sum > /dev/null 2>&1; then
++    checksum_tool="sha256sum"
++else
++    echo "Missing SHA-256 dependency (shasum or sha256sum)" >&2
++    exit 1
++fi
++
++download_dir=$(mktemp -d "${TMPDIR:-/tmp}/react-native-pjsip.XXXXXX")
++trap 'rm -rf "$download_dir"' EXIT
++trap 'exit 1' HUP INT TERM
++archive="$download_dir/release.tar.gz"
++curl --fail --location --proto '=https' --proto-redir '=https' \
++    --output "$archive" \
++    https://github.com/datso/react-native-pjsip-builder/releases/download/v2.7.1-with-vialer/release.tar.gz
++if [ "$checksum_tool" = "shasum" ]; then
++    checksum=$(shasum -a 256 "$archive")
++else
++    checksum=$(sha256sum "$archive")
++fi
++if [ "${checksum%% *}" != "$expected_sha256" ]; then
++    echo "react-native-pjsip SDK SHA-256 mismatch; refusing extraction" >&2
++    exit 1
++fi
++tar -xvf "$archive"

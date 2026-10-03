@@ -1,0 +1,270 @@
+name: Phone11 Live Kamailio Auth Evidence V28
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-kamailio-auth-evidence-v28.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  kamailio-auth-evidence:
+    name: Capture exact Kamailio INVITE auth blocker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_kam_auth_v28_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_kam_auth_v28_key.pub" >/dev/null
+
+      - name: Run SIP auth capture on EC2 and always print server evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_kam_auth_v28_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          TEST_EXTENSION="1998"
+          TEST_PASSWORD="phone11-v24-external-runner"
+          TARGET="*9196"
+          OUT="/tmp/phone11-v28-auth-output.txt"
+          CALL_ID_FILE="/tmp/phone11-v28-call-id.txt"
+          rm -f "$OUT" "$CALL_ID_FILE"
+
+          echo "===== Config evidence before test ====="
+          docker exec p11-freeswitch sh -lc 'grep -n "auth-calls\|sip-port\|context" /etc/freeswitch/sip_profiles/external.xml | sed -n "1,120p"' || true
+          docker exec p11-freeswitch fs_cli -x "sofia status profile external" | grep -E "Name|URL|BIND-URL|RUNNING|RTP-IP|SIP-IP|Ext-RTP-IP|Ext-SIP-IP" | sed -n '1,140p' || true
+          docker exec p11-kamailio sh -lc 'grep -n "www_challenge\|proxy_challenge\|auth_check\|consume_credentials\|TO_FREESWITCH\|5080\|rtpengine" /etc/kamailio/kamailio.cfg 2>/dev/null | sed -n "1,260p"' || true
+
+          echo "===== Ensure test account and echo target ====="
+          docker exec -i p11-freeswitch sh -lc 'cat > /etc/freeswitch/dialplan/public/00_phone11_media_self_test.xml' <<'XML'
+          <include>
+            <extension name="phone11_media_echo_destination_9196">
+              <condition field="destination_number" expression="^(\*9196|9196|%2A9196)$" break="on-true">
+                <action application="set" data="phone11_media_self_test=true"/>
+                <action application="answer"/>
+                <action application="echo"/>
+              </condition>
+            </extension>
+          </include>
+          XML
+          docker exec p11-freeswitch fs_cli -x reloadxml
+          docker exec p11-freeswitch fs_cli -x "sofia profile external siptrace on" || true
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES ('$TEST_EXTENSION', '$DOMAIN', '$TEST_PASSWORD', md5('$TEST_EXTENSION:$DOMAIN:$TEST_PASSWORD'), md5('$TEST_EXTENSION@$DOMAIN:$DOMAIN:$TEST_PASSWORD'))
+          ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b;
+          SELECT username, domain, length(ha1) AS ha1_len FROM subscriber WHERE username = '$TEST_EXTENSION' AND domain = '$DOMAIN';
+          SQL
+
+          sudo rm -f /tmp/phone11-v28-auth.pcap.txt
+          if command -v tcpdump >/dev/null 2>&1; then
+            sudo sh -lc 'nohup timeout 95 tcpdump -i any -nn -s0 -A "(udp port 5060) or (udp port 5080) or (udp portrange 20000-20150) or (udp portrange 30000-32050)" > /tmp/phone11-v28-auth.pcap.txt 2>&1 &' || true
+            sleep 2
+          fi
+          echo "SERVER_LOG_MARKER_EPOCH=$(date +%s)"
+
+          set +e
+          python3 - <<'PY' | tee "$OUT"
+          import hashlib, random, re, secrets, select, socket, sys, time
+          DOMAIN="sip.phone11.ai"
+          SERVER=("10.0.1.69", 5060)
+          USER="1998"
+          PASSWORD="phone11-v24-external-runner"
+          TARGET="*9196"
+          LOCAL_IP="10.0.1.69"
+          def md5(v): return hashlib.md5(v.encode()).hexdigest()
+          def status_code(text):
+              first=text.splitlines()[0] if text.splitlines() else ""
+              m=re.match(r"SIP/2.0\s+(\d+)\s*(.*)", first)
+              return (int(m.group(1)), m.group(2).strip()) if m else (0, first)
+          def header(text, name):
+              m=re.search(rf"^{re.escape(name)}:\s*(.+)$", text, re.I|re.M)
+              return m.group(1).strip() if m else ""
+          def all_headers(text, name):
+              return re.findall(rf"^{re.escape(name)}:\s*(.+)$", text, re.I|re.M)
+          def parse_auth(value):
+              value=value.replace("Digest", "", 1).strip()
+              return {k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', value)}
+          def digest_value(username, password, challenge, method, uri):
+              d=parse_auth(challenge)
+              realm=d.get("realm", DOMAIN)
+              nonce=d["nonce"]
+              qop="auth" if "auth" in d.get("qop", "") else ""
+              cnonce=secrets.token_hex(8)
+              nc="00000001"
+              ha1=md5(f"{username}:{realm}:{password}")
+              ha2=md5(f"{method}:{uri}")
+              resp=md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}") if qop else md5(f"{ha1}:{nonce}:{ha2}")
+              parts=[f'username="{username}"', f'realm="{realm}"', f'nonce="{nonce}"', f'uri="{uri}"', f'response="{resp}"', "algorithm=MD5"]
+              if d.get("opaque"): parts.append(f'opaque="{d["opaque"]}"')
+              if qop: parts.extend([f"qop={qop}", f"nc={nc}", f'cnonce="{cnonce}"'])
+              return "Digest " + ", ".join(parts)
+          def print_challenges(text):
+              for name in ("WWW-Authenticate", "Proxy-Authenticate"):
+                  for value in all_headers(text, name):
+                      d=parse_auth(value)
+                      print(f"challenge_header={name} realm={d.get('realm','')} nonce_present={'yes' if d.get('nonce') else 'no'} qop={d.get('qop','')} raw={value}")
+          sip=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+          sip.bind((LOCAL_IP, random.randint(27000, 27999)))
+          sip.setblocking(False)
+          sip_port=sip.getsockname()[1]
+          contact=f"<sip:{USER}@{LOCAL_IP}:{sip_port};transport=udp>"
+          def send(payload):
+              sip.sendto(payload.encode(), SERVER)
+          def recv_for(call_id, timeout):
+              deadline=time.time()+timeout
+              while time.time()<deadline:
+                  ready,_,_=select.select([sip], [], [], 0.2)
+                  if not ready:
+                      continue
+                  data,addr=sip.recvfrom(65535)
+                  text=data.decode(errors="replace")
+                  if call_id in text:
+                      return text, addr
+              raise TimeoutError(f"no SIP response for {call_id}")
+          def register():
+              uri=f"sip:{DOMAIN}"
+              call_id=f"phone11-v28-register-{secrets.token_hex(8)}@ec2"
+              tag=secrets.token_hex(5)
+              def msg(cseq, auth_header=""):
+                  lines=[
+                      f"REGISTER {uri} SIP/2.0",
+                      f"Via: SIP/2.0/UDP {LOCAL_IP}:{sip_port};branch=z9hG4bKv28reg{secrets.token_hex(8)};rport",
+                      "Max-Forwards: 70",
+                      f"From: <sip:{USER}@{DOMAIN}>;tag={tag}",
+                      f"To: <sip:{USER}@{DOMAIN}>",
+                      f"Call-ID: {call_id}",
+                      f"CSeq: {cseq} REGISTER",
+                      f"Contact: {contact};expires=300",
+                      "Expires: 300",
+                      "User-Agent: Phone11KamailioAuthEvidence/28",
+                  ]
+                  if auth_header:
+                      lines.append(auth_header)
+                  lines += ["Content-Length: 0", "", ""]
+                  return "\r\n".join(lines)
+              send(msg(1))
+              first,_=recv_for(call_id, 10)
+              code,reason=status_code(first)
+              print(f"register_first_status={code} reason={reason}")
+              print_challenges(first)
+              if code in (401,407):
+                  challenge=header(first,"WWW-Authenticate") or header(first,"Proxy-Authenticate")
+                  name="Proxy-Authorization" if code == 407 else "Authorization"
+                  send(msg(2, f"{name}: {digest_value(USER, PASSWORD, challenge, 'REGISTER', uri)}"))
+                  final,_=recv_for(call_id, 10)
+                  code,reason=status_code(final)
+              print(f"register_final_status={code} reason={reason}")
+          def invite():
+              call_id=f"phone11-v28-kam-auth-{secrets.token_hex(8)}@ec2"
+              open("/tmp/phone11-v28-call-id.txt", "w").write(call_id)
+              print(f"call_id={call_id}")
+              req_uri=f"sip:{TARGET}@{DOMAIN}"
+              from_tag=secrets.token_hex(6)
+              offer="\r\n".join([
+                  "v=0",
+                  f"o=phone11-kam-auth 1 1 IN IP4 {LOCAL_IP}",
+                  "s=Phone11 Kamailio Auth Evidence",
+                  f"c=IN IP4 {LOCAL_IP}",
+                  "t=0 0",
+                  "m=audio 30102 RTP/AVP 0",
+                  "a=rtpmap:0 PCMU/8000",
+                  "a=sendrecv",
+                  "",
+              ])
+              def msg(cseq, auth_header=""):
+                  lines=[
+                      f"INVITE {req_uri} SIP/2.0",
+                      f"Via: SIP/2.0/UDP {LOCAL_IP}:{sip_port};branch=z9hG4bKv28inv{secrets.token_hex(8)};rport",
+                      "Max-Forwards: 70",
+                      f"From: Phone11 V28 <sip:{USER}@{DOMAIN}>;tag={from_tag}",
+                      f"To: <{req_uri}>",
+                      f"Call-ID: {call_id}",
+                      f"CSeq: {cseq} INVITE",
+                      f"Contact: {contact}",
+                      "Allow: INVITE, ACK, CANCEL, BYE, OPTIONS",
+                      "User-Agent: Phone11KamailioAuthEvidence/28",
+                  ]
+                  if auth_header:
+                      lines.append(auth_header)
+                  lines += ["Content-Type: application/sdp", f"Content-Length: {len(offer.encode())}", "", offer]
+                  return "\r\n".join(lines)
+              cseq=1
+              auth_header=""
+              for attempt in range(1, 8):
+                  send(msg(cseq, auth_header))
+                  text,addr=recv_for(call_id, 12)
+                  code,reason=status_code(text)
+                  print(f"invite_status attempt={attempt} cseq={cseq} code={code} reason={reason} from={addr[0]}:{addr[1]}")
+                  print(f"received_to={header(text,'To')}")
+                  print(f"received_server={header(text,'Server') or header(text,'User-Agent')}")
+                  print_challenges(text)
+                  if code == 200:
+                      print("INVITE_ANSWERED=yes")
+                      return 0
+                  if code not in (401,407):
+                      return 65
+                  challenge=header(text,"WWW-Authenticate") or header(text,"Proxy-Authenticate")
+                  if not challenge:
+                      print("INVITE_AUTH_CHALLENGE_WITHOUT_HEADER=yes")
+                      return 66
+                  name="Proxy-Authorization" if code == 407 else "Authorization"
+                  auth_header=f"{name}: {digest_value(USER, PASSWORD, challenge, 'INVITE', req_uri)}"
+                  print(f"sending_auth_header_name={name}")
+                  cseq += 1
+              print("INVITE_AUTH_LOOP=yes")
+              return 67
+          register()
+          sys.exit(invite())
+          PY
+          PY_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "PY_EXIT=$PY_EXIT"
+
+          CALL_ID=""
+          [ -s "$CALL_ID_FILE" ] && CALL_ID="$(cat "$CALL_ID_FILE")"
+          echo "===== V28 output summary ====="
+          cat "$OUT" || true
+          echo "===== V28 Call-ID ====="
+          echo "$CALL_ID"
+          echo "===== Kamailio recent logs ====="
+          docker logs --since 220s --timestamps p11-kamailio 2>&1 | grep -Eia "$CALL_ID|phone11-v28|1998|9196|RTPENGINE|FREESWITCH|INVITE|ACK|407|401|200 OK|auth|error|warning" | tail -n 520 || true
+          echo "===== RTPEngine recent logs ====="
+          docker logs --since 220s --timestamps p11-rtpengine 2>&1 | grep -Eia "$CALL_ID|phone11-v28|1998|9196|offer|answer|packet|created|delete|RTP|warning|error" | tail -n 420 || true
+          echo "===== FreeSWITCH recent logs ====="
+          docker logs --since 220s --timestamps p11-freeswitch 2>&1 | grep -Eia "$CALL_ID|phone11-v28|1998|9196|phone11_media_self_test|echo|RTP|Codec|media|hangup|407|401|200 OK|auth|error|warning" | tail -n 520 || true
+          echo "===== Packet capture summary ====="
+          if [ -s /tmp/phone11-v28-auth.pcap.txt ]; then
+            grep -aE "SIP/2.0|INVITE|REGISTER|ACK|BYE|Call-ID:|CSeq:|WWW-Authenticate|Proxy-Authenticate|Authorization|Proxy-Authorization|c=IN IP4|m=audio|phone11-v28|9196|1998" /tmp/phone11-v28-auth.pcap.txt | tail -n 700 || true
+          else
+            echo "no_server_capture"
+          fi
+          echo "V28_SERVER_EVIDENCE_RESULT=pass"
+          exit "$PY_EXIT"
+          REMOTE

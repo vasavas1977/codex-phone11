@@ -16,6 +16,7 @@ vi.mock("../server/pbx/tenant-middleware", () => ({
     tenantId: 7, role: "admin", memberships: [{ tenantId: 7, role: "admin" }],
   })),
   hasRole: vi.fn((role: string) => role === "admin" || role === "owner"),
+  requireLiveTenantAdminMembership: vi.fn(async () => "admin"),
   validateTenantOwnership: vi.fn(async () => true),
 }));
 vi.mock("../server/pbx/sip-secrets", () => ({
@@ -34,6 +35,9 @@ vi.mock("../server/pbx/schema-capabilities", () => ({
   readManagementCapabilities: vi.fn(async () => ({ phoneNumbers: false })),
   schemaHasRequiredColumns: vi.fn(),
 }));
+vi.mock("../server/phone-provisioning", () => ({
+  rotateExtensionSipAuth: vi.fn(), revokeExtensionSipAuth: vi.fn(), reactivateExtensionSipAuth: vi.fn(),
+}));
 
 import { pbxRouter } from "../server/pbx/pbx-router";
 import { resolveTenantContext } from "../server/pbx/tenant-middleware";
@@ -46,6 +50,8 @@ const credentials = {
   secretTag: Buffer.from("tag"), dekId: "fixture-dek",
 };
 const ownedAccount = {
+  id: 51, tenant_id: 7, ha1: "old-ha1", ha1b: "old-ha1b",
+  extension_sip_username: "4101", extension_sip_domain: "sip.phone11.ai", extension_number: "4101",
   extension_id: 41, extension_username: "4101", extension_domain: "sip.phone11.ai",
   extension_user_id: 33, account_id: 51, sip_username: "4101",
   sip_domain: "sip.phone11.ai", account_user_id: 33,
@@ -61,13 +67,16 @@ beforeEach(() => {
       ? [ownedAccount] : [],
   }));
   state.txQuery.mockImplementation(async (sql: string) => {
+    if (sql.includes("tm.role::text AS role")) return { rows: [{ role: "admin" }] };
     if (sql.includes("FROM tenant_memberships")) return { rows: [{ one: 1 }] };
+    if (sql.includes("AS has_conflict")) return { rows: [{ has_conflict: false }] };
     if (sql.includes("FROM extensions e") && sql.includes("JOIN sip_accounts sa")) {
       return { rows: [ownedAccount] };
     }
-    if (sql.includes("FROM subscriber") && sql.includes("FOR UPDATE")) {
-      return { rows: [{ id: 61 }] };
-    }
+    if (sql.includes("FROM sip_accounts sa") && sql.includes("FOR UPDATE OF e, sa")) return { rows: [ownedAccount] };
+    if (sql.includes("FROM subscriber") && sql.includes("FOR UPDATE")) return { rows: [{ ha1: "old-ha1", ha1b: "old-ha1b" }] };
+    if (sql.includes("INSERT INTO subscriber")) return { rows: [{ username: "4101" }] };
+    if (sql.includes("UPDATE subscriber")) return { rows: [{ username: "4101" }] };
     if (sql.includes("INSERT INTO extensions")) return { rows: [{ id: 41, sip_password: "legacy-secret" }] };
     if (sql.includes("SELECT EXISTS")) return { rows: [{ has_primary: false }] };
     if (sql.includes("RETURNING id")) return { rows: [{ id: 1 }] };
@@ -80,14 +89,15 @@ describe("PBX SIP credential consistency", () => {
     const result = await pbxRouter.createCaller(context).extensions.create({
       extensionNumber: "4101", userId: 33,
     });
-    expect(result.sipCredentials.password).toBe("fixture-password");
+    expect(result.sipCredentials).toEqual({ username: "4101", domain: "sip.phone11.ai", transport: "UDP" });
+    expect(JSON.stringify(result)).not.toContain("fixture-password");
     expect(state.query).not.toHaveBeenCalled();
     expect(state.withTransaction).toHaveBeenCalledTimes(1);
     const sql = state.txQuery.mock.calls.map(([statement]) => String(statement));
     const lock = sql.findIndex((statement) => statement.includes("pg_advisory_xact_lock(hashtext"));
     expect(lock).toBeGreaterThanOrEqual(0);
     expect(lock).toBeLessThan(sql.findIndex((statement) => statement.includes("FROM subscriber")));
-    expect(sql.some((statement) => statement.includes("INSERT INTO subscriber") && !statement.includes("ON CONFLICT"))).toBe(true);
+    expect(sql.some((statement) => statement.includes("INSERT INTO subscriber") && statement.includes("ON CONFLICT"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO extensions") && statement.includes("sip_password"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO sip_accounts"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO user_extensions"))).toBe(true);
@@ -100,8 +110,9 @@ describe("PBX SIP credential consistency", () => {
   });
 
   it("rejects a pre-existing global subscriber before generating credentials", async () => {
-    state.txQuery.mockImplementation(async (sql: string) =>
-      sql.includes("SELECT id FROM subscriber") ? { rows: [{ id: 99 }] } : { rows: [] },
+    const original = state.txQuery.getMockImplementation();
+    state.txQuery.mockImplementation(async (sql: string, parameters: unknown[]) =>
+      sql.includes("SELECT id FROM subscriber") ? { rows: [{ id: 99 }] } : original!(sql, parameters),
     );
     await expect(pbxRouter.createCaller(context).extensions.create({ extensionNumber: "4101" }))
       .rejects.toMatchObject({ code: "CONFLICT" });
@@ -124,13 +135,13 @@ describe("PBX SIP credential consistency", () => {
 
   it("resets the exact tenant account and subscriber together", async () => {
     const result = await pbxRouter.createCaller(context).extensions.resetPassword({ extensionId: 41 });
-    expect(result.sipCredentials.password).toBe("fixture-password");
-    expect(state.query).toHaveBeenCalledWith(expect.stringContaining("e.tenant_id = $2"), [41, 7]);
+    expect(result.sipCredentials).toEqual({ username: "4101", domain: "sip.phone11.ai" });
+    expect(JSON.stringify(result)).not.toContain("fixture-password");
     const sql = state.txQuery.mock.calls.map(([statement]) => String(statement));
-    expect(sql.findIndex((statement) => statement.includes("pg_advisory_xact_lock(hashtext")))
-      .toBeLessThan(sql.findIndex((statement) => statement.includes("FOR UPDATE OF e, sa")));
-    expect(sql.some((statement) => statement.includes("UPDATE subscriber") && statement.includes("RETURNING id"))).toBe(true);
-    expect(sql.some((statement) => statement.includes("UPDATE sip_accounts") && statement.includes("tenant_id = $9"))).toBe(true);
+    expect(sql.some((statement) => statement.includes("pg_advisory_xact_lock(hashtext"))).toBe(true);
+    expect(sql.some((statement) => statement.includes("FOR UPDATE OF e, sa"))).toBe(true);
+    expect(sql.some((statement) => statement.includes("UPDATE subscriber") && statement.includes("RETURNING username"))).toBe(true);
+    expect(sql.some((statement) => statement.includes("UPDATE sip_accounts") && statement.includes("tenant_id = $8"))).toBe(true);
     expect(sql.some((statement) => statement.includes("UPDATE extensions SET sip_password = NULL"))).toBe(true);
     expect(state.audit).toHaveBeenCalledWith(expect.objectContaining({ resourceId: "51" }));
   });
@@ -147,9 +158,8 @@ describe("PBX SIP credential consistency", () => {
 
   it("reassigns extension, account, and user grant in one transaction", async () => {
     state.txQuery.mockImplementation(async (sql: string) => {
-      if (sql.includes("SELECT id, type FROM extensions")) return { rows: [{ id: 41, type: "user" }] };
-      if (sql.includes("SELECT id FROM sip_accounts") && sql.includes("FOR UPDATE")) return { rows: [{ id: 51 }] };
-      if (sql.includes("COUNT(*)::integer AS count FROM sip_accounts")) return { rows: [{ count: 1 }] };
+      if (sql.includes("tm.role::text AS role")) return { rows: [{ role: "admin" }] };
+      if (sql.includes("AS old_value")) return { rows: [{ old_value: { id: 41 }, user_id: 33, status: "active", type: "user" }] };
       if (sql.includes("FROM tenant_memberships")) return { rows: [{ one: 1 }] };
       if (sql.includes("SELECT EXISTS")) return { rows: [{ has_primary: false }] };
       if (sql.includes("RETURNING id")) return { rows: [{ id: 41 }] };
@@ -159,22 +169,25 @@ describe("PBX SIP credential consistency", () => {
       .resolves.toEqual({ success: true });
     const sql = state.txQuery.mock.calls.map(([statement]) => String(statement));
     expect(sql.some((statement) => statement.includes("UPDATE extensions SET") && statement.includes("tenant_id"))).toBe(true);
-    expect(sql.some((statement) => statement.includes("UPDATE sip_accounts SET user_id"))).toBe(true);
+    expect(sql.some((statement) => /UPDATE sip_accounts\s+SET user_id/.test(statement))).toBe(true);
     expect(sql.some((statement) => statement.includes("DELETE FROM user_extensions"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO user_extensions"))).toBe(true);
-    const accountUpdate = state.txQuery.mock.calls.find(([statement]) => String(statement).includes("UPDATE sip_accounts SET user_id"));
+    const accountUpdate = state.txQuery.mock.calls.find(([statement]) => /UPDATE sip_accounts\s+SET user_id/.test(String(statement)));
     expect(accountUpdate?.[1]).toContain(44);
     expect(state.query.mock.calls.some(([statement]) => String(statement).includes("UPDATE extensions"))).toBe(false);
   });
 
   it("fails closed for another tenant or ambiguous accounts", async () => {
-    state.query.mockResolvedValueOnce({ rows: [] });
+    const original = state.txQuery.getMockImplementation();
+    state.txQuery.mockImplementation(async (sql: string, parameters: unknown[]) =>
+      sql.includes("FROM sip_accounts sa") ? { rows: [] } : original!(sql, parameters));
     await expect(pbxRouter.createCaller(context).extensions.resetPassword({ extensionId: 41 }))
       .rejects.toMatchObject({ code: "NOT_FOUND" });
-    state.query.mockResolvedValueOnce({ rows: [ownedAccount, ownedAccount] });
+    state.txQuery.mockImplementation(async (sql: string, parameters: unknown[]) =>
+      sql.includes("FROM sip_accounts sa") ? { rows: [ownedAccount, ownedAccount] } : original!(sql, parameters));
     await expect(pbxRouter.createCaller(context).extensions.resetPassword({ extensionId: 41 }))
       .rejects.toMatchObject({ code: "CONFLICT" });
-    expect(state.withTransaction).not.toHaveBeenCalled();
+    expect(state.withTransaction).toHaveBeenCalledTimes(2);
   });
 
   it("rejects an absent subscriber without rotating an orphaned account", async () => {
@@ -205,7 +218,7 @@ describe("PBX SIP credential consistency", () => {
   it("redacts stored legacy passwords from extension list and detail", async () => {
     state.query.mockImplementation(async (sql: string) => {
       if (sql.includes("COUNT(*) as total")) return { rows: [{ total: "1" }] };
-      return { rows: [{ id: 41, extension_number: "4101", sip_password: "legacy-secret" }] };
+      return { rows: [{ extension: { id: 41, extension_number: "4101", sip_password: "legacy-secret" } }] };
     });
     const caller = pbxRouter.createCaller(context);
     const listed = await caller.extensions.list();

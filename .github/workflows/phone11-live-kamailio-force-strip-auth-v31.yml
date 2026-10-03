@@ -1,0 +1,62 @@
+name: Phone11 Live Kamailio Force Strip Auth V31
+
+on:
+  push:
+    branches: [codex/phone11-mobile-pjsip-20260506]
+    paths:
+      - ".github/workflows/phone11-live-kamailio-force-strip-auth-v31.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  force-strip-auth:
+    name: Force live Kamailio auth-header strip before rtpengine_offer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Connect and patch live Kamailio
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v31_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v31_key.pub" >/dev/null
+          ssh -i ~/.ssh/phone11_v31_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "===== Before route[TO_FREESWITCH] ====="
+          docker exec p11-kamailio sh -lc 'awk "/route\\[TO_FREESWITCH\\]/,/t_on_reply/ {print NR \":" $0}" /etc/kamailio/kamailio.cfg | sed -n "1,80p"'
+          docker exec p11-kamailio sh -lc 'cp /etc/kamailio/kamailio.cfg /etc/kamailio/kamailio.cfg.v31-before'
+          docker exec p11-kamailio sh -lc '
+            set -eu
+            if ! grep -q "loadmodule \"textopsx.so\"" /etc/kamailio/kamailio.cfg; then
+              sed -i "/loadmodule \"textops.so\"/a loadmodule \"textopsx.so\"" /etc/kamailio/kamailio.cfg
+            fi
+            if ! grep -q "phone11-strip-fs-auth" /etc/kamailio/kamailio.cfg; then
+              sed -i "/rtpengine_offer/i\    # phone11-strip-fs-auth: Kamailio consumed caller auth; do not forward it to FreeSWITCH.\n    remove_hf(\"Proxy-Authorization\");\n    remove_hf(\"Authorization\");\n    msg_apply_changes();" /etc/kamailio/kamailio.cfg
+            fi
+            if grep -q "phone11-strip-fs-auth" /etc/kamailio/kamailio.cfg && ! grep -q "msg_apply_changes();" /etc/kamailio/kamailio.cfg; then
+              sed -i "/remove_hf(\"Authorization\");/a\    msg_apply_changes();" /etc/kamailio/kamailio.cfg
+            fi
+          '
+          echo "===== After route[TO_FREESWITCH] ====="
+          docker exec p11-kamailio sh -lc 'awk "/route\\[TO_FREESWITCH\\]/,/t_on_reply/ {print NR \":" $0}" /etc/kamailio/kamailio.cfg | sed -n "1,100p"'
+          docker exec p11-kamailio sh -lc 'kamailio -c -f /etc/kamailio/kamailio.cfg'
+          docker restart p11-kamailio >/dev/null
+          sleep 5
+          docker ps --format 'table {{.Names}}\t{{.Status}}' | grep p11-kamailio
+          echo V31_FORCE_STRIP_AUTH_PATCH_RESULT=pass
+          REMOTE

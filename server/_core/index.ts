@@ -1,17 +1,31 @@
+import { startRecordingCaptureService } from "../cloud-recordings/capture-service";
 import "dotenv/config";
+import { chatMediaRouter, startChatMediaRetention } from "../chat/media";
+import { profilePhotoRouter } from "../profile/photo";
+import { startChatNotificationDispatcher } from "../chat-notifications/dispatcher";
+import { startRecordingAnalysisWorker, startRecordingRetentionWorker } from "../cloud-recordings/worker";
 import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
+import { registerAuthRoutes, phone11Cors } from "./auth-routes";
 import { registerStorageProxy } from "./storageProxy";
 import { fullRouter } from "../routers";
 import { createContext } from "./context";
-import { freeswitchRouter } from "../pbx/freeswitch-routes";
+import { createInvitationHttpGuard } from "./phone11-invitation-http";
+import { freeswitchRouter, freeswitchCdrRouter } from "../pbx/freeswitch-routes";
 import { kamailioRouter } from "../pbx/kamailio-routes";
 import { storageRouter } from "../pbx/recording-storage";
 import { wsManager } from "../pbx/websocket";
 import { fsEventListener } from "../pbx/fs-event-listener";
+import { registerWakeRoutes } from "../push/wake-routes";
+import {
+  createPhone11RuntimeLifecycle,
+  createPhone11Shutdown,
+  parsePhone11RuntimePort,
+  Phone11ShutdownTimeoutError,
+  selectPhone11RuntimePort,
+} from "./runtime-role";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -32,43 +46,57 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
-async function startServer() {
+export async function startServer() {
+  const runtime = createPhone11RuntimeLifecycle(
+    process.env.PHONE11_RUNTIME_ROLE,
+    {
+      startChatNotificationDispatcher,
+      startChatMediaRetention,
+      startRecordingAnalysis: startRecordingAnalysisWorker,
+      startRecordingRetention: startRecordingRetentionWorker,
+      startRecordingCapture: startRecordingCaptureService,
+      startFreeSwitchEventListener: () => {
+        try {
+          fsEventListener.start();
+        } catch (error: any) {
+          console.warn(
+            `[ESL] Failed to start event listener: ${error.message}`,
+          );
+        }
+      },
+      stopFreeSwitchEventListener: () => fsEventListener.stop(),
+      shutdownWebSockets: () => wsManager.shutdown(),
+    },
+  );
   const app = express();
   const server = createServer(app);
 
-  // Enable CORS for all routes - reflect the request origin to support credentials
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.header("Access-Control-Allow-Origin", origin);
-    }
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header(
-      "Access-Control-Allow-Headers",
-      "Origin, X-Requested-With, Content-Type, Accept, Authorization",
-    );
-    res.header("Access-Control-Allow-Credentials", "true");
+  const trustedProxies = process.env.PHONE11_TRUSTED_PROXY_CIDRS?.split(",").map(v => v.trim()).filter(Boolean);
+  if (trustedProxies?.length) app.set("trust proxy", trustedProxies);
+  app.use(phone11Cors);
+  registerAuthRoutes(app);
+  // Wake requests have their own small body limit and fail closed until commissioned.
+  registerWakeRoutes(app);
 
-    // Handle preflight requests
-    if (req.method === "OPTIONS") {
-      res.sendStatus(200);
-      return;
-    }
-    next();
-  });
-
+  app.use("/api/chat/media", chatMediaRouter);
+  app.use("/api/profile", profilePhotoRouter);
+  app.use("/api/freeswitch/cdr", freeswitchCdrRouter);
+  app.use("/api/trpc", createInvitationHttpGuard());
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
 
-  const healthPayload = () => ({ ok: true, timestamp: Date.now() });
-
+  const healthPayload = () => ({
+    ok: true,
+    timestamp: Date.now(),
+    build: process.env.PHONE11_BUILD_SHA || "unknown",
+    service: "phone11-backend",
+    runtimeRole: runtime.plan.role,
+  });
   app.get("/health", (_req, res) => {
     res.json(healthPayload());
   });
-
   app.get("/api/health", (_req, res) => {
     res.json(healthPayload());
   });
@@ -90,43 +118,60 @@ async function startServer() {
     }),
   );
 
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  const port = await findAvailablePort(preferredPort);
+  const preferredPort = parsePhone11RuntimePort(runtime.plan, process.env.PORT);
+  const port = await selectPhone11RuntimePort(
+    runtime.plan,
+    preferredPort,
+    findAvailablePort,
+  );
 
-  if (port !== preferredPort) {
+  if (!runtime.plan.bindsPortExactly && port !== preferredPort) {
     console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
   }
 
-  // Initialize WebSocket server for real-time events
-  wsManager.init(server);
+  // The legacy /ws endpoint trusted caller-supplied tenant/role values.
+  // Keep it disabled until upgrades use authenticated tenant membership.
 
   // WebSocket status endpoint
   app.get("/api/ws/status", (_req, res) => {
-    res.json({
-      ok: true,
-      clients: wsManager.getClientCount(),
+    res.status(503).json({
+      ok: false,
+      enabled: false,
+      reason: "Authenticated event delivery is not enabled",
       timestamp: Date.now(),
     });
   });
 
   server.listen(port, () => {
     console.log(`[api] server listening on port ${port}`);
-
-    // Start FreeSWITCH ESL event listener after server is up
-    try {
-      fsEventListener.start();
-    } catch (e: any) {
-      console.warn(`[ESL] Failed to start event listener: ${e.message}`);
-    }
+    runtime.background.start();
   });
 
-  // Graceful shutdown
-  process.on("SIGTERM", () => {
-    console.log("[api] SIGTERM received, shutting down...");
-    fsEventListener.stop();
-    wsManager.shutdown();
-    server.close();
-  });
+  const shutdown = createPhone11Shutdown(server, runtime.background);
+  let signalHandled = false;
+  const handleSignal = (signal: "SIGTERM" | "SIGINT") => {
+    if (signalHandled) return;
+    signalHandled = true;
+    console.log(`[api] ${signal} received, draining...`);
+    void shutdown().then(
+      () => {
+        console.log("[api] Graceful shutdown complete");
+        process.exit(0);
+      },
+      error => {
+        if (error instanceof Phone11ShutdownTimeoutError) {
+          console.error(`[api] ${error.message}`);
+        } else {
+          // Shutdown errors can wrap provider failures. Keep the process result
+          // honest without writing raw provider, database, or credential data.
+          console.error("[api] Graceful shutdown failed");
+        }
+        process.exit(1);
+      },
+    );
+  };
+  process.once("SIGTERM", () => handleSignal("SIGTERM"));
+  process.once("SIGINT", () => handleSignal("SIGINT"));
 }
 
 startServer().catch(console.error);
