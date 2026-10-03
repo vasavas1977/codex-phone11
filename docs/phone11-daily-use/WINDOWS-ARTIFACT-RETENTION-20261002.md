@@ -63,6 +63,29 @@ signing, or permission to distribute a package containing vendor DLLs. Those
 remain separate Windows-device and release gates; confirm SDK distribution
 terms before sharing a bundled package.
 
+## 4 October read-only custody refresh
+
+The source-only boundary above is historical. Successful manual
+[run 36904369975](https://github.com/vasavas1977/codex-phone11/actions/runs/36904369975)
+at `e9241df8a6b1d89cdeedbc6eecff73714a6cfcd4` retained artifact
+`11183430872`, unexpired until 8 October 2026 at 18:07:34 UTC. Its local archive
+matches GitHub's SHA-256 `e5f8be1453848eba71669d30182e5d96b058c89b85828a4725df3d3334743dd6`.
+The helper SHA-256 is `595d49fbffb003957c58777ed54efb963b869d0f0661b6717f40a33834f866c9`.
+
+An existing local unsigned portable trial ZIP also remains retained at
+`~/Library/Application Support/Phone11/desktop-windows-packages/avatar-history-e9241df-20261002/Phone11-Windows-x64-Trial-e9241df.zip`.
+It is 169,099,116 bytes, SHA-256
+`aaa162ddd3b199ed60f18566ba2e748bfc2d61e1a4ec451839c24d47a05ca694`.
+Twenty-four read-only checks passed, including receipt/run/source binding,
+Windows CRLF source hashes, package manifest/ASAR/helper hashes, ZIP integrity
+and all 78 archived files matching the retained directory. Desktop app/native
+source and the helper workflow are unchanged from `e9241df` through `4854985`.
+No executable was run or downloaded during this refresh.
+
+Reuse these inputs; a new helper build is unnecessary for custody. Windows
+loader/sign-in/SIP/audio/controls/trial-cutoff acceptance, release signing,
+installer preparation and vendor redistribution terms remain separate gates.
+
 References: [official Windows integration](https://docs.siprix-voip.com/rst/integration.html#windows),
 [SDK license](https://docs.siprix-voip.com/rst/license.html),
 [trial description](https://www.siprix-voip.com/download/),

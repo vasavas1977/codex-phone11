@@ -28,6 +28,31 @@ No public route, production schema, provider mapping or credential changed. The 
 
 ## Installed handset and media acceptance
 
+### 4 October consumer corrections
+
+The integration now includes truthful About capability labels and the installed
+native build number; canceled prejoin routes cannot navigate after a late join;
+browser joins serialize and retain failed teardown for retry; cached profile
+availability/status retire at their server-supplied expiry; and an absent
+workspace exposes loading and an authenticated retry. Voicemail deletion uses
+the selected authorized workspace and returns its actual mutation receipt.
+These are source corrections, not a new backend activation or installed build.
+
+The first combined Vitest run passed 2,608 cases, skipped 451 environment-gated
+cases and timed out the API-startup case under concurrent compiler load. That
+case passed individually with its original limit; all 18 deletion caller tests
+also passed after the independent review's constructor correction. Native
+checks passed 23 cases and timed out the Swift import check; that exact check
+passed individually without changing its 60-second limit. Full TypeScript on
+`4854985` passed after the test correction. Focused lint has zero errors with
+existing warnings. Independent server/profile reviews cover source only. The
+voicemail account-switch follow-up at `b8f9e54` binds actions, feedback and
+expanded playback selection to the initiating authenticated owner; a stale
+delete confirmation cannot submit under a replacement account. All 35 focused
+mobile/caller tests passed after integration. Its final type check and review
+must close before the next signed candidate. Later checks and release receipts
+must name their own source rather than inherit earlier results.
+
 The retained daily-pilot Build 111 comes from source `11cd1f199cd4cd79d133637ad59271a21014d9e8`. Earlier Mirroring verified navigation, default member selection, deselection/cancel, own-avatar profile and persisted Away/Automatic settings. Builds 110/109 remain available; the historical Build 112/113 signed-package evidence remains recorded above.
 
 The [newer installation receipts](OWN-AVATAR-PROFILE-20261002.md) confirm signed daily-pilot Build 114 from `d69eede` on both the iPhone 13 (1020) and iPhone 17 (3001): official installation and normal launch succeeded, and app readback verified version `1.0.0`, bundle version `114`. The iPhone 17's own-avatar profile navigation passed without changing a photo; the iPhone 13's signed-in UI remains unverified. Installation and profile UI do not establish successful meeting admission or two-phone audio/video acceptance.
