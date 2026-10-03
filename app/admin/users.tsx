@@ -56,7 +56,17 @@ type MemberChanges = {
   role?: "admin" | "user";
   status?: MembershipStatus;
 };
-type MemberConfirmation = { scope: MemberEditScope; changes: MemberChanges };
+type MemberDraft = Readonly<{
+  revision: number;
+  role: "admin" | "user";
+  roleChanged: boolean;
+  status: MembershipStatus;
+}>;
+type MemberConfirmation = {
+  scope: MemberEditScope;
+  draft: MemberDraft;
+  changes: MemberChanges;
+};
 
 const deactivationConsequences =
   "Deactivation removes this person's workspace access, revokes SIP access for their assigned active extensions, suspends those extensions and SIP accounts, and removes their permission to use assigned extensions. Reactivating membership does not restore extension or SIP access; manage extensions separately.";
@@ -104,6 +114,9 @@ function AdminUsersContent() {
   );
   const [saving, setSaving] = useState(false);
   const editorRevision = useRef(0);
+  const draftRevision = useRef(0);
+  // Retire old callbacks synchronously, including between React renders.
+  const currentDraft = useRef<MemberDraft | null>(null);
   const editScope = useRef<MemberEditScope | null>(null);
   const pendingConfirmation = useRef<MemberConfirmation | null>(null);
   const busy = useRef<MemberConfirmation | null>(null);
@@ -158,6 +171,7 @@ function AdminUsersContent() {
   const closeEditor = useCallback(() => {
     editorRevision.current += 1;
     editScope.current = null;
+    currentDraft.current = null;
     pendingConfirmation.current = null;
     setEditing(null);
     setConfirmation(null);
@@ -193,6 +207,7 @@ function AdminUsersContent() {
       mounted.current = false;
       editorRevision.current += 1;
       editScope.current = null;
+      currentDraft.current = null;
       unsubscribe();
     };
   }, [closeEditor]);
@@ -239,6 +254,12 @@ function AdminUsersContent() {
       revision: editorRevision.current,
     };
     setEditing(member);
+    currentDraft.current = {
+      revision: ++draftRevision.current,
+      role: member.role === "admin" ? "admin" : "user",
+      roleChanged: false,
+      status: member.status,
+    };
     pendingConfirmation.current = null;
     setConfirmation(null);
     setSelectedRole(member.role === "admin" ? "admin" : "user");
@@ -247,10 +268,21 @@ function AdminUsersContent() {
     setSaveError(null);
   };
 
+  const draftIsCurrent = (draft: MemberDraft) => {
+    const live = currentDraft.current;
+    return (
+      live?.revision === draft.revision &&
+      live.role === draft.role &&
+      live.roleChanged === draft.roleChanged &&
+      live.status === draft.status
+    );
+  };
+
   const save = async (request: MemberConfirmation) => {
     if (
       busy.current ||
       !scopeIsCurrent(request.scope) ||
+      !draftIsCurrent(request.draft) ||
       (request.changes.status === "inactive" &&
         pendingConfirmation.current !== request)
     )
@@ -278,9 +310,22 @@ function AdminUsersContent() {
   };
 
   const renderedScope = editScope.current;
+  const renderedDraft = currentDraft.current;
   const requestSave = () => {
     const scope = renderedScope;
-    if (!editing || !scope || busy.current || !scopeIsCurrent(scope)) return;
+    const draft = renderedDraft;
+    if (
+      !editing ||
+      !scope ||
+      !draft ||
+      busy.current ||
+      !scopeIsCurrent(scope) ||
+      !draftIsCurrent(draft) ||
+      draft.role !== selectedRole ||
+      draft.roleChanged !== roleChanged ||
+      draft.status !== selectedStatus
+    )
+      return;
     const changes: MemberChanges = {
       tenantId: scope.tenantId,
       userId: scope.memberId,
@@ -288,23 +333,23 @@ function AdminUsersContent() {
     if (
       canManageAdministrators &&
       editing.role !== "owner" &&
-      roleChanged &&
-      selectedRole !== editing.role
+      draft.roleChanged &&
+      draft.role !== editing.role
     ) {
-      changes.role = selectedRole;
+      changes.role = draft.role;
     }
     if (
       (editing.role === "user" || canManageAdministrators) &&
-      selectedStatus !== editing.status
+      draft.status !== editing.status
     ) {
-      changes.status = selectedStatus;
+      changes.status = draft.status;
     }
     if (changes.role === undefined && changes.status === undefined) {
       closeEditor();
       return;
     }
-    const request = { scope, changes };
-    if (editing.status === "active" && selectedStatus === "inactive") {
+    const request = { scope, draft, changes };
+    if (editing.status === "active" && draft.status === "inactive") {
       pendingConfirmation.current = request;
       if (Platform.OS === "web") {
         setSaveError(null);
@@ -517,7 +562,26 @@ function AdminUsersContent() {
                     accessibilityState={{ selected, disabled }}
                     disabled={disabled}
                     onPress={() => {
-                      if (busy.current || pendingConfirmation.current) return;
+                      if (
+                        !renderedScope ||
+                        !renderedDraft ||
+                        busy.current ||
+                        pendingConfirmation.current ||
+                        !scopeIsCurrent(renderedScope) ||
+                        !draftIsCurrent(renderedDraft)
+                      )
+                        return;
+                      if (
+                        renderedDraft.role === role &&
+                        renderedDraft.roleChanged
+                      )
+                        return;
+                      currentDraft.current = {
+                        ...renderedDraft,
+                        revision: ++draftRevision.current,
+                        role,
+                        roleChanged: true,
+                      };
                       setSelectedRole(role);
                       setRoleChanged(true);
                     }}
@@ -567,8 +631,22 @@ function AdminUsersContent() {
                     accessibilityState={{ selected, disabled }}
                     disabled={disabled}
                     onPress={() => {
-                      if (!busy.current && !pendingConfirmation.current)
-                        setSelectedStatus(status);
+                      if (
+                        !renderedScope ||
+                        !renderedDraft ||
+                        busy.current ||
+                        pendingConfirmation.current ||
+                        !scopeIsCurrent(renderedScope) ||
+                        !draftIsCurrent(renderedDraft)
+                      )
+                        return;
+                      if (renderedDraft.status === status) return;
+                      currentDraft.current = {
+                        ...renderedDraft,
+                        revision: ++draftRevision.current,
+                        status,
+                      };
+                      setSelectedStatus(status);
                     }}
                     style={[
                       styles.option,
@@ -628,6 +706,12 @@ function AdminUsersContent() {
                     )
                       return;
                     pendingConfirmation.current = null;
+                    if (draftIsCurrent(confirmation.draft)) {
+                      currentDraft.current = {
+                        ...confirmation.draft,
+                        revision: ++draftRevision.current,
+                      };
+                    }
                     setConfirmation(null);
                     setSaveError(null);
                   }}
@@ -639,7 +723,11 @@ function AdminUsersContent() {
                 <TouchableOpacity
                   accessibilityRole="button"
                   accessibilityLabel="Confirm member deactivation"
-                  disabled={saving || !scopeIsCurrent(confirmation.scope)}
+                  disabled={
+                    saving ||
+                    !scopeIsCurrent(confirmation.scope) ||
+                    !draftIsCurrent(confirmation.draft)
+                  }
                   onPress={() => void save(confirmation)}
                   style={[styles.saveButton, { backgroundColor: colors.error }]}
                 >

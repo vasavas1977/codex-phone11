@@ -189,6 +189,147 @@ beforeEach(() => {
 });
 
 describe("web member deactivation confirmation", () => {
+  it("ignores a retained role Save after the same draft returns to Member", async () => {
+    open();
+    press("Administrator");
+    render();
+    const oldSave = m.presses.get("Save membership changes").onPress;
+    press("Member");
+    render();
+    oldSave();
+    await settled();
+    expect(m.mutate).not.toHaveBeenCalled();
+    expect(m.presses.has("Close member editor")).toBe(true);
+  });
+  it("ignores a retained Inactive Save after cancel and return to Active", async () => {
+    open();
+    press("Inactive");
+    render();
+    const oldSave = m.presses.get("Save membership changes").onPress;
+    oldSave();
+    render();
+    press("Cancel member deactivation");
+    render();
+    press("Active");
+    render();
+    oldSave();
+    render();
+    expect(m.presses.has("Confirm member deactivation")).toBe(false);
+    expect(m.mutate).not.toHaveBeenCalled();
+  });
+  it("invalidates Save synchronously when a role draft changes before rerender", async () => {
+    open();
+    press("Administrator");
+    render();
+    const oldSave = m.presses.get("Save membership changes").onPress;
+    press("Member");
+    oldSave();
+    await settled();
+    expect(m.mutate).not.toHaveBeenCalled();
+    expect(m.presses.has("Close member editor")).toBe(true);
+    press("Save membership changes");
+    render();
+    expect(m.presses.has("Close member editor")).toBe(false);
+  });
+  it("invalidates an old no-change Save when roleChanged first transitions to true", async () => {
+    open();
+    const noChangeSave = m.presses.get("Save membership changes").onPress;
+    press("Member");
+    noChangeSave();
+    await settled();
+    expect(m.mutate).not.toHaveBeenCalled();
+    expect(m.presses.has("Close member editor")).toBe(true);
+    press("Administrator");
+    render();
+    press("Save membership changes");
+    await settled();
+    expect(m.mutate).toHaveBeenCalledWith({
+      tenantId: 18,
+      userId: 88,
+      role: "admin",
+    });
+  });
+  it("keeps a retained Save inert when role values cycle back to the same value", async () => {
+    open();
+    press("Administrator");
+    render();
+    const oldSave = m.presses.get("Save membership changes").onPress;
+    press("Member");
+    render();
+    press("Administrator");
+    render();
+    oldSave();
+    await settled();
+    expect(m.mutate).not.toHaveBeenCalled();
+    press("Save membership changes");
+    await settled();
+    expect(m.mutate).toHaveBeenCalledWith({
+      tenantId: 18,
+      userId: 88,
+      role: "admin",
+    });
+  });
+  it("keeps current Save usable when the selected role is pressed again without a state change", async () => {
+    open();
+    press("Administrator");
+    render();
+    const save = m.presses.get("Save membership changes").onPress;
+    press("Administrator");
+    save();
+    await settled();
+    expect(m.mutate).toHaveBeenCalledWith({
+      tenantId: 18,
+      userId: 88,
+      role: "admin",
+    });
+  });
+  it("keeps current Save usable when the selected status is pressed again without a state change", async () => {
+    open();
+    press("Inactive");
+    render();
+    const save = m.presses.get("Save membership changes").onPress;
+    press("Inactive");
+    save();
+    render();
+    expect(m.presses.has("Confirm member deactivation")).toBe(true);
+    press("Confirm member deactivation");
+    await settled();
+    expect(m.mutate).toHaveBeenCalledWith({
+      tenantId: 18,
+      userId: 88,
+      status: "inactive",
+    });
+  });
+  it("keeps retained Save inert across status cycles and unchanged-draft Cancel", async () => {
+    open();
+    press("Inactive");
+    render();
+    const oldSave = m.presses.get("Save membership changes").onPress;
+    press("Active");
+    render();
+    press("Inactive");
+    render();
+    oldSave();
+    render();
+    expect(m.presses.has("Confirm member deactivation")).toBe(false);
+    press("Save membership changes");
+    render();
+    const beforeCancelSave = m.presses.get(
+      "Confirm member deactivation",
+    ).onPress;
+    press("Cancel member deactivation");
+    render();
+    oldSave();
+    beforeCancelSave();
+    await settled();
+    expect(m.mutate).not.toHaveBeenCalled();
+    expect(m.presses.has("Confirm member deactivation")).toBe(false);
+    press("Save membership changes");
+    render();
+    press("Confirm member deactivation");
+    await settled();
+    expect(m.mutate).toHaveBeenCalledTimes(1);
+  });
   it("opens explicit confirmation instead of the no-op web Alert and submits only after confirmation", async () => {
     const markup = requestDeactivation();
     expect(markup).toContain("Deactivate membership?");
