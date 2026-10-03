@@ -6,6 +6,13 @@ No authentication, API probe, mutation, deposit, migration, route change, storag
 commissioning, installation or handset check was performed to prepare it.
 Do not enable `PHONE11_VOICEMAIL_HOOK_READY` from this document.
 
+Subsequent source/release addendum: [Build 115](BUILD-115-RELEASE-20261004.md)
+finished and passed signed-package and device-coverage checks; installation and
+physical acceptance remain deferred. Server-only `194cae9` adds reviewed file
+and directory durability barriers before new/replayed acknowledgment, with 22
+integrated regression passes. Neither result supplies the missing live target,
+writer, deposit or ownership evidence below.
+
 ## Source and retained evidence
 
 Prepared from clean integration `8f0306489245bb47dd684670b3953b7b5b8475d7`.

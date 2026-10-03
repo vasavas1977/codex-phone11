@@ -62,6 +62,11 @@ package verification or installation. The owner explicitly deferred physical
 two-phone testing while source and release work continues; retain Build 114
 on the phones until a separately verified update is installed.
 
+That workflow subsequently succeeded. [Build 115's release receipt](BUILD-115-RELEASE-20261004.md)
+records the finished exact-source package, all 22 signed checks and independent
+coverage of all three retained Build 114 phones. Installation and physical
+acceptance remain deferred; the package does not deploy the server corrections.
+
 The desktop-only follow-up at `64eb19c` clears autoplay guidance only after the
 current authorized voicemail source emits actual playback. Old-source events
 cannot clear another account's guidance or mark its voicemail read; synchronous
@@ -69,6 +74,17 @@ teardown during feedback also prevents queued read work. Its isolated worker
 reproduced three baseline failures, then passed all 10 focused player tests and
 desktop TypeScript. This follow-up is outside the iOS candidate source above;
 desktop voicemail remains gated off pending storage commissioning.
+
+Server-only durability follow-up `194cae9` resolves an additional commissioning
+blocker: a successful voicemail receipt now follows synchronization of the WAV
+and its month/tenant/root directory links. Existing-file, indexed and concurrent
+winner retries cross the same barrier; missing configured roots fail closed.
+Failures preserve uncertain media and the relay retry evidence. The isolated
+worker passed 107 tests across nine suites, full TypeScript and targeted lint;
+independent review returned `APPROVE_SOURCE_ONLY`. The lead reran all 22 new
+durability cases after integration and compiled the backend successfully.
+This change is outside Build 115 and is not deployed; production filesystem,
+database commit, producer callbacks and owner playback remain unverified.
 
 The retained daily-pilot Build 111 comes from source `11cd1f199cd4cd79d133637ad59271a21014d9e8`. Earlier Mirroring verified navigation, default member selection, deselection/cancel, own-avatar profile and persisted Away/Automatic settings. Builds 110/109 remain available; the historical Build 112/113 signed-package evidence remains recorded above.
 
