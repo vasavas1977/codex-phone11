@@ -81,6 +81,19 @@ describe("routing writes hold current administrator authority", () => {
     expect(state.withTransaction).toHaveBeenCalledTimes(1);
     expect(state.query).not.toHaveBeenCalled(); expect(state.cacheGetOrSet).not.toHaveBeenCalled();
   });
+  it("runs the actual capability reader on the held write client", async () => {
+    const actual = await vi.importActual<typeof import("../server/pbx/schema-capabilities")>("../server/pbx/schema-capabilities");
+    state.capabilities.mockImplementationOnce(actual.readManagementCapabilities);
+    await expect(ivrRouter.createCaller(context()).ringGroups.create({ tenant_id: 7, name: "Group" })).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED", message: "Ring groups is unavailable on this server",
+    });
+    expect(state.transactionQuery.mock.calls[0][0]).toContain("FOR UPDATE OF tm, t");
+    expect(state.query).not.toHaveBeenCalled();
+    expect(state.transactionQuery.mock.calls.map(([sql]) => String(sql))).toEqual([
+      expect.stringContaining("FOR UPDATE OF tm, t"), expect.stringContaining("information_schema.columns"),
+    ]);
+    expect(state.transactionQuery.mock.calls.some(([sql]) => dml(sql))).toBe(false);
+  });
   it.each(["user", "manager"])("refuses a current %s without relying on cached admin", async role => {
     state.actor = [{ tenant_id: 7, role }];
     await expect(ivrRouter.createCaller(context()).ringGroups.create({ tenant_id: 7, name: "Group" })).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -143,6 +156,34 @@ describe.skipIf(!databaseUrl)("routing authority on an owned disposable PostgreS
   });
   afterAll(async () => { if (pool) await pool.end(); });
   const create = () => ivrRouter.createCaller(context()).ringGroups.create({ tenant_id: 7, name: "Locked group", fallback_action: "hangup" });
+  it("checks actual schema capabilities with a one-connection pool while authority is held", async () => {
+    const actual = await vi.importActual<typeof import("../server/pbx/schema-capabilities")>("../server/pbx/schema-capabilities");
+    const url = new URL(databaseUrl!);
+    const single = new Pool({ host: "127.0.0.1", port: Number(url.port), user: "p11_routing_auth_runtime", password: decodeURIComponent(url.password), database: "phone11_routing_auth_test", ssl: false, application_name: "phone11-routing-auth-single-client-test", max: 1, connectionTimeoutMillis: 250, query_timeout: 5000, options: "-c search_path=p11_routing_auth_test,pg_catalog -c statement_timeout=5000 -c lock_timeout=4000" });
+    const statements: string[] = [];
+    state.capabilities.mockImplementationOnce(actual.readManagementCapabilities);
+    state.query.mockImplementation((sql, parameters) => single.query(sql, parameters));
+    state.withTransaction.mockImplementationOnce(async fn => {
+      const client = await single.connect();
+      await client.query("BEGIN");
+      const held = { query: (sql: string, parameters?: unknown[]) => {
+        statements.push(sql); return client.query(sql, parameters);
+      } } as unknown as PoolClient;
+      try { const result = await fn(held); await client.query("COMMIT"); return result; }
+      catch (error) { await client.query("ROLLBACK"); throw error; }
+      finally { client.release(); }
+    });
+    try {
+      // The fixture deliberately has no public management schema. Its actual
+      // catalog read must refuse readiness, without waiting for another client.
+      await expect(create()).rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: "Ring groups is unavailable on this server" });
+      expect(statements[0]).toContain("FOR UPDATE OF tm, t");
+      expect(statements[1]).toContain("information_schema.columns");
+      expect(state.query).not.toHaveBeenCalled();
+      expect(single.totalCount).toBe(1); expect(single.waitingCount).toBe(0);
+      expect((await single.query("SELECT count(*)::int count FROM ring_groups")).rows[0].count).toBe(0);
+    } finally { await single.end(); }
+  });
   it.each(["inactive membership", "deleted membership", "inactive tenant", "demoted role"])("refuses %s with zero committed writes", async condition => {
     if (condition === "inactive membership") await pool.query("UPDATE tenant_memberships SET status='inactive'");
     if (condition === "deleted membership") await pool.query("DELETE FROM tenant_memberships");

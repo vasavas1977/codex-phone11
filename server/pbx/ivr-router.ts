@@ -50,7 +50,7 @@ async function withRoutingMutation<T>(
     if (memberships.rows.length !== 1 || !hasRole(memberships.rows[0].role, "admin")) {
       throw new TRPCError({ code: "FORBIDDEN" });
     }
-    const capabilities = await readManagementCapabilities();
+    const capabilities = await readManagementCapabilities((sql, parameters) => client.query(sql, parameters));
     if (!capabilities[facility]) unavailableFacility(routingFacilityLabels[facility]);
     const tools: RoutingWriteTools = {
       query: (sql, parameters) => client.query(sql, parameters),
