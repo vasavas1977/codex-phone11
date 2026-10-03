@@ -190,7 +190,8 @@ describe("PBX voice application administration", () => {
         { extension_id: 99, priority: 2, delay_seconds: 0, is_active: true },
       ],
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(db.withTransaction).toHaveBeenCalledTimes(1);
+    expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
     expect(db.query.mock.calls[2][1]).toEqual([7, [10, 99]]);
   });
 
@@ -207,7 +208,8 @@ describe("PBX voice application administration", () => {
       ],
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.query).toHaveBeenCalledTimes(2);
-    expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(db.withTransaction).toHaveBeenCalledTimes(1);
+    expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
     db.query.mockReset();
     db.query
@@ -218,7 +220,8 @@ describe("PBX voice application administration", () => {
       members: [{ extension_id: 10, priority: 1, delay_seconds: 121, is_active: true }],
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.query).not.toHaveBeenCalled();
-    expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(db.withTransaction).toHaveBeenCalledTimes(1);
+    expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
     db.query.mockReset();
     db.query
@@ -229,7 +232,8 @@ describe("PBX voice application administration", () => {
       ring_group_id: 4,
       members: [{ extension_id: 10, priority: 1, delay_seconds: 0, is_active: true }],
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(db.withTransaction).toHaveBeenCalledTimes(2);
+    expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
   });
 
   it("replaces ring-group members only after active tenant validation", async () => {
@@ -274,7 +278,8 @@ describe("PBX voice application administration", () => {
       ],
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.query).toHaveBeenCalledTimes(2);
-    expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(db.withTransaction).toHaveBeenCalledTimes(1);
+    expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
     db.query.mockReset();
     db.query
@@ -285,7 +290,8 @@ describe("PBX voice application administration", () => {
       queue_id: 4,
       agents: [{ extension_id: 10, priority: 1, skills: [], max_no_answer: 3 }],
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(db.withTransaction).toHaveBeenCalledTimes(2);
+    expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
     db.query.mockReset();
     db.query
@@ -299,7 +305,8 @@ describe("PBX voice application administration", () => {
         { extension_id: 99, priority: 2, skills: [], max_no_answer: 3 },
       ],
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(db.withTransaction).toHaveBeenCalledTimes(3);
+    expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
   });
 
   it("preserves supported queue-agent metadata while replacing validated members", async () => {
