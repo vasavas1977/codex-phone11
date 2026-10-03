@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
@@ -9,6 +9,7 @@ import { useColors } from "@/hooks/use-colors";
 import { voicemailPlaybackURL } from "@/lib/cloud-recordings/presentation";
 import { normalizeDialInput } from "@/lib/sip/dial-input";
 import { trpc } from "@/lib/trpc";
+import { getAuthSnapshot } from "@/lib/_core/auth";
 
 type Voicemail = {
   id: number;
@@ -102,25 +103,60 @@ export default function VoicemailScreen() {
   const remove = trpc.pbx.voicemail.delete.useMutation({
     onSuccess: () => void utils.pbx.voicemail.list.invalidate(),
   });
-  const [openId, setOpenId] = useState<number>();
+  const scope = useRef<{ owner: NonNullable<typeof user> } | null>(null);
+  if (!user) scope.current = null;
+  else if (scope.current?.owner !== user) scope.current = { owner: user };
+  const action = scope.current;
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  type ActionState = { scope: NonNullable<typeof action>; id: number; pending: boolean; failed: boolean };
+  const operations = useRef<{ read: ActionState | null; delete: ActionState | null }>({ read: null, delete: null });
+  const [feedback, setFeedback] = useState<{ read: ActionState | null; delete: ActionState | null }>({ read: null, delete: null });
+  const [openId, setOpenId] = useState<{ scope: NonNullable<typeof action>; id: number }>();
+  const isCurrent = (captured: typeof action) => {
+    const auth = getAuthSnapshot();
+    return mounted.current && !!captured && scope.current === captured && auth.user === captured.owner && !auth.loading;
+  };
+  const mutateMessage = async (kind: "read" | "delete", message: Voicemail, captured: typeof action) => {
+    if (!captured || !isCurrent(captured)) return;
+    const previous = operations.current[kind];
+    if (previous?.scope === captured && previous.pending) return;
+    const operation: ActionState = { scope: captured, id: message.id, pending: true, failed: false };
+    operations.current[kind] = operation;
+    setFeedback((current) => ({ ...current, [kind]: operation }));
+    const settle = (failed: boolean) => {
+      if (!isCurrent(captured) || operations.current[kind] !== operation) return;
+      const result = { ...operation, pending: false, failed };
+      operations.current[kind] = result;
+      setFeedback((current) => ({ ...current, [kind]: result }));
+    };
+    try {
+      const result = await (kind === "read" ? markRead : remove).mutateAsync(voicemailMutationInput(message));
+      settle(result.success === false);
+    } catch { settle(true); }
+  };
   const messages = (inbox.data ?? []) as Voicemail[];
   const unread = useMemo(
     () => messages.filter((message) => message.status === "new").length,
     [messages],
   );
   const openMessage = (message: Voicemail) => {
-    setOpenId((current) => (current === message.id ? undefined : message.id));
-    if (message.status === "new" && !markRead.isPending)
-      void markRead.mutateAsync(voicemailMutationInput(message)).catch(() => {});
+    if (!action || !isCurrent(action)) return;
+    setOpenId((current) => (current?.scope === action && current.id === message.id ? undefined : { scope: action, id: message.id }));
+    if (message.status === "new") void mutateMessage("read", message, action);
   };
   const confirmDelete = (message: Voicemail) => {
+    if (!isCurrent(action)) return;
     Alert.alert("Delete voicemail?", "This removes it from your inbox.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
         style: "destructive",
         onPress: () => {
-          void remove.mutateAsync(voicemailMutationInput(message)).catch(() => {});
+          void mutateMessage("delete", message, action);
         },
       },
     ]);
@@ -130,10 +166,11 @@ export default function VoicemailScreen() {
     : inbox.error
       ? voicemailInboxErrorMessage(inbox.error)
       : undefined;
-  const deleteFailed = Boolean(remove.error) || (remove.data?.success === false &&
-    messages.some((message) => message.id === remove.variables?.id));
-  const markReadFailed = Boolean(markRead.error) || (markRead.data?.success === false &&
-    messages.some((message) => message.id === markRead.variables?.id && message.status === "new"));
+  const deletePending = feedback.delete?.scope === action && feedback.delete.pending;
+  const deleteFailed = feedback.delete?.scope === action && feedback.delete.failed &&
+    messages.some((message) => message.id === feedback.delete?.id);
+  const markReadFailed = feedback.read?.scope === action && feedback.read.failed &&
+    messages.some((message) => message.id === feedback.read?.id && message.status === "new");
 
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
@@ -176,7 +213,7 @@ export default function VoicemailScreen() {
             <Text style={[styles.message, { color: colors.muted }]}>New messages will appear here.</Text>
           </View>
         ) : messages.map((message) => {
-          const open = openId === message.id;
+          const open = openId?.scope === action && openId?.id === message.id;
           const path = `/api/recordings/voicemail/${message.id}`;
           return (
             <View key={message.id} style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
@@ -214,11 +251,11 @@ export default function VoicemailScreen() {
                   <TouchableOpacity
                     accessibilityRole="button"
                     accessibilityLabel={`Delete voicemail from ${voicemailTitle(message)}`}
-                    disabled={remove.isPending}
+                    disabled={deletePending}
                     onPress={() => confirmDelete(message)}
                     style={styles.delete}
                   >
-                    <Text style={{ color: colors.error }}>{remove.isPending ? "Deleting…" : "Delete voicemail"}</Text>
+                    <Text style={{ color: colors.error }}>{deletePending ? "Deleting…" : "Delete voicemail"}</Text>
                   </TouchableOpacity>
                 </View>
               )}
