@@ -25,6 +25,7 @@ on:
       - "server/**"
       - "desktop/**"
       - "tests/**"
+      - "scripts/phone11-voicemail-helper-preflight.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "vitest.config.ts"
@@ -53,6 +54,7 @@ on:
       - "server/**"
       - "desktop/**"
       - "tests/**"
+      - "scripts/phone11-voicemail-helper-preflight.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "vitest.config.ts"
@@ -175,7 +177,7 @@ jobs:
             tests/phone11-wake-routes.test.ts
           node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
       # Host removal remains unmounted/default-off. This job exercises the
-      # source contract only; its PG17 test requires a separate disposable harness.
+      # source contract only; the separate PG17 job exercises durable authority.
       - name: Test host removal authority service and provider receipt contract
         run: |
           pnpm exec vitest run \
@@ -191,6 +193,7 @@ jobs:
             tests/phone11-voicemail-dialplan-route.test.ts \
             tests/phone11-voicemail-fallbacks.test.ts \
             tests/phone11-voicemail-static-routing.test.ts \
+            tests/phone11-voicemail-helper-preflight.test.ts \
             tests/phone11-ring-group-dialplan.test.ts \
             tests/phone11-queue-dialplan.test.ts \
             tests/phone11-voicemail-producer.test.ts \
@@ -233,6 +236,101 @@ jobs:
           npm --prefix desktop/app test
           npm --prefix desktop/app run typecheck
           PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build
+
+  host-eviction-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: runner
+          POSTGRES_PASSWORD: phone11_host_eviction_ci
+          POSTGRES_DB: phone11_host_eviction_candidate
+          PGPORT: "55441"
+        # The suite accepts only this Unix socket. No host TCP port is published.
+        volumes:
+          - /tmp/phone11-host-eviction-candidate-pg/socket:/var/run/postgresql
+        options: >-
+          --health-cmd "pg_isready -h /var/run/postgresql -p 55441 -U runner -d phone11_host_eviction_candidate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Synthetic role in the job's disposable service; no deployment URL fallback.
+      PHONE11_TEST_DISPOSABLE_PG: "YES"
+      PHONE11_TEST_PG_SOCKET: /tmp/phone11-host-eviction-candidate-pg/socket
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the disposable host authority PostgreSQL 17 identity
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          test ! -L /tmp/phone11-host-eviction-candidate-pg
+          test ! -L "$PHONE11_TEST_PG_SOCKET"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { lstatSync } from 'node:fs';
+          import { setTimeout } from 'node:timers/promises';
+          import pg from 'pg';
+          assert.equal(process.env.USER, 'runner');
+          assert.equal(process.env.PHONE11_TEST_DISPOSABLE_PG, 'YES');
+          assert.equal(process.env.PHONE11_TEST_PG_SOCKET, '/tmp/phone11-host-eviction-candidate-pg/socket');
+          assert.match(process.env.PG_CONTAINER_ID ?? '', /^[a-f0-9]{64}$/);
+          for (const key of ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGSSLMODE', 'PGSERVICE', 'PGSERVICEFILE']) {
+            assert.equal(process.env[key], undefined, `Unexpected PostgreSQL connection fallback: ${key}`);
+          }
+          const pool = new pg.Pool({
+            host: process.env.PHONE11_TEST_PG_SOCKET,
+            port: 55441,
+            database: 'phone11_host_eviction_candidate',
+            user: process.env.USER,
+            password: 'phone11_host_eviction_ci',
+            ssl: false,
+            connectionTimeoutMillis: 1000,
+            query_timeout: 3000,
+          });
+          try {
+            let identity;
+            for (let attempt = 1; attempt <= 30; attempt++) {
+              try {
+                // initdb's temporary server can satisfy pg_isready. Require the
+                // official image's final PID 1 before probing the actual database.
+                const pid1 = execFileSync('docker', ['exec', process.env.PG_CONTAINER_ID, 'cat', '/proc/1/comm'],
+                  { encoding: 'utf8', timeout: 3000 }).trim();
+                assert.equal(pid1, 'postgres');
+                assert.ok(lstatSync(`${process.env.PHONE11_TEST_PG_SOCKET}/.s.PGSQL.55441`).isSocket());
+                const result = await pool.query(`SELECT current_database() AS db,
+                  current_user AS role, inet_server_addr() IS NULL AS socket_only,
+                  current_setting('server_version_num')::integer AS version`);
+                identity = result.rows[0];
+                break;
+              } catch (error) {
+                if (attempt === 30) throw new Error('Disposable PostgreSQL 17 was not SQL-ready after 30 checks', { cause: error });
+                await setTimeout(1000);
+              }
+            }
+            assert.equal(identity.db, 'phone11_host_eviction_candidate');
+            assert.equal(identity.role, 'runner');
+            assert.equal(identity.socket_only, true);
+            assert.ok(identity.version >= 170000 && identity.version < 180000);
+            console.log('Disposable host authority PostgreSQL 17 identity verified');
+          } finally {
+            await pool.end();
+          }
+          JS
+      - name: Test durable host authority, denial, replay and lease invalidation on PostgreSQL 17
+        run: pnpm exec vitest run server/meetings/meeting-host-eviction.pg.test.ts
 
   cloud-recording-postgres-tests:
     runs-on: ubuntu-24.04
