@@ -12,6 +12,10 @@ on:
       - "infra/configs/freeswitch/phone11-recording-anchor-candidate/**"
       - "infra/configs/kamailio/phone11-outbound-recording-candidate/**"
       - "infra/configs/freeswitch/dialplan/public/02_kamailio_outbound.xml"
+      - "infra/configs/freeswitch/**"
+      - "infra/docker/freeswitch/**"
+      - "infra/compose/docker-compose.*.yml"
+      - "deploy/freeswitch/**"
       - "ops/scripts/check-phone11-wake-kamailio.mjs"
       - "ops/scripts/test-phone11-wake-kamailio.mjs"
       - "app/**"
@@ -36,6 +40,10 @@ on:
       - "infra/configs/freeswitch/phone11-recording-anchor-candidate/**"
       - "infra/configs/kamailio/phone11-outbound-recording-candidate/**"
       - "infra/configs/freeswitch/dialplan/public/02_kamailio_outbound.xml"
+      - "infra/configs/freeswitch/**"
+      - "infra/docker/freeswitch/**"
+      - "infra/compose/docker-compose.*.yml"
+      - "deploy/freeswitch/**"
       - "ops/scripts/check-phone11-wake-kamailio.mjs"
       - "ops/scripts/test-phone11-wake-kamailio.mjs"
       - "app/**"
@@ -166,6 +174,36 @@ jobs:
             tests/phone11-wake-service.test.ts \
             tests/phone11-wake-routes.test.ts
           node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
+      # Host removal remains unmounted/default-off. This job exercises the
+      # source contract only; its PG17 test requires a separate disposable harness.
+      - name: Test host removal authority service and provider receipt contract
+        run: |
+          pnpm exec vitest run \
+            server/meetings/meeting-host-eviction-service.test.ts \
+            server/meetings/meeting-host-eviction-transport.test.ts \
+            server/meetings/plain-video-eviction-service.test.ts \
+            server/meetings/plain-video-eviction-repository.test.ts \
+            server/meetings/connect11-plain-video-facade.test.ts
+      - name: Test guarded voicemail routing and durable producer lifecycle
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-voicemail-dialplan.test.ts \
+            tests/phone11-voicemail-dialplan-route.test.ts \
+            tests/phone11-voicemail-fallbacks.test.ts \
+            tests/phone11-voicemail-static-routing.test.ts \
+            tests/phone11-ring-group-dialplan.test.ts \
+            tests/phone11-queue-dialplan.test.ts \
+            tests/phone11-voicemail-producer.test.ts \
+            tests/phone11-voicemail-lifecycle-rehearsal.test.ts
+      - name: Install Lua source test runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.4
+      - name: Test voicemail admission mode agreement and legacy route guards
+        run: |
+          lua5.4 tests/phone11-voicemail-hook.lua
+          lua5.4 tests/phone11-legacy-voicemail-hook.lua
+          lua5.4 tests/phone11-did-voicemail-hook.lua
       - name: Parse disabled and enabled wake candidates with exact Kamailio version
         run: node ops/scripts/check-phone11-wake-kamailio.mjs --image ghcr.io/kamailio/kamailio-ci@sha256:8eebac744905d360d04bd871ee46a3de0908aa30989649c00fd590914cb35fa0
       - name: Test held INVITE, cancellation and timeout with isolated SIP endpoints
