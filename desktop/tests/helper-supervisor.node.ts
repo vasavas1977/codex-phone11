@@ -28,7 +28,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (fields) {
     fields--;
     if (!fields) {
-      out({ ok: true, initialized: true });
+      out({ ok: true, initialized: true, ...(mode === 'provision-capability' ? { blindTransfer: 'callback-v1-once' } : {}) });
       registered = true;
       out({ event: 'registration', registered: true, accountId: 'forged-account' });
       if (mode === 'inbound') setTimeout(() => { call = '200'; out({ event: 'call', callId: call, state: 'incoming', muted: false }); }, 10);
@@ -37,7 +37,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   if (line === 'v1 init') {
     if (mode === 'slow-init') setTimeout(() => out({ ok: true, initialized: true }), 80);
-    else out({ ok: true, initialized: true });
+    else out({ ok: true, initialized: true, ...(mode.startsWith('transfer') ? { blindTransfer: mode === 'transfer-unsupported' ? 'callback-v2' : 'callback-v1-once' } : {}) });
   }
   else if (line === 'v1 provision') { fs.appendFileSync(marker, 'provision\\n'); fields = 5; }
   else if (line === 'v1 snapshot') out({ ok: true, initialized: true, registered, callId: call });
@@ -60,6 +60,14 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   } else if (line === 'v1 answer 200') {
     out({ ok: true, initialized: true });
     setTimeout(() => out({ event: 'call', callId: '200', state: 'connected', muted: false }), 10);
+  } else if (line.startsWith('v1 transfer ')) {
+    fs.appendFileSync(marker, line + '\\n');
+    const [, , callId, intentId] = line.split(' ');
+    const callback = () => out({ event: 'transfer', callId, intentId, statusCode: 0,
+      generation: 'forged-generation', accountId: 'forged-account', sessionRevision: 'forged-session' });
+    if (mode === 'transfer-sync') callback();
+    out({ ok: true, initialized: true });
+    if (mode === 'transfer-late') setTimeout(callback, 60);
   } else if (line.startsWith('v1 end ')) {
     out({ ok: true, initialized: true });
     out({ event: 'call', callId: line.slice(7), state: 'terminated', muted: false });
@@ -89,8 +97,9 @@ function harness(mode: string) {
   const children: ChildProcess[] = [];
   const supervisor = new DesktopHelperSupervisor({
     helperPath: join(directory, "phone11_siprix_helper"), currentSession: () => session,
-    provision: async () => secret, dialCallbackTimeoutMs: 25, commandTimeoutMs: 250,
-    verifyHelper: async () => true, shutdownGraceMs: 40,
+    // Keep the callback deadline short; allow bounded process startup/exit under a full-suite runner.
+    provision: async () => secret, dialCallbackTimeoutMs: 25, commandTimeoutMs: 1000,
+    verifyHelper: async () => true, shutdownGraceMs: 100,
     onSnapshot: snapshot => snapshots.push(JSON.stringify(snapshot)),
     launch: () => {
       const child = spawn(process.execPath, [script, mode, marker], { stdio: ["pipe", "pipe", "ignore"] });
@@ -294,4 +303,45 @@ test("session change during an accepted command never returns the old snapshot",
     assert.equal(h.supervisor.snapshot().registered, false);
     assert.equal(h.supervisor.snapshot().call, null);
   } finally { h.cleanup(); }
+});
+
+
+test("verified optional init capability permits callback-confirmed transfer; old helper does not", async () => {
+  for (const mode of ["normal", "provision-capability", "transfer-unsupported", "transfer-sync", "transfer-late"]) {
+    const h = harness(mode);
+    try {
+      const generation = await h.supervisor.start();
+      await waitFor(() => h.supervisor.snapshot().registered);
+      await h.supervisor.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" });
+      await waitFor(() => h.supervisor.snapshot().call?.state === "connected");
+      const action = { operation: "transfer", sessionRevision: binding.revision, generation, callId: "201", destination: "1021" };
+      if (["normal", "provision-capability", "transfer-unsupported"].includes(mode)) {
+        assert.equal(h.supervisor.snapshot().transfer, undefined);
+        await assert.rejects(h.supervisor.handleRendererAction(action), /unavailable/);
+        assert.equal(readFileSync(h.marker, "utf8").includes("v1 transfer"), false);
+      } else {
+        await h.supervisor.handleRendererAction(action);
+        assert.equal(h.supervisor.snapshot().transfer, mode === "transfer-sync" ? "confirmed" : "pending");
+        await assert.rejects(h.supervisor.handleRendererAction(action));
+        await h.supervisor.handleRendererAction({ ...action, operation: "mute", value: true });
+        await waitFor(() => h.supervisor.snapshot().transfer === "confirmed");
+        assert.equal(h.supervisor.snapshot().call?.id, "201");
+        assert.match(readFileSync(h.marker, "utf8"), /v1 transfer 201 [0-9a-f-]{36} 1021/);
+      }
+    } finally { await h.cleanup(); }
+  }
+});
+
+test("late transfer callback after End cannot mark a new call transferred", async () => {
+  const h = harness("transfer-late");
+  try {
+    const generation = await h.supervisor.start();
+    await h.supervisor.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" });
+    await waitFor(() => h.supervisor.snapshot().call?.state === "connected");
+    const action = { sessionRevision: binding.revision, generation, callId: "201" };
+    await h.supervisor.handleRendererAction({ ...action, operation: "transfer", destination: "1021" });
+    await h.supervisor.handleRendererAction({ ...action, operation: "end" });
+    await pause(90);
+    assert.equal(h.supervisor.snapshot().call, null); assert.equal(h.supervisor.snapshot().transfer, "ready");
+  } finally { await h.cleanup(); }
 });

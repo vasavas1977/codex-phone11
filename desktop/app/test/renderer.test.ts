@@ -26,7 +26,7 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     'voicemail-state', 'voicemail-list', 'voicemail-refresh', 'history-list', 'history-state', 'history-refresh', 'history-more',
     'history-search', 'history-direction', 'history-outcome', 'history-clear', 'history-count', 'history-scope',
     'open-meetings', 'meeting-open-message', 'identity', 'status', 'call-id', 'notice', 'hold-message', 'dial', 'answer',
-    'end', 'mute', 'hold', 'keypad', 'destination', 'message', 'login-form', 'email', 'password', 'sign-out', 'dial-form'];
+    'end', 'mute', 'hold', 'transfer-controls', 'transfer', 'transfer-destination', 'transfer-message', 'keypad', 'destination', 'message', 'login-form', 'email', 'password', 'sign-out', 'dial-form'];
   const elements = new Map(ids.map(id => [id, element()]));
   const keypad = elements.get('keypad')!;
   const destination = elements.get('destination')!;
@@ -190,6 +190,37 @@ test('dialpad enters a bounded destination while idle and sends DTMF only in an 
     assert.equal(elements.get('open-meetings')!.disabled, true, 'a Phone call prevents opening meeting media');
     keypad.listeners.get('click')!({ target: { closest: () => ({ dataset: { digit: '5' } }) } });
     assert.deepEqual(actions[0], { operation: 'dtmf', generation: 'generation-a', callId: '81', digits: '5', sessionRevision: 'session-a' });
+    await new Promise(resolve => setImmediate(resolve)); // Finish the prior DTMF command acceptance.
+    assert.equal(elements.get('transfer-controls')!.hidden, true, 'old helper does not expose transfer');
+    const transferReady = { ...connected, transfer: 'ready' };
+    listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: transferReady });
+    assert.equal(elements.get('transfer-controls')!.hidden, false);
+    assert.equal(elements.get('transfer')!.disabled, false);
+    elements.get('transfer-destination')!.value = 'sip:3002@example.invalid';
+    const beforeTransfer = actions.length;
+    elements.get('transfer')!.listeners.get('click')!({});
+    assert.equal(actions.length, beforeTransfer, 'URI transfer is refused in renderer');
+    elements.get('transfer-destination')!.value = '+6621234567';
+    elements.get('transfer')!.listeners.get('click')!({});
+    assert.deepEqual(actions.at(-1), { operation: 'transfer', generation: 'generation-a', callId: '81', destination: '+6621234567', sessionRevision: 'session-a' });
+    assert.equal(elements.get('transfer')!.disabled, true, 'reserve the UI during acceptance without disabling End/Mute');
+    await new Promise(resolve => setImmediate(resolve));
+    for (const transfer of ['pending', 'uncertain', 'confirmed', 'refused']) {
+      listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: { ...connected, transfer } });
+      assert.equal(elements.get('transfer')!.disabled, true);
+      assert.equal(elements.get('end')!.hidden, false); assert.equal(elements.get('mute')!.hidden, false);
+      const countBefore: number = actions.length; elements.get('transfer')!.listeners.get('click')!({});
+      assert.equal(actions.length, countBefore, 'pending/finished transfer cannot retrigger');
+      assert.equal(elements.get('hold')!.disabled, true, 'Hold follows the boundary restriction');
+      if (transfer === 'pending') {
+        elements.get('mute')!.listeners.get('click')!({});
+        elements.get('end')!.listeners.get('click')!({});
+        assert.deepEqual(actions.slice(-2).map((action: any) => action.operation), ['mute', 'end']);
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    }
+    listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: { ...transferReady, call: { ...connected.call, state: 'held' } } });
+    assert.equal(elements.get('transfer')!.disabled, true);
     listeners.get('update')!({ sessionRevision: 'session-a', generation: 'generation-a', snapshot: calling });
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual([...reconciliationTimers.values()].map(timer => timer.delay), [1000, 3000, 10000]);

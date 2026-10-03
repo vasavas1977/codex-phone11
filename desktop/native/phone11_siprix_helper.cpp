@@ -6,6 +6,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,9 +35,10 @@ void writeLine(const std::string& line) {
   std::cout << line << std::endl;
 }
 
-void reply(bool ok, bool initialized, const char* code = nullptr) {
+void reply(bool ok, bool initialized, const char* code = nullptr, bool transfer = false) {
   std::string line = std::string("{\"version\":1,\"ok\":") + (ok ? "true" : "false") +
                      ",\"initialized\":" + (initialized ? "true" : "false");
+  if (transfer) line += ",\"blindTransfer\":\"callback-v1-once\"";
   if (code != nullptr) line += std::string(",\"code\":\"") + code + "\"";
   writeLine(line + "}");
 }
@@ -71,6 +73,23 @@ bool validDestination(const std::string& value) {
   if (value.empty() || value.size() > 32) return false;
   for (char ch : value) {
     if (!std::isdigit(static_cast<unsigned char>(ch)) && ch != '+' && ch != '*' && ch != '#') return false;
+  }
+  return true;
+}
+
+bool validTransferDestination(const std::string& value) {
+  if (value.empty() || value.size() > 33) return false;
+  const std::size_t first = value[0] == '+' ? 1 : 0;
+  if (value.size() == first || value.size() - first > 32) return false;
+  for (std::size_t i = first; i < value.size(); ++i)
+    if (value[i] < '0' || value[i] > '9') return false;
+  return true;
+}
+bool validIntent(const std::string& value) {
+  if (value.size() != 36 || value[14] != '4' || std::string("89ab").find(value[19]) == std::string::npos) return false;
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    if (i == 8 || i == 13 || i == 18 || i == 23) { if (value[i] != '-') return false; }
+    else if (!((value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f'))) return false;
   }
   return true;
 }
@@ -125,6 +144,8 @@ class SiprixModule {
         Siprix::Callback_SetCallHeld(module_, &SiprixModule::onHeld) == Siprix::ErrorCode::EOK &&
         Siprix::Callback_SetCallTerminated(module_, &SiprixModule::onTerminated) == Siprix::ErrorCode::EOK;
     if (!callbacksOk) { shutdown(); return false; }
+    // Optional: failure must leave ordinary calling compatible.
+    transferSupported_ = Siprix::Callback_SetCallTransferred(module_, &SiprixModule::onTransferred) == Siprix::ErrorCode::EOK;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
       reconcileStop_ = false;
@@ -191,6 +212,14 @@ class SiprixModule {
     }
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
+      if (retiredCallIds_.count(id)) {
+        pendingDial_ = false;
+        // Reused SDK IDs cannot be safely associated. Retire the helper pipe
+        // instead of reporting this queued call as an ordinary retryable refusal.
+        writeLine("{\"version\":1,\"event\":\"call_id_reused\"}");
+        return false;
+      }
+      transferIntent_.clear(); transferAttempted_ = false; transferCallbackSeen_ = false;
       callId_ = id;
       pendingDial_ = false;
       connected_ = false;
@@ -204,6 +233,7 @@ class SiprixModule {
       if (earlyConnectedId_ == id) { incoming_ = false; connected_ = true; emitCall(id, "connected"); }
       if (earlyTerminatedId_ == id) {
         emitCall(id, "terminated");
+        retiredCallIds_.insert(id);
         callId_ = 0;
       }
       earlyConnectedId_ = 0;
@@ -236,6 +266,7 @@ class SiprixModule {
       std::lock_guard<std::mutex> lock(stateMutex_);
       if (id != callId_) return false;
       rejectable = incoming_;
+      transferIntent_.clear(); // End supersedes any late transfer callback.
     }
     return (rejectable ? Siprix::Call_Reject(module_, id, 486) : Siprix::Call_Bye(module_, id)) == Siprix::ErrorCode::EOK;
   }
@@ -254,7 +285,7 @@ class SiprixModule {
     if (!initialized() || id == 0) return false;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
-      if (id != callId_ || !connected_ || holdPending_ || holdUncertain_) return false;
+      if (id != callId_ || !connected_ || holdPending_ || holdUncertain_ || transferAttempted_) return false;
       holdPending_ = true;
       holdTargetLocal_ = desired;
       holdAccepted_ = false;
@@ -288,6 +319,26 @@ class SiprixModule {
     return true;
   }
 
+  bool transfer(Siprix::CallId id, const std::string& intent, const std::string& destination) {
+    if (!initialized() || !validIntent(intent) || !validTransferDestination(destination)) return false;
+    {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      if (!transferSupported_ || !registered_ || id == 0 || id != callId_ || !connected_ || held_ ||
+          holdPending_ || holdUncertain_ || transferAttempted_ || retiredCallIds_.count(id)) return false;
+      // SDK callbacks have no request ID. Never invoke a second transfer on this
+      // call, even after an immediate refusal. Reserve before a sync callback.
+      transferAttempted_ = true;
+      transferCallbackSeen_ = false;
+      transferIntent_ = intent;
+    }
+    const bool ok = Siprix::Call_TransferBlind(module_, id, destination.c_str()) == Siprix::ErrorCode::EOK;
+    if (!ok) {
+      std::lock_guard<std::mutex> lock(stateMutex_);
+      if (id == callId_ && !transferCallbackSeen_) transferIntent_.clear();
+    }
+    return ok; // EOK accepts REFER; it does not confirm its outcome.
+  }
+
   bool dtmf(Siprix::CallId id, const std::string& digits) {
     if (!initialized() || id == 0 || id != callId_ || !connected_ || !validDtmf(digits)) return false;
     std::string normalized = digits;
@@ -310,6 +361,11 @@ class SiprixModule {
       Siprix::Module_UnInitialize(module_);
       module_ = nullptr;
     }
+    transferSupported_ = false;
+    transferIntent_.clear();
+    transferAttempted_ = false;
+    transferCallbackSeen_ = false;
+    // Tombstones intentionally survive re-init within this helper process.
     accountId_ = 0;
     callId_ = 0;
     earlyConnectedId_ = 0;
@@ -326,6 +382,7 @@ class SiprixModule {
   }
 
   bool initialized() const { return module_ != nullptr && Siprix::Module_IsInitialized(module_); }
+  bool transferSupported() const { return transferSupported_; }
   bool registered() const { return registered_; }
   Siprix::CallId callId() const { return callId_; }
 
@@ -382,8 +439,9 @@ class SiprixModule {
     bool secondCall = false;
     {
       std::lock_guard<std::mutex> lock(self->stateMutex_);
-      if (self->pendingDial_ || self->callId_ != 0) secondCall = true;
+      if (self->pendingDial_ || self->callId_ != 0 || self->retiredCallIds_.count(id)) secondCall = true;
       else {
+        self->transferIntent_.clear(); self->transferAttempted_ = false; self->transferCallbackSeen_ = false;
         self->callId_ = id;
         self->incoming_ = true;
         self->connected_ = false;
@@ -416,7 +474,7 @@ class SiprixModule {
       self->connected_ = true;
       emitCall(id, self->held_ ? "held" : "connected", self->muted_);
     }
-    else if (self->callId_ == 0) self->earlyConnectedId_ = id;
+    else if (self->callId_ == 0 && !self->retiredCallIds_.count(id)) self->earlyConnectedId_ = id;
   }
   static void onHeld(Siprix::CallId id, Siprix::HoldState state) {
     auto* self = active_.load();
@@ -438,12 +496,25 @@ class SiprixModule {
     }
     emitCall(id, self->held_ ? "held" : "connected", self->muted_);
   }
+  static void onTransferred(Siprix::CallId id, std::uint32_t statusCode) {
+    auto* self = active_.load();
+    if (!self) return;
+    std::lock_guard<std::mutex> lock(self->stateMutex_);
+    if (id != self->callId_ || self->retiredCallIds_.count(id) || self->transferIntent_.empty() ||
+        !self->transferAttempted_ || self->transferCallbackSeen_) return;
+    self->transferCallbackSeen_ = true;
+    writeLine(std::string("{\"version\":1,\"event\":\"transfer\",\"callId\":\"") + std::to_string(id) +
+              "\",\"intentId\":\"" + self->transferIntent_ + "\",\"statusCode\":" + std::to_string(statusCode) + "}");
+    // No automatic Bye: only SDK termination ends a successful transfer call.
+  }
   static void onTerminated(Siprix::CallId id, std::uint32_t) {
     auto* self = active_.load();
     if (!self) return;
     std::lock_guard<std::mutex> lock(self->stateMutex_);
     if (id == self->callId_) {
       emitCall(id, "terminated");
+      self->retiredCallIds_.insert(id);
+      self->transferIntent_.clear();
       self->callId_ = 0;
       self->incoming_ = false;
       self->connected_ = false;
@@ -453,7 +524,7 @@ class SiprixModule {
       self->holdPending_ = false;
       self->holdUncertain_ = false;
       self->holdCv_.notify_all();
-    } else if (self->callId_ == 0) self->earlyTerminatedId_ = id;
+    } else if (self->callId_ == 0 && !self->retiredCallIds_.count(id)) self->earlyTerminatedId_ = id;
   }
 
   Siprix::ISiprixModule* module_ = nullptr;
@@ -462,6 +533,11 @@ class SiprixModule {
   std::atomic<bool> registered_{false};
   std::atomic<bool> incoming_{false};
   std::atomic<bool> connected_{false};
+  bool transferSupported_ = false;
+  bool transferAttempted_ = false;
+  bool transferCallbackSeen_ = false;
+  std::string transferIntent_;
+  std::set<Siprix::CallId> retiredCallIds_;
   bool muted_ = false;
   bool held_ = false;
   bool localHeld_ = false;
@@ -494,7 +570,7 @@ int main() {
       reply(false, siprix.initialized(), "invalid_command");
     } else if (command == "v1 init") {
       const bool ok = siprix.initialize();
-      reply(ok, siprix.initialized(), ok ? nullptr : "initialization_failed");
+      reply(ok, siprix.initialized(), ok ? nullptr : "initialization_failed", ok && siprix.transferSupported());
     } else if (command == "v1 snapshot") {
       writeLine(std::string("{\"version\":1,\"ok\":true,\"initialized\":") +
                 (siprix.initialized() ? "true" : "false") + ",\"registered\":" +
@@ -535,6 +611,15 @@ int main() {
       const bool value = valid && args.back() == '1';
       const bool ok = valid && (mute ? siprix.mute(id, value) : siprix.hold(id, value));
       reply(ok, siprix.initialized(), ok ? nullptr : "call_unavailable");
+    } else if (command.rfind("v1 transfer ", 0) == 0) {
+      const std::string args = command.substr(12);
+      const auto first = args.find(' ');
+      const auto second = first == std::string::npos ? first : args.find(' ', first + 1);
+      Siprix::CallId id = 0;
+      const bool valid = first != std::string::npos && second != std::string::npos &&
+                         parseCallId(args.substr(0, first), id);
+      const bool ok = valid && siprix.transfer(id, args.substr(first + 1, second - first - 1), args.substr(second + 1));
+      reply(ok, siprix.initialized(), ok ? nullptr : "transfer_unavailable");
     } else if (command.rfind("v1 dtmf ", 0) == 0) {
       const std::string args = command.substr(8);
       const auto separator = args.find(' ');

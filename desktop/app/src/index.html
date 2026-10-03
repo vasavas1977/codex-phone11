@@ -184,6 +184,12 @@
                 <button id="mute" type="button" hidden><img src="icons/mic.svg" alt=""><span id="mute-label">Mute</span></button>
                 <button id="hold" type="button" hidden><img src="icons/pause.svg" alt=""><span id="hold-label">Hold</span></button>
               </div>
+              <div id="transfer-controls" hidden>
+                <label for="transfer-destination">Transfer to number</label>
+                <input id="transfer-destination" type="tel" inputmode="tel" maxlength="33" autocomplete="off" aria-describedby="transfer-message">
+                <button id="transfer" type="button">Transfer</button>
+                <p id="transfer-message" role="status">One transfer attempt per call. End and Mute remain available.</p>
+              </div>
               <p id="identity" class="identity" title="Signed in extension"></p>
               <p id="hold-message" class="hold-message" role="status"></p>
             </div>

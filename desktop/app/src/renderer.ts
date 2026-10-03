@@ -346,6 +346,22 @@ function render(): void {
   (byId('end') as HTMLButtonElement).hidden = !call;
   (byId('mute') as HTMLButtonElement).hidden = !call || !['connected', 'held'].includes(call.state);
   (byId('hold') as HTMLButtonElement).hidden = !call || !['connected', 'held'].includes(call.state);
+  const transferControls = maybeById('transfer-controls');
+  const transferButton = maybeById('transfer') as HTMLButtonElement | null;
+  const transferDestination = maybeById('transfer-destination') as HTMLInputElement | null;
+  const transferMessage = maybeById('transfer-message');
+  const transfer = state.calling.transfer;
+  if (transferControls) transferControls.hidden = !call || transfer === undefined;
+  (byId('hold') as HTMLButtonElement).disabled = transfer !== undefined && transfer !== 'ready';
+  const canTransfer = !busy && !!call && call.state === 'connected' && state.calling.registered &&
+    transfer === 'ready' && state.calling.callActionState === 'idle' && !state.calling.holdMessage;
+  if (transferButton) transferButton.disabled = !canTransfer;
+  if (transferDestination) transferDestination.disabled = !canTransfer;
+  if (transferMessage) transferMessage.textContent = transfer === 'pending' ? 'Waiting for transfer confirmation. End and Mute remain available.' :
+    transfer === 'confirmed' ? 'Transfer confirmed. Waiting for the calling service to end this call.' :
+    transfer === 'refused' ? 'Transfer refused. Original call remains available; one attempt per call.' :
+    transfer === 'uncertain' ? 'Transfer not confirmed. Keep or end the original call; one attempt per call.' :
+    'One transfer attempt per call. End and Mute remain available.';
   const canEnterDestination = !busy && !call && state.calling.registered && state.calling.dialState === 'idle';
   (byId('destination') as HTMLInputElement).disabled = !canEnterDestination;
   const backspace = maybeById('backspace') as HTMLButtonElement | null;
@@ -591,6 +607,14 @@ for (const operation of ['answer', 'end', 'mute', 'hold'] as const) {
       ...operation === 'mute' ? { value: !call.muted } : operation === 'hold' ? { value: call.state !== 'held' } : {} });
   });
 }
+maybeById('transfer')?.addEventListener('click', () => {
+  const call = state?.calling.call;
+  const destination = (maybeById('transfer-destination') as HTMLInputElement | null)?.value.trim();
+  if (busy || !call || call.state !== 'connected' || !state?.generation || state.calling.transfer !== 'ready' ||
+      !state.calling.registered || state.calling.callActionState !== 'idle' || state.calling.holdMessage) return;
+  if (!destination || !/^\+?[0-9]{1,32}$/.test(destination)) { message('Enter a number with up to 32 digits.'); return; }
+  void request({ operation: 'transfer', generation: state.generation, callId: call.id, destination });
+});
 maybeById('backspace')?.addEventListener('click', () => {
   if (busy || !state?.signedIn || state.calling.call || !state.calling.registered || state.calling.dialState !== 'idle') return;
   const destination = byId('destination') as HTMLInputElement;

@@ -13,6 +13,7 @@ REQUIRED_API = (
     "Account_Add", "Account_GetRegState", "Call_Invite", "Call_Accept",
     "Call_Reject", "Call_Bye", "Call_Hold", "Call_GetHoldState",
     "Call_MuteMic", "Call_SendDtmf", "Callback_SetCallHeld",
+    "Call_TransferBlind", "Callback_SetCallTransferred",
 )
 
 

@@ -24,7 +24,7 @@ type Context = {
   sequence: number;
   buffer: string;
   queue: Promise<void>;
-  pending: { resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | null;
+  pending: { init: boolean; resolve: () => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | null;
 };
 
 export type SupervisorOptions = Readonly<{
@@ -183,6 +183,10 @@ export class DesktopHelperSupervisor {
       frame = `v1 ${command.operation} ${command.callId}\n`;
     else if ((command.operation === "mute" || command.operation === "hold") && callId(command.callId) &&
              typeof command.value === "boolean") frame = `v1 ${command.operation} ${command.callId} ${command.value ? 1 : 0}\n`;
+    else if (command.operation === "transfer" && callId(command.callId) &&
+             typeof command.destination === "string" && /^\+?[0-9]{1,32}$/.test(command.destination) &&
+             typeof command.intentId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(command.intentId))
+      frame = `v1 transfer ${command.callId} ${command.intentId} ${command.destination}\n`;
     else if (command.operation === "dtmf" && callId(command.callId) && digits(command.value))
       frame = `v1 dtmf ${command.callId} ${command.value}\n`;
     else return Promise.reject(new Error("Invalid helper command"));
@@ -205,7 +209,7 @@ export class DesktopHelperSupervisor {
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.close(ctx), this.timeoutMs);
-      ctx.pending = { resolve, reject, timer };
+      ctx.pending = { init: frame === "v1 init\n", resolve, reject, timer };
       try { ctx.child.stdin!.write(frame, error => { if (error) this.close(ctx); }); }
       catch { this.close(ctx); }
     });
@@ -228,7 +232,11 @@ export class DesktopHelperSupervisor {
         if (!pending) { this.close(ctx); return; }
         ctx.pending = null;
         clearTimeout(pending.timer);
-        if (input.ok) pending.resolve();
+        if (input.ok) {
+          if (pending.init && input.initialized && input.blindTransfer === "callback-v1-once")
+            this.boundary.setTransferCapability(true);
+          pending.resolve();
+        }
         else pending.reject(new HelperCommandRejectedError());
         continue;
       }
@@ -247,6 +255,10 @@ export class DesktopHelperSupervisor {
              ["incoming", "dialing", "ringing", "connected", "held", "terminated"].includes(raw.state) &&
              typeof raw.muted === "boolean")
       event = { ...base, type: "call", callId: raw.callId, state: raw.state, muted: raw.muted };
+    else if (raw.event === "transfer" && callId(raw.callId) && typeof raw.intentId === "string" &&
+             /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.intentId) &&
+             Number.isInteger(raw.statusCode) && (raw.statusCode as number) >= 0 && (raw.statusCode as number) <= 0xffffffff)
+      event = { ...base, type: "transfer", callId: raw.callId, intentId: raw.intentId, statusCode: raw.statusCode };
     else if (raw.event === "hold_error" && callId(raw.callId) && raw.code === "state_unconfirmed" && raw.holdControl === "blocked")
       event = { ...base, type: "hold_error", callId: raw.callId, code: "state_unconfirmed", holdControl: "blocked" };
     else if (raw.event === "hold_recovered" && callId(raw.callId) && raw.code === "state_confirmed" && raw.holdControl === "ready")

@@ -6,6 +6,7 @@
  * diagnostics, or an arbitrary helper command channel.
  */
 export const DESKTOP_CALL_PROTOCOL_VERSION = 1;
+export type TransferState = "ready" | "pending" | "uncertain" | "confirmed" | "refused";
 
 export type DesktopSession = Readonly<{
   revision: string;
@@ -24,6 +25,8 @@ export type PublicSnapshot = Readonly<{
   dialState: "idle" | "requesting" | "reconcile";
   callActionState: "idle" | "requesting" | "reconcile";
   holdMessage: "Hold unavailable; end call if needed" | null;
+  /** Present only after the verified helper advertises callback support. One attempt per call. */
+  transfer?: TransferState;
 }>;
 
 export type HelperCommand = Readonly<{
@@ -31,9 +34,10 @@ export type HelperCommand = Readonly<{
   generation: string;
   sessionRevision: string;
   accountId: string;
-  operation: "dial" | "answer" | "end" | "mute" | "hold" | "dtmf";
+  operation: "dial" | "answer" | "end" | "mute" | "hold" | "dtmf" | "transfer";
   callId?: string;
   destination?: string;
+  intentId?: string;
   value?: boolean | string;
 }>;
 
@@ -59,6 +63,7 @@ type HelperEvent =
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "registration"; registered: boolean }
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "call"; callId: string; state: CallState | "terminated"; muted?: boolean }
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "hold_error"; callId: string; code: "state_unconfirmed"; holdControl: "blocked" }
+  | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "transfer"; callId: string; intentId: string; statusCode: number }
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "hold_recovered"; callId: string; code: "state_confirmed"; holdControl: "ready" };
 
 export type RendererAction =
@@ -66,6 +71,7 @@ export type RendererAction =
   | { operation: "dial"; sessionRevision: string; destination: string }
   | { operation: "answer" | "end"; sessionRevision: string; generation: string; callId: string }
   | { operation: "mute" | "hold"; sessionRevision: string; generation: string; callId: string; value: boolean }
+  | { operation: "transfer"; sessionRevision: string; generation: string; callId: string; destination: string }
   | { operation: "dtmf"; sessionRevision: string; generation: string; callId: string; digits: string };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -76,6 +82,10 @@ const isCallId = (value: unknown): value is string =>
   typeof value === "string" && /^[1-9][0-9]{0,9}$/.test(value);
 const isDestination = (value: unknown): value is string =>
   typeof value === "string" && /^\+?[0-9*#]{1,32}$/.test(value);
+const isTransferDestination = (value: unknown): value is string =>
+  typeof value === "string" && /^\+?[0-9]{1,32}$/.test(value);
+const isIntentId = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 const isDigits = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9*#A-Da-d]{1,32}$/.test(value);
 const states: readonly string[] = ["incoming", "dialing", "ringing", "connected", "held", "terminated"];
@@ -96,6 +106,9 @@ export function parseRendererAction(input: unknown): RendererAction {
     case "hold":
       if (!isToken(input.generation) || !isCallId(input.callId) || typeof input.value !== "boolean") break;
       return { operation: input.operation, sessionRevision: input.sessionRevision, generation: input.generation, callId: input.callId, value: input.value };
+    case "transfer":
+      if (!isToken(input.generation) || !isCallId(input.callId) || !isTransferDestination(input.destination)) break;
+      return { operation: "transfer", sessionRevision: input.sessionRevision, generation: input.generation, callId: input.callId, destination: input.destination };
     case "dtmf":
       if (!isToken(input.generation) || !isCallId(input.callId) || !isDigits(input.digits)) break;
       return { operation: "dtmf", sessionRevision: input.sessionRevision, generation: input.generation, callId: input.callId, digits: input.digits.toUpperCase() };
@@ -114,6 +127,9 @@ function parseHelperEvent(input: unknown): HelperEvent | null {
   if (input.type === "call" && isCallId(input.callId) && typeof input.state === "string" && states.includes(input.state) &&
       (input.muted === undefined || typeof input.muted === "boolean"))
     return { ...base, type: "call", callId: input.callId, state: input.state as CallState | "terminated", muted: input.muted as boolean | undefined };
+  if (input.type === "transfer" && isCallId(input.callId) && isIntentId(input.intentId) &&
+      Number.isInteger(input.statusCode) && (input.statusCode as number) >= 0 && (input.statusCode as number) <= 0xffffffff)
+    return { ...base, type: "transfer", callId: input.callId, intentId: input.intentId, statusCode: input.statusCode as number };
   if (input.type === "hold_error" && isCallId(input.callId) &&
       input.code === "state_unconfirmed" && input.holdControl === "blocked")
     return { ...base, type: "hold_error", callId: input.callId, code: "state_unconfirmed", holdControl: "blocked" };
@@ -127,6 +143,8 @@ function parseHelperEvent(input: unknown): HelperEvent | null {
 export class DesktopCallBoundary {
   private generation: string | null = null;
   private session: DesktopSession | null = null;
+  private transferSupported = false;
+  private transfer: { callId: string; intentId: string; state: TransferState; callbackSeen: boolean; timer: ReturnType<typeof setTimeout> | null } | null = null;
   private sequence = 0;
   private registered = false;
   private call: PublicCall | null = null;
@@ -149,7 +167,12 @@ export class DesktopCallBoundary {
       throw new Error("Invalid dial timeout");
   }
 
+  /** Only the verified supervisor may set this from a successful init reply. */
+  setTransferCapability(supported: boolean): void { this.transferSupported = supported; }
+
   private resetPending(): void {
+    if (this.transfer?.timer) clearTimeout(this.transfer.timer);
+    this.transfer = null;
     if (this.dialTimer) clearTimeout(this.dialTimer);
     this.dialTimer = null;
     this.dialState = "idle";
@@ -166,6 +189,7 @@ export class DesktopCallBoundary {
   startHelperGeneration(generation: string): void {
     if (!isToken(generation) || generation === this.generation) throw new Error("Invalid helper generation");
     this.resetPending();
+    this.transferSupported = false;
     this.generation = generation;
     this.session = null;
     this.sequence = 0;
@@ -194,6 +218,7 @@ export class DesktopCallBoundary {
   /** Logout, helper exit, or account change immediately invalidates old calls. */
   clear(): void {
     this.resetPending();
+    this.transferSupported = false;
     this.session = null;
     this.registered = false;
     this.call = null;
@@ -212,6 +237,18 @@ export class DesktopCallBoundary {
       this.registered = event.registered;
       // An established SIP dialog can outlive a registration failure. Keep its
       // End control until the helper reports termination or the session ends.
+      return true;
+    }
+    if (event.type === "transfer") {
+      const transfer = this.transfer;
+      if (!transfer || transfer.callbackSeen || this.call?.id !== event.callId ||
+          transfer.callId !== event.callId || transfer.intentId !== event.intentId) return false;
+      this.sequence = event.sequence;
+      transfer.callbackSeen = true;
+      if (transfer.timer) clearTimeout(transfer.timer);
+      transfer.timer = null;
+      // Siprix documents status 0 as success. Never infer success from SIP 2xx.
+      transfer.state = event.statusCode === 0 ? "confirmed" : "uncertain";
       return true;
     }
     if (event.type === "hold_error") {
@@ -257,7 +294,7 @@ export class DesktopCallBoundary {
   snapshot(): PublicSnapshot {
     return { version: 1, registered: this.registered, call: this.call ? { ...this.call } : null,
       dialState: this.dialState, callActionState: this.pendingCallAction?.phase ?? "idle",
-      holdMessage: this.holdMessage };
+      holdMessage: this.holdMessage, ...(this.transferSupported ? { transfer: this.transfer?.state ?? "ready" } : {}) };
   }
 
   async handleRendererAction(input: unknown, currentSession: DesktopSession | null): Promise<PublicSnapshot> {
@@ -307,10 +344,43 @@ export class DesktopCallBoundary {
     }
     if (!this.call || this.call.id !== action.callId || action.generation !== this.generation)
       throw new Error("Call changed");
+    if (action.operation === "transfer") {
+      if (!this.transferSupported || !this.registered || this.call.state !== "connected" || this.holdMessage ||
+          this.transfer || this.pendingCallAction || this.pendingCallCommands.has(`hold:${action.callId}`))
+        throw new Error("Transfer unavailable; one attempt per call");
+      const reservation = { callId: action.callId, intentId: globalThis.crypto.randomUUID(), state: "pending" as TransferState,
+        callbackSeen: false, timer: null as ReturnType<typeof setTimeout> | null };
+      this.transfer = reservation; // Reserve before the SDK can callback synchronously.
+      reservation.timer = setTimeout(() => {
+        if (this.transfer === reservation && reservation.state === "pending") {
+          reservation.timer = null; reservation.state = "uncertain"; this.onStateChange?.();
+        }
+      }, this.dialCallbackTimeoutMs);
+      try { await this.port.execute({ ...command, callId: action.callId, destination: action.destination, intentId: reservation.intentId }); }
+      catch (error) {
+        if (this.transfer === reservation && !reservation.callbackSeen) {
+          if (reservation.timer) clearTimeout(reservation.timer);
+          reservation.timer = null;
+          reservation.state = error instanceof HelperCommandRejectedError ? "refused" : "uncertain";
+          this.onStateChange?.();
+        }
+        throw new Error("Transfer could not be confirmed; original call remains available");
+      }
+      if (this.session?.revision !== action.sessionRevision || this.generation !== action.generation)
+        throw new Error("Calling session changed");
+      return this.snapshot();
+    }
+    if (action.operation === "hold" && this.transfer) throw new Error("Hold unavailable after transfer attempt");
     if (action.operation === "answer" && this.call.state !== "incoming") throw new Error("Call is not ringing");
     if ((action.operation === "mute" || action.operation === "hold" || action.operation === "dtmf") &&
         !["connected", "held"].includes(this.call.state)) throw new Error("Call is not connected");
     if (action.operation === "hold" && this.holdMessage) throw new Error("Hold unavailable");
+    if (action.operation === "end" && this.transfer) {
+      this.transfer.callbackSeen = true;
+      if (this.transfer.timer) clearTimeout(this.transfer.timer);
+      this.transfer.timer = null;
+      if (this.transfer.state === "pending") this.transfer.state = "uncertain";
+    }
     const callbackAction = action.operation === "answer" || action.operation === "end";
     let supersededAnswer = false;
     if (callbackAction && this.pendingCallAction) {

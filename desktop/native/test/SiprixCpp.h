@@ -25,6 +25,8 @@ using OnCallIncoming = void (*)(CallId, AccountId, bool, const char*, const char
 using OnCallProceeding = void (*)(CallId, const char*);
 using OnCallConnected = void (*)(CallId, const char*, const char*, bool);
 using OnCallTerminated = void (*)(CallId, std::uint32_t);
+using OnCallTransferred = void (*)(CallId, std::uint32_t);
+inline OnCallTransferred transferredCallback = nullptr;
 using OnCallHeld = void (*)(CallId, HoldState);
 inline OnCallIncoming incomingCallback = nullptr;
 inline OnCallTerminated terminatedCallback = nullptr;
@@ -47,6 +49,13 @@ inline ErrorCode Callback_SetAccountRegState(ISiprixModule*, OnAccountRegState) 
 inline ErrorCode Callback_SetCallIncoming(ISiprixModule*, OnCallIncoming cb) { incomingCallback = cb; return ErrorCode::EOK; }
 inline ErrorCode Callback_SetCallProceeding(ISiprixModule*, OnCallProceeding) { return ErrorCode::EOK; }
 inline ErrorCode Callback_SetCallConnected(ISiprixModule*, OnCallConnected cb) { connectedCallback = cb; return ErrorCode::EOK; }
+inline ErrorCode Callback_SetCallTransferred(ISiprixModule*, OnCallTransferred cb) {
+#ifdef PHONE11_FAKE_NO_TRANSFER_CAPABILITY
+  return ErrorCode::ENotIncoming;
+#else
+  transferredCallback = cb; return ErrorCode::EOK;
+#endif
+}
 inline ErrorCode Callback_SetCallHeld(ISiprixModule*, OnCallHeld cb) { heldCallback = cb; return ErrorCode::EOK; }
 inline ErrorCode Callback_SetCallTerminated(ISiprixModule*, OnCallTerminated cb) { terminatedCallback = cb; return ErrorCode::EOK; }
 inline AccData* Acc_GetDefault() { return &account; }
@@ -123,6 +132,34 @@ inline ErrorCode Call_Hold(ISiprixModule* m, CallId id) {
 #endif
   return ErrorCode::EOK;
 }
+inline unsigned transferInvocations = 0;
+inline ErrorCode Call_TransferBlind(ISiprixModule* m, CallId id, const char*) {
+  if (id != 200 || !m->accepted || m->held) return ErrorCode::ENotIncoming;
+#ifdef PHONE11_FAKE_TRANSFER_REFUSED
+  return ++transferInvocations == 1 ? ErrorCode::ENotIncoming : ErrorCode::EOK;
+#endif
+#ifdef PHONE11_FAKE_TRANSFER_SYNC
+  if (transferredCallback) transferredCallback(id, 0);
+#else
+#ifndef PHONE11_FAKE_TRANSFER_DROP
+  std::thread([m, id] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    if (!m->initialized || !transferredCallback) return;
+#ifdef PHONE11_FAKE_TRANSFER_FAILED
+    transferredCallback(id, 486);
+#elif defined(PHONE11_FAKE_TRANSFER_200)
+    transferredCallback(id, 200);
+#else
+    transferredCallback(id, 0);
+#endif
+    // Deliberate duplicate and wrong-call callbacks must not publish twice.
+    transferredCallback(id, 0);
+    transferredCallback(id + 1, 0);
+  }).detach();
+#endif
+#endif
+  return ErrorCode::EOK;
+}
 inline ErrorCode Call_SendDtmf(ISiprixModule* m, CallId id, const char* digits,
                                std::uint16_t duration, std::uint16_t gap, DtmfMethod method) {
   if (id != 200 || !m->accepted || !digits || duration != 200 || gap != 50 || method != DtmfMethod::DTMF_RTP)
@@ -137,6 +174,11 @@ inline ErrorCode Call_Reject(ISiprixModule* m, CallId id, std::uint16_t) {
 inline ErrorCode Call_Bye(ISiprixModule* m, CallId id) {
   if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
   if (terminatedCallback) terminatedCallback(id, 200);
+#ifdef PHONE11_FAKE_TRANSFER_REUSED_ID
+  if (incomingCallback) incomingCallback(id, 1, false, "private-from", "private-to");
+#elif defined(PHONE11_FAKE_TRANSFER_NEW_CALL)
+  if (incomingCallback) incomingCallback(id + 1, 1, false, "private-from", "private-to");
+#endif
   return ErrorCode::EOK;
 }
 }  // namespace Siprix
