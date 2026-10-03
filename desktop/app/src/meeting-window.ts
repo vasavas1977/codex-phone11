@@ -24,6 +24,7 @@ export class DesktopMeetingWindow {
   private directHasMore = false;
   private directSearchPending = false;
   private directPagePending = false;
+  private stateRequest = 0;
   private closing: Promise<void> | null = null;
   private joined = false;
   private starting = false;
@@ -64,6 +65,7 @@ export class DesktopMeetingWindow {
     if (!session || this.phoneBusy()) throw new Error('Meeting unavailable during a Phone call');
     if (this.win && !this.win.isDestroyed()) { this.win.show(); this.win.focus(); return; }
     this.revision = session.revision;
+    ++this.stateRequest;
     this.clearPhotos();
     this.admitted.clear();
     this.channels.clear();
@@ -159,15 +161,24 @@ export class DesktopMeetingWindow {
       this.photoQueue = request.catch(() => null);
       return request;
     });
-    ipcMain.handle(MEETING_CHANNELS.state, async event => {
-      if (!this.valid(event) || !this.revision) throw new Error('Meeting session changed');
+    ipcMain.handle(MEETING_CHANNELS.state, async (event, input: unknown) => {
+      if (!this.valid(event) || !this.revision || this.phoneBusy() || this.joined || this.starting || this.startedChannel)
+        throw new Error('Meeting session changed');
+      const refreshOnly = input !== undefined;
+      if (refreshOnly && (!input || typeof input !== 'object' || Array.isArray(input) ||
+          Object.keys(input).length !== 2 || (input as Record<string, unknown>).revision !== this.revision ||
+          (input as Record<string, unknown>).refreshMeetings !== true)) throw new Error('Meeting session changed');
+      const request = ++this.stateRequest;
       const revision = this.revision;
       const [meetings, channels, directChats] = await Promise.all([
-        this.provider.availableMeetings(revision), this.provider.meetingChannels(revision),
-        this.provider.meetingDirectChats(revision).catch(() => []),
+        this.provider.availableMeetings(revision),
+        refreshOnly ? [] : this.provider.meetingChannels(revision),
+        refreshOnly ? [] : this.provider.meetingDirectChats(revision).catch(() => []),
       ]);
-      if (!this.valid(event) || this.revision !== revision) throw new Error('Meeting session changed');
+      if (!this.valid(event) || this.revision !== revision || request !== this.stateRequest ||
+          this.phoneBusy() || this.joined || this.starting || this.startedChannel) throw new Error('Meeting session changed');
       this.admitted = new Set(meetings.map(({ meetingId }) => meetingId));
+      if (refreshOnly) return { revision, meetings };
       this.channels = new Set(channels.map(({ id }) => id));
       this.directChats = new Map(directChats.map(({ id, peerId }) => [id, peerId]));
       this.directSearchTerm = '';
@@ -244,6 +255,7 @@ export class DesktopMeetingWindow {
           selectedMemberIds.length > 50 || selectedMemberIds.some(id => !Number.isSafeInteger(id) || id <= 0) ||
           new Set(selectedMemberIds).size !== selectedMemberIds.length) throw new Error('Meeting unavailable');
       const expected = this.revision;
+      ++this.stateRequest;
       this.starting = true;
       try {
         const key = JSON.stringify([channelId, [...selectedMemberIds].sort((a, b) => a - b)]);
@@ -279,6 +291,7 @@ export class DesktopMeetingWindow {
           revision !== this.revision || !this.directChats.has(conversationId)) throw new Error('Meeting unavailable');
       const expected = this.revision;
       const peerId = this.directChats.get(conversationId)!;
+      ++this.stateRequest;
       this.starting = true;
       try {
         const key = JSON.stringify(['direct', conversationId, peerId]);
@@ -299,6 +312,7 @@ export class DesktopMeetingWindow {
           revision !== this.revision || !this.admitted.has(meetingId)) throw new Error('Meeting unavailable');
       const expected = this.revision;
       // Prevent a double-click from minting two grants or joining twice.
+      ++this.stateRequest;
       this.joined = true;
       try {
         const admission = await this.provider.joinMeeting(expected, meetingId);
@@ -334,6 +348,7 @@ export class DesktopMeetingWindow {
     if (this.closing) return this.closing;
     const win = this.win;
     if (!win || win.isDestroyed()) return;
+    ++this.stateRequest;
     this.closing = (async () => {
       this.clearPhotos();
       this.admitted.clear();

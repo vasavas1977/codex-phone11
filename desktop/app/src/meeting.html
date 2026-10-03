@@ -9,7 +9,9 @@
       <video id="prejoin-video" autoplay muted playsinline aria-label="Your camera preview" hidden></video>
       <div id="preview-empty"><svg class="preview-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="m15 10 6-3v10l-6-3"/></svg><p id="preview-message">Camera is off. Select the camera option to preview before joining.</p></div>
     </div>
-    <div class="prejoin-options"><label for="meeting-select">Meeting</label><select id="meeting-select" disabled><option>Loading…</option></select>
+    <div class="prejoin-options"><label for="meeting-select">Meeting</label><select id="meeting-select" disabled><option value="">Loading…</option></select>
+      <button id="refresh-meetings" type="button" aria-describedby="meeting-list-status" disabled>Refresh meetings</button>
+      <p id="meeting-list-status" role="status" aria-live="polite"></p>
       <section class="meet-now" aria-labelledby="meet-now-title">
         <h2 id="meet-now-title">Meet now in a channel</h2>
         <label for="channel-select">Channel</label><select id="channel-select" disabled><option>Loading…</option></select>

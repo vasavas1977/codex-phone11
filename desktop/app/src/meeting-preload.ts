@@ -16,6 +16,11 @@ let meetingChat: DesktopMeetingChat | null = null;
 let meetingPhotos: DesktopMeetingPhotos | null = null;
 let chatOpen = false;
 let revision: string | null = null;
+let meetingListRequest = 0;
+let refreshingMeetings = false;
+let meetingsChecked = false;
+let meetingSelectionRequired = false;
+const admittedMeetingIds = new Set<string>();
 let busy = false;
 let canPublish = false;
 const mediaLifecycle = new MeetingMediaLifecycle();
@@ -611,6 +616,8 @@ function attachRemote(track: { kind: Track.Kind; attach: () => HTMLElement }, _p
 
 function leave(): Promise<void> {
   if (leaving) return leaving;
+  invalidateMeetingList();
+  el<HTMLButtonElement>('refresh-meetings').disabled = true;
   const active = room;
   room = null;
   canPublish = false;
@@ -647,13 +654,15 @@ function closeMeeting(): void {
 }
 
 async function join(): Promise<void> {
-  if (busy || room || !revision) return;
+  if (busy || room || !revision || refreshingMeetings || startingChannel || startingDirect || leaving || !meetingsChecked) return;
   const select = el<HTMLSelectElement>('meeting-select');
   const meetingId = select.value;
-  if (!meetingId) return;
+  if (!admittedMeetingIds.has(meetingId)) return;
   const wantsMic = el<HTMLInputElement>('start-mic').checked;
   const wantsCamera = el<HTMLInputElement>('start-camera').checked;
   busy = true;
+  invalidateMeetingList();
+  updateMeetingListControls();
   select.disabled = true;
   el<HTMLButtonElement>('join').disabled = true;
   el<HTMLInputElement>('start-mic').disabled = true;
@@ -791,8 +800,7 @@ async function join(): Promise<void> {
   } finally {
     busy = false;
     if (current()) {
-      select.disabled = false;
-      el<HTMLButtonElement>('join').disabled = false;
+      updateMeetingListControls();
       el<HTMLInputElement>('start-mic').disabled = false;
       el<HTMLInputElement>('start-camera').disabled = false;
       updateRoomUi();
@@ -871,6 +879,8 @@ async function startChannelMeeting(): Promise<void> {
     return;
   }
   startingChannel = true;
+  invalidateMeetingList();
+  updateMeetingListControls();
   el<HTMLButtonElement>('start-channel-meeting').disabled = true;
   el<HTMLSelectElement>('channel-select').disabled = true;
   el<HTMLFieldSetElement>('invite-picker').disabled = true;
@@ -886,6 +896,8 @@ async function startChannelMeeting(): Promise<void> {
     option.title = `Room ID: ${result.meetingId}`;
     select.appendChild(option);
     select.value = result.meetingId;
+    admittedMeetingIds.add(result.meetingId);
+    meetingsChecked = true;
     select.disabled = false;
     el<HTMLButtonElement>('join').disabled = false;
     createdChannelMeeting = true;
@@ -900,6 +912,7 @@ async function startChannelMeeting(): Promise<void> {
     el('meet-now-message').textContent = 'Meeting could not start. Check your access and try again.';
   } finally {
     startingChannel = false;
+    updateMeetingListControls();
     el<HTMLSelectElement>('channel-select').disabled = createdChannelMeeting;
     if (!createdChannelMeeting && selectedChannelDetails?.channelId === channelId && selectedChannelDetails.canStart && !room) {
       el<HTMLButtonElement>('start-channel-meeting').disabled = false;
@@ -1043,6 +1056,8 @@ async function startDirectMeeting(): Promise<void> {
   if (!revision || !details?.canStart || details.conversationId !== conversationId ||
       startingDirect || startingChannel || createdChannelMeeting || busy || room) return;
   startingDirect = true;
+  invalidateMeetingList();
+  updateMeetingListControls();
   el<HTMLButtonElement>('start-direct-meeting').disabled = true;
   el<HTMLSelectElement>('direct-select').disabled = true;
   el('direct-meet-message').textContent = 'Starting meeting…';
@@ -1057,6 +1072,8 @@ async function startDirectMeeting(): Promise<void> {
     option.title = `Room ID: ${result.meetingId}`;
     select.appendChild(option);
     select.value = result.meetingId;
+    admittedMeetingIds.add(result.meetingId);
+    meetingsChecked = true;
     select.disabled = false;
     el<HTMLButtonElement>('join').disabled = false;
     createdChannelMeeting = true;
@@ -1072,6 +1089,7 @@ async function startDirectMeeting(): Promise<void> {
     el('direct-meet-message').textContent = 'Meeting could not start. Check your access and try again.';
   } finally {
     startingDirect = false;
+    updateMeetingListControls();
     el<HTMLSelectElement>('direct-select').disabled = createdChannelMeeting;
     if (!createdChannelMeeting && selectedDirectDetails?.conversationId === conversationId &&
         selectedDirectDetails.canStart && !room)
@@ -1079,7 +1097,113 @@ async function startDirectMeeting(): Promise<void> {
   }
 }
 
+function invalidateMeetingList(): void {
+  ++meetingListRequest;
+  refreshingMeetings = false;
+  el<HTMLButtonElement>('refresh-meetings').setAttribute('aria-busy', 'false');
+  el('meeting-list-status').textContent = '';
+}
+
+function updateMeetingListControls(): void {
+  const blocked = busy || !!room || startingChannel || startingDirect || !!leaving;
+  el<HTMLButtonElement>('refresh-meetings').disabled = blocked || refreshingMeetings || createdChannelMeeting;
+  el<HTMLSelectElement>('meeting-select').disabled = blocked || refreshingMeetings || !admittedMeetingIds.size;
+  el<HTMLButtonElement>('join').disabled = blocked || refreshingMeetings || !meetingsChecked ||
+    !admittedMeetingIds.has(el<HTMLSelectElement>('meeting-select').value);
+}
+
+async function refreshMeetings(): Promise<void> {
+  if (refreshingMeetings || busy || room || startingChannel || startingDirect || createdChannelMeeting || leaving) return;
+  const request = ++meetingListRequest;
+  const expectedRevision = revision;
+  const initial = revision === null;
+  const current = () => request === meetingListRequest && !busy && !room && !startingChannel &&
+    !startingDirect && !createdChannelMeeting && !leaving;
+  refreshingMeetings = true;
+  meetingsChecked = false;
+  updateMeetingListControls();
+  const refresh = el<HTMLButtonElement>('refresh-meetings');
+  refresh.setAttribute('aria-busy', 'true');
+  el('meeting-list-status').textContent = 'Checking admitted meetings…';
+  error('');
+  try {
+    // A room-only refresh preserves channel invite choices and direct-search paging.
+    const state = await ipcRenderer.invoke(MEETING_CHANNELS.state,
+      initial ? undefined : { revision: expectedRevision, refreshMeetings: true }) as PublicMeetingState;
+    if (!current()) return;
+    if (!state || typeof state.revision !== 'string' || !state.revision ||
+        (expectedRevision !== null && state.revision !== expectedRevision)) throw new Error('Meeting session changed');
+    revision = state.revision;
+    const select = el<HTMLSelectElement>('meeting-select');
+    const previous = initial ? '' : select.value;
+    const meetings = [...state.meetings].sort((a, b) => a.meetingId.localeCompare(b.meetingId));
+    admittedMeetingIds.clear();
+    for (const { meetingId } of meetings) admittedMeetingIds.add(meetingId);
+    if (previous && !admittedMeetingIds.has(previous)) meetingSelectionRequired = true;
+    if (admittedMeetingIds.has(previous)) meetingSelectionRequired = false;
+    const selected = admittedMeetingIds.has(previous) ? previous : meetingSelectionRequired ? '' : meetings[0]?.meetingId ?? '';
+    select.replaceChildren();
+    // A revoked selection must not silently become an unrelated admitted room.
+    if (!selected) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = meetings.length ? 'Choose a meeting' : 'No admitted meetings';
+      select.appendChild(option);
+    }
+    const titleCounts = new Map<string, number>();
+    for (const { title } of meetings) if (title) titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1);
+    for (const [index, { meetingId, title }] of meetings.entries()) {
+      const option = document.createElement('option');
+      option.value = meetingId;
+      option.textContent = title
+        ? `${title}${(titleCounts.get(title) ?? 0) > 1 ? ` · …${meetingId.slice(-6).toUpperCase()}` : ''}`
+        : `Meeting ${index + 1} · …${meetingId.slice(-6).toUpperCase()}`;
+      option.title = `Room ID: ${meetingId}`;
+      select.appendChild(option);
+    }
+    select.value = selected;
+    meetingsChecked = true;
+    if (initial) {
+      const channelSelect = el<HTMLSelectElement>('channel-select');
+      channelSelect.replaceChildren();
+      for (const channel of state.channels) {
+        const option = document.createElement('option');
+        option.value = channel.id;
+        option.textContent = channel.name;
+        channelSelect.appendChild(option);
+      }
+      if (!state.channels.length) {
+        const option = document.createElement('option');
+        option.textContent = 'No channels available';
+        channelSelect.appendChild(option);
+      }
+      channelSelect.disabled = !state.channels.length;
+      if (state.channels.length) void loadChannelDetails();
+      showDirectChats(state.directChats, state.directHasMore);
+    }
+    refresh.textContent = 'Refresh meetings';
+    el('meeting-list-status').textContent = previous && !admittedMeetingIds.has(previous)
+      ? 'The selected meeting is no longer available. Choose an admitted meeting or refresh again.'
+      : meetings.length ? 'Meeting list is up to date.' : 'No admitted meetings. Refresh after someone invites you.';
+    status(selected ? 'Ready to join' : meetings.length ? 'Choose a meeting' : 'No admitted meetings for this account');
+  } catch {
+    if (!current()) return;
+    refresh.textContent = 'Retry meeting access';
+    error('Meeting access could not be checked. Check your connection and try again.');
+    el('meeting-list-status').textContent = 'Could not refresh meetings. Retry meeting access.';
+    status('Meeting access unavailable');
+  } finally {
+    if (current()) {
+      refreshingMeetings = false;
+      refresh.setAttribute('aria-busy', 'false');
+      updateMeetingListControls();
+    }
+  }
+}
+
 async function load(): Promise<void> {
+  el<HTMLButtonElement>('refresh-meetings').addEventListener('click', () => { void refreshMeetings(); });
+  el<HTMLSelectElement>('meeting-select').addEventListener('change', updateMeetingListControls);
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });
   el<HTMLButtonElement>('cancel').addEventListener('click', closeMeeting);
   el<HTMLSelectElement>('channel-select').addEventListener('change', () => { void loadChannelDetails(); });
@@ -1134,51 +1258,7 @@ async function load(): Promise<void> {
   ipcRenderer.on(MEETING_CHANNELS.leaveNow, () => {
     void leave().finally(() => ipcRenderer.send(MEETING_CHANNELS.left));
   });
-  try {
-    const state = await ipcRenderer.invoke(MEETING_CHANNELS.state) as PublicMeetingState;
-    revision = state.revision;
-    const select = el<HTMLSelectElement>('meeting-select');
-    select.replaceChildren();
-    const meetings = [...state.meetings].sort((a, b) => a.meetingId.localeCompare(b.meetingId));
-    const titleCounts = new Map<string, number>();
-    for (const { title } of meetings) if (title) titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1);
-    for (const [index, { meetingId, title }] of meetings.entries()) {
-      const option = document.createElement('option');
-      option.value = meetingId;
-      option.textContent = title
-        ? `${title}${(titleCounts.get(title) ?? 0) > 1 ? ` · …${meetingId.slice(-6).toUpperCase()}` : ''}`
-        : `Meeting ${index + 1} · …${meetingId.slice(-6).toUpperCase()}`;
-      option.title = `Room ID: ${meetingId}`;
-      select.appendChild(option);
-    }
-    if (!meetings.length) {
-      const option = document.createElement('option');
-      option.textContent = 'No admitted meetings';
-      select.appendChild(option);
-    }
-    select.disabled = !meetings.length;
-    el<HTMLButtonElement>('join').disabled = !meetings.length;
-    const channelSelect = el<HTMLSelectElement>('channel-select');
-    channelSelect.replaceChildren();
-    for (const channel of state.channels) {
-      const option = document.createElement('option');
-      option.value = channel.id;
-      option.textContent = channel.name;
-      channelSelect.appendChild(option);
-    }
-    if (!state.channels.length) {
-      const option = document.createElement('option');
-      option.textContent = 'No channels available';
-      channelSelect.appendChild(option);
-    }
-    channelSelect.disabled = !state.channels.length;
-    if (state.channels.length) void loadChannelDetails();
-    showDirectChats(state.directChats, state.directHasMore);
-    status(meetings.length ? 'Ready to join' : 'No admitted meetings for this account');
-  } catch {
-    error('Meeting access could not be checked. Close this window and try again.');
-    status('Meeting access unavailable');
-  }
+  await refreshMeetings();
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { void load(); });
