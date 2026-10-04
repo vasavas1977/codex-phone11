@@ -21,6 +21,9 @@ const m = vi.hoisted(() => ({
   mutate: vi.fn(),
   refetch: vi.fn(),
   alert: vi.fn(),
+  tenantRefetch: vi.fn(),
+  tables: [] as any[],
+  platform: { OS: "web" },
 }));
 vi.mock("react", async () => {
   const actual = await vi.importActual<typeof import("react")>("react");
@@ -70,7 +73,7 @@ vi.mock("react-native", () => ({
   Alert: { alert: m.alert },
   Modal: ({ visible, children }: any) =>
     visible ? element({ children }) : null,
-  Platform: { OS: "web" },
+  Platform: m.platform,
   StyleSheet: { create: (s: unknown) => s },
   Text: ({ children, accessibilityRole }: any) =>
     createElement("span", { role: accessibilityRole }, children),
@@ -105,6 +108,7 @@ vi.mock("../components/admin/admin-invitations", () => ({
 vi.mock("../components/admin/admin-people-table", () => ({
   AdminPeopleTable: ({ onEdit }: any) => {
     m.edit = onEdit;
+    m.tables.push(onEdit);
     return null;
   },
 }));
@@ -139,6 +143,7 @@ import AdminUsers from "../app/admin/users";
 function render() {
   m.frame.index = 0;
   m.presses.clear();
+  m.tables = [];
   const markup = renderToStaticMarkup(createElement(AdminUsers));
   for (const effect of m.frame.effects.splice(0)) effect();
   return markup;
@@ -175,9 +180,11 @@ beforeEach(() => {
   m.frame = { index: 0, values: [], effects: [] };
   m.user = { id: 7 };
   m.authUser = m.user;
+  m.platform.OS = "web";
   m.tenant = {
     data: { id: 18, userRole: "owner", name: "Support" },
     isSuccess: true,
+    refetch: m.tenantRefetch,
   };
   m.workspace = {
     selectedTenantId: 18,
@@ -186,6 +193,7 @@ beforeEach(() => {
   m.members = [{ id: 88, name: "Nok", role: "user", status: "active" }];
   m.mutate.mockResolvedValue({ success: true });
   m.refetch.mockResolvedValue({});
+  m.tenantRefetch.mockResolvedValue({});
 });
 
 describe("web member deactivation confirmation", () => {
@@ -613,5 +621,168 @@ describe("web member deactivation confirmation", () => {
     await settled();
     expect(m.presses.has("Close member editor")).toBe(false);
     expect(m.refetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("selected workspace request recovery", () => {
+  function failWorkspace(keepData = false) {
+    m.tenant = {
+      ...m.tenant,
+      data: keepData ? m.tenant.data : undefined,
+      isSuccess: false,
+      isError: true,
+      error: new Error("Workspace request unavailable"),
+    };
+    return render();
+  }
+
+  it("distinguishes a failed workspace request from denied administrator access and recovers management", async () => {
+    const markup = failWorkspace();
+    expect(markup).toContain("Couldn’t load workspace");
+    expect(markup).toContain("Workspace request unavailable");
+    expect(markup).not.toContain("Administrator access required");
+    press("Retry workspace request");
+    await settled();
+    expect(m.tenantRefetch).toHaveBeenCalledTimes(1);
+    m.tenant = {
+      ...m.tenant,
+      data: { id: 18, userRole: "owner" },
+      isSuccess: true,
+      isError: false,
+    };
+    open();
+    press("Administrator");
+    render();
+    press("Save membership changes");
+    await settled();
+    expect(m.mutate).toHaveBeenCalledWith({
+      tenantId: 18,
+      userId: 88,
+      role: "admin",
+    });
+  });
+
+  it("retires a pending destructive confirmation when a workspace refresh fails with cached owner data", async () => {
+    requestDeactivation();
+    const confirm = m.presses.get("Confirm member deactivation").onPress;
+    const markup = failWorkspace(true);
+    confirm();
+    await settled();
+    expect(m.mutate).not.toHaveBeenCalled();
+    expect(markup).toContain("Couldn’t load workspace");
+    expect(markup).not.toContain("Close member editor");
+    expect(m.tables).toHaveLength(0);
+    expect(m.presses.has("Close member editor")).toBe(false);
+  });
+
+  it.each([
+    "workspace",
+    "workspace-cycle",
+    "account",
+    "same-account-session",
+    "success",
+    "unmount",
+  ])("ignores a retained workspace retry after %s", async (change) => {
+    failWorkspace();
+    const retry = m.presses.get("Retry workspace request").onPress;
+    if (change === "workspace" || change === "workspace-cycle") {
+      m.workspace = { ...m.workspace, selectedTenantId: 19 };
+      render();
+      if (change === "workspace-cycle") {
+        m.workspace = { ...m.workspace, selectedTenantId: 18 };
+        render();
+      }
+    }
+    if (change === "account" || change === "same-account-session") {
+      m.authUser = { id: change === "account" ? 9 : 7 };
+      for (const listener of m.listeners) listener();
+    }
+    if (change === "success") {
+      m.tenant = {
+        ...m.tenant,
+        data: { id: 18, userRole: "owner" },
+        isSuccess: true,
+        isError: false,
+      };
+      render();
+    }
+    if (change === "unmount") unmount();
+    retry();
+    await settled();
+    expect(m.tenantRefetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed retry available without an unhandled rejection", async () => {
+    m.tenantRefetch.mockRejectedValueOnce(new Error("still unavailable"));
+    failWorkspace();
+    press("Retry workspace request");
+    await settled();
+    expect(render()).toContain("Workspace request unavailable");
+    press("Retry workspace request");
+    await settled();
+    expect(m.tenantRefetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("blocks a retry while workspace authority is being refreshed", async () => {
+    failWorkspace();
+    const retry = m.presses.get("Retry workspace request").onPress;
+    m.workspace.membershipsQuery.isFetching = true;
+    retry();
+    await settled();
+    expect(m.tenantRefetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects the retired member row callback after a failed workspace refresh", () => {
+    render();
+    const edit = m.edit!;
+    failWorkspace(true);
+    edit(m.members[0]);
+    render();
+    expect(m.presses.has("Close member editor")).toBe(false);
+  });
+
+  it.each(["ios", "android"])(
+    "retires a native %s deactivation alert after a failed workspace refresh",
+    async (platform) => {
+      m.platform.OS = platform;
+      requestDeactivation();
+      const confirm = m.alert.mock.calls[0][2].find(
+        (button: any) => button.style === "destructive",
+      ).onPress;
+      failWorkspace(true);
+      confirm();
+      await settled();
+      expect(m.mutate).not.toHaveBeenCalled();
+      expect(m.presses.has("Close member editor")).toBe(false);
+    },
+  );
+
+  it("rejects a retained retry immediately when the live selected workspace changes", async () => {
+    failWorkspace();
+    const retry = m.presses.get("Retry workspace request").onPress;
+    m.workspace.selectedTenantId = 19;
+    retry();
+    await settled();
+    expect(m.tenantRefetch).not.toHaveBeenCalled();
+  });
+
+  it("requires the current error's retry after a new request fails", async () => {
+    failWorkspace();
+    const retry = m.presses.get("Retry workspace request").onPress;
+    m.tenant = { ...m.tenant, error: new Error("New request failed") };
+    render();
+    retry();
+    await settled();
+    expect(m.tenantRefetch).not.toHaveBeenCalled();
+    press("Retry workspace request");
+    await settled();
+    expect(m.tenantRefetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves genuine administrator access denial", () => {
+    m.tenant.data.userRole = "user";
+    expect(render()).toContain("Administrator access required");
+    expect(m.presses.has("Retry workspace request")).toBe(false);
+    expect(m.tables).toHaveLength(0);
   });
 });

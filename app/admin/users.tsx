@@ -97,7 +97,8 @@ function AdminUsersContent() {
   const tenantQuery = useTenant();
   const tenantId = tenantQuery.data?.id;
   const actorRole = String(tenantQuery.data?.userRole || "");
-  const canManage = ["owner", "admin"].includes(actorRole);
+  const canManage =
+    tenantQuery.isSuccess && ["owner", "admin"].includes(actorRole);
   const canManageAdministrators = actorRole === "owner";
   const membersQuery = useTenantMembers(tenantQuery.isSuccess && canManage);
   const directory = useDirectory(tenantId, tenantQuery.isSuccess && canManage);
@@ -121,12 +122,30 @@ function AdminUsersContent() {
   const pendingConfirmation = useRef<MemberConfirmation | null>(null);
   const busy = useRef<MemberConfirmation | null>(null);
   const mounted = useRef(true);
+  // A retained retry must never refresh a different workspace through the
+  // same query observer, including when the selection later cycles back.
+  const workspaceRequestContext = useRef({
+    actor: user,
+    selectedTenantId: workspace.selectedTenantId,
+  });
+  if (
+    workspaceRequestContext.current.actor !== user ||
+    workspaceRequestContext.current.selectedTenantId !==
+      workspace.selectedTenantId
+  ) {
+    workspaceRequestContext.current = {
+      actor: user,
+      selectedTenantId: workspace.selectedTenantId,
+    };
+  }
+  const renderedWorkspaceRequestContext = workspaceRequestContext.current;
   const current = useRef({
     user,
     tenantId,
     workspace,
     canManage,
     actorRole,
+    tenantQuery,
     members: [] as TenantMember[],
   });
 
@@ -140,6 +159,7 @@ function AdminUsersContent() {
     workspace,
     canManage,
     actorRole,
+    tenantQuery,
     members,
   };
   const directoryPhotos = useMemo(() => {
@@ -236,9 +256,12 @@ function AdminUsersContent() {
   const openEditor = (member: TenantMember) => {
     if (
       busy.current ||
+      !mounted.current ||
       !user ||
       !tenantId ||
       !canManage ||
+      !current.current.canManage ||
+      workspaceRequestContext.current !== renderedWorkspaceRequestContext ||
       workspace.selectedTenantId !== tenantId ||
       Auth.getAuthSnapshot().user !== user
     )
@@ -387,6 +410,47 @@ function AdminUsersContent() {
         Loading workspace…
       </Text>
     </View>
+  ) : tenantQuery.isError ? (
+    <View style={styles.state}>
+      <Text
+        accessibilityRole="alert"
+        style={[styles.stateTitle, { color: colors.foreground }]}
+      >
+        Couldn’t load workspace
+      </Text>
+      <Text style={[styles.stateText, { color: colors.muted }]}>
+        {readableError(tenantQuery.error)}
+      </Text>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel="Retry workspace request"
+        disabled={
+          tenantQuery.isFetching || workspace.membershipsQuery.isFetching
+        }
+        onPress={() => {
+          const live = current.current;
+          if (
+            !mounted.current ||
+            workspaceRequestContext.current !==
+              renderedWorkspaceRequestContext ||
+            !user ||
+            live.user !== user ||
+            live.workspace.selectedTenantId !==
+              renderedWorkspaceRequestContext.selectedTenantId ||
+            Auth.getAuthSnapshot().user !== user ||
+            !live.workspace.membershipsQuery.isSuccess ||
+            live.workspace.membershipsQuery.isFetching ||
+            !live.tenantQuery.isError ||
+            live.tenantQuery.error !== tenantQuery.error ||
+            live.tenantQuery.isFetching
+          )
+            return;
+          void tenantQuery.refetch().catch(() => undefined);
+        }}
+      >
+        <Text style={[styles.retry, { color: colors.primary }]}>Try again</Text>
+      </TouchableOpacity>
+    </View>
   ) : !canManage ? (
     <View style={styles.state}>
       <Text style={[styles.stateTitle, { color: colors.foreground }]}>
@@ -503,7 +567,7 @@ function AdminUsersContent() {
       {body}
 
       <Modal
-        visible={Boolean(editing)}
+        visible={Boolean(editing) && canManage}
         animationType="slide"
         transparent
         onRequestClose={closeEditor}
