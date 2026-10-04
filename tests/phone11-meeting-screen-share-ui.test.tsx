@@ -63,6 +63,7 @@ it("listener UI cannot initiate screen capture", () => {
   expect(state.buttons.get("Share screen")!.disabled).toBe(true); state.buttons.get("Share screen")!.onPress(); expect(session.startScreenShare).not.toHaveBeenCalled();
 });
 it("allows a failed cleanup to be retried with Stop", () => {
-  const { session } = render({ available: false, status: "stopping", error: "Cleanup requires retry" });
+  const { session, html } = render({ available: false, status: "stopping", error: "Cleanup requires retry" });
+  expect(html).toContain("Cleanup requires retry");
   expect(state.buttons.get("Stop sharing screen")!.disabled).toBe(false); state.buttons.get("Stop sharing screen")!.onPress(); expect(session.stopScreenShare).toHaveBeenCalled();
 });

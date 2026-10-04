@@ -449,13 +449,13 @@ export function MeetingRoomState({
           );
         })}
 
-        {(feedback || snapshot.error) && (
+        {(screen?.error || feedback || snapshot.error) && (
           <Text
             accessibilityRole="alert"
             accessibilityLiveRegion="polite"
             style={[styles.feedback, { color: colors.foreground }]}
           >
-            {feedback ?? snapshot.error}
+            {screen?.error ?? feedback ?? snapshot.error}
           </Text>
         )}
       </ScrollView>
