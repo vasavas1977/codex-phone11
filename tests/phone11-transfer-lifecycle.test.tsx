@@ -9,6 +9,7 @@ const m = vi.hoisted(() => ({
   retired: false, retiredWrites: 0, params: { callId: "11" },
   calls: {} as Record<string, any>, account: null as any,
   callListeners: new Set<() => void>(), accountListeners: new Set<() => void>(),
+  warmSupported: false, warm: null as {requestId:string;phase:string;callId?:string;attempted:boolean}|null, begin: vi.fn(), cancel: vi.fn(), complete: vi.fn(),
   supported: true, attempted: false, transfer: vi.fn(), back: vi.fn(), replace: vi.fn(),
 }));
 vi.mock("react", async () => {
@@ -47,7 +48,7 @@ vi.mock("expo-secure-store", () => ({}));
 vi.mock("expo-router", () => ({ useLocalSearchParams: () => m.params, router: { canGoBack: () => true, back: m.back, replace: m.replace } }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ background: "white", foreground: "black", muted: "gray", surface: "white", primary: "blue", success: "green", error: "red" }) }));
-vi.mock("../lib/sip/sip-provider", () => ({ useSip: () => ({ transferCall: m.transfer, supportsBlindTransfer: () => m.supported, hasAttemptedBlindTransfer: () => m.attempted }) }));
+vi.mock("../lib/sip/sip-provider", () => ({ useSip: () => ({ transferCall: m.transfer, supportsBlindTransfer: () => m.supported, hasAttemptedBlindTransfer: () => m.attempted, supportsWarmTransfer: () => m.warmSupported, consultation: () => m.warm, beginConsultation:m.begin, cancelConsultation:m.cancel, completeConsultation:m.complete }) }));
 vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: Object.assign((select: any) => select({ activeCalls: m.calls, incomingCall: null }), {
   getState: () => ({ activeCalls: m.calls, incomingCall: null }),
   subscribe: (fn: () => void) => { m.callListeners.add(fn); return () => m.callListeners.delete(fn); },
@@ -99,6 +100,7 @@ beforeEach(() => {
   m.callListeners.clear(); m.accountListeners.clear(); m.params = { callId: "11" }; m.calls = { "11": call() };
   m.account = { id: "a", ownerUserId: 7, tenantId: 8, username: "1001", password: "not-live", enabled: true };
   m.supported = true; m.attempted = false; m.transfer.mockResolvedValue(undefined);
+  m.warmSupported=false; m.warm=null; m.begin.mockReset().mockResolvedValue(undefined); m.cancel.mockReset().mockResolvedValue(undefined); m.complete.mockReset().mockResolvedValue(undefined);
   Auth.updateAuthState({ user: null }); Auth.updateAuthState({ user: actor(), loading: false, error: null });
 });
 it.each(Object.keys(boundaries))("retires retained Submit after %s before sending a request", async key => {
@@ -155,4 +157,63 @@ it("does not revive a retained Submit when an account changes away and back befo
 });
 it("does not resend a retained Submit after its confirmed result", async () => {
   const submit = callback(); await submit(); await submit(); expect(m.transfer).toHaveBeenCalledOnce();
+});
+
+function warmSubmit() {
+  m.warmSupported=true; render(); m.presses.get("Choose consultation transfer").onPress(); render(); edit();
+  return m.presses.get("Start consultation call").onPress;
+}
+it("starts the real consultation path only when native capability is enabled",async()=>{
+  const submit=warmSubmit(); await submit();
+  expect(m.begin).toHaveBeenCalledWith("11","3003"); expect(m.transfer).not.toHaveBeenCalled();
+  expect(render()).not.toContain("Transfer confirmed.");
+});
+it("never falls back to blind transfer when consultation capability changes",async()=>{
+  const submit=warmSubmit(); m.warmSupported=false; await submit();
+  expect(m.begin).not.toHaveBeenCalled(); expect(m.transfer).not.toHaveBeenCalled();
+});
+it.each(Object.keys(boundaries))("retires a retained consultation Submit after %s",async key=>{
+  const submit=warmSubmit(); boundaries[key as keyof typeof boundaries](); await submit();
+  expect(m.begin).not.toHaveBeenCalled(); expect(m.transfer).not.toHaveBeenCalled(); expect(m.retiredWrites).toBe(0);
+});
+it("shows native phases while the original is held and confirms readiness only from the native phase",async()=>{
+  await warmSubmit()(); m.calls["11"]={...m.calls["11"],status:"held",isHeld:true};
+  m.warm={requestId:"original-request",phase:"holding",attempted:true};
+  expect(render()).toContain("only after hold is confirmed"); expect(m.presses.has("Complete consultation transfer")).toBe(false);
+  m.warm={...m.warm,phase:"switching",callId:"12"}; expect(render()).toContain("Waiting for consultation audio focus");
+  expect(m.presses.has("Complete consultation transfer")).toBe(false);
+  m.warm={...m.warm,phase:"ready"}; expect(render()).toContain("Consultation connected");
+  expect(m.presses.has("Complete consultation transfer")).toBe(true);
+  await m.presses.get("Complete consultation transfer").onPress(); expect(m.complete).toHaveBeenCalledWith("11","original-request");
+  expect(render()).not.toContain("Transfer confirmed.");
+  m.warm={...m.warm,phase:"completed"}; expect(render()).toContain("Transfer confirmed.");
+});
+it("offers explicit cancellation and waits for native original restoration",async()=>{
+  m.warmSupported=true; m.warm={requestId:"request",phase:"calling",attempted:true};
+  m.calls["11"]={...m.calls["11"],status:"held",isHeld:true}; render();
+  await m.presses.get("Return to original call").onPress(); expect(m.cancel).toHaveBeenCalledWith("11","request");
+  expect(render()).toContain("original caller is on hold"); expect(m.back).not.toHaveBeenCalled();
+  m.warm={...m.warm,phase:"returning"}; expect(render()).toContain("Waiting for hold confirmation");
+  m.warm={...m.warm,phase:"restoring_audio"}; expect(render()).toContain("Waiting for audio focus confirmation");
+  m.warm={...m.warm,phase:"returned"}; expect(render()).toContain("Your original call is available");
+  expect(m.presses.has("Complete consultation transfer")).toBe(false);
+});
+it("suppresses a retained warm completion/cancellation after request ownership changes",async()=>{
+  m.warmSupported=true; m.warm={requestId:"original-request",phase:"ready",attempted:true}; render();
+  const complete=m.presses.get("Complete consultation transfer").onPress, cancel=m.presses.get("Return to original call").onPress;
+  m.warm={...m.warm,requestId:"replacement-request"}; await complete(); await cancel();
+  expect(m.complete).not.toHaveBeenCalled(); expect(m.cancel).not.toHaveBeenCalled();
+});
+it.each(Object.keys(boundaries))("retires pending warm completion after %s",async key=>{
+  m.warmSupported=true; m.warm={requestId:"request",phase:"ready",attempted:true}; const result=deferred(); m.complete.mockReturnValueOnce(result.promise); render();
+  const pending=m.presses.get("Complete consultation transfer").onPress(); boundaries[key as keyof typeof boundaries]();
+  const before=JSON.stringify(m.frame.values,(_key,value)=>typeof value==="function"?"function":value);
+  result.resolve(); await pending; expect(m.retiredWrites).toBe(0);
+  expect(JSON.stringify(m.frame.values,(_key,value)=>typeof value==="function"?"function":value)).toBe(before);
+});
+it("keeps pending transfer uncertain and offers restoration after authoritative failure",()=>{
+  m.warmSupported=true; m.warm={requestId:"request",phase:"transferring",attempted:true};
+  expect(render()).toContain("server may still complete"); expect(m.presses.has("Return to original call")).toBe(false);
+  m.warm={...m.warm,phase:"transfer_failed"}; expect(render()).toContain("Transfer failed");
+  expect(m.presses.has("Return to original call")).toBe(true); expect(m.presses.has("Complete consultation transfer")).toBe(false);
 });

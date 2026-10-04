@@ -97,6 +97,10 @@ const bridge = {
   setSpeaker: vi.fn(async (_speaker: boolean) => {}),
   createTransferRequestId: vi.fn(async () => `00000000-0000-4000-8000-${String(++transferIdentity).padStart(12, "0")}`),
   transferCall: vi.fn(async (_id: string, _target: string, _requestId: string) => {}),
+  beginConsultation: vi.fn(async (_id: string, _target: string, _request: string) => {}),
+  continueConsultation: vi.fn(async (_id: string, _request: string) => {}),
+  cancelConsultation: vi.fn(async (_id: string, _request: string) => {}),
+  completeConsultation: vi.fn(async (_id: string, _request: string, _transfer: string) => {}),
   sendDtmf: vi.fn(async (_id: string, _digits: string) => {}),
   handleNativeAudioSession: vi.fn(async (_active: boolean) => {}),
   destroy: vi.fn(async () => {
@@ -119,6 +123,10 @@ beforeEach(() => {
     vi.clearAllMocks();
     runtime.storage.clear(); runtime.writeHistory.mockReset().mockImplementation(async (key: string, value: string) => { runtime.storage.set(key,value); });
     bridge.transferCall.mockReset().mockResolvedValue(undefined);
+    bridge.beginConsultation.mockReset().mockResolvedValue(undefined);
+    bridge.continueConsultation.mockReset().mockResolvedValue(undefined);
+    bridge.cancelConsultation.mockReset().mockResolvedValue(undefined);
+    bridge.completeConsultation.mockReset().mockResolvedValue(undefined);
     bridge.readCompletedWakeCalls.mockReset().mockResolvedValue([]); bridge.ackCompletedWakeCalls.mockReset().mockResolvedValue(undefined);
     runtime.wakeBinding.mockReset().mockResolvedValue(null);
     snapshot = emptySnapshot();
@@ -1142,5 +1150,149 @@ describe("Siprix blind transfer outcomes", () => {
     await connected(); const transfer = engine.transferCall("11", "3003");
     const assertion = expect(transfer).rejects.toThrow("session changed");
     await engine.destroy(); await assertion;
+  });
+});
+
+
+describe("default-off warm transfer native candidate", () => {
+  const requestId = "00000000-0000-4000-8000-111111111111";
+  const original = (phase: import("../modules/phone11-siprix").ConsultationPhase = "holding", extra: Partial<SiprixCall> = {}) => newCall({
+    state: "held", held: true, holdState: 1, historyId: "native-outbound:00000000-0000-4000-8000-000000000011",
+    consultationAttempted: true, consultationRequestId: requestId, consultationPhase: phase,
+    ...(phase !== "holding" ? { consultationCallId: "12" } : {}), ...extra,
+  });
+  const consult = () => newCall({ id: "12", callId: "12", state: "connected", consultationParentId: "11", consultationRequestId: requestId,
+    remoteUri: "sip:3003@sip.example.test", historyId: "native-outbound:00000000-0000-4000-8000-000000000012" });
+  async function warmReady() {
+    snapshot.warmTransferAvailable = true;
+    await ready(); await engine.makeCall("2002");
+    emit({ type: "callConnected", call: newCall({state:"connected"}) });
+  }
+  function admit() {
+    emit({type:"consultationChanged",call:original("calling")});
+    emit({type:"consultationChanged",call:consult()});
+    emit({type:"consultationChanged",call:original("ready")});
+  }
+  it("requires affirmative native capability, keeping old/gate-off builds and wake adoption unavailable", async () => {
+    await ready(); expect(engine.supportsWarmTransfer()).toBe(false);
+    await engine.makeCall("2002"); emit({type:"callConnected",call:newCall({state:"connected"})});
+    await expect(engine.beginConsultation("11","3003")).rejects.toThrow();
+    expect(bridge.beginConsultation).not.toHaveBeenCalled();
+  });
+  it("reauthorizes outward dialing after authoritative hold and sends one continuation only",async()=>{
+    await warmReady(); await engine.beginConsultation("11","3003");
+    emit({type:"callHeld",call:original("held_ready")});
+    emit({type:"callHeld",call:original("held_ready")});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.continueConsultation).toHaveBeenCalledOnce();
+    expect(bridge.continueConsultation).toHaveBeenCalledWith("11",requestId);
+  });
+  it.each(["logout","account","ended","request"])("does not dial a consultation retired between begin and hold (%s)",async boundary=>{
+    await warmReady(); await engine.beginConsultation("11","3003");
+    if (boundary === "logout") runtime.user=null;
+    if (boundary === "account") useSipAccountStore.setState({account:{...account,tenantId:99}});
+    if (boundary === "ended") emit({type:"callTerminated",call:newCall({state:"terminated"})});
+    if (boundary === "request") {
+      emit({type:"callHeld",call:original("held_ready")});
+      emit({type:"consultationChanged",call:original("canceling",{consultationRequestId:"replacement-request"})});
+    } else emit({type:"callHeld",call:original("held_ready")});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.continueConsultation).not.toHaveBeenCalled();
+    expect(bridge.makeCall).toHaveBeenCalledOnce();
+  });
+  it("starts a consultation using a native UUID and does not optimistically hold or create a second call",async()=>{
+    await warmReady(); expect(engine.supportsWarmTransfer()).toBe(true);
+    await engine.beginConsultation("11","3003");
+    expect(bridge.beginConsultation).toHaveBeenCalledWith("11","3003",expect.stringMatching(/^[0-9a-f-]{36}$/));
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(false);
+    expect(Object.keys(useSipCallStore.getState().activeCalls)).toEqual(["11"]);
+    emit({type:"consultationChanged",call:original()});
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(true);
+    expect(engine.consultation("11")?.phase).toBe("holding");
+    await expect(engine.beginConsultation("11","4004")).rejects.toThrow();
+    expect(bridge.beginConsultation).toHaveBeenCalledOnce();
+  });
+  it("rejects session change and original replacement while requesting a native identity",async()=>{
+    await warmReady(); const identity=deferred<string>(); bridge.createTransferRequestId.mockImplementationOnce(()=>identity.promise);
+    const pending=engine.beginConsultation("11","3003"); await new Promise(resolve=>setTimeout(resolve,0));
+    runtime.user={id:18}; identity.resolve(requestId);
+    await expect(pending).rejects.toThrow(); expect(bridge.beginConsultation).not.toHaveBeenCalled();
+  });
+  it("admits only a same-account native request-owned consultation, rejecting ordinary extra calls",async()=>{
+    await warmReady(); emit({type:"consultationChanged",call:original("calling")});
+    emit({type:"callConnected",call:{...consult(),consultationRequestId:"stale"}});
+    expect(bridge.hangupCall).toHaveBeenCalledWith("12");
+    expect(Object.keys(useSipCallStore.getState().activeCalls)).toEqual(["11"]);
+    admit(); expect(Object.keys(useSipCallStore.getState().activeCalls).sort()).toEqual(["11","12"]);
+    await expect(engine.makeCall("4004")).rejects.toThrow();
+    emit({type:"callIncoming",call:newCall({id:"13",callId:"13",state:"ringing",direction:"incoming"})});
+    expect(bridge.hangupCall).toHaveBeenCalledWith("13");
+  });
+  it("cancels only the current native consultation and waits for authoritative restoration",async()=>{
+    await warmReady(); admit();
+    await expect(engine.cancelConsultation("11","stale")).rejects.toThrow();
+    expect(bridge.cancelConsultation).not.toHaveBeenCalled();
+    await engine.cancelConsultation("11",requestId);
+    expect(bridge.cancelConsultation).toHaveBeenCalledWith("11",requestId);
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(true);
+    expect(bridge.hangupCall).not.toHaveBeenCalled(); // Native owns exactly the consultation leg.
+    emit({type:"callTerminated",call:{...consult(),state:"terminated"}});
+    emit({type:"consultationChanged",call:original("returned",{state:"connected",held:false,holdState:0})});
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(false);
+    await expect(engine.beginConsultation("11","4004")).rejects.toThrow();
+  });
+  it("rejects retained blind transfer before consuming its latch while consultation hold is pending",async()=>{
+    await warmReady();
+    emit({type:"consultationChanged",call:original("holding",{state:"connected",held:false,holdState:0})});
+    await expect(engine.transferCall("11","4004")).rejects.toThrow("consultation controls");
+    expect(bridge.transferCall).not.toHaveBeenCalled(); expect(engine.hasAttemptedBlindTransfer("11")).toBe(false);
+    admit(); const outcome=engine.completeConsultation("11",requestId); await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.completeConsultation).toHaveBeenCalledOnce();
+    const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("completed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})}); await outcome;
+  });
+  it("retains the single original CallKit audio session when SDK terminates original before transfer callback",async()=>{
+    await warmReady(); admit(); expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledOnce();
+    const outcome=engine.completeConsultation("11",requestId); const uncertain=expect(outcome).rejects.toThrow("ended before transfer");
+    await new Promise(resolve=>setTimeout(resolve,0)); const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transferring",{transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    emit({type:"callTerminated",call:original("transferring",{state:"terminated",transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    await uncertain; expect(runtime.callManager.reportCallEnded).not.toHaveBeenCalled(); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    emit({type:"callTransferred",call:original("completed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})});
+    expect(runtime.callManager.reportCallEnded).not.toHaveBeenCalled();
+    emit({type:"callTerminated",call:{...consult(),state:"terminated"}});
+    expect(runtime.callManager.reportCallEnded).toHaveBeenCalledOnce(); expect(runtime.callManager.reportCallEnded).toHaveBeenCalledWith("11");
+  });
+  it("waits for the matching attended SDK outcome and never forces disconnect after success",async()=>{
+    await warmReady(); admit(); let resolved=false;
+    const outcome=engine.completeConsultation("11",requestId).then(()=>{resolved=true;});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.completeConsultation).toHaveBeenCalledOnce(); expect(resolved).toBe(false);
+    const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transferring",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})});
+    await outcome; expect(resolved).toBe(true); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(Object.keys(useSipCallStore.getState().activeCalls).sort()).toEqual(["11","12"]);
+  });
+  it("preserves both legs on failed attended transfer and rejects a later transfer request",async()=>{
+    await warmReady(); admit(); const outcome=engine.completeConsultation("11",requestId);
+    await new Promise(resolve=>setTimeout(resolve,0));
+    const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transfer_failed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:486})});
+    await expect(outcome).rejects.toThrow("failed"); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    await expect(engine.completeConsultation("11",requestId)).rejects.toThrow();
+    expect(bridge.completeConsultation).toHaveBeenCalledOnce();
+    await engine.cancelConsultation("11",requestId); expect(bridge.cancelConsultation).toHaveBeenCalledOnce();
+  });
+  it("fences timed-out completion and delayed outcomes while keeping call controls responsive",async()=>{
+    vi.useFakeTimers();
+    try {
+      await warmReady(); admit(); const outcome=engine.completeConsultation("11",requestId); const failure=expect(outcome).rejects.toThrow("not been confirmed");
+      await vi.advanceTimersByTimeAsync(0); const transferId=bridge.completeConsultation.mock.calls[0][2];
+      await engine.setMute("11",true); expect(bridge.setMute).toHaveBeenCalledWith("11",true);
+      await vi.advanceTimersByTimeAsync(30_000); await failure;
+      await expect(engine.completeConsultation("11",requestId)).rejects.toThrow("One transfer attempt");
+      emit({type:"callTransferred",call:original("completed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})});
+      expect(bridge.completeConsultation).toHaveBeenCalledOnce(); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    } finally {vi.useRealTimers();}
   });
 });

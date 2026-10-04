@@ -123,6 +123,10 @@ static id<SiprixEventDelegate> sdkDelegate;
 
 static int transferInvocations, transferCode;
 static BOOL inlineTransferSuccess;
+static int attendedInvocations, attendedFrom, attendedTo;
+static BOOL inlineHeld;
+static int mixerSwitches, mixerCode, switchedCall, dtmfCall;
+static BOOL emitMixerSwitch = YES;
 @implementation SiprixModule
 - (int)initialize:(id<SiprixEventDelegate>)delegate iniData:(SiprixIniData *)iniData {
   initializes++;
@@ -175,11 +179,13 @@ static BOOL inlineTransferSuccess;
 - (int)callReject:(int)callId statusCode:(int)statusCode { rejects++; return sdkCode; }
 - (int)callBye:(int)callId { byes++; return sdkCode; }
 - (int)callTransferBlind:(int)callId toExt:(NSString *)toExt { transferInvocations++; if (inlineTransferSuccess) [sdkDelegate onCallTransferred:callId statusCode:0]; return transferCode; }
+- (int)callTransferAttended:(int)fromCallId toCallId:(int)toCallId { attendedInvocations++; attendedFrom=fromCallId; attendedTo=toCallId; if (inlineTransferSuccess) [sdkDelegate onCallTransferred:fromCallId statusCode:0]; return transferCode; }
+- (int)mixerSwitchCall:(int)callId { mixerSwitches++; switchedCall=callId; if (!mixerCode && emitMixerSwitch) [sdkDelegate onCallSwitched:callId]; return mixerCode; }
 - (int)callMuteMic:(int)callId mute:(BOOL)mute { mutes++; lastMuteCall = callId; lastMuteValue = mute; return sdkCode; }
 - (int)callGetHoldState:(int)callId holdState:(SiprixHoldData *)data { data.holdState = mockHold; return sdkCode; }
-- (int)callHold:(int)callId { holds++; return sdkCode; }
+- (int)callHold:(int)callId { holds++; if (!sdkCode && inlineHeld) [sdkDelegate onCallHeld:callId holdState:HoldStateLocal]; return sdkCode; }
 - (int)callSendDtmf:(int)callId dtmfs:(NSString *)digits durationMs:(int)duration intertoneGapMs:(int)gap method:(DtmfMethod)method {
-  dtmfs++; if (duration != 160 || gap != 80 || method != DtmfMethodRtp) abort(); return sdkCode;
+  dtmfs++; dtmfCall=callId; if (duration != 160 || gap != 80 || method != DtmfMethodRtp) abort(); return sdkCode;
 }
 - (void)activateSession:(AVAudioSession *)session { activations++; }
 - (void)deactivateSession:(AVAudioSession *)session { deactivations++; }

@@ -31,6 +31,8 @@ export interface WakeBinding {
 }
 export interface NativeWake extends WakeBinding { v: 1; callUUID: string; grantExpiresAt: number; }
 
+export type ConsultationPhase = "holding" | "held_ready" | "calling" | "ready" | "switching" | "restoring_audio" | "consultation_failed" | "canceling" | "returning" | "returned" | "return_failed" | "transferring" | "transfer_failed" | "completed";
+
 export interface Call {
   id: string;
   callId: string;
@@ -49,6 +51,12 @@ export interface Call {
   transferRequestId?: string;
   transferPending?: boolean;
   transferStatusCode?: number;
+  consultationAttempted?: boolean;
+  consultationRequestId?: string;
+  consultationCallId?: string;
+  consultationParentId?: string;
+  consultationDestination?: string;
+  consultationPhase?: ConsultationPhase;
   statusCode?: number;
   historyId?: string; startedAt?: number; answeredAt?: number;
   wakeCallUUID?: string;
@@ -56,6 +64,8 @@ export interface Call {
 }
 
 export interface Snapshot {
+  /** Default-off native source gate; never inferred from JS method presence. */
+  warmTransferAvailable?: boolean;
   nativeWake?: NativeWake;
   initialized: boolean;
   generation: number;
@@ -75,7 +85,7 @@ export interface PlaybackAudioRouteStatus {
 
 type EventData =
   | { type: 'registration'; account: Account }
-  | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted' | 'callTransferred' | 'callVideoChanged'; call: Call }
+  | { type: 'callIncoming' | 'callProceeding' | 'callConnected' | 'callTerminated' | 'callHeld' | 'callMuted' | 'callTransferred' | 'callVideoChanged' | 'consultationChanged'; call: Call }
   | { type: 'devicesAudioChanged' | 'audioSession'; audioSessionActive: boolean; speaker: boolean }
   | ({ type: 'playbackAudioRoute' } & PlaybackAudioRouteStatus)
   | { type: 'trial' }
@@ -120,6 +130,10 @@ export interface Phone11SiprixModule {
   /** Optional for compatibility with installed native builds predating transfer support. Resolves acceptance only. */
   createTransferRequestId?(): Promise<string>;
   transferCall?(callId: string, destination: string, requestId: string): Promise<void>;
+  beginConsultation?(callId: string, destination: string, requestId: string): Promise<void>;
+  continueConsultation?(callId: string, requestId: string): Promise<void>;
+  cancelConsultation?(callId: string, requestId: string): Promise<void>;
+  completeConsultation?(callId: string, requestId: string, transferRequestId: string): Promise<void>;
   setMute(callId: string, muted: boolean): Promise<void>;
   setHold(callId: string, held: boolean): Promise<void>;
   sendDtmf(callId: string, digits: string): Promise<void>;

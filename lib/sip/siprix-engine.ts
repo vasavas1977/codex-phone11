@@ -6,7 +6,7 @@ import { useSipCallStore } from "./call-store";
 import { callNumber, importCompletedWakeCalls } from "./call-history";
 import { useSipDiagnosticsStore } from "./diagnostics-store";
 import type {
-  AccountConfig, WakeBinding, Phone11SiprixModule, SiprixAccount, SiprixCall, SiprixEvent, SiprixSnapshot,
+  AccountConfig, WakeBinding, Phone11SiprixModule, SiprixAccount, SiprixCall, SiprixEvent, SiprixSnapshot, ConsultationPhase,
 } from "../../modules/phone11-siprix";
 
 // These compatibility labels belong to call-store, not to the Siprix SDK.
@@ -28,7 +28,7 @@ function nativeCall(call: SiprixCall) {
     getId: () => call.callId,
     getState: () => storeStates[call.state],
     getRemoteUri: () => call.remoteUri,
-    getInfo: () => ({ state: storeStates[call.state], remoteUri: call.remoteUri, historyId: call.historyId, startedAt: call.startedAt, answeredAt: call.answeredAt, hasVideo: call.hasVideo, cameraMuted: (call as SiprixCall & { cameraMuted?: boolean }).cameraMuted, videoOffered: (call as SiprixCall & { videoOffered?: boolean }).videoOffered }),
+    getInfo: () => ({ state: storeStates[call.state], remoteUri: call.remoteUri, historyId: call.historyId, startedAt: call.startedAt, answeredAt: call.answeredAt, hasVideo: call.hasVideo, cameraMuted: (call as SiprixCall & { cameraMuted?: boolean }).cameraMuted, videoOffered: (call as SiprixCall & { videoOffered?: boolean }).videoOffered, consultationAttempted: call.consultationAttempted, consultationRequestId: call.consultationRequestId, consultationCallId: call.consultationCallId, consultationPhase: call.consultationPhase, consultationDestination: call.consultationDestination }),
     xferReplaces: async () => { throw unsupported("attended transfer"); },
   };
 }
@@ -83,6 +83,9 @@ export class SiprixEngine {
   private terminated = new Set<string>();
   private connected = new Set<string>();
   private audioActive = false;
+  private warmTransferAvailable = false;
+  private consultationContinuations = new Set<string>();
+  private deferredCallKitEnds = new Map<string,string>();
   private transferAttempts = new Set<string>();
   private transfers = new Map<string, { requestId?: string; settle: (error?: Error) => void }>();
   private callManager: typeof import("./native-call").nativeCallManager | null = null;
@@ -287,8 +290,9 @@ export class SiprixEngine {
       // introduce a new call or revive a terminated lifetime.
       if (this.calls.has(event.call.callId)) this.applyCall(event.call);
       this.transferOutcome(event.call);
-    } else if (["callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted", "callVideoChanged"].includes(event.type) && "call" in event) {
+    } else if (["callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted", "callVideoChanged", "consultationChanged"].includes(event.type) && "call" in event) {
       this.applyCall(event.call, event.type === "callConnected");
+      this.requestConsultationContinuation(event.call);
     } else if (event.type === "network" && "networkState" in event && event.networkState === 0) {
       this.networkLost = true;
       useSipAccountStore.getState().setRegistrationState("network_error", "Siprix network lost");
@@ -319,11 +323,13 @@ export class SiprixEngine {
     const account = snapshot.accounts.find(item => item.accountId === session.accountId);
     if (account) this.registration(account, true);
     else useSipAccountStore.getState().setRegistrationState("unregistered");
+    this.warmTransferAvailable = snapshot.warmTransferAvailable === true && !snapshot.nativeWake;
     const present = new Set(snapshot.calls.map(call => call.callId));
     for (const id of this.calls.keys()) if (!present.has(id)) this.endCall(id);
-    for (const call of snapshot.calls) {
+    for (const call of [...snapshot.calls].sort((a,b) => Number(!!a.consultationParentId) - Number(!!b.consultationParentId))) {
       this.applyCall(call, call.state === "connected");
       this.transferOutcome(call);
+      this.requestConsultationContinuation(call);
     }
   }
 
@@ -355,7 +361,19 @@ export class SiprixEngine {
   private endCall(id: string): void {
     this.transfers.get(id)?.settle(new Error("The call ended before transfer was confirmed."));
     this.transferAttempts.delete(id);
-    if (this.calls.has(id)) this.callManager?.reportCallEnded(id);
+    const ended = this.calls.get(id);
+    const consult = ended?.consultationCallId ? this.calls.get(ended.consultationCallId) : undefined;
+    if (ended && consult && consult.consultationRequestId === ended.consultationRequestId &&
+        ["transferring","completed"].includes(ended.consultationPhase ?? "")) {
+      // SDK success may terminate the original before its transfer callback. Keep
+      // the original OS audio session until the owned consultation also ends.
+      this.deferredCallKitEnds.set(consult.callId,id);
+    } else if (ended && !ended.consultationParentId) this.callManager?.reportCallEnded(id);
+    const deferredOriginal = this.deferredCallKitEnds.get(id);
+    if (deferredOriginal) {
+      this.deferredCallKitEnds.delete(id);
+      this.callManager?.reportCallEnded(deferredOriginal);
+    }
     this.terminated.add(id);
     this.connected.delete(id);
     this.calls.delete(id);
@@ -366,7 +384,12 @@ export class SiprixEngine {
     if (call.accountId !== this.session?.accountId || !call.callId || !(call.state in storeStates)) return;
     if (call.state === "terminated") { this.endCall(call.callId); return; }
     if (this.terminated.has(call.callId)) return;
-    if (this.calls.size > 0 && !this.calls.has(call.callId)) {
+    const parent = call.consultationParentId ? this.calls.get(call.consultationParentId) : undefined;
+    const ownedConsultation = this.warmTransferAvailable && call.direction === "outgoing" && !!parent &&
+      parent.accountId === call.accountId && parent.consultationCallId === call.callId &&
+      !!parent.consultationRequestId && parent.consultationRequestId === call.consultationRequestId &&
+      this.calls.size === 1;
+    if (this.calls.size > 0 && !this.calls.has(call.callId) && !ownedConsultation) {
       void this.bridge?.hangupCall(call.callId).catch(() => this.failure("reject unsupported call"));
       return;
     }
@@ -386,7 +409,9 @@ export class SiprixEngine {
         } else this.callManager?.displayIncomingCall(call.callId, displayHandle);
         store.setIncomingCall(handle);
       } else {
-        this.callManager?.reportOutgoingCall(call.callId, displayHandle);
+        // A consultation is a bounded media leg inside the original CallKit session.
+        // Preserve the existing one-group/one-call OS configuration.
+        if (!call.consultationParentId) this.callManager?.reportOutgoingCall(call.callId, displayHandle);
         store.addOutgoingCall(handle, call.remoteUri);
       }
     }
@@ -395,7 +420,7 @@ export class SiprixEngine {
     if (call.state === "connected" || call.state === "held") store.setHeld(call.callId, call.holdState !== 0);
     if (confirmed && call.state === "connected" && !this.connected.has(call.callId)) {
       this.connected.add(call.callId);
-      this.callManager?.reportCallConnected(call.callId);
+      if (!call.consultationParentId) this.callManager?.reportCallConnected(call.callId);
     }
   }
 
@@ -533,6 +558,93 @@ export class SiprixEngine {
     if (!/^[0-9*#A-D]+$/i.test(digits)) return Promise.reject(new Error("Invalid DTMF digits"));
     return this.command(callId, "DTMF", bridge => bridge.sendDtmf(callId, digits.toUpperCase()));
   }
+  supportsWarmTransfer(): boolean {
+    return this.current() && this.warmTransferAvailable && typeof this.bridge?.beginConsultation === "function" &&
+      typeof this.bridge?.continueConsultation === "function" && typeof this.bridge?.cancelConsultation === "function" && typeof this.bridge?.completeConsultation === "function" &&
+      typeof this.bridge?.createTransferRequestId === "function";
+  }
+
+  private requestConsultationContinuation(call: SiprixCall): void {
+    if (!this.supportsWarmTransfer() || call.consultationPhase !== "held_ready" || !call.consultationRequestId ||
+        call.consultationParentId || this.calls.get(call.callId) !== call || call.accountId !== this.session?.accountId) return;
+    const requestId = call.consultationRequestId;
+    const key = `${call.callId}:${requestId}`;
+    if (this.consultationContinuations.has(key)) return;
+    this.consultationContinuations.add(key);
+    void this.command(call.callId,"consultation dial",async bridge => {
+      // This check executes immediately before the native invocation; a logout,
+      // account replacement, cancellation or ended call cannot authorize a dial.
+      const original = this.calls.get(call.callId);
+      if (!this.supportsWarmTransfer() || !bridge.continueConsultation || original?.consultationRequestId !== requestId ||
+          original.consultationPhase !== "held_ready" || original.holdState !== 1 || this.calls.size !== 1) throw new Error("The consultation changed before dialing.");
+      await bridge.continueConsultation(call.callId,requestId);
+    }).catch(() => undefined); // Native phase/UI retains Return controls; never fabricate connection.
+  }
+
+  consultation(callId: string): { requestId: string; phase: ConsultationPhase; callId?: string; attempted: boolean } | null {
+    const call = this.calls.get(callId);
+    return this.current() && call?.consultationRequestId && call.consultationPhase
+      ? { requestId: call.consultationRequestId, phase: call.consultationPhase, callId: call.consultationCallId, attempted: !!call.consultationAttempted } : null;
+  }
+
+  beginConsultation(callId: string, destination: string): Promise<void> {
+    const target = destination.trim();
+    if (!/^\+?[0-9*#]{1,32}$/.test(target)) return Promise.reject(new Error("Enter a phone number or extension."));
+    return this.command(callId, "consultation", async bridge => {
+      if (!this.supportsWarmTransfer() || !bridge.beginConsultation || !bridge.createTransferRequestId) throw unsupported("consultation in this native build");
+      const session = this.requireSession(); const original = this.calls.get(callId)!;
+      if (original.state !== "connected" || original.holdState !== 0 || this.calls.size !== 1 ||
+          original.consultationAttempted || this.hasAttemptedBlindTransfer(callId)) throw new Error("Consultation requires one resumed call and permits one consultation attempt per call.");
+      const requestId = await bridge.createTransferRequestId();
+      if (!this.current(session) || this.calls.get(callId) !== original || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId)) throw new Error("The call changed before consultation started.");
+      await bridge.beginConsultation(callId, target, requestId);
+    });
+  }
+
+  cancelConsultation(callId: string, requestId: string): Promise<void> {
+    return this.command(callId, "return to original call", async bridge => {
+      if (!this.supportsWarmTransfer() || !bridge.cancelConsultation || this.consultation(callId)?.requestId !== requestId) throw new Error("The consultation changed.");
+      await bridge.cancelConsultation(callId, requestId);
+    });
+  }
+
+  completeConsultation(callId: string, requestId: string): Promise<void> {
+    if (!this.supportsWarmTransfer() || this.consultation(callId)?.requestId !== requestId ||
+        this.consultation(callId)?.phase !== "ready") return Promise.reject(new Error("Wait for the consultation to connect."));
+    if (this.transfers.has(callId) || this.hasAttemptedBlindTransfer(callId)) return Promise.reject(new Error("One transfer attempt per call."));
+    let settled = false;
+    let settle!: (error?: Error) => void;
+    let pending!: { requestId?: string; settle: (error?: Error) => void };
+    const outcome = new Promise<void>((resolve,reject) => {
+      const timer = setTimeout(() => settle(new Error("Transfer has not been confirmed. Keep the calls open; the server may still complete it. One transfer attempt per call.")),30_000);
+      settle = error => {
+        if (settled) return; settled = true; clearTimeout(timer);
+        if (this.transfers.get(callId) === pending) this.transfers.delete(callId);
+        if (error) reject(error); else resolve();
+      };
+    });
+    pending = { settle }; this.transfers.set(callId,pending);
+    void this.command(callId,"attended transfer",async bridge => {
+      const session = this.requireSession(); const original = this.calls.get(callId)!;
+      const consult = original.consultationCallId ? this.calls.get(original.consultationCallId) : undefined;
+      if (!bridge.completeConsultation || !bridge.createTransferRequestId || original.consultationRequestId !== requestId ||
+          original.consultationPhase !== "ready" || !consult || consult.accountId !== original.accountId || consult.state !== "connected" ||
+          consult.holdState !== 0 || original.holdState !== 1 || this.calls.size !== 2) throw new Error("The consultation is no longer ready.");
+      const transferId = await bridge.createTransferRequestId();
+      if (settled || !this.current(session) || this.calls.get(callId) !== original || this.calls.get(consult.callId) !== consult ||
+          !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(transferId)) throw new Error("The consultation changed before transfer was sent.");
+      pending.requestId = transferId; this.transferAttempts.add(callId);
+      try { await bridge.completeConsultation(callId,requestId,transferId); }
+      catch (error) {
+        const code = (error as {code?:unknown})?.code;
+        if (this.current(session) && this.transfers.get(callId) === pending && typeof code === "string" &&
+            ["E_CALL_STATE","E_TRANSFER_ATTEMPTED","E_INVALID_ARGUMENT","E_UNSUPPORTED","E_CONSULTATION_CHANGED"].includes(code)) this.transferAttempts.delete(callId);
+        throw error;
+      }
+    }).catch(() => settle(new Error("Attended transfer could not be confirmed. Keep the original call open and use Return to original call when available.")));
+    return outcome;
+  }
+
   supportsBlindTransfer(): boolean {
     return this.current() && typeof this.bridge?.transferCall === "function" && typeof this.bridge?.createTransferRequestId === "function";
   }
@@ -546,6 +658,7 @@ export class SiprixEngine {
     if (!/^\+?[0-9*#]{1,32}$/.test(target)) return Promise.reject(new Error("Enter a phone number or extension."));
     if (!this.supportsBlindTransfer()) return Promise.reject(new Error("Install the Phone11 update to enable call transfer."));
     const call = this.calls.get(callId);
+    if (call?.consultationParentId || (call?.consultationPhase && call.consultationPhase !== "returned")) return Promise.reject(new Error("Use consultation controls to return to the original call before blind transfer."));
     if (!call || call.state !== "connected" || call.held || call.holdState !== 0) return Promise.reject(new Error("Resume the connected call before transferring it."));
     if (this.transfers.has(callId)) return Promise.reject(new Error("A transfer is already in progress."));
     if (this.hasAttemptedBlindTransfer(callId)) return Promise.reject(new Error("Transfer is unavailable for this call. One transfer attempt per call; return to call controls."));
@@ -585,7 +698,7 @@ export class SiprixEngine {
         // These native guards precede callTransferBlind. Unknown transport/SDK
         // failures remain uncertain and cannot authorize another invocation.
         if (this.current(session) && this.transfers.get(callId) === pending &&
-            ["E_CALL_STATE", "E_INVALID_ARGUMENT", "E_NOT_INITIALIZED", "E_RUNTIME_IN_USE", "E_UNKNOWN_ID", "E_CLEANUP_REQUIRED"].includes((error as { code?: string })?.code ?? ""))
+            ["E_CALL_STATE", "E_CONSULTATION_ACTIVE", "E_INVALID_ARGUMENT", "E_NOT_INITIALIZED", "E_RUNTIME_IN_USE", "E_UNKNOWN_ID", "E_CLEANUP_REQUIRED"].includes((error as { code?: string })?.code ?? ""))
           this.transferAttempts.delete(callId);
         throw error;
       }
@@ -627,7 +740,11 @@ export class SiprixEngine {
     }
     for (const id of this.calls.keys()) this.endCall(id);
     this.calls.clear();
+    for (const id of this.deferredCallKitEnds.values()) this.callManager?.reportCallEnded(id);
+    this.deferredCallKitEnds.clear();
     this.transferAttempts.clear();
+    this.warmTransferAvailable = false;
+    this.consultationContinuations.clear();
     this.terminated.clear();
     this.connected.clear();
     this.callManager = null;

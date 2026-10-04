@@ -33,6 +33,11 @@ interface SipContextValue {
   sendDtmf: (callId: string, digit: string) => Promise<void>;
   transferCall: (callId: string, destination: string) => Promise<void>;
   supportsBlindTransfer: () => boolean;
+  supportsWarmTransfer: () => boolean;
+  consultation: typeof siprixEngine.consultation;
+  beginConsultation: (callId: string, destination: string) => Promise<void>;
+  cancelConsultation: (callId: string, requestId: string) => Promise<void>;
+  completeConsultation: (callId: string, requestId: string) => Promise<void>;
   hasAttemptedBlindTransfer: (callId: string) => boolean;
 }
 
@@ -47,6 +52,11 @@ const SipContext = createContext<SipContextValue>({
   sendDtmf: async () => {},
   transferCall: async () => {},
   supportsBlindTransfer: () => false,
+  supportsWarmTransfer: () => false,
+  consultation: () => null,
+  beginConsultation: async () => { throw new Error("Consultation transfer is unavailable."); },
+  cancelConsultation: async () => { throw new Error("Consultation transfer is unavailable."); },
+  completeConsultation: async () => { throw new Error("Consultation transfer is unavailable."); },
   hasAttemptedBlindTransfer: () => false,
 });
 
@@ -327,6 +337,11 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     transferCall: async (id, dest) => {
       await sipEngine.transferCall(id, dest);
     },
+    supportsWarmTransfer: () => Platform.OS === "ios" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" && siprixEngine.supportsWarmTransfer(),
+    consultation: id => siprixEngine.consultation(id),
+    beginConsultation: (id,dest) => siprixEngine.beginConsultation(id,dest),
+    cancelConsultation: (id,requestId) => siprixEngine.cancelConsultation(id,requestId),
+    completeConsultation: (id,requestId) => siprixEngine.completeConsultation(id,requestId),
     hasAttemptedBlindTransfer: id => siprixEngine.hasAttemptedBlindTransfer(id),
     supportsBlindTransfer: () => Platform.OS === "ios" &&
       process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" &&

@@ -8,6 +8,10 @@
 #ifndef PHONE11_VOIP_WAKE_COMMISSIONED
 #define PHONE11_VOIP_WAKE_COMMISSIONED 0
 #endif
+#ifndef PHONE11_WARM_TRANSFER_SOURCE_ENABLED
+// Source candidate only: activation requires independent native/provider/device acceptance.
+#define PHONE11_WARM_TRANSFER_SOURCE_ENABLED 0
+#endif
 #if PHONE11_VOIP_WAKE_COMMISSIONED
 #import "Phone11WakeCoordinator.h"
 #endif
@@ -178,6 +182,9 @@ static NSString *P11HistoryNumber(id uri) {
 - (void)scheduleWakeRefreshAfter:(double)delay block:(dispatch_block_t)block;
 - (void)emit:(NSString *)type data:(NSDictionary *)data;
 - (void)receive:(NSString *)type data:(NSDictionary *)data generation:(NSUInteger)generation;
+- (void)consultationChanged:(NSMutableDictionary *)original;
+- (void)returnFromConsultation:(NSMutableDictionary *)original;
+- (void)inviteConsultation:(NSMutableDictionary *)original;
 - (int)shutdown;
 - (void)clearWake:(BOOL)failed;
 - (void)wakeNotify:(NSString *)type;
@@ -501,9 +508,75 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
            @"generation": @(self.generation), @"sequence": @(self.sequence),
            @"sdkVersion": self.sdkVersion ?: NSNull.null, @"accounts": accounts, @"calls": calls,
            @"audioSessionActive": @(self.audioSessionActive), @"speaker": @(P11Speaker()),
-           @"trialNotified": @(self.trialNotified)} mutableCopy];
+           @"trialNotified": @(self.trialNotified),
+           @"warmTransferAvailable": @(PHONE11_WARM_TRANSFER_SOURCE_ENABLED && !self.wakeContext)} mutableCopy];
   if (self.wakeContext) snapshot[@"nativeWake"] = self.wakeContext;
   return snapshot;
+}
+// Consultation ownership is retained in the exact original call dictionary, not JS screen state.
+// Only one consultation attempt per original lifetime: SDK hold/transfer callbacks lack request IDs.
+- (void)consultationChanged:(NSMutableDictionary *)original {
+  if (self.calls[original[@"callId"]] == original)
+    [self emit:@"consultationChanged" data:@{@"call":[original copy]}];
+}
+- (void)returnFromConsultation:(NSMutableDictionary *)original {
+  if (self.calls[original[@"callId"]] != original || [original[@"transferPending"] boolValue]) return;
+  NSString *consultId = original[@"consultationCallId"];
+  if (consultId && self.calls[consultId]) return; // Wait for authoritative termination, never mix both legs.
+  if ([self.pendingHolds containsObject:original[@"callId"]]) {
+    original[@"consultationPhase"] = @"canceling"; [self consultationChanged:original]; return;
+  }
+  SiprixHoldData *hold = [SiprixHoldData new];
+  int code = [self.sdk callGetHoldState:[original[@"callId"] intValue] holdState:hold];
+  if (!code && (hold.holdState & HoldStateLocal)) {
+    // Remove only the local hold we acquired; a remote hold remains authoritative.
+    code = [self.sdk callHold:[original[@"callId"] intValue]];
+    if (!code) {
+      [self.pendingHolds addObject:original[@"callId"]];
+      original[@"consultationPhase"] = @"returning";
+    }
+  } else if (!code) {
+    original[@"consultationPhase"] = @"restoring_audio";
+    code = [self.sdk mixerSwitchCall:[original[@"callId"] intValue]];
+  }
+  if (code) {
+    original[@"consultationPhase"] = @"return_failed";
+    [self emit:@"error" data:@{@"operation":@"consultationReturn", @"code":@(code)}];
+  }
+  [self consultationChanged:original];
+}
+- (void)inviteConsultation:(NSMutableDictionary *)original {
+  if (self.calls[original[@"callId"]] != original || ![original[@"consultationPhase"] isEqual:@"held_ready"]) return;
+  if (self.calls.count != 1 || self.wakeContext || self.accountChangeLease ||
+      ![self.accounts[original[@"accountId"]][@"registrationState"] isEqual:@"registered"] ||
+      [original[@"holdState"] integerValue] != HoldStateLocal) {
+    original[@"consultationPhase"] = @"canceling"; [self returnFromConsultation:original]; return;
+  }
+  SiprixDestData *dest = [SiprixDestData new];
+  dest.fromAccId = [original[@"accountId"] intValue]; dest.toExt = original[@"consultationDestination"]; dest.withVideo = @NO;
+  NSString *uuid = NSUUID.UUID.UUIDString.lowercaseString;
+  dest.xheaders = @{@"X-Phone11-Outbound-ID":uuid};
+  int code = [self.sdk callInvite:dest];
+  if (code || dest.myCallId <= kInvalidId || self.calls[P11ID(dest.myCallId)] || [self.retiredCallIDs containsObject:P11ID(dest.myCallId)]) {
+    if (!code) self.quarantined = YES; // Invalid/reused native ID cannot safely identify a consultation.
+    original[@"consultationPhase"] = @"canceling";
+    [self emit:@"error" data:@{@"operation":@"consultationInvite", @"code":@(code ?: -1)}];
+    [self returnFromConsultation:original]; return;
+  }
+  NSString *consultId = P11ID(dest.myCallId);
+  NSMutableDictionary *consult = P11Call(consultId, original[@"accountId"], @"outgoing", @"dialing", dest.toExt);
+  consult[@"consultationParentId"] = original[@"callId"];
+  consult[@"consultationRequestId"] = original[@"consultationRequestId"];
+  consult[@"historyId"] = [@"native-outbound:" stringByAppendingString:uuid]; consult[@"startedAt"] = @(P11NowMs());
+  self.calls[consultId] = consult;
+  original[@"consultationCallId"] = consultId;
+  // Keep the second leg muted until connected and explicitly given mixer focus.
+  int muteCode = [self.sdk callMuteMic:consultId.intValue mute:YES];
+  consult[@"muted"] = @(muteCode == 0);
+  original[@"consultationPhase"] = muteCode ? @"consultation_failed" : @"calling";
+  if (muteCode) [self emit:@"error" data:@{@"operation":@"consultationInitialMute",@"code":@(muteCode)}];
+  [self consultationChanged:original]; // Admit parent relationship before introducing the second leg.
+  [self emit:@"consultationChanged" data:@{@"call":[consult copy]}];
 }
 - (void)scheduleWakeRefreshAfter:(double)delay block:(dispatch_block_t)block {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
@@ -659,6 +732,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
       call[@"holdState"] = @(state);
       call[@"state"] = state == HoldStateNone ? @"connected" : @"held";
       [self.pendingHolds removeObject:callId];
+      if ([call[@"consultationPhase"] isEqual:@"holding"] && state == HoldStateLocal) call[@"consultationPhase"] = @"held_ready";
     }
     // Snapshot before either callback: notification can synchronously adopt,
     // clean up, or replace the runtime without necessarily changing generation.
@@ -667,6 +741,40 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
     NSString *endedUUID = self.wakeContext[@"callUUID"];
     NSString *endedLease = self.lease;
     [self emit:type data:@{@"call": [call copy]}];
+    if (self.generation == endedGeneration && self.calls[callId] == call && call[@"consultationPhase"] && [type isEqual:@"callHeld"]) {
+      NSString *phase = call[@"consultationPhase"];
+      if ([phase isEqual:@"canceling"]) [self returnFromConsultation:call];
+      else if ([phase isEqual:@"returning"] && !([call[@"holdState"] integerValue] & HoldStateLocal)) {
+        [self returnFromConsultation:call];
+      }
+    }
+    if (self.generation == endedGeneration && call[@"consultationParentId"]) {
+      NSMutableDictionary *original = self.calls[call[@"consultationParentId"]];
+      if (original && [original[@"consultationCallId"] isEqual:callId] &&
+          [original[@"consultationRequestId"] isEqual:call[@"consultationRequestId"]]) {
+        if ([type isEqual:@"callConnected"] && [original[@"consultationPhase"] isEqual:@"calling"]) {
+          int code = [self.sdk callMuteMic:callId.intValue mute:[original[@"muted"] boolValue]];
+          if (!code) {
+            call[@"muted"] = original[@"muted"];
+            [self emit:@"callMuted" data:@{@"call":[call copy]}];
+            original[@"consultationPhase"] = @"switching";
+            code = [self.sdk mixerSwitchCall:callId.intValue];
+          }
+          if (code) {
+            original[@"consultationPhase"] = @"consultation_failed";
+            [self emit:@"error" data:@{@"operation":@"consultationAudioFocus",@"code":@(code)}];
+          }
+          [self consultationChanged:original];
+        } else if ([type isEqual:@"callTerminated"] && ![original[@"transferPending"] boolValue] &&
+                   ![original[@"consultationPhase"] isEqual:@"completed"]) [self returnFromConsultation:original];
+      }
+    }
+    if (self.generation == endedGeneration && [type isEqual:@"callTerminated"] && call[@"consultationCallId"]) {
+      // The original remote party ended the call. Only its owned consultation is canceled.
+      NSMutableDictionary *consult = self.calls[call[@"consultationCallId"]];
+      if (consult && [consult[@"consultationRequestId"] isEqual:call[@"consultationRequestId"]] &&
+          ![call[@"consultationPhase"] isEqual:@"completed"] && ![call[@"consultationPhase"] isEqual:@"transferring"]) [self.sdk callBye:[consult[@"callId"] intValue]];
+    }
     if (self.generation == endedGeneration && [self.wakeContext[@"callUUID"] isEqual:endedUUID] && [self.wakeCallId isEqualToString:callId]) {
       if ([type isEqualToString:@"callConnected"]) [self wakeNotify:@"connected"];
       if ([type isEqualToString:@"callTerminated"]) {
@@ -681,12 +789,23 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
         }
       }
     }
+  } else if ([type isEqualToString:@"callSwitched"] && call) {
+    NSMutableDictionary *original = call[@"consultationParentId"] ? self.calls[call[@"consultationParentId"]] : call;
+    if (original == call && [original[@"consultationPhase"] isEqual:@"restoring_audio"] &&
+        !self.calls[original[@"consultationCallId"] ?: @""] && !([original[@"holdState"] integerValue] & HoldStateLocal)) {
+      original[@"consultationPhase"] = @"returned"; [self consultationChanged:original];
+    } else if (original != call && [original[@"consultationCallId"] isEqual:callId] &&
+               [original[@"consultationRequestId"] isEqual:call[@"consultationRequestId"]] &&
+               [original[@"consultationPhase"] isEqual:@"switching"] && [call[@"state"] isEqual:@"connected"]) {
+      original[@"consultationPhase"] = @"ready"; [self consultationChanged:original];
+    }
   } else if ([type isEqualToString:@"callVideoChanged"] && call) {
     call[@"hasVideo"] = @([data[@"hasVideo"] boolValue]);
     [self emit:type data:@{@"call": [call copy]}];
   } else if ([type isEqualToString:@"callTransferred"] && call && [call[@"transferPending"] boolValue]) {
     call[@"transferPending"] = @NO;
     call[@"transferStatusCode"] = data[@"statusCode"];
+    if ([call[@"consultationPhase"] isEqual:@"transferring"]) call[@"consultationPhase"] = [data[@"statusCode"] intValue] == 0 ? @"completed" : @"transfer_failed";
     [self emit:type data:@{@"call": [call copy]}];
   } else if ([type isEqualToString:@"devicesAudioChanged"]) {
     [self emit:type data:@{@"audioSessionActive": @(self.audioSessionActive), @"speaker": @(P11Speaker())}];
@@ -798,7 +917,7 @@ static NSMutableDictionary *P11Call(NSString *callId, NSString *accountId, NSStr
 - (void)onSubscriptionState:(NSInteger)subscrId subscrState:(SubscrState)state response:(NSString *)response {}
 - (void)onPlayerState:(NSInteger)playerId playerState:(PlayerState)state {}
 - (void)onRingerState:(BOOL)started {}
-- (void)onCallSwitched:(NSInteger)callId {}
+- (void)onCallSwitched:(NSInteger)callId { [self post:@"callSwitched" data:@{@"callId":P11ID(callId)}]; }
 - (void)onCallTransferred:(NSInteger)callId statusCode:(NSInteger)code {
   [self post:@"callTransferred" data:@{@"callId": P11ID(callId), @"statusCode": @(code)}];
 }
@@ -1230,7 +1349,7 @@ RCT_EXPORT_METHOD(initialize:(NSDictionary *)options resolver:(RCTPromiseResolve
   ini.logLevelFile = @(LogLevelNoLog);
   ini.logLevelIde = @(LogLevelNoLog);
   ini.tlsVerifyServer = @YES;
-  ini.singleCallMode = @YES;
+  ini.singleCallMode = @(!PHONE11_WARM_TRANSFER_SOURCE_ENABLED); // Ordinary builds retain the single-call baseline.
   ini.enableVideoCall = @YES; // Media capability only; voice invite/answer still explicitly use NO.
   ini.unregOnDestroy = @YES;
   int code = [runtime.sdk initialize:runtime.delegate iniData:ini];
@@ -1548,10 +1667,94 @@ RCT_EXPORT_METHOD(createTransferRequestId:(RCTPromiseResolveBlock)resolve reject
   resolve(NSUUID.UUID.UUIDString.lowercaseString);
 }
 
+RCT_EXPORT_METHOD(beginConsultation:(NSString *)callId destination:(NSString *)destination requestId:(NSString *)requestId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  if (!PHONE11_WARM_TRANSFER_SOURCE_ENABLED || runtime.wakeContext) { P11Reject(reject, @"E_UNSUPPORTED", @"Consultation transfer is unavailable in this native phone session."); return; }
+  NSMutableDictionary *original = runtime.calls[callId];
+  if (runtime.calls.count != 1 || original[@"consultationAttempted"] || original[@"consultationParentId"] ||
+      [original[@"transferAttempted"] boolValue] || ![original[@"state"] isEqual:@"connected"] ||
+      [original[@"holdState"] integerValue] != HoldStateNone || [runtime.pendingHolds containsObject:callId]) {
+    P11Reject(reject, @"E_CALL_STATE", @"Consultation requires one connected, resumed call and permits one consultation attempt per call."); return;
+  }
+  NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"^[+]?[0-9*#]{1,32}\\z" options:0 error:nil];
+  if (![[NSUUID alloc] initWithUUIDString:requestId] || !P11String(destination,33) ||
+      [pattern numberOfMatchesInString:destination options:0 range:NSMakeRange(0,destination.length)] != 1) {
+    P11Reject(reject, @"E_INVALID_ARGUMENT", @"Enter a phone number or extension and a native request identity."); return;
+  }
+  SiprixHoldData *hold = [SiprixHoldData new];
+  if (![self checkSDK:[runtime.sdk callGetHoldState:callId.intValue holdState:hold] operation:@"callGetHoldState" reject:reject]) return;
+  if (hold.holdState != HoldStateNone) { P11Reject(reject, @"E_CALL_STATE", @"Resume the original call before consultation."); return; }
+  original[@"consultationAttempted"] = @YES;
+  original[@"consultationRequestId"] = requestId; original[@"consultationDestination"] = destination;
+  original[@"consultationPhase"] = @"holding";
+  int code = [runtime.sdk callHold:callId.intValue];
+  if (!code) [runtime.pendingHolds addObject:callId];
+  else original[@"consultationPhase"] = @"returned";
+  [runtime consultationChanged:original];
+  if ([self checkSDK:code operation:@"consultationHold" reject:reject]) resolve(nil);
+}
+// Holding callbacks never dial. The authenticated JS engine must authorize the next outward send.
+RCT_EXPORT_METHOD(continueConsultation:(NSString *)callId requestId:(NSString *)requestId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSMutableDictionary *original = runtime.calls[callId];
+  if (!PHONE11_WARM_TRANSFER_SOURCE_ENABLED || runtime.wakeContext ||
+      ![original[@"consultationRequestId"] isEqual:requestId] || ![original[@"consultationPhase"] isEqual:@"held_ready"] ||
+      [original[@"holdState"] integerValue] != HoldStateLocal || [runtime.pendingHolds containsObject:callId] || runtime.calls.count != 1) {
+    P11Reject(reject,@"E_CONSULTATION_CHANGED",@"The held consultation changed before dialing."); return;
+  }
+  [runtime inviteConsultation:original]; resolve(nil);
+}
+RCT_EXPORT_METHOD(cancelConsultation:(NSString *)callId requestId:(NSString *)requestId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSMutableDictionary *original = runtime.calls[callId];
+  if (!PHONE11_WARM_TRANSFER_SOURCE_ENABLED || ![original[@"consultationRequestId"] isEqual:requestId]) {
+    P11Reject(reject, @"E_CONSULTATION_CHANGED", @"The consultation changed."); return;
+  }
+  if ([original[@"transferPending"] boolValue] || [original[@"consultationPhase"] isEqual:@"completed"]) {
+    P11Reject(reject, @"E_TRANSFER_PENDING", @"The server may still complete the transfer. Keep the calls open."); return;
+  }
+  if ([original[@"consultationPhase"] isEqual:@"returned"]) { resolve(nil); return; }
+  NSString *consultId = original[@"consultationCallId"];
+  NSMutableDictionary *consult = consultId ? runtime.calls[consultId] : nil;
+  if (consult && ![consult[@"consultationRequestId"] isEqual:requestId]) { P11Reject(reject, @"E_CONSULTATION_CHANGED", @"The consultation changed."); return; }
+  if (consult && ![original[@"consultationPhase"] isEqual:@"canceling"]) {
+    if (![self checkSDK:[runtime.sdk callBye:consultId.intValue] operation:@"consultationCancel" reject:reject]) return;
+  }
+  original[@"consultationPhase"] = @"canceling"; [runtime consultationChanged:original];
+  if (!consult) [runtime returnFromConsultation:original];
+  resolve(nil); // Returned state requires the later authoritative termination/hold callback.
+}
+RCT_EXPORT_METHOD(completeConsultation:(NSString *)callId requestId:(NSString *)requestId transferRequestId:(NSString *)transferRequestId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+  P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSMutableDictionary *original = runtime.calls[callId];
+  NSString *consultId = original[@"consultationCallId"];
+  NSMutableDictionary *consult = consultId ? runtime.calls[consultId] : nil;
+  if (!PHONE11_WARM_TRANSFER_SOURCE_ENABLED || runtime.wakeContext || ![original[@"consultationRequestId"] isEqual:requestId] ||
+      ![original[@"consultationPhase"] isEqual:@"ready"] || !consult ||
+      ![consult[@"consultationRequestId"] isEqual:requestId] || ![consult[@"accountId"] isEqual:original[@"accountId"]] ||
+      ![consult[@"consultationParentId"] isEqual:callId] || ![consult[@"state"] isEqual:@"connected"] ||
+      [consult[@"holdState"] integerValue] != HoldStateNone || [original[@"holdState"] integerValue] != HoldStateLocal ||
+      [runtime.pendingHolds containsObject:callId] || [runtime.pendingHolds containsObject:consult[@"callId"]] || runtime.calls.count != 2) {
+    P11Reject(reject, @"E_CALL_STATE", @"Wait for the consultation to connect before completing transfer."); return;
+  }
+  if ([original[@"transferAttempted"] boolValue] || original[@"transferRequestId"]) {
+    P11Reject(reject, @"E_TRANSFER_ATTEMPTED", @"One transfer attempt per call. Return to the original call."); return;
+  }
+  if (![[NSUUID alloc] initWithUUIDString:transferRequestId]) { P11Reject(reject,@"E_INVALID_ARGUMENT",@"Invalid native transfer identity."); return; }
+  original[@"transferAttempted"] = @YES; original[@"transferRequestId"] = transferRequestId;
+  original[@"transferPending"] = @YES; original[@"consultationPhase"] = @"transferring";
+  [original removeObjectForKey:@"transferStatusCode"];
+  int code = [runtime.sdk callTransferAttended:callId.intValue toCallId:[consult[@"callId"] intValue]];
+  if (code) { original[@"transferPending"] = @NO; original[@"consultationPhase"] = @"transfer_failed"; }
+  [runtime emit:@"callTransferred" data:@{@"call":[original copy]}];
+  if ([self checkSDK:code operation:@"callTransferAttended" reject:reject]) resolve(nil);
+}
+
 // Resolves command acceptance only; callTransferred carries the SDK outcome.
 RCT_EXPORT_METHOD(transferCall:(NSString *)callId destination:(NSString *)destination requestId:(NSString *)requestId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
   NSMutableDictionary *call = runtime.calls[callId];
+  if (call[@"consultationParentId"] || (call[@"consultationPhase"] && ![call[@"consultationPhase"] isEqual:@"returned"])) { P11Reject(reject,@"E_CONSULTATION_ACTIVE",@"Return to the original call before blind transfer."); return; }
   if (![call[@"state"] isEqualToString:@"connected"] || [call[@"held"] boolValue] || [call[@"holdState"] integerValue] != 0 || [runtime.pendingHolds containsObject:callId]) {
     P11Reject(reject, @"E_CALL_STATE", @"Resume the connected call before transferring it."); return;
   }
@@ -1582,6 +1785,13 @@ RCT_EXPORT_METHOD(transferCall:(NSString *)callId destination:(NSString *)destin
 
 RCT_EXPORT_METHOD(setMute:(NSString *)callId muted:(BOOL)muted resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSDictionary *original = runtime.calls[callId];
+  NSString *consultId = original[@"consultationCallId"];
+  NSMutableDictionary *consult = consultId ? runtime.calls[consultId] : nil;
+  if (consult && [consult[@"consultationRequestId"] isEqual:original[@"consultationRequestId"]]) {
+    if (![self checkSDK:[runtime.sdk callMuteMic:consultId.intValue mute:muted] operation:@"consultationMute" reject:reject]) return;
+    consult[@"muted"] = @(muted); [runtime emit:@"callMuted" data:@{@"call":[consult copy]}];
+  }
   if (![self checkSDK:[runtime.sdk callMuteMic:callId.intValue mute:muted] operation:@"callMuteMic" reject:reject]) return;
   runtime.calls[callId][@"muted"] = @(muted);
   [runtime emit:@"callMuted" data:@{@"call": [runtime.calls[callId] copy]}];
@@ -1590,6 +1800,8 @@ RCT_EXPORT_METHOD(setMute:(NSString *)callId muted:(BOOL)muted resolver:(RCTProm
 
 RCT_EXPORT_METHOD(setHold:(NSString *)callId held:(BOOL)held resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
   P11SiprixRuntime *runtime = [self ready:reject]; if (!runtime || ![self hasID:callId in:runtime.calls reject:reject]) return;
+  NSDictionary *controlled = runtime.calls[callId];
+  if (controlled[@"consultationParentId"] || (controlled[@"consultationPhase"] && ![controlled[@"consultationPhase"] isEqual:@"returned"])) { P11Reject(reject,@"E_CONSULTATION_ACTIVE",@"Use consultation controls to return to the original call."); return; }
   if ([runtime.calls[callId][@"transferPending"] boolValue]) {
     P11Reject(reject, @"E_TRANSFER_PENDING", @"Wait for the transfer outcome before changing hold."); return;
   }
@@ -1610,6 +1822,13 @@ RCT_EXPORT_METHOD(sendDtmf:(NSString *)callId digits:(NSString *)digits resolver
   if (!P11String(digits, 32) || [digits rangeOfCharacterFromSet:
       [[NSCharacterSet characterSetWithCharactersInString:@"0123456789*#ABCD"] invertedSet]].location != NSNotFound) {
     P11Reject(reject, @"E_INVALID_ARGUMENT", @"DTMF requires 1-32 digits from 0-9, *, #, A-D."); return;
+  }
+  NSDictionary *original = runtime.calls[callId];
+  NSString *consultId = original[@"consultationCallId"];
+  NSDictionary *consult = consultId ? runtime.calls[consultId] : nil;
+  if (consult && [consult[@"consultationRequestId"] isEqual:original[@"consultationRequestId"]]) {
+    if (![original[@"consultationPhase"] isEqual:@"ready"]) { P11Reject(reject,@"E_CONSULTATION_ACTIVE",@"Wait for consultation audio focus before sending tones."); return; }
+    callId = consultId;
   }
   if ([self checkSDK:[runtime.sdk callSendDtmf:callId.intValue dtmfs:digits durationMs:160 intertoneGapMs:80 method:DtmfMethodRtp]
           operation:@"callSendDtmf" reject:reject]) resolve(nil);

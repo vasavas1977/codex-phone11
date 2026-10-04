@@ -30,7 +30,7 @@ export default function ActiveCallScreen() {
     type?: string;
     callId?: string;
   }>();
-  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf, supportsBlindTransfer } = useSip();
+  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf, supportsBlindTransfer, consultation } = useSip();
   const call = useSipCallStore((state) =>
     resolveCurrentCall(state, requestedCallId),
   );
@@ -107,7 +107,9 @@ export default function ActiveCallScreen() {
   const controlsReady = Boolean(
     call && (call.status === "active" || call.status === "held"),
   );
-  const canTransfer = Boolean(call && call.status === "active" && !held && supportsBlindTransfer?.());
+  const warm = call ? consultation?.(call.id) : null;
+  const hasConsultation = !!warm && !["returned","completed"].includes(warm.phase);
+  const canTransfer = Boolean(hasConsultation || (call && call.status === "active" && !held && supportsBlindTransfer?.()));
   const control = async (operation: () => Promise<void>) => {
     if (!controlsReady) return;
     try {
@@ -132,7 +134,7 @@ export default function ActiveCallScreen() {
     });
     return callId && control(() => setMute(callId, !muted));
   };
-  const handleHold = () => callId && control(() => setHold(callId, !held));
+  const handleHold = () => !hasConsultation && callId && control(() => setHold(callId, !held));
   const handleSpeaker = () =>
     callId && control(() => setSpeaker(callId, !speaker));
   const handleDtmf = (digit: string) =>
@@ -147,6 +149,7 @@ export default function ActiveCallScreen() {
     onPress: () => unknown,
     selected: boolean,
     title = key,
+    unavailable = false,
   ) => (
     <TouchableOpacity
       key={key}
@@ -154,11 +157,11 @@ export default function ActiveCallScreen() {
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{
-        disabled: !controlsReady,
+        disabled: !controlsReady || unavailable,
         selected,
         ...(key === "Keypad" ? { expanded: showKeypad } : {}),
       }}
-      disabled={!controlsReady}
+      disabled={!controlsReady || unavailable}
       onPress={onPress}
     >
       <View
@@ -166,7 +169,7 @@ export default function ActiveCallScreen() {
           styles.controlCircle,
           {
             backgroundColor: selected ? colors.primary : colors.surface,
-            opacity: controlsReady ? 1 : 0.45,
+            opacity: controlsReady && !unavailable ? 1 : 0.45,
           },
         ]}
       >
@@ -334,10 +337,11 @@ export default function ActiveCallScreen() {
             handleHold,
             held,
             held ? "Resume" : "Hold",
+            hasConsultation,
           )}
           {canTransfer && callControl(
-            "Transfer",
-            "Transfer call",
+            hasConsultation ? "Consultation" : "Transfer",
+            hasConsultation ? "Open consultation controls" : "Transfer call",
             "phone.arrow.up.right",
             () => router.push({ pathname: "/call/transfer", params: { callId: call!.id } }),
             false,

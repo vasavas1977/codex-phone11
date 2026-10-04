@@ -34,14 +34,14 @@ function scopeMatches(scope: TransferScope): boolean {
     !!scope.account && !!account && account.enabled && account.ownerUserId === scope.owner.id &&
     sameSipAccount(scope.account, account) && scope.callId === call?.id && scope.callIdentity === callIdentity(call);
 }
-type TransferView = { scope: TransferScope; destination: string; pending: boolean; confirmed: boolean; error: string };
-const emptyView = (scope: TransferScope): TransferView => ({ scope, destination: "", pending: false, confirmed: false, error: "" });
+type TransferView = { scope: TransferScope; destination: string; pending: boolean; confirmed: boolean; error: string; mode: "blind" | "warm" };
+const emptyView = (scope: TransferScope): TransferView => ({ scope, destination: "", pending: false, confirmed: false, error: "", mode: "blind" });
 
 export default function TransferCallScreen() {
   const { callId } = useLocalSearchParams<{ callId?: string }>();
   const insets = useSafeAreaInsets();
   const colors = useColors();
-  const { transferCall, supportsBlindTransfer, hasAttemptedBlindTransfer } = useSip();
+  const { transferCall, supportsBlindTransfer, hasAttemptedBlindTransfer, supportsWarmTransfer, consultation, beginConsultation, cancelConsultation, completeConsultation } = useSip();
   const owner = useSyncExternalStore(addAuthChangeListener, getAuthSnapshot, getAuthSnapshot).user;
   const account = useSipAccountStore(state => state.account);
   const call = useSipCallStore(state => resolveCurrentCall(state, callId));
@@ -91,6 +91,8 @@ export default function TransferCallScreen() {
     description="This Phone11 build cannot transfer calls. Your current call stays available."
   />;
 
+  const warmSupported = supportsWarmTransfer?.() === true;
+  const warm = call ? consultation?.(call.id) : null;
   const connected = call?.status === "active" && !call.isHeld;
   const attempted = !!call && hasAttemptedBlindTransfer(call.id);
   const target = destination.trim();
@@ -98,11 +100,17 @@ export default function TransferCallScreen() {
   const submit = async () => {
     const liveCall = resolveCurrentCall(useSipCallStore.getState(), callId);
     if (!current() || !supportsBlindTransfer() || !liveCall || liveCall.status !== "active" || liveCall.isHeld ||
-        !validTarget || scope.locked || scope.confirmed || hasAttemptedBlindTransfer(liveCall.id)) return;
+        !validTarget || scope.locked || scope.confirmed || hasAttemptedBlindTransfer(liveCall.id) ||
+        (view.mode === "warm" && supportsWarmTransfer?.() !== true)) return;
     scope.locked = true;
     setView({ ...view, pending: true, error: "" });
     try {
       // Only a matching SDK success outcome resolves; acceptance never ends the call.
+      if (view.mode === "warm") {
+        await beginConsultation(liveCall.id,target);
+        if (current()) setView({ ...view, pending: false });
+        return;
+      }
       await transferCall(liveCall.id, target);
       if (current()) {
         scope.confirmed = true;
@@ -115,13 +123,51 @@ export default function TransferCallScreen() {
     }
   };
 
+  const warmAction = async (complete: boolean) => {
+    const liveWarm = call ? consultation?.(call.id) : null;
+    if (!current() || !call || !warm || scope.locked || supportsWarmTransfer?.() !== true ||
+        liveWarm?.requestId !== warm.requestId || (complete && liveWarm.phase !== "ready")) return;
+    const requestId = warm.requestId;
+    scope.locked = true; setView({ ...view,pending:true,error:"" });
+    try {
+      if (complete) await completeConsultation(call.id,requestId);
+      else await cancelConsultation(call.id,requestId);
+      if (current()) setView({ ...view,pending:false });
+    } catch (cause) {
+      if (current()) setView({ ...view,pending:false,error:cause instanceof Error ? cause.message : "Consultation could not be confirmed." });
+    } finally { if (current()) scope.locked = false; }
+  };
+  const warmMessage = warm ? ({
+    holding: "Placing the original call on hold. The destination is called only after hold is confirmed.",
+    held_ready: "Original call hold confirmed. Checking the phone session before calling the destination.",
+    calling: "Calling the destination. Your original caller is on hold.",
+    switching: "The destination connected. Waiting for consultation audio focus.",
+    restoring_audio: "Original call hold was restored. Waiting for audio focus confirmation.",
+    consultation_failed: "Consultation audio could not be confirmed. Return to your original caller.",
+    ready: "Consultation connected. Speak to the destination, then complete transfer or return to your original caller.",
+    canceling: "Ending the consultation. Your original call resumes only after the consultation has ended.",
+    returning: "Restoring the original call. Waiting for hold confirmation.",
+    returned: "Consultation ended. Your original call is available. One consultation attempt per call.",
+    return_failed: "The original call could not be resumed. Tap Return to original call to request restoration again.",
+    transferring: "Waiting for transfer confirmation. Keep both calls open; the server may still complete the transfer.",
+    transfer_failed: "Transfer failed. Your original caller remains on hold. Return to the original call to end the consultation and resume it.",
+    completed: "Transfer confirmed.",
+  }[warm.phase]) : "";
+
   return <View style={[styles.root, { backgroundColor: colors.background, paddingTop: Math.max(insets.top, 16), paddingBottom: Math.max(insets.bottom, 16) }]}>
     <Pressable accessibilityRole="button" accessibilityLabel={pending ? "Return to active call; transfer may continue" : "Back to active call"} onPress={backToCall} style={styles.back}>
       <Text style={{ color: colors.primary, fontSize: 17 }}>‹ {pending ? "Return to call" : "Back to call"}</Text>
     </Pressable>
     <View style={styles.content}>
       <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Transfer call</Text>
-      {confirmed ? <>
+      {warm ? <>
+        <Text accessibilityLiveRegion="polite" style={[styles.body,{ color: colors.muted }]}>{warmMessage}</Text>
+        {!!error && <Text accessibilityLiveRegion="polite" style={[styles.body,{ color: colors.error }]}>{error}</Text>}
+        {warm.phase === "ready" && <Pressable accessibilityRole="button" accessibilityLabel="Complete consultation transfer" disabled={pending || attempted} onPress={() => warmAction(true)} style={[styles.action,{ backgroundColor: colors.primary, opacity: pending || attempted ? 0.5 : 1 }]}><Text style={styles.actionText}>Complete transfer</Text></Pressable>}
+        {["holding","held_ready","calling","switching","ready","return_failed","consultation_failed","transfer_failed"].includes(warm.phase) && <Pressable accessibilityRole="button" accessibilityLabel="Return to original call" disabled={pending} onPress={() => warmAction(false)} style={[styles.action,{ backgroundColor: colors.primary,opacity:pending ? 0.5 : 1 }]}><Text style={styles.actionText}>Return to original call</Text></Pressable>}
+        {warm.phase === "returned" && <Pressable accessibilityRole="button" accessibilityLabel="Open original call controls" onPress={backToCall} style={[styles.action,{backgroundColor:colors.primary}]}><Text style={styles.actionText}>Open original call</Text></Pressable>}
+        <Text style={[styles.note,{color:colors.muted}]}>This Siprix trial limits each call to 60 seconds. Returning to call controls keeps this consultation open until you choose Return to original call.</Text>
+      </> : confirmed ? <>
         <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.success }]}>Transfer confirmed.</Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Open Recents" style={[styles.action, { backgroundColor: colors.primary }]} onPress={() => { if (current()) router.replace("/(tabs)/recents"); }}><Text style={styles.actionText}>Open Recents</Text></Pressable>
       </> : (!connected || attempted) && !pending ? <>
@@ -129,12 +175,16 @@ export default function TransferCallScreen() {
         {!!error && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.error }]}>{error}</Text>}
         <Pressable accessibilityRole="button" accessibilityLabel="Return to call controls" style={[styles.action, { backgroundColor: colors.primary }]} onPress={backToCall}><Text style={styles.actionText}>Return to call</Text></Pressable>
       </> : <>
-        <Text style={[styles.body, { color: colors.muted }]}>Enter an extension or phone number. Phone11 will transfer this call without first calling the destination.</Text>
+        {warmSupported && <View style={styles.progress}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Choose blind transfer" disabled={pending} onPress={() => { if (current()) setView({...view,mode:"blind"}); }}><Text style={{color:colors.primary}}>Transfer now</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Choose consultation transfer" disabled={pending} onPress={() => { if (current()) setView({...view,mode:"warm"}); }}><Text style={{color:colors.primary}}>Call first</Text></Pressable>
+        </View>}
+        <Text style={[styles.body, { color: colors.muted }]}>{view.mode === "warm" ? "Call the destination first. Your original caller is held while you consult; complete transfer only after the destination connects." : "Enter an extension or phone number. Phone11 will transfer this call without first calling the destination."}</Text>
         <TextInput accessibilityLabel="Transfer destination" value={destination} onChangeText={value => { if (current()) setView({ ...view, destination: value }); }} editable={!pending} keyboardType="phone-pad" autoCapitalize="none" maxLength={32} placeholder="Extension or phone number" placeholderTextColor={colors.muted} style={[styles.input, { borderColor: colors.muted, color: colors.foreground, backgroundColor: colors.surface }]} />
-        {pending && <View style={styles.progress}><ActivityIndicator color={colors.primary} /><Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.muted }]}>Waiting for transfer confirmation. You can return to the call; this request may still complete.</Text></View>}
+        {pending && <View style={styles.progress}><ActivityIndicator color={colors.primary} /><Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.muted }]}>{view.mode === "warm" ? "Starting consultation. Wait for confirmed hold before the destination is called." : "Waiting for transfer confirmation. You can return to the call; this request may still complete."}</Text></View>}
         {!!error && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.error }]}>{error}</Text>}
-        <Pressable accessibilityRole="button" accessibilityLabel="Confirm blind transfer" accessibilityState={{ disabled: !validTarget || pending }} disabled={!validTarget || pending} style={[styles.action, { backgroundColor: colors.primary, opacity: !validTarget || pending ? 0.5 : 1 }]} onPress={submit}><Text style={styles.actionText}>Transfer now</Text></Pressable>
-        <Text style={[styles.note, { color: colors.muted }]}>Before you tap Transfer now, Back to call cancels this screen. After the request is sent, returning to the call does not cancel it.</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={view.mode === "warm" ? "Start consultation call" : "Confirm blind transfer"} accessibilityState={{ disabled: !validTarget || pending }} disabled={!validTarget || pending} style={[styles.action, { backgroundColor: colors.primary, opacity: !validTarget || pending ? 0.5 : 1 }]} onPress={submit}><Text style={styles.actionText}>{view.mode === "warm" ? "Call destination first" : "Transfer now"}</Text></Pressable>
+        <Text style={[styles.note, { color: colors.muted }]}>{view.mode === "warm" ? "Back to call closes this screen. After consultation begins, use Return to original call to cancel it and restore your original call. This trial limits each call to 60 seconds." : "Before you tap Transfer now, Back to call cancels this screen. After the request is sent, returning to the call does not cancel it."}</Text>
       </>}
     </View>
   </View>;
