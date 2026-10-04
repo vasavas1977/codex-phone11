@@ -179,6 +179,22 @@ int main(void) {
     [sdkDelegate onCallTransferred:original.intValue statusCode:0]; drain(); CHECK(byes==beforeByes && P11SiprixRuntime.shared.calls[consult]);
     [sdkDelegate onCallTerminated:consult.intValue statusCode:200]; drain(); CHECK(P11SiprixRuntime.shared.calls.count==0 && byes==beforeByes);
 
+    // Both SDK orders may leave a live leg with an uncertain original outcome.
+    // Only explicit user End may send BYE to that remaining consultation.
+    for (NSNumber *callbackFirst in @[@YES,@NO]) {
+      original=boot(); consult=connectConsultation(original); beforeByes=byes;
+      [warmBridge completeConsultation:original requestId:request transferRequestId:transferRequest resolver:warmResolve rejecter:warmReject]; CHECK(!warmError);
+      if (callbackFirst.boolValue) { [sdkDelegate onCallTransferred:original.intValue statusCode:0]; drain(); }
+      [sdkDelegate onCallTerminated:original.intValue statusCode:200]; drain();
+      if (!callbackFirst.boolValue) { [sdkDelegate onCallTransferred:original.intValue statusCode:486]; drain(); }
+      CHECK(byes==beforeByes && P11SiprixRuntime.shared.calls[consult]);
+      [warmBridge hangupCall:consult resolver:warmResolve rejecter:warmReject];
+      CHECK(!warmError && byes==beforeByes+1 && P11SiprixRuntime.shared.calls[consult]);
+      [sdkDelegate onCallTerminated:consult.intValue statusCode:200]; drain();
+      CHECK(P11SiprixRuntime.shared.calls.count==0 && byes==beforeByes+1);
+      [warmBridge hangupCall:consult resolver:warmResolve rejecter:warmReject]; CHECK(warmError && byes==beforeByes+1);
+    }
+
     original=boot(); begin(original); id<SiprixEventDelegate> retired=sdkDelegate;
     NSString *replacement=boot(); beforeInvites=invites;
     [retired onCallHeld:original.intValue holdState:HoldStateLocal]; drain();

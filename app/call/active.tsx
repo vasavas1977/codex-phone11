@@ -30,9 +30,12 @@ export default function ActiveCallScreen() {
     type?: string;
     callId?: string;
   }>();
-  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf, supportsBlindTransfer, consultation } = useSip();
+  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf, supportsBlindTransfer, consultation, remainingConsultation } = useSip();
+  const routedCall = useSipCallStore((state) => resolveCurrentCall(state, requestedCallId));
+  const roleId = requestedCallId ?? routedCall?.id;
+  const remaining = roleId ? remainingConsultation?.(roleId) : null;
   const call = useSipCallStore((state) =>
-    resolveCurrentCall(state, requestedCallId),
+    resolveCurrentCall(state, requestedCallId) ?? (remaining ? resolveCurrentCall(state, remaining.callId) : null),
   );
   const callId = call?.id;
   const [ending, setEnding] = useState(false);
@@ -93,7 +96,12 @@ export default function ActiveCallScreen() {
     if (ending) return;
     setEnding(true);
     try {
-      await hangupCall(callId);
+      if (remaining) {
+        const live = remainingConsultation?.(remaining.originalId);
+        if (live?.callId !== remaining.callId || live.requestId !== remaining.requestId || live.historyId !== remaining.historyId)
+          throw new Error("Consultation is no longer available");
+        await hangupCall(remaining.originalId);
+      } else await hangupCall(callId);
     } catch {
       Alert.alert(
         "Could not end call",
@@ -102,14 +110,14 @@ export default function ActiveCallScreen() {
     } finally {
       setEnding(false);
     }
-  }, [callId, ending, hangupCall]);
+  }, [callId, ending, hangupCall, remaining, remainingConsultation, requestedCallId]);
 
   const controlsReady = Boolean(
     call && (call.status === "active" || call.status === "held"),
   );
   const warm = call ? consultation?.(call.id) : null;
   const hasConsultation = !!warm && !["returned","completed"].includes(warm.phase);
-  const canTransfer = Boolean(hasConsultation || (call && call.status === "active" && !held && supportsBlindTransfer?.()));
+  const canTransfer = !remaining && Boolean(hasConsultation || (call && call.status === "active" && !held && supportsBlindTransfer?.()));
   const control = async (operation: () => Promise<void>) => {
     if (!controlsReady) return;
     try {
@@ -134,7 +142,7 @@ export default function ActiveCallScreen() {
     });
     return callId && control(() => setMute(callId, !muted));
   };
-  const handleHold = () => !hasConsultation && callId && control(() => setHold(callId, !held));
+  const handleHold = () => !remaining && !hasConsultation && callId && control(() => setHold(callId, !held));
   const handleSpeaker = () =>
     callId && control(() => setSpeaker(callId, !speaker));
   const handleDtmf = (digit: string) =>
@@ -249,6 +257,7 @@ export default function ActiveCallScreen() {
           >
             {callStatusLabel()}
           </Text>
+          {remaining && <Text style={{ color: colors.muted }}>Original call ended. End the remaining consultation when you are finished.</Text>}
         </View>
 
         {call?.isVideo && (
@@ -330,7 +339,7 @@ export default function ActiveCallScreen() {
           )}
         </View>
         <View style={styles.controlRow}>
-          {callControl(
+          {!remaining && callControl(
             "Hold",
             held ? "Resume call" : "Hold call",
             "pause.fill",

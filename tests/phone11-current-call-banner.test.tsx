@@ -50,6 +50,14 @@ beforeEach(() => {
   mocks.hooks = null; mocks.disabled.clear();
   mocks.state = { activeCalls: { "200": { id: "200", status: "active", remoteNumber: "3001" } }, incomingCall: null };
 });
+it("opens the sole remaining consultation by its actual call id from Recents", () => {
+  mocks.path = "/(tabs)/recents";
+  mocks.state = { activeCalls: { "12": { id: "12", status: "active", remoteNumber: "3003", history: { id: "owned-consultation" } } }, incomingCall: null };
+  renderToStaticMarkup(<CurrentCallBanner />);
+  mocks.press.get("Return to current call")!();
+  expect(mocks.push).toHaveBeenCalledWith({ pathname: "/call/active", params: { callId: "12", number: "3003", type: "voice" } });
+  expect(mocks.hangup).not.toHaveBeenCalled();
+});
 it.each(["/call/active", "/call/incoming"])("reveals the next incoming call on a stale %s route", path => {
   mocks.path = path; mocks.params = { callId: "200" };
   mocks.state = { activeCalls: {}, incomingCall: null };

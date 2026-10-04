@@ -35,6 +35,7 @@ interface SipContextValue {
   supportsBlindTransfer: () => boolean;
   supportsWarmTransfer: () => boolean;
   consultation: typeof siprixEngine.consultation;
+  remainingConsultation: typeof siprixEngine.remainingConsultation;
   beginConsultation: (callId: string, destination: string) => Promise<void>;
   cancelConsultation: (callId: string, requestId: string) => Promise<void>;
   completeConsultation: (callId: string, requestId: string) => Promise<void>;
@@ -54,6 +55,7 @@ const SipContext = createContext<SipContextValue>({
   supportsBlindTransfer: () => false,
   supportsWarmTransfer: () => false,
   consultation: () => null,
+  remainingConsultation: () => null,
   beginConsultation: async () => { throw new Error("Consultation transfer is unavailable."); },
   cancelConsultation: async () => { throw new Error("Consultation transfer is unavailable."); },
   completeConsultation: async () => { throw new Error("Consultation transfer is unavailable."); },
@@ -339,6 +341,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     },
     supportsWarmTransfer: () => Platform.OS === "ios" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" && siprixEngine.supportsWarmTransfer(),
     consultation: id => siprixEngine.consultation(id),
+    remainingConsultation: id => siprixEngine.remainingConsultation(id),
     beginConsultation: (id,dest) => siprixEngine.beginConsultation(id,dest),
     cancelConsultation: (id,requestId) => siprixEngine.cancelConsultation(id,requestId),
     completeConsultation: (id,requestId) => siprixEngine.completeConsultation(id,requestId),

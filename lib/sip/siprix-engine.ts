@@ -85,7 +85,7 @@ export class SiprixEngine {
   private audioActive = false;
   private warmTransferAvailable = false;
   private consultationContinuations = new Set<string>();
-  private deferredCallKitEnds = new Map<string,string>();
+  private deferredCallKitEnds = new Map<string, { originalId: string; requestId: string; accountId: string; historyId: string }>();
   private transferAttempts = new Set<string>();
   private transfers = new Map<string, { requestId?: string; settle: (error?: Error) => void }>();
   private callManager: typeof import("./native-call").nativeCallManager | null = null;
@@ -363,16 +363,19 @@ export class SiprixEngine {
     this.transferAttempts.delete(id);
     const ended = this.calls.get(id);
     const consult = ended?.consultationCallId ? this.calls.get(ended.consultationCallId) : undefined;
-    if (ended && consult && consult.consultationRequestId === ended.consultationRequestId &&
+    if (ended && consult && consult.consultationRequestId && consult.historyId &&
+        consult.accountId === ended.accountId && consult.consultationParentId === id &&
+        consult.consultationRequestId === ended.consultationRequestId &&
         ["transferring","completed"].includes(ended.consultationPhase ?? "")) {
       // SDK success may terminate the original before its transfer callback. Keep
       // the original OS audio session until the owned consultation also ends.
-      this.deferredCallKitEnds.set(consult.callId,id);
+      this.deferredCallKitEnds.set(consult.callId, { originalId: id, requestId: consult.consultationRequestId,
+        accountId: consult.accountId, historyId: consult.historyId });
     } else if (ended && !ended.consultationParentId) this.callManager?.reportCallEnded(id);
     const deferredOriginal = this.deferredCallKitEnds.get(id);
     if (deferredOriginal) {
       this.deferredCallKitEnds.delete(id);
-      this.callManager?.reportCallEnded(deferredOriginal);
+      this.callManager?.reportCallEnded(deferredOriginal.originalId);
     }
     this.terminated.add(id);
     this.connected.delete(id);
@@ -505,7 +508,27 @@ export class SiprixEngine {
   }
   hangupCall(callId: string): Promise<void> {
     useSipDiagnosticsStore.getState().addEvent({ level: "info", category: "call", message: "Siprix hang-up requested", context: { callId } });
+    const remaining = this.remainingConsultation(callId);
+    if (remaining) return this.command(remaining.callId, "hangup", bridge => {
+      const live = this.remainingConsultation(callId);
+      if (live?.callId !== remaining.callId || live.requestId !== remaining.requestId || live.historyId !== remaining.historyId)
+        throw new Error("Siprix consultation is no longer available");
+      // Only an explicit user End on the retained OS/UI original can end this
+      // leg. Original termination never implies a BYE or transfer success.
+      return bridge.hangupCall(remaining.callId);
+    });
     return this.command(callId, "hangup", bridge => bridge.hangupCall(callId));
+  }
+  remainingConsultation(id: string): { originalId: string; callId: string; requestId: string; historyId: string } | null {
+    if (!this.current()) return null;
+    for (const [callId, owned] of this.deferredCallKitEnds) {
+      const call = this.calls.get(callId);
+      if ((owned.originalId === id || callId === id) && !this.calls.has(owned.originalId) && call && call.accountId === owned.accountId &&
+          call.accountId === this.session?.accountId && call.consultationParentId === owned.originalId &&
+          call.consultationRequestId === owned.requestId && call.historyId === owned.historyId)
+        return { originalId: owned.originalId, callId, requestId: owned.requestId, historyId: owned.historyId };
+    }
+    return null;
   }
   setMute(callId: string, muted: boolean): Promise<void> {
     const messages: Record<CommandStage, string> = {
@@ -740,7 +763,7 @@ export class SiprixEngine {
     }
     for (const id of this.calls.keys()) this.endCall(id);
     this.calls.clear();
-    for (const id of this.deferredCallKitEnds.values()) this.callManager?.reportCallEnded(id);
+    for (const owned of this.deferredCallKitEnds.values()) this.callManager?.reportCallEnded(owned.originalId);
     this.deferredCallKitEnds.clear();
     this.transferAttempts.clear();
     this.warmTransferAvailable = false;

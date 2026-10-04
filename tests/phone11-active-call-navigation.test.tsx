@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
   hangup: vi.fn(),
   mute: vi.fn(),
   diagnostics: vi.fn(),
+  remaining: vi.fn((_id: string) => null as { originalId: string; callId: string; requestId: string; historyId: string } | null),
+  requestedId: "12" as string | undefined,
+  originalMissing: false,
   call: {
     id: "12",
     status: "active",
@@ -41,8 +44,8 @@ vi.mock("react-native", () => ({
   },
 }));
 vi.mock("expo-router", () => ({
-  router: { replace: mocks.replace },
-  useLocalSearchParams: () => ({ callId: "12" }),
+  router: { replace: mocks.replace, canGoBack: () => false },
+  useLocalSearchParams: () => ({ callId: mocks.requestedId }),
 }));
 vi.mock("expo-haptics", () => ({
   notificationAsync: vi.fn(),
@@ -63,12 +66,13 @@ vi.mock("../hooks/use-colors", () => ({
   }),
 }));
 vi.mock("../lib/sip/sip-provider", () => ({
-  useSip: () => ({ hangupCall: mocks.hangup, setMute: mocks.mute }),
+  useSip: () => ({ hangupCall: mocks.hangup, setMute: mocks.mute, remainingConsultation: mocks.remaining, supportsBlindTransfer: () => true }),
 }));
 vi.mock("../lib/sip/diagnostics-store", () => ({
   useSipDiagnosticsStore: { getState: () => ({ addEvent: mocks.diagnostics }) },
 }));
-vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: () => mocks.call }));
+vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: (select: any) => mocks.originalMissing
+  ? select({ activeCalls: { "12": mocks.call }, incomingCall: null }) : mocks.call }));
 vi.mock(
   "../components/cloud-recordings/active-call-recording-controls",
   () => ({
@@ -80,6 +84,41 @@ import ActiveCallScreen from "../app/call/active";
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.press.clear();
+  mocks.requestedId = "12"; mocks.originalMissing = false; mocks.remaining.mockReturnValue(null);
+});
+it("shows the owned remaining consultation and ends it through the original route without navigating away", async () => {
+  mocks.requestedId = "11"; mocks.originalMissing = true;
+  mocks.remaining.mockReturnValue({ originalId: "11", callId: "12", requestId: "owned-request", historyId: "history-12" });
+  const output = renderToStaticMarkup(<ActiveCallScreen />);
+  expect(output).toContain("Original call ended. End the remaining consultation");
+  expect(output).not.toContain('aria-label="Transfer call"');
+  expect(output).not.toContain('aria-label="Hold call"');
+  expect(output).not.toContain('aria-label="Resume call"');
+  await mocks.press.get("End call")!();
+  expect(mocks.hangup).toHaveBeenCalledWith("11");
+  expect(mocks.replace).not.toHaveBeenCalled();
+});
+it("rejects a retained remaining-leg End when its request or lifetime changes", async () => {
+  mocks.requestedId = "11"; mocks.originalMissing = true;
+  mocks.remaining.mockReturnValue({ originalId: "11", callId: "12", requestId: "owned-request", historyId: "history-12" });
+  renderToStaticMarkup(<ActiveCallScreen />);
+  const retainedEnd = mocks.press.get("End call")!;
+  mocks.remaining.mockReturnValue({ originalId: "11", callId: "12", requestId: "replacement-request", historyId: "replacement-history" });
+  await retainedEnd();
+  expect(mocks.hangup).not.toHaveBeenCalled();
+  expect(mocks.replace).not.toHaveBeenCalled();
+});
+it.each(["12", undefined])("recognizes the owned remaining-leg role through the banner/sole-call route (%s)", async route => {
+  mocks.requestedId = route; mocks.originalMissing = true;
+  mocks.remaining.mockImplementation(id => id === "12" || id === "11"
+    ? { originalId: "11", callId: "12", requestId: "owned-request", historyId: "history-12" } : null);
+  const output = renderToStaticMarkup(<ActiveCallScreen />);
+  expect(output).toContain("Original call ended. End the remaining consultation");
+  expect(output).not.toContain('aria-label="Transfer call"');
+  expect(output).not.toContain('aria-label="Hold call"');
+  expect(output).not.toContain('aria-label="Resume call"');
+  await mocks.press.get("End call")!(); expect(mocks.hangup).toHaveBeenCalledWith("11");
+  expect(mocks.replace).not.toHaveBeenCalled();
 });
 it("opens Recents without ending the active call", () => {
   renderToStaticMarkup(<ActiveCallScreen />);

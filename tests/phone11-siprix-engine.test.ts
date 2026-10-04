@@ -8,6 +8,10 @@ const runtime = vi.hoisted(() => ({
   listeners: new Set<(event: SiprixEvent) => void>(),
   diagnostics: vi.fn(),
   wakeBinding: vi.fn(), storage: new Map<string,string>(), writeHistory: vi.fn(),
+  osHangup: vi.fn(async (_id: string) => {}),
+  osHandlers: new Map<string, (event: any) => unknown>(),
+  osKeep: { setup: vi.fn(async () => {}), startCall: vi.fn((_uuid: string, _handle: string) => {}),
+    reportConnectedOutgoingCallWithUUID: vi.fn(), reportEndCallWithUUID: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn() },
   callManager: {
     initialize: vi.fn(async () => {}), displayIncomingCall: vi.fn(), reportOutgoingCall: vi.fn(),
     reportCallConnected: vi.fn(), reportCallEnded: vi.fn(), adoptIncomingCall: vi.fn(),
@@ -15,6 +19,7 @@ const runtime = vi.hoisted(() => ({
 }));
 vi.mock("react-native", () => ({
   UIManager: { getViewManagerConfig: () => ({}) },
+  Alert: { alert: vi.fn() }, AppState: { currentState: "active", addEventListener: () => ({ remove: vi.fn() }) },
   Platform: runtime.platform, NativeModules: runtime.modules,
   NativeEventEmitter: class {
     addListener(name: string, listener: (event: SiprixEvent) => void) {
@@ -34,10 +39,12 @@ vi.mock("../lib/_core/auth", () => ({
   },
 }));
 vi.mock("../lib/sip/diagnostics-store", () => ({
+  formatSipError: String,
   useSipDiagnosticsStore: { getState: () => ({ addEvent: runtime.diagnostics }) },
 }));
 vi.mock("../lib/push/client", () => ({ getWakeAdoptionBinding: runtime.wakeBinding }));
 vi.mock("../lib/sip/native-call", () => ({ nativeCallManager: runtime.callManager }));
+vi.mock("../lib/sip/engine", () => ({ sipEngine: { hangupCall: runtime.osHangup } }));
 
 import { createRegistrationLifecycle } from "../lib/sip/registration-lifecycle";
 import { SiprixEngine } from "../lib/sip/siprix-engine";
@@ -1262,6 +1269,90 @@ describe("default-off warm transfer native candidate", () => {
     expect(runtime.callManager.reportCallEnded).not.toHaveBeenCalled();
     emit({type:"callTerminated",call:{...consult(),state:"terminated"}});
     expect(runtime.callManager.reportCallEnded).toHaveBeenCalledOnce(); expect(runtime.callManager.reportCallEnded).toHaveBeenCalledWith("11");
+  });
+  it("allows explicit OS End(original) to end the remaining owned consultation after original termination",async()=>{
+    await warmReady(); admit(); const outcome=engine.completeConsultation("11",requestId); const uncertain=expect(outcome).rejects.toThrow("ended before transfer");
+    await new Promise(resolve=>setTimeout(resolve,0)); const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transferring",{transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    emit({type:"callTerminated",call:original("transferring",{state:"terminated",transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    await uncertain; expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(engine.remainingConsultation("12")).toEqual(engine.remainingConsultation("11"));
+    expect(engine.remainingConsultation("12")?.originalId).toBe("11");
+    await engine.hangupCall("11"); expect(bridge.hangupCall).toHaveBeenCalledWith("12");
+    expect(runtime.callManager.reportCallEnded).not.toHaveBeenCalled();
+    emit({type:"callTerminated",call:{...consult(),state:"terminated"}});
+    expect(runtime.callManager.reportCallEnded).toHaveBeenCalledWith("11");
+  });
+  it.each(["callback-first", "termination-first", "account-retired"])("fences the actual retained CallKit End listener to the remaining leg (%s)", async order => {
+    const handlers = runtime.osHandlers; handlers.clear(); const keep = runtime.osKeep;
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url); const key = require.resolve("react-native-callkeep");
+    require.cache[key] = { id: key, filename: key, loaded: true, exports: { default: { ...keep,
+      addEventListener: (event: string, callback: (event: any) => unknown) => handlers.set(event, callback) } } } as any;
+    const { nativeCallManager } = await vi.importActual<typeof import("../lib/sip/native-call")>("../lib/sip/native-call");
+    nativeCallManager.destroy();
+    // The engine and OS listener are real; only the unavailable native packages are mocked.
+    runtime.osHangup.mockImplementation(id => engine.hangupCall(id));
+    runtime.callManager.initialize.mockImplementationOnce(() => nativeCallManager.initialize());
+    runtime.callManager.reportOutgoingCall.mockImplementationOnce((...args: any[]) => nativeCallManager.reportOutgoingCall(args[0], args[1]));
+    runtime.callManager.reportCallConnected.mockImplementationOnce((...args: any[]) => nativeCallManager.reportCallConnected(args[0]));
+    runtime.callManager.reportCallEnded.mockImplementationOnce((...args: any[]) => nativeCallManager.reportCallEnded(args[0]));
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    try {
+      await warmReady(); admit();
+      const callUUID = keep.startCall.mock.calls[0][0];
+      const outcome = engine.completeConsultation("11", requestId);
+      const result = order === "termination-first" ? expect(outcome).rejects.toThrow("ended before transfer") : outcome;
+      await new Promise(resolve => setTimeout(resolve, 0)); const transferId = bridge.completeConsultation.mock.calls.at(-1)![2];
+      const transfer = (phase: "completed" | "transferring") => original(phase, { transferAttempted: true, transferRequestId: transferId,
+        transferPending: phase === "transferring", ...(phase === "completed" ? { transferStatusCode: 0 } : {}) });
+      emit({ type: "callTransferred", call: transfer(order === "termination-first" ? "transferring" : "completed") });
+      emit({ type: "callTerminated", call: { ...transfer(order === "termination-first" ? "transferring" : "completed"), state: "terminated" } });
+      await result;
+      if (order === "termination-first") emit({ type: "callTransferred", call: transfer("completed") });
+      expect(bridge.hangupCall).not.toHaveBeenCalled(); expect(keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+      if (order === "account-retired") useSipAccountStore.setState({ account: { ...account, tenantId: 99 } });
+      await handlers.get("endCall")!({ callUUID });
+      expect(runtime.osHangup).toHaveBeenCalledWith("11");
+      if (order === "account-retired") {
+        expect(bridge.hangupCall).not.toHaveBeenCalled(); expect(engine.remainingConsultation("11")).toBeNull();
+        // Account retirement owns OS cleanup; its old UUID must not target another leg.
+        await handlers.get("endCall")!({ callUUID }); expect(bridge.hangupCall).not.toHaveBeenCalled(); return;
+      }
+      expect(keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+      expect(bridge.hangupCall).toHaveBeenCalledWith("12");
+      emit({ type: "callTerminated", call: { ...consult(), state: "terminated" } });
+      expect(keep.reportEndCallWithUUID).toHaveBeenCalledOnce();
+    } finally { nativeCallManager.destroy(); }
+  });
+  it.each(["logout", "account", "request", "history", "queued-request"])("retires the explicit remaining-leg End mapping (%s)", async boundary => {
+    await warmReady(); admit();
+    emit({ type: "callTransferred", call: original("completed", { transferPending: false, transferStatusCode: 0 }) });
+    emit({ type: "callTerminated", call: original("completed", { state: "terminated" }) });
+    expect(engine.remainingConsultation("11")?.callId).toBe("12");
+    let end: Promise<void> | undefined;
+    if (boundary === "queued-request") end = engine.hangupCall("11");
+    if (boundary === "logout") runtime.user = null;
+    if (boundary === "account") useSipAccountStore.setState({ account: { ...account, tenantId: 99 } });
+    if (boundary === "request" || boundary === "queued-request") emit({ type: "consultationChanged", call: { ...consult(), consultationRequestId: "replacement" } });
+    if (boundary === "history") emit({ type: "consultationChanged", call: { ...consult(), historyId: "replacement" } });
+    expect(engine.remainingConsultation("11")).toBeNull();
+    await expect(end ?? engine.hangupCall("11")).rejects.toThrow();
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+  });
+  it("keeps explicit remaining-leg End available after SDK refusal, retiring it only on termination", async () => {
+    await warmReady(); admit();
+    emit({ type: "callTransferred", call: original("completed", { transferPending: false, transferStatusCode: 0 }) });
+    emit({ type: "callTerminated", call: original("completed", { state: "terminated" }) });
+    bridge.hangupCall.mockRejectedValueOnce(new Error("SDK refused"));
+    await expect(engine.hangupCall("11")).rejects.toThrow();
+    expect(engine.remainingConsultation("11")?.callId).toBe("12");
+    await engine.hangupCall("11");
+    expect(bridge.hangupCall).toHaveBeenCalledTimes(2);
+    emit({ type: "callTerminated", call: { ...consult(), state: "terminated" } });
+    expect(engine.remainingConsultation("11")).toBeNull();
+    await expect(engine.hangupCall("11")).rejects.toThrow();
+    expect(bridge.hangupCall).toHaveBeenCalledTimes(2);
   });
   it("waits for the matching attended SDK outcome and never forces disconnect after success",async()=>{
     await warmReady(); admit(); let resolved=false;
