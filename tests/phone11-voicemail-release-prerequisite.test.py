@@ -102,6 +102,48 @@ class EvidenceChecks(TestCase):
             with self.subTest(raw=raw), self.assertRaises(gate.Refused):
                 gate.modules_config(raw)
 
+    def test_wide_encoded_dtd_and_entity_directives_refuse(self):
+        declarations = ('<!DOCTYPE configuration>',
+                        '<!DOCTYPE configuration [<!ENTITY module "mod_lua">]>')
+        for codec, xml_encoding in (("utf-16", "UTF-16"), ("utf-16-le", "UTF-16"), ("utf-16-be", "UTF-16"),
+                                    ("utf-32", "UTF-32"), ("utf-32-le", "UTF-32"), ("utf-32-be", "UTF-32")):
+            for declaration in declarations:
+                module = "&module;" if "ENTITY" in declaration else "mod_lua"
+                xml = (f'<?xml version="1.0" encoding="{xml_encoding}"?>{declaration}'
+                       f'<configuration name="modules.conf"><modules><load module="{module}"/></modules></configuration>')
+                with self.subTest(codec=codec, declaration=declaration), self.assertRaises(gate.Refused):
+                    gate.modules_config(xml.encode(codec))
+
+    def test_wide_encoded_processing_instructions_and_plain_config_refuse(self):
+        for codec, xml_encoding in (("utf-16", "UTF-16"), ("utf-16-le", "UTF-16"), ("utf-16-be", "UTF-16"),
+                                    ("utf-32", "UTF-32"), ("utf-32-le", "UTF-32"), ("utf-32-be", "UTF-32")):
+            for instruction in ("", '<?include file="modules-extra.xml"?>'):
+                xml = (f'<?xml version="1.0" encoding="{xml_encoding}"?>{instruction}'
+                       '<configuration name="modules.conf"><modules><load module="mod_lua"/></modules></configuration>')
+                with self.subTest(codec=codec, instruction=instruction), self.assertRaises(gate.Refused):
+                    gate.modules_config(xml.encode(codec))
+
+    def test_utf8_and_ascii_config_remain_accepted(self):
+        config = fixture()[2]
+        for declaration in (b'', b'<?xml version="1.0" encoding="UTF-8"?>',
+                            b'<?xml version="1.0" encoding="US-ASCII"?>',
+                            b'<?xml version="1.0" encoding="ASCII"?>',
+                            b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?>'):
+            with self.subTest(declaration=declaration):
+                gate.modules_config(declaration + config)
+        gate.modules_config(b'<?xml version="1.0" encoding="UTF-8"?>' + '<!--ภาษาไทย-->'.encode("utf-8") + config)
+
+    def test_invalid_utf8_nul_and_contradictory_declarations_refuse(self):
+        config = fixture()[2]
+        cases = [b'\xff' + config, b'\x00' + config,
+                 b'<?xml version="1.0" encoding="UTF-16"?>' + config,
+                 b'<?xml version="1.0" encoding="UTF-32"?>' + config,
+                 b'<?xml version="1.0" encoding="ISO-8859-1"?>' + config,
+                 b'<?xml version="1.0" encoding="US-ASCII"?>' + '<!--ภาษาไทย-->'.encode("utf-8") + config]
+        for raw in cases:
+            with self.subTest(raw=raw), self.assertRaises(gate.Refused):
+                gate.modules_config(raw)
+
 
 class PrivateFileChecks(TestCase):
     def setUp(self):

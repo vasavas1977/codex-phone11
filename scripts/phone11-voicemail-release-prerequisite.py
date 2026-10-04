@@ -133,11 +133,24 @@ def validate(value: Any, pins: dict[str, Any], now: float) -> None:
 
 
 def modules_config(raw: bytes) -> None:
-    require(b"<!DOCTYPE" not in raw.upper() and b"<!ENTITY" not in raw.upper(), "prerequisite_configuration")
-    require(re.search(rb"\bxmlns\s*[:=]|<\?(?!xml\s)", raw, re.IGNORECASE) is None,
+    # Parse the exact decoded text that was scanned. Passing raw bytes to Expat
+    # would allow UTF-16/32 auto-detection to bypass ASCII directive checks.
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise Refused("prerequisite_configuration") from error
+    require("\x00" not in text, "prerequisite_configuration")
+    declaration = re.match(r'\ufeff?<\?xml\s+[^?]*\?>', text)
+    if declaration:
+        encoding = re.search(r'''\bencoding\s*=\s*(["'])([^"']+)\1''', declaration.group())
+        if encoding:
+            require(encoding.group(2).lower() in {"utf-8", "us-ascii", "ascii"}, "prerequisite_configuration")
+            require(encoding.group(2).lower() == "utf-8" or text.isascii(), "prerequisite_configuration")
+    require("<!DOCTYPE" not in text.upper() and "<!ENTITY" not in text.upper(), "prerequisite_configuration")
+    require(re.search(r"\bxmlns\s*[:=]|<\?(?!xml\s)", text, re.IGNORECASE) is None,
             "prerequisite_configuration")
     try:
-        root = ET.fromstring(raw)
+        root = ET.fromstring(text)
     except (ET.ParseError, ValueError) as error:
         raise Refused("prerequisite_configuration") from error
     require(root.tag == "configuration" and root.attrib.get("name") == "modules.conf", "prerequisite_configuration")

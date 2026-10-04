@@ -48,6 +48,9 @@ operator packet directory. `snapshot/` contains exactly named copies of
 `mod_lua` load and no include/conditional/namespace/DTD constructs. Do not copy
 environment files or credentials into this packet. Retain original metadata
 receipts unchanged under their separately reviewed access boundary.
+The configuration must decode strictly as UTF-8 (ASCII is supported), with no
+NULs and no contradictory encoding declaration. Directive checks and XML parsing
+consume the same decoded text; UTF-16/32 inputs are refused before parsing.
 
 The following shape is an interface example, not admitted evidence. Replace
 every placeholder using separately authorized observations. `candidate` is an
