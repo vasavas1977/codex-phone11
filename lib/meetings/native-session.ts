@@ -150,6 +150,8 @@ async function loadNativeBindings(): Promise<NativeBindings> {
  * credential construction input: the server admission is passed through as-is.
  */
 export class NativeMeetingLifecycle {
+  private static joinGeneration = 0;
+  private static pendingJoin?: Promise<NativeMeetingLifecycle>;
   readonly session: BrowserMeetingSession;
   private lease?: MediaLease;
   private leaving = false;
@@ -223,14 +225,43 @@ export class NativeMeetingLifecycle {
     });
   }
 
-  static async join(
+  static join(
     meetingId: string,
     admission: NativeMeetingAdmission,
     preferences: NativeMeetingPreferences,
   ): Promise<NativeMeetingLifecycle> {
     const owner = getAuthSnapshot().user;
-    if (!owner) throw new Error("Sign in before joining a meeting.");
+    if (!owner) return Promise.reject(new Error("Sign in before joining a meeting."));
     if (!meetingId || hasLiveSipCall())
+      return Promise.reject(new Error("Finish your Phone call before joining a meeting."));
+    const generation = ++this.joinGeneration;
+    const previous = this.pendingJoin;
+    // A connecting lifecycle is not yet in the registry. In particular, two
+    // joins for the same meeting must not share one coordinator lease while
+    // independently activating audio and publishing rooms.
+    const task = (async () => {
+      await previous?.catch(() => undefined);
+      if (generation !== this.joinGeneration)
+        throw new MeetingJoinFailure("post_connect_guard");
+      return this.joinCurrent(generation, owner.id, meetingId, admission, preferences);
+    })();
+    this.pendingJoin = task;
+    void task.finally(() => {
+      if (this.pendingJoin === task) this.pendingJoin = undefined;
+    }).catch(() => undefined);
+    return task;
+  }
+
+  private static async joinCurrent(
+    generation: number,
+    ownerId: number,
+    meetingId: string,
+    admission: NativeMeetingAdmission,
+    preferences: NativeMeetingPreferences,
+  ): Promise<NativeMeetingLifecycle> {
+    if (getAuthSnapshot().user?.id !== ownerId)
+      throw new MeetingJoinFailure("admission");
+    if (hasLiveSipCall())
       throw new Error("Finish your Phone call before joining a meeting.");
     // A different account can never retain a process-global native room.
     let bindings: NativeBindings;
@@ -241,13 +272,15 @@ export class NativeMeetingLifecycle {
     } catch {
       throw new MeetingJoinFailure("bindings");
     }
-    if (getAuthSnapshot().user?.id !== owner.id)
+    if (getAuthSnapshot().user?.id !== ownerId)
       throw new Error(
         "Your Phone11 account changed before the meeting could connect.",
       );
+    if (generation !== this.joinGeneration)
+      throw new MeetingJoinFailure("post_connect_guard");
     const lifecycle = new NativeMeetingLifecycle(
       meetingId,
-      owner.id,
+      ownerId,
       admission.grant_profile === "listener",
       () => new bindings.Room(),
     );
@@ -290,6 +323,8 @@ export class NativeMeetingLifecycle {
     let stage: MeetingJoinStage = "audio_start";
     try {
       await request.ready;
+      if (generation !== this.joinGeneration)
+        throw new MeetingJoinFailure("post_connect_guard");
       if (!lifecycle.ownerIsCurrent())
         throw new Error(
           "Your Phone11 account changed before the meeting could connect.",
@@ -305,6 +340,8 @@ export class NativeMeetingLifecycle {
       lifecycle.audioStartAttempted = true;
       const audioSetupTask = (async () => {
         await bindings.configureMeetingAudio();
+        if (generation !== this.joinGeneration)
+          throw new MeetingJoinFailure("post_connect_guard");
         if (
           lifecycle.leaving ||
           !lifecycle.ownerIsCurrent() ||
@@ -315,6 +352,8 @@ export class NativeMeetingLifecycle {
       })();
       lifecycle.audioSetupTask = audioSetupTask;
       await audioSetupTask;
+      if (generation !== this.joinGeneration)
+        throw new MeetingJoinFailure("post_connect_guard");
       if (
         !lifecycle.ownerIsCurrent() ||
         hasLiveSipCall() ||
@@ -334,6 +373,8 @@ export class NativeMeetingLifecycle {
         receiveOnly: lifecycle.receiveOnly,
       });
       stage = "connected";
+      if (generation !== this.joinGeneration)
+        throw new MeetingJoinFailure("post_connect_guard");
       if (
         !lifecycle.ownerIsCurrent() ||
         !phone11MediaOwnership.isCurrent(request.lease)
@@ -361,6 +402,7 @@ export class NativeMeetingLifecycle {
         // The held media lease prevents SIP from racing a live local track.
         setActiveNativeMeeting(lifecycle);
       }
+      if (error instanceof MeetingJoinFailure) throw error;
       const failureStage =
         error instanceof BrowserMeetingConnectionFailure ? error.stage : stage;
       throw new MeetingJoinFailure(

@@ -197,6 +197,122 @@ describe("native meeting lifecycle", () => {
     await lifecycle.leave();
   });
 
+  it.each([
+    ["ios", "meeting-overlap"],
+    ["android", "meeting-overlap"],
+    ["ios", "meeting-replacement"],
+    ["android", "meeting-replacement"],
+  ] as const)("stops a superseded native join before %s starts %s", async (platform, nextMeetingId) => {
+    mocks.platformOS = platform;
+    let finishConnect!: () => void;
+    mocks.roomConnect.mockImplementationOnce(() => new Promise(resolve => { finishConnect = resolve; }));
+    mocks.stopAudioSession.mockImplementation(async () => { mocks.lifecycleEvents.push("audio-stop"); });
+    const first = native.NativeMeetingLifecycle.join("meeting-overlap", admission, preferences).catch(error => error);
+    await vi.waitFor(() => expect(mocks.rooms[0]?.connect).toHaveBeenCalledOnce());
+
+    const replacement = native.NativeMeetingLifecycle.join(nextMeetingId, admission, preferences);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(mocks.rooms).toHaveLength(1);
+    expect(mocks.startAudioSession).toHaveBeenCalledTimes(1);
+    finishConnect();
+
+    expect(await first).toMatchObject({ name: "MeetingJoinFailure", stage: "post_connect_guard" });
+    const current = await replacement;
+    expect(mocks.rooms).toHaveLength(2);
+    expect(mocks.rooms[0].disconnect).toHaveBeenCalledWith(true);
+    expect(mocks.lifecycleEvents.indexOf("audio-stop")).toBeLessThan(mocks.lifecycleEvents.lastIndexOf("audio-start"));
+    expect(registry.getActiveNativeMeeting(11)).toBe(current);
+
+    // The SIP hook must belong to the sole current room, including a same-ID
+    // replacement. No obsolete room may retain capture outside that barrier.
+    const sip = native.phone11MediaOwnership.requestSip("sip:overlap");
+    await sip.ready;
+    expect(mocks.rooms[1].disconnect).toHaveBeenCalledWith(true);
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(2);
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    native.releaseSipMediaOwnership(sip.lease);
+  });
+
+  it("denies replacement capture while superseded native audio cleanup fails, then permits a clean retry", async () => {
+    let finishConnect!: () => void;
+    mocks.roomConnect.mockImplementationOnce(() => new Promise(resolve => { finishConnect = resolve; }));
+    const first = native.NativeMeetingLifecycle.join("meeting-overlap", admission, preferences).catch(error => error);
+    await vi.waitFor(() => expect(mocks.rooms[0]?.connect).toHaveBeenCalledOnce());
+    mocks.stopAudioSession.mockRejectedValue(new Error("native audio stop failed"));
+    const replacement = native.NativeMeetingLifecycle.join("meeting-overlap", admission, preferences).catch(error => error);
+    finishConnect();
+
+    expect(await first).toMatchObject({ stage: "post_connect_guard" });
+    expect(await replacement).toMatchObject({ name: "MeetingJoinFailure", stage: "bindings" });
+    expect(mocks.rooms).toHaveLength(1);
+    expect(mocks.startAudioSession).toHaveBeenCalledTimes(1);
+    expect(registry.getActiveNativeMeeting(11)).toBeDefined();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({ kind: "meeting" });
+
+    mocks.stopAudioSession.mockResolvedValue(undefined);
+    const retried = await native.NativeMeetingLifecycle.join("meeting-overlap", admission, preferences);
+    expect(mocks.rooms).toHaveLength(2);
+    expect(registry.getActiveNativeMeeting(11)).toBe(retried);
+    await retried.leave();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+    expect(mocks.listeners.size).toBe(0);
+  });
+
+  it("rejects a queued native admission when the initiating account changes", async () => {
+    let finishConnect!: () => void;
+    mocks.roomConnect.mockImplementationOnce(() => new Promise(resolve => { finishConnect = resolve; }));
+    const first = native.NativeMeetingLifecycle.join("meeting-overlap", admission, preferences).catch(error => error);
+    await vi.waitFor(() => expect(mocks.rooms[0]?.connect).toHaveBeenCalledOnce());
+    const replacement = native.NativeMeetingLifecycle.join("meeting-replacement", admission, preferences).catch(error => error);
+    mocks.authUser = { id: 12 };
+    finishConnect();
+
+    expect(await first).toMatchObject({ stage: "post_connect_guard" });
+    expect(await replacement).toMatchObject({ stage: "admission" });
+    expect(mocks.rooms).toHaveLength(1);
+    expect(mocks.startAudioSession).toHaveBeenCalledTimes(1);
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+    expect(mocks.listeners.size).toBe(0);
+  });
+
+  it("cancels a superseded iOS configuration before starting audio or creating a room", async () => {
+    let finishConfigure!: () => void;
+    mocks.configureMeetingAudio.mockImplementationOnce(() => new Promise(resolve => { finishConfigure = resolve; }));
+    const first = native.NativeMeetingLifecycle.join("meeting-overlap", admission, preferences).catch(error => error);
+    await vi.waitFor(() => expect(mocks.configureMeetingAudio).toHaveBeenCalledOnce());
+    const replacement = native.NativeMeetingLifecycle.join("meeting-replacement", admission, preferences);
+    expect(mocks.startAudioSession).not.toHaveBeenCalled();
+    expect(mocks.rooms).toHaveLength(0);
+    finishConfigure();
+
+    expect(await first).toMatchObject({ stage: "post_connect_guard" });
+    const current = await replacement;
+    expect(mocks.startAudioSession).toHaveBeenCalledTimes(1);
+    expect(mocks.rooms).toHaveLength(1);
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    expect(registry.getActiveNativeMeeting(11)).toBe(current);
+    await current.leave();
+  });
+
+  it.each(["ios", "android"] as const)("waits for superseded %s audio activation to stop before replacement capture", async (platform) => {
+    mocks.platformOS = platform;
+    let finishAudioStart!: () => void;
+    mocks.startAudioSession.mockImplementationOnce(() => new Promise(resolve => { finishAudioStart = resolve; }));
+    const first = native.NativeMeetingLifecycle.join("meeting-overlap", admission, preferences).catch(error => error);
+    await vi.waitFor(() => expect(mocks.startAudioSession).toHaveBeenCalledOnce());
+    const replacement = native.NativeMeetingLifecycle.join("meeting-replacement", admission, preferences);
+    expect(mocks.rooms).toHaveLength(0);
+    finishAudioStart();
+
+    expect(await first).toMatchObject({ stage: "post_connect_guard" });
+    const current = await replacement;
+    expect(mocks.stopAudioSession).toHaveBeenCalledTimes(1);
+    expect(mocks.rooms).toHaveLength(1);
+    expect(registry.getActiveNativeMeeting(11)).toBe(current);
+    await current.leave();
+  });
+
   it("offers native outputs and rejects an unavailable route", async () => {
     mocks.platformOS = "android";
     const lifecycle = await native.NativeMeetingLifecycle.join("meeting-route", admission, preferences);
