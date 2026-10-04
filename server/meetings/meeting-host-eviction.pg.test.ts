@@ -252,7 +252,7 @@ describe.runIf(enabled)(
     });
     it.each([
       "UPDATE phone11_chat_members SET can_start_meeting=false WHERE user_id=7",
-      "UPDATE phone11_plain_video_admission_members SET revoked_at=clock_timestamp() WHERE user_id=7",
+      "UPDATE phone11_plain_video_admission_members SET revoked_at=clock_timestamp(),revision=gen_random_uuid() WHERE user_id=7",
       "UPDATE phone11_auth_identity SET disabled_at=clock_timestamp() WHERE legacy_user_id=7",
       "UPDATE phone11_channel_meetings SET expires_at=clock_timestamp()-INTERVAL '1 second',created_at=clock_timestamp()-INTERVAL '2 hours'",
     ])("snapshot refuses current host authority loss without exposing names: %s", async sql => {
@@ -264,7 +264,7 @@ describe.runIf(enabled)(
       expect(await repository.snapshot(7, meetingId, [42])).toEqual({ available: false, meetingId, members: [] });
     });
     it("snapshot excludes unrelated revoked targets but retains exact durable pending/completed access", async () => {
-      await pool.query("UPDATE phone11_plain_video_admission_members SET revoked_at=clock_timestamp() WHERE user_id=9");
+      await pool.query("UPDATE phone11_plain_video_admission_members SET revoked_at=clock_timestamp(),revision=gen_random_uuid() WHERE user_id=9");
       const operation = await repository.begin(7, { ...input, expectedParticipantId: "stable_target" });
       expect(operation).not.toBeNull();
       expect((await repository.snapshot(7, meetingId, [41])).members).toMatchObject([
