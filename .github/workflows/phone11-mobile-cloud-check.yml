@@ -9,6 +9,8 @@ on:
       - "hooks/**"
       - "lib/**"
       - "modules/phone11-siprix/**"
+      - "plugins/**"
+      - "react-native.config.js"
       - "scripts/**"
       - "docs/**"
       - "app.config.ts"
@@ -145,6 +147,74 @@ jobs:
       - name: Compile Android debug build
         working-directory: android
         run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Verify ordinary APK excludes the unfinished calling runtime
+        run: |
+          python3 tests/phone11-android-apk.test.py
+          python3 scripts/verify-phone11-android-apk.py \
+            --apk android/app/build/outputs/apk/debug/app-debug.apk \
+            --apkanalyzer "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+
+  android-foreground-trial-assemble:
+    name: Package isolated Android foreground calling trial
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PHONE11_ANDROID_FOREGROUND_TRIAL: "1"
+      EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL: "1"
+      EXPO_PUBLIC_SIP_ENGINE: siprix
+      PHONE11_APP_STORE_BUILD: "0"
+      PHONE11_VOIP_WAKE_COMMISSIONED: "0"
+      PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Stage full checksum-pinned runtime SDK
+        shell: bash
+        run: |
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/phone11-siprix-android.aar" \
+            https://raw.githubusercontent.com/siprix/SampleJava/80d198ed6179b45ff8cd8dad9b8086976b4197a0/app/libs/siprix_voip_sdk.aar
+          printf '%s  %s\n' 3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198 "$RUNNER_TEMP/phone11-siprix-android.aar" | sha256sum --check --strict
+          printf 'PHONE11_SIPRIX_ANDROID_AAR=%s\n' "$RUNNER_TEMP/phone11-siprix-android.aar" >> "$GITHUB_ENV"
+      - name: Prebuild separate foreground trial
+        run: pnpm exec expo prebuild --clean --platform android --no-install
+      - name: Check explicit bridge registration and foreground build gate
+        shell: bash
+        run: |
+          test "$(grep -c "include ':phone11-siprix-android-runtime'" android/settings.gradle)" = 1
+          grep -F 'phone11AndroidForegroundSourceEnabled=true' android/gradle.properties
+          test "$(grep -R -F 'add(Phone11SiprixPackage())' android/app/src/main/java --include='MainApplication.kt' | wc -l)" = 1
+      - name: Compile and assemble real SDK linked trial APK
+        working-directory: android
+        run: |
+          ./gradlew :phone11-siprix-android-runtime:verifyPhone11SiprixAndroidSdk \
+            :phone11-siprix-android-runtime:compileDebugJavaWithJavac :app:assembleDebug \
+            -PreactNativeArchitectures=arm64-v8a,armeabi-v7a --stacktrace
+      - name: Verify trial APK identity, bridge, SDK and audio permissions
+        run: |
+          python3 tests/phone11-android-apk.test.py
+          python3 scripts/verify-phone11-android-apk.py --trial \
+            --apk android/app/build/outputs/apk/debug/app-debug.apk \
+            --apkanalyzer "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+      # Debug APK may require Metro. This job proves packaging only and does not
+      # distribute an APK or represent foreground/background/device acceptance.
 
   siprix-bridge-regressions:
     name: Compile and test the iOS Siprix bridge
