@@ -1,14 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync,readFileSync,readdirSync,writeFileSync,rmSync } from 'node:fs';
+import { mkdtempSync,readFileSync,writeFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {verifySdk,sdkLock} from '../android/verify-sdk.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const aar=process.env.PHONE11_SIPRIX_ANDROID_AAR,androidJar=process.env.PHONE11_ANDROID_API_JAR;
-const javaFiles=dir=>readdirSync(dir,{withFileTypes:true}).flatMap(item=>item.isDirectory()?javaFiles(path.join(dir,item.name)):item.name.endsWith('.java')?[path.join(dir,item.name)]:[]);
 test('Android preflight never downloads or accepts an unpinned SDK',()=>{
   assert.throws(()=>verifySdk(null),/No download/);
   const out=mkdtempSync(path.join(tmpdir(),'phone11-android-invalid-sdk-'));
