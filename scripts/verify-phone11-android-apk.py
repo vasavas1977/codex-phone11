@@ -97,8 +97,13 @@ def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool) -> dict:
         # Actual DEX definitions establish packaging, not runtime execution.
         definitions = set().union(*(defined_classes(archive.read(name)) for name in dex_names))
         if trial:
-            if siprix != expected or any(archive.getinfo(name).file_size == 0 for name in siprix):
-                raise ValueError("trial_native_sdk_packaging_missing")
+            empty = {name for name in siprix if archive.getinfo(name).file_size == 0}
+            if siprix != expected or empty:
+                # Log safe ZIP entry names, not SDK bytes, so a strict ABI mismatch
+                # cannot be mistaken for an absent library or silently relaxed.
+                inventory = {"missing": sorted(expected - siprix),
+                             "unexpected": sorted(siprix - expected), "empty": sorted(empty)}
+                raise ValueError("trial_native_sdk_packaging_missing: " + json.dumps(inventory, sort_keys=True))
             if not set(CLASSES) <= definitions:
                 raise ValueError("trial_bridge_or_sdk_classes_missing")
         elif siprix or set(CLASSES) & definitions:

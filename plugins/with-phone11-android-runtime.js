@@ -59,6 +59,16 @@ function configureAppGradle(source, enabled) {
   if (source.includes(projectName)) throw new Error("Unexpected Android Siprix runtime dependency");
   return enabled ? source.replace(/\n*$/, "\n") + block("dependencies", `def phone11TrialAar = rootProject.findProperty('phone11SiprixAndroidAar') ?: System.getenv('PHONE11_SIPRIX_ANDROID_AAR')
 if (!phone11TrialAar || !new File(phone11TrialAar.toString()).isAbsolute()) throw new GradleException('Android foreground trial requires an absolute pinned runtime AAR path')
+// RN 0.81.5 only derives ABI filters from reactNativeArchitectures for New Arch.
+// This legacy-architecture trial must explicitly filter the full four-ABI SDK.
+android {
+  defaultConfig {
+    ndk {
+      abiFilters.clear()
+      abiFilters.addAll(['arm64-v8a', 'armeabi-v7a'])
+    }
+  }
+}
 dependencies {
   implementation project(':${projectName}')
   implementation files(phone11TrialAar)

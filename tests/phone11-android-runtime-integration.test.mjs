@@ -49,6 +49,24 @@ test("host links the module and full runtime, idempotently removes both on an or
   assert.doesNotMatch(app, /compileOnly|https?:|vendor/);
 });
 
+test("legacy trial explicitly filters the full SDK to two ARM ABIs and restores existing host configuration", () => {
+  const source = `apply plugin: 'com.android.application'
+android {
+  defaultConfig {
+    ndk { abiFilters.addAll(['x86', 'x86_64']) }
+  }
+}
+dependencies { implementation project(':livekit_react-native') }
+`;
+  const enabled = integration.configureAppGradle(source, true);
+  assert.match(enabled, /ndk\s*\{\s*abiFilters\.clear\(\)\s*abiFilters\.addAll\(\['arm64-v8a', 'armeabi-v7a'\]\)/);
+  assert.equal(enabled.split("abiFilters.clear()").length, 2);
+  assert.ok(enabled.startsWith(source));
+  assert.equal(integration.configureAppGradle(enabled, true), enabled);
+  assert.equal(integration.configureAppGradle(enabled, false), source);
+  assert.doesNotMatch(integration.configureAppGradle("", false), /abiFilters|Siprix/);
+});
+
 const kotlin = `package ai.phone11.mobile
 import android.app.Application
 import com.facebook.react.PackageList

@@ -2,6 +2,7 @@
 """Synthetic APK parser failure cases; not native build or device evidence."""
 import importlib.util
 import hashlib
+import json
 from pathlib import Path
 import struct
 import tempfile
@@ -77,6 +78,40 @@ class PackagingChecks(unittest.TestCase):
             apk, xml = self.fixture(**args)
             with self.assertRaises(ValueError):
                 check.inspect_apk(apk, xml, trial=True)
+
+    def packaging_failure(self, apk, xml):
+        with self.assertRaisesRegex(ValueError, "^trial_native_sdk_packaging_missing: ") as caught:
+            check.inspect_apk(apk, xml, trial=True)
+        return json.loads(str(caught.exception).split(": ", 1)[1])
+
+    def test_full_four_abi_sdk_is_rejected_with_exact_unexpected_inventory(self):
+        # Literal pinned AAR names: a full AAR must be filtered by the host build.
+        apk, xml = self.fixture()
+        extra = [f"lib/{abi}/{library}" for abi in ("x86", "x86_64")
+                 for library in ("libsiprix.so", "libsiprixMedia.so")]
+        with ZipFile(apk, "a") as archive:
+            for name in extra:
+                archive.writestr(name, b"synthetic-parser-fixture")
+        self.assertEqual(self.packaging_failure(apk, xml),
+                         {"missing": [], "unexpected": sorted(extra), "empty": []})
+
+    def test_missing_and_empty_libraries_have_distinct_diagnostics(self):
+        missing = "lib/arm64-v8a/libsiprix.so"
+        apk, xml = self.fixture(exclude=missing)
+        self.assertEqual(self.packaging_failure(apk, xml),
+                         {"missing": [missing], "unexpected": [], "empty": []})
+        apk, xml = self.fixture(exclude=missing)
+        with ZipFile(apk, "a") as archive:
+            archive.writestr(missing, b"")
+        self.assertEqual(self.packaging_failure(apk, xml),
+                         {"missing": [], "unexpected": [], "empty": [missing]})
+
+    def test_ordinary_native_only_runtime_leak_refuses(self):
+        apk, xml = self.fixture(trial=False)
+        with ZipFile(apk, "a") as archive:
+            archive.writestr("lib/x86/libsiprixMedia.so", b"synthetic-parser-fixture")
+        with self.assertRaisesRegex(ValueError, "ordinary_apk_contains_uncommissioned_runtime"):
+            check.inspect_apk(apk, xml, trial=False)
 
     def test_ordinary_runtime_leak_and_duplicate_gate_refuse(self):
         apk, xml = self.fixture()
