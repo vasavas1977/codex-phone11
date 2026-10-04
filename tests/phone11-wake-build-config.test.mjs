@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 const require=createRequire(import.meta.url);
 const {getConfig}=createRequire(require.resolve('expo/package.json'))('@expo/config');
 const root=new URL('..',import.meta.url).pathname;
@@ -124,4 +125,78 @@ test('App Store config fails closed without a license and resolves as licensed w
   assert.equal(resolved.extra.buildInfo.appStoreBuild,true);
   assert.equal(resolved.extra.buildInfo.sipSdkVersion,'1.0.40-licensed');
   assert.ok(!configured.stdout.includes('fake-native-license-test-only'));
+});
+
+// Evaluate the actual config and settings functions with only synthetic inputs.
+// In particular, never run load-env.js or allow a plugin to read local SDK files.
+function syntheticConfig(env) {
+  const typescript=require('typescript');
+  const source=readFileSync(join(root,'app.config.ts'),'utf8');
+  const compiled=typescript.transpileModule(source,{compilerOptions:{module:typescript.ModuleKind.CommonJS,target:typescript.ScriptTarget.ES2022}}).outputText;
+  const pluginApi={withInfoPlist:config=>config,withAppDelegate:config=>config,withEntitlementsPlist:config=>config,
+    withPodfile:config=>config,withPodfileProperties:config=>config};
+  const sdkLock=JSON.parse(readFileSync(join(root,'modules/phone11-siprix/android/sdk-lock.json'),'utf8'));
+  function plugin(filename) {
+    const module={exports:{}};
+    runInNewContext(readFileSync(join(root,filename),'utf8'),{module,exports:module.exports,process:{env:{...env}},require:id=>{
+      if(id==='expo/config-plugins')return pluginApi;
+      if(id==='../modules/phone11-siprix/android/sdk-lock.json')return sdkLock;
+      if(id==='node:fs')return new Proxy({}, {get:()=>()=>{throw new Error('Plugin file access forbidden in synthetic config test');}});
+      if(id==='node:path'||id==='node:crypto')return require(id);
+      throw new Error(`Unexpected plugin import: ${id}`);
+    }});
+    return module.exports;
+  }
+  const android=plugin('plugins/with-phone11-android-runtime.js');
+  const wake=plugin('plugins/with-phone11-voip-wake.js');
+  const module={exports:{}};
+  let environmentLoadBlocked=false;
+  runInNewContext(compiled,{module,exports:module.exports,process:{env:{...env}},require:id=>{
+    if(id==='./scripts/load-env.js'){environmentLoadBlocked=true;return {};}
+    if(id==='expo/config-plugins')return pluginApi;
+    if(id==='./plugins/with-phone11-android-runtime.js')return android;
+    if(id==='./plugins/with-phone11-voip-wake.js')return wake;
+    throw new Error(`Unexpected config import: ${id}`);
+  }});
+  assert.equal(environmentLoadBlocked,true);
+  return module.exports.default;
+}
+
+test('synthetic store platform guard refuses both Android store profiles before packaging',()=>{
+  const reviewed={...profile('production-ios-siprix-store').env,PHONE11_SIPRIX_LICENSE:'synthetic-placeholder-only',EAS_BUILD_PLATFORM:'android'};
+  for(const name of ['production','production-ios-siprix-store']) {
+    const env={...reviewed,...profile(name).env};
+    assert.throws(()=>syntheticConfig(env),/Android store distribution is not commissioned/);
+  }
+});
+
+test('synthetic store platform guard preserves iOS and unset local resolution plus existing store prerequisites',()=>{
+  for(const platform of ['ios',undefined]) {
+    const env={...profile('production-ios-siprix-store').env,PHONE11_SIPRIX_LICENSE:'synthetic-placeholder-only'};
+    if(platform)env.EAS_BUILD_PLATFORM=platform;
+    const config=syntheticConfig(env);
+    assert.equal(config.extra.buildInfo.appStoreBuild,true);
+    assert.equal(config.ios.bundleIdentifier,env.PHONE11_BUNDLE_ID);
+    assert.equal(config.extra.phone11ApnsEnvironment,'production');
+    assert.equal(config.extra.phone11ChatNotificationsEnabled,true);
+    assert.ok(!JSON.stringify(config).includes('synthetic-placeholder-only'));
+    for(const [overrides,error] of [
+      [{PHONE11_SIPRIX_LICENSE:''},/production Siprix license/],
+      [{PHONE11_BUNDLE_ID:''},/registered bundle identifier/],
+      [{EXPO_PUBLIC_SIP_ENGINE:'pjsip',PHONE11_VOIP_WAKE_COMMISSIONED:'0',PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED:'0',PHONE11_APNS_ENVIRONMENT:undefined},/reviewed Siprix calling engine/],
+      [{PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED:'0'},/notification commissioning/],
+    ])assert.throws(()=>syntheticConfig({...env,...overrides}),error);
+  }
+});
+
+test('synthetic store platform guard leaves ordinary Android and the isolated foreground trial unchanged',()=>{
+  const ordinary=syntheticConfig({EAS_BUILD_PLATFORM:'android',EXPO_PUBLIC_SIP_ENGINE:'siprix'});
+  assert.equal(ordinary.android.package,'ai.phone11.mobile');
+  assert.equal(ordinary.extra.buildInfo.appStoreBuild,false);
+  assert.equal(ordinary.extra.buildInfo.androidForegroundTrial,undefined);
+  const trial=syntheticConfig({EAS_BUILD_PLATFORM:'android',EXPO_PUBLIC_SIP_ENGINE:'siprix',
+    PHONE11_ANDROID_FOREGROUND_TRIAL:'1',EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL:'1'});
+  assert.equal(trial.android.package,'ai.phone11.mobile.foregroundtrial');
+  assert.equal(trial.extra.buildInfo.androidForegroundTrial,true);
+  assert.equal(trial.extra.buildInfo.appStoreBuild,false);
 });

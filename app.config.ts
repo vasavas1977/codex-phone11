@@ -35,6 +35,9 @@ const bundleId =
     })
     .join(".") || "space.manus.app";
 if (appStoreBuild === "1") {
+  if (process.env.EAS_BUILD_PLATFORM === "android") {
+    throw new Error("Phone11 store builds support only the reviewed iOS path; Android store distribution is not commissioned");
+  }
   if (!process.env.PHONE11_BUNDLE_ID?.trim() || bundleId === "ai.phone11.mobile") {
     throw new Error("Phone11 App Store builds require the explicit registered bundle identifier");
   }
