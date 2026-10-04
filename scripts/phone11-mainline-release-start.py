@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,13 @@ LOCK = Path("/run/phone11-desktop-provisioning-route.lock")
 STATE_ROOT = Path("/var/lib/phone11-mainline-release-start")
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 IMAGE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+_spec = importlib.util.spec_from_file_location("phone11_voicemail_prerequisite", Path(__file__).resolve().with_name("phone11-voicemail-release-prerequisite.py"))
+if _spec is None or _spec.loader is None:
+    raise RuntimeError("voicemail_prerequisite_helper_missing")
+voicemail = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = voicemail
+_spec.loader.exec_module(voicemail)
 
 
 class Refused(RuntimeError):
@@ -380,8 +388,38 @@ def write_receipt(pins: dict[str, Any], created: str) -> Path:
     return path
 
 
-def start(pins: dict[str, Any]) -> Path:
+def voicemail_guard(pins: dict[str, Any], receipt: Path, source_root: Path,
+                    expected_receipt_sha: str | None = None) -> str:
+    try:
+        evidence, receipt_sha = voicemail.read_prerequisite(receipt, source_root, pins, now=time.time())
+    except voicemail.Refused as error:
+        raise Refused(str(error)) from error
+    require(expected_receipt_sha is None or receipt_sha == expected_receipt_sha, "prerequisite_receipt_changed")
+    for key in ("backend", "freeswitch"):
+        pin = evidence[key]
+        item = inspect(pin["name"])
+        require(item.get("Name") == "/" + pin["name"] and item.get("Id") == pin["container_id"]
+                and item.get("Image") == pin["image"] and item.get("State", {}).get("Running") is True
+                and runtime_hash(item) == pin["runtime_sha256"], "prerequisite_runtime_drift")
+        require(env_map(item).get("PHONE11_VOICEMAIL_HOOK_READY") != "true", "prerequisite_runtime_flag_not_off")
+    # Only fixed hashes leave the host command; process readability and loaded-module
+    # evidence remain explicitly caller-attested, independently reviewed prerequisites.
+    for name, expected in voicemail.HELPERS.items():
+        path = "/etc/freeswitch/scripts/" + name
+        observed = command("docker", "exec", evidence["freeswitch"]["container_id"], "sha256sum", path).decode().split()
+        require(observed == [expected, path], "prerequisite_installed_helper_drift")
+    path = "/etc/freeswitch/autoload_configs/modules.conf.xml"
+    observed = command("docker", "exec", evidence["freeswitch"]["container_id"], "sha256sum", path).decode().split()
+    require(observed == [evidence["lua"]["modules_config_sha256"], path], "prerequisite_installed_configuration_drift")
+    return receipt_sha
+
+
+def start(pins: dict[str, Any], voicemail_prerequisite: Path | None = None,
+          voicemail_source_root: Path | None = None) -> Path:
     require(os.geteuid() == 0, "root_required")
+    require(voicemail_prerequisite is not None and voicemail_source_root is not None,
+            "voicemail_prerequisite_required")
+    prerequisite_sha = voicemail_guard(pins, voicemail_prerequisite, voicemail_source_root)
     site_and_wake(pins, pins["candidate"]["port"])
     pinned_container(BASELINE, pins["baseline"], port=3000, build=pins["baseline"]["build"], role=pins["baseline"]["role"])
     pinned_container(RECOVERY, pins["recovery"], port=3004, build=pins["recovery"]["build"], role=pins["recovery"]["role"])
@@ -433,6 +471,7 @@ def start(pins: dict[str, Any]) -> Path:
         command("docker", "update", "--restart", "unless-stopped", c["name"])
         check_candidate(pins, source, created)
         require((inspect(c["name"]).get("HostConfig", {}).get("RestartPolicy") or {}).get("Name") == "unless-stopped", "candidate_restart_policy")
+        voicemail_guard(pins, voicemail_prerequisite, voicemail_source_root, prerequisite_sha)
         return write_receipt(pins, created)
     except Exception:
         if created and SHA.fullmatch(created):
@@ -458,11 +497,15 @@ def start(pins: dict[str, Any]) -> Path:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--voicemail-prerequisite", type=Path, required=True,
+                        help="Protected fresh flag-off caller-evidence packet; not commissioning approval")
+    parser.add_argument("--voicemail-source-root", type=Path, required=True,
+                        help="Protected release source tree with both reviewed Lua helper copies")
     args = parser.parse_args()
     fd = None
     try:
         fd = lock()
-        receipt = start(manifest(args.manifest))
+        receipt = start(manifest(args.manifest), args.voicemail_prerequisite, args.voicemail_source_root)
         print(f"candidate_ready receipt={receipt}")
         return 0
     except Refused as error:

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline failure-path tests for the source-only EC2 candidate operators."""
 import importlib.util
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import stat
@@ -299,6 +300,153 @@ class StartGuards(TestCase):
             with self.assertRaisesRegex(start.Refused, "file_owner"):
                 start.secure_file(start.SITE_ENABLED)
             opened.assert_not_called()
+
+
+class VoicemailReleaseGuards(TestCase):
+    def runtime_fixture(self):
+        record = pins()
+        identities = {}
+        for key, name, ident, image in (("backend", start.PREDECESSOR, start.PREDECESSOR_ID, start.PREDECESSOR_IMAGE),
+                                      ("freeswitch", start.voicemail.FREESWITCH, "f" * 64, "sha256:" + "f" * 64)):
+            item = {"Name": "/" + name, "Id": ident, "Image": image,
+                    "State": {"Running": True}, "Config": {"Env": ["PHONE11_VOICEMAIL_HOOK_READY=false"]},
+                    "HostConfig": {}, "Mounts": []}
+            identities[key] = item
+        record["predecessor"]["runtime_sha256"] = start.runtime_hash(identities["backend"])
+        evidence = {key: {"name": item["Name"][1:], "container_id": item["Id"], "image": item["Image"],
+                          "runtime_sha256": start.runtime_hash(item), "hook_ready": False}
+                    for key, item in identities.items()}
+        evidence["lua"] = {"modules_config_sha256": "a" * 64}
+        return record, evidence, identities
+
+    def guard_context(self, stack, evidence, identities):
+        reader = stack.enter_context(mock.patch.object(start.voicemail, "read_prerequisite", return_value=(evidence, "a" * 64)))
+        stack.enter_context(mock.patch.object(start, "inspect", side_effect=lambda name: identities["backend" if name == start.PREDECESSOR else "freeswitch"]))
+        def hashes(*args):
+            path = args[-1]
+            expected = start.voicemail.HELPERS.get(Path(path).name, "a" * 64)
+            return (expected + "  " + path).encode()
+        command = stack.enter_context(mock.patch.object(start, "command", side_effect=hashes))
+        return reader, command
+
+    def test_private_evidence_runtime_identities_and_installed_hashes_are_bound(self):
+        record, evidence, identities = self.runtime_fixture()
+        with ExitStack() as stack:
+            reader, command = self.guard_context(stack, evidence, identities)
+            self.assertEqual(start.voicemail_guard(record, Path("/root/receipt"), Path("/root/source")), "a" * 64)
+            self.assertEqual(command.call_count, 3)
+            self.assertEqual(reader.call_args.args[:3], (Path("/root/receipt"), Path("/root/source"), record))
+            self.assertTrue(all(call.args[:4] == ("docker", "exec", "f" * 64, "sha256sum")
+                                for call in command.call_args_list))
+
+    def test_missing_private_evidence_and_changed_receipt_refuse_before_runtime_commands(self):
+        record, evidence, _ = self.runtime_fixture()
+        with mock.patch.object(start.voicemail, "read_prerequisite", side_effect=start.voicemail.Refused("prerequisite_file_unavailable")), \
+             mock.patch.object(start, "inspect") as inspect:
+            with self.assertRaisesRegex(start.Refused, "prerequisite_file_unavailable"):
+                start.voicemail_guard(record, Path("/missing"), Path("/source"))
+            inspect.assert_not_called()
+        with mock.patch.object(start.voicemail, "read_prerequisite", return_value=(evidence, "b" * 64)), \
+             mock.patch.object(start, "inspect") as inspect:
+            with self.assertRaisesRegex(start.Refused, "prerequisite_receipt_changed"):
+                start.voicemail_guard(record, Path("/receipt"), Path("/source"), "a" * 64)
+            inspect.assert_not_called()
+
+    def test_wrong_backend_or_freeswitch_id_image_runtime_or_flag_refuse(self):
+        for key in ("backend", "freeswitch"):
+            for field, value in (("Id", "0" * 64), ("Image", "sha256:" + "0" * 64), ("Name", "/decoy"),
+                                 ("State", {"Running": False}),
+                                 ("Config", {"Env": ["PHONE11_VOICEMAIL_HOOK_READY=true"]})):
+                record, evidence, identities = self.runtime_fixture()
+                identities[key][field] = value
+                with self.subTest(key=key, field=field), ExitStack() as stack:
+                    _, command = self.guard_context(stack, evidence, identities)
+                    with self.assertRaises(start.Refused):
+                        start.voicemail_guard(record, Path("/receipt"), Path("/source"))
+                    command.assert_not_called()
+        # Even a receipt pinning protected mode must fail the observed flag guard.
+        record, evidence, identities = self.runtime_fixture()
+        identities["freeswitch"]["Config"]["Env"] = ["PHONE11_VOICEMAIL_HOOK_READY=true"]
+        evidence["freeswitch"]["runtime_sha256"] = start.runtime_hash(identities["freeswitch"])
+        with ExitStack() as stack:
+            self.guard_context(stack, evidence, identities)
+            with self.assertRaisesRegex(start.Refused, "runtime_flag_not_off"):
+                start.voicemail_guard(record, Path("/receipt"), Path("/source"))
+
+    def test_live_helper_or_module_config_drift_refuses(self):
+        for filename in (*start.voicemail.HELPERS, "modules.conf.xml"):
+            record, evidence, identities = self.runtime_fixture()
+            with self.subTest(filename=filename), ExitStack() as stack:
+                _, command = self.guard_context(stack, evidence, identities)
+                original = command.side_effect
+                command.side_effect = lambda *args: ("b" * 64 + "  " + args[-1]).encode() if Path(args[-1]).name == filename else original(*args)
+                with self.assertRaises(start.Refused):
+                    start.voicemail_guard(record, Path("/receipt"), Path("/source"))
+
+    def start_context(self, stack, guard_results):
+        source = {"Config": {"Env": ["PHONE11_RUNTIME_ROLE=api-candidate", "PORT=3016"]},
+                  "HostConfig": {"NetworkMode": "test", "Memory": 1024}, "Mounts": []}
+        stack.enter_context(mock.patch.object(start.os, "geteuid", return_value=0))
+        for name in ("site_and_wake", "pinned_container", "candidate_image", "absent_target", "health", "check_candidate"):
+            stack.enter_context(mock.patch.object(start, name))
+        stack.enter_context(mock.patch.object(start, "source_runtime", return_value=source))
+        stack.enter_context(mock.patch.object(start, "inspect", return_value={"Id": "f" * 64,
+                            "State": {"Health": {"Status": "healthy"}}, "HostConfig": {"RestartPolicy": {"Name": "unless-stopped"}}}))
+        guard = stack.enter_context(mock.patch.object(start, "voicemail_guard", side_effect=guard_results))
+        create = stack.enter_context(mock.patch.object(start, "create_in_memory", return_value="f" * 64))
+        command = stack.enter_context(mock.patch.object(start, "command", return_value=b""))
+        receipt = stack.enter_context(mock.patch.object(start, "write_receipt", return_value=Path("/receipt")))
+        return guard, create, command, receipt
+
+    def test_mandatory_missing_barrier_refuses_before_any_docker_command(self):
+        with mock.patch.object(start.os, "geteuid", return_value=0), mock.patch.object(start, "command") as command, \
+             mock.patch.object(start, "create_in_memory") as create:
+            with self.assertRaisesRegex(start.Refused, "voicemail_prerequisite_required"):
+                start.start(pins())
+            command.assert_not_called()
+            create.assert_not_called()
+
+    def test_old_cli_without_prerequisite_refuses_before_lock_or_commands(self):
+        with mock.patch.object(start.sys, "argv", ["release-start", "--manifest", "/root/manifest"]), \
+             mock.patch.object(start.sys, "stderr"), mock.patch.object(start, "lock") as lock, \
+             mock.patch.object(start, "command") as command:
+            with self.assertRaises(SystemExit) as caught:
+                start.main()
+            self.assertEqual(caught.exception.code, 2)
+            lock.assert_not_called()
+            command.assert_not_called()
+
+    def test_failed_first_gate_refuses_before_candidate_creation(self):
+        for code in ("prerequisite_stale_or_future", "prerequisite_flag_not_off", "prerequisite_helper_mismatch",
+                     "prerequisite_file_unavailable", "prerequisite_backend_mismatch", "prerequisite_lua_unknown_or_missing"):
+            with self.subTest(code=code), ExitStack() as stack:
+                _, create, command, receipt = self.start_context(stack, [start.Refused(code)])
+                with self.assertRaisesRegex(start.Refused, code):
+                    start.start(pins(), Path("/receipt"), Path("/source"))
+                create.assert_not_called()
+                command.assert_not_called()
+                receipt.assert_not_called()
+
+    def test_success_rechecks_unchanged_evidence_before_receipt(self):
+        with ExitStack() as stack:
+            guard, create, _, receipt = self.start_context(stack, ["a" * 64, "a" * 64])
+            sequence = []
+            guard.side_effect = lambda *a: sequence.append("guard") or "a" * 64
+            create.side_effect = lambda *a: sequence.append("create") or "f" * 64
+            receipt.side_effect = lambda *a: sequence.append("receipt") or Path("/receipt")
+            self.assertEqual(start.start(pins(), Path("/receipt"), Path("/source")), Path("/receipt"))
+            self.assertEqual(sequence, ["guard", "create", "guard", "receipt"])
+            self.assertEqual(guard.call_args.args[3], "a" * 64)
+
+    def test_failed_final_gate_produces_no_receipt_and_cleans_only_owned_candidate(self):
+        with ExitStack() as stack:
+            guard, create, command, receipt = self.start_context(stack, ["a" * 64, start.Refused("prerequisite_receipt_changed")])
+            with self.assertRaisesRegex(start.Refused, "prerequisite_receipt_changed"):
+                start.start(pins(), Path("/receipt"), Path("/source"))
+            self.assertEqual(guard.call_count, 2)
+            create.assert_called_once()
+            receipt.assert_not_called()
+            command.assert_any_call("docker", "rm", "-f", "f" * 64)
 
 
 class RouteGuards(TestCase):
