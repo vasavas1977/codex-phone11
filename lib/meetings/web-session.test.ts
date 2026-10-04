@@ -26,6 +26,12 @@ vi.mock("livekit-client", () => {
       trackPublications: new Map(),
       setMicrophoneEnabled: vi.fn(async () => undefined),
       setCameraEnabled: vi.fn(async () => undefined),
+      permissions: { canPublish: true, canPublishSources: [] as number[] },
+      createScreenTracks: vi.fn(async () => [{ kind: "video", source: "screen_share", mediaStreamTrack: {
+        readyState: "live", addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      }, stop: vi.fn() }]),
+      publishTrack: vi.fn(async (track: unknown) => { this.localParticipant.trackPublications.set("screen", { track, isMuted: false, source: "screen_share" }); }),
+      unpublishTrack: vi.fn(async () => { this.localParticipant.trackPublications.delete("screen"); }),
     };
     remoteParticipants = new Map();
     private listeners = new Map<string, Set<(...args: unknown[]) => void>>();
@@ -45,7 +51,7 @@ vi.mock("livekit-client", () => {
     }
     constructor() { state.rooms.push(this); }
   }
-  return { Room, ConnectionError: class ConnectionError extends Error {} };
+  return { Room, Track: { Source: { ScreenShare: "screen_share", ScreenShareAudio: "screen_share_audio" }, sourceToProto: () => 4 }, ConnectionError: class ConnectionError extends Error {} };
 });
 
 const admission = { url: "wss://server-issued.invalid", token: "server-issued-token" };
@@ -58,6 +64,8 @@ beforeEach(async () => {
   state.disconnectError = undefined;
   state.rooms.length = 0;
   state.listeners.clear();
+  vi.stubGlobal("isSecureContext", true);
+  vi.stubGlobal("navigator", { mediaDevices: { getDisplayMedia: vi.fn(() => { throw new Error("Tests must never capture"); }) } });
 });
 
 it("uses the server admission and joins muted without requesting capture", async () => {
@@ -170,4 +178,57 @@ it("blocks replacement media when superseded join cleanup still fails, then allo
   expect(getActiveNativeMeeting(3001)).toBe(retried);
   await retried.leave();
   expect(state.listeners.size).toBe(0);
+});
+
+it.each([undefined, 'listener'] as const)('does not infer screen entitlement from absent/listener admission %s', async grant_profile => {
+  const meeting = await WebMeetingLifecycle.join(3001, 'admitted-id', { ...admission, grant_profile }, { microphone: false, camera: false });
+  expect(meeting.session.getSnapshot().screenShare).toBeUndefined();
+  await expect(meeting.session.startScreenShare()).rejects.toThrow('unavailable');
+  expect(state.rooms[0].localParticipant.createScreenTracks).not.toHaveBeenCalled();
+  await meeting.leave();
+});
+it('interactive admission plus connected SDK entitlement permits video-only capture', async () => {
+  const meeting = await WebMeetingLifecycle.join(3001, 'admitted-id', { ...admission, grant_profile: 'interactive' }, { microphone: false, camera: false });
+  const local = state.rooms[0].localParticipant;
+  expect(meeting.session.getSnapshot().screenShare?.available).toBe(true);
+  await meeting.session.startScreenShare();
+  expect(local.createScreenTracks).toHaveBeenCalledWith({ audio: false });
+  expect(local.publishTrack).toHaveBeenCalledTimes(1);
+  await meeting.leave();
+});
+it.each(['noPublish', 'cameraOnly', 'unknownPermissions', 'insecure', 'unsupported'])(
+  'interactive profile cannot bypass %s', async restriction => {
+    const meeting = await WebMeetingLifecycle.join(3001, 'admitted-id', { ...admission, grant_profile: 'interactive' }, { microphone: false, camera: false });
+    const local = state.rooms[0].localParticipant;
+    if (restriction === 'noPublish') local.permissions.canPublish = false;
+    if (restriction === 'cameraOnly') local.permissions.canPublishSources = [1];
+    if (restriction === 'unknownPermissions') local.permissions = undefined;
+    if (restriction === 'insecure') vi.stubGlobal('isSecureContext', false);
+    if (restriction === 'unsupported') vi.stubGlobal('navigator', {});
+    meeting.session.refreshScreenCapability();
+    expect(meeting.session.getSnapshot().screenShare?.available).toBe(false);
+    await expect(meeting.session.startScreenShare()).rejects.toThrow('unavailable');
+    expect(local.createScreenTracks).not.toHaveBeenCalled();
+    await meeting.leave();
+  });
+it('explicit SDK screen source permits sharing without granting host actions', async () => {
+  const meeting = await WebMeetingLifecycle.join(3001, 'admitted-id', { ...admission, grant_profile: 'interactive' }, { microphone: false, camera: false });
+  state.rooms[0].localParticipant.permissions.canPublishSources = [4];
+  await meeting.session.startScreenShare();
+  expect(meeting.session.getSnapshot().screenShare?.status).toBe('sharing');
+  await meeting.leave();
+});
+it('owner change while chooser is pending stops the result without publishing', async () => {
+  const meeting = await WebMeetingLifecycle.join(3001, 'admitted-id', { ...admission, grant_profile: 'interactive' }, { microphone: false, camera: false });
+  const local = state.rooms[0].localParticipant;
+  let resolve!: (tracks: unknown[]) => void;
+  local.createScreenTracks.mockImplementation(() => new Promise(yes => { resolve = yes; }));
+  const start = meeting.session.startScreenShare();
+  state.userId = 1020;
+  state.listeners.forEach(listener => listener());
+  const captured = { kind: 'video', source: 'screen_share', mediaStreamTrack: { readyState: 'live', addEventListener: vi.fn(), removeEventListener: vi.fn() }, stop: vi.fn() };
+  resolve([captured]);
+  await expect(start).rejects.toThrow('cancelled');
+  await meeting.leave();
+  expect(captured.stop).toHaveBeenCalled(); expect(local.publishTrack).not.toHaveBeenCalled();
 });

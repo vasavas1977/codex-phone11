@@ -40,6 +40,7 @@ const mocks = vi.hoisted(() => ({
   ],
 }));
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios" },
   StyleSheet: { create: (value: unknown) => value },
   View: ({ children }: any) => createElement("div", null, children),
   Text: ({ children }: any) => createElement("span", null, children),

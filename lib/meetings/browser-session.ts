@@ -46,12 +46,30 @@ export interface BrowserSessionSnapshot {
   status: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected' | 'error';
   participants: readonly MeetingParticipant[];
   error: string | null;
+  /** Absent for native/desktop adapters, which cannot publish browser screens. */
+  screenShare?: { available: boolean; status: 'idle' | 'choosing' | 'publishing' | 'sharing' | 'stopping'; error: string | null };
 }
-export interface BrowserSessionCapabilities { languageAttribute?: string }
+export interface BrowserScreenTrack {
+  readonly kind: string;
+  readonly source: string;
+  readonly mediaStreamTrack: Pick<MediaStreamTrack, 'readyState' | 'addEventListener' | 'removeEventListener'>;
+  stop(): void;
+}
+export interface BrowserScreenAdapter {
+  /** Checks the current authenticated admission AND connected SDK publication rights. */
+  isAllowed(room: BrowserRoom): boolean;
+  /** Must invoke the browser picker synchronously, before returning its promise. */
+  capture(room: BrowserRoom): Promise<readonly BrowserScreenTrack[]>;
+  publish(room: BrowserRoom, track: BrowserScreenTrack): Promise<unknown>;
+  unpublish(room: BrowserRoom, track: BrowserScreenTrack): Promise<unknown>;
+  isPublished(room: BrowserRoom, track: BrowserScreenTrack): boolean;
+  publishedTracks(room: BrowserRoom): readonly BrowserScreenTrack[];
+}
+export interface BrowserSessionCapabilities { languageAttribute?: string; screen?: BrowserScreenAdapter }
 const refreshEvents = ['participantConnected', 'participantDisconnected', 'participantNameChanged',
   'participantAttributesChanged', 'activeSpeakersChanged', 'trackMuted', 'trackUnmuted',
   'trackPublished', 'trackUnpublished', 'localTrackPublished', 'localTrackUnpublished',
-  'trackSubscribed', 'trackUnsubscribed'];
+  'trackSubscribed', 'trackUnsubscribed', 'participantPermissionsChanged'];
 
 export class BrowserMeetingSession {
   private room?: BrowserRoom;
@@ -64,8 +82,14 @@ export class BrowserMeetingSession {
   private connectionTasks = new Set<Promise<void>>();
   private disconnectTask?: Promise<void>;
   private receiveOnly = false;
+  private screenEpoch = 0;
+  private screenTasks = new Set<Promise<void>>();
+  private screenStopTask?: Promise<void>;
+  private screenTracks = new Map<BrowserScreenTrack, { room: BrowserRoom; ended: () => void }>();
   constructor(private readonly createRoom: () => BrowserRoom,
-    private readonly capabilities: BrowserSessionCapabilities = {}) {}
+    private readonly capabilities: BrowserSessionCapabilities = {}) {
+    if (capabilities.screen) this.snapshot.screenShare = { available: false, status: 'idle', error: null };
+  }
   getSnapshot = (): BrowserSessionSnapshot => this.snapshot;
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -85,6 +109,23 @@ export class BrowserMeetingSession {
     });
     this.update({ participants: Object.freeze([map(room.localParticipant, true),
       ...Array.from(room.remoteParticipants.values(), p => map(p, false))]) });
+    if (this.snapshot.screenShare) {
+      // A reconnect can republish a snapshot of an already stopped SDK track.
+      // Adopt and retire that publication before permitting another local share.
+      let stalePublication = false;
+      for (const track of this.capabilities.screen!.publishedTracks(room)) if (!this.screenTracks.has(track)) {
+        const ended = () => { void this.stopScreenShare().catch(() => undefined); };
+        this.screenTracks.set(track, { room, ended });
+        track.mediaStreamTrack.addEventListener('ended', ended);
+        stalePublication = true;
+      }
+      this.updateScreen(this.snapshot.screenShare.status, this.snapshot.screenShare.error);
+      const revoked = !this.screenAllowed(room);
+      const unpublished = this.snapshot.screenShare.status === 'sharing' &&
+        [...this.screenTracks.keys()].some(track => !this.capabilities.screen!.isPublished(room, track));
+      if ((revoked || unpublished || stalePublication) && (this.screenTracks.size || this.screenTasks.size))
+        void this.stopScreenShare().catch(() => undefined);
+    }
   }
   private fail(error: unknown) {
     // Do not expose SDK error strings, which can contain credential-bearing URLs.
@@ -100,12 +141,14 @@ export class BrowserMeetingSession {
   private async connectInternal(options: { url: string; token: string; microphone?: boolean; camera?: boolean; receiveOnly?: boolean }): Promise<void> {
     const generation = ++this.generation;
     const previous = this.room;
+    const screensStopped = this.stopScreenShare();
     this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
     this.receiveOnly = options.receiveOnly === true;
     this.update({ status: 'connecting', participants: [], error: null });
     let room: BrowserRoom | undefined;
     let stage: BrowserMeetingConnectStage = 'room_cleanup';
     try {
+      if (this.capabilities.screen) await screensStopped;
       if (previous) await this.stopRoom(previous);
       if (generation !== this.generation) throw new Error('Meeting connection cancelled');
       stage = 'room_create';
@@ -120,8 +163,16 @@ export class BrowserMeetingSession {
       this.cleanup = () => bindings.forEach(([event, fn]) => room!.off(event, fn));
       stage = 'event_bind';
       refreshEvents.forEach(event => bind(event, () => this.refresh(room!)));
-      bind('reconnecting', () => this.update({ status: 'reconnecting' }));
-      bind('reconnected', () => { this.refresh(room!); this.update({ status: 'connected' }); });
+      const reconnecting = () => {
+        this.update({ status: 'reconnecting' });
+        void this.stopScreenShare().catch(() => undefined);
+      };
+      bind('reconnecting', reconnecting);
+      if (this.capabilities.screen) bind('signalReconnecting', reconnecting);
+      bind('reconnected', () => {
+        if (this.capabilities.screen) { this.update({ status: 'connected' }); this.refresh(room!); }
+        else { this.refresh(room!); this.update({ status: 'connected' }); }
+      });
       bind('disconnected', () => {
         this.update({ status: 'disconnected', participants: [], error: 'Meeting disconnected.' });
         // The SDK can signal disconnection while a native capture operation
@@ -151,6 +202,7 @@ export class BrowserMeetingSession {
       this.refresh(room);
       stage = 'post_connect_guard';
       this.update({ status: 'connected', error: unavailable.length ? unavailable.join(' ') : null });
+      if (this.snapshot.screenShare) this.updateScreen('idle');
     } catch (error) {
       if (generation === this.generation) {
         this.cleanup?.(); this.cleanup = undefined; this.room = undefined;
@@ -177,6 +229,7 @@ export class BrowserMeetingSession {
     // reentrantly from its subscription to an external disconnect event.
     const task = Promise.resolve().then(() => this.disconnectInternal());
     this.disconnectTask = task;
+    if (this.capabilities.screen) void this.stopScreenShare().catch(() => undefined);
     void task.finally(() => {
       if (this.disconnectTask === task) this.disconnectTask = undefined;
     }).catch(() => undefined);
@@ -184,6 +237,7 @@ export class BrowserMeetingSession {
   }
   private async disconnectInternal(): Promise<void> {
     const generation = ++this.generation, room = this.room;
+    const screensStopped = this.stopScreenShare();
     const pendingMedia = this.mediaQueue;
     const hadPendingWork = this.pendingMediaOperations > 0 || this.connectionTasks.size > 0;
     const pendingConnections = [...this.connectionTasks];
@@ -196,8 +250,8 @@ export class BrowserMeetingSession {
       // publish a native track. A final stop closes the late-publish window
       // before NativeMeetingLifecycle hands the audio device to SIP.
       const firstStop = room ? this.stopRoom(room) : Promise.resolve();
-      const [stopResult] = await Promise.allSettled([
-        firstStop, pendingMedia, ...pendingConnections,
+      const [stopResult, screenResult] = await Promise.allSettled([
+        firstStop, screensStopped, pendingMedia, ...pendingConnections,
       ]);
       if (room && hadPendingWork) await this.stopRoom(room);
       // A failing connect may restore its room for retry only after the
@@ -206,12 +260,21 @@ export class BrowserMeetingSession {
       const lateRoom = this.room;
       if (lateRoom && lateRoom !== room) await this.stopRoom(lateRoom);
       if (stopResult.status === 'rejected') throw stopResult.reason;
+      if (screenResult.status === 'rejected') throw screenResult.reason;
       if (generation === this.generation) this.room = undefined;
     }
     catch (error) { if (generation === this.generation) this.fail(error); throw error; }
   }
   private async stopRoom(room: BrowserRoom): Promise<void> {
-    try { await room.disconnect(true); }
+    // Includes acquired-but-unpublished screens, which the SDK cannot discover.
+    let captureStopError: unknown;
+    for (const [track, entry] of this.screenTracks) if (entry.room === room) {
+      try { track.stop(); } catch (error) { captureStopError = error; }
+    }
+    try {
+      await room.disconnect(true);
+      if (captureStopError) throw captureStopError;
+    }
     catch (error) {
       // LiveKit may reject sendLeave()/engine.close() before handleDisconnect
       // stops tracks. Stop published capture ourselves, but still reject so
@@ -223,6 +286,115 @@ export class BrowserMeetingSession {
       }
       throw error;
     }
+    for (const [track, entry] of this.screenTracks) if (entry.room === room) {
+      track.mediaStreamTrack.removeEventListener('ended', entry.ended);
+      this.screenTracks.delete(track);
+    }
+  }
+  private screenAllowed(room: BrowserRoom | undefined): boolean {
+    if (!room || room !== this.room || this.receiveOnly || this.snapshot.status !== 'connected') return false;
+    try { return this.capabilities.screen?.isAllowed(room) === true; }
+    catch { return false; }
+  }
+  private updateScreen(status: NonNullable<BrowserSessionSnapshot['screenShare']>['status'], error: string | null = null) {
+    if (this.capabilities.screen) this.update({ screenShare: Object.freeze({
+      available: this.screenAllowed(this.room), status, error,
+    }) });
+  }
+  refreshScreenCapability(): void {
+    if (this.room && this.snapshot.screenShare) this.refresh(this.room);
+  }
+  /** Call directly from the user's click. Capture must never enter mediaQueue. */
+  startScreenShare(): Promise<void> {
+    const room = this.room, adapter = this.capabilities.screen;
+    if (!adapter || !this.screenAllowed(room) || this.disconnectTask || this.screenStopTask ||
+        this.screenTasks.size || this.screenTracks.size || adapter.publishedTracks(room!).length)
+      return Promise.reject(new Error('Screen sharing is unavailable'));
+    const generation = this.generation, epoch = ++this.screenEpoch;
+    // Register before snapshots can reentrantly request leave/stop.
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const task = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    this.screenTasks.add(task);
+    const current = () => !this.disconnectTask && generation === this.generation && epoch === this.screenEpoch && this.screenAllowed(room);
+    const run = async () => {
+      let tracks: readonly BrowserScreenTrack[] = [];
+      try {
+        this.updateScreen('choosing');
+        if (!current()) throw new Error('Screen sharing cancelled');
+        // This call executes now, in the trusted click stack, before the first await.
+        tracks = await adapter.capture(room!);
+        for (const track of tracks) {
+          const ended = () => { void this.stopScreenShare().catch(() => undefined); };
+          this.screenTracks.set(track, { room: room!, ended });
+          track.mediaStreamTrack.addEventListener('ended', ended);
+        }
+        if (tracks.length !== 1 || tracks[0].kind !== 'video' || tracks[0].source !== 'screen_share')
+          throw new Error('Screen capture is unavailable');
+        const track = tracks[0];
+        const live = () => track.mediaStreamTrack.readyState === 'live';
+        if (!current() || !live()) throw new Error('Screen sharing cancelled');
+        this.updateScreen('publishing');
+        if (!current() || !live()) throw new Error('Screen sharing cancelled');
+        await adapter.publish(room!, track);
+        if (!current() || !live() || !adapter.isPublished(room!, track))
+          throw new Error('Screen sharing cancelled');
+        this.updateScreen('sharing');
+      } catch (error) {
+        // Stale picker/publish completions never publish again or alter a newer screen state.
+        const stopped = tracks.map(track => {
+          const entry = this.screenTracks.get(track);
+          if (entry) track.mediaStreamTrack.removeEventListener('ended', entry.ended);
+          try { track.stop(); return true; } catch { return false; }
+        });
+        const results = await Promise.allSettled(tracks.map(track => adapter.unpublish(room!, track)));
+        for (let index = 0; index < tracks.length; index++) if (stopped[index] && results[index].status === 'fulfilled') {
+          const entry = this.screenTracks.get(tracks[index]);
+          if (entry) tracks[index].mediaStreamTrack.removeEventListener('ended', entry.ended);
+          this.screenTracks.delete(tracks[index]);
+        }
+        if (generation === this.generation && epoch === this.screenEpoch) this.updateScreen(
+          this.screenTracks.size ? 'stopping' : 'idle', 'Screen sharing did not start. Choose a screen and check your permissions, then retry.');
+        throw error;
+      }
+    };
+    // Calling run() directly is essential: Promise.then(run) loses the gesture.
+    void run().then(resolve, reject);
+    void task.finally(() => this.screenTasks.delete(task)).catch(() => undefined);
+    return task;
+  }
+  /** Invalidates capture immediately; a still-open browser chooser must settle before teardown completes. */
+  stopScreenShare(): Promise<void> {
+    if (!this.capabilities.screen) return Promise.resolve();
+    if (this.screenStopTask) return this.screenStopTask;
+    ++this.screenEpoch;
+    const pending = [...this.screenTasks];
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const task = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    this.screenStopTask = task;
+    // Stop capture synchronously, including a screen whose publish is still pending.
+    for (const [track, entry] of this.screenTracks) {
+      track.mediaStreamTrack.removeEventListener('ended', entry.ended);
+      try { track.stop(); } catch { /* Retry below; retain ownership if stopping keeps failing. */ }
+    }
+    if (pending.length || this.screenTracks.size) this.updateScreen('stopping');
+    const run = async () => {
+      await Promise.allSettled(pending);
+      const entries = [...this.screenTracks];
+      const results = await Promise.allSettled(entries.map(async ([track, entry]) => {
+        track.stop();
+        await this.capabilities.screen!.unpublish(entry.room, track);
+        this.screenTracks.delete(track);
+      }));
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed?.status === 'rejected') {
+        this.updateScreen('stopping', 'Screen sharing could not finish stopping. Retry cleanup before leaving.');
+        throw failed.reason;
+      }
+      this.updateScreen('idle');
+    };
+    void run().then(resolve, reject);
+    void task.finally(() => { if (this.screenStopTask === task) this.screenStopTask = undefined; }).catch(() => undefined);
+    return task;
   }
   private operation(action: (participant: BrowserLocalParticipant) => Promise<unknown>): Promise<void> {
     const generation = this.generation, room = this.room;

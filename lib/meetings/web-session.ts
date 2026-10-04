@@ -1,9 +1,35 @@
 import { addAuthChangeListener, getAuthSnapshot } from "@/lib/_core/auth";
 
-import { BrowserMeetingConnectionFailure, BrowserMeetingSession, type BrowserRoom } from "./browser-session";
+import type { LocalParticipant, LocalTrack } from "livekit-client";
+import { BrowserMeetingConnectionFailure, BrowserMeetingSession, type BrowserRoom, type BrowserScreenAdapter } from "./browser-session";
 import { MeetingJoinFailure, safeMeetingJoinHttpStatus, type MeetingJoinStage } from "./join-failure";
 import { clearActiveNativeMeeting, getActiveNativeMeeting, setActiveNativeMeeting } from "./native-session-registry";
 import type { NativeMeetingAdmission, NativeMeetingPreferences } from "./native-session";
+
+/** Connected provider permissions, not the unconsumed tenant policy model or host authority. */
+function screenAdapter(client: typeof import("livekit-client")): BrowserScreenAdapter | undefined {
+  if (typeof client.Track?.sourceToProto !== "function") return undefined;
+  const source = client.Track.sourceToProto(client.Track.Source.ScreenShare);
+  const participant = (room: BrowserRoom) => room.localParticipant as unknown as LocalParticipant;
+  return {
+    isAllowed(room) {
+      const local = participant(room), permissions = local.permissions;
+      return globalThis.isSecureContext === true && typeof globalThis.navigator?.mediaDevices?.getDisplayMedia === "function" &&
+        typeof local.createScreenTracks === "function" && typeof local.publishTrack === "function" &&
+        typeof local.unpublishTrack === "function" && permissions?.canPublish === true &&
+        Array.isArray(permissions.canPublishSources) &&
+        (permissions.canPublishSources.length === 0 || permissions.canPublishSources.includes(source));
+    },
+    capture: room => participant(room).createScreenTracks({ audio: false }),
+    publish: (room, track) => participant(room).publishTrack(track as LocalTrack),
+    unpublish: (room, track) => participant(room).unpublishTrack(track as LocalTrack, true),
+    isPublished: (room, track) => Array.from(participant(room).trackPublications.values()).some(publication =>
+      publication.track === track && !publication.isMuted && track.mediaStreamTrack.readyState === "live"),
+    publishedTracks: room => Array.from(participant(room).trackPublications.values()).flatMap(publication =>
+      publication.track && (publication.source === client.Track.Source.ScreenShare || publication.source === client.Track.Source.ScreenShareAudio)
+        ? [publication.track] : []),
+  };
+}
 
 /** Browser media uses LiveKit's web Room; it never starts a native audio or SIP session. */
 export class WebMeetingLifecycle {
@@ -20,8 +46,12 @@ export class WebMeetingLifecycle {
     readonly meetingId: string,
     readonly receiveOnly: boolean,
     createRoom: () => BrowserRoom,
+    screen?: BrowserScreenAdapter,
   ) {
-    this.session = new BrowserMeetingSession(createRoom);
+    this.session = new BrowserMeetingSession(createRoom, { screen: screen && {
+      ...screen,
+      isAllowed: room => getAuthSnapshot().user?.id === ownerId && getActiveNativeMeeting(ownerId) === this && screen.isAllowed(room),
+    } });
     this.unsubscribeOwner = addAuthChangeListener(() => {
       if (getAuthSnapshot().user?.id !== ownerId) void this.leave().catch(() => undefined);
     });
@@ -75,7 +105,9 @@ export class WebMeetingLifecycle {
       if (typeof client.Room !== "function") throw new Error("Web meeting client unavailable");
       if (getAuthSnapshot().user?.id !== ownerId) throw new MeetingJoinFailure("admission");
       if (generation !== this.joinGeneration) throw new MeetingJoinFailure("post_connect_guard");
-      lifecycle = new WebMeetingLifecycle(ownerId, meetingId, admission.grant_profile === "listener", () => new client.Room() as unknown as BrowserRoom);
+      lifecycle = new WebMeetingLifecycle(ownerId, meetingId, admission.grant_profile === "listener",
+        () => new client.Room() as unknown as BrowserRoom,
+        admission.grant_profile === "interactive" ? screenAdapter(client) : undefined);
       stage = "signal_connect";
       await lifecycle.session.connect({
         url: admission.url,
@@ -87,6 +119,8 @@ export class WebMeetingLifecycle {
       if (generation !== this.joinGeneration || getAuthSnapshot().user?.id !== ownerId)
         throw new MeetingJoinFailure("post_connect_guard");
       setActiveNativeMeeting(lifecycle);
+      // Refresh the capability only after this exact lifecycle is registered as owner.
+      lifecycle.session.refreshScreenCapability();
       return lifecycle;
     } catch (error) {
       if (lifecycle) {

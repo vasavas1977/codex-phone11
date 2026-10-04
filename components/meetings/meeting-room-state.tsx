@@ -246,6 +246,11 @@ export function MeetingRoomState({
     !!localParticipant &&
     !leaving &&
     !receiveOnly;
+  const screen = Platform.OS === "web" ? snapshot.screenShare : undefined;
+  const screenActive = !!screen && screen.status !== "idle";
+  const screenDisabled = leaving || (screenActive
+    ? screen?.status === "stopping" && !screen.error
+    : !mediaReady || !screen?.available || busyControl !== null);
   const routeReady = snapshot.status === "connected" &&
     !!audioRoute?.getAudioOutputs && !!audioRoute.selectAudioOutput &&
     !sipInterrupted && !leaving;
@@ -288,6 +293,17 @@ export function MeetingRoomState({
     } finally {
       setBusyControl(null);
     }
+  }
+
+  function updateScreen() {
+    if (!session || !screen || screenDisabled || getAuthSnapshot().user !== user) return;
+    setFeedback(null);
+    // No await or queued work may precede startScreenShare: the browser requires this click.
+    const operation = screenActive ? session.stopScreenShare() : session.startScreenShare();
+    void operation.catch(() => {
+      if (getAuthSnapshot().user === user && !leavingNow.current)
+        setFeedback(session.getSnapshot().screenShare?.error ?? null);
+    });
   }
 
   async function leave() {
@@ -510,6 +526,19 @@ export function MeetingRoomState({
               </>
             )}
           </Pressable>
+          {screen && (screen.available || screenActive) && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={screenActive ? "Stop sharing screen" : "Share screen"}
+              accessibilityHint="Choose a browser tab, window or screen to send video to this meeting. Screen audio is off."
+              accessibilityState={{ disabled: screenDisabled, selected: screen.status === "sharing", busy: screen.status === "stopping" }}
+              disabled={screenDisabled}
+              onPress={updateScreen}
+              style={[styles.controlButton, screen.status === "sharing" && styles.activeControl, screenDisabled && styles.disabledControl]}
+            >
+              <Text style={styles.controlText}>{screenActive ? "Stop sharing" : "Share screen"}</Text>
+            </Pressable>
+          )}
           {audioRoute?.getAudioOutputs && audioRoute.selectAudioOutput && (
             <Pressable
               accessibilityRole="button"
@@ -620,6 +649,12 @@ export function MeetingRoomState({
                 ? `Mic ${localParticipant?.microphone ? "on" : "off"} · Video ${localParticipant?.camera ? "on" : "off"}`
                 : "Controls become available when you connect."}
         </Text>
+        {screenActive && <Text style={styles.controlsHint} accessibilityRole="text">
+          {screen?.status === "sharing" ? "You are sharing your screen · screen audio off"
+            : screen?.status === "choosing" ? "Choose a screen in your browser. Nothing is shared until you confirm."
+              : screen?.status === "publishing" ? "Starting screen sharing…"
+                : "Stopping screen sharing. Close the browser chooser if it is still open."}
+        </Text>}
       </View>
 
       <Modal
