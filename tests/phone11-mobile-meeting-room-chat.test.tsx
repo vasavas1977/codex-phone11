@@ -8,7 +8,8 @@ import { decodeRoomChatMessage, encodeRoomChatMessage, ROOM_CHAT_MAX_MESSAGES, R
 
 const ui = vi.hoisted(() => ({ values: [] as any[], refs: [] as any[], effects: [] as any[], stateIndex: 0, refIndex: 0, effectIndex: 0,
   buttons: [] as any[], input: null as any, modal: null as any, keyboard: null as any, platform: "ios",
-  renderedOwner: { id: 3001, name: "Current Person" } as any, currentOwner: null as any }));
+  renderedOwner: { id: 3001, name: "Current Person" } as any, currentOwner: null as any,
+  avatars: [] as any[], people: [] as any[], directoryOwner: 3001, directoryTenant: 7 }));
 vi.mock("react", async () => {
   const actual = await vi.importActual<typeof import("react")>("react");
   return { ...actual,
@@ -37,11 +38,11 @@ vi.mock("react-native", () => ({
   TextInput: (props: any) => { ui.input = props; return createElement("textarea", { "aria-label": props.accessibilityLabel, value: props.value, onChange: () => {}, readOnly: !props.editable }); },
 }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
-vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: ({ name }: any) => createElement("span", null, name), useProfilePhotoCacheScope: vi.fn() }));
+vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: (props: any) => { ui.avatars.push(props); return createElement("span", null, props.name); }, useProfilePhotoCacheScope: vi.fn() }));
 vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: ui.renderedOwner }) }));
 vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: ui.currentOwner }) }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "#00f", error: "#f00", foreground: "#fff", muted: "#888" }) }));
-vi.mock("../hooks/use-directory", () => ({ useDirectory: () => ({ owner: 3001, workspace: { id: 7 }, people: [], reload: vi.fn() }), useDirectoryFocusRefresh: vi.fn() }));
+vi.mock("../hooks/use-directory", () => ({ useDirectory: () => ({ owner: ui.directoryOwner, workspace: { id: ui.directoryTenant }, people: ui.people, reload: vi.fn() }), useDirectoryFocusRefresh: vi.fn() }));
 vi.mock("../lib/profile/use-workspace-profile", () => ({ useWorkspaceProfile: () => ({ photoDescriptor: null }) }));
 vi.mock("../components/meetings/native-video-stage", () => ({ NativeVideoStage: () => null }));
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server") as { renderToStaticMarkup(node: ReactNode): string };
@@ -70,6 +71,7 @@ beforeEach(() => {
   ui.effects.forEach(effect => effect?.cleanup?.()); ui.values = []; ui.refs = []; ui.effects = [];
   ui.buttons = []; ui.input = null; ui.modal = null; ui.keyboard = null; ui.platform = "ios";
   ui.renderedOwner = { id: 3001, name: "Current Person" }; ui.currentOwner = ui.renderedOwner;
+  ui.avatars = []; ui.people = []; ui.directoryOwner = 3001; ui.directoryTenant = 7;
 });
 
 describe("mobile chat transport uses the authenticated SDK room", () => {
@@ -248,5 +250,41 @@ describe("mobile meeting chat sheet", () => {
     expect(f.publish).toHaveBeenCalledTimes(1); oldSend(); await Promise.resolve(); expect(f.publish).toHaveBeenCalledTimes(1);
     render(); render(); expect(ui.modal.visible).toBe(false);
     expect(leave).toHaveBeenCalledTimes(1);
+  });
+  it.each(["matching", "other tenant", "other owner", "opaque media identity"])("host member avatars use only matching authorized workspace descriptors: %s", scenario => {
+    const f = fixture();
+    const participant = { identity: scenario === "opaque media identity" ? "opaque_hmac_identity" : "p11-t7-u3001",
+      name: "You", local: true, speaking: false, microphone: false, camera: false, attributes: {} };
+    const snapshot = { status: "connected", participants: [participant], error: null };
+    const session = { getRoom: () => f.room, getSnapshot: () => snapshot, subscribe: () => () => {} } as unknown as BrowserMeetingSession;
+    const descriptor = "/api/profile/photo/7/8?v=42345678-1234-4234-8234-123456789012";
+    ui.people = [{ id: 8, photoUrl: descriptor, photoVersion: "42345678-1234-4234-8234-123456789012" }];
+    if (scenario === "other owner") ui.directoryOwner = 999;
+    const memberControls = (avatar: (target: { userId: number; name?: string }, tenantId: number) => ReactNode) =>
+      avatar({ userId: 8, name: "Admitted Member" }, scenario === "other tenant" ? 42 : 7);
+    const render = () => {
+      ui.stateIndex = 0; ui.refIndex = 0; ui.effectIndex = 0; ui.buttons = []; ui.avatars = [];
+      renderToStaticMarkup(createElement(MeetingRoomState, { session, nativeRoom: f.room, onBack: vi.fn(), memberControls }));
+    };
+    render(); ui.buttons.find(button => button.accessibilityLabel === "Participants").onPress(); render();
+    const avatar = ui.avatars.find(value => value.name === "Admitted Member");
+    expect(avatar).toMatchObject({ userId: 8, interactive: false });
+    expect(avatar.photoUrl).toBe(scenario === "matching" ? descriptor : undefined);
+  });
+  it("retires the real parent member control scope when Leave fails, before rerender and afterward", async () => {
+    const f = fixture(), wait = deferred();
+    const snapshot = { status: "connected", participants: [{ identity: "opaque_hmac_identity", local: true, microphone: false, camera: false }], error: null };
+    const session = { getRoom: () => f.room, getSnapshot: () => snapshot, subscribe: () => () => {} } as unknown as BrowserMeetingSession;
+    let oldCurrent!: () => boolean;
+    const render = () => {
+      ui.stateIndex = 0; ui.refIndex = 0; ui.effectIndex = 0; ui.buttons = [];
+      renderToStaticMarkup(createElement(MeetingRoomState, { session, nativeRoom: f.room, onBack: vi.fn(), onLeave: () => wait.promise,
+        memberControls: (_avatar, current) => { oldCurrent = current; return null; } }));
+    };
+    render(); ui.buttons.find(button => button.accessibilityLabel === "Participants").onPress(); render();
+    const retained = oldCurrent; expect(retained()).toBe(true);
+    ui.buttons.find(button => button.accessibilityLabel === "Leave meeting").onPress(); expect(retained()).toBe(false);
+    wait.reject(new Error("cleanup failed")); await Promise.resolve(); await Promise.resolve();
+    expect(retained()).toBe(false); render(); expect(oldCurrent()).toBe(true);
   });
 });

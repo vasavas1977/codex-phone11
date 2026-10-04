@@ -3,6 +3,8 @@ import type { BrowserMeetingSession, BrowserRoom } from "./browser-session";
 export type ActiveNativeMeeting = {
   /** Local authenticated account that owns this process-global room. */
   readonly ownerId: number;
+  /** Exact admitted room; old restored records without it cannot offer host controls. */
+  readonly meetingId?: string;
   session: BrowserMeetingSession;
   readonly room: BrowserRoom | undefined;
   readonly receiveOnly: boolean;

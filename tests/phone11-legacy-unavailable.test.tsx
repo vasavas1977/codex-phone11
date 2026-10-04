@@ -40,6 +40,7 @@ vi.mock("../components/meetings/meeting-prejoin", () => ({
 vi.mock("../components/meetings/meeting-room-state", () => ({
   MeetingRoomState: ({ unavailableReason }: any) => createElement("main", null, unavailableReason),
 }));
+vi.mock("../lib/meetings/member-removal-panel", () => ({ MeetingMemberRemovalPanel: () => null }));
 vi.mock("expo-router", () => ({ router: {}, useLocalSearchParams: () => ({}) }));
 vi.mock("react-native", () => ({ StyleSheet: { create: (x: unknown) => x } }));
 import Notifications from "../app/notifications";

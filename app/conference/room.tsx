@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { BackHandler } from "react-native";
 import { router } from "expo-router";
 
@@ -6,8 +6,9 @@ import { useAuth } from "@/hooks/use-auth";
 
 import { MeetingRoomState } from "@/components/meetings/meeting-room-state";
 import { ScreenContainer } from "@/components/screen-container";
-import { getActiveNativeMeeting } from "@/lib/meetings/native-session-registry";
+import { getActiveNativeMeeting, subscribeNativeMeetingRegistry } from "@/lib/meetings/native-session-registry";
 import { createMeetingRouteExit } from "@/lib/meetings/route-exit";
+import { MeetingMemberRemovalPanel } from "@/lib/meetings/member-removal-panel";
 
 /**
  * A route shell only. The authenticated meeting adapter must supply a real
@@ -15,7 +16,8 @@ import { createMeetingRouteExit } from "@/lib/meetings/route-exit";
  */
 export default function ConferenceRoomScreen() {
   const { user } = useAuth({ autoFetch: false });
-  const meeting = user ? getActiveNativeMeeting(user.id) : undefined;
+  const currentMeeting = useCallback(() => user ? getActiveNativeMeeting(user.id) : undefined, [user]);
+  const meeting = useSyncExternalStore(subscribeNativeMeetingRegistry, currentMeeting, currentMeeting);
   const back = useCallback(() =>
     router.canGoBack() ? router.back() : router.replace("/(tabs)"), []);
   const exit = useMemo(
@@ -45,6 +47,8 @@ export default function ConferenceRoomScreen() {
         unavailableReason={meeting ? undefined : "Meetings are still being configured for this workspace. There is no connected meeting session on this device."}
         onLeave={exit ? () => exit.leaveAndNavigate() : undefined}
         onBack={back}
+        memberControls={meeting?.meetingId && user ? (renderMemberAvatar, isCurrent) =>
+          <MeetingMemberRemovalPanel meeting={meeting} owner={user} renderMemberAvatar={renderMemberAvatar} isCurrent={isCurrent} /> : undefined}
       />
     </ScreenContainer>
   );

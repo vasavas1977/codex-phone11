@@ -47,6 +47,9 @@ import {
   joinMeetingSchema,
   type MeetingRepository,
 } from "./service";
+import { createMeetingHostEvictionRepository, meetingHostControlScopeSchema, meetingHostRemovalSchema } from "./meeting-host-eviction-repository";
+import { createMeetingHostEvictionService, type MeetingHostEvictionRepository, type ReviewedMeetingHostEvictionGate } from "./meeting-host-eviction-service";
+import { createPlainVideoEvictionPostgresTransaction } from "./plain-video-eviction-repository";
 
 type PlainVideoClientFactory = {
   create(
@@ -64,6 +67,8 @@ export type MeetingsRouterDependencies = {
   channelRepository?: ChannelMeetingRepository;
   channelAdminRepository?: ChannelMeetingAdminRepository;
   directRepository?: DirectMeetingRepository;
+  /** Explicit reviewed composition only. Join configuration never enables removal. */
+  hostEviction?: { repository?: MeetingHostEvictionRepository; gate: ReviewedMeetingHostEvictionGate };
 };
 
 function defaultClientFactory(): PlainVideoClientFactory {
@@ -154,7 +159,25 @@ export function createMeetingsRouter(
   const channelEnabled = (tenantId: number) => channelConfiguration.enabled
     && channelConfiguration.tenantIds.includes(tenantId)
     && configured.configuredTenantIds.includes(tenantId);
+  // Lazily acquire the DB only for an explicitly reviewed removal composition.
+  const hostRepository = dependencies.hostEviction?.repository ?? createMeetingHostEvictionRepository(
+    async (fn) => createPlainVideoEvictionPostgresTransaction(getPool())(fn),
+  );
+  const hostEviction = createMeetingHostEvictionService(hostRepository, dependencies.hostEviction?.gate);
+  const removalInput = meetingHostRemovalSchema;
+  const removalResult = (result: Awaited<ReturnType<typeof hostEviction.request>>) => ({
+    operationId: result.operationId, expectedRoomRevision: result.expectedRoomRevision,
+    expectedMemberRevision: result.expectedMemberRevision, state: result.state, providerAcknowledged: result.providerAcknowledged,
+    ...(result.providerState ? { providerState: result.providerState } : {}),
+    ...(result.providerError ? { providerError: result.providerError } : {}),
+  });
   return router({
+    hostControls: protectedProcedure.input(meetingHostControlScopeSchema)
+      .query(({ ctx, input }) => hostEviction.snapshot(ctx.user.id, input)),
+    removeMember: protectedProcedure.input(removalInput)
+      .mutation(async ({ ctx, input }) => removalResult(await hostEviction.request(ctx.user.id, input))),
+    removalStatus: protectedProcedure.input(removalInput)
+      .query(async ({ ctx, input }) => removalResult(await hostEviction.poll(ctx.user.id, input))),
     adminOverview: protectedProcedure
       .input(adminOverviewSchema)
       .query(({ ctx, input }) => channelAdminRepository.overview(ctx.user.id, input.tenantId, channelEnabled(input.tenantId), input.directCursor, input.channelCursor)),

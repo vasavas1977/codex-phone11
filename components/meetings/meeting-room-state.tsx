@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -62,6 +62,9 @@ export interface MeetingRoomStateProps {
   onBack: () => void;
   /** Owns the complete leave sequence when media has extra cleanup requirements. */
   onLeave?: () => void | Promise<void>;
+  /** Authoritative admitted-member controls, distinct from live media participants. */
+  memberControls?: (renderMemberAvatar: (target: { userId: number; name?: string }, tenantId: number) => ReactNode,
+    isCurrent: () => boolean) => ReactNode;
 }
 
 const unavailableSnapshot: BrowserSessionSnapshot = Object.freeze({
@@ -167,6 +170,7 @@ export function MeetingRoomState({
   unavailableReason,
   onBack,
   onLeave,
+  memberControls,
 }: MeetingRoomStateProps) {
   const colors = useColors("dark");
   const { user } = useAuth({ autoFetch: false });
@@ -182,6 +186,9 @@ export function MeetingRoomState({
   const leavingNow = useRef(false);
   const chatEpoch = useRef(0);
   const chatScopeEpoch = chatEpoch.current;
+  const memberControlsCurrent = useMemo(() => () => chatEpoch.current === chatScopeEpoch &&
+    !leavingNow.current && getAuthSnapshot().user === user && session?.getSnapshot().status === "connected",
+  [chatScopeEpoch, session, user]);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [panel, setPanel] = useState<"participants" | "more" | "audio" | null>(null);
   const [audioOutputs, setAudioOutputs] = useState<string[]>([]);
@@ -713,6 +720,11 @@ export function MeetingRoomState({
                     </View>
                   ))
                 )}
+                {memberControls?.((target, tenantId) => {
+                  const person = tenantId === photoTenantId ? photoPeople.find(person => person.id === target.userId) : undefined;
+                  return <ProfileAvatar name={target.name ?? "Meeting member"} size={40} interactive={false}
+                    tenantId={tenantId} userId={target.userId} photoUrl={person?.photoUrl} />;
+                }, memberControlsCurrent)}
               </ScrollView>
             ) : panel === "audio" ? (
               <View style={styles.infoRows}>

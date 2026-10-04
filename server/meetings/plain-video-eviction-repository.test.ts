@@ -26,16 +26,18 @@ const operationRow = {
 describe("plain-video eviction repository", () => {
   it("durably revokes the exact tenant member before creating a pending provider operation", async () => {
     let revoked = false;
-    const query = vi.fn(async (sql: string) => {
+    let denialRevision: unknown;
+    const query = vi.fn(async (sql: string, args: unknown[] = []) => {
       if (sql.includes("SELECT") && sql.includes("phone11_plain_video_eviction_operations")) {
         return { rows: [] };
       }
       if (sql.includes("UPDATE phone11_plain_video_admission_members")) {
-        revoked = true;
+        revoked = true; denialRevision = args[4];
         return { rows: [{ meeting_id: target.meetingId }] };
       }
       if (sql.includes("INSERT INTO phone11_plain_video_eviction_operations")) {
-        return { rows: [operationRow] };
+        expect(args[0]).toBe(denialRevision);
+        return { rows: [{ ...operationRow, id: args[0] }] };
       }
       return { rows: revoked ? [] : [] };
     });
@@ -43,7 +45,7 @@ describe("plain-video eviction repository", () => {
     const repository = createPlainVideoEvictionRepository(transaction);
 
     await expect(repository.begin(target, key)).resolves.toMatchObject({
-      id: operationRow.id,
+      id: expect.any(String),
       state: "pending",
       target,
     });

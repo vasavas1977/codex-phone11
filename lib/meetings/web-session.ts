@@ -17,6 +17,7 @@ export class WebMeetingLifecycle {
 
   private constructor(
     readonly ownerId: number,
+    readonly meetingId: string,
     readonly receiveOnly: boolean,
     createRoom: () => BrowserRoom,
   ) {
@@ -74,7 +75,7 @@ export class WebMeetingLifecycle {
       if (typeof client.Room !== "function") throw new Error("Web meeting client unavailable");
       if (getAuthSnapshot().user?.id !== ownerId) throw new MeetingJoinFailure("admission");
       if (generation !== this.joinGeneration) throw new MeetingJoinFailure("post_connect_guard");
-      lifecycle = new WebMeetingLifecycle(ownerId, admission.grant_profile === "listener", () => new client.Room() as unknown as BrowserRoom);
+      lifecycle = new WebMeetingLifecycle(ownerId, meetingId, admission.grant_profile === "listener", () => new client.Room() as unknown as BrowserRoom);
       stage = "signal_connect";
       await lifecycle.session.connect({
         url: admission.url,

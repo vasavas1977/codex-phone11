@@ -2,6 +2,8 @@ import { TRPCError } from "@trpc/server";
 
 import {
   meetingHostRemovalSchema,
+  meetingHostControlScopeSchema,
+  type MeetingHostControlSnapshot,
   type createMeetingHostEvictionRepository,
 } from "./meeting-host-eviction-repository";
 import {
@@ -21,8 +23,8 @@ export type ReviewedMeetingHostEvictionGate = {
 };
 
 /**
- * Reusable source contract, intentionally unmounted. Capabilities currently
- * expose no eviction readiness, so the default gate is off and makes no DB or
+ * Reusable source contract, composed only through explicit reviewed dependencies.
+ * Join capabilities expose no eviction readiness, so the default gate is off and makes no DB or
  * provider calls. Enabling join capability alone cannot enable host removal.
  * The actor ID must come from the protected server session, never client input.
  */
@@ -34,7 +36,8 @@ export function createMeetingHostEvictionService(
     gate?.reviewedEvictionEnabled === true
       ? new Map(gate.tenantClients)
       : new Map<number, PlainVideoEvictionClient>();
-  const inFlight = new Map<string, Promise<PlainVideoRemovalStatus>>();
+  type HostRemovalStatus = PlainVideoRemovalStatus & { expectedRoomRevision: string; expectedMemberRevision: string };
+  const inFlight = new Map<string, Promise<HostRemovalStatus>>();
   const unavailable = () =>
     new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -44,7 +47,7 @@ export function createMeetingHostEvictionService(
     actorId: number,
     raw: unknown,
     mode: "request" | "poll",
-  ): Promise<PlainVideoRemovalStatus> {
+  ): Promise<HostRemovalStatus> {
     if (!Number.isSafeInteger(actorId) || actorId < 1)
       throw new TRPCError({ code: "UNAUTHORIZED" });
     const parsed = meetingHostRemovalSchema.safeParse(raw);
@@ -85,7 +88,8 @@ export function createMeetingHostEvictionService(
       const flight = lifecycle[mode](
         operation.target,
         operation.idempotencyKey,
-      );
+      ).then(result => ({ ...result, expectedRoomRevision: parsed.data.expectedRoomRevision,
+        expectedMemberRevision: operation.id }));
       inFlight.set(flightKey, flight);
       try {
         return await flight;
@@ -98,6 +102,20 @@ export function createMeetingHostEvictionService(
     }
   }
   return {
+    async snapshot(actorId: number, raw: unknown): Promise<MeetingHostControlSnapshot> {
+      const parsed = meetingHostControlScopeSchema.safeParse(raw);
+      if (!parsed.success || !Number.isSafeInteger(actorId) || actorId < 1)
+        throw new TRPCError({ code: "BAD_REQUEST" });
+      const unavailable: MeetingHostControlSnapshot = {
+        available: false, meetingId: parsed.data.meetingId, members: [],
+      };
+      if (!clients.size) return unavailable;
+      try {
+        const result = await repository.snapshot(actorId, parsed.data.meetingId, [...clients.keys()]);
+        return result.available && result.meetingId === parsed.data.meetingId &&
+          result.tenantId !== undefined && clients.has(result.tenantId) ? result : unavailable;
+      } catch { return unavailable; }
+    },
     request: (actorId: number, raw: unknown) =>
       perform(actorId, raw, "request"),
     poll: (actorId: number, raw: unknown) => perform(actorId, raw, "poll"),

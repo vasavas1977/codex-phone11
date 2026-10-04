@@ -130,6 +130,8 @@ export function createPlainVideoEvictionRepository(
         const existing = await findByKey(db, target.data.tenantId, target.data.userId, key.data);
         if (existing) return sameTarget(existing, target.data) ? existing : null;
 
+        // The host boundary can prove this exact operation owns the local denial.
+        const operationId = randomUUID();
         // A member must be durable, tenant-scoped, and not previously revoked.
         // This happens before external I/O and is the permanent local remint
         // denial even if the provider is slow, fails, or cannot be reached.
@@ -148,7 +150,7 @@ export function createPlainVideoEvictionRepository(
             target.data.tenantId,
             target.data.userId,
             target.data.participantId,
-            randomUUID(),
+            operationId,
           ],
         );
         if (revoked.rows.length !== 1) return null;
@@ -175,7 +177,7 @@ export function createPlainVideoEvictionRepository(
            VALUES ($1, $2, $3, $4, $5, $6, 'pending')
            RETURNING ${columns}`,
           [
-            randomUUID(),
+            operationId,
             target.data.tenantId,
             target.data.meetingId,
             target.data.userId,

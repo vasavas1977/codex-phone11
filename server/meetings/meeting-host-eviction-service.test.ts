@@ -6,7 +6,8 @@ import type { PlainVideoEvictionOperation } from "./plain-video-eviction-reposit
 const input = {
   tenantId: 41,
   meetingId: "12345678-1234-4234-8234-123456789012",
-  targetUserId: 8,
+  targetUserId: 8, expectedParticipantId: "stable_41_8",
+  expectedRoomRevision: "22345678-1234-4234-8234-123456789012", expectedMemberRevision: "32345678-1234-4234-8234-123456789012",
 };
 const target = {
   meetingId: input.meetingId,
@@ -21,6 +22,7 @@ const operation: PlainVideoEvictionOperation = {
     41,
     input.meetingId,
     target.participantId,
+    input.expectedRoomRevision,
   ),
   state: "pending",
   providerEvictionId: null,
@@ -41,6 +43,7 @@ const response = (
 function fixture() {
   let current = { ...operation };
   const repository = {
+    snapshot: vi.fn(async () => ({ available: false, meetingId: input.meetingId, members: [] })),
     begin: vi.fn(async () => current),
     get: vi.fn(async () => current),
     record: vi.fn(async (_op, observed) => {
