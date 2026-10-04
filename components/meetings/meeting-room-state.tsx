@@ -655,7 +655,8 @@ export function MeetingRoomState({
                 : "Controls become available when you connect."}
         </Text>
         {screenActive && <Text style={styles.controlsHint} accessibilityRole="text">
-          {screen?.status === "sharing" ? "You are sharing your screen · screen audio off"
+          {screen?.error ? "Tap Stop sharing to retry cleanup before leaving."
+            : screen?.status === "sharing" ? "You are sharing your screen · screen audio off"
             : screen?.status === "choosing" ? "Choose a screen in your browser. Nothing is shared until you confirm."
               : screen?.status === "publishing" ? "Starting screen sharing…"
                 : "Stopping screen sharing. Close the browser chooser if it is still open."}

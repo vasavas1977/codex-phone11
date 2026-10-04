@@ -65,5 +65,6 @@ it("listener UI cannot initiate screen capture", () => {
 it("allows a failed cleanup to be retried with Stop", () => {
   const { session, html } = render({ available: false, status: "stopping", error: "Cleanup requires retry" });
   expect(html).toContain("Cleanup requires retry");
+  expect(html).toContain("Tap Stop sharing to retry cleanup before leaving.");
   expect(state.buttons.get("Stop sharing screen")!.disabled).toBe(false); state.buttons.get("Stop sharing screen")!.onPress(); expect(session.stopScreenShare).toHaveBeenCalled();
 });
