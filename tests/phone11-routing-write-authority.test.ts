@@ -38,6 +38,9 @@ const dml = (sql: unknown) => /\b(?:INSERT INTO|UPDATE|DELETE FROM)\b/.test(Stri
 
 beforeEach(() => {
   vi.clearAllMocks(); state.committed = false; state.actor = [{ tenant_id: 7, role: "admin" }];
+  // A setup failure must not leave an unconsumed actual-reader one-shot for
+  // another test. clearAllMocks clears calls, but preserves queued implementations.
+  state.capabilities.mockReset();
   state.capabilities.mockResolvedValue({ ivr: true, ringGroups: true, queues: true, businessHours: true });
   const stale = [{ userId: 9, tenantId: 7, role: "admin", tenantName: "Workspace", tenantStatus: "active" }];
   state.cacheGetOrSet.mockResolvedValue(stale);
@@ -159,21 +162,28 @@ describe.skipIf(!databaseUrl)("routing authority on an owned disposable PostgreS
   it("checks actual schema capabilities with a one-connection pool while authority is held", async () => {
     const actual = await vi.importActual<typeof import("../server/pbx/schema-capabilities")>("../server/pbx/schema-capabilities");
     const url = new URL(databaseUrl!);
-    const single = new Pool({ host: "127.0.0.1", port: Number(url.port), user: "p11_routing_auth_runtime", password: decodeURIComponent(url.password), database: "phone11_routing_auth_test", ssl: false, application_name: "phone11-routing-auth-single-client-test", max: 1, connectionTimeoutMillis: 250, query_timeout: 5000, options: "-c search_path=p11_routing_auth_test,pg_catalog -c statement_timeout=5000 -c lock_timeout=4000" });
+    const single = new Pool({ host: "127.0.0.1", port: Number(url.port), user: "p11_routing_auth_runtime", password: decodeURIComponent(url.password), database: "phone11_routing_auth_test", ssl: false, application_name: "phone11-routing-auth-single-client-test", max: 1, connectionTimeoutMillis: 3000, query_timeout: 5000, options: "-c search_path=p11_routing_auth_test,pg_catalog -c statement_timeout=5000 -c lock_timeout=4000" });
     const statements: string[] = [];
-    state.capabilities.mockImplementationOnce(actual.readManagementCapabilities);
-    state.query.mockImplementation((sql, parameters) => single.query(sql, parameters));
-    state.withTransaction.mockImplementationOnce(async fn => {
-      const client = await single.connect();
-      await client.query("BEGIN");
-      const held = { query: (sql: string, parameters?: unknown[]) => {
-        statements.push(sql); return client.query(sql, parameters);
-      } } as unknown as PoolClient;
-      try { const result = await fn(held); await client.query("COMMIT"); return result; }
-      catch (error) { await client.query("ROLLBACK"); throw error; }
-      finally { client.release(); }
-    });
     try {
+      // Open and release the sole connection with the normal startup budget.
+      // pg-pool reads this public option for subsequent pending checkouts: a
+      // second checkout while the write client is held must still fail quickly.
+      await single.query("SELECT 1");
+      expect(single.totalCount).toBe(1); expect(single.idleCount).toBe(1);
+      single.options.connectionTimeoutMillis = 250;
+      state.capabilities.mockImplementationOnce(actual.readManagementCapabilities);
+      state.query.mockImplementation((sql, parameters) => single.query(sql, parameters));
+      state.withTransaction.mockImplementationOnce(async fn => {
+        const client = await single.connect();
+        try {
+          await client.query("BEGIN");
+          const held = { query: (sql: string, parameters?: unknown[]) => {
+            statements.push(sql); return client.query(sql, parameters);
+          } } as unknown as PoolClient;
+          const result = await fn(held); await client.query("COMMIT"); return result;
+        } catch (error) { await client.query("ROLLBACK"); throw error; }
+        finally { client.release(); }
+      });
       // The fixture deliberately has no public management schema. Its actual
       // catalog read must refuse readiness, without waiting for another client.
       await expect(create()).rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: "Ring groups is unavailable on this server" });
@@ -226,7 +236,14 @@ describe.skipIf(!databaseUrl)("routing authority on an owned disposable PostgreS
       try { const result = await fn(wrapped); await client.query("COMMIT"); state.committed = true; return result; }
       catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
     });
-    const write = create(); const writer = await atWrite; const revoker = await pool.connect();
+    const write = create();
+    // Observe a refusal before INSERT immediately rather than leaving a rejected
+    // write unhandled while waiting forever for a pause that cannot be reached.
+    const writer = await Promise.race([atWrite, write.then(
+      () => { throw Error("Mutation completed before the expected write pause"); },
+      error => { throw error; },
+    )]);
+    const revoker = await pool.connect();
     try {
       await revoker.query("BEGIN"); const revoke = revoker.query("UPDATE tenant_memberships SET status='inactive' WHERE user_id=9 AND tenant_id=7");
       await untilBlocked(writer); release(); await write; await revoke; await revoker.query("COMMIT");
