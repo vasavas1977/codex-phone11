@@ -714,7 +714,6 @@ export async function assignExtensionToUser(
  */
 export async function listExtensions(orgId: number) {
   const db = getPool();
-  await ensurePhoneProvisioningSchema(db);
 
   const result = await db.query(`
     SELECT e.*, ue.user_id as assigned_user_id
@@ -844,7 +843,6 @@ async function lockLegacyPhoneAdmin(client: PoolClient, actorUserId: number, ten
  */
 export async function listOrganizations(tenantIds: number[]) {
   const db = getPool();
-  await ensurePhoneProvisioningSchema(db);
 
   const result = await db.query(`SELECT * FROM organizations WHERE id = ANY($1::integer[]) ORDER BY id`, [tenantIds]);
   return result.rows;
@@ -855,7 +853,6 @@ export async function listOrganizations(tenantIds: number[]) {
  */
 export async function listDidNumbers(orgId: number) {
   const db = getPool();
-  await ensurePhoneProvisioningSchema(db);
 
   const result = await db.query(`
     SELECT * FROM did_numbers WHERE tenant_id = $1 ORDER BY number
