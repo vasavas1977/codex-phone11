@@ -1,5 +1,5 @@
 import { ipcRenderer } from 'electron';
-import { Participant, Room, RoomEvent, Track, supportsAudioOutputSelection } from 'livekit-client';
+import { ConnectionState, Participant, Room, RoomEvent, Track, supportsAudioOutputSelection } from 'livekit-client';
 import { MeetingAudioOutputSequence } from './meeting-audio-output-sequence';
 import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, type PublicMeetingDirectPage, type MeetingPhotoScope, type MeetingProfilePhoto } from './meeting-channels';
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
@@ -7,6 +7,9 @@ import { PrejoinMicrophoneCheck } from './prejoin-microphone-check';
 import { MeetingVideoSlot } from './meeting-video-slot';
 import { DesktopMeetingChat, DesktopMeetingPhotos, type DesktopChatSnapshot } from './meeting-room-chat';
 import { channelInviteMessage, channelInviteSelectionIsValid } from './channel-invite-selection';
+import { DesktopMeetingRemovalClient, removalRow, type DesktopRemovalView } from './meeting-member-removal';
+import type { RemovalMember } from '../../../lib/meetings/member-removal';
+import { MAX_MEETING_AVATAR_BYTES, meetingPhotoBytesMatch } from './meeting-channels';
 import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingDirectDetails, DesktopMeetingDirectChat } from '../../src/authenticated-provider';
 
 // This isolated preload is the only Chromium world that receives a media grant.
@@ -15,6 +18,10 @@ let room: Room | null = null;
 let meetingChat: DesktopMeetingChat | null = null;
 let meetingPhotos: DesktopMeetingPhotos | null = null;
 let chatOpen = false;
+let memberRemoval: DesktopMeetingRemovalClient | null = null;
+let accessOpen = false;
+let confirmRemoval: RemovalMember | null = null;
+let accessPhoto: ((row: RemovalMember, avatar: HTMLElement) => void) | null = null;
 let revision: string | null = null;
 let meetingListRequest = 0;
 let refreshingMeetings = false;
@@ -65,12 +72,109 @@ const status = (message: string) => { el('status').textContent = message; };
 const error = (message: string) => { el('prejoin-error').textContent = message; };
 
 function showChat(open: boolean, focus = true): void {
+  if (open) showAccess(false, false);
   chatOpen = open;
   el('chat-panel').hidden = !open;
   el('participant-roster').hidden = open;
   el('meeting-content').classList.toggle('chat-open', open);
   el('chat').setAttribute('aria-pressed', String(open));
   if (focus) (open ? el<HTMLTextAreaElement>('chat-text').disabled ? el('chat-messages') : el('chat-text') : el('chat')).focus();
+}
+
+function showAccess(open: boolean, focus = true): void {
+  accessOpen = open;
+  if (open) showChat(false, false);
+  el('access-panel').hidden = !open;
+  el('participant-roster').hidden = open || chatOpen;
+  el('manage-access').setAttribute('aria-pressed', String(open));
+  el('meeting-content').classList.toggle('access-open', open);
+  if (!open) confirmRemoval = null;
+  if (focus) (open ? el('access-panel') : el('manage-access')).focus();
+}
+
+function renderAccess(view: DesktopRemovalView): void {
+  if (confirmRemoval && !view.members.includes(confirmRemoval)) confirmRemoval = null;
+  const busy = view.loading || view.busyUserId !== null;
+  el('manage-access').hidden = !view.available && !view.error;
+  el<HTMLButtonElement>('refresh-access').disabled = busy;
+  el('access-status').textContent = view.error ?? (view.loading ? 'Checking host permission…' :
+    view.available ? 'Only the original meeting host can remove access.' : 'Meeting access controls are unavailable.');
+  el('access-empty').hidden = !view.available || view.members.length > 0;
+  const list = el('access-members');
+  list.replaceChildren();
+  const client = memberRemoval;
+  for (const row of view.members) {
+    const item = document.createElement('li'); item.className = 'access-member';
+    const avatar = document.createElement('span'); avatar.className = 'person-avatar';
+    const name = row.name ?? 'Meeting member'; avatar.textContent = name.split(/\s+/).slice(0, 2).map(word => word[0]).join('').toUpperCase();
+    accessPhoto?.(row, avatar);
+    const body = document.createElement('div');
+    const title = document.createElement('strong'); title.textContent = name;
+    const state = document.createElement('p'); state.textContent = row.state === 'admitted' ? 'Meeting access admitted' :
+      row.state === 'pending' ? 'Access revoked · removal pending; departure is not confirmed' :
+      row.state === 'completed' ? 'Access revoked · service acknowledged removal' : 'Access revoked · removal service failed';
+    body.append(title, state);
+    const button = (label: string, act: () => void) => {
+      const action = document.createElement('button'); action.type = 'button'; action.textContent = label;
+      action.setAttribute('aria-label', `${label} for ${name}`); action.disabled = busy;
+      action.addEventListener('click', () => {
+        if (memberRemoval === client && client?.current() && client.getSnapshot().members.includes(row)) act();
+      }); body.append(action);
+    };
+    if (row.state === 'admitted') button('Remove meeting access', () => { confirmRemoval = row; renderAccess(client!.getSnapshot()); });
+    if (row.state === 'pending') {
+      button('Check status', () => { void client!.act(row, 'poll'); });
+      button('Retry request', () => { void client!.act(row, 'request'); });
+    }
+    if (row === confirmRemoval) {
+      const warning = document.createElement('p'); warning.textContent = 'Permanently block this membership from rejoining and request removal? A pending request does not confirm the member has left.';
+      body.append(warning);
+      button('Confirm permanent removal', () => { confirmRemoval = null; void client!.act(row, 'request'); });
+      button('Cancel removal', () => { confirmRemoval = null; renderAccess(client!.getSnapshot()); });
+    }
+    item.append(avatar, body); list.append(item);
+  }
+}
+
+function clearAccess(): void {
+  const client = memberRemoval; memberRemoval = null;
+  accessPhoto = null; confirmRemoval = null;
+  client?.dispose(); showAccess(false, false);
+  el('manage-access').hidden = true; el('access-members').replaceChildren();
+}
+
+function startAccess(active: Room, scope: MeetingPhotoScope, current: () => boolean): void {
+  clearAccess();
+  const binding = { revision, roomRevision: scope.roomRevision };
+  const client = new DesktopMeetingRemovalClient(() => room === active && current() && active.state === ConnectionState.Connected,
+    { refresh: () => ipcRenderer.invoke(MEETING_CHANNELS.hostControls, binding),
+      act: (row, mode) => ipcRenderer.invoke(mode === 'request' ? MEETING_CHANNELS.removeMember : MEETING_CHANNELS.removalStatus, { ...binding, row }),
+      retire: () => ipcRenderer.send(MEETING_CHANNELS.retireControls, binding) }, renderAccess);
+  memberRemoval = client;
+  // Observe loss synchronously. A later connected event cannot restore this controller.
+  const check = () => { if (!client.current()) { active.off(RoomEvent.ConnectionStateChanged, check); showAccess(false, false); } };
+  active.on(RoomEvent.ConnectionStateChanged, check);
+  active.once(RoomEvent.Disconnected, () => { active.off(RoomEvent.ConnectionStateChanged, check); client.dispose(); });
+  const photos = new Map<number, Promise<string | null>>();
+  accessPhoto = (row, avatar) => {
+    if (!client.current()) return;
+    let photo = photos.get(row.userId);
+    if (!photo) {
+      photo = ipcRenderer.invoke(MEETING_CHANNELS.memberPhoto, { ...binding, row: removalRow(row) }).then((value: MeetingProfilePhoto | null) => {
+        if (!client.current() || !value || value.identity !== `p11-t${scope.tenantId}-u${row.userId}` ||
+            !(value.bytes instanceof Uint8Array) || value.bytes.length > MAX_MEETING_AVATAR_BYTES ||
+            !meetingPhotoBytesMatch(value.bytes, value.mimeType)) return null;
+        return `data:${value.mimeType};base64,${btoa(String.fromCharCode(...value.bytes))}`;
+      }).catch(() => null);
+      photos.set(row.userId, photo);
+    }
+    void photo.then(src => {
+      if (!src || memberRemoval !== client || !client.current() || !client.getSnapshot().members.includes(row)) return;
+      const image = document.createElement('img'); image.alt = ''; image.src = src;
+      avatar.replaceChildren(image);
+    });
+  };
+  void client.refresh();
 }
 
 function renderChat(snapshot: DesktopChatSnapshot): void {
@@ -621,6 +725,7 @@ function leave(): Promise<void> {
   const active = room;
   room = null;
   canPublish = false;
+  clearAccess();
   clearChat();
   resetAudioOutput();
   clearPreview();
@@ -748,6 +853,7 @@ async function join(): Promise<void> {
     clearChat();
     const chatRoom = next;
     const photoScope = grant.photoScope;
+    if (photoScope) startAccess(chatRoom, photoScope, current);
     if (photoScope) meetingPhotos = new DesktopMeetingPhotos(chatRoom, photoScope,
       () => room === chatRoom && current(),
       (localIdentity, identity) => ipcRenderer.invoke(MEETING_CHANNELS.photo,
@@ -779,6 +885,7 @@ async function join(): Promise<void> {
     room = null;
     canPublish = false;
     clearChat();
+    clearAccess();
     if (next) {
       try { await next.disconnect(true); }
       catch {
@@ -1202,6 +1309,11 @@ async function refreshMeetings(): Promise<void> {
 }
 
 async function load(): Promise<void> {
+  el('manage-access').addEventListener('click', () => { if (memberRemoval?.current()) showAccess(!accessOpen); });
+  el('close-access').addEventListener('click', () => showAccess(false));
+  el('refresh-access').addEventListener('click', () => { confirmRemoval = null; void memberRemoval?.refresh(); });
+  el('access-panel').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); showAccess(false); } });
+  window.addEventListener('beforeunload', clearAccess, { once: true });
   el<HTMLButtonElement>('refresh-meetings').addEventListener('click', () => { void refreshMeetings(); });
   el<HTMLSelectElement>('meeting-select').addEventListener('change', updateMeetingListControls);
   el<HTMLButtonElement>('join').addEventListener('click', () => { void join(); });

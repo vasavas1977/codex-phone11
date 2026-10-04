@@ -7,6 +7,8 @@ import { DesktopCallHistoryError, type DesktopCallHistoryErrorCode } from "./cal
 import { meetingAvatarPerson, meetingAvatarTenant } from "../../lib/meetings/participant-avatar";
 import { readDirectory } from "../../lib/phone/directory";
 import { MAX_MEETING_PHOTO_BYTES, meetingPhotoBytesMatch, type MeetingProfilePhoto } from "../app/src/meeting-channels";
+import { readHostControls, readRemovalResult, validRemovalInput } from "../app/src/meeting-member-removal";
+import type { HostControlSnapshot, MemberRemovalInput, MemberRemovalResult } from "../../lib/meetings/member-removal";
 export { DesktopCallHistoryError } from "./call-history-error";
 export type { DesktopCallHistoryErrorCode } from "./call-history-error";
 
@@ -634,6 +636,45 @@ export class AuthenticatedDesktopProvider {
     return { url: value.url, token: value.token,
       grantProfile: value.grant_profile as DesktopMeetingGrant["grantProfile"],
       expiresAt: value.expires_at };
+  }
+
+  /** Host authority is fetched fresh; join grants and publishing permission confer no host controls. */
+  async meetingHostControls(expectedRevision: string, selectedMeetingId: string): Promise<HostControlSnapshot> {
+    if (!meetingId(selectedMeetingId)) throw new DesktopAuthenticationError();
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const session = this.session!;
+    const value = await this.query('meetings.hostControls', token, epoch, { meetingId: selectedMeetingId });
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (this.session !== session) throw new DesktopAuthenticationError();
+    return readHostControls(value, selectedMeetingId, session.tenantId, Number(session.userId));
+  }
+
+  async meetingRemoveMember(expectedRevision: string, input: MemberRemovalInput): Promise<MemberRemovalResult> {
+    return this.meetingRemoval(expectedRevision, input, 'request');
+  }
+  async meetingRemovalStatus(expectedRevision: string, input: MemberRemovalInput): Promise<MemberRemovalResult> {
+    return this.meetingRemoval(expectedRevision, input, 'poll');
+  }
+  private async meetingRemoval(expectedRevision: string, input: MemberRemovalInput, mode: 'request' | 'poll'): Promise<MemberRemovalResult> {
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const session = this.session!;
+    if (!validRemovalInput(input) || input.tenantId !== session.tenantId || input.targetUserId === Number(session.userId))
+      throw new DesktopAuthenticationError();
+    const value = mode === 'poll' ? await this.query('meetings.removalStatus', token, epoch, input) :
+      this.unwrapTrpc(await this.json(await this.send('/api/trpc/meetings.removeMember', {
+        method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ json: input }),
+      }, epoch)));
+    this.assertSessionAuthority(expectedRevision, epoch);
+    if (this.session !== session) throw new DesktopAuthenticationError();
+    return readRemovalResult(value, input);
+  }
+
+  /** Exact server-authorized tenant/user coordinates reuse the trusted workspace photo resolver. */
+  async meetingMemberPhoto(expectedRevision: string, tenantId: number, userId: number, signal: AbortSignal): Promise<MeetingProfilePhoto | null> {
+    const session = this.session;
+    if (!session || session.revision !== expectedRevision || tenantId !== session.tenantId || !positiveId(userId)) return null;
+    return this.meetingProfilePhoto(expectedRevision, `p11-t${tenantId}-u${session.userId}`, `p11-t${tenantId}-u${userId}`, signal);
   }
 
   private sessionAuthority(expectedRevision: string): { token: string; epoch: number } {

@@ -6,6 +6,7 @@ import type { AuthenticatedDesktopProvider, DesktopMeetingGrant, DesktopMeetingD
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
 import { appendDirectMeetingPage, MAX_MEETING_AVATAR_BYTES, MAX_MEETING_PHOTO_PEOPLE, MEETING_CHANNELS, type PublicMeetingState, type MeetingPhotoScope, type MeetingProfilePhoto } from './meeting-channels';
 import { permitMeetingMedia, permitMeetingSpeakerSelection, phoneMediaBusy, validMeetingFrame } from './meeting-boundary';
+import { DesktopMeetingMemberRemoval } from './meeting-member-removal';
 
 const meetingPath = join(__dirname, 'meeting.html');
 const meetingUrl = pathToFileURL(meetingPath).href;
@@ -35,8 +36,19 @@ export class DesktopMeetingWindow {
   private photoAbort = new AbortController();
   private photoPeople = new Set<string>();
   private photoQueue: Promise<unknown> = Promise.resolve();
+  private joinedMeetingId: string | null = null;
+  private memberRemoval: DesktopMeetingMemberRemoval | null = null;
+  private controlsRetired = false;
+
+  private retireControls(): void {
+    this.controlsRetired = true;
+    this.memberRemoval?.dispose();
+    this.memberRemoval = null;
+  }
 
   private clearPhotos(): void {
+    this.retireControls();
+    this.joinedMeetingId = null;
     this.photoAbort.abort();
     this.photoAbort = new AbortController();
     this.photoScope = null;
@@ -102,8 +114,8 @@ export class DesktopMeetingWindow {
       permitMeetingMedia(permission, ['audio', 'video'], exactFrame(sender), this.phoneBusy()) ||
       permitMeetingSpeakerSelection(permission, exactFrame(sender), this.phoneBusy()));
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
-    wc.on('will-navigate', event => event.preventDefault());
-    wc.on('will-redirect', event => event.preventDefault());
+    wc.on('will-navigate', event => { this.retireControls(); event.preventDefault(); });
+    wc.on('will-redirect', event => { this.retireControls(); event.preventDefault(); });
     wc.on('will-attach-webview', event => event.preventDefault());
     win.on('close', event => {
       if (this.acceptingClose) return;
@@ -127,6 +139,72 @@ export class DesktopMeetingWindow {
   }
 
   registerIpc(): void {
+    const controls = (event: IpcMainInvokeEvent, input: unknown, row = false): DesktopMeetingMemberRemoval => {
+      if (!input || typeof input !== 'object' || Array.isArray(input) || !this.valid(event) ||
+          !this.joined || !this.joinedMeetingId || !this.revision || !this.photoScope || this.phoneBusy() || this.controlsRetired)
+        throw new Error('Meeting access unavailable');
+      const values = input as Record<string, unknown>;
+      if (Object.keys(values).length !== (row ? 3 : 2) || values.revision !== this.revision ||
+          values.roomRevision !== this.photoScope.roomRevision || (row && !validRow(values.row)))
+        throw new Error('Meeting access unavailable');
+      if (!this.memberRemoval) {
+        const scope = this.photoScope, session = this.provider.currentSession()!, revision = this.revision;
+        this.memberRemoval = new DesktopMeetingMemberRemoval(this.joinedMeetingId, scope.tenantId, scope.ownerId,
+          () => !this.controlsRetired && this.photoScope === scope && this.provider.currentSession() === session &&
+            this.valid(event) && this.joined && !this.phoneBusy(), {
+            snapshot: meetingId => this.provider.meetingHostControls(revision, meetingId),
+            request: input => this.provider.meetingRemoveMember(revision, input),
+            poll: input => this.provider.meetingRemovalStatus(revision, input),
+          });
+      }
+      if (!this.memberRemoval.current()) { this.retireControls(); throw new Error('Meeting access unavailable'); }
+      return this.memberRemoval;
+    };
+    const validRow = (raw: unknown): boolean => !!raw && typeof raw === 'object' && !Array.isArray(raw) &&
+      Object.keys(raw).length === 4 && Object.keys(raw).every(key =>
+        ['userId', 'expectedParticipantId', 'expectedRoomRevision', 'expectedMemberRevision'].includes(key));
+    ipcMain.handle(MEETING_CHANNELS.hostControls, async (event, input: unknown) => {
+      const owner = controls(event, input);
+      const view = await owner.refresh();
+      if (controls(event, input) !== owner) throw new Error('Meeting access unavailable');
+      return view;
+    });
+    for (const [channel, mode] of [[MEETING_CHANNELS.removeMember, 'request'], [MEETING_CHANNELS.removalStatus, 'poll']] as const)
+      ipcMain.handle(channel, async (event, input: unknown) => {
+        const owner = controls(event, input, true);
+        const view = await owner.act((input as { row: unknown }).row, mode);
+        if (controls(event, input, true) !== owner) throw new Error('Meeting access unavailable');
+        return view;
+      });
+    ipcMain.on(MEETING_CHANNELS.retireControls, (event, input: unknown) => {
+      if (this.valid(event) && input && typeof input === 'object' && !Array.isArray(input) &&
+          (input as Record<string, unknown>).revision === this.revision &&
+          (input as Record<string, unknown>).roomRevision === this.photoScope?.roomRevision) this.retireControls();
+    });
+    ipcMain.handle(MEETING_CHANNELS.memberPhoto, async (event, input: unknown): Promise<MeetingProfilePhoto | null> => {
+      const owner = controls(event, input, true);
+      const row = owner.row((input as { row: unknown }).row);
+      if (!row) return null;
+      const signal = this.photoAbort.signal;
+      const key = `member:${row.userId}`;
+      if (this.photoPeople.has(key) || this.photoPeople.size >= MAX_MEETING_PHOTO_PEOPLE) return null;
+      this.photoPeople.add(key);
+      const revision = this.revision!;
+      const request = this.photoQueue.then(async () => {
+        if (signal.aborted || this.memberRemoval !== owner || !owner.row((input as { row: unknown }).row)) return null;
+        const photo = await this.provider.meetingMemberPhoto(revision, owner.tenantId, row.userId, signal);
+        if (!photo || signal.aborted || controls(event, input, true) !== owner || owner.row((input as { row: unknown }).row) !== row) return null;
+        const image = nativeImage.createFromBuffer(Buffer.from(photo.bytes));
+        const { width, height } = image.getSize();
+        if (image.isEmpty() || width <= 0 || height <= 0 || width > 2048 || height > 2048) return null;
+        const scale = Math.min(1, 96 / width, 96 / height);
+        const bytes = new Uint8Array(image.resize({ width: Math.max(1, Math.round(width * scale)),
+          height: Math.max(1, Math.round(height * scale)), quality: 'good' }).toPNG());
+        return bytes.length && bytes.length <= MAX_MEETING_AVATAR_BYTES ? { identity: photo.identity, mimeType: 'image/png' as const, bytes } : null;
+      });
+      this.photoQueue = request.catch(() => null);
+      return request;
+    });
     ipcMain.handle(MEETING_CHANNELS.photo, async (event, input: unknown): Promise<MeetingProfilePhoto | null> => {
       const scope = this.photoScope;
       if (!scope || !this.valid(event) || !this.joined || !this.revision ||
@@ -321,6 +399,8 @@ export class DesktopMeetingWindow {
         const session = this.provider.currentSession()!;
         this.clearPhotos();
         this.photoScope = { roomRevision: randomUUID(), ownerId: Number(session.userId), tenantId: session.tenantId };
+        this.joinedMeetingId = meetingId;
+        this.controlsRetired = false;
         return { ...admission, photoScope: this.photoScope };
       } catch {
         this.joined = false;

@@ -66,6 +66,8 @@ async function harness(initialState: MeetingState | Promise<MeetingState> | Erro
   let admission: Promise<unknown> | undefined;
   let connection: Promise<void> | undefined;
   let microphone: Promise<void> | undefined;
+  let hostControls: unknown = { available: false, loading: false, members: [], busyUserId: null, error: null };
+  let removalControls: unknown;
   const grant = { url: 'wss://synthetic.invalid', token: 'synthetic-test-token',
     expiresAt: Math.floor(Date.now() / 1000) + 60, grantProfile: 'interactive' };
   ipc.invoke = async (channel, input?: unknown) => {
@@ -76,6 +78,9 @@ async function harness(initialState: MeetingState | Promise<MeetingState> | Erro
       return meetingState;
     }
     if (channel === 'phone11:meeting-join') return admission ?? grant;
+    if (channel === 'phone11:meeting-host-controls') return hostControls;
+    if (channel === 'phone11:meeting-remove-member' || channel === 'phone11:meeting-removal-status') return removalControls;
+    if (channel === 'phone11:meeting-member-photo') return null;
     if (channel === 'phone11:meeting-direct-details') return { conversationId: otherMeetingId, peerId: 2, canStart: true };
     if (channel === 'phone11:meeting-start-direct') return directStart ?? { meetingId: otherMeetingId };
   };
@@ -122,7 +127,9 @@ async function harness(initialState: MeetingState | Promise<MeetingState> | Erro
     setDirectStart: (value: Promise<{ meetingId: string }>) => { directStart = value; },
     setAdmission: (value: Promise<unknown>) => { admission = value; },
     setConnection: (value: Promise<void>) => { connection = value; },
-    setMicrophone: (value: Promise<void>) => { microphone = value; } };
+    setMicrophone: (value: Promise<void>) => { microphone = value; },
+    setHostControls: (value: unknown) => { hostControls = value; },
+    setRemovalControls: (value: unknown) => { removalControls = value; } };
 }
 
 test('open empty prejoin discovers a later admitted invitation without reopening', async () => {
@@ -400,4 +407,51 @@ test('cancel drains pending microphone publication before disconnect and blocks 
   await h.leave();
   assert.equal(h.rooms[0].cameraCalls, 0);
   assert.equal(h.rooms[0].disconnectCalls, 1);
+});
+
+const memberAssertion = { userId: 8, name: 'Authoritative admitted member', expectedParticipantId: 'opaque_server_id',
+  expectedRoomRevision: meetingId, expectedMemberRevision: meetingId, state: 'admitted' };
+const hostView = { available: true, loading: false, tenantId: 1, members: [memberAssertion], busyUserId: null, error: null };
+const admissionScope = { roomRevision: otherMeetingId, ownerId: 1, tenantId: 1 };
+function findButton(element: Element, label: string): Element | undefined {
+  return element.children.find(child => child.textContent === label) ?? element.children.map(child => findButton(child, label)).find(Boolean);
+}
+
+test('real preload confirms admitted access removal while preserving the live SDK roster and pending operation', async () => {
+  const h = await harness(); h.setConnection(Promise.resolve());
+  h.setAdmission(Promise.resolve({ ...h.grant, photoScope: admissionScope }));
+  h.setHostControls(hostView);
+  h.setRemovalControls({ ...hostView, members: [{ ...memberAssertion, state: 'pending', expectedMemberRevision: otherMeetingId }] });
+  await h.join(); await until(() => h.element('access-members').children.length === 1, 'admitted members');
+  assert.equal(h.element('manage-access').hidden, false);
+  h.element('manage-access').click(); assert.equal(h.element('access-panel').hidden, false);
+  findButton(h.element('access-members'), 'Remove meeting access')!.click();
+  assert.equal(h.calls.includes('phone11:meeting-remove-member'), false);
+  findButton(h.element('access-members'), 'Confirm permanent removal')!.click();
+  await until(() => !!findButton(h.element('access-members'), 'Check status'), 'pending removal');
+  const request = h.inputs.find(input => input.channel === 'phone11:meeting-remove-member')!.input as { row: unknown };
+  assert.deepEqual(JSON.parse(JSON.stringify(request.row)), { userId: 8, expectedParticipantId: 'opaque_server_id',
+    expectedRoomRevision: meetingId, expectedMemberRevision: meetingId });
+  assert.equal(h.element('roster-count').textContent, '1');
+  assert.match(h.element('access-members').children[0].children[1].children[1].textContent, /departure is not confirmed/);
+  findButton(h.element('access-members'), 'Check status')!.click();
+  await until(() => h.calls.includes('phone11:meeting-removal-status'), 'status poll');
+  const poll = h.inputs.find(input => input.channel === 'phone11:meeting-removal-status')!.input as { row: { expectedMemberRevision: string } };
+  assert.equal(poll.row.expectedMemberRevision, otherMeetingId);
+  await h.leave();
+});
+
+test('real preload connection-loss event permanently retires controls before immediate reconnect and late snapshot', async () => {
+  const h = await harness(); const response = deferred<unknown>(); h.setConnection(Promise.resolve());
+  h.setAdmission(Promise.resolve({ ...h.grant, photoScope: admissionScope })); h.setHostControls(response.promise);
+  await h.join(); const active = h.rooms[0];
+  active.state = 'reconnecting'; active.emit('ConnectionStateChanged');
+  active.state = 'connected'; active.emit('ConnectionStateChanged');
+  response.resolve(hostView); await new Promise<void>(done => setImmediate(done));
+  assert.equal(h.element('manage-access').hidden, true); assert.equal(h.element('access-members').children.length, 0);
+  assert.equal(h.calls.filter(channel => channel === 'phone11:meeting-retire-controls').length, 1);
+  h.element('refresh-access').click(); h.element('manage-access').click();
+  assert.equal(h.calls.filter(channel => channel === 'phone11:meeting-host-controls').length, 1);
+  assert.equal(h.calls.includes('phone11:meeting-remove-member'), false);
+  await h.leave();
 });
