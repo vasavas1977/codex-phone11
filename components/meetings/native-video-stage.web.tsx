@@ -4,21 +4,15 @@ import type { AudioTrack, VideoTrack } from "livekit-client";
 
 import type { BrowserRoom } from "@/lib/meetings/browser-session";
 import { meetingParticipantDisplayName } from "@/lib/meetings/participant-display-name";
+import { meetingVideoPublications, type MeetingVideoPublication } from "@/lib/meetings/video-publications";
 
 type Publication = { track?: AudioTrack | VideoTrack; audioTrack?: AudioTrack; videoTrack?: VideoTrack };
 type MediaParticipant = {
   identity: string;
   name?: string;
   audioTrackPublications?: ReadonlyMap<string, Publication>;
-  videoTrackPublications?: ReadonlyMap<string, Publication>;
+  videoTrackPublications?: ReadonlyMap<string, MeetingVideoPublication<VideoTrack>>;
 };
-
-function firstVideo(participant: MediaParticipant): VideoTrack | undefined {
-  for (const publication of participant.videoTrackPublications?.values() ?? []) {
-    const track = publication.videoTrack ?? publication.track;
-    if (track) return track as VideoTrack;
-  }
-}
 
 function audioTracks(participant: MediaParticipant): AudioTrack[] {
   return Array.from(participant.audioTrackPublications?.values() ?? [], publication =>
@@ -26,7 +20,7 @@ function audioTracks(participant: MediaParticipant): AudioTrack[] {
   ).filter((track): track is AudioTrack => Boolean(track));
 }
 
-function WebVideo({ track, local }: { track: VideoTrack; local: boolean }) {
+function WebVideo({ track, local, screenShare }: { track: VideoTrack; local: boolean; screenShare: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const element = ref.current;
@@ -34,7 +28,7 @@ function WebVideo({ track, local }: { track: VideoTrack; local: boolean }) {
     track.attach(element);
     return () => { track.detach(element); };
   }, [track]);
-  return <video ref={ref} autoPlay playsInline muted={local} style={styles.video} />;
+  return <video ref={ref} autoPlay playsInline muted={local} style={{ ...styles.video, objectFit: screenShare ? "contain" : "cover" }} />;
 }
 
 function WebAudio({ track }: { track: AudioTrack }) {
@@ -72,29 +66,26 @@ export function NativeVideoStage({
     mediaRoom.on("audioPlaybackChanged", refresh);
     return () => { mediaRoom.off("audioPlaybackChanged", refresh); };
   }, [mediaRoom]);
-  const localVideo = mediaRoom && firstVideo(mediaRoom.localParticipant);
-  const remotes = mediaRoom ? Array.from(mediaRoom.remoteParticipants.values()) : [];
-  const remoteVideos = remotes.flatMap((participant, index) => {
-    const track = firstVideo(participant);
-    return track
-      ? [{
-          identity: participant.identity,
+  const localVideos = meetingVideoPublications(mediaRoom?.localParticipant.videoTrackPublications);
+  const remotes: MediaParticipant[] = mediaRoom ? Array.from(mediaRoom.remoteParticipants.values()) : [];
+  const remoteVideos = remotes.flatMap((participant, index) =>
+    meetingVideoPublications(participant.videoTrackPublications).map(video => ({
+          ...video,
+          key: `${participant.identity}:${video.key}`,
           label: meetingParticipantDisplayName(
             participant.name,
             participant.identity,
             `Participant ${index + 1}`,
           ),
-          track,
-        }]
-      : [];
-  });
+        })),
+  );
   const remoteAudio = remotes.flatMap(participant => audioTracks(participant).map((track, index) => ({
     key: `${participant.identity}:${index}`, track,
   })));
 
   return (
     <View style={styles.stage} testID="web-video-stage">
-      {remoteVideos.length === 0 && !localVideo ? (
+      {remoteVideos.length === 0 && localVideos.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>{reconnecting ? "Reconnecting video…" : "Waiting for video"}</Text>
           <Text style={styles.emptyCopy}>
@@ -106,15 +97,15 @@ export function NativeVideoStage({
       ) : (
         <View style={styles.grid}>
           {remoteVideos.map(video => (
-            <View key={video.identity} style={styles.tile}>
-              <WebVideo track={video.track} local={false} />
-              <Text style={styles.name}>{video.label}</Text>
+            <View key={video.key} style={[styles.tile, video.screenShare && styles.screenTile]} testID={video.screenShare ? "shared-screen" : "remote-video"}>
+              <WebVideo track={video.track} local={false} screenShare={video.screenShare} />
+              <Text style={styles.name}>{video.screenShare ? `${video.label} is sharing` : video.label}</Text>
             </View>
           ))}
-          {localVideo && <View style={styles.tile} testID="local-camera-preview">
-            <WebVideo track={localVideo} local />
-            <Text style={styles.name}>You</Text>
-          </View>}
+          {localVideos.map(video => <View key={`local:${video.key}`} style={[styles.tile, video.screenShare && styles.screenTile]} testID={video.screenShare ? "shared-screen" : "local-camera-preview"}>
+            <WebVideo track={video.track} local screenShare={video.screenShare} />
+            <Text style={styles.name}>{video.screenShare ? "You are sharing" : "You"}</Text>
+          </View>)}
         </View>
       )}
       {remoteAudio.map(({ key, track }) => <WebAudio key={key} track={track} />)}
@@ -134,6 +125,7 @@ const styles = StyleSheet.create({
   stage: { minHeight: 250, borderRadius: 24, overflow: "hidden", backgroundColor: "#191D26" },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 2, minHeight: 250 },
   tile: { minHeight: 180, flexBasis: "49%", flexGrow: 1, backgroundColor: "#0B0D12", overflow: "hidden" },
+  screenTile: { minHeight: 250, flexBasis: "100%" },
   video: { width: "100%", height: "100%", objectFit: "cover" as const },
   name: { position: "absolute", left: 10, bottom: 10, color: "#FFFFFF", backgroundColor: "#00000099", paddingHorizontal: 8, paddingVertical: 5 },
   empty: { minHeight: 250, alignItems: "center", justifyContent: "center", padding: 28, gap: 8 },

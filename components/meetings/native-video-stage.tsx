@@ -3,6 +3,8 @@ import type { VideoTrack } from "livekit-client";
 import { StyleSheet, Text, View } from "react-native";
 
 import type { BrowserRoom } from "@/lib/meetings/browser-session";
+import { meetingParticipantDisplayName } from "@/lib/meetings/participant-display-name";
+import { meetingVideoPublications, type MeetingVideoPublication } from "@/lib/meetings/video-publications";
 
 type Publication = {
   videoTrack?: VideoTrack;
@@ -12,21 +14,13 @@ type Publication = {
 type NativeParticipant = {
   identity: string;
   name?: string;
-  videoTrackPublications?: ReadonlyMap<string, Publication>;
+  videoTrackPublications?: ReadonlyMap<string, MeetingVideoPublication<VideoTrack>>;
   audioTrackPublications?: ReadonlyMap<string, Publication>;
 };
 type NativeRoom = BrowserRoom & {
   localParticipant: NativeParticipant;
   remoteParticipants: ReadonlyMap<string, NativeParticipant>;
 };
-
-function firstVideo(participant: NativeParticipant): VideoTrack | undefined {
-  for (const publication of participant.videoTrackPublications?.values() ?? []) {
-    const track = publication.videoTrack ?? publication.track;
-    if (track) return track;
-  }
-  return undefined;
-}
 
 function subscribedAudioCount(participant: NativeParticipant): number {
   let count = 0;
@@ -40,20 +34,22 @@ function VideoTile({
   track,
   label,
   local = false,
+  screenShare = false,
 }: {
   track: VideoTrack;
   label: string;
   local?: boolean;
+  screenShare?: boolean;
 }) {
   // The lifecycle creates this existing, server-authorized LiveKit Room.
   // VideoView renders only its actual media track; it accepts no URL or token.
   return (
-    <View style={styles.tile} testID={local ? "local-camera-preview" : "remote-video"}>
+    <View style={[styles.tile, screenShare && styles.screenTile]} testID={screenShare ? "shared-screen" : local ? "local-camera-preview" : "remote-video"}>
       <VideoView
         videoTrack={track}
         style={styles.video}
-        objectFit="cover"
-        mirror={local}
+        objectFit={screenShare ? "contain" : "cover"}
+        mirror={local && !screenShare}
         zOrder={local ? 1 : 0}
       />
       <View style={styles.nameBadge} pointerEvents="none">
@@ -73,18 +69,17 @@ export function NativeVideoStage({
   receiveOnly: boolean;
 }) {
   const nativeRoom = room as NativeRoom | undefined;
-  const localTrack = nativeRoom && firstVideo(nativeRoom.localParticipant);
-  const remoteParticipants = nativeRoom
+  const localVideos = meetingVideoPublications(nativeRoom?.localParticipant.videoTrackPublications);
+  const remoteParticipants: NativeParticipant[] = nativeRoom
     ? Array.from(nativeRoom.remoteParticipants.values())
     : [];
-  const remoteVideos = remoteParticipants.flatMap((participant) => {
-    const track = firstVideo(participant);
-    return track ? [{
-      identity: participant.identity,
-      label: participant.name || participant.identity,
-      track,
-    }] : [];
-  });
+  const remoteVideos = remoteParticipants.flatMap((participant, index) =>
+    meetingVideoPublications(participant.videoTrackPublications).map(video => ({
+      ...video,
+      key: `${participant.identity}:${video.key}`,
+      label: meetingParticipantDisplayName(participant.name, participant.identity, `Participant ${index + 1}`),
+    })),
+  );
   const remoteAudio = remoteParticipants.reduce(
     (count, participant) => count + subscribedAudioCount(participant),
     0,
@@ -92,7 +87,7 @@ export function NativeVideoStage({
 
   return (
     <View style={styles.stage} testID="native-video-stage">
-      {remoteVideos.length === 0 && !localTrack ? (
+      {remoteVideos.length === 0 && localVideos.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>{reconnecting ? "Reconnecting video…" : "Waiting for video"}</Text>
           <Text style={styles.emptyCopy}>
@@ -104,9 +99,9 @@ export function NativeVideoStage({
       ) : (
         <View style={styles.grid}>
           {remoteVideos.map((video) => (
-            <VideoTile key={video.identity} track={video.track} label={video.label} />
+            <VideoTile key={video.key} track={video.track} label={video.screenShare ? `${video.label} is sharing` : video.label} screenShare={video.screenShare} />
           ))}
-          {localTrack !== undefined && <VideoTile track={localTrack} label="You" local />}
+          {localVideos.map(video => <VideoTile key={`local:${video.key}`} track={video.track} label={video.screenShare ? "You are sharing" : "You"} local screenShare={video.screenShare} />)}
         </View>
       )}
       {remoteAudio > 0 && (
@@ -127,6 +122,7 @@ const styles = StyleSheet.create({
   stage: { minHeight: 250, borderRadius: 24, overflow: "hidden", backgroundColor: "#191D26" },
   grid: { flexDirection: "row", flexWrap: "wrap", gap: 2, minHeight: 250 },
   tile: { minHeight: 180, flexBasis: "49%", flexGrow: 1, backgroundColor: "#0B0D12", overflow: "hidden" },
+  screenTile: { minHeight: 250, flexBasis: "100%" },
   video: { flex: 1, width: "100%" },
   nameBadge: { position: "absolute", left: 10, right: 10, bottom: 10, borderRadius: 8, backgroundColor: "#00000099", paddingHorizontal: 8, paddingVertical: 5 },
   name: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },

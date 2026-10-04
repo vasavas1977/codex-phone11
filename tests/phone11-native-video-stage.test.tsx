@@ -1,6 +1,7 @@
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 import { expect, it, vi } from "vitest";
+import { NativeVideoStage } from "../components/meetings/native-video-stage";
 
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
@@ -16,14 +17,13 @@ vi.mock("react-native", () => ({
 }));
 
 vi.mock("@livekit/react-native", () => ({
-  VideoView: ({ videoTrack, mirror }: any) =>
+  VideoView: ({ videoTrack, mirror, objectFit }: any) =>
     createElement("video", {
       "data-track": videoTrack?.id,
       "data-mirror": String(Boolean(mirror)),
+      "data-fit": objectFit,
     }),
 }));
-
-import { NativeVideoStage } from "../components/meetings/native-video-stage";
 
 function room({ localVideo = true, remoteVideo = true, remoteAudio = true }: { localVideo?: boolean; remoteVideo?: boolean; remoteAudio?: boolean } = {}) {
   return {
@@ -57,6 +57,34 @@ it("renders the existing LiveKit local and remote tracks without accepting room 
   expect(html).toContain("Receiving audio from 1 participant");
   expect(html).not.toContain("wss://");
   expect(html).not.toContain("token");
+});
+
+it("renders simultaneous cameras and screens with uncropped nonmirrored shares", () => {
+  const active = room();
+  active.localParticipant.videoTrackPublications.set("screen", { source: "screen_share", trackSid: "local-screen-sid", videoTrack: { id: "local-screen" } });
+  active.remoteParticipants.get("remote").videoTrackPublications.set("screen", { source: "screen_share", trackSid: "remote-screen-sid", videoTrack: { id: "remote-screen" } });
+  const html = renderToStaticMarkup(createElement(NativeVideoStage, { room: active, reconnecting: false, receiveOnly: false }));
+  expect(html).toContain('data-track="local-camera" data-mirror="true" data-fit="cover"');
+  expect(html).toContain('data-track="remote-camera" data-mirror="false" data-fit="cover"');
+  expect(html).toContain('data-track="local-screen" data-mirror="false" data-fit="contain"');
+  expect(html).toContain('data-track="remote-screen" data-mirror="false" data-fit="contain"');
+  expect(html).toContain("You are sharing");
+  expect(html).toContain("Nadia is sharing");
+});
+
+it("renders a share without a camera, clears removed tracks, and hides opaque identities", () => {
+  const active = room({ localVideo: false, remoteVideo: false, remoteAudio: false });
+  const participant = active.remoteParticipants.get("remote");
+  participant.identity = "6fa4634ade063138::phone11-plain-video-abc123";
+  participant.name = participant.identity;
+  participant.videoTrackPublications.set("screen", { source: "screen_share", videoTrack: { id: "remote-screen" } });
+  const render = () => renderToStaticMarkup(createElement(NativeVideoStage, { room: active, reconnecting: false, receiveOnly: true }));
+  expect(render()).toContain("Participant 1 is sharing");
+  expect(render()).not.toContain(participant.identity);
+  expect(render()).not.toContain("Waiting for video");
+  participant.videoTrackPublications.delete("screen");
+  expect(render()).not.toContain("remote-screen");
+  expect(render()).toContain("Waiting for video");
 });
 
 it("renders receive-only and reconnecting states without attempting a local capture", () => {
