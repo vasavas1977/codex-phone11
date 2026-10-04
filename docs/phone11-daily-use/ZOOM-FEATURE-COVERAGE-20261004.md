@@ -15,6 +15,12 @@ documentation-only updates and separately reviewed artifacts.
 
 ## Latest confirmed boundary
 
+- The [5 October production continuation](PRODUCTION-CONTINUATION-20261005.md)
+  integrates camera/screen receiving, the voicemail candidate-start prerequisite
+  and isolated Android foreground runtime wiring. Its source, new cloud checks,
+  old deployed releases and outstanding production gates are recorded separately.
+  It does not close the unchecked acceptance rows below.
+
 - The [native parity and PBX rehearsal follow-up](NATIVE-PARITY-SOURCE-COMPLETION-20261004.md)
   adds a default-off desktop consultation/attended-transfer source candidate,
   an isolated default-off Android foreground calling bridge and an offline
