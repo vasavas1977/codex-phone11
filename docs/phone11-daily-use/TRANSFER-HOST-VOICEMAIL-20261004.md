@@ -38,7 +38,9 @@ renderer suite was then used successfully.
 ## Meeting moderation
 
 Default-off host-removal composition now supplies a server-authorized admitted
-member list to the shared web/iOS/Android meeting panel. Trusted profile photos
+member list to the shared web/iOS/Android meeting panel. Targets use the original
+trusted logical participant identifier sent to Connect11 token minting, never
+the opaque RTC identity, SID, display label or token identifier. Trusted profile photos
 use the existing authorized directory descriptor; missing photos use initials.
 Host authority, current membership and extension grant are checked under held
 transaction locks. Requests bind the exact participant, room revision and member
@@ -79,6 +81,14 @@ member-removal test. Its failed log is retained. Independently reviewed amendmen
 implementation are unchanged. Root integrated it as `9711881`, reran all nineteen
 controller cases without skips and passed whole-repository TypeScript checking.
 These source pins, raw checks and review hashes are retained in private custody.
+
+The first hosted PostgreSQL attempt on `770f95a` executed 31 cases with 29
+passes, two failures and zero skips. Both failures occurred while setting up new
+fixture revocations: those updates omitted the revision change required by the
+existing BEFORE UPDATE trigger. The test-only correction adds a fresh revision
+to those two updates, retaining all assertions and production constraints.
+The first failed raw job log is retained; a new-head passing hosted result is
+required, and the failed attempt is never counted as a pass.
 
 Fresh iOS, macOS and Windows packages are required for this batch. Build 118
 and previously verified desktop bundles retain their earlier source pins and
