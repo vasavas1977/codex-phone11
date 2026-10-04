@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MeetingMemberRemoval, type HostControlSnapshot, type MemberRemovalResult } from "./member-removal";
+import { MeetingMemberRemoval, type HostControlSnapshot, type MemberRemovalApi, type MemberRemovalResult } from "./member-removal";
 const meetingId = "12345678-1234-4234-8234-123456789012";
 const operationId = "22345678-1234-4234-8234-123456789012";
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
@@ -8,8 +8,8 @@ function fixture() {
   const scope: HostControlSnapshot = { available: true, tenantId: 41, meetingId,
     members: [{ userId: 8, expectedParticipantId: "member_8", expectedRoomRevision: "22345678-1234-4234-8234-123456789012", expectedMemberRevision: "32345678-1234-4234-8234-123456789012", name: "Target", state: "admitted" }] };
   const api = { snapshot: vi.fn(async () => scope),
-    request: vi.fn(async (): Promise<MemberRemovalResult> => ({ operationId, expectedRoomRevision: "22345678-1234-4234-8234-123456789012", expectedMemberRevision: operationId, state: "pending", providerAcknowledged: false })),
-    poll: vi.fn(async (): Promise<MemberRemovalResult> => ({ operationId, expectedRoomRevision: "22345678-1234-4234-8234-123456789012", expectedMemberRevision: operationId, state: "completed", providerAcknowledged: true })) };
+    request: vi.fn<MemberRemovalApi["request"]>(async (): Promise<MemberRemovalResult> => ({ operationId, expectedRoomRevision: "22345678-1234-4234-8234-123456789012", expectedMemberRevision: operationId, state: "pending", providerAcknowledged: false })),
+    poll: vi.fn<MemberRemovalApi["poll"]>(async (): Promise<MemberRemovalResult> => ({ operationId, expectedRoomRevision: "22345678-1234-4234-8234-123456789012", expectedMemberRevision: operationId, state: "completed", providerAcknowledged: true })) };
   const control = new MeetingMemberRemoval(meetingId, 7, () => context.current, api);
   return { context, scope, api, control };
 }
