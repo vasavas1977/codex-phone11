@@ -196,6 +196,7 @@ jobs:
             tests/phone11-voicemail-helper-preflight.test.ts \
             tests/phone11-ring-group-dialplan.test.ts \
             tests/phone11-queue-dialplan.test.ts \
+            tests/phone11-voicemail-durability.test.ts \
             tests/phone11-voicemail-producer.test.ts \
             tests/phone11-voicemail-lifecycle-rehearsal.test.ts
       - name: Install Lua source test runtime

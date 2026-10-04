@@ -16,6 +16,11 @@ actually run on their pinned source and artifacts.
 
 ## Latest confirmed boundary
 
+- The [workflow reliability follow-up](WORKFLOW-RELIABILITY-20261004.md) fixes
+  overlapping native joins, stale desktop contact callbacks and interrupted
+  voicemail publication at implementation source `4c018ba99e86a913c75b181caa6cacafa55640a9`.
+  Combined source checks and independent reviews passed. Fresh client package
+  receipts are required because Build 116 predates these client changes.
 - [Installed-client receipts](OWN-AVATAR-PROFILE-20261002.md) establish signed
   daily-pilot **Build 114 (`d69eede`)** installed and normally launched on 3001
   and 1020. [Build 116 and fresh desktop packages](BUILD-116-RELEASE-20261004.md)
