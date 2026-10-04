@@ -39,8 +39,20 @@ checks have their own pass/skip boundaries.
 
 Exact-head cloud runs: Mobile Native 37225385476, daily-use 37225385489,
 desktop helper 37225385475, owned auth 37225385466 and release guards 37225385468.
-They were started at the source above; completion must be read from their actual
-results. Earlier nineteen-job green CI belongs to `13ff36b`, not this new source.
+Daily-use (all ten jobs), desktop helper, owned auth and release guards passed
+at this source. Mobile Native passed ordinary Android assembly, iOS bridge,
+prebuild and config checks, but failed the isolated trial APK verification with
+`trial_native_sdk_packaging_missing` after successful trial assembly. This
+failure must be diagnosed and the corrected exact source checked again; neither
+successful compilation nor synthetic parser checks closes actual packaging.
+Earlier nineteen-job green CI belongs to `13ff36b`, not this new source.
+
+Subsequent source review also closed an explicit Android selection of the iOS
+store-profile configuration: it now refuses that platform mismatch before
+packaging. The iOS path and ordinary/trial Android profiles retain their
+existing behavior. This source guard does not establish production licensing or
+store distribution. See [store boundary](STORE-DISTRIBUTION-BOUNDARY-20261005.md)
+and the separate [dependency advisory](DEPENDENCY-ADVISORY-20261005.md).
 
 ## Live and package boundary
 
@@ -75,7 +87,12 @@ production SDK credential, formal signing or provider activation is claimed.
 4. Obtain frozen, authenticated scheduling and bot/artifact consumer contracts
    from Super Number. Its recorder-interface source merges do not establish a
    deployed shared scheduling or recording service. Phone11 must reuse those
-   services rather than create duplicate event or transcript stores.
+   services rather than create duplicate event or transcript stores. The fresh
+   coordination handoff pins shared Alpha `f6b7da544cb5975e43fb433c98965782aefe56a2`
+   with green postmerge checks, but confirms that no released authenticated
+   Phone11 scheduling or bot-recording consumer API is verified. Canonical
+   privileged SQL and note11 capture Edge Functions are not handset consumer
+   endpoints; capture completion does not confer playback/publication authority.
 5. Confirm SDK production coverage and formal mobile/macOS/Windows distribution,
    then accept exact-build calls, two-phone meeting speech/video, background
    ringing, notifications, reconnect and cleanup. Trial packages and old call
