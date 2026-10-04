@@ -113,6 +113,9 @@ function directoryFailureMessage(error: unknown): string {
   return 'Contacts could not load. Refresh to try again.';
 }
 function renderDirectory(): void {
+  // A removed row can retain its callback after another owner, search or load.
+  const loadedFor = directoryLoadedFor;
+  const request = directoryRequest;
   const status = maybeById('directory-state');
   if (status) status.textContent = directoryMessage;
   const refresh = maybeById('directory-refresh') as HTMLButtonElement | null;
@@ -137,7 +140,8 @@ function renderDirectory(): void {
     row.addEventListener('click', () => {
       if (!state?.signedIn || !state.calling.registered || state.calling.call || busy ||
           state.calling.dialState !== 'idle' || state.calling.callActionState !== 'idle' ||
-          directoryLoadedFor !== directoryKey(state.sessionRevision!, state.tenantId!,
+          !loadedFor || loadedFor !== directoryLoadedFor || request !== directoryRequest ||
+          loadedFor !== directoryKey(state.sessionRevision!, state.tenantId!,
             (byId('directory-search') as HTMLInputElement).value.trim())) return;
       const field = byId('destination') as HTMLInputElement;
       field.value = item.number; field.focus();
