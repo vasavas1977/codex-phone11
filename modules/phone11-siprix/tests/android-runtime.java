@@ -66,6 +66,15 @@ final class AndroidRuntimeTest {
     Fixture shutdown=new Fixture();shutdown.e.fail="destroy";fails("E_SIPRIX_-77",()->shutdown.r.release(shutdown.lease));long replacement=shutdown.r.acquire();check(replacement>shutdown.lease);fails("E_CLEANUP_REQUIRED",()->shutdown.r.initialize(replacement));shutdown.e.fail=null;shutdown.r.destroy(replacement);shutdown.r.initialize(replacement);
     Fixture video=new Fixture();video.invite();video.e.listener.connected(11,true);check(video.e.ends==1);check("dialing".equals(call(video).get("state")));check("error".equals(video.events.get(video.events.size()-1).get("type")));
     Fixture privacy=new Fixture();privacy.e.listener.registration(7,1,"401 user/password/token");check(!privacy.events.toString().contains("password"));check(!privacy.events.toString().contains("sipStatusCode=401"));
+    for(String pkg:new String[]{null,"","ai.phone11.mobile","ai.phone11.mobile.staging"})fails("E_ANDROID_SOURCE_GATE",()->Phone11ForegroundTrial.requireSource(true,pkg,true));
+    fails("E_ANDROID_SOURCE_GATE",()->Phone11ForegroundTrial.requireSource(false,"ai.phone11.mobile.foregroundtrial",true));
+    fails("E_ANDROID_SOURCE_GATE",()->Phone11ForegroundTrial.requireSource(true,"ai.phone11.mobile.foregroundtrial",false));
+    Phone11ForegroundTrial.requireSource(true,"ai.phone11.mobile.foregroundtrial",true);
+    fails("E_ANDROID_FOREGROUND_REQUIRED",()->Phone11ForegroundTrial.requireForeground(false));Phone11ForegroundTrial.requireForeground(true);
+    fails("E_MICROPHONE_PERMISSION",()->Phone11ForegroundTrial.requireMicrophone(false));Phone11ForegroundTrial.requireMicrophone(true);
+    Map<String,Object> cap=Phone11ForegroundTrial.capabilities();check(Boolean.TRUE.equals(cap.get("foregroundAudioTrial")));
+    check("1.1.0".equals(cap.get("sdkVersion")));check("20260905_1222".equals(cap.get("sdkBuild")));check(Integer.valueOf(60).equals(cap.get("trialCallLimitSeconds")));
+    for(String key:new String[]{"backgroundCalling","closedAppCalling","wake","transfer","video"})check(Boolean.FALSE.equals(cap.get(key)));
     System.out.println("PASS "+assertions+" isolated Android state assertions; no SDK runtime, SIP, audio, or device acceptance");
   }
 }

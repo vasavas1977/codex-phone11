@@ -5,6 +5,7 @@ import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.Looper;
 import com.facebook.react.bridge.*;
+import com.facebook.react.common.LifecycleState;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 import java.util.Map;
 
@@ -32,17 +33,18 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
   private void sourceGate(){
     if(!BuildConfig.FOREGROUND_SOURCE_ENABLED)throw new Phone11CallRuntime.Failure("E_ANDROID_SOURCE_GATE");
     try{ApplicationInfo app=getReactApplicationContext().getPackageManager().getApplicationInfo(getReactApplicationContext().getPackageName(),PackageManager.GET_META_DATA);
-      if(app.metaData==null||!app.metaData.getBoolean("ai.phone11.siprix.FOREGROUND_SOURCE_ENABLED",false))throw new Phone11CallRuntime.Failure("E_ANDROID_SOURCE_GATE");
+      Phone11ForegroundTrial.requireSource(BuildConfig.FOREGROUND_SOURCE_ENABLED,getReactApplicationContext().getPackageName(),app.metaData!=null&&app.metaData.getBoolean("ai.phone11.siprix.FOREGROUND_SOURCE_ENABLED",false));
     }catch(PackageManager.NameNotFoundException failure){throw new Phone11CallRuntime.Failure("E_ANDROID_SOURCE_GATE");}
   }
-  @ReactMethod public void initialize(ReadableMap options,Promise p){perform(p,()->{sourceGate();if(options==null||options.keySetIterator().hasNextKey())throw new Phone11CallRuntime.Failure("E_INVALID_ARGUMENT");return runtime.initialize(lease);});}
+  private void foregroundGate(){Phone11ForegroundTrial.requireForeground(getReactApplicationContext().getLifecycleState()==LifecycleState.RESUMED);}
+  @ReactMethod public void initialize(ReadableMap options,Promise p){perform(p,()->{sourceGate();foregroundGate();if(options==null||options.keySetIterator().hasNextKey())throw new Phone11CallRuntime.Failure("E_INVALID_ARGUMENT");return runtime.initialize(lease);});}
   @ReactMethod public void getSnapshot(Promise p){perform(p,()->runtime.snapshot(lease));}
-  @ReactMethod public void createAccount(ReadableMap config,Promise p){perform(p,()->{sourceGate();if(config==null)throw new Phone11CallRuntime.Failure("E_INVALID_ARGUMENT");return runtime.createAccount(lease,config.toHashMap());});}
-  @ReactMethod public void registerAccount(String id,int expiry,Promise p){perform(p,()->{sourceGate();runtime.register(lease,id,expiry);return null;});}
+  @ReactMethod public void createAccount(ReadableMap config,Promise p){perform(p,()->{sourceGate();foregroundGate();if(config==null)throw new Phone11CallRuntime.Failure("E_INVALID_ARGUMENT");return runtime.createAccount(lease,config.toHashMap());});}
+  @ReactMethod public void registerAccount(String id,int expiry,Promise p){perform(p,()->{sourceGate();foregroundGate();runtime.register(lease,id,expiry);return null;});}
   @ReactMethod public void unregisterAccount(String id,Promise p){perform(p,()->{runtime.unregister(lease,id);return null;});}
   @ReactMethod public void deleteAccount(String id,Promise p){perform(p,()->{runtime.delete(lease,id);return null;});}
-  @ReactMethod public void makeCall(String account,String destination,Promise p){perform(p,()->{sourceGate();return runtime.invite(lease,account,destination);});}
-  @ReactMethod public void answerCall(String id,Promise p){perform(p,()->{sourceGate();runtime.answer(lease,id);return null;});}
+  @ReactMethod public void makeCall(String account,String destination,Promise p){perform(p,()->{sourceGate();foregroundGate();return runtime.invite(lease,account,destination);});}
+  @ReactMethod public void answerCall(String id,Promise p){perform(p,()->{sourceGate();foregroundGate();runtime.answer(lease,id);return null;});}
   @ReactMethod public void hangupCall(String id,Promise p){perform(p,()->{runtime.end(lease,id);return null;});}
   @ReactMethod public void setMute(String id,boolean muted,Promise p){perform(p,()->{runtime.mute(lease,id,muted);return null;});}
   @ReactMethod public void setHold(String id,boolean held,Promise p){perform(p,()->{runtime.hold(lease,id,held);return null;});}
@@ -50,6 +52,13 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
   @ReactMethod public void setSpeaker(boolean enabled,Promise p){perform(p,()->{runtime.speaker(lease,enabled);return null;});}
   @ReactMethod public void destroy(Promise p){perform(p,()->{runtime.destroy(lease);return null;});}
   @ReactMethod public void getCapabilities(Promise p){perform(p,()->Phone11CallRuntime.map("registrationAvailable",false,"foregroundSourceCandidate",true,"closedAppCalling",false,"reason","android_native_acceptance_required"));}
+  // This is a build contract for a trial candidate, not wake or media acceptance.
+  @ReactMethod public void getForegroundCapabilities(Promise p){main.post(()->{
+    if(invalidated){p.reject("E_STALE_BRIDGE","Phone session changed");return;}
+    try{sourceGate();p.resolve(Arguments.makeNativeMap(Phone11ForegroundTrial.capabilities()));}
+    catch(Phone11CallRuntime.Failure failure){p.reject(failure.code,"Android foreground trial is not enabled");}
+    catch(RuntimeException failure){p.reject("E_ANDROID_SOURCE_GATE","Android foreground trial configuration is unavailable");}
+  });}
   @ReactMethod public void getVideoCapabilities(Promise p){perform(p,()->Phone11CallRuntime.map("oneToOne",false,"cameraMute",false,"cameraSwitch",false,"nativeView",false));}
   private void unsupported(Promise p){perform(p,()->{throw new Phone11CallRuntime.Failure("E_UNSUPPORTED");});}
   @ReactMethod public void handleNativeAudioSession(boolean active,Promise p){unsupported(p);}

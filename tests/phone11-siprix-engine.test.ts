@@ -149,6 +149,52 @@ beforeEach(() => {
 afterEach(async () => { await engine.destroy(); vi.unstubAllEnvs(); });
 
 describe("Siprix native adapter", () => {
+  const foregroundTrial = () => {
+    runtime.platform.OS = "android";
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL", "1");
+    return { foregroundAudioTrial: true, sdkVersion: "1.1.0", sdkBuild: "20260905_1222", trialCallLimitSeconds: 60,
+      backgroundCalling: false, closedAppCalling: false, wake: false, transfer: false, video: false };
+  };
+  it("starts the explicit Android foreground trial only after the exact native capability, retaining callback registration truth", async () => {
+    const capabilities = vi.fn(async () => foregroundTrial());
+    foregroundTrial(); runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: capabilities };
+    await engine.initialize();
+    expect(capabilities).toHaveBeenCalledOnce();
+    expect(bridge.initialize).toHaveBeenCalledWith({});
+    expect(bridge.createAccount).toHaveBeenCalledOnce();
+    expect(useSipAccountStore.getState().registrationState).toBe("registering");
+    registered(); expect(useSipAccountStore.getState().registrationState).toBe("registered");
+    await engine.makeCall("2002"); expect(bridge.makeCall).toHaveBeenCalledOnce();
+    expect(runtime.wakeBinding).not.toHaveBeenCalled();
+  });
+  it.each(["missing", "wrong-version", "wrong-build", "wrong-limit", "background-claim", "native-gate-rejected"])("rejects Android trial capability %s before SDK/account work", async condition => {
+    const value = foregroundTrial();
+    if (condition === "wrong-version") value.sdkVersion = "1.0.40";
+    if (condition === "wrong-build") value.sdkBuild = "different";
+    if (condition === "wrong-limit") value.trialCallLimitSeconds = 0;
+    if (condition === "background-claim") value.backgroundCalling = true;
+    runtime.modules.Phone11Siprix = { ...bridge, ...(condition === "missing" ? {} : {
+      getForegroundCapabilities: async () => { if (condition === "native-gate-rejected") throw { code: "E_ANDROID_SOURCE_GATE" }; return value; },
+    }) };
+    await expect(engine.initialize()).rejects.toThrow("Android foreground trial capability");
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.createAccount).not.toHaveBeenCalled();
+    expect(bridge.registerAccount).not.toHaveBeenCalled(); expect(runtime.listeners.size).toBe(0);
+  });
+  it("cannot activate Android using a public flag without the Siprix engine build selection", async () => {
+    foregroundTrial(); vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "pjsip");
+    await expect(engine.initialize()).rejects.toThrow("no PJSIP fallback");
+    expect(bridge.getSnapshot).not.toHaveBeenCalled(); expect(bridge.initialize).not.toHaveBeenCalled();
+  });
+  it("ignores a late Android capability result after account/logout changes", async () => {
+    foregroundTrial(); const result = deferred<Record<string, unknown>>();
+    runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: () => result.promise };
+    const work = engine.initialize(); await Promise.resolve(); await Promise.resolve();
+    runtime.user = null; useSipAccountStore.setState({ account: null, registrationState: "unregistered" });
+    result.resolve(foregroundTrial()); await work;
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.createAccount).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("unregistered");
+  });
   it("negotiates video only after runtime support and camera permission, then consumes real video events", async () => {
     vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
     const camera = vi.fn(async () => true);

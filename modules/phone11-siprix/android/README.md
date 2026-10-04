@@ -3,8 +3,9 @@
 This is a default-off source candidate for ordinary audio dial, foreground
 incoming answer, End, mute, hold, DTMF and observed SDK speaker selection. It is
 not Android native acceptance. The package still has `android: null` in the
-React Native autolinking config; shared app/Expo configuration, iOS code, iOS SDK
-pins and signed daily-pilot artifacts are unchanged.
+React Native autolinking config. A separate, explicit foreground-trial Expo
+plugin now registers the existing bridge manually in the host; ordinary builds
+remove that wiring. The iOS SDK pin and signed daily-pilot artifacts are unchanged.
 
 The real Android SDK is the official `siprix/SampleJava` AAR from revision
 `80d198ed6179b45ff8cd8dad9b8086976b4197a0`, version `1.1.0`, build
@@ -97,8 +98,48 @@ fails unless the host `:app` has an `implementation(files(...))` dependency on
 that same exact AAR; checksum verification still applies. Runtime initialization
 also requires the separately default-false manifest
 `ai.phone11.siprix.FOREGROUND_SOURCE_ENABLED` gate. Enabling either gate,
-autolinking, APK packaging or changing shared engine selection requires a later
-reviewed integration. This compiler candidate supplies none of those changes.
+APK packaging and shared engine selection are supplied only by the separate
+foreground-trial integration below. None of these gates enables background wake.
+
+## Explicit foreground-trial host integration (5 October 2026)
+
+The candidate uses the separate package `ai.phone11.mobile.foregroundtrial` and
+Android-only runtime version `1.0.0-siprix-android-foreground-trial-1`.
+Set both `PHONE11_ANDROID_FOREGROUND_TRIAL=1` and
+`EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL=1`, select
+`EXPO_PUBLIC_SIP_ENGINE=siprix`, and point `PHONE11_SIPRIX_ANDROID_AAR` at an
+absolute path to an already staged, exact pinned AAR. No SDK is copied into the
+repository or downloaded by this integration. Missing/mismatched flags, a missing
+or mismatched SDK, or store/wake/chat commissioning fail closed.
+
+`plugins/with-phone11-android-runtime.js` manually includes
+`:phone11-siprix-android-runtime`, adds that project and the full AAR to `:app`
+implementation dependencies, registers one `Phone11SiprixPackage`, and writes the
+explicit native build/manifest gates. Android PJSIP stays excluded in this candidate.
+The Gradle SDK path can also be supplied as `-Pphone11SiprixAndroidAar=/absolute/path`;
+its checksum and host runtime dependency must still pass. Repeat prebuilds are
+idempotent. An ordinary prebuild removes all owned trial host wiring and gates.
+
+The shared Siprix engine requires the exact native `getForegroundCapabilities`
+profile before initialization: SDK `1.1.0`, build `20260905_1222`, 60-second trial,
+and background/closed-app/wake/transfer/video capabilities false. The native bridge
+also checks the separate package, native build flag and manifest gate. Initialization,
+account creation, registration, dial and Answer require a resumed React Native host.
+Microphone denial rejects dial/Answer before SDK invocation. End/destroy remain
+available for cleanup. iOS wake maintenance and completed-wake history are not entered
+by the Android candidate; native wake remains unsupported.
+
+On 5 October, source/configuration regressions, isolated native gate and lifecycle
+assertions, actual pinned SDK/Android API compilation, and whole-module compilation
+against the real cached React Native 0.81.5 classes passed. The real React Native
+compiler uses no React declaration stubs and checks both native build flag values
+with `javac -Xlint:all -Werror`; it is an explicit
+`tests/android-react-native-compiler.mjs` gate with required cached input paths.
+Actual Expo 54 Android trial prebuild, repeat prebuild and ordinary-build removal
+also passed. These are source/host-generation/compiler results. Matching APK
+assembly and inventory, installed runtime, SIP/RTP/audio, licensing, provider wake
+and physical handset acceptance are separate gates. See
+`docs/phone11-daily-use/ANDROID-FOREGROUND-INTEGRATION-20261005.md` in the app repository.
 
 ## Validation actually run on 4 October 2026
 

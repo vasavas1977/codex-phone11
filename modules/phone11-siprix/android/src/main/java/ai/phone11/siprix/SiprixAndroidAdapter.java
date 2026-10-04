@@ -15,7 +15,7 @@ public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
   public SiprixAndroidAdapter(Context context){this.context=context.getApplicationContext();}
   private static void ok(int code){if(code!=SiprixCore.kOK)throw new Phone11CallRuntime.Failure("E_SIPRIX_"+code);}
   private SiprixCore sdk(){if(core==null)throw new Phone11CallRuntime.Failure("E_NOT_INITIALIZED");return core;}
-  private void microphone(){if(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED)throw new Phone11CallRuntime.Failure("E_MICROPHONE_PERMISSION");}
+  private void microphone(){Phone11ForegroundTrial.requireMicrophone(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED);}
   public String initialize(Phone11CallRuntime.Listener listener){
     if(core==null)core=new SiprixCore(context);
     String version=core.getVersion();

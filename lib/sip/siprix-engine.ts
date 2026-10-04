@@ -20,7 +20,17 @@ const storeStates = {
 } as const;
 
 function unsupported(feature: string): Error {
-  return new Error(`Siprix iOS voice trial does not support ${feature}`);
+  return new Error(`Siprix voice trial does not support ${feature}`);
+}
+
+type AndroidTrialBridge = Phone11SiprixModule & { getForegroundCapabilities?: () => Promise<Record<string, unknown>> };
+async function requireAndroidForegroundTrial(bridge: AndroidTrialBridge): Promise<void> {
+  const capabilities = await bridge.getForegroundCapabilities?.();
+  if (!capabilities || capabilities.foregroundAudioTrial !== true || capabilities.sdkVersion !== "1.1.0"
+      || capabilities.sdkBuild !== "20260905_1222" || capabilities.trialCallLimitSeconds !== 60
+      || ["backgroundCalling", "closedAppCalling", "wake", "transfer", "video"].some(key => capabilities[key] !== false)) {
+    throw new Error("Android foreground Siprix trial native/build capability is unavailable");
+  }
 }
 
 function nativeCall(call: SiprixCall) {
@@ -135,7 +145,8 @@ export class SiprixEngine {
         useSipAccountStore.getState().setRegistrationState("unregistered", "Sign in and sync your Phone11 extension");
         return;
       }
-      if (Platform.OS !== "ios") {
+      if (Platform.OS !== "ios" && !(Platform.OS === "android" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix"
+          && process.env.EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL === "1")) {
         const error = unsupported(`${Platform.OS}; no PJSIP fallback is enabled in this build`);
         useSipAccountStore.getState().setRegistrationState("failed", error.message);
         throw error;
@@ -154,9 +165,20 @@ export class SiprixEngine {
       if (revision !== this.revision) return;
       const bridge = NativeModules.Phone11Siprix as Phone11SiprixModule | undefined;
       if (!bridge) {
-        const error = new Error("Phone11Siprix native module is missing; install a Siprix-enabled iOS build");
+        const error = new Error(`Phone11Siprix native module is missing; install a matching Siprix-enabled ${Platform.OS} build`);
         useSipAccountStore.getState().setRegistrationState("failed", error.message);
         throw error;
+      }
+      if (Platform.OS === "android") {
+        const owner = getAuthSnapshot().user;
+        try { await requireAndroidForegroundTrial(bridge); }
+        catch (error) {
+          if (revision !== this.revision || owner !== getAuthSnapshot().user || !sameAccount(account, useSipAccountStore.getState().account)) return;
+          const failure = this.failure("Android foreground trial capability", error);
+          useSipAccountStore.getState().setRegistrationState("failed", failure.message);
+          throw failure;
+        }
+        if (revision !== this.revision || owner !== getAuthSnapshot().user || !sameAccount(account, useSipAccountStore.getState().account)) return;
       }
       this.bridge = bridge;
       const session: Session = { revision, account, owner: getAuthSnapshot().user, generation: null, accountId: null };
@@ -223,6 +245,9 @@ export class SiprixEngine {
         if (!this.current(session)) { await this.cleanup(); return; }
         this.applySnapshot(await bridge.getSnapshot(), session);
         if (!this.current(session)) { await this.cleanup(); return; }
+        // The Android candidate owns foreground trial calls only. It has no
+        // enrolled wake owner or native completed-wake history to reconcile.
+        if (Platform.OS === "android") return;
         // Native recreation clears its warm-wake owner, while secure enrollment
         // survives. Resolve that enrollment against the current server session.
         // Bind directly: bindWakeOwner serializes on this same lifecycle queue.
@@ -334,6 +359,7 @@ export class SiprixEngine {
   }
 
   private async reconcileCompletedCalls(session: Session, verified?: WakeBinding): Promise<void> {
+    if (Platform.OS !== "ios") return;
     const bridge = this.bridge;
     if (!bridge?.readCompletedWakeCalls || !bridge.ackCompletedWakeCalls) return;
     try {
