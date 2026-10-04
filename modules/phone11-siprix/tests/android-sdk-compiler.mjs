@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync,readdirSync,writeFileSync,rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync,readFileSync,readdirSync,writeFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +16,7 @@ test('Actual official Siprix + Android API compiler binding; RN declaration stub
   const out=mkdtempSync(path.join(tmpdir(),'phone11-android-real-api-'));
   try{
     const siprix=path.join(out,'siprix.jar');writeFileSync(siprix,execFileSync('unzip',['-p',aar,'classes.jar'],{maxBuffer:1024*1024}));
+    assert.equal(createHash('sha256').update(readFileSync(siprix)).digest('hex'),'4929fc4b157bb65b9739a8d872079975d369501c9b55ece7b4506a9c5ac6a1b0');
     const source=path.join(root,'android/src/main/java/ai/phone11/siprix');
     execFileSync('javac',['-Xlint:all','-Werror','-cp',`${siprix}${path.delimiter}${androidJar}`,'-d',path.join(out,'api'),path.join(source,'Phone11CallRuntime.java'),path.join(source,'SiprixAndroidAdapter.java')],{encoding:'utf8'});
     const config=path.join(out,'BuildConfig.java');writeFileSync(config,'package ai.phone11.siprix; public final class BuildConfig {public static final boolean FOREGROUND_SOURCE_ENABLED=false;}');

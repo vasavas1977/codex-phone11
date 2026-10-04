@@ -4,6 +4,8 @@ apply plugin: 'com.android.library'
 // Actual APK activation requires a separate host runtime AAR dependency and review.
 def sdkAar = file(findProperty('phone11SiprixAndroidAar') ?: System.getenv('PHONE11_SIPRIX_ANDROID_AAR') ?: '../vendor/android/siprix_voip_sdk.aar')
 def expectedSha = '3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198'
+def expectedApiSha = '4929fc4b157bb65b9739a8d872079975d369501c9b55ece7b4506a9c5ac6a1b0'
+def sdkApiJar = layout.buildDirectory.file('phone11-siprix-api/classes.jar')
 def sourceEnabled = findProperty('phone11AndroidForegroundSourceEnabled') == 'true'
 android {
   namespace 'ai.phone11.siprix'
@@ -24,7 +26,29 @@ def verifySdk = tasks.register('verifyPhone11SiprixAndroidSdk') {
     if (actual != expectedSha) throw new GradleException('Phone11 Android Siprix AAR checksum mismatch')
   }
 }
-// compileOnly intentionally proves API binding without creating an executable APK.
+// Android compileOnly does not support AARs. Extract only the exact SDK API jar
+// to temporary build output; native libraries and resources remain unpackaged.
+def stageSdkApi = tasks.register('stagePhone11SiprixAndroidApi') {
+  dependsOn verifySdk
+  inputs.file(sdkAar)
+  outputs.file(sdkApiJar)
+  outputs.upToDateWhen { false }
+  doLast {
+    def archive = new java.util.zip.ZipFile(sdkAar)
+    try {
+      def entry = archive.getEntry('classes.jar')
+      if (entry == null || entry.isDirectory()) throw new GradleException('Pinned Android Siprix API jar is missing')
+      def bytes
+      archive.getInputStream(entry).withCloseable { stream -> bytes = stream.bytes }
+      def actual = java.security.MessageDigest.getInstance('SHA-256').digest(bytes).encodeHex().toString()
+      if (actual != expectedApiSha) throw new GradleException('Pinned Android Siprix API jar checksum mismatch')
+      def output = sdkApiJar.get().asFile
+      output.parentFile.mkdirs()
+      output.bytes = bytes
+    } finally { archive.close() }
+  }
+}
+// compileOnly API jars prove compiler binding without creating an executable APK.
 // Enabling source at compile time fails unless the host app includes the real AAR.
 gradle.projectsEvaluated {
   if (sourceEnabled) {
@@ -35,8 +59,8 @@ gradle.projectsEvaluated {
     if (!included) throw new GradleException('Phone11 Android source activation requires :app implementation(files(pinnedSiprixAar)); compileOnly cannot supply the executable SIP runtime')
   }
 }
-tasks.matching { it.name.startsWith('compile') && it.name.endsWith('JavaWithJavac') }.configureEach { dependsOn verifySdk }
+tasks.matching { it.name.startsWith('compile') && it.name.endsWith('JavaWithJavac') }.configureEach { dependsOn stageSdkApi }
 dependencies {
   implementation 'com.facebook.react:react-android'
-  compileOnly files(sdkAar)
+  compileOnly files(sdkApiJar).builtBy(stageSdkApi)
 }

@@ -28,7 +28,7 @@ public final class Phone11CallRuntime {
   private boolean initialized=false,quarantined=false,accountRetired=false,trial=false,wantsRegistration=false;
   private String sdkVersion; private Map<String,Object> account; private Map<String,Object> call;
   private final Set<Integer> retiredCalls=new HashSet<>();
-  private boolean answerPending=false,endPending=false,holdPending=false;
+  private boolean answerPending=false,endPending=false,holdPending=false,requestedLocalHold=false;
   public Phone11CallRuntime(Engine engine,Sink sink){this.engine=engine;this.sink=sink;}
   public long acquire(){if(owner!=0)return 0;return owner=++nextLease;}
   public void requireOwner(long lease){if(lease==0||lease!=owner)throw new Failure("E_STALE_BRIDGE");}
@@ -49,7 +49,7 @@ public final class Phone11CallRuntime {
     requireOwner(lease);if(!initialized&&!quarantined)return;
     try{engine.destroy();}catch(RuntimeException failure){quarantined=true;throw failure;}
     initialized=false;quarantined=false;++generation;sequence=0;sdkVersion=null;account=null;call=null;
-    accountRetired=false;retiredCalls.clear();answerPending=endPending=holdPending=false;trial=false;wantsRegistration=false;
+    accountRetired=false;retiredCalls.clear();answerPending=endPending=holdPending=requestedLocalHold=false;trial=false;wantsRegistration=false;
   }
   public Map<String,Object> snapshot(long lease){requireOwner(lease);return map("initialized",initialized,"cleanupRequired",quarantined,
     "generation",generation,"sequence",sequence,"sdkVersion",sdkVersion,"accounts",account==null?new ArrayList<>():Arrays.asList(copy(account)),
@@ -71,10 +71,10 @@ public final class Phone11CallRuntime {
   }
   public void answer(long lease,String id){int n=call(lease,id);if(endPending)throw new Failure("E_CALL_STATE");if(answerPending||"connected".equals(call.get("state")))return;
     if(!"incoming".equals(call.get("direction"))||!"ringing".equals(call.get("state")))throw new Failure("E_CALL_STATE");engine.answer(n);answerPending=true;}
-  public void end(long lease,String id){int n=call(lease,id);if(endPending)return;engine.end(n,"incoming".equals(call.get("direction"))&&"ringing".equals(call.get("state")));endPending=true;}
+  public void end(long lease,String id){int n=call(lease,id);if(endPending)return;engine.end(n,!answerPending&&"incoming".equals(call.get("direction"))&&"ringing".equals(call.get("state")));endPending=true;}
   public void mute(long lease,String id,boolean muted){int n=call(lease,id);connectedControl();engine.mute(n,muted);call.put("muted",muted);emit("callMuted","call",copy(call));}
   public void hold(long lease,String id,boolean held){int n=call(lease,id);connectedControl();if(holdPending)throw new Failure("E_HOLD_PENDING");
-    int state=engine.holdState(n);if(state<0||state>3)throw new Failure("E_INVALID_HOLD_STATE");if(((state&1)!=0)==held)return;engine.toggleHold(n);holdPending=true;}
+    int state=engine.holdState(n);if(state<0||state>3)throw new Failure("E_INVALID_HOLD_STATE");if(((state&1)!=0)==held)return;engine.toggleHold(n);requestedLocalHold=held;holdPending=true;}
   public void dtmf(long lease,String id,String digits){int n=call(lease,id);connectedControl();if(digits==null||!digits.matches("[0-9*#A-D]{1,32}"))throw new Failure("E_INVALID_ARGUMENT");engine.dtmf(n,digits);}
   public void speaker(long lease,boolean enabled){ready(lease);if(call==null)throw new Failure("E_CALL_STATE");engine.speaker(enabled);}
   private boolean current(long captured){return initialized&&!quarantined&&captured==generation;}
@@ -98,7 +98,7 @@ public final class Phone11CallRuntime {
       if(Boolean.TRUE.equals(call.get("answered")))return;answerPending=false;call.put("answered",true);call.put("answeredAt",System.currentTimeMillis());changed("callConnected","connected");}
     public void terminated(int n,int status){if(!current(captured)||!ownsCall(n))return;call.put("statusCode",status);changed("callTerminated","terminated");retiredCalls.add(n);call=null;answerPending=endPending=holdPending=false;}
     public void held(int n,int state){if(!current(captured)||!ownsCall(n)||endPending||!Boolean.TRUE.equals(call.get("answered"))||state<0||state>3)return;
-      holdPending=false;call.put("holdState",state);call.put("held",state!=0);changed("callHeld",state==0?"connected":"held");}
+      if(holdPending&&((state&1)!=0)==requestedLocalHold)holdPending=false;call.put("holdState",state);call.put("held",state!=0);changed("callHeld",state==0?"connected":"held");}
     public void videoUpgrade(int n){if(!current(captured)||!ownsCall(n)||endPending)return;try{engine.rejectVideo(n);}catch(RuntimeException failure){errorEvent("rejectVideoUpgrade",failure);}}
     public void error(String operation,int code){if(current(captured))errorEvent(operation,new Failure("E_SIPRIX_"+code));}
     public void audio(){if(current(captured)){Map<String,Object> event=map("type","devicesAudioChanged","generation",generation,"sequence",++sequence,"speaker",engine.speaker(),"audioSessionActive",false);sink.event(event);}}

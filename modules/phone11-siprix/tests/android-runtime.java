@@ -8,14 +8,14 @@ final class AndroidRuntimeTest {
   static void fails(String code,Runnable action){try{action.run();throw new AssertionError("expected "+code);}catch(Phone11CallRuntime.Failure failure){check(code.equals(failure.code));}}
   static class Engine implements Phone11CallRuntime.Engine {
     Phone11CallRuntime.Listener listener;int account=7,call=11,invites,answers,ends,holds,mutes,dtmfs,destroys,rejectsVideo,holdState;
-    String fail;boolean speaker;
+    String fail;boolean speaker,rejectAfterAnswerFailure,lastEndRejected;
     void command(String name){if(name.equals(fail))throw new Phone11CallRuntime.Failure("E_SIPRIX_-77");}
     public String initialize(Phone11CallRuntime.Listener l){command("initialize");listener=l;return "1.1.0 from 20260905_1222";}
     public void destroy(){command("destroy");destroys++;}
     public int addAccount(Map<String,Object> c){command("add");return account;}
     public void register(int id,int expiry){command("register");} public void unregister(int id){command("unregister");} public void delete(int id){command("delete");}
     public int invite(int acc,String destination){command("invite");invites++;return call;}
-    public void answer(int id){command("answer");answers++;} public void end(int id,boolean reject){command("end");ends++;}
+    public void answer(int id){command("answer");answers++;} public void end(int id,boolean reject){command("end");if(rejectAfterAnswerFailure&&answers>0&&reject)throw new Phone11CallRuntime.Failure("E_SIPRIX_-77");lastEndRejected=reject;ends++;}
     public void mute(int id,boolean v){command("mute");mutes++;} public void rejectVideo(int id){command("rejectVideo");rejectsVideo++;} public int holdState(int id){command("queryHold");return holdState;}
     public void toggleHold(int id){command("hold");holds++;} public void dtmf(int id,String digits){command("dtmf");dtmfs++;}
     public boolean speaker(){return speaker;} public void speaker(boolean v){command("speaker");speaker=v;}
@@ -43,6 +43,8 @@ final class AndroidRuntimeTest {
     int count=f.events.size();f.connect();f.e.listener.proceeding(11);check(f.events.size()==count);check("connected".equals(call(f).get("state")));f.e.listener.videoUpgrade(99);check(f.e.rejectsVideo==0);f.e.listener.videoUpgrade(11);check(f.e.rejectsVideo==1);
     f.e.fail="mute";fails("E_SIPRIX_-77",()->f.r.mute(f.lease,"11",true));check(Boolean.FALSE.equals(call(f).get("muted")));f.e.fail=null;f.r.mute(f.lease,"11",true);check(Boolean.TRUE.equals(call(f).get("muted")));
     f.e.holdState=2;f.r.hold(f.lease,"11",true);check(f.e.holds==1);check(Boolean.FALSE.equals(call(f).get("held")));fails("E_HOLD_PENDING",()->f.r.hold(f.lease,"11",false));
+    f.e.listener.held(11,2);check(((Number)call(f).get("holdState")).intValue()==2);fails("E_HOLD_PENDING",()->f.r.hold(f.lease,"11",false));
+    f.e.listener.held(11,0);check("connected".equals(call(f).get("state")));fails("E_HOLD_PENDING",()->f.r.hold(f.lease,"11",true));check(f.e.holds==1);
     f.e.holdState=3;f.e.listener.held(11,3);check(Boolean.TRUE.equals(call(f).get("held")));check("held".equals(call(f).get("state")));f.r.hold(f.lease,"11",true);check(f.e.holds==1);
     f.r.hold(f.lease,"11",false);f.e.listener.held(11,2);check(Boolean.TRUE.equals(call(f).get("held")));check(((Number)call(f).get("holdState")).intValue()==2);
     fails("E_INVALID_ARGUMENT",()->f.r.dtmf(f.lease,"11","1;secret"));f.r.dtmf(f.lease,"11","12#");check(f.e.dtmfs==1);
@@ -53,6 +55,10 @@ final class AndroidRuntimeTest {
     Fixture incoming=new Fixture();incoming.e.listener.incoming(11,7,true,"\"Secret Name\" <sip:1020@example.test;password=hidden>");check("sip:1020@example.test".equals(call(incoming).get("remoteUri")));check(Boolean.TRUE.equals(call(incoming).get("videoOffered")));
     incoming.e.fail="answer";fails("E_SIPRIX_-77",()->incoming.r.answer(incoming.lease,"11"));check("ringing".equals(call(incoming).get("state")));incoming.e.fail=null;incoming.r.answer(incoming.lease,"11");incoming.r.answer(incoming.lease,"11");check(incoming.e.answers==1);check("ringing".equals(call(incoming).get("state")));
     incoming.e.listener.incoming(12,7,false,"sip:200@example.test");check(incoming.e.ends==1);check("11".equals(call(incoming).get("id")));incoming.connect();check("connected".equals(call(incoming).get("state")));
+    Fixture acceptedAnswer=new Fixture();acceptedAnswer.e.rejectAfterAnswerFailure=true;acceptedAnswer.e.listener.incoming(11,7,false,"sip:1020@example.test");
+    acceptedAnswer.r.answer(acceptedAnswer.lease,"11");check("ringing".equals(call(acceptedAnswer).get("state")));acceptedAnswer.r.end(acceptedAnswer.lease,"11");acceptedAnswer.r.end(acceptedAnswer.lease,"11");
+    check(acceptedAnswer.e.ends==1);check(!acceptedAnswer.e.lastEndRejected);check("ringing".equals(call(acceptedAnswer).get("state")));acceptedAnswer.connect();check("ringing".equals(call(acceptedAnswer).get("state")));
+    acceptedAnswer.e.listener.terminated(11,200);check(((List<?>)acceptedAnswer.r.snapshot(acceptedAnswer.lease).get("calls")).isEmpty());
     check("".equals(Phone11CallRuntime.safeUri("sip:user:password@example.test")));check("".equals(Phone11CallRuntime.safeUri("Secret Name")));
     Fixture cleanup=new Fixture();cleanup.invite();cleanup.connect();Phone11CallRuntime.Listener retained=cleanup.e.listener;cleanup.e.fail="destroy";fails("E_SIPRIX_-77",()->cleanup.r.destroy(cleanup.lease));check(Boolean.TRUE.equals(cleanup.r.snapshot(cleanup.lease).get("initialized")));fails("E_CLEANUP_REQUIRED",()->cleanup.r.end(cleanup.lease,"11"));
     count=cleanup.events.size();retained.terminated(11,200);retained.videoUpgrade(11);check(cleanup.e.rejectsVideo==0);check(cleanup.events.size()==count);check(((List<?>)cleanup.r.snapshot(cleanup.lease).get("calls")).size()==1);

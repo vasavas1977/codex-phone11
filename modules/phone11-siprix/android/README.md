@@ -31,8 +31,10 @@ OS audio-session activation contract.
 One live bridge lease, one account lifetime and one active audio call are allowed.
 Account deletion requires destroy/reinitialize before another account; retired
 call IDs cannot be reused in one generation. Duplicate answer/End requests have
-one SDK invocation. Pending hold blocks another toggle and the SDK hold query
-checks the local bit; remote hold remains visible separately in `holdState`.
+one SDK invocation. End uses Bye after SDK acceptance of Answer, even while the
+call awaits its connected callback. Pending hold blocks another toggle until a
+callback confirms the requested local hold bit; remote-only or unmatched callbacks
+keep that request pending. Remote hold remains visible separately in `holdState`.
 Account/call/session generations fence delayed callbacks and bridge invalidation.
 SDK command failure preserves current state and rejects `E_SIPRIX_<signed code>`.
 Failed shutdown retains SDK/account/call state and explicitly quarantines all
@@ -83,8 +85,13 @@ The host must provide its locked React Native Maven dependency and
   -Pphone11SiprixAndroidAar=/absolute/path/to/pinned/siprix_voip_sdk.aar
 ```
 
-The library uses `compileOnly` for API binding. That does **not** package the SDK
-in an executable APK. Source activation defaults off with
+The `stagePhone11SiprixAndroidApi` task depends on exact AAR verification and
+extracts only `classes.jar` into `build/phone11-siprix-api/classes.jar`, verifying
+its SHA-256 as `4929fc4b157bb65b9739a8d872079975d369501c9b55ece7b4506a9c5ac6a1b0`.
+The library uses `compileOnly` on that generated API **jar** because Android does
+not support AAR dependencies with `compileOnly`. Compiler tasks depend on this
+extraction; native libraries and resources are not staged into the API output.
+That does **not** package the SDK in an executable APK. Source activation defaults off with
 `phone11AndroidForegroundSourceEnabled` omitted. An explicitly enabled build
 fails unless the host `:app` has an `implementation(files(...))` dependency on
 that same exact AAR; checksum verification still applies. Runtime initialization
@@ -106,7 +113,7 @@ node --test modules/phone11-siprix/tests/android-*.test.mjs \
   modules/phone11-siprix/tests/android-sdk-compiler.mjs
 ```
 
-Four Node tests pass, including 78 isolated Java lifecycle assertions. The actual
+Four Node tests pass, including 89 isolated Java lifecycle assertions. The actual
 adapter and state source pass JDK 17 `javac -Xlint:all -Werror` against the real
 pinned official `classes.jar` and real installed Android 35 `android.jar`.
 A separate whole-module host declaration check passes with **React declaration
@@ -114,6 +121,14 @@ stubs**, the real Siprix API and the real Android API. The stubs are test-only;
 this is not full React Native compiler/runtime proof. The actual SDK compiler gate is an explicit `android-sdk-compiler.mjs` invocation
 and fails if SDK/API paths are absent. The ordinary `*.test.mjs` wildcard runs
 only platform-independent readiness/lifecycle checks, with no platform skips.
+
+The cached Gradle 8.14.3 executable ran the AAR verification and API extraction
+task bodies offline in an isolated task harness. The output contained only the
+exact pinned API jar. A separate offline Gradle Java-plugin harness compiled the
+actual adapter and state sources with `-Xlint:all -Werror`, using the same
+generated-jar `builtBy` dependency and the real installed Android API. These
+checks verify the task and file dependency wiring, not the Android plugin or
+React Native Gradle compiler integration.
 
 A full local Gradle/React Native dependency cache was not found. Full real
 React Native Gradle compilation, linking/packaging, hosted CI, signed Android APK,
