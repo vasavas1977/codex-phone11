@@ -21,6 +21,7 @@ import { useSipAccountStore } from "./account-store";
 import { useSipCallStore } from "./call-store";
 import { useSipDiagnosticsStore } from "./diagnostics-store";
 import { nativeCallManager, registerVoipPush } from "./native-call";
+import { createAndroidCallPermissionGate, isAndroidForegroundTrial } from "./android-call-permission";
 
 interface SipContextValue {
   reconnectPhone: () => Promise<void>;
@@ -62,6 +63,14 @@ const SipContext = createContext<SipContextValue>({
   hasAttemptedBlindTransfer: () => false,
 });
 
+const createTrialPermissionGate = () => createAndroidCallPermissionGate(() => {
+  const auth = getAuthSnapshot();
+  const phone = useSipAccountStore.getState();
+  const calls = useSipCallStore.getState();
+  return { owner: auth.user, authLoading: auth.loading, account: phone.account,
+    incomingCall: calls.incomingCall, activeCalls: calls.activeCalls };
+}, changed => useSipCallStore.subscribe(changed));
+
 export function SipProvider({ children }: { children: React.ReactNode }) {
   const registrationLifecycle = useRef<ReturnType<typeof createRegistrationLifecycle> | null>(null);
   const accountLoadedFor = useRef<number | undefined>(undefined);
@@ -69,6 +78,15 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
   const nativeStackInitialized = useRef(false);
   const nativeStackInitPromise = useRef<Promise<void> | null>(null);
   const sipMediaLease = useRef<MediaLease | undefined>(undefined);
+  const androidCallPermission = useRef<ReturnType<typeof createAndroidCallPermissionGate> | null>(null);
+  if (!androidCallPermission.current) androidCallPermission.current = createTrialPermissionGate();
+  useEffect(() => {
+    // Recreate on effect setup so React's development cleanup/setup rehearsal
+    // does not leave a disposed gate in the still-mounted provider.
+    const gate = createTrialPermissionGate();
+    androidCallPermission.current = gate;
+    return () => { gate.dispose(); };
+  }, []);
   const { loadAccount } = useSipAccountStore();
 
   const ensureAccountLoaded = useCallback(async () => {
@@ -253,71 +271,92 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       await registrationLifecycle.current.reconnect();
     },
     makeCall: async (dest, video) => {
-      const lease = await prepareSipMediaOwnership(`outgoing-${Date.now()}`);
-      releaseSipMediaOwnership(sipMediaLease.current);
-      sipMediaLease.current = lease;
-      await ensureNativeStackInitialized();
-      try {
-        const callId = await sipEngine.makeCall(dest, video);
-        if (callId) {
-          nativeCallManager.reportOutgoingCall(callId, dest, undefined, video);
-          return callId;
+      const dial = async (assertCurrent?: () => void, commandStarted?: () => void) => {
+        const lease = await prepareSipMediaOwnership(`outgoing-${Date.now()}`);
+        try { assertCurrent?.(); }
+        catch (error) { releaseSipMediaOwnership(lease); throw error; }
+        releaseSipMediaOwnership(sipMediaLease.current);
+        sipMediaLease.current = lease;
+        if (assertCurrent) {
+          try { await ensureNativeStackInitialized(); }
+          catch (error) {
+            releaseSipMediaOwnership(lease);
+            if (sipMediaLease.current === lease) sipMediaLease.current = undefined;
+            throw error;
+          }
+        } else await ensureNativeStackInitialized();
+        try {
+          assertCurrent?.();
+          commandStarted?.();
+          const callId = await sipEngine.makeCall(dest, video);
+          if (callId) {
+            nativeCallManager.reportOutgoingCall(callId, dest, undefined, video);
+            return callId;
+          }
+          releaseSipMediaOwnership(lease);
+          if (sipMediaLease.current === lease) sipMediaLease.current = undefined;
+          return null;
+        } catch (error) {
+          releaseSipMediaOwnership(lease);
+          if (sipMediaLease.current === lease) sipMediaLease.current = undefined;
+          throw error;
         }
-        releaseSipMediaOwnership(lease);
-        if (sipMediaLease.current === lease) sipMediaLease.current = undefined;
-        return null;
-      } catch (error) {
-        releaseSipMediaOwnership(lease);
-        if (sipMediaLease.current === lease) sipMediaLease.current = undefined;
-        throw error;
-      }
+      };
+      if (!isAndroidForegroundTrial()) return dial();
+      return androidCallPermission.current!.run({ kind: "dial", destination: dest, video: !!video }, dial);
     },
     hangupCall: async (id) => {
       await sipEngine.hangupCall(id);
       if (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix") nativeCallManager.reportCallEnded(id);
     },
     answerCall: async (id, video) => {
-      const systemAnswer = Platform.OS === "ios" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix";
+      const answer = async (assertCurrent?: () => void, commandStarted?: () => void) => {
+        const systemAnswer = Platform.OS === "ios" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix";
 
-      const owner = getAuthSnapshot().user;
-      const incoming = useSipCallStore.getState().incomingCall;
-      // Initialization can cross a logout or a replacement call with a reused native ID.
-      // Capture identity before yielding; accepting the SDK directly skips CallKit audio activation.
-      const historyId = incoming?.history?.id;
-      const startedAt = incoming?.startTime?.getTime();
-      const stillThisIncomingCall = () => {
-        const auth = getAuthSnapshot();
-        const live = useSipCallStore.getState().incomingCall;
-        if (!owner || auth.loading || auth.user !== owner || live?.id !== id || live.status !== "incoming" ||
-          (live.history?.ownerUserId !== undefined && live.history.ownerUserId !== owner.id)) return false;
-        return historyId ? live.history?.id === historyId
-          : startedAt !== undefined ? live.startTime?.getTime() === startedAt : live === incoming;
-      };
-      if (systemAnswer && !stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
-      await ensureNativeStackInitialized();
-      if (systemAnswer) {
-        if (!stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
-        const videoBridge = video ? await getVideoBridge() : null;
-        if (video) {
-          const bridge = videoBridge;
-          if (!bridge) throw new Error("Video requires a Phone11 update.");
-          if (!await bridge.requestCameraPermission()) throw new Error("Camera permission is required.");
+        const owner = getAuthSnapshot().user;
+        const incoming = useSipCallStore.getState().incomingCall;
+        // Initialization can cross a logout or a replacement call with a reused native ID.
+        // Capture identity before yielding; accepting the SDK directly skips CallKit audio activation.
+        const historyId = incoming?.history?.id;
+        const startedAt = incoming?.startTime?.getTime();
+        const stillThisIncomingCall = () => {
+          const auth = getAuthSnapshot();
+          const live = useSipCallStore.getState().incomingCall;
+          if (!owner || auth.loading || auth.user !== owner || live?.id !== id || live.status !== "incoming" ||
+            (live.history?.ownerUserId !== undefined && live.history.ownerUserId !== owner.id)) return false;
+          return historyId ? live.history?.id === historyId
+            : startedAt !== undefined ? live.startTime?.getTime() === startedAt : live === incoming;
+        };
+        if (systemAnswer && !stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
+        await ensureNativeStackInitialized();
+        assertCurrent?.();
+        if (systemAnswer) {
           if (!stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
-          await bridge.prepareVideoAnswer(id);
-          if (!stillThisIncomingCall()) {
-            await bridge.cancelVideoAnswer(id).catch(() => undefined);
-            throw new Error("This incoming call is no longer available.");
+          const videoBridge = video ? await getVideoBridge() : null;
+          if (video) {
+            const bridge = videoBridge;
+            if (!bridge) throw new Error("Video requires a Phone11 update.");
+            if (!await bridge.requestCameraPermission()) throw new Error("Camera permission is required.");
+            if (!stillThisIncomingCall()) throw new Error("This incoming call is no longer available.");
+            await bridge.prepareVideoAnswer(id);
+            if (!stillThisIncomingCall()) {
+              await bridge.cancelVideoAnswer(id).catch(() => undefined);
+              throw new Error("This incoming call is no longer available.");
+            }
           }
+          try { await nativeCallManager.answerIncomingCall(id); }
+          catch (error) {
+            if (videoBridge) await videoBridge.cancelVideoAnswer(id).catch(() => undefined);
+            throw error;
+          }
+          return;
         }
-        try { await nativeCallManager.answerIncomingCall(id); }
-        catch (error) {
-          if (videoBridge) await videoBridge.cancelVideoAnswer(id).catch(() => undefined);
-          throw error;
-        }
-        return;
-      }
-      await sipEngine.answerCall(id, video);
-      if (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix") nativeCallManager.reportCallConnected(id);
+        commandStarted?.();
+        await sipEngine.answerCall(id, video);
+        if (process.env.EXPO_PUBLIC_SIP_ENGINE !== "siprix") nativeCallManager.reportCallConnected(id);
+      };
+      if (!isAndroidForegroundTrial()) return answer();
+      return androidCallPermission.current!.run({ kind: "answer", callId: id, video: !!video }, answer);
     },
     setMute: async (id, muted) => {
       await sipEngine.setMute(id, muted);
