@@ -80,19 +80,43 @@ function mailboxRootFor(config: ProducerConfig, tenantId: number, extension: str
   return root;
 }
 
-async function assertPrivateDirectory(directory: string): Promise<void> {
+async function assertPrivateDirectory(directory: string): Promise<Stats> {
   const stat = await lstat(directory);
   if (!stat.isDirectory() || (stat.mode & 0o077) !== 0) throw new Error("Producer outbox directory must be private");
+  return stat;
 }
 
-async function privateDirectory(directory: string): Promise<void> {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await assertPrivateDirectory(directory);
+async function privateDirectory(directory: string, requirePrivateParent = false): Promise<void> {
+  // The configured parent must already exist. Recursive creation would leave
+  // untracked ancestor entries outside this durability boundary.
+  const parent = path.dirname(directory);
+  const parentStat = requirePrivateParent ? await assertPrivateDirectory(parent) : await lstat(parent);
+  if (!parentStat.isDirectory()) throw new Error("Producer outbox parent must be a directory");
+  try { await mkdir(directory, { mode: 0o700 }); }
+  catch (error: any) { if (error?.code !== "EEXIST") throw error; }
+  const created = await assertPrivateDirectory(directory);
+  // Re-establish both syncs on retry: existence alone cannot prove that a
+  // previous attempt persisted this directory's entry in its parent.
+  await syncDirectory(directory, created);
+  await syncDirectory(parent, parentStat);
+  assertSameDirectory(created, await assertPrivateDirectory(directory));
 }
 
-async function syncDirectory(directory: string): Promise<void> {
+function assertSameDirectory(expected: Stats, current: Stats): void {
+  if (!expected.isDirectory() || !current.isDirectory() || expected.dev !== current.dev ||
+      expected.ino !== current.ino || expected.mode !== current.mode ||
+      expected.uid !== current.uid || expected.gid !== current.gid)
+    throw new Error("Voicemail producer directory changed");
+}
+
+async function syncDirectory(directory: string, expected?: Stats): Promise<void> {
+  const original = expected ?? await lstat(directory);
   const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { await handle.sync(); } finally { await handle.close(); }
+  try {
+    assertSameDirectory(original, await handle.stat());
+    await handle.sync();
+    assertSameDirectory(original, await lstat(directory));
+  } finally { await handle.close(); }
 }
 
 /** Publish once with a link, so an existing manifest can never be replaced. */
@@ -283,7 +307,7 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
   mailboxRootFor(config, input.tenantId, input.extension);
   const pendingDir = path.join(config.outboxRoot, "pending");
   await privateDirectory(config.outboxRoot);
-  await privateDirectory(pendingDir);
+  await privateDirectory(pendingDir, true);
   const pendingPath = path.join(pendingDir, `${input.channelUuid}.json`);
   let pending: Pending | undefined;
   try {
@@ -423,7 +447,8 @@ export async function retireReviewedVoicemailPending(
     throw new Error("An exact operator-reviewed voicemail identity is required");
   const pendingDir = path.join(config.outboxRoot, "pending");
   const retiredDir = path.join(config.outboxRoot, "retired-pending");
-  for (const directory of [config.outboxRoot, pendingDir, retiredDir]) await privateDirectory(directory);
+  for (const directory of [config.outboxRoot, pendingDir, retiredDir])
+    await privateDirectory(directory, directory !== config.outboxRoot);
   const source = path.join(pendingDir, `${input.channelUuid}.json`);
   const pending = pendingFrom(await readRetirablePrivateJson(source,
     path.join(retiredDir, `${input.channelUuid}.json`)), input.channelUuid);
