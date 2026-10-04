@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, linkSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readPrivateRehearsalManifest, readRehearsalSourcePins, rehearsalCases, rehearsalPlanSha256, rehearsalSourceFiles,
   validateRehearsalReadiness } from "../scripts/phone11-pbx-rehearsal-readiness";
@@ -82,6 +83,16 @@ describe("PBX offline rehearsal content admission", () => {
     observation.clone = structuredClone(input.plan.clone); rebind(input);
     expect(validateRehearsalReadiness(input, observation, source, now).issues).toContain("clone_is_origin_or_not_independent");
   });
+  it.each(["0", "0123456789"])("refuses noncanonical system identifier %s even with matching evidence and rebound approval", systemIdentifier => {
+    const { input, observation, source } = fixture();
+    input.plan.clone.target.systemIdentifier = systemIdentifier;
+    input.plan.rollback.restoreTarget.systemIdentifier = systemIdentifier;
+    observation.clone = structuredClone(input.plan.clone); observation.rollback = structuredClone(input.plan.rollback); rebind(input);
+    const result = validateRehearsalReadiness(input, observation, source, now);
+    expect(result.status).toBe("blocked");
+    expect(result.issues).toEqual(expect.arrayContaining(["plan_shape_or_required_boundary", "observation_shape_or_required_boundary"]));
+    expect(result.actionAuthorized).toBe(false);
+  });
   it("refuses cross-target snapshot and access-profile binding", () => {
     const { input, observation, source } = fixture();
     input.plan.clone.originSnapshotSha256 = digest("other target"); input.plan.clone.accessProfileSha256 = digest("ACLs stripped");
@@ -142,6 +153,21 @@ describe("PBX offline rehearsal content admission", () => {
       linkSync(path, join(root, "hardlink.json")); expect(() => readPrivateRehearsalManifest(path)).toThrow(); rmSync(join(root, "hardlink.json"));
       writeFileSync(path, " ".repeat(256 * 1024 + 1)); expect(() => readPrivateRehearsalManifest(path)).toThrow();
       expect(() => readPrivateRehearsalManifest("relative.json")).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("refuses a private FIFO without waiting indefinitely for a writer", () => {
+    const root = mkdtempSync(join(tmpdir(), "p11-pbx-fifo-")), fifo = join(root, "manifest.fifo");
+    try {
+      execFileSync("mkfifo", [fifo]); chmodSync(fifo, 0o600);
+      const module = pathToFileURL(join(process.cwd(), "scripts/phone11-pbx-rehearsal-readiness.ts")).href;
+      const child = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e",
+        `const imported = await import(${JSON.stringify(module)});\n` +
+        `const readPrivateRehearsalManifest = imported.readPrivateRehearsalManifest ?? imported.default.readPrivateRehearsalManifest;\n` +
+        `try { readPrivateRehearsalManifest(${JSON.stringify(fifo)}); process.exitCode = 1; }\n` +
+        `catch (error) { if (error.message !== "Protected metadata manifest required") throw error; }`],
+      { encoding: "utf8", timeout: 5_000 });
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("hashes committed real source bytes and rejects dirty source instead of claiming commit equivalence", () => {

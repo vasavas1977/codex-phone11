@@ -10,7 +10,7 @@ const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const name = z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/);
 const timestamp = z.string().datetime({ offset: true });
 const target = z.object({
-  hostIdentitySha256: hash, systemIdentifier: z.string().regex(/^[0-9]+$/),
+  hostIdentitySha256: hash, systemIdentifier: z.string().regex(/^[1-9][0-9]*$/),
   database: name, schema: name,
 }).strict();
 export const rehearsalSourceFiles = [
@@ -178,7 +178,8 @@ function report(issues: string[]) {
 
 export function readPrivateRehearsalManifest(path: string) {
   if (!path || resolve(path) !== path) throw new Error("Absolute private manifest required");
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  // Reject FIFOs and other special files after open without waiting for a peer.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid?.() ||
