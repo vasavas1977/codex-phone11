@@ -1,0 +1,42 @@
+apply plugin: 'com.android.library'
+
+// Source compiler gate: include this project manually, without autolinking it.
+// Actual APK activation requires a separate host runtime AAR dependency and review.
+def sdkAar = file(findProperty('phone11SiprixAndroidAar') ?: System.getenv('PHONE11_SIPRIX_ANDROID_AAR') ?: '../vendor/android/siprix_voip_sdk.aar')
+def expectedSha = '3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198'
+def sourceEnabled = findProperty('phone11AndroidForegroundSourceEnabled') == 'true'
+android {
+  namespace 'ai.phone11.siprix'
+  compileSdkVersion rootProject.ext.compileSdkVersion
+  defaultConfig { minSdkVersion 24 }
+  buildFeatures { buildConfig true }
+  defaultConfig { buildConfigField 'boolean', 'FOREGROUND_SOURCE_ENABLED', sourceEnabled.toString() }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+}
+def verifySdk = tasks.register('verifyPhone11SiprixAndroidSdk') {
+  inputs.file(sdkAar)
+  doLast {
+    if (!sdkAar.isFile()) throw new GradleException('Phone11 Android source compile requires the pinned official Siprix AAR; set phone11SiprixAndroidAar or PHONE11_SIPRIX_ANDROID_AAR. No automatic download is performed.')
+    def actual = java.security.MessageDigest.getInstance('SHA-256').digest(sdkAar.bytes).encodeHex().toString()
+    if (actual != expectedSha) throw new GradleException('Phone11 Android Siprix AAR checksum mismatch')
+  }
+}
+// compileOnly intentionally proves API binding without creating an executable APK.
+// Enabling source at compile time fails unless the host app includes the real AAR.
+gradle.projectsEvaluated {
+  if (sourceEnabled) {
+    def host = rootProject.findProject(':app')
+    def included = host?.configurations?.findByName('implementation')?.dependencies?.any { dependency ->
+      dependency instanceof org.gradle.api.artifacts.FileCollectionDependency && dependency.files.files.any { it.canonicalFile == sdkAar.canonicalFile }
+    }
+    if (!included) throw new GradleException('Phone11 Android source activation requires :app implementation(files(pinnedSiprixAar)); compileOnly cannot supply the executable SIP runtime')
+  }
+}
+tasks.matching { it.name.startsWith('compile') && it.name.endsWith('JavaWithJavac') }.configureEach { dependsOn verifySdk }
+dependencies {
+  implementation 'com.facebook.react:react-android'
+  compileOnly files(sdkAar)
+}

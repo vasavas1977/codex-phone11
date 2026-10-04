@@ -1,0 +1,2 @@
+/** Host declaration only; never Android or React Native runtime proof. */
+package com.facebook.react; public interface ReactPackage {java.util.List<com.facebook.react.bridge.NativeModule> createNativeModules(com.facebook.react.bridge.ReactApplicationContext context);java.util.List<com.facebook.react.uimanager.ViewManager> createViewManagers(com.facebook.react.bridge.ReactApplicationContext context);}
