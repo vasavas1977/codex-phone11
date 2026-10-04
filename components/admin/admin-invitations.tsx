@@ -52,16 +52,25 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const currentScope = useRef({ tenantId, userId, workspaceValid });
-  currentScope.current = { tenantId, userId, workspaceValid };
+  // Auth preserves this identity on profile refresh and replaces it on login.
+  const actor = Auth.getAuthSnapshot().user;
+  const mounted = useRef(true);
+  const lifetime = useRef(0);
+  const renderedLifetime = lifetime.current;
+  const currentScope = useRef({ tenantId, userId, workspaceValid, actorRole });
+  currentScope.current = { tenantId, userId, workspaceValid, actorRole };
   const attempt = useRef(0);
-  const busy = useRef(false);
+  const busy = useRef<object | null>(null);
 
-  const admissionStillCurrent = useCallback((expectedTenant: number, expectedUser: number) => {
-    return isCurrentInvitationScope(expectedTenant, expectedUser, currentScope.current, Auth.getAuthSnapshot().user?.id);
+  const admissionStillCurrent = useCallback((expectedTenant: number, expectedUser: number, expectedActor: Auth.User | null, expectedLifetime: number, expectedRole: string) => {
+    return mounted.current && lifetime.current === expectedLifetime && currentScope.current.actorRole === expectedRole && expectedActor !== null &&
+      Auth.getAuthSnapshot().user === expectedActor &&
+      isCurrentInvitationScope(expectedTenant, expectedUser, currentScope.current, expectedActor.id);
   }, []);
 
   const load = useCallback(async () => {
+    if (!mounted.current) return;
+    const requestLifetime = lifetime.current;
     const request = ++attempt.current;
     if (!tenantId || !userId || !workspaceValid) {
       setEnabled(null);
@@ -70,6 +79,7 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
       setChecking(false);
       return;
     }
+    if (!admissionStillCurrent(tenantId, userId, actor, requestLifetime, actorRole)) return;
     const requestedTenant = tenantId;
     const requestedUser = userId;
     setChecking(true);
@@ -80,7 +90,7 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
     try {
       client = createTRPCClient();
       const capability = await client.invitations.availability.query({ tenantId: requestedTenant });
-      if (request !== attempt.current || !admissionStillCurrent(requestedTenant, requestedUser)) return;
+      if (request !== attempt.current || !admissionStillCurrent(requestedTenant, requestedUser, actor, requestLifetime, actorRole)) return;
       setEnabled(capability.enabled);
       if (!capability.enabled) {
         setRows([]);
@@ -89,7 +99,7 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
         return;
       }
     } catch (failure) {
-      if (request === attempt.current && admissionStillCurrent(requestedTenant, requestedUser)) {
+      if (request === attempt.current && admissionStillCurrent(requestedTenant, requestedUser, actor, requestLifetime, actorRole)) {
         setEnabled(false);
         setRows([]);
         setListLoaded(false);
@@ -100,22 +110,25 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
     }
     try {
       const next = await client.invitations.list.query({ tenantId: requestedTenant });
-      if (request === attempt.current && admissionStillCurrent(requestedTenant, requestedUser)) {
+      if (request === attempt.current && admissionStillCurrent(requestedTenant, requestedUser, actor, requestLifetime, actorRole)) {
         setRows(next);
         setListLoaded(true);
       }
     } catch (failure) {
-      if (request === attempt.current && admissionStillCurrent(requestedTenant, requestedUser)) {
+      if (request === attempt.current && admissionStillCurrent(requestedTenant, requestedUser, actor, requestLifetime, actorRole)) {
         setRows([]);
         setListLoaded(false);
         setLoadError(messageOf(failure));
       }
     } finally {
-      if (request === attempt.current) setChecking(false);
+      if (request === attempt.current && admissionStillCurrent(requestedTenant, requestedUser, actor, requestLifetime, actorRole)) setChecking(false);
     }
-  }, [admissionStillCurrent, tenantId, userId, workspaceValid]);
+  }, [actor, actorRole, admissionStillCurrent, tenantId, userId, workspaceValid]);
 
   useEffect(() => {
+    mounted.current = true;
+    busy.current = null;
+    setBusyId(null);
     setRows([]);
     setFormOpen(false);
     setEmail("");
@@ -123,10 +136,16 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
     setError(null);
     setNotice(null);
     void load();
-    return () => { attempt.current += 1; };
+    return () => {
+      mounted.current = false;
+      lifetime.current += 1;
+      attempt.current += 1;
+      busy.current = null;
+    };
   }, [load]);
 
   const refresh = async () => {
+    if (!tenantId || !userId || !admissionStillCurrent(tenantId, userId, actor, renderedLifetime, actorRole)) return;
     await load();
   };
 
@@ -135,30 +154,36 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
     action: (client: ReturnType<typeof createTRPCClient>, input: { tenantId: number; invitationId: string }) => Promise<InvitationSummary>,
     actionKind: "create" | "resend" | "revoke",
   ) => {
-    if (busy.current || !tenantId || !userId || !workspaceValid || !admissionStillCurrent(tenantId, userId)) {
+    if (!mounted.current || renderedLifetime !== lifetime.current || currentScope.current.actorRole !== actorRole || Auth.getAuthSnapshot().user !== actor) return;
+    if (busy.current || !tenantId || !userId || !workspaceValid || !admissionStillCurrent(tenantId, userId, actor, renderedLifetime, actorRole)) {
       setError("Workspace access changed. Refresh before managing invitations.");
       return;
     }
-    busy.current = true;
+    const actionAttempt = {};
+    busy.current = actionAttempt;
     setBusyId(id ?? "create");
     setError(null);
     setNotice(null);
     const expectedTenant = tenantId;
     const expectedUser = userId;
+    const release = () => {
+      // A retired request must never unlock an action from the next lifetime.
+      if (busy.current !== actionAttempt) return;
+      busy.current = null;
+      if (admissionStillCurrent(expectedTenant, expectedUser, actor, renderedLifetime, actorRole)) setBusyId(null);
+    };
     let client: ReturnType<typeof createTRPCClient>;
     let result: InvitationSummary;
     try {
       client = createTRPCClient();
       result = await action(client, { tenantId: expectedTenant, invitationId: id ?? "" });
     } catch (failure) {
-      if (admissionStillCurrent(expectedTenant, expectedUser)) setError(messageOf(failure));
-      busy.current = false;
-      setBusyId(null);
+      if (admissionStillCurrent(expectedTenant, expectedUser, actor, renderedLifetime, actorRole)) setError(messageOf(failure));
+      release();
       return;
     }
-    if (!admissionStillCurrent(expectedTenant, expectedUser)) {
-      busy.current = false;
-      setBusyId(null);
+    if (!admissionStillCurrent(expectedTenant, expectedUser, actor, renderedLifetime, actorRole)) {
+      release();
       return;
     }
     setNotice(actionKind === "revoke"
@@ -181,23 +206,23 @@ export function AdminInvitations({ tenantId, actorRole, userId, workspaceValid }
     }
     try {
       const next = await client.invitations.list.query({ tenantId: expectedTenant });
-      if (admissionStillCurrent(expectedTenant, expectedUser)) {
+      if (admissionStillCurrent(expectedTenant, expectedUser, actor, renderedLifetime, actorRole)) {
         setRows(next);
         setListLoaded(true);
         setLoadError(null);
       }
     } catch {
-      if (admissionStillCurrent(expectedTenant, expectedUser)) {
+      if (admissionStillCurrent(expectedTenant, expectedUser, actor, renderedLifetime, actorRole)) {
         setListLoaded(false);
         setLoadError("The invitation was updated, but the list could not refresh. Try again.");
       }
     } finally {
-      busy.current = false;
-      setBusyId(null);
+      release();
     }
   };
 
   const create = () => {
+    if (!tenantId || !userId || !admissionStillCurrent(tenantId, userId, actor, renderedLifetime, actorRole)) return;
     if (!isValidInvitationEmail(email)) {
       setError("Enter a valid email address.");
       return;
