@@ -20,9 +20,15 @@ actually run on their pinned source and artifacts.
   adds native transfer lifetime guards, per-message voicemail action locks and
   default-off server-authorized member removal with exact membership/room
   revision and reconnect retirement. Focused integration and native source
-  checks and the full compiler passed; new-head CI and fresh packages still
-  require separate receipts. Earlier artifacts do not include these changes. Provider removal
-  activation and physical acceptance remain open.
+  checks and the full compiler passed. Frozen source `22fd183` passed all five
+  hosted workflows and nineteen jobs, including zero-skip host-removal,
+  routing/legacy and native bridge gates. Build 119 and fresh macOS/Windows
+  trials passed independent package review at that pin. iOS review reran
+  22 signed and 42 supplemental checks; all three existing registered phones
+  remain covered. Submitted source-archive reproducibility and the original
+  early planning snapshot remain unproven. Earlier artifacts retain their
+  original source pins.
+  Provider removal activation and physical acceptance remain open.
 - The [workflow reliability follow-up](WORKFLOW-RELIABILITY-20261004.md) fixes
   overlapping native joins, stale desktop contact callbacks and interrupted
   voicemail publication at implementation source `4c018ba99e86a913c75b181caa6cacafa55640a9`.
@@ -82,7 +88,7 @@ These changes do not close unchecked acceptance rows below.
 | [ ] | Meetings: create/invite, join, media and leave ([Z7]) | `server/meetings/service.ts`, `lib/meetings/native-session.ts`, `app/conference/room.tsx`; pinned source/CI and mocked lifecycle checks in [integration state](INTEGRATION-STATUS-20261001.md). | Server refusal hotfix released separately; Build 114 installed; 3001 one-phone muted/camera-off join and visible Leave observed on 3 October. | Confirm both identities and exact shared room, second join, both-direction speech/video, routes, reconnect, background recovery, SIP interruption and cleanup. No full meeting acceptance yet. |
 | [ ] | Meeting chat, host moderation and collaboration ([Z7]) | Reviewed plaintext room chat/mobile/desktop and avatar checks in [meeting chat](IN-MEETING-CHAT-20261001.md); consumer/provider limits in [integration state](INTEGRATION-STATUS-20261001.md); [default-off member removal](TRANSFER-HOST-VOICEMAIL-20261004.md) has reviewed lifetime/authority source checks. | Build 114 and local desktop candidate include reviewed chat source; real peer delivery is unaccepted. Connect11 lacks authoritative end-for-all, remote mute and waiting-room admission. | Prove real room-chat delivery/permission loss/teardown. Verify the reviewed exact-member removal contract and provider configuration before activation; desktop removal wiring remains open. Screen share, captions, recording/AI and advanced meeting features still need explicit capability/release/device evidence. |
 | [ ] | Future scheduling, callbacks and calendar handoff ([Z8]) | [Shared adapter contract](SHARED-CALENDAR-PHONE11-ADAPTER-20260916.md) has recorded contract tests; immediate rooms and task focus intervals are not scheduled meetings. | [Current coordination](INTEGRATION-STATUS-20261001.md) confirms no deployed shared event/provider service. | Super Number owns canonical events, invitations, timezone/recurrence/provider sync; Phone11 adds its authorized projection/adapter when that service is pinned. Do not create a duplicate Phone11 event store. |
-| [ ] | macOS, Windows and mobile distribution ([Z1], [Z7]) | Native helper/Electron source and hosted checks are pinned to `b5a97e6bdf41c66347547dfb8340f954d8318bce` in [Build 116 release](BUILD-116-RELEASE-20261004.md). | Build 116 passed 22 signed and 42 supplemental checks and covers all three registered phones. Fresh macOS arm64 and Windows x64 trial packages passed independent package review; macOS is ad-hoc signed, Windows own binaries are unsigned. These candidates were not launched or installed; Build 114 remains the recorded installed iOS version. | Prove matching-build sign-in/SIP/media/lifecycle on each OS and close SDK terms and formal signing/distribution; macOS notarization remains open. Physical acceptance is owner-deferred. Android native acceptance is a separate outstanding mobile gate. |
+| [ ] | macOS, Windows and mobile distribution ([Z1], [Z7]) | Current client source and hosted checks are pinned to `22fd183` in [the latest follow-up](TRANSFER-HOST-VOICEMAIL-20261004.md); retained helper provenance remains `b5a97e6bdf41c66347547dfb8340f954d8318bce` from [Build 116 release](BUILD-116-RELEASE-20261004.md). | Latest frozen source `22fd183` produced Build 119 and fresh macOS arm64/Windows x64 trials; all passed independent package review. Build 119 passed 22 signed and 42 supplemental checks and covers the three existing registered phones. macOS is ad-hoc signed; Windows own binaries are unsigned. Candidates were not installed or launched; Build 114 remains the recorded installed iOS version. | Prove matching-build sign-in/SIP/media/lifecycle on each OS and close SDK terms and formal signing/distribution; macOS notarization remains open. Physical acceptance is owner-deferred. Android native acceptance is a separate outstanding mobile gate. |
 
 ## Next work and ownership
 
@@ -95,9 +101,9 @@ These changes do not close unchecked acceptance rows below.
    advanced routing and voicemail activation; accept real deposits and transfers.
    The [routing writer authority follow-up](PBX-ROUTING-AUTHORITY-20261004.md)
    holds live authority through each mutation and reuses its transaction client
-   for capability reads. Eight disposable PG17 checks are recorded. Its new
-   hosted CI proof is pending at this document's commit; it is outside the
-   Build 116 source pin and does not commission routing. The separate
+   for capability reads. The corrected `22fd183` hosted routing/legacy gate passed 225 cases,
+   including forty actual disposable PG17 cases, with zero skips. That proof is
+   outside the Build 116 source pin and does not commission routing. The separate
    [read and legacy provisioning authority follow-up](PBX-READ-PROVISIONING-AUTHORITY-20261004.md)
    replaces cached facility-read admission and removes schema initialization
    from three authenticated legacy writers and three legacy admin list reads.

@@ -64,7 +64,8 @@ intermediate reproduced eight failures in 23 lifetime/panel cases; root applied
 only the complete reviewed delta, not that intermediate as a standalone commit.
 Root integration passed all 207 cases across fifteen related suites without
 skips. The 31 disposable PostgreSQL cases (14 existing, ten snapshot/authority,
-seven lifetime) still require hosted execution with zero skips.
+seven lifetime) subsequently passed hosted execution with zero skips at the
+corrected source pin below.
 
 ## Integration and release guards
 
@@ -73,7 +74,7 @@ checks passed. The daily-use workflow now fails early when any of fifteen
 required regression files is absent; root executed that exact gate successfully.
 Independent workflow review approved the added exact test arguments and a
 macOS native bridge check using the pinned SDK. YAML and shell syntax checks
-passed. These workflow checks do not mean hosted jobs have already run.
+passed. The later hosted results below are separate from these local workflow checks.
 
 The first full TypeScript run found mock-signature inference errors in the new
 member-removal test. Its failed log is retained. Independently reviewed amendment
@@ -87,13 +88,58 @@ passes, two failures and zero skips. Both failures occurred while setting up new
 fixture revocations: those updates omitted the revision change required by the
 existing BEFORE UPDATE trigger. The test-only correction adds a fresh revision
 to those two updates, retaining all assertions and production constraints.
-The first failed raw job log is retained; a new-head passing hosted result is
-required, and the failed attempt is never counted as a pass.
+The first failed raw job log is retained. The corrected source passed a new
+automatically triggered hosted run; the failed attempt is never counted as a pass.
 
-Fresh iOS, macOS and Windows packages are required for this batch. Build 118
-and previously verified desktop bundles retain their earlier source pins and
-rollback roles. No new package, hosted check, deployment, installation or
-physical acceptance is established by this source record.
+## Frozen release-candidate evidence
+
+Implementation and test source is frozen at
+`22fd18314ed6671cbb4a7cfd9408adf4d6456b68`, tree
+`f8256c69b15e934c4190da3498a11106366b857e`. Later documentation changes do
+not retag that source or its packages.
+
+All five automatically triggered hosted workflows and all nineteen jobs passed
+on that source tree, attempt one. Four jobs checked out the exact source and
+fifteen checked out its authenticated PR merge with the identical full tree.
+Mandatory routing/legacy checks passed 225 cases, including forty actual
+owned disposable PostgreSQL cases; the separate host-removal job passed 31
+and the native bridge job passed ten. Each required gate had zero skips.
+Android debug compilation passed. Optional full source discovery recorded
+3,255 Vitest passes and 523 skips, plus 68 Node passes and ten platform skips;
+those optional skips are not counted as required-gate passes. PR-only Windows
+helper custody/export steps were intentionally skipped and are not package proof.
+Root rehashed 52 evidence files, verified the nineteen checkout bindings and
+all five complete workflow archives, and checked the required raw summaries.
+
+Signed internal iOS [Build 119](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/d492c632-e4f8-41e7-9b4f-3dcf9762e16f),
+fresh macOS arm64 and Windows x64 trial packages were produced from that frozen
+source. All three passed independent package review. The iOS reviewer reran 22
+signed checks and 42 supplemental checks and proved
+the exact three existing registered phones against the signed provisioning and
+fresh authenticated inventory. Source provenance binds authenticated metadata,
+the clean checkout and submission custody. A submitted archive digest was not
+retained, so this does not establish cloud reproducibility. The original early
+preparation-plan bytes were also not retained; its historical digest cannot now
+be rehashed. Preserved helper snapshots, the later paused plan, and the actual
+corrected-source submission custody are separately pinned. Historical planning
+records are not substituted for actual submission or signed-package evidence.
+
+Independent desktop verification covered all 82 consumed source inputs, actual
+Expo configuration, all 24 compiled files, native helper reuse and rollback
+custody. macOS inventory covered 280 regular files and nineteen contained
+relative links, thirteen helper files and five helper links, with strict deep
+signature verification. Windows verification covered all 78 ZIP entries with
+CRC and exact-byte equality, ten AMD64 PE images, fourteen unchanged
+non-resource sections and exact resource-edit reproduction. Twenty-three
+shared compiled files matched across macOS and Windows; the main file differed
+only by its platform helper-manifest digest. These checks do not establish an
+independent compiler rebuild. macOS is ad-hoc signed; Windows own binaries are
+unsigned. Trial calls
+remain limited to sixty seconds. No package was installed or launched, and
+no provider activation, deployment or production database mutation occurred.
+Builds 49 and 115–118 and the earlier desktop rollback packages remain retained.
+Build 114 remains the last recorded installed iOS baseline; this is not a fresh
+audit of either phone. Physical acceptance remains owner-deferred.
 
 See the [coverage checklist](ZOOM-FEATURE-COVERAGE-20261004.md) for the remaining
 Phone11/Zoom workflow gaps.
