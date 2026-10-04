@@ -48,6 +48,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run tests
+        # The platform-independent Android lifecycle tests invoke the real JDK.
         run: pnpm test
 
       - name: Validate Expo config
@@ -119,6 +120,28 @@ jobs:
       - name: Prebuild Android project
         run: pnpm exec expo prebuild --clean --platform android --no-install
 
+      - name: Stage the exact Android SDK for source compilation only
+        shell: bash
+        run: |
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/phone11-siprix-android.aar" \
+            https://raw.githubusercontent.com/siprix/SampleJava/80d198ed6179b45ff8cd8dad9b8086976b4197a0/app/libs/siprix_voip_sdk.aar
+          printf '%s  %s\n' 3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198 "$RUNNER_TEMP/phone11-siprix-android.aar" | sha256sum --check --strict
+
+      - name: Include the Android source candidate without app autolinking or activation
+        shell: bash
+        run: |
+          cat >> android/settings.gradle <<'GRADLE'
+          include ':phone11-siprix-android-source'
+          project(':phone11-siprix-android-source').projectDir = new File(rootProject.projectDir, '../modules/phone11-siprix/android')
+          GRADLE
+
+      - name: Compile the Android bridge against actual React Native and SDK classes
+        working-directory: android
+        run: |
+          ./gradlew :phone11-siprix-android-source:verifyPhone11SiprixAndroidSdk \
+            :phone11-siprix-android-source:compileDebugJavaWithJavac \
+            -Pphone11SiprixAndroidAar="$RUNNER_TEMP/phone11-siprix-android.aar" --stacktrace
+
       - name: Compile Android debug build
         working-directory: android
         run: ./gradlew :app:assembleDebug --stacktrace
@@ -140,6 +163,11 @@ jobs:
         run: |
           corepack enable
           corepack prepare pnpm@9.12.0 --activate
+      - name: Setup Java for Android lifecycle source checks
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - name: Install locked native headers
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Check pinned headers and actual bridge callbacks
@@ -162,7 +190,10 @@ jobs:
           assert count and int(count[1]) > 0, "Native tests did not execute"
           required = ["all native selectors and delegate methods compile against the exact staged SDK header",
                       "actual bridge lifecycle, callback, security, and call-control behavior with a mock SDK",
-                      "default-off native warm-transfer candidate uses pinned selectors and owned async lifecycle"]
+                      "default-off native warm-transfer candidate uses pinned selectors and owned async lifecycle",
+                      "Android isolated callback, lease, account, call, request, logout and failure state contracts",
+                      "Android preflight never downloads or accepts an unpinned SDK",
+                      "Android source candidate preserves default-off integration and unsupported capabilities"]
           for name in required:
               assert re.search(rf"^ok \d+ - {re.escape(name)}$", output, re.M), f"Required native case did not execute: {name}"
           print("Native bridge and warm-transfer source gates executed with zero skips")
