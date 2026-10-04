@@ -26,6 +26,8 @@ jobs:
           python3 desktop/native/test_controls.py
           python3 desktop/native/test_hold_reconcile.py
           python3 desktop/native/test_transfer.py
+          python3 desktop/native/test_warm.py
+          python3 desktop/native/test_redirect.py
 
   macos-arm64:
     runs-on: macos-15
@@ -48,6 +50,13 @@ jobs:
         run: |
           python3 desktop/native/test_bootstrap.py \
             "$RUNNER_TEMP/phone11-desktop-helper/Release/phone11_siprix_helper.app/Contents/MacOS/phone11_siprix_helper"
+      - name: Compile gated warm-transfer source against the real macOS SDK
+        shell: bash
+        run: |
+          cmake -S desktop/native -B "$RUNNER_TEMP/phone11-desktop-helper-warm-source" -G Xcode \
+            -DSIPRIX_SDK_ROOT="$GITHUB_WORKSPACE/_vendor/siprixua" \
+            -DPHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=ON
+          cmake --build "$RUNNER_TEMP/phone11-desktop-helper-warm-source" --config Release
 
   windows-x64:
     runs-on: windows-2022
@@ -71,6 +80,11 @@ jobs:
         shell: pwsh
         run: |
           python desktop/native/test_bootstrap.py "$env:RUNNER_TEMP\phone11-desktop-helper\Release\phone11_siprix_helper.exe"
+      - name: Compile gated warm-transfer source against the real Windows SDK
+        shell: pwsh
+        run: |
+          cmake -S desktop/native -B "$env:RUNNER_TEMP\phone11-desktop-helper-warm-source" -G "Visual Studio 17 2022" -A x64 "-DSIPRIX_SDK_ROOT=$env:GITHUB_WORKSPACE\_vendor\siprixua" -DPHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=ON
+          cmake --build "$env:RUNNER_TEMP\phone11-desktop-helper-warm-source" --config Release
       - name: Compile protocol test double with MSVC
         shell: pwsh
         run: |
