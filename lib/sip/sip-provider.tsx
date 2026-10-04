@@ -33,6 +33,7 @@ interface SipContextValue {
   sendDtmf: (callId: string, digit: string) => Promise<void>;
   transferCall: (callId: string, destination: string) => Promise<void>;
   supportsBlindTransfer: () => boolean;
+  hasAttemptedBlindTransfer: (callId: string) => boolean;
 }
 
 const SipContext = createContext<SipContextValue>({
@@ -46,6 +47,7 @@ const SipContext = createContext<SipContextValue>({
   sendDtmf: async () => {},
   transferCall: async () => {},
   supportsBlindTransfer: () => false,
+  hasAttemptedBlindTransfer: () => false,
 });
 
 export function SipProvider({ children }: { children: React.ReactNode }) {
@@ -325,6 +327,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     transferCall: async (id, dest) => {
       await sipEngine.transferCall(id, dest);
     },
+    hasAttemptedBlindTransfer: id => siprixEngine.hasAttemptedBlindTransfer(id),
     supportsBlindTransfer: () => Platform.OS === "ios" &&
       process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" &&
       siprixEngine.supportsBlindTransfer(),

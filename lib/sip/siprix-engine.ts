@@ -83,6 +83,7 @@ export class SiprixEngine {
   private terminated = new Set<string>();
   private connected = new Set<string>();
   private audioActive = false;
+  private transferAttempts = new Set<string>();
   private transfers = new Map<string, { requestId?: string; settle: (error?: Error) => void }>();
   private callManager: typeof import("./native-call").nativeCallManager | null = null;
 
@@ -282,6 +283,9 @@ export class SiprixEngine {
     if (event.type === "registration" && "account" in event) {
       this.registration(event.account);
     } else if (event.type === "callTransferred" && "call" in event) {
+      // A transfer report updates only an already admitted call; it cannot
+      // introduce a new call or revive a terminated lifetime.
+      if (this.calls.has(event.call.callId)) this.applyCall(event.call);
       this.transferOutcome(event.call);
     } else if (["callIncoming", "callProceeding", "callConnected", "callTerminated", "callHeld", "callMuted", "callVideoChanged"].includes(event.type) && "call" in event) {
       this.applyCall(event.call, event.type === "callConnected");
@@ -345,11 +349,12 @@ export class SiprixEngine {
     if (call.accountId !== this.session?.accountId || !this.calls.has(call.callId) || call.transferPending !== false || !Number.isInteger(call.transferStatusCode)) return;
     const pending = this.transfers.get(call.callId);
     if (!pending?.requestId || call.transferRequestId !== pending.requestId) return;
-    pending.settle(call.transferStatusCode === 0 ? undefined : new Error("Call transfer failed. Your original call remains available."));
+    pending.settle(call.transferStatusCode === 0 ? undefined : new Error("Call transfer failed. One transfer attempt per call. Your original call remains available; return to call controls."));
   }
 
   private endCall(id: string): void {
     this.transfers.get(id)?.settle(new Error("The call ended before transfer was confirmed."));
+    this.transferAttempts.delete(id);
     if (this.calls.has(id)) this.callManager?.reportCallEnded(id);
     this.terminated.add(id);
     this.connected.delete(id);
@@ -369,6 +374,7 @@ export class SiprixEngine {
     if (previous && ["connected", "held"].includes(previous.state) &&
       ["dialing", "proceeding", "ringing"].includes(call.state)) return;
     this.calls.set(call.callId, call);
+    if (call.transferAttempted || call.transferRequestId) this.transferAttempts.add(call.callId);
     const handle = nativeCall(call);
     const store = useSipCallStore.getState();
     if (!previous) {
@@ -531,6 +537,10 @@ export class SiprixEngine {
     return this.current() && typeof this.bridge?.transferCall === "function" && typeof this.bridge?.createTransferRequestId === "function";
   }
 
+  hasAttemptedBlindTransfer(callId: string): boolean {
+    return this.current() && this.transferAttempts.has(callId);
+  }
+
   transferCall(callId: string, destination: string): Promise<void> {
     const target = destination.trim();
     if (!/^\+?[0-9*#]{1,32}$/.test(target)) return Promise.reject(new Error("Enter a phone number or extension."));
@@ -538,15 +548,19 @@ export class SiprixEngine {
     const call = this.calls.get(callId);
     if (!call || call.state !== "connected" || call.held || call.holdState !== 0) return Promise.reject(new Error("Resume the connected call before transferring it."));
     if (this.transfers.has(callId)) return Promise.reject(new Error("A transfer is already in progress."));
+    if (this.hasAttemptedBlindTransfer(callId)) return Promise.reject(new Error("Transfer is unavailable for this call. One transfer attempt per call; return to call controls."));
+    const session = this.session;
     let settled = false;
     let settle!: (error?: Error) => void;
     const outcome = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => settle(new Error("Transfer has not been confirmed. Keep the call open; the server may still complete it.")), 30_000);
+      const timer = setTimeout(() => settle(new Error(this.hasAttemptedBlindTransfer(callId)
+        ? "Transfer has not been confirmed. Keep the call open; the server may still complete it. One transfer attempt per call."
+        : "Transfer request expired before it could be sent. Your original call remains available; try again.")), 30_000);
       settle = error => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.transfers.delete(callId);
+        if (this.transfers.get(callId) === pending) this.transfers.delete(callId);
         if (error) reject(error);
         else resolve();
       };
@@ -560,9 +574,24 @@ export class SiprixEngine {
       const requestId = await bridge.createTransferRequestId();
       if (settled) throw new Error("Transfer request expired before it could be sent.");
       if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId)) throw new Error("Invalid native transfer identity.");
+      const currentCall = this.calls.get(callId);
+      if (!this.current(session) || !currentCall || currentCall.state !== "connected" || currentCall.held || currentCall.holdState !== 0)
+        throw new Error("The phone session or call changed before transfer was sent.");
       pending.requestId = requestId;
-      await bridge.transferCall(callId, target, requestId);
-    }).catch(() => settle(new Error("Could not request transfer. Your original call remains available.")));
+      this.transferAttempts.add(callId);
+      try {
+        await bridge.transferCall(callId, target, requestId);
+      } catch (error) {
+        // These native guards precede callTransferBlind. Unknown transport/SDK
+        // failures remain uncertain and cannot authorize another invocation.
+        if (this.current(session) && this.transfers.get(callId) === pending &&
+            ["E_CALL_STATE", "E_INVALID_ARGUMENT", "E_NOT_INITIALIZED", "E_RUNTIME_IN_USE", "E_UNKNOWN_ID", "E_CLEANUP_REQUIRED"].includes((error as { code?: string })?.code ?? ""))
+          this.transferAttempts.delete(callId);
+        throw error;
+      }
+    }).catch(() => settle(new Error(this.hasAttemptedBlindTransfer(callId)
+      ? "Could not confirm transfer. One transfer attempt per call. Your original call remains available; return to call controls."
+      : "Could not request transfer. Your original call remains available.")));
     return outcome;
   }
 
@@ -598,6 +627,7 @@ export class SiprixEngine {
     }
     for (const id of this.calls.keys()) this.endCall(id);
     this.calls.clear();
+    this.transferAttempts.clear();
     this.terminated.clear();
     this.connected.clear();
     this.callManager = null;

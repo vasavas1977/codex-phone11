@@ -27,8 +27,10 @@ vi.mock("expo-router", () => ({
   useLocalSearchParams: () => mocks.params,
 }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ background: "white", foreground: "black", muted: "gray", surface: "white", primary: "blue", success: "green", error: "red" }) }));
-vi.mock("../lib/sip/sip-provider", () => ({ useSip: () => ({ transferCall: mocks.transfer, supportsBlindTransfer: () => mocks.supported }) }));
-vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: (select: any) => select({ activeCalls: mocks.calls, incomingCall: null }) }));
+vi.mock("../lib/sip/sip-provider", () => ({ useSip: () => ({ transferCall: mocks.transfer, supportsBlindTransfer: () => mocks.supported, hasAttemptedBlindTransfer: () => false }) }));
+vi.mock("../lib/sip/call-store", () => ({ useSipCallStore: Object.assign((select: any) => select({ activeCalls: mocks.calls, incomingCall: null }), { getState: () => ({ activeCalls: mocks.calls, incomingCall: null }) }) }));
+vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: { id: 7 } }), addAuthChangeListener: () => () => {} }));
+vi.mock("../lib/sip/account-store", () => ({ useSipAccountStore: Object.assign((select: any) => select({ account: null }), { getState: () => ({ account: null }) }), sameSipAccount: () => false }));
 vi.mock("../components/feature-unavailable", () => ({ FeatureUnavailable: ({ title }: any) => createElement("span", null, title) }));
 
 import TransferCallScreen from "../app/call/transfer";

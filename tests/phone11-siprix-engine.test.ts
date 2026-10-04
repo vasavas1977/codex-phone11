@@ -994,6 +994,12 @@ describe("Siprix blind transfer outcomes", () => {
     await Promise.resolve(); expect(completed).toBe(false);
     result(0); await transfer;
   });
+  it("does not admit a new call from an unsolicited transfer outcome", async () => {
+    await ready();
+    emit({ type: "callTransferred", call: newCall({ callId: "999", id: "999", state: "connected", transferAttempted: true, transferPending: false, transferStatusCode: 0 }) });
+    expect(useSipCallStore.getState().activeCalls).toEqual({});
+    expect(runtime.callManager.reportOutgoingCall).not.toHaveBeenCalled();
+  });
   it("times out without blocking mute or ending the call", async () => {
     await connected(); vi.useFakeTimers();
     try {
@@ -1002,6 +1008,19 @@ describe("Siprix blind transfer outcomes", () => {
       await vi.advanceTimersByTimeAsync(30_000); await assertion;
       await engine.setMute("11", true);
       expect(bridge.hangupCall).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it("allows a fresh request after expiry before invocation without old cleanup deleting it", async () => {
+    await connected(); vi.useFakeTimers();
+    try {
+      const identity = deferred<string>(); bridge.createTransferRequestId.mockReturnValueOnce(identity.promise);
+      const first = engine.transferCall("11", "3003"), expired = expect(first).rejects.toThrow("expired before it could be sent");
+      await vi.advanceTimersByTimeAsync(30_000); await expired;
+      expect(bridge.transferCall).not.toHaveBeenCalled(); expect(engine.hasAttemptedBlindTransfer("11")).toBe(false);
+      const next = engine.transferCall("11", "4004");
+      identity.resolve("00000000-0000-4000-8000-000000000123"); await vi.advanceTimersByTimeAsync(0);
+      expect(bridge.transferCall).toHaveBeenCalledOnce(); expect(bridge.transferCall.mock.calls[0][1]).toBe("4004");
+      result(0); await next;
     } finally { vi.useRealTimers(); }
   });
   it("gates older installed bridges without transfer support", async () => {
@@ -1014,7 +1033,7 @@ describe("Siprix blind transfer outcomes", () => {
   });
   it("handles native command rejection without ending the original call", async () => {
     await connected(); bridge.transferCall.mockRejectedValueOnce(new Error("SDK rejected"));
-    await expect(engine.transferCall("11", "3003")).rejects.toThrow("Could not request");
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("Could not confirm");
     expect(bridge.hangupCall).not.toHaveBeenCalled();
   });
   it("recovers a callback outcome from the native snapshot", async () => {
@@ -1024,21 +1043,72 @@ describe("Siprix blind transfer outcomes", () => {
     await engine.restart(); await transfer;
     expect(bridge.hangupCall).not.toHaveBeenCalled();
   });
-  it("does not settle a retry from the previous attempt snapshot", async () => {
+  it("refuses a retry after a failed SDK outcome and ignores its late duplicate", async () => {
     await connected(); const first = engine.transferCall("11", "3003");
     const rejected = expect(first).rejects.toThrow("failed");
     await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(1));
-    const previousId = bridge.transferCall.mock.calls[0][2];
     result(486); await rejected;
-    let settled = false;
-    const retry = engine.transferCall("11", "4004").finally(() => { settled = true; });
-    snapshot.calls = [newCall({ state: "connected", transferRequestId: previousId, transferPending: false, transferStatusCode: 486 })];
-    await engine.restart();
-    expect(settled).toBe(false);
+    const retry = engine.transferCall("11", "4004");
+    const refused = expect(retry).rejects.toThrow("unavailable for this call");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    result(0); await refused;
+    expect(bridge.transferCall).toHaveBeenCalledTimes(1);
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+  });
+  it("permits retry only for a known native refusal before SDK invocation", async () => {
+    await connected(); bridge.transferCall.mockRejectedValueOnce(Object.assign(new Error("not sent"), { code: "E_CALL_STATE" }));
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("Could not request");
+    expect(engine.hasAttemptedBlindTransfer("11")).toBe(false);
+    const next = engine.transferCall("11", "4004");
     await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(2));
-    emit({ type: "callTransferred", call: snapshot.calls[0] });
-    await Promise.resolve(); expect(settled).toBe(false);
-    result(0); await retry;
+    result(0); await next;
+  });
+  it.each(["E_SIPRIX_-20", "E_BRIDGE_TRANSPORT", "E_TRANSFER_ATTEMPTED"])("retains one-attempt admission after %s", async code => {
+    await connected(); bridge.transferCall.mockRejectedValueOnce(Object.assign(new Error("private native error"), { code }));
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("One transfer attempt");
+    await expect(engine.transferCall("11", "4004")).rejects.toThrow("unavailable for this call");
+    expect(bridge.transferCall).toHaveBeenCalledOnce(); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+  });
+  it("restores consumed transfer admission from a retained native snapshot", async () => {
+    await connected(); snapshot.calls = [newCall({ state: "connected", transferAttempted: true, transferPending: false, transferRequestId: "00000000-0000-4000-8000-000000000001", transferStatusCode: 486 })];
+    await engine.restart();
+    await expect(engine.transferCall("11", "4004")).rejects.toThrow("unavailable for this call");
+    expect(bridge.transferCall).not.toHaveBeenCalled();
+  });
+  it.each(["logout", "ended", "held"])("does not invoke SDK after %s while minting request identity", async boundary => {
+    await connected(); const identity = deferred<string>(); bridge.createTransferRequestId.mockReturnValueOnce(identity.promise);
+    const first = engine.transferCall("11", "3003"); const rejected = expect(first).rejects.toThrow();
+    await vi.waitFor(() => expect(bridge.createTransferRequestId).toHaveBeenCalled());
+    if (boundary === "logout") { runtime.user = null; runtime.authListeners.forEach(listener => listener()); }
+    if (boundary === "ended") emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    if (boundary === "held") emit({ type: "callHeld", call: newCall({ state: "held", held: true, holdState: 1 }) });
+    identity.resolve("00000000-0000-4000-8000-000000000123"); await rejected;
+    expect(bridge.transferCall).not.toHaveBeenCalled();
+  });
+  it("serializes replacement behind an old bridge refusal and preserves the reused-ID attempt", async () => {
+    await connected();
+    let rejectOld!: (error: Error) => void;
+    bridge.transferCall.mockImplementationOnce(() => new Promise<void>((_done, fail) => { rejectOld = fail; }));
+    const first = engine.transferCall("11", "3003"), firstResult = expect(first).rejects.toThrow("session changed");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledOnce());
+    const oldGeneration = snapshot.generation, oldRequest = bridge.transferCall.mock.calls[0][2];
+    runtime.user = { id: 17 }; runtime.authListeners.forEach(listener => listener());
+    const replacement = engine.initialize();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(bridge.createAccount).toHaveBeenCalledOnce();
+    rejectOld(Object.assign(new Error("old guard refusal"), { code: "E_CALL_STATE" }));
+    await firstResult; await replacement; registered(); await engine.makeCall("2002");
+    emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+    let completed = false;
+    const next = engine.transferCall("11", "4004").then(() => { completed = true; });
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(2));
+    runtime.listeners.forEach(listener => listener({ type: "callTransferred", generation: oldGeneration, sequence: snapshot.sequence + 1,
+      call: newCall({ state: "connected", transferRequestId: oldRequest, transferPending: false, transferStatusCode: 0 }) }));
+    await Promise.resolve(); expect(completed).toBe(false); expect(engine.hasAttemptedBlindTransfer("11")).toBe(true);
+    await expect(engine.transferCall("11", "5005")).rejects.toThrow("already");
+    result(0); await next; expect(completed).toBe(true);
   });
   it("isolates a recreated JS engine with a native-minted UUID", async () => {
     await connected(); const first = engine.transferCall("11", "3003");

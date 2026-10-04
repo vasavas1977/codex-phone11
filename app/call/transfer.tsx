@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -8,20 +8,79 @@ import { useColors } from "@/hooks/use-colors";
 import { useSip } from "@/lib/sip/sip-provider";
 import { useSipCallStore } from "@/lib/sip/call-store";
 import { resolveCurrentCall } from "@/lib/sip/current-call";
+import { addAuthChangeListener, getAuthSnapshot } from "@/lib/_core/auth";
+import { sameSipAccount, useSipAccountStore, type SipAccount } from "@/lib/sip/account-store";
+import type { SipCall } from "@/lib/sip/call-store";
+
+type TransferScope = {
+  owner: ReturnType<typeof getAuthSnapshot>["user"];
+  account: SipAccount | null;
+  requestedId?: string | string[];
+  callId?: string;
+  callIdentity: unknown;
+  active: boolean;
+  locked: boolean;
+  confirmed: boolean;
+};
+// Store updates replace the call object. Its history/start identity survives
+// mute/hold updates, but changes when a native ID is reused for another call.
+function callIdentity(call: SipCall | null): unknown {
+  return call?.history?.id ?? call?.startTime ?? call;
+}
+function scopeMatches(scope: TransferScope): boolean {
+  const account = useSipAccountStore.getState().account;
+  const call = resolveCurrentCall(useSipCallStore.getState(), scope.requestedId);
+  return scope.owner === getAuthSnapshot().user && !!scope.owner &&
+    !!scope.account && !!account && account.enabled && account.ownerUserId === scope.owner.id &&
+    sameSipAccount(scope.account, account) && scope.callId === call?.id && scope.callIdentity === callIdentity(call);
+}
+type TransferView = { scope: TransferScope; destination: string; pending: boolean; confirmed: boolean; error: string };
+const emptyView = (scope: TransferScope): TransferView => ({ scope, destination: "", pending: false, confirmed: false, error: "" });
 
 export default function TransferCallScreen() {
   const { callId } = useLocalSearchParams<{ callId?: string }>();
   const insets = useSafeAreaInsets();
   const colors = useColors();
-  const { transferCall, supportsBlindTransfer } = useSip();
+  const { transferCall, supportsBlindTransfer, hasAttemptedBlindTransfer } = useSip();
+  const owner = useSyncExternalStore(addAuthChangeListener, getAuthSnapshot, getAuthSnapshot).user;
+  const account = useSipAccountStore(state => state.account);
   const call = useSipCallStore(state => resolveCurrentCall(state, callId));
-  const [destination, setDestination] = useState("");
-  const [pending, setPending] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
-  const [error, setError] = useState("");
-  const lock = useRef(false);
+  const mounted = useRef(true);
+  const currentScope = useRef<TransferScope | null>(null);
+  let nextScope = currentScope.current;
+  if (!nextScope || !nextScope.active || !scopeMatches(nextScope) || nextScope.owner !== owner ||
+      nextScope.callId !== call?.id || nextScope.callIdentity !== callIdentity(call)) {
+    if (nextScope) nextScope.active = false;
+    nextScope = { owner, account: account ? { ...account } : null, requestedId: callId,
+      callId: call?.id, callIdentity: callIdentity(call), active: true, locked: false, confirmed: false };
+    currentScope.current = nextScope;
+  }
+  const scope = nextScope;
+  const [savedView, setView] = useState<TransferView>(() => emptyView(scope));
+  const view = savedView.scope === scope ? savedView : emptyView(scope);
+  const { destination, pending, confirmed, error } = view;
+  const current = () => {
+    if (!mounted.current || currentScope.current !== scope || !scope.active) return false;
+    if (!scopeMatches(scope)) { scope.active = false; return false; }
+    return true;
+  };
+  useEffect(() => {
+    mounted.current = true;
+    if (currentScope.current && scopeMatches(currentScope.current)) currentScope.current.active = true;
+    const retire = () => {
+      const active = currentScope.current;
+      if (active && !scopeMatches(active)) active.active = false;
+    };
+    const remove = [addAuthChangeListener(retire), useSipAccountStore.subscribe(retire), useSipCallStore.subscribe(retire)];
+    return () => {
+      mounted.current = false;
+      if (currentScope.current) currentScope.current.active = false;
+      for (const unsubscribe of remove) unsubscribe();
+    };
+  }, []);
 
   const backToCall = () => {
+    if (!current()) return;
     if (router.canGoBack()) router.back();
     else if (call) router.replace({ pathname: "/call/active", params: { callId: call.id } });
     else router.replace("/(tabs)/recents");
@@ -33,23 +92,26 @@ export default function TransferCallScreen() {
   />;
 
   const connected = call?.status === "active" && !call.isHeld;
+  const attempted = !!call && hasAttemptedBlindTransfer(call.id);
   const target = destination.trim();
   const validTarget = /^\+?[0-9*#]{1,32}$/.test(target);
   const submit = async () => {
-    if (!connected || !call || !validTarget || lock.current || confirmed) return;
-    lock.current = true;
-    setPending(true);
-    setError("");
+    const liveCall = resolveCurrentCall(useSipCallStore.getState(), callId);
+    if (!current() || !supportsBlindTransfer() || !liveCall || liveCall.status !== "active" || liveCall.isHeld ||
+        !validTarget || scope.locked || scope.confirmed || hasAttemptedBlindTransfer(liveCall.id)) return;
+    scope.locked = true;
+    setView({ ...view, pending: true, error: "" });
     try {
-      // Siprix resolves this promise only for the matching native success callback.
-      await transferCall(call.id, target);
-      setConfirmed(true);
+      // Only a matching SDK success outcome resolves; acceptance never ends the call.
+      await transferCall(liveCall.id, target);
+      if (current()) {
+        scope.confirmed = true;
+        setView({ ...view, confirmed: true, pending: false });
+      }
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "Call transfer could not be confirmed.";
-      setError(message);
+      if (current()) setView({ ...view, pending: false, error: cause instanceof Error ? cause.message : "Call transfer could not be confirmed." });
     } finally {
-      lock.current = false;
-      setPending(false);
+      if (current()) scope.locked = false;
     }
   };
 
@@ -61,14 +123,14 @@ export default function TransferCallScreen() {
       <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Transfer call</Text>
       {confirmed ? <>
         <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.success }]}>Transfer confirmed.</Text>
-        <Pressable accessibilityRole="button" accessibilityLabel="Open Recents" style={[styles.action, { backgroundColor: colors.primary }]} onPress={() => router.replace("/(tabs)/recents")}><Text style={styles.actionText}>Open Recents</Text></Pressable>
-      </> : !connected && !pending ? <>
-        <Text style={[styles.body, { color: colors.muted }]}>{call?.isHeld ? "Resume the call before transferring it." : "This call is no longer connected."}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel="Open Recents" style={[styles.action, { backgroundColor: colors.primary }]} onPress={() => { if (current()) router.replace("/(tabs)/recents"); }}><Text style={styles.actionText}>Open Recents</Text></Pressable>
+      </> : (!connected || attempted) && !pending ? <>
+        <Text style={[styles.body, { color: colors.muted }]}>{attempted ? "Transfer is unavailable for this call. One transfer attempt per call; return to call controls." : call?.isHeld ? "Resume the call before transferring it." : "This call is no longer connected."}</Text>
         {!!error && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.error }]}>{error}</Text>}
         <Pressable accessibilityRole="button" accessibilityLabel="Return to call controls" style={[styles.action, { backgroundColor: colors.primary }]} onPress={backToCall}><Text style={styles.actionText}>Return to call</Text></Pressable>
       </> : <>
         <Text style={[styles.body, { color: colors.muted }]}>Enter an extension or phone number. Phone11 will transfer this call without first calling the destination.</Text>
-        <TextInput accessibilityLabel="Transfer destination" value={destination} onChangeText={setDestination} editable={!pending} keyboardType="phone-pad" autoCapitalize="none" maxLength={32} placeholder="Extension or phone number" placeholderTextColor={colors.muted} style={[styles.input, { borderColor: colors.muted, color: colors.foreground, backgroundColor: colors.surface }]} />
+        <TextInput accessibilityLabel="Transfer destination" value={destination} onChangeText={value => { if (current()) setView({ ...view, destination: value }); }} editable={!pending} keyboardType="phone-pad" autoCapitalize="none" maxLength={32} placeholder="Extension or phone number" placeholderTextColor={colors.muted} style={[styles.input, { borderColor: colors.muted, color: colors.foreground, backgroundColor: colors.surface }]} />
         {pending && <View style={styles.progress}><ActivityIndicator color={colors.primary} /><Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.muted }]}>Waiting for transfer confirmation. You can return to the call; this request may still complete.</Text></View>}
         {!!error && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.error }]}>{error}</Text>}
         <Pressable accessibilityRole="button" accessibilityLabel="Confirm blind transfer" accessibilityState={{ disabled: !validTarget || pending }} disabled={!validTarget || pending} style={[styles.action, { backgroundColor: colors.primary, opacity: !validTarget || pending ? 0.5 : 1 }]} onPress={submit}><Text style={styles.actionText}>Transfer now</Text></Pressable>

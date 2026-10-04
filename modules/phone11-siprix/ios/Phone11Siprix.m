@@ -1555,8 +1555,8 @@ RCT_EXPORT_METHOD(transferCall:(NSString *)callId destination:(NSString *)destin
   if (![call[@"state"] isEqualToString:@"connected"] || [call[@"held"] boolValue] || [call[@"holdState"] integerValue] != 0 || [runtime.pendingHolds containsObject:callId]) {
     P11Reject(reject, @"E_CALL_STATE", @"Resume the connected call before transferring it."); return;
   }
-  if ([call[@"transferPending"] boolValue] || [call[@"transferStatusCode"] isEqual:@0]) {
-    P11Reject(reject, @"E_TRANSFER_PENDING", @"Wait for the transfer outcome before another request."); return;
+  if ([call[@"transferAttempted"] boolValue] || call[@"transferRequestId"]) {
+    P11Reject(reject, @"E_TRANSFER_ATTEMPTED", @"Transfer is unavailable for this call. One transfer attempt per call; return to call controls."); return;
   }
   if (!P11String(requestId, 64) || [requestId rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef-"] invertedSet]].location != NSNotFound) {
     P11Reject(reject, @"E_INVALID_ARGUMENT", @"Invalid transfer request identity."); return;
@@ -1566,10 +1566,17 @@ RCT_EXPORT_METHOD(transferCall:(NSString *)callId destination:(NSString *)destin
   if (!P11String(destination, 33) || [pattern numberOfMatchesInString:destination options:0 range:NSMakeRange(0, destination.length)] != 1) {
     P11Reject(reject, @"E_INVALID_ARGUMENT", @"Enter a phone number or extension."); return;
   }
-  if (![self checkSDK:[runtime.sdk callTransferBlind:callId.intValue toExt:destination] operation:@"callTransferBlind" reject:reject]) return;
+  // The SDK callback contains only callId/status, so a later request cannot
+  // safely distinguish an old outcome. Reserve before invoking the SDK, even
+  // when it returns an error; validation failures above do not consume a turn.
+  call[@"transferAttempted"] = @YES;
   call[@"transferRequestId"] = requestId;
   call[@"transferPending"] = @YES;
   [call removeObjectForKey:@"transferStatusCode"];
+  int code = [runtime.sdk callTransferBlind:callId.intValue toExt:destination];
+  if (code != 0) call[@"transferPending"] = @NO;
+  [runtime emit:@"callTransferred" data:@{@"call": [call copy]}];
+  if (![self checkSDK:code operation:@"callTransferBlind" reject:reject]) return;
   resolve(nil);
 }
 

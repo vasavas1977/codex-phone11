@@ -44,6 +44,8 @@ export interface Call {
   muted: boolean;
   held: boolean;
   holdState: number;
+  /** One SDK transfer invocation is permitted per native call lifetime. */
+  transferAttempted?: boolean;
   transferRequestId?: string;
   transferPending?: boolean;
   transferStatusCode?: number;
