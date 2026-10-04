@@ -62,6 +62,39 @@ existing behavior. This source guard does not establish production licensing or
 store distribution. See [store boundary](STORE-DISTRIBUTION-BOUNDARY-20261005.md)
 and the separate [dependency advisory](DEPENDENCY-ADVISORY-20261005.md).
 
+## Reviewed follow-up candidate
+
+Combined implementation and CI-gate source:
+`bc560157768263fbdd88b02d8cfc4ecc4f33e228`.
+
+- The trial now writes an explicit, reversible two-ARM ABI filter. The pinned
+  full SDK contains four ABIs, and React Native's legacy-architecture path skips
+  the architecture property's automatic filter. The original failed APK's
+  inventory was not observed; the explanation is source-derived and requires
+  a new hosted APK result. The verifier remains strict and now reports missing,
+  unexpected and empty native-library entries safely.
+- Android trial Dial/Answer checks and requests microphone permission from the
+  user action, then rechecks account and call ownership. Duplicate actions join
+  the same command even when native callbacks precede command completion.
+  Observed replacement, termination, logout and disposal invalidate the pending
+  action. Denial preserves the existing incoming ringing session. iOS and
+  initial CallKeep behavior are unchanged. See
+  [permission recovery](ANDROID-CALL-PERMISSION-20261005.md).
+- Browser Share/Stop uses the existing control icons. Automatic cleanup errors
+  now outrank stale feedback and give explicit Stop retry guidance. Android
+  meeting permission errors refer to Android Settings.
+- Daily-use CI requires four exact interactive-media suites, nonempty assertions
+  and zero skips. The lead executed all 109 cases, then 230 existing calling,
+  CallKit, entry and media-ownership regressions. Ten Android integration/SDK
+  Node cases, ten synthetic APK parser cases, full TypeScript, backend bundling,
+  workflow parsing and diff checks passed. Independent reviews found and resolved
+  the callback-first and hidden-cleanup-message bugs; corrected source was
+  approved with explicit mock/compiler/artifact limits.
+
+Hosted CI for this follow-up is separate from the earlier failed run. No new
+APK, signed client, real capture, SIP call, provider or physical-device result is
+established by the local checks. The earlier package/runtime pins remain intact.
+
 ## Live and package boundary
 
 Fresh public reads observed API build `team-chat-media-d41fc504` and static portal
