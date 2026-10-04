@@ -22,6 +22,7 @@ const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
 const LOAD_ERROR = 'Could not load voicemail. Try again.';
 const PLAYBACK_ERROR = 'This voicemail could not be played. Try again.';
 const AUTOPLAY_GUIDANCE = 'Press play to listen.';
+const READ_ERROR = 'Playback started, but could not mark this voicemail as read. Pause and play to retry.';
 
 /** Owns one local voicemail blob; callers stop it on account or route changes. */
 export class VoicemailPlayer {
@@ -148,11 +149,17 @@ export class VoicemailPlayer {
       // Publishing feedback can synchronously stop or replace this media session.
       if (this.current(epoch) && this.currentState.id === id &&
           this.sourceUrl === url && this.sourceRevision === revision) return this.markRead(revision, id);
+    }).then(() => {
+      if (this.current(epoch) && this.currentState.id === id && this.sourceUrl === url &&
+          this.currentState.error === READ_ERROR) {
+        this.publish({ id, loading: false, error: null });
+      }
     }).catch(() => {
       if (this.current(epoch) && this.currentState.id === id && this.sourceUrl === url) {
+        this.readMarked = false;
         this.publish({ id, loading: false,
           error: this.currentState.error === PLAYBACK_ERROR ? PLAYBACK_ERROR :
-            'Playback started, but could not mark this voicemail as read.' });
+            READ_ERROR });
       }
     });
   };

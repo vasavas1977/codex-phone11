@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
@@ -10,6 +10,7 @@ import { voicemailPlaybackURL } from "@/lib/cloud-recordings/presentation";
 import { normalizeDialInput } from "@/lib/sip/dial-input";
 import { trpc } from "@/lib/trpc";
 import { getAuthSnapshot } from "@/lib/_core/auth";
+import { useSipAccountStore } from "@/lib/sip/account-store";
 
 type Voicemail = {
   id: number;
@@ -37,6 +38,12 @@ const voicemailMutationInput = (message: Voicemail) => ({
     : {}),
 });
 
+// Read-state reconciliation may replace a row object without replacing its message.
+const messageIdentity = (message: Voicemail) => JSON.stringify([
+  message.id, message.tenant_id ?? null, message.extension_number,
+  message.caller_number, new Date(message.created_at).getTime(),
+]);
+
 export function voicemailCallbackTarget(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const number = normalizeDialInput(value);
@@ -60,11 +67,15 @@ export function voicemailInboxErrorMessage(error: unknown): string {
 export function VoicemailCallbackAction({
   callerNumber,
   callerName,
+  authorize,
 }: {
   callerNumber: string;
   callerName: string;
+  authorize?: () => boolean;
 }) {
   const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
+  const account = useSipAccountStore((state) => state.account);
   const { placeCall, calling } = usePhoneCall();
   const target = voicemailCallbackTarget(callerNumber);
   if (!target) return null;
@@ -75,7 +86,10 @@ export function VoicemailCallbackAction({
       accessibilityLabel={`Call back ${callerName}`}
       disabled={calling}
       onPress={() => {
-        if (!calling) void placeCall(target);
+        const auth = getAuthSnapshot();
+        if (!calling && user && auth.user === user && !auth.loading &&
+          useSipAccountStore.getState().account === account && authorize?.() !== false)
+          void Promise.resolve(placeCall(target)).catch(() => {});
       }}
       style={styles.callback}
     >
@@ -92,71 +106,123 @@ const voicemailSourceURL = (base: string, path: string) => {
 export default function VoicemailScreen() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
+  const account = useSipAccountStore((state) => state.account);
+  const tenantId = account?.ownerUserId === user?.id && Number.isSafeInteger(account?.tenantId) && account!.tenantId! > 0
+    ? account!.tenantId : undefined;
   const utils = trpc.useUtils();
-  const inbox = trpc.pbx.voicemail.list.useQuery(undefined, {
+  const inbox = trpc.pbx.voicemail.list.useQuery(tenantId ? { tenantId } : undefined, {
     enabled: Boolean(user),
     retry: false,
   });
-  const markRead = trpc.pbx.voicemail.markRead.useMutation({
-    onSuccess: () => void utils.pbx.voicemail.list.invalidate(),
-  });
-  const remove = trpc.pbx.voicemail.delete.useMutation({
-    onSuccess: () => void utils.pbx.voicemail.list.invalidate(),
-  });
-  const scope = useRef<{ owner: NonNullable<typeof user> } | null>(null);
+  const markRead = trpc.pbx.voicemail.markRead.useMutation();
+  const remove = trpc.pbx.voicemail.delete.useMutation();
+  const available = !inbox.error && !inbox.isLoading && !getAuthSnapshot().loading;
+  const scope = useRef<{ owner: NonNullable<typeof user>; account: typeof account; available: boolean } | null>(null);
   if (!user) scope.current = null;
-  else if (scope.current?.owner !== user) scope.current = { owner: user };
+  else if (scope.current?.owner !== user || scope.current.account !== account || scope.current.available !== available)
+    scope.current = { owner: user, account, available };
   const action = scope.current;
+  const currentInbox = useRef(inbox);
+  currentInbox.current = inbox;
+  // A confirmed server deletion stays retired across phone-workspace changes.
+  const sameOwner = (left: typeof action, right: typeof action) => left?.owner === right?.owner;
+  const retired = useRef<{ scope: typeof action; keys: Set<string> }>({ scope: action, keys: new Set() });
+  if (!sameOwner(retired.current.scope, action)) retired.current = { scope: action, keys: new Set() };
+  const [retiredMessages, setRetiredMessages] = useState<{ scope: typeof action; keys: string[] }>({ scope: action, keys: [] });
   const mounted = useRef(false);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; };
   }, []);
-  type ActionState = { scope: NonNullable<typeof action>; id: number; pending: boolean; failed: boolean };
-  const operations = useRef<{ read: ActionState | null; delete: ActionState | null }>({ read: null, delete: null });
+  type ActionState = { scope: NonNullable<typeof action>; id: number; key: string; pending: boolean; failed: boolean };
+  const operations = useRef<{ scope: typeof action; read: Map<string, ActionState>; delete: Map<string, ActionState> }>({
+    scope: action, read: new Map(), delete: new Map(),
+  });
+  if (operations.current.scope !== action) operations.current = { scope: action, read: new Map(), delete: new Map() };
   const [feedback, setFeedback] = useState<{ read: ActionState | null; delete: ActionState | null }>({ read: null, delete: null });
-  const [openId, setOpenId] = useState<{ scope: NonNullable<typeof action>; id: number }>();
-  const isCurrent = (captured: typeof action) => {
+  const [openId, setOpenId] = useState<{ scope: NonNullable<typeof action>; id: number; key: string }>();
+  const selection = useRef(openId);
+  selection.current = openId;
+  const isCurrentReader = useCallback((captured: typeof action) => {
     const auth = getAuthSnapshot();
-    return mounted.current && !!captured && scope.current === captured && auth.user === captured.owner && !auth.loading;
-  };
+    return mounted.current && !!captured && scope.current === captured && auth.user === captured.owner && !auth.loading &&
+      useSipAccountStore.getState().account === captured.account;
+  }, []);
+  const isCurrent = useCallback((captured: typeof action) => !!captured?.available && isCurrentReader(captured), [isCurrentReader]);
+  const isCurrentMessage = useCallback((captured: typeof action, message: Voicemail) =>
+    isCurrent(captured) && !currentInbox.current.error && !currentInbox.current.isLoading &&
+    !retired.current.keys.has(messageIdentity(message)) &&
+    (!tenantId || !message.tenant_id || message.tenant_id === tenantId) &&
+    (currentInbox.current.data as Voicemail[] | undefined)?.some((row) => messageIdentity(row) === messageIdentity(message)) === true,
+  [isCurrent, tenantId]);
   const mutateMessage = async (kind: "read" | "delete", message: Voicemail, captured: typeof action) => {
-    if (!captured || !isCurrent(captured)) return;
-    const previous = operations.current[kind];
-    if (previous?.scope === captured && previous.pending) return;
-    const operation: ActionState = { scope: captured, id: message.id, pending: true, failed: false };
-    operations.current[kind] = operation;
+    if (!captured || !isCurrentMessage(captured, message)) return;
+    const key = messageIdentity(message);
+    const previous = operations.current[kind].get(key);
+    if (previous?.scope === captured && previous.key === key && previous.pending) return;
+    const operation: ActionState = { scope: captured, id: message.id, key, pending: true, failed: false };
+    operations.current[kind].set(key, operation);
     setFeedback((current) => ({ ...current, [kind]: operation }));
     const settle = (failed: boolean) => {
-      if (!isCurrent(captured) || operations.current[kind] !== operation) return;
+      if (!isCurrentMessage(captured, message)) {
+        if (operations.current.scope === captured && operations.current[kind].get(key) === operation) {
+          operations.current[kind].delete(key);
+          if (isCurrentReader(captured))
+            setFeedback((current) => ({ ...current, [kind]: current[kind] === operation ? null : current[kind] }));
+        }
+        return;
+      }
+      if (!failed) {
+        if (kind === "delete") {
+          retired.current.keys.add(key);
+          setRetiredMessages({ scope: captured, keys: [...retired.current.keys] });
+          if (selection.current?.scope === captured && selection.current.key === key) {
+            selection.current = undefined;
+            setOpenId(undefined);
+          }
+        }
+        // A retired owner's completion must not refresh the replacement inbox.
+        void Promise.resolve(utils.pbx.voicemail.list.invalidate()).catch(() => {});
+      }
+      if (operations.current[kind].get(key) !== operation) return;
       const result = { ...operation, pending: false, failed };
-      operations.current[kind] = result;
-      setFeedback((current) => ({ ...current, [kind]: result }));
+      operations.current[kind].delete(key);
+      setFeedback((current) => ({ ...current, [kind]: current[kind] === operation ? result : current[kind] }));
     };
     try {
       const result = await (kind === "read" ? markRead : remove).mutateAsync(voicemailMutationInput(message));
-      settle(result.success === false);
+      settle(result.success !== true);
     } catch { settle(true); }
   };
-  const messages = (inbox.data ?? []) as Voicemail[];
-  const unread = useMemo(
-    () => messages.filter((message) => message.status === "new").length,
-    [messages],
-  );
+  const messages = !action?.available ? [] : ((inbox.data ?? []) as Voicemail[]).filter((message) =>
+    (!tenantId || !message.tenant_id || message.tenant_id === tenantId) &&
+    (!sameOwner(retiredMessages.scope, action) || !retiredMessages.keys.includes(messageIdentity(message))));
+  if (openId && (openId.scope !== action || !messages.some((message) =>
+    messageIdentity(message) === openId.key && isCurrentMessage(action, message)))) {
+    // Retire the selection itself, so a removed row cannot later reopen by reappearing.
+    selection.current = undefined;
+    setOpenId(undefined);
+  }
+  const unread = messages.filter((message) => message.status === "new").length;
   const openMessage = (message: Voicemail) => {
-    if (!action || !isCurrent(action)) return;
-    setOpenId((current) => (current?.scope === action && current.id === message.id ? undefined : { scope: action, id: message.id }));
+    if (!action || !isCurrentMessage(action, message)) return;
+    const key = messageIdentity(message);
+    const next = selection.current?.scope === action && selection.current.key === key ? undefined : { scope: action, id: message.id, key };
+    selection.current = next;
+    setOpenId(next);
     if (message.status === "new") void mutateMessage("read", message, action);
   };
   const confirmDelete = (message: Voicemail) => {
-    if (!isCurrent(action)) return;
+    if (!isCurrentMessage(action, message)) return;
+    const selected = selection.current;
     Alert.alert("Delete voicemail?", "This removes it from your inbox.", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Delete",
         style: "destructive",
         onPress: () => {
-          void mutateMessage("delete", message, action);
+          if (selected && selection.current === selected && selected.key === messageIdentity(message))
+            void mutateMessage("delete", message, action);
         },
       },
     ]);
@@ -166,11 +232,16 @@ export default function VoicemailScreen() {
     : inbox.error
       ? voicemailInboxErrorMessage(inbox.error)
       : undefined;
-  const deletePending = feedback.delete?.scope === action && feedback.delete.pending;
+  const selectedSourceURL = useMemo(() => (base: string, path: string) => {
+    const selected = openId;
+    const message = (currentInbox.current.data as Voicemail[] | undefined)?.find((row) => messageIdentity(row) === selected?.key);
+    return selected && selection.current === selected && selected.scope === action && path === `/api/recordings/voicemail/${selected.id}` && message && isCurrentMessage(action, message)
+      ? voicemailSourceURL(base, path) : null;
+  }, [action, isCurrentMessage, openId]);
   const deleteFailed = feedback.delete?.scope === action && feedback.delete.failed &&
-    messages.some((message) => message.id === feedback.delete?.id);
+    messages.some((message) => messageIdentity(message) === feedback.delete?.key);
   const markReadFailed = feedback.read?.scope === action && feedback.read.failed &&
-    messages.some((message) => message.id === feedback.read?.id && message.status === "new");
+    messages.some((message) => messageIdentity(message) === feedback.read?.key && message.status === "new");
 
   return (
     <ScreenContainer edges={["top", "bottom", "left", "right"]}>
@@ -202,7 +273,8 @@ export default function VoicemailScreen() {
           <View style={[styles.empty, { borderColor: colors.border, backgroundColor: colors.surface }]}>
             <Text style={[styles.message, { color: colors.muted }]}>{unavailable}</Text>
             {user && (
-              <TouchableOpacity accessibilityRole="button" disabled={inbox.isFetching} onPress={() => void inbox.refetch()} style={styles.refresh}>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Refresh voicemail" disabled={inbox.isFetching}
+                onPress={() => { if (isCurrentReader(action)) void Promise.resolve(inbox.refetch()).catch(() => {}); }} style={styles.refresh}>
                 <Text style={{ color: colors.primary }}>{inbox.isFetching ? "Refreshing…" : "Refresh"}</Text>
               </TouchableOpacity>
             )}
@@ -213,7 +285,9 @@ export default function VoicemailScreen() {
             <Text style={[styles.message, { color: colors.muted }]}>New messages will appear here.</Text>
           </View>
         ) : messages.map((message) => {
-          const open = openId?.scope === action && openId?.id === message.id;
+          const open = openId?.scope === action && openId?.key === messageIdentity(message);
+          const pending = operations.current.delete.get(messageIdentity(message));
+          const deletePending = pending?.scope === action && pending.pending;
           const path = `/api/recordings/voicemail/${message.id}`;
           return (
             <View key={message.id} style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
@@ -241,12 +315,13 @@ export default function VoicemailScreen() {
                     key={`voicemail:${message.id}`}
                     callUuid={`voicemail-${message.id}`}
                     path={path}
-                    sourceURL={voicemailSourceURL}
+                    sourceURL={selectedSourceURL}
                     allowShare={false}
                   />
                   <VoicemailCallbackAction
                     callerNumber={message.caller_number}
                     callerName={voicemailTitle(message)}
+                    authorize={() => selection.current?.scope === action && selection.current.key === messageIdentity(message) && isCurrentMessage(action, message)}
                   />
                   <TouchableOpacity
                     accessibilityRole="button"

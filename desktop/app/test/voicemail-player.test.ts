@@ -321,3 +321,109 @@ test('current mark-read failure reports a friendly error without stopping playba
     assert.equal(audio.src, 'blob:test/1');
   });
 });
+
+test('the same local source can retry failed mark-read through pause/play without duplicate pending requests', async () => {
+  await withUrls(async created => {
+    const audio = new FakeAudio();
+    const retry = deferred<unknown>();
+    let reads = 0;
+    const player = new VoicemailPlayer({
+      audio: audio as unknown as HTMLAudioElement,
+      fetchAudio: async () => download('r1', 1),
+      markRead: () => { reads++; return reads === 1 ? Promise.reject(new Error('private read failure')) : retry.promise; },
+      onState: () => undefined,
+    });
+    await player.play('r1', 1); audio.emit('playing');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.match(player.state.error ?? '', /could not mark this voicemail as read/i);
+    audio.pause(); await audio.play(); audio.emit('playing'); audio.emit('playing');
+    await Promise.resolve(); assert.equal(reads, 2);
+    retry.resolve(undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(player.state.error, null);
+    audio.emit('playing'); await Promise.resolve();
+    assert.equal(reads, 2); assert.equal(created.length, 1); assert.equal(audio.paused, false);
+    player.dispose();
+  });
+});
+
+test('a synchronous mark-read throw also releases only the current source retry latch', async () => {
+  await withUrls(async () => {
+    const audio = new FakeAudio();
+    let reads = 0;
+    const player = new VoicemailPlayer({
+      audio: audio as unknown as HTMLAudioElement,
+      fetchAudio: async () => download('r1', 1),
+      markRead: () => { if (++reads === 1) throw new Error('private synchronous failure'); return Promise.resolve(); },
+      onState: () => undefined,
+    });
+    await player.play('r1', 1); audio.emit('playing');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    audio.pause(); await audio.play(); audio.emit('playing');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(reads, 2); assert.equal(player.state.error, null);
+    player.dispose();
+  });
+});
+
+test('an old same-ID revision rejection cannot release a replacement source successful read latch', async () => {
+  await withUrls(async () => {
+    const audio = new FakeAudio();
+    const old = deferred<unknown>();
+    const reads: string[] = [];
+    const player = new VoicemailPlayer({
+      audio: audio as unknown as HTMLAudioElement,
+      fetchAudio: async (revision, id) => download(revision, id),
+      markRead: (revision) => { reads.push(revision); return revision === 'old' ? old.promise : Promise.resolve(); },
+      onState: () => undefined,
+    });
+    await player.play('old', 1); audio.emit('playing'); await Promise.resolve();
+    await player.play('replacement', 1); audio.emit('playing');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    old.reject(new Error('retired owner failure'));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    audio.emit('playing'); await Promise.resolve();
+    assert.deepEqual(reads, ['old', 'replacement']); assert.equal(player.state.error, null);
+    player.dispose();
+  });
+});
+
+test('successful read retry does not hide a current media decode failure', async () => {
+  await withUrls(async () => {
+    const audio = new FakeAudio();
+    let reads = 0;
+    const player = new VoicemailPlayer({
+      audio: audio as unknown as HTMLAudioElement,
+      fetchAudio: async () => download('r1', 1),
+      markRead: () => ++reads === 1 ? Promise.reject(new Error('offline')) : Promise.resolve(),
+      onState: () => undefined,
+    });
+    await player.play('r1', 1); audio.emit('playing');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    audio.emit('error'); audio.emit('playing');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(reads, 2); assert.equal(player.state.error, 'This voicemail could not be played. Try again.');
+    player.dispose();
+  });
+});
+
+test('disposal during a failed-read retry cannot publish late success or retain a blob', async () => {
+  await withUrls(async (created, revoked) => {
+    const audio = new FakeAudio(); const retry = deferred<unknown>(); let reads = 0;
+    const states: VoicemailPlayerState[] = [];
+    const player = new VoicemailPlayer({
+      audio: audio as unknown as HTMLAudioElement,
+      fetchAudio: async () => download('r1', 1),
+      markRead: () => ++reads === 1 ? Promise.reject(new Error('offline')) : retry.promise,
+      onState: state => states.push(state),
+    });
+    await player.play('r1', 1); audio.emit('playing');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    audio.emit('playing'); await Promise.resolve(); player.dispose();
+    const count = states.length; retry.resolve(undefined);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(reads, 2); assert.equal(states.length, count);
+    assert.deepEqual(player.state, { id: null, loading: false, error: null });
+    assert.deepEqual(revoked, created); assert.equal(audio.src, '');
+  });
+});

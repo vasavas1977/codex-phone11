@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 import { Alert } from "react-native";
+import { beginPlaybackSession } from "../lib/cloud-recordings/playback-session";
 import VoicemailScreen, {
   VoicemailCallbackAction,
   voicemailCallbackTarget,
@@ -15,10 +16,16 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/serve
 const mocks = vi.hoisted(() => ({
   placeCall: vi.fn(),
   calling: false,
+  platform: "ios",
+  account: null as { ownerUserId: number; tenantId: number } | null,
+  authLoading: false,
+  invalidate: vi.fn(),
+  query: vi.fn(),
+  playback: [] as { path: string; sourceURL: (base: string, path: string) => string | null }[],
   buttons: new Map<string, { press: () => void; disabled: boolean; minHeight: number }>(),
   frame: null as { values: any[]; index: number; effectRegistered?: boolean; cleanup?: () => void } | null,
   user: { id: 1 } as { id: number } | null,
-  inbox: { data: [] as any[], isLoading: false, error: null as unknown },
+  inbox: { data: [] as any[], isLoading: false, error: null as unknown, isFetching: false, refetch: vi.fn() },
   markRead: { isPending: false, error: null as unknown, data: undefined as { success: boolean } | undefined, variables: undefined as { id: number } | undefined, mutateAsync: vi.fn() },
   remove: { isPending: false, error: null as unknown, data: undefined as { success: boolean } | undefined, variables: undefined as { id: number } | undefined, mutateAsync: vi.fn() },
 }));
@@ -49,6 +56,7 @@ vi.mock("react", async () => {
 });
 
 vi.mock("react-native", () => ({
+  Platform: { get OS() { return mocks.platform; } },
   Alert: { alert: vi.fn() },
   ScrollView: ({ children }: any) => createElement("div", null, children),
   StyleSheet: { create: (styles: any) => styles },
@@ -70,15 +78,20 @@ vi.mock("../hooks/use-phone-call", () => ({
 }));
 vi.mock("../hooks/use-colors", () => ({ useColors: () => ({ primary: "#06f" }) }));
 vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: mocks.user }) }));
-vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: mocks.user, loading: false }) }));
+vi.mock("../lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: mocks.user, loading: mocks.authLoading }) }));
+vi.mock("../lib/sip/account-store", () => ({
+  useSipAccountStore: Object.assign((select: any) => select({ account: mocks.account }), {
+    getState: () => ({ account: mocks.account }),
+  }),
+}));
 vi.mock("../components/screen-container", () => ({ ScreenContainer: ({ children }: any) => createElement("main", null, children) }));
-vi.mock("../components/cloud-recordings/cloud-playback", () => ({ Playback: () => null }));
+vi.mock("../components/cloud-recordings/cloud-playback", () => ({ Playback: (props: any) => { mocks.playback.push(props); return null; } }));
 vi.mock("expo-router", () => ({ router: { canGoBack: () => false, replace: vi.fn(), back: vi.fn() } }));
 vi.mock("../lib/trpc", () => ({
   trpc: {
-    useUtils: () => ({ pbx: { voicemail: { list: { invalidate: vi.fn() } } } }),
+    useUtils: () => ({ pbx: { voicemail: { list: { invalidate: mocks.invalidate } } } }),
     pbx: { voicemail: {
-      list: { useQuery: () => mocks.inbox },
+      list: { useQuery: (input: unknown) => { mocks.query(input); return mocks.inbox; } },
       markRead: { useMutation: () => mocks.markRead },
       delete: { useMutation: () => mocks.remove },
     } },
@@ -112,13 +125,234 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.buttons.clear();
   mocks.calling = false;
+  mocks.platform = "ios";
+  mocks.account = null;
+  mocks.authLoading = false;
+  mocks.playback = [];
+  mocks.invalidate.mockResolvedValue(undefined);
   mocks.frame = null;
   mocks.user = { id: 1 };
-  mocks.inbox = { data: [], isLoading: false, error: null };
+  mocks.inbox = { data: [], isLoading: false, error: null, isFetching: false, refetch: vi.fn().mockResolvedValue(undefined) };
   mocks.markRead = { isPending: false, error: null, data: undefined, variables: undefined, mutateAsync: vi.fn().mockResolvedValue({ success: true }) };
   mocks.remove = { isPending: false, error: null, data: undefined, variables: undefined, mutateAsync: vi.fn().mockResolvedValue({ success: true }) };
 });
 afterEach(() => mocks.frame?.cleanup?.());
+
+describe.each(["web", "ios", "android"])("retained voicemail consumer on %s", platform => {
+  beforeEach(() => { mocks.platform = platform; });
+  const revocations = [
+    ["sign-out", () => { mocks.user = null; }],
+    ["same-ID login replacement", () => { mocks.user = { id: 1 }; }],
+    ["workspace replacement", () => { mocks.account = { ownerUserId: 1, tenantId: 21 }; }],
+    ["loading authorization", () => { mocks.authLoading = true; }],
+    ["inbox denial", () => { mocks.inbox.error = { data: { code: "FORBIDDEN" } }; }],
+    ["message removal", () => { mocks.inbox.data = []; }],
+    ["same-ID message replacement", () => { mocks.inbox.data = [{ ...message, caller_number: "1021" }]; }],
+  ] as const;
+  it.each(revocations)("rejects retained selection, callback, confirmation and media source after %s", (_name, revoke) => {
+    mocks.account = { ownerUserId: 1, tenantId: 20 };
+    mocks.inbox.data = [{ ...message, tenant_id: 20 }];
+    renderInbox();
+    const oldOpen = mocks.buttons.get("Voicemail from Support")!.press;
+    oldOpen(); renderInbox();
+    const oldCall = mocks.buttons.get("Call back Support")!.press;
+    const oldDelete = pressDelete()!;
+    const oldPlayback = mocks.playback.at(-1)!;
+    expect(oldPlayback.sourceURL("https://api.example", oldPlayback.path)).toBe("https://api.example/api/recordings/voicemail/7");
+    revoke(); // Store/auth changes are checked even before the next render.
+    oldCall(); oldDelete(); oldOpen();
+    expect(mocks.placeCall).not.toHaveBeenCalled();
+    expect(mocks.remove.mutateAsync).not.toHaveBeenCalled();
+    expect(mocks.markRead.mutateAsync).not.toHaveBeenCalled();
+    expect(oldPlayback.sourceURL("https://api.example", oldPlayback.path)).toBeNull();
+    renderInbox();
+    expect(renderInbox()).not.toContain("Mailbox 3001");
+  });
+
+  it("retires confirmed deletion immediately while reconciliation remains pending", async () => {
+    mocks.inbox.data = [message];
+    const reconciliation = deferred();
+    mocks.invalidate.mockReturnValue(reconciliation.promise);
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    const oldCall = mocks.buttons.get("Call back Support")!.press;
+    const oldPlayback = mocks.playback.at(-1)!;
+    pressDelete()?.(); await flush();
+    expect(renderInbox()).toContain("No voicemail"); // Query still holds its original row.
+    expect(renderInbox()).not.toContain("Mailbox 3001");
+    expect(oldPlayback.sourceURL("https://api.example", oldPlayback.path)).toBeNull();
+    oldCall(); expect(mocks.placeCall).not.toHaveBeenCalled();
+    mocks.inbox.error = { data: { code: "FORBIDDEN" } }; renderInbox();
+    mocks.inbox.error = null;
+    expect(renderInbox()).toContain("No voicemail"); // Access retry cannot resurrect a confirmed deletion.
+    reconciliation.resolve({ success: true }); await flush();
+  });
+
+  it("keeps normal profile/read-state reconciliation current and rejects mismatched media paths", async () => {
+    mocks.account = { ownerUserId: 1, tenantId: 20 };
+    mocks.inbox.data = [{ ...message, tenant_id: 20, status: "new" }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    const oldCall = mocks.buttons.get("Call back Support")!.press;
+    const source = mocks.playback.at(-1)!;
+    Object.assign(mocks.user!, { name: "Profile refreshed" });
+    mocks.inbox.data = [{ ...message, tenant_id: 20 }]; renderInbox();
+    await flush();
+    oldCall();
+    expect(mocks.placeCall).toHaveBeenCalledWith("1020");
+    expect(mocks.markRead.mutateAsync).toHaveBeenCalledWith({ id: 7, tenantId: 20 });
+    expect(mocks.query).toHaveBeenCalledWith({ tenantId: 20 });
+    expect(source.sourceURL("https://api.example", source.path)).toBe("https://api.example/api/recordings/voicemail/7");
+    expect(source.sourceURL("https://api.example", "/api/recordings/voicemail/8")).toBeNull();
+  });
+});
+
+describe("voicemail completion and selection ownership", () => {
+  it("retains A's deletion lock and row busy state while B also deletes, then retires A without closing B", async () => {
+    const a = deferred(), b = deferred();
+    mocks.remove.mutateAsync.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise);
+    mocks.inbox.data = [message, { ...message, id: 8, caller_name: "Sales" }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox(); pressDelete()?.();
+    mocks.buttons.get("Voicemail from Sales")!.press(); renderInbox();
+    mocks.buttons.get("Delete voicemail from Sales")!.press();
+    vi.mocked(Alert.alert).mock.calls.at(-1)?.[2]?.find(button => button.text === "Delete")?.onPress?.();
+    mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    expect(mocks.buttons.get("Delete voicemail from Support")!.disabled).toBe(true);
+    pressDelete()?.(); expect(mocks.remove.mutateAsync).toHaveBeenCalledTimes(2);
+    mocks.buttons.get("Voicemail from Sales")!.press(); renderInbox();
+    a.resolve({ success: true }); await flush();
+    expect(renderInbox()).not.toContain("Voicemail from Support");
+    expect(renderInbox()).toContain("Mailbox 3001");
+    expect(mocks.buttons.get("Delete voicemail from Sales")!.disabled).toBe(true);
+    b.reject(new Error("synthetic retry failure")); await flush();
+    renderInbox(); // This retained-hook fixture renders state updates explicitly.
+    expect(mocks.buttons.get("Delete voicemail from Sales")!.disabled).toBe(false);
+    expect(renderInbox()).toContain("Could not delete voicemail");
+  });
+
+  it("retires old Refresh callbacks while the current unavailable inbox can explicitly retry", () => {
+    mocks.account = { ownerUserId: 1, tenantId: 20 };
+    mocks.inbox.error = { data: { code: "FORBIDDEN" } };
+    renderInbox(); const refresh = mocks.buttons.get("Refresh voicemail")!.press;
+    refresh(); expect(mocks.inbox.refetch).toHaveBeenCalledOnce();
+    mocks.account = { ownerUserId: 1, tenantId: 21 }; refresh();
+    expect(mocks.inbox.refetch).toHaveBeenCalledOnce();
+    renderInbox(); mocks.buttons.get("Refresh voicemail")!.press();
+    expect(mocks.inbox.refetch).toHaveBeenCalledTimes(2);
+    expect(mocks.query).toHaveBeenLastCalledWith({ tenantId: 21 });
+  });
+
+  it("keeps confirmed deletion retired when the same owner replaces its phone account", async () => {
+    mocks.account = { ownerUserId: 1, tenantId: 20 };
+    mocks.inbox.data = [{ ...message, tenant_id: 20 }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox(); pressDelete()?.(); await flush();
+    mocks.account = { ownerUserId: 1, tenantId: 20 };
+    expect(renderInbox()).toContain("No voicemail");
+  });
+
+  it("releases a completed request's lock if its row disappeared, without reviving feedback", async () => {
+    const pending = deferred(); mocks.markRead.mutateAsync.mockReturnValueOnce(pending.promise);
+    mocks.inbox.data = [{ ...message, status: "new" }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    mocks.inbox.data = []; renderInbox(); pending.reject(new Error("old failure")); await flush();
+    mocks.inbox.data = [{ ...message, status: "new" }]; renderInbox();
+    mocks.buttons.get("Voicemail from Support")!.press(); await flush();
+    expect(mocks.markRead.mutateAsync).toHaveBeenCalledTimes(2);
+    expect(renderInbox()).not.toContain("Could not mark voicemail");
+  });
+
+  it("does not revive an old confirmation after switching away and back to the same message", () => {
+    mocks.inbox.data = [message, { ...message, id: 8, caller_name: "Sales" }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    const oldDelete = pressDelete()!;
+    mocks.buttons.get("Voicemail from Sales")!.press(); renderInbox();
+    mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    oldDelete(); expect(mocks.remove.mutateAsync).not.toHaveBeenCalled();
+    pressDelete()?.(); expect(mocks.remove.mutateAsync).toHaveBeenCalledWith({ id: 7 });
+  });
+
+  it("cannot reopen a removed row when it reappears, and requires a new selection", () => {
+    mocks.inbox.data = [message];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    const oldDelete = pressDelete()!;
+    mocks.inbox.data = []; renderInbox();
+    mocks.inbox.data = [message];
+    expect(renderInbox()).not.toContain("Mailbox 3001");
+    oldDelete(); expect(mocks.remove.mutateAsync).not.toHaveBeenCalled();
+    mocks.buttons.get("Voicemail from Support")!.press();
+    expect(renderInbox()).toContain("Mailbox 3001");
+  });
+
+  it.each(["read", "delete"] as const)("ignores late %s completion after inbox denial and permits an explicit retry", async kind => {
+    const pending = deferred();
+    const mutation = kind === "read" ? mocks.markRead : mocks.remove;
+    mutation.mutateAsync.mockReturnValueOnce(pending.promise);
+    mocks.inbox.data = [{ ...message, status: kind === "read" ? "new" : "read" }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    if (kind === "delete") pressDelete()?.();
+    mocks.inbox.error = { data: { code: "FORBIDDEN" } }; renderInbox();
+    mocks.inbox.error = null; renderInbox();
+    pending.resolve({ success: true }); await flush();
+    expect(mocks.invalidate).not.toHaveBeenCalled();
+    expect(renderInbox()).not.toMatch(/Deleting…|Mailbox 3001|Could not delete/);
+    mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    if (kind === "delete") pressDelete()?.();
+    await flush(); expect(mutation.mutateAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks a newly selected message while a different read request is pending; late failure cannot replace current feedback", async () => {
+    const pending = deferred();
+    mocks.markRead.mutateAsync.mockReturnValueOnce(pending.promise);
+    mocks.inbox.data = [{ ...message, status: "new" }, { ...message, id: 8, caller_name: "Sales", status: "new" }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    mocks.buttons.get("Voicemail from Sales")!.press(); renderInbox(); await flush();
+    expect(mocks.markRead.mutateAsync).toHaveBeenNthCalledWith(2, { id: 8 });
+    pending.reject(new Error("old private failure")); await flush();
+    expect(renderInbox()).not.toContain("Could not mark voicemail");
+  });
+
+  it("retires both confirmed parallel deletions without an older receipt replacing current feedback", async () => {
+    const old = deferred(), next = deferred();
+    mocks.remove.mutateAsync.mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
+    mocks.inbox.data = [message, { ...message, id: 8, caller_name: "Sales" }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox(); pressDelete()?.();
+    mocks.buttons.get("Voicemail from Sales")!.press(); renderInbox();
+    mocks.buttons.get("Delete voicemail from Sales")!.press();
+    vi.mocked(Alert.alert).mock.calls.at(-1)?.[2]?.find(button => button.text === "Delete")?.onPress?.();
+    old.resolve({ success: true }); await flush();
+    expect(renderInbox()).not.toContain("Voicemail from Support");
+    expect(renderInbox()).toContain("Deleting…");
+    next.resolve({ success: true }); await flush();
+    expect(renderInbox()).toContain("No voicemail");
+  });
+
+  it("rejects a late token's source publication after workspace replacement using the actual playback session", async () => {
+    mocks.account = { ownerUserId: 1, tenantId: 20 };
+    mocks.inbox.data = [{ ...message, tenant_id: 20 }];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    const source = mocks.playback.at(-1)!;
+    let resolve!: (token: string) => void;
+    const token = new Promise<string>(yes => { resolve = yes; });
+    const player = { pause: vi.fn(), replace: vi.fn() };
+    const session = beginPlaybackSession({ player, base: "https://api.example", callUuid: "voicemail-7",
+      path: source.path, sourceURL: source.sourceURL, identity: () => mocks.user, token: () => token,
+      subscribe: () => () => {}, ready: vi.fn(), failed: vi.fn() });
+    mocks.account = { ownerUserId: 1, tenantId: 21 };
+    resolve("synthetic token"); await session.done;
+    expect(player.replace).not.toHaveBeenCalled();
+    session.dispose();
+  });
+
+  it("does not retire a replacement message or invalidate its inbox on the old deletion's completion", async () => {
+    const pending = deferred(); mocks.remove.mutateAsync.mockReturnValueOnce(pending.promise);
+    mocks.inbox.data = [message];
+    renderInbox(); mocks.buttons.get("Voicemail from Support")!.press(); renderInbox(); pressDelete()?.();
+    mocks.inbox.data = [{ ...message, caller_number: "1021" }]; renderInbox();
+    mocks.buttons.get("Voicemail from Support")!.press(); renderInbox();
+    pending.resolve({ success: true }); await flush();
+    expect(mocks.invalidate).not.toHaveBeenCalled();
+    expect(renderInbox()).toContain("Mailbox 3001");
+    mocks.buttons.get("Call back Support")!.press(); expect(mocks.placeCall).toHaveBeenCalledWith("1021");
+  });
+});
 
 describe("voicemail mutation feedback", () => {
   it("retains the expanded message on failed deletion and shows safe retry guidance", async () => {
