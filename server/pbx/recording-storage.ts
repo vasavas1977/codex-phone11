@@ -100,28 +100,55 @@ export async function storeVoicemail(
   if (!realDir.startsWith(path.join(base, String(tenantId)) + path.sep))
     throw new Error("Invalid voicemail directory");
   const filePath = path.join(realDir, `${messageUuid}.wav`);
-  let created = true;
+  let created = false;
+  let stagingPath: string | undefined;
   let handle;
-  try { handle = await fs.promises.open(filePath, "wx", 0o600); }
-  catch (error) {
-    if (!idempotent || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    created = false;
-    handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  }
   try {
-    if (created) await handle.writeFile(fileBuffer);
-    else {
+    try { handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (!handle) {
+      // A write interruption must not leave a truncated final UUID path that
+      // poisons every retry. Only publish a fully written, synced inode, and
+      // never replace a concurrent delivery's final object.
+      const candidate = path.join(realDir, `.${messageUuid}.${randomUUID()}.pending.wav`);
+      const staging = await fs.promises.open(candidate, "wx", 0o600);
+      stagingPath = candidate;
+      try {
+        await staging.writeFile(fileBuffer);
+        await staging.sync();
+      } finally { await staging.close(); }
+      try {
+        await fs.promises.link(stagingPath, filePath);
+        created = true;
+      } catch (error) {
+        if (!idempotent || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+      }
+    }
+    if (handle) {
+      if (!idempotent) throw Object.assign(new Error("Voicemail already exists"), { code: "EEXIST" });
       const stat = await handle.stat();
       if (!stat.isFile() || stat.size !== fileBuffer.length)
         throw new Error("Voicemail identity mismatch");
       const bytes = await handle.readFile();
       if (!createHash("sha256").update(bytes).digest().equals(createHash("sha256").update(fileBuffer).digest()))
         throw new Error("Voicemail identity mismatch");
+      // A receipt lets the relay retire its manifest. Verified uncertain prior
+      // writes must cross the same durability barrier as a new staging inode.
+      await handle.sync();
     }
-    // A receipt lets the relay retire its manifest. Close/write completion is
-    // insufficient: sync both new audio and a verified uncertain prior write.
-    await handle.sync();
-  } finally { await handle.close(); }
+  } finally {
+    try { if (handle) await handle.close(); }
+    finally {
+      // This exclusive, request-owned staging name is never stored in the DB.
+      // Removing it cannot erase published media; a hardlink preserves the
+      // final inode. A crash or cleanup failure leaves private evidence for
+      // reviewed recovery. Never sweep another request's staging files.
+      if (stagingPath) await fs.promises.unlink(stagingPath).catch(() => {});
+    }
+  }
   await syncVoicemailDirectories(realDir, base);
   return { filePath, fileSize: fileBuffer.length, created };
 }

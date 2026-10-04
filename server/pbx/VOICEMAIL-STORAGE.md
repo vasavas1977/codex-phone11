@@ -127,3 +127,17 @@ membership; reassignment does not transfer old messages. An uncertain database
 failure may leave an unindexed WAV; retain it for
 safe reconciliation because a concurrent upload may have committed that path.
 Clients must not display an unavailable inbox as an empty inbox.
+
+The backend writes new audio to a private, request-owned staging file in the
+same directory and syncs that complete inode before exclusively linking it to
+the final UUID path. A partial write cannot publish a truncated final object
+that blocks future retries. Concurrent final objects are never overwritten;
+only byte-identical audio is acknowledged. The final directory and its parents
+through the configured root are synced before insertion or delivery receipt.
+An ordinary caught failure cleans only that request's unindexed staging name;
+it preserves any published final object. A crash or failed cleanup can retain
+private `.pending.wav` evidence, which requires reviewed recovery/retention.
+Retries do not sweep those files. This protocol requires a filesystem that
+supports same-directory exclusive hardlinks and file/directory synchronization;
+unsupported operations fail closed without a successful receipt. Local temporary
+filesystem tests do not establish those properties on a production mount.
