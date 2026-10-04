@@ -19,8 +19,13 @@ actually run on their pinned source and artifacts.
 - The [workflow reliability follow-up](WORKFLOW-RELIABILITY-20261004.md) fixes
   overlapping native joins, stale desktop contact callbacks and interrupted
   voicemail publication at implementation source `4c018ba99e86a913c75b181caa6cacafa55640a9`.
-  Combined source checks and independent reviews passed. Fresh client package
-  receipts are required because Build 116 predates these client changes.
+  Combined source checks and independent reviews passed. Build 117 and fresh
+  desktop trials subsequently passed independent package verification for that
+  implementation pin; their private receipts do not establish device acceptance.
+- The [admin, admission and storage follow-up](ADMIN-INVITE-STORAGE-20261004.md)
+  adds recoverable workspace management, same-ID login retirement for prejoin
+  and publication-primitive storage readiness. It requires its own source,
+  hosted and signed-client evidence; Build 117 predates these client changes.
 - [Installed-client receipts](OWN-AVATAR-PROFILE-20261002.md) establish signed
   daily-pilot **Build 114 (`d69eede`)** installed and normally launched on 3001
   and 1020. [Build 116 and fresh desktop packages](BUILD-116-RELEASE-20261004.md)

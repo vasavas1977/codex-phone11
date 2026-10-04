@@ -102,6 +102,17 @@ jobs:
             tests/phone11-directory-ui.test.tsx
       - name: Test media, push, PBX authorization, and durable chat state
         run: |
+          for suite in \
+            tests/phone11-admin-member-confirmation.test.tsx \
+            tests/phone11-admin-invitations-lifecycle.test.tsx \
+            tests/phone11-admin-members-ui.test.ts \
+            lib/meetings/prejoin-owner-session.test.tsx \
+            tests/phone11-conference-auth-race.test.tsx \
+            lib/meetings/media-ownership.test.ts \
+            lib/meetings/route-exit.test.ts \
+            tests/phone11-voicemail-readiness.test.ts; do
+            test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
+          done
           pnpm exec vitest run \
             tests/phone11-media-security.test.ts \
             tests/phone11-recording-gemini.test.ts \
@@ -145,10 +156,17 @@ jobs:
             tests/phone11-chat-all-mentions.test.ts \
             tests/phone11-profile-menu.test.tsx \
             tests/phone11-profile-scope.test.tsx \
+            tests/phone11-admin-member-confirmation.test.tsx \
+            tests/phone11-admin-invitations-lifecycle.test.tsx \
+            tests/phone11-admin-members-ui.test.ts \
             server/profile/service.test.ts \
             lib/meetings/native-session.test.ts \
             lib/meetings/room-construction-diagnostic.test.ts \
             lib/meetings/browser-session.test.ts \
+            lib/meetings/prejoin-owner-session.test.tsx \
+            tests/phone11-conference-auth-race.test.tsx \
+            lib/meetings/media-ownership.test.ts \
+            lib/meetings/route-exit.test.ts \
             tests/phone11-meeting-prejoin.test.tsx \
             tests/phone11-graceful-shutdown.test.ts \
             tests/phone11-chat-persistence.test.ts \
@@ -197,6 +215,7 @@ jobs:
             tests/phone11-ring-group-dialplan.test.ts \
             tests/phone11-queue-dialplan.test.ts \
             tests/phone11-voicemail-durability.test.ts \
+            tests/phone11-voicemail-readiness.test.ts \
             tests/phone11-voicemail-producer.test.ts \
             tests/phone11-voicemail-lifecycle-rehearsal.test.ts
       - name: Install Lua source test runtime
