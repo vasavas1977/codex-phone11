@@ -38,7 +38,7 @@ function buildInfoLines(): string[] {
   return [
     `appVersion=${expoConfig?.version ?? "unknown"}`,
     `sipEngine=${buildInfo.sipEngine ?? "unknown"}`,
-    `sipSdkVersion=${buildInfo.sipSdkVersion ?? "unknown"}`,
+    `sipSdkVersion=${(Platform.OS === "android" ? buildInfo.androidSipSdkVersion : buildInfo.sipSdkVersion) ?? "unknown"}`,
     `easBuildId=${buildInfo.easBuildId ?? "unknown"}`,
     `easBuildProfile=${buildInfo.easBuildProfile ?? "unknown"}`,
     `gitCommitHash=${buildInfo.gitCommitHash ?? "unknown"}`,
