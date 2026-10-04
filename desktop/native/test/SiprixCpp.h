@@ -3,6 +3,7 @@
 // Minimal fake of the pinned C++ API for helper protocol tests. The release
 // target includes the vendor header from SIPRIX_SDK_ROOT, never this header.
 #include <chrono>
+#include <cstdio>
 #include <cstdint>
 #include <thread>
 
@@ -30,6 +31,10 @@ inline OnCallTransferred transferredCallback = nullptr;
 using OnCallSwitched = void (*)(CallId);
 inline OnCallSwitched switchedCallback = nullptr;
 inline CallId switchedCall = 0;
+using OnCallRedirected = void (*)(CallId, CallId, const char*);
+inline OnCallRedirected redirectedCallback = nullptr;
+inline bool redirectedLegAlive = false;
+inline unsigned redirectByeCount = 0, originalByeCount = 0, consultByeCount = 0;
 inline bool consultAccepted = false;
 inline bool consultMuted = false;
 using OnCallHeld = void (*)(CallId, HoldState);
@@ -43,7 +48,12 @@ inline AccData account;
 inline DestData destination;
 inline ISiprixModule* Module_Create() { return &module; }
 inline ErrorCode Module_Initialize(ISiprixModule* m, IniData*) { m->initialized = true; return ErrorCode::EOK; }
-inline ErrorCode Module_UnInitialize(ISiprixModule* m) { m->initialized = false; return ErrorCode::EOK; }
+inline ErrorCode Module_UnInitialize(ISiprixModule* m) {
+#ifdef PHONE11_FAKE_WARM_REDIRECT
+  if (m->initialized) std::fprintf(stderr,"redirectBye=%u originalBye=%u consultBye=%u hiddenBeforeShutdown=%d\n",redirectByeCount,originalByeCount,consultByeCount,int(redirectedLegAlive));
+#endif
+  m->initialized = false; redirectedLegAlive = false; return ErrorCode::EOK;
+}
 inline bool Module_IsInitialized(ISiprixModule* m) { return m->initialized; }
 inline IniData* Ini_GetDefault() { return &ini; }
 inline void Ini_SetTlsVerifyServer(IniData*, bool) {}
@@ -59,6 +69,13 @@ inline ErrorCode Callback_SetCallTransferred(ISiprixModule*, OnCallTransferred c
   return ErrorCode::ENotIncoming;
 #else
   transferredCallback = cb; return ErrorCode::EOK;
+#endif
+}
+inline ErrorCode Callback_SetCallRedirected(ISiprixModule*, OnCallRedirected cb) {
+#ifdef PHONE11_FAKE_NO_REDIRECT_CAPABILITY
+  return ErrorCode::ENotIncoming;
+#else
+  redirectedCallback = cb; return ErrorCode::EOK;
 #endif
 }
 inline ErrorCode Callback_SetCallSwitched(ISiprixModule*, OnCallSwitched cb) {
@@ -131,9 +148,38 @@ inline ErrorCode Call_MuteMic(ISiprixModule* m, CallId id, bool value) {
 #ifdef PHONE11_FAKE_WARM_UNMUTE_REFUSED_SYNC
     if (!value) { if (connectedCallback) connectedCallback(id,"private","private",false); return ErrorCode::ENotIncoming; }
 #endif
-    consultMuted = value; return ErrorCode::EOK;
+    consultMuted = value;
+#ifdef PHONE11_FAKE_WARM_REDIRECT
+    if (!value) {
+      redirectedLegAlive = true;
+      if (redirectedCallback) {
+#ifdef PHONE11_FAKE_WARM_REDIRECT_RETIRED
+        if (terminatedCallback) terminatedCallback(200,200);
+        redirectedCallback(201,200,"private-refer-to"); // old original ID cannot identify its reused incarnation
+#elif defined(PHONE11_FAKE_WARM_REDIRECT_OVERLAP)
+        redirectedCallback(201, 200, "private-refer-to");
+#elif defined(PHONE11_FAKE_WARM_REDIRECT_UNKNOWN)
+        redirectedCallback(999, 202, "private-refer-to");
+#elif defined(PHONE11_FAKE_WARM_REDIRECT_ZERO)
+        redirectedCallback(201, 0, "private-refer-to");
+#else
+        redirectedCallback(201, 202, "private-refer-to");
+        redirectedCallback(999, 202, "private-refer-to"); // retired duplicate never ends a reused leg
+#endif
+      }
+      if (connectedCallback) connectedCallback(202,"private","private",false);
+    }
+#endif
+    return ErrorCode::EOK;
   }
 #endif
+  if (id == 202 && redirectedLegAlive) {
+#ifdef PHONE11_FAKE_WARM_REDIRECT_MUTE_REFUSED
+    return ErrorCode::ENotIncoming;
+#else
+    return ErrorCode::EOK;
+#endif
+  }
   if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
   m->muted = value;
   return ErrorCode::EOK;
@@ -260,8 +306,20 @@ inline ErrorCode Call_Reject(ISiprixModule* m, CallId id, std::uint16_t) {
   return ErrorCode::EOK;
 }
 inline ErrorCode Call_Bye(ISiprixModule* m, CallId id) {
+  if (id == 202 && redirectedLegAlive) {
+    ++redirectByeCount;
+#ifdef PHONE11_FAKE_WARM_REDIRECT_END_REFUSED
+    return ErrorCode::ENotIncoming;
+#else
+    redirectedLegAlive = false;
+    if (terminatedCallback) terminatedCallback(id, 200);
+    if (connectedCallback) connectedCallback(id,"private","private",false); // late must not revive
+    return ErrorCode::EOK;
+#endif
+  }
 #if PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
   if (id == 201 && consultAccepted) {
+    ++consultByeCount;
 #ifdef PHONE11_FAKE_WARM_END_REFUSED
     static bool refused = false; if (!refused) { refused = true; return ErrorCode::ENotIncoming; }
 #endif
@@ -275,6 +333,7 @@ inline ErrorCode Call_Bye(ISiprixModule* m, CallId id) {
   }
 #endif
   if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
+  ++originalByeCount;
   if (terminatedCallback) terminatedCallback(id, 200);
 #ifdef PHONE11_FAKE_TRANSFER_REUSED_ID
   if (incomingCallback) incomingCallback(id, 1, false, "private-from", "private-to");

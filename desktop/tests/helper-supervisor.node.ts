@@ -370,3 +370,18 @@ test("queued consultation continuation is reauthorized at actual write after ten
     assert.equal(h.supervisor.snapshot().call,null);
   } finally { await h.supervisor.stop(); h.cleanup(); }
 });
+
+test("unsupported SDK redirect retires the authenticated pipe and blocks queued calling", async () => {
+  const h = harness("warm-fatal");
+  try {
+    await h.supervisor.start(); await waitFor(() => h.supervisor.snapshot().registered);
+    await h.supervisor.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" });
+    await waitFor(() => h.supervisor.snapshot().call?.state === "connected");
+    h.children[0]?.stdout?.emit("data", '{"version":1,"event":"unsupported_redirect"}\n');
+    assert.equal(h.supervisor.snapshot().call, null);
+    assert.equal(h.supervisor.snapshot().registered, false);
+    await assert.rejects(h.supervisor.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1021" }), /session changed/);
+    h.children[0]?.stdout?.emit("data", '{"version":1,"event":"call","callId":"202","state":"connected","muted":false}\n');
+    assert.equal(h.supervisor.snapshot().call, null);
+  } finally { await h.supervisor.stop(); h.cleanup(); }
+});

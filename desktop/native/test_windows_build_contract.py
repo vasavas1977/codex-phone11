@@ -14,7 +14,7 @@ REQUIRED_API = (
     "Call_Reject", "Call_Bye", "Call_Hold", "Call_GetHoldState",
     "Call_MuteMic", "Call_SendDtmf", "Callback_SetCallHeld",
     "Call_TransferBlind", "Callback_SetCallTransferred",
-    "Call_TransferAttended", "Mixer_SwitchToCall", "Callback_SetCallSwitched",
+    "Call_TransferAttended", "Mixer_SwitchToCall", "Callback_SetCallSwitched", "Callback_SetCallRedirected",
 )
 
 

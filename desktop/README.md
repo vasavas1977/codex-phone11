@@ -259,9 +259,9 @@ its route rollback; do not deploy this divergent desktop branch wholesale.
 
 `PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED` is an **OFF by default** CMake
 option. Default builds still request SDK single-call mode and never advertise
-consultation. The gated source requires the pinned SDK's transferred and
-switched callbacks before initialization succeeds. `owned-two-call-v1` in the
-verified helper's init reply admits the UI; a renderer cannot set this capability.
+consultation. The gated source requires the pinned SDK's transferred, switched
+and redirected callbacks before initialization succeeds. `owned-two-call-v1`
+in the verified helper's init reply admits the UI; a renderer cannot set this capability.
 This is source and mock evidence only. It does not enable a distributed build or
 prove macOS/Windows audio, REFER/Replaces, provider behavior or release acceptance.
 
@@ -298,3 +298,14 @@ required. Compile the gated source against the same external pinned vendor
 inputs with `-DPHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=ON`; retain a separate
 default-off build. Windows x64 requires the Visual Studio CI target in addition
 to any local cross-header syntax check.
+
+A remote REFER can make Siprix create a redirected outgoing leg without an
+application invite. In gated builds the mandatory redirect handler never admits
+that leg. It quarantines the runtime, tombstones any fresh non-owned related ID,
+and makes a bounded mute/end attempt outside the native state mutex. Owned,
+retired, zero or ambiguous in-flight identities are never targeted. Every
+unsupported redirect retires the privileged helper pipe, including cleanup
+refusal; SDK shutdown is not proof of remote BYE delivery. The default-off
+single-call path is unchanged. `python3 desktop/native/test_redirect.py` covers
+fresh and unknown-origin redirects, duplicates/late callbacks, owned/retired
+ID overlap, invalid IDs, cleanup refusal and missing redirect capability.

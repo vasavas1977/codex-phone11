@@ -153,7 +153,8 @@ class SiprixModule {
     transferSupported_ = Siprix::Callback_SetCallTransferred(module_, &SiprixModule::onTransferred) == Siprix::ErrorCode::EOK;
 #if PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
     warmSupported_ = transferSupported_ &&
-        Siprix::Callback_SetCallSwitched(module_, &SiprixModule::onSwitched) == Siprix::ErrorCode::EOK;
+        Siprix::Callback_SetCallSwitched(module_, &SiprixModule::onSwitched) == Siprix::ErrorCode::EOK &&
+        Siprix::Callback_SetCallRedirected(module_, &SiprixModule::onRedirected) == Siprix::ErrorCode::EOK;
     if (!warmSupported_) { shutdown(); return false; }
 #endif
     {
@@ -165,7 +166,7 @@ class SiprixModule {
   }
 
   bool provision(const std::vector<std::string>& fields) {
-    if (!initialized() || accountId_.load() != 0 || fields.size() != 5 ||
+    if (!initialized() || quarantined_ || accountId_.load() != 0 || fields.size() != 5 ||
         !safeField(fields[0]) || !safeField(fields[1]) || !safeField(fields[2]) ||
         !safeField(fields[3], true) ||
         (fields[4] != "TLS" && fields[4] != "TCP" && fields[4] != "UDP")) return false;
@@ -197,7 +198,7 @@ class SiprixModule {
   }
 
   bool dial(const std::string& destination) {
-    if (!initialized() || !registered_ || callId_ != 0 || !validDestination(destination)) return false;
+    if (!initialized() || quarantined_ || !registered_ || callId_ != 0 || !validDestination(destination)) return false;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
       if (pendingDial_ || callId_ != 0 || consultId_ != 0) return false;
@@ -254,6 +255,7 @@ class SiprixModule {
   }
 
   bool answer(Siprix::CallId id) {
+    if (quarantined_) return false;
     if (!initialized() || id == 0) return false;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
@@ -289,6 +291,7 @@ class SiprixModule {
   }
 
   bool mute(Siprix::CallId id, bool value) {
+    if (quarantined_) return false;
     if (!initialized() || id == 0 || id != callId_ || !connected_) return false;
     { std::lock_guard<std::mutex> lock(stateMutex_); if (!warmRequest_.empty() && warmPhase_ != "returned") return false; }
     if (Siprix::Call_MuteMic(module_, id, value) != Siprix::ErrorCode::EOK) return false;
@@ -300,6 +303,7 @@ class SiprixModule {
   }
 
   bool hold(Siprix::CallId id, bool desired, bool warmControl = false) {
+    if (quarantined_) return false;
     if (!initialized() || id == 0) return false;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
@@ -338,7 +342,7 @@ class SiprixModule {
   }
 
   bool transfer(Siprix::CallId id, const std::string& intent, const std::string& destination) {
-    if (!initialized() || !validIntent(intent) || !validTransferDestination(destination)) return false;
+    if (!initialized() || quarantined_ || !validIntent(intent) || !validTransferDestination(destination)) return false;
     {
       std::lock_guard<std::mutex> lock(stateMutex_);
       if (!transferSupported_ || !registered_ || id == 0 || id != callId_ || !connected_ || held_ ||
@@ -362,7 +366,7 @@ class SiprixModule {
 #if !PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
     return false;
 #else
-    if (!initialized() || !warmSupported_ || !validIntent(request)) return false;
+    if (!initialized() || quarantined_ || !warmSupported_ || !validIntent(request)) return false;
     if (operation == "begin") {
       if (!validTransferDestination(argument)) return false;
       Siprix::HoldState state = Siprix::HoldState::None;
@@ -496,6 +500,7 @@ class SiprixModule {
   }
 
   bool dtmf(Siprix::CallId id, const std::string& digits) {
+    if (quarantined_) return false;
     if (!initialized() || id == 0 || id != callId_ || !connected_ || !validDtmf(digits)) return false;
     { std::lock_guard<std::mutex> lock(stateMutex_); if (!warmRequest_.empty() && warmPhase_ != "returned") return false; }
     std::string normalized = digits;
@@ -542,7 +547,7 @@ class SiprixModule {
 
   bool initialized() const { return module_ != nullptr && Siprix::Module_IsInitialized(module_); }
   bool transferSupported() const { return transferSupported_; }
-  bool warmSupported() const { return warmSupported_; }
+  bool warmSupported() const { return warmSupported_ && !quarantined_; }
   bool registered() const { return registered_; }
   Siprix::CallId callId() const { return callId_; }
 
@@ -553,6 +558,30 @@ class SiprixModule {
     writeLine("{\"version\":1,\"event\":\"consultation\",\"callId\":\"" + std::to_string(warmOriginal_) +
       "\",\"requestId\":\"" + warmRequest_ + "\",\"phase\":\"" + warmPhase_ + "\",\"originalAlive\":" +
       (callId_ == warmOriginal_ ? "true" : "false") + ",\"consultConnected\":" + (consultConnected_ ? "true" : "false") + ",\"consultId\":" + (consultId_ ? "\"" + std::to_string(consultId_) + "\"" : "null") + "}");
+  }
+  static void onRedirected(Siprix::CallId original, Siprix::CallId related, const char*) {
+    auto* self = active_.load(); if (!self) return;
+    bool cleanup = false;
+    {
+      std::lock_guard<std::mutex> lock(self->stateMutex_);
+      // Remote REFER can create an outgoing SDK leg without Call_Invite. Never
+      // admit it to the owned pair. Ambiguous/reused IDs must not target a known
+      // dialog; quarantine until the privileged supervisor retires this pipe.
+      self->quarantined_ = true;
+      if (!self->warmRequest_.empty()) { self->warmPhase_ = "uncertain"; self->transferIntent_.clear(); self->emitWarm(); }
+      if (related && related != original && related != self->callId_ && related != self->consultId_ &&
+          !self->pendingDial_ && !self->retiredCallIds_.count(related)) {
+        self->retiredCallIds_.insert(related); // Reserve before synchronous termination/late callbacks.
+        cleanup = true;
+      }
+    }
+    if (cleanup) {
+      // SDK calls stay outside the state mutex. Even if mute fails, try to end
+      // this fresh unowned leg; any result still retires the quarantined pipe.
+      Siprix::Call_MuteMic(self->module_, related, true);
+      Siprix::Call_Bye(self->module_, related);
+    }
+    writeLine("{\"version\":1,\"event\":\"unsupported_redirect\"}");
   }
   static void onSwitched(Siprix::CallId id) {
     auto* self = active_.load(); if (!self) return;
@@ -622,7 +651,7 @@ class SiprixModule {
     bool secondCall = false;
     {
       std::lock_guard<std::mutex> lock(self->stateMutex_);
-      if (self->pendingDial_ || self->callId_ != 0 || self->consultId_ != 0 || self->retiredCallIds_.count(id)) secondCall = true;
+      if (self->quarantined_ || self->pendingDial_ || self->callId_ != 0 || self->consultId_ != 0 || self->retiredCallIds_.count(id)) secondCall = true;
       else {
         self->clearWarm();
         self->transferIntent_.clear(); self->transferAttempted_ = false; self->transferCallbackSeen_ = false;
@@ -736,6 +765,7 @@ class SiprixModule {
   std::atomic<bool> registered_{false};
   std::atomic<bool> incoming_{false};
   std::atomic<bool> connected_{false};
+  std::atomic<bool> quarantined_{false};
   bool warmSupported_ = false;
   Siprix::CallId warmOriginal_ = 0, consultId_ = 0, switchedId_ = 0, earlySwitchedId_ = 0;
   std::string warmRequest_, warmDestination_, warmPhase_;
