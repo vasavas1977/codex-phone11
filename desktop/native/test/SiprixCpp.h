@@ -9,7 +9,7 @@
 namespace Siprix {
 using AccountId = std::uint32_t;
 using CallId = std::uint32_t;
-enum class ErrorCode { EOK, ENotIncoming };
+enum class ErrorCode { EOK, ENotIncoming, ECallAlreadySwitched };
 enum class LogLevel { NoLog };
 enum class RegState { Success, Failed, Removed, InProgress };
 enum class SipTransport { UDP, TCP, TLS };
@@ -27,6 +27,11 @@ using OnCallConnected = void (*)(CallId, const char*, const char*, bool);
 using OnCallTerminated = void (*)(CallId, std::uint32_t);
 using OnCallTransferred = void (*)(CallId, std::uint32_t);
 inline OnCallTransferred transferredCallback = nullptr;
+using OnCallSwitched = void (*)(CallId);
+inline OnCallSwitched switchedCallback = nullptr;
+inline CallId switchedCall = 0;
+inline bool consultAccepted = false;
+inline bool consultMuted = false;
 using OnCallHeld = void (*)(CallId, HoldState);
 inline OnCallIncoming incomingCallback = nullptr;
 inline OnCallTerminated terminatedCallback = nullptr;
@@ -54,6 +59,13 @@ inline ErrorCode Callback_SetCallTransferred(ISiprixModule*, OnCallTransferred c
   return ErrorCode::ENotIncoming;
 #else
   transferredCallback = cb; return ErrorCode::EOK;
+#endif
+}
+inline ErrorCode Callback_SetCallSwitched(ISiprixModule*, OnCallSwitched cb) {
+#ifdef PHONE11_FAKE_NO_WARM_CAPABILITY
+  return ErrorCode::ENotIncoming;
+#else
+  switchedCallback = cb; return ErrorCode::EOK;
 #endif
 }
 inline ErrorCode Callback_SetCallHeld(ISiprixModule*, OnCallHeld cb) { heldCallback = cb; return ErrorCode::EOK; }
@@ -88,6 +100,17 @@ inline ErrorCode Call_Invite(ISiprixModule*, DestData*, CallId* id) {
 #else
   *id = 201;
 #endif
+#if PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
+  consultAccepted = true;
+#ifndef PHONE11_FAKE_WARM_INVITE_DROP
+#ifdef PHONE11_FAKE_WARM_INVITE_SYNC
+  if (connectedCallback) connectedCallback(*id, "private", "private", false);
+#else
+  const CallId call = *id;
+  std::thread([call] { std::this_thread::sleep_for(std::chrono::milliseconds(70)); if (module.initialized && connectedCallback) connectedCallback(call, "private", "private", false); }).detach();
+#endif
+#endif
+#endif
   return ErrorCode::EOK;
 }
 inline ErrorCode Call_Accept(ISiprixModule* m, CallId id, bool) {
@@ -100,13 +123,31 @@ inline ErrorCode Call_Accept(ISiprixModule* m, CallId id, bool) {
   return ErrorCode::EOK;
 }
 inline ErrorCode Call_MuteMic(ISiprixModule* m, CallId id, bool value) {
+#if PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
+  if (id == 201 && consultAccepted) {
+#ifdef PHONE11_FAKE_WARM_INITIAL_MUTE_REFUSED_SYNC
+    if (value) { if (connectedCallback) connectedCallback(id,"private","private",false); return ErrorCode::ENotIncoming; }
+#endif
+#ifdef PHONE11_FAKE_WARM_UNMUTE_REFUSED_SYNC
+    if (!value) { if (connectedCallback) connectedCallback(id,"private","private",false); return ErrorCode::ENotIncoming; }
+#endif
+    consultMuted = value; return ErrorCode::EOK;
+  }
+#endif
   if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
   m->muted = value;
   return ErrorCode::EOK;
 }
 inline ErrorCode Call_GetHoldState(ISiprixModule* m, CallId id, HoldState* state) {
+#if PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
+  if (id == 201 && consultAccepted) { *state = HoldState::None; return ErrorCode::EOK; }
+#endif
   if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
+#ifdef PHONE11_FAKE_WARM_REMOTE_HOLD
+  *state = m->held ? (consultAccepted ? HoldState::LocalAndRemote : HoldState::Local) : (consultAccepted ? HoldState::Remote : HoldState::None);
+#else
   *state = m->held ? HoldState::Local : HoldState::None;
+#endif
   return ErrorCode::EOK;
 }
 inline ErrorCode Call_Hold(ISiprixModule* m, CallId id) {
@@ -127,7 +168,11 @@ inline ErrorCode Call_Hold(ISiprixModule* m, CallId id) {
 #ifndef PHONE11_FAKE_HOLD_NO_STATE_CHANGE
   m->held = !m->held;
 #endif
+#ifdef PHONE11_FAKE_WARM_REMOTE_HOLD
+  const HoldState finalState = m->held ? HoldState::Local : HoldState::Remote;
+#else
   const HoldState finalState = m->held ? HoldState::Local : HoldState::None;
+#endif
 #ifdef PHONE11_FAKE_REMOTE_FIRST
   if (heldCallback) heldCallback(id, HoldState::Remote);
 #endif
@@ -136,6 +181,42 @@ inline ErrorCode Call_Hold(ISiprixModule* m, CallId id) {
     std::this_thread::sleep_for(std::chrono::milliseconds(70));
     if (m->initialized && heldCallback) heldCallback(id, finalState);
   }).detach();
+#endif
+  return ErrorCode::EOK;
+}
+inline ErrorCode Mixer_SwitchToCall(ISiprixModule*, CallId id) {
+#ifdef PHONE11_FAKE_WARM_FOCUS_DROP
+  return ErrorCode::EOK;
+#else
+  if (switchedCall == id) return ErrorCode::ECallAlreadySwitched;
+  switchedCall = id;
+  if (switchedCallback) switchedCallback(id);
+#ifdef PHONE11_FAKE_WARM_FOCUS_REFUSED_SYNC
+  if (id == 201) return ErrorCode::ENotIncoming;
+#endif
+#ifdef PHONE11_FAKE_WARM_RESTORE_REFUSED_SYNC
+  if (id == 200) return ErrorCode::ENotIncoming;
+#endif
+  return ErrorCode::EOK;
+#endif
+}
+inline ErrorCode Call_TransferAttended(ISiprixModule* m, CallId original, CallId consult) {
+  if (original != 200 || consult != 201 || !m->held || !consultAccepted || consultMuted) return ErrorCode::ENotIncoming;
+#ifdef PHONE11_FAKE_WARM_TRANSFER_REFUSED
+  return ErrorCode::ENotIncoming;
+#endif
+#ifndef PHONE11_FAKE_WARM_TRANSFER_DROP
+  if (transferredCallback) {
+#ifdef PHONE11_FAKE_WARM_TRANSFER_FAILED
+    transferredCallback(original, 486);
+#else
+    transferredCallback(original, 0);
+#endif
+    transferredCallback(original, 0); // one-attempt duplicate fence
+#ifdef PHONE11_FAKE_WARM_TRANSFER_REFUSED_SYNC
+    return ErrorCode::ENotIncoming;
+#endif
+  }
 #endif
   return ErrorCode::EOK;
 }
@@ -179,6 +260,20 @@ inline ErrorCode Call_Reject(ISiprixModule* m, CallId id, std::uint16_t) {
   return ErrorCode::EOK;
 }
 inline ErrorCode Call_Bye(ISiprixModule* m, CallId id) {
+#if PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
+  if (id == 201 && consultAccepted) {
+#ifdef PHONE11_FAKE_WARM_END_REFUSED
+    static bool refused = false; if (!refused) { refused = true; return ErrorCode::ENotIncoming; }
+#endif
+    consultAccepted = false;
+    if (terminatedCallback) terminatedCallback(id, 200);
+#ifndef PHONE11_FAKE_WARM_RESTORE_REFUSED_SYNC
+    switchedCall = 200; if (switchedCallback) switchedCallback(200); // documented SDK auto-focus of survivor
+#endif
+    if (connectedCallback) connectedCallback(id, "private", "private", false); // retired late callback
+    return ErrorCode::EOK;
+  }
+#endif
   if (id != 200 || !m->accepted) return ErrorCode::ENotIncoming;
   if (terminatedCallback) terminatedCallback(id, 200);
 #ifdef PHONE11_FAKE_TRANSFER_REUSED_ID

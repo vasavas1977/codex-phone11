@@ -19,7 +19,7 @@ def main() -> None:
         "v1 provision\n"
         "invalid.example\n1020\n1020\nDO_NOT_ECHO_THIS_INPUT\nBAD\n"
         f"{secret_marker}\n"
-        + "x" * 100
+        + "x" * 160
         + "\n"
         "v1 snapshot\n"
         "v1 shutdown\n"

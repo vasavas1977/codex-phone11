@@ -12,7 +12,9 @@ if(NOT PHONE11_USE_FAKE_SDK AND NOT DEFINED SIPRIX_SDK_ROOT)
   message(FATAL_ERROR "Set SIPRIX_SDK_ROOT to an external SiprixUA SDK checkout")
 endif()
 
+option(PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED "Compile source-only bounded consultation (no provider/media acceptance)" OFF)
 add_executable(phone11_siprix_helper phone11_siprix_helper.cpp)
+target_compile_definitions(phone11_siprix_helper PRIVATE PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=$<BOOL:${PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED}>)
 
 if(PHONE11_USE_FAKE_SDK)
   if(WIN32)

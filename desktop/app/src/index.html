@@ -188,6 +188,13 @@
                 <label for="transfer-destination">Transfer to number</label>
                 <input id="transfer-destination" type="tel" inputmode="tel" maxlength="33" autocomplete="off" aria-describedby="transfer-message">
                 <button id="transfer" type="button">Transfer</button>
+                <div id="consult-controls" hidden>
+                  <button id="consult" type="button">Speak before transfer</button>
+                  <button id="consult-complete" type="button" hidden>Complete transfer</button>
+                  <button id="consult-cancel" type="button" hidden>Return to original call</button>
+                  <button id="consult-end" type="button" hidden>End consultation call</button>
+                  <p id="consult-message" role="status"></p>
+                </div>
                 <p id="transfer-message" role="status">One transfer attempt per call. End and Mute remain available.</p>
               </div>
               <p id="identity" class="identity" title="Signed in extension"></p>

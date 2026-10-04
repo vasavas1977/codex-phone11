@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { basename, isAbsolute } from "node:path";
 import {
   DesktopCallBoundary, HelperCommandRejectedError,
-  type DesktopSession, type HelperCommand, type PublicSnapshot,
+  WARM_PHASES, type DesktopSession, type HelperCommand, type PublicSnapshot,
 } from "./call-boundary";
 
 export type SipAccountSecret = Readonly<{
@@ -187,6 +187,14 @@ export class DesktopHelperSupervisor {
              typeof command.destination === "string" && /^\+?[0-9]{1,32}$/.test(command.destination) &&
              typeof command.intentId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(command.intentId))
       frame = `v1 transfer ${command.callId} ${command.intentId} ${command.destination}\n`;
+    else if (command.operation === "warm" && callId(command.callId) &&
+      typeof command.requestId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(command.requestId) &&
+      ["begin", "continue", "focus", "unmute", "cancel", "restore", "complete"].includes(command.warmOperation ?? "")) {
+      let argument = "";
+      if (command.warmOperation === "begin") { if (!command.destination || !/^\+?[0-9]{1,32}$/.test(command.destination)) return Promise.reject(new Error("Invalid helper command")); argument = ` ${command.destination}`; }
+      if (command.warmOperation === "complete") { if (!command.intentId || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(command.intentId)) return Promise.reject(new Error("Invalid helper command")); argument = ` ${command.intentId}`; }
+      frame = `v1 warm ${command.warmOperation} ${command.callId} ${command.requestId}${argument}\n`;
+    }
     else if (command.operation === "dtmf" && callId(command.callId) && digits(command.value))
       frame = `v1 dtmf ${command.callId} ${command.value}\n`;
     else return Promise.reject(new Error("Invalid helper command"));
@@ -235,6 +243,7 @@ export class DesktopHelperSupervisor {
         if (input.ok) {
           if (pending.init && input.initialized && input.blindTransfer === "callback-v1-once")
             this.boundary.setTransferCapability(true);
+          if (pending.init && input.initialized && input.warmTransfer === "owned-two-call-v1") this.boundary.setWarmCapability(true);
           pending.resolve();
         }
         else pending.reject(new HelperCommandRejectedError());
@@ -255,6 +264,11 @@ export class DesktopHelperSupervisor {
              ["incoming", "dialing", "ringing", "connected", "held", "terminated"].includes(raw.state) &&
              typeof raw.muted === "boolean")
       event = { ...base, type: "call", callId: raw.callId, state: raw.state, muted: raw.muted };
+    else if (raw.event === "consultation" && callId(raw.callId) && typeof raw.requestId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.requestId) &&
+      (raw.consultId === null || callId(raw.consultId)) && typeof raw.originalAlive === "boolean" && typeof raw.consultConnected === "boolean" &&
+      typeof raw.phase === "string" && (WARM_PHASES as readonly string[]).includes(raw.phase))
+      event = { ...base, type: "consultation", callId: raw.callId, requestId: raw.requestId, consultId: raw.consultId, originalAlive: raw.originalAlive, consultConnected: raw.consultConnected, phase: raw.phase };
     else if (raw.event === "transfer" && callId(raw.callId) && typeof raw.intentId === "string" &&
              /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.intentId) &&
              Number.isInteger(raw.statusCode) && (raw.statusCode as number) >= 0 && (raw.statusCode as number) <= 0xffffffff)

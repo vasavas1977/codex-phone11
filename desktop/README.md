@@ -254,3 +254,47 @@ or server deployment.
 The backend is currently managed by the separate voicemail-status integration
 checkout. Prepare a narrow overlay against its exact running source and preserve
 its route rollback; do not deploy this divergent desktop branch wholesale.
+
+## Bounded consultation source candidate — 4 October 2026
+
+`PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED` is an **OFF by default** CMake
+option. Default builds still request SDK single-call mode and never advertise
+consultation. The gated source requires the pinned SDK's transferred and
+switched callbacks before initialization succeeds. `owned-two-call-v1` in the
+verified helper's init reply admits the UI; a renderer cannot set this capability.
+This is source and mock evidence only. It does not enable a distributed build or
+prove macOS/Windows audio, REFER/Replaces, provider behavior or release acceptance.
+
+The private protocol adds `v1 warm OP ORIGINAL_ID REQUEST_ID [ARGUMENT]`, where
+OP is `begin`, `continue`, `focus`, `unmute`, `cancel`, `restore`, or `complete`.
+The privileged boundary creates the request UUID. Begin reserves one attempt
+for one connected, resumed original call and acquires local hold. Only an exact
+local-hold callback yields `held_ready`. The authenticated supervisor rechecks
+session/account at actual write time before continuing to dial the single owned
+consultation. Native callbacks never dial. The consultation stays muted until
+its connected callback and explicit mixer switch callback; only the authenticated
+next command unmutes it. Arbitrary second incoming calls and ordinary dialing
+remain refused while either owned leg exists.
+
+Cancel ends only the owned consultation, waits for its terminal callback, removes
+only the original's local hold, then requires the original's mixer focus callback.
+Complete requires both exact legs, local-only hold on the original, no hold on
+the connected consultation, and one attended-transfer attempt. Only callback
+status 0 confirms transfer. Missing callbacks remain uncertain. The helper never
+automatically ends either leg after transfer. If the original ends first, the
+surviving consultation retains a separate explicit End route; a definite End
+refusal allows retry, and retired SDK IDs cannot revive a leg. Callbacks and
+queued commands are invalidated by account change, logout or helper replacement.
+
+Run `python3 desktop/native/test_warm.py` and
+`./node_modules/.bin/tsx --test desktop/tests/warm-transfer.node.ts desktop/tests/helper-supervisor.node.ts`.
+The native suite compiles isolated fake SDK variants for default-off behavior,
+synchronous invite/focus/transfer callbacks, callback-before-refusal fences,
+remote-hold restoration with separate local-unhold and audio-focus stages,
+cancel/restore, early cancellation,
+transfer refusal/failure/missing outcome, missing focus, sole-survivor End and
+pre-acceptance End retry. Existing ordinary-call native and desktop suites stay
+required. Compile the gated source against the same external pinned vendor
+inputs with `-DPHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=ON`; retain a separate
+default-off build. Windows x64 requires the Visual Studio CI target in addition
+to any local cross-header syntax check.

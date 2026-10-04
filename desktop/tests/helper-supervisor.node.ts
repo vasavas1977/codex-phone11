@@ -37,7 +37,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   }
   if (line === 'v1 init') {
     if (mode === 'slow-init') setTimeout(() => out({ ok: true, initialized: true }), 80);
-    else out({ ok: true, initialized: true, ...(mode.startsWith('transfer') ? { blindTransfer: mode === 'transfer-unsupported' ? 'callback-v2' : 'callback-v1-once' } : {}) });
+    else out({ ok: true, initialized: true, ...(mode.startsWith('warm') ? { warmTransfer: 'owned-two-call-v1' } : {}), ...(mode.startsWith('transfer') ? { blindTransfer: mode === 'transfer-unsupported' ? 'callback-v2' : 'callback-v1-once' } : {}) });
   }
   else if (line === 'v1 provision') { fs.appendFileSync(marker, 'provision\\n'); fields = 5; }
   else if (line === 'v1 snapshot') out({ ok: true, initialized: true, registered, callId: call });
@@ -60,6 +60,12 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   } else if (line === 'v1 answer 200') {
     out({ ok: true, initialized: true });
     setTimeout(() => out({ event: 'call', callId: '200', state: 'connected', muted: false }), 10);
+  } else if (line.startsWith('v1 warm ')) {
+    fs.appendFileSync(marker, line + '\\n');
+    const [, , operation, callId, requestId] = line.split(' ');
+    const callback = () => out({ event: 'consultation', callId, requestId, consultId: null, originalAlive: true, consultConnected: false, phase: 'held_ready', generation: 'forged-generation', accountId: 'forged-account' });
+    if (operation === 'begin' && mode === 'warm-queued') { callback(); setTimeout(() => out({ ok: true, initialized: true }), 80); }
+    else { out({ ok: true, initialized: true }); if (operation === 'begin') callback(); }
   } else if (line.startsWith('v1 transfer ')) {
     fs.appendFileSync(marker, line + '\\n');
     const [, , callId, intentId] = line.split(' ');
@@ -345,4 +351,22 @@ test("late transfer callback after End cannot restore a retired call", async () 
     await pause(90);
     assert.equal(h.supervisor.snapshot().call, null); assert.equal(h.supervisor.snapshot().transfer, "ready");
   } finally { await h.cleanup(); }
+});
+
+
+test("queued consultation continuation is reauthorized at actual write after tenant change", async () => {
+  const h = harness("warm-queued");
+  try {
+    const generation = await h.supervisor.start();
+    await waitFor(() => h.supervisor.snapshot().registered);
+    await h.supervisor.handleRendererAction({ operation: "dial", sessionRevision: binding.revision, destination: "1020" });
+    await waitFor(() => h.supervisor.snapshot().call?.state === "connected");
+    const begin = h.supervisor.handleRendererAction({ operation: "consult", sessionRevision: binding.revision, generation, callId: "201", destination: "1021" });
+    const rejected = assert.rejects(begin);
+    await waitFor(() => readFileSync(h.marker,"utf8").includes("v1 warm begin"));
+    h.setSession({ ...binding, revision: "changed", tenantId: 22, accountId: "other" });
+    await rejected;
+    assert.equal(readFileSync(h.marker,"utf8").includes("v1 warm continue"),false);
+    assert.equal(h.supervisor.snapshot().call,null);
+  } finally { await h.supervisor.stop(); h.cleanup(); }
 });

@@ -6,6 +6,9 @@
  * diagnostics, or an arbitrary helper command channel.
  */
 export const DESKTOP_CALL_PROTOCOL_VERSION = 1;
+export const WARM_PHASES = ["holding", "held_ready", "inviting", "preparing", "calling", "focus_ready", "switching", "focused", "ready", "consultation_failed", "canceling", "return_ready", "return_audio_ready", "returning", "restoring_audio", "returned", "return_failed", "transferring", "completed", "transfer_failed", "original_ended", "ended", "uncertain"] as const;
+export type WarmPhase = typeof WARM_PHASES[number];
+export type PublicConsultation = Readonly<{ originalId: string; requestId: string; consultId: string | null; originalAlive: boolean; consultConnected: boolean; phase: WarmPhase }>;
 export type TransferState = "ready" | "pending" | "uncertain" | "confirmed" | "refused";
 
 export type DesktopSession = Readonly<{
@@ -27,6 +30,8 @@ export type PublicSnapshot = Readonly<{
   holdMessage: "Hold unavailable; end call if needed" | null;
   /** Present only after the verified helper advertises callback support. One attempt per call. */
   transfer?: TransferState;
+  warmTransferAvailable?: true;
+  consultation?: PublicConsultation;
 }>;
 
 export type HelperCommand = Readonly<{
@@ -34,7 +39,9 @@ export type HelperCommand = Readonly<{
   generation: string;
   sessionRevision: string;
   accountId: string;
-  operation: "dial" | "answer" | "end" | "mute" | "hold" | "dtmf" | "transfer";
+  operation: "dial" | "answer" | "end" | "mute" | "hold" | "dtmf" | "transfer" | "warm";
+  warmOperation?: "begin" | "continue" | "focus" | "unmute" | "cancel" | "restore" | "complete";
+  requestId?: string;
   callId?: string;
   destination?: string;
   intentId?: string;
@@ -60,6 +67,7 @@ export class HelperCommandRejectedError extends Error {
 }
 
 type HelperEvent =
+  | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "consultation"; callId: string; requestId: string; consultId: string | null; originalAlive: boolean; consultConnected: boolean; phase: WarmPhase }
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "registration"; registered: boolean }
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "call"; callId: string; state: CallState | "terminated"; muted?: boolean }
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "hold_error"; callId: string; code: "state_unconfirmed"; holdControl: "blocked" }
@@ -67,6 +75,8 @@ type HelperEvent =
   | { version: 1; generation: string; sequence: number; sessionRevision: string; accountId: string; type: "hold_recovered"; callId: string; code: "state_confirmed"; holdControl: "ready" };
 
 export type RendererAction =
+  | { operation: "consult"; sessionRevision: string; generation: string; callId: string; destination: string }
+  | { operation: "consult-cancel" | "consult-complete"; sessionRevision: string; generation: string; callId: string; requestId: string }
   | { operation: "snapshot"; sessionRevision: string }
   | { operation: "dial"; sessionRevision: string; destination: string }
   | { operation: "answer" | "end"; sessionRevision: string; generation: string; callId: string }
@@ -106,6 +116,13 @@ export function parseRendererAction(input: unknown): RendererAction {
     case "hold":
       if (!isToken(input.generation) || !isCallId(input.callId) || typeof input.value !== "boolean") break;
       return { operation: input.operation, sessionRevision: input.sessionRevision, generation: input.generation, callId: input.callId, value: input.value };
+    case "consult":
+      if (!isToken(input.generation) || !isCallId(input.callId) || !isTransferDestination(input.destination)) break;
+      return { operation: "consult", sessionRevision: input.sessionRevision, generation: input.generation, callId: input.callId, destination: input.destination };
+    case "consult-cancel":
+    case "consult-complete":
+      if (!isToken(input.generation) || !isCallId(input.callId) || !isIntentId(input.requestId)) break;
+      return { operation: input.operation, sessionRevision: input.sessionRevision, generation: input.generation, callId: input.callId, requestId: input.requestId };
     case "transfer":
       if (!isToken(input.generation) || !isCallId(input.callId) || !isTransferDestination(input.destination)) break;
       return { operation: "transfer", sessionRevision: input.sessionRevision, generation: input.generation, callId: input.callId, destination: input.destination };
@@ -122,6 +139,10 @@ function parseHelperEvent(input: unknown): HelperEvent | null {
       !isToken(input.sessionRevision) || !isToken(input.accountId)) return null;
   const base = { version: 1 as const, generation: input.generation, sequence: input.sequence as number,
     sessionRevision: input.sessionRevision, accountId: input.accountId };
+  if (input.type === "consultation" && isCallId(input.callId) && isIntentId(input.requestId) &&
+      (input.consultId === null || isCallId(input.consultId)) && typeof input.originalAlive === "boolean" && typeof input.consultConnected === "boolean" &&
+      typeof input.phase === "string" && (WARM_PHASES as readonly string[]).includes(input.phase))
+    return { ...base, type: "consultation", callId: input.callId, requestId: input.requestId, consultId: input.consultId as string | null, originalAlive: input.originalAlive, consultConnected: input.consultConnected, phase: input.phase as WarmPhase };
   if (input.type === "registration" && typeof input.registered === "boolean")
     return { ...base, type: "registration", registered: input.registered };
   if (input.type === "call" && isCallId(input.callId) && typeof input.state === "string" && states.includes(input.state) &&
@@ -143,6 +164,12 @@ function parseHelperEvent(input: unknown): HelperEvent | null {
 export class DesktopCallBoundary {
   private generation: string | null = null;
   private session: DesktopSession | null = null;
+  private warmSupported = false;
+  private consultation: PublicConsultation | null = null;
+  private warmConsultId: string | null = null;
+  private warmSent = new Set<string>();
+  private warmTimer: ReturnType<typeof setTimeout> | null = null;
+  private warmEnding = new Map<string, "requesting" | "reconcile">();
   private transferSupported = false;
   private transfer: { callId: string; intentId: string; state: TransferState; callbackSeen: boolean; timer: ReturnType<typeof setTimeout> | null } | null = null;
   private sequence = 0;
@@ -170,6 +197,38 @@ export class DesktopCallBoundary {
   /** Only the verified supervisor may set this from a successful init reply. */
   setTransferCapability(supported: boolean): void { this.transferSupported = supported; }
 
+  setWarmCapability(supported: boolean): void { this.warmSupported = supported; }
+  private resetWarm(): void {
+    if (this.warmTimer) clearTimeout(this.warmTimer);
+    this.warmTimer = null; this.consultation = null; this.warmConsultId = null; this.warmSent.clear(); this.warmEnding.clear(); this.warmSupported = false;
+  }
+  private armWarmTimeout(owned: PublicConsultation): void {
+    if (this.warmTimer) clearTimeout(this.warmTimer);
+    this.warmTimer = setTimeout(() => {
+      if (this.consultation?.requestId === owned.requestId && !["ready", "returned", "completed", "transfer_failed", "ended"].includes(this.consultation.phase)) {
+        this.consultation = { ...this.consultation, phase: "uncertain" }; this.onStateChange?.();
+      }
+      this.warmTimer = null;
+    }, this.dialCallbackTimeoutMs);
+  }
+  private advanceWarm(): void {
+    const owned = this.consultation;
+    if (!owned || !this.session || !this.generation || !owned.originalAlive) return;
+    const operation = ({ held_ready: "continue", focus_ready: "focus", focused: "unmute", return_ready: "restore", return_audio_ready: "restore" } as const)[owned.phase as "held_ready" | "focus_ready" | "focused" | "return_ready" | "return_audio_ready"];
+    if (!operation) return;
+    const key = `${owned.requestId}:${operation}:${owned.phase}`;
+    if (this.warmSent.has(key)) return;
+    this.warmSent.add(key); // Reserve each continuation before a synchronous callback.
+    const generation = this.generation, session = this.session;
+    void this.port.execute({ version: 1, generation, sessionRevision: session.revision, accountId: session.accountId,
+      operation: "warm", warmOperation: operation, callId: owned.originalId, requestId: owned.requestId }).catch(() => {
+      if (this.consultation?.requestId === owned.requestId && this.session === session && this.generation === generation &&
+          this.consultation.phase === owned.phase) {
+        this.consultation = { ...this.consultation, phase: "uncertain" }; this.onStateChange?.();
+      }
+    });
+  }
+
   private resetPending(): void {
     if (this.transfer?.timer) clearTimeout(this.transfer.timer);
     this.transfer = null;
@@ -189,6 +248,7 @@ export class DesktopCallBoundary {
   startHelperGeneration(generation: string): void {
     if (!isToken(generation) || generation === this.generation) throw new Error("Invalid helper generation");
     this.resetPending();
+    this.resetWarm();
     this.transferSupported = false;
     this.generation = generation;
     this.session = null;
@@ -207,6 +267,7 @@ export class DesktopCallBoundary {
         !Number.isSafeInteger(session.extensionId) || session.extensionId <= 0)
       throw new Error("Invalid desktop session");
     this.resetPending();
+    this.resetWarm();
     this.session = Object.freeze({ ...session });
     this.registered = false;
     this.call = null;
@@ -218,6 +279,7 @@ export class DesktopCallBoundary {
   /** Logout, helper exit, or account change immediately invalidates old calls. */
   clear(): void {
     this.resetPending();
+    this.resetWarm();
     this.transferSupported = false;
     this.session = null;
     this.registered = false;
@@ -232,6 +294,21 @@ export class DesktopCallBoundary {
     if (!event || !this.session || event.generation !== this.generation ||
         event.sessionRevision !== this.session.revision || event.accountId !== this.session.accountId ||
         event.sequence <= this.sequence) return false;
+    if (event.type === "consultation") {
+      const owned = this.consultation;
+      if (!this.warmSupported || !owned || event.requestId !== owned.requestId || event.callId !== owned.originalId ||
+          event.consultId === owned.originalId || (event.consultId && this.terminatedCallIds.has(event.consultId)) ||
+          (event.originalAlive && this.terminatedCallIds.has(event.callId)) ||
+          (event.consultId && this.warmConsultId && event.consultId !== this.warmConsultId) ||
+          (owned.consultId && event.consultId && event.consultId !== owned.consultId)) return false;
+      this.sequence = event.sequence;
+      if (event.consultId) this.warmConsultId = event.consultId;
+      if (owned.consultId && !event.consultId) { this.terminatedCallIds.add(owned.consultId); this.warmEnding.delete(owned.consultId); }
+      this.consultation = { originalId: event.callId, requestId: event.requestId, consultId: event.consultId, originalAlive: event.originalAlive, consultConnected: event.consultConnected, phase: event.phase };
+      if (["ready", "returned", "completed", "transfer_failed", "ended"].includes(event.phase) && this.warmTimer) { clearTimeout(this.warmTimer); this.warmTimer = null; }
+      this.advanceWarm();
+      return true;
+    }
     if (event.type === "registration") {
       this.sequence = event.sequence;
       this.registered = event.registered;
@@ -265,11 +342,13 @@ export class DesktopCallBoundary {
       this.holdMessage = null;
       return true;
     }
+    if (this.consultation && this.consultation.phase !== "ended" && event.callId !== this.consultation.originalId) return false;
     if (event.state === "terminated") {
       if (this.call?.id !== event.callId) return false;
       this.sequence = event.sequence;
       this.terminatedCallIds.add(event.callId);
       this.call = null;
+      if (this.consultation?.originalId === event.callId) this.consultation = { ...this.consultation, originalAlive: false, phase: "original_ended" };
       this.holdMessage = null;
       this.resetPending();
       return true;
@@ -278,6 +357,10 @@ export class DesktopCallBoundary {
     if (this.call && this.call.id !== event.callId) return false; // one-call policy
     if (!this.registered && event.state !== "incoming") return false;
     this.sequence = event.sequence;
+    if (!this.call && this.consultation && !this.consultation.originalAlive && !this.consultation.consultId) {
+      this.consultation = null; this.warmConsultId = null; this.warmSent.clear(); this.warmEnding.clear();
+      if (this.warmTimer) clearTimeout(this.warmTimer); this.warmTimer = null;
+    }
     this.call = { id: event.callId, state: event.state, muted: event.muted ?? this.call?.muted ?? false };
     if (this.pendingCallAction?.operation === "answer" && this.pendingCallAction.callId === event.callId &&
         (event.state === "connected" || event.state === "held")) this.clearPendingCallAction();
@@ -292,9 +375,11 @@ export class DesktopCallBoundary {
   }
 
   snapshot(): PublicSnapshot {
-    return { version: 1, registered: this.registered, call: this.call ? { ...this.call } : null,
-      dialState: this.dialState, callActionState: this.pendingCallAction?.phase ?? "idle",
-      holdMessage: this.holdMessage, ...(this.transferSupported ? { transfer: this.transfer?.state ?? "ready" } : {}) };
+    const owned = this.consultation;
+    const visibleCall = this.call ?? (owned?.consultId && !owned.originalAlive ? { id: owned.consultId, state: owned.consultConnected ? "connected" as const : "dialing" as const, muted: false } : null);
+    return { version: 1, registered: this.registered, call: visibleCall ? { ...visibleCall } : null,
+      dialState: owned && !owned.originalAlive && !owned.consultId && owned.phase !== "ended" ? "reconcile" : this.dialState, callActionState: this.pendingCallAction?.phase ?? "idle",
+      holdMessage: this.holdMessage, ...(this.warmSupported ? { warmTransferAvailable: true as const } : {}), ...(owned ? { consultation: { ...owned } } : {}), ...(this.transferSupported ? { transfer: this.transfer?.state ?? "ready" } : {}) };
   }
 
   async handleRendererAction(input: unknown, currentSession: DesktopSession | null): Promise<PublicSnapshot> {
@@ -308,10 +393,10 @@ export class DesktopCallBoundary {
 
     const command: HelperCommand = {
       version: 1, generation: this.generation, sessionRevision: this.session.revision,
-      accountId: this.session.accountId, operation: action.operation,
+      accountId: this.session.accountId, operation: ["consult", "consult-cancel", "consult-complete"].includes(action.operation) ? "warm" : action.operation as HelperCommand["operation"],
     };
     if (action.operation === "dial") {
-      if (!this.registered || this.call || this.dialState !== "idle") throw new Error("Calling is unavailable");
+      if (!this.registered || this.call || this.consultation?.consultId || this.dialState !== "idle") throw new Error("Calling is unavailable");
       // Reserve the single-call slot before awaiting the helper. Command
       // acceptance is not a call callback, so the reservation remains until
       // a callback arrives. A timeout requires reconciliation, not a retry.
@@ -342,10 +427,45 @@ export class DesktopCallBoundary {
         throw new Error("Calling session changed");
       return this.snapshot();
     }
+    if (action.operation === "consult" || action.operation === "consult-cancel" || action.operation === "consult-complete") {
+      if (!this.warmSupported || action.generation !== this.generation) throw new Error("Consultation unavailable");
+      let owned = this.consultation;
+      if (action.operation === "consult") {
+        if (!this.registered || this.call?.id !== action.callId || this.call.state !== "connected" || owned || this.transfer || this.pendingCallAction || this.holdMessage || this.pendingCallCommands.size) throw new Error("Consultation unavailable; one attempt per call");
+        owned = { originalId: action.callId, requestId: globalThis.crypto.randomUUID(), consultId: null, originalAlive: true, consultConnected: false, phase: "holding" };
+        this.consultation = owned; this.armWarmTimeout(owned);
+      } else {
+        if (!owned || owned.originalId !== action.callId || owned.requestId !== action.requestId || !owned.originalAlive) throw new Error("Consultation changed");
+        if (action.operation === "consult-complete" && owned.phase !== "ready") throw new Error("Wait for consultation audio");
+        if (action.operation === "consult-cancel" && ["transferring", "completed", "uncertain", "canceling", "returned"].includes(owned.phase)) throw new Error("Consultation cannot return yet; End remains available");
+        this.consultation = { ...owned, phase: action.operation === "consult-complete" ? "transferring" : "canceling" };
+        this.armWarmTimeout(owned);
+      }
+      const operation = action.operation === "consult" ? "begin" : action.operation === "consult-complete" ? "complete" : "cancel";
+      const key = `${owned.requestId}:${operation}`;
+      if (this.warmSent.has(key)) throw new Error("Consultation action already attempted");
+      this.warmSent.add(key);
+      try { await this.port.execute({ ...command, operation: "warm", warmOperation: operation, callId: owned.originalId, requestId: owned.requestId,
+        ...(action.operation === "consult" ? { destination: action.destination } : operation === "complete" ? { intentId: globalThis.crypto.randomUUID() } : {}) }); }
+      catch (error) {
+        if (operation === "cancel" && error instanceof HelperCommandRejectedError && this.consultation?.requestId === owned.requestId) this.warmSent.delete(key);
+        throw new Error("Consultation action could not be confirmed; End remains available");
+      }
+      if (this.session?.revision !== action.sessionRevision || this.generation !== action.generation) throw new Error("Calling session changed");
+      return this.snapshot();
+    }
+    if (action.operation === "end" && this.consultation?.consultId === action.callId && action.generation === this.generation) {
+      if (this.warmEnding.has(action.callId)) throw new Error("Call action is in progress");
+      this.warmEnding.set(action.callId, "requesting");
+      try { await this.port.execute({ ...command, callId: action.callId }); }
+      catch (error) { if (error instanceof HelperCommandRejectedError) this.warmEnding.delete(action.callId); else this.warmEnding.set(action.callId, "reconcile"); throw new Error("Call action could not complete"); }
+      if (this.session?.revision !== action.sessionRevision || this.generation !== action.generation) throw new Error("Calling session changed");
+      return this.snapshot();
+    }
     if (!this.call || this.call.id !== action.callId || action.generation !== this.generation)
       throw new Error("Call changed");
     if (action.operation === "transfer") {
-      if (!this.transferSupported || !this.registered || this.call.state !== "connected" || this.holdMessage ||
+      if (this.consultation || !this.transferSupported || !this.registered || this.call.state !== "connected" || this.holdMessage ||
           this.transfer || this.pendingCallAction || this.pendingCallCommands.has(`hold:${action.callId}`))
         throw new Error("Transfer unavailable; one attempt per call");
       const reservation = { callId: action.callId, intentId: globalThis.crypto.randomUUID(), state: "pending" as TransferState,
@@ -370,6 +490,7 @@ export class DesktopCallBoundary {
         throw new Error("Calling session changed");
       return this.snapshot();
     }
+    if (this.consultation && !["returned", "ended"].includes(this.consultation.phase) && action.operation !== "end") throw new Error("Consultation owns call controls; End remains available");
     if (action.operation === "hold" && this.transfer) throw new Error("Hold unavailable after transfer attempt");
     if (action.operation === "answer" && this.call.state !== "incoming") throw new Error("Call is not ringing");
     if ((action.operation === "mute" || action.operation === "hold" || action.operation === "dtmf") &&

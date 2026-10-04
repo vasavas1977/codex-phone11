@@ -360,10 +360,34 @@ function render(): void {
   const transfer = state.calling.transfer;
   if (transferControls) transferControls.hidden = !call || transfer === undefined;
   (byId('hold') as HTMLButtonElement).disabled = transfer !== undefined && transfer !== 'ready';
+  const consultation = state.calling.consultation;
   const canTransfer = !busy && !!call && call.state === 'connected' && state.calling.registered &&
-    transfer === 'ready' && state.calling.callActionState === 'idle' && !state.calling.holdMessage;
+    transfer === 'ready' && !consultation && state.calling.callActionState === 'idle' && !state.calling.holdMessage;
   if (transferButton) transferButton.disabled = !canTransfer;
   if (transferDestination) transferDestination.disabled = !canTransfer;
+  const consultControls = maybeById('consult-controls');
+  if (consultControls) consultControls.hidden = state.calling.warmTransferAvailable !== true || !call;
+  const consultButton = maybeById('consult') as HTMLButtonElement | null;
+  if (consultButton) { consultButton.hidden = !!consultation; consultButton.disabled = !canTransfer; }
+  const complete = maybeById('consult-complete') as HTMLButtonElement | null;
+  if (complete) { complete.hidden = !consultation?.originalAlive || !consultation.consultId; complete.disabled = busy || consultation?.phase !== 'ready'; }
+  const cancel = maybeById('consult-cancel') as HTMLButtonElement | null;
+  if (cancel) { cancel.hidden = !consultation?.originalAlive || ['returned','ended'].includes(consultation.phase); cancel.disabled = busy || ['transferring','completed','uncertain','canceling'].includes(consultation?.phase ?? ''); }
+  const consultEnd = maybeById('consult-end') as HTMLButtonElement | null;
+  if (consultEnd) { consultEnd.hidden = !consultation?.consultId || !consultation.originalAlive; consultEnd.disabled = busy; }
+  if (consultation && !['returned','ended'].includes(consultation.phase)) {
+    (byId('hold') as HTMLButtonElement).disabled = true;
+    (byId('mute') as HTMLButtonElement).disabled = true;
+  } else (byId('mute') as HTMLButtonElement).disabled = false;
+  const consultMessage = maybeById('consult-message');
+  if (consultMessage) consultMessage.textContent = !consultation ? 'Speak with the recipient before completing transfer.' :
+    consultation.phase === 'ready' ? 'Consultation connected. Complete transfer or return to the original call.' :
+    consultation.phase === 'returned' ? 'Returned to original call. One consultation attempt per call.' :
+    consultation.phase === 'completed' ? 'Transfer confirmed. Waiting for the calling service to end both calls.' :
+    consultation.phase === 'transfer_failed' ? 'Transfer not confirmed. Return to the original call or end the calls.' :
+    consultation.phase === 'original_ended' ? 'Original call ended. End the remaining consultation call when ready.' :
+    consultation.phase === 'uncertain' || consultation.phase.endsWith('failed') ? 'Consultation could not be confirmed. End remains available.' :
+    'Waiting for the calling service to confirm consultation state. End remains available.';
   if (transferMessage) transferMessage.textContent = transfer === 'pending' ? 'Waiting for transfer confirmation. End and Mute remain available.' :
     transfer === 'confirmed' ? 'Transfer confirmed. Waiting for the calling service to end this call.' :
     transfer === 'refused' ? 'Transfer refused. Original call remains available; one attempt per call.' :
@@ -628,6 +652,25 @@ maybeById('transfer')?.addEventListener('click', () => {
       !state.calling.registered || state.calling.callActionState !== 'idle' || state.calling.holdMessage) return;
   if (!destination || !/^\+?[0-9]{1,32}$/.test(destination)) { message('Enter a number with up to 32 digits.'); return; }
   void request({ operation: 'transfer', generation: state.generation, callId: call.id, destination });
+});
+maybeById('consult')?.addEventListener('click', () => {
+  const call = state?.calling.call;
+  const destination = (maybeById('transfer-destination') as HTMLInputElement | null)?.value.trim();
+  if (busy || !call || !state?.generation || state.calling.warmTransferAvailable !== true || state.calling.consultation ||
+      call.state !== 'connected' || state.calling.transfer !== 'ready' || !state.calling.registered || state.calling.callActionState !== 'idle' || state.calling.holdMessage) return;
+  if (!destination || !/^\+?[0-9]{1,32}$/.test(destination)) { message('Enter a number with up to 32 digits.'); return; }
+  void request({ operation: 'consult', generation: state.generation, callId: call.id, destination });
+});
+for (const operation of ['consult-cancel','consult-complete','consult-end'] as const) maybeById(operation)?.addEventListener('click', () => {
+  const owned = state?.calling.consultation;
+  if (busy || !owned || !state?.generation || state.calling.warmTransferAvailable !== true) return;
+  if (operation === 'consult-end') {
+    if (owned.consultId) void request({ operation: 'end', generation: state.generation, callId: owned.consultId });
+    return;
+  }
+  if (!owned.originalAlive || (operation === 'consult-complete' && owned.phase !== 'ready') ||
+      (operation === 'consult-cancel' && ['transferring','completed','uncertain','canceling','returned'].includes(owned.phase))) return;
+  void request({ operation, generation: state.generation, callId: owned.originalId, requestId: owned.requestId });
 });
 maybeById('backspace')?.addEventListener('click', () => {
   if (busy || !state?.signedIn || state.calling.call || !state.calling.registered || state.calling.dialState !== 'idle') return;

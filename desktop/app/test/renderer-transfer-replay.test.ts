@@ -155,3 +155,31 @@ test('a late action completion cannot overwrite a replaced account lifecycle eve
     assert.equal(f.get('transfer').disabled, false);
   } finally { f.cleanup(); }
 });
+
+
+test('warm controls are gated and callback state outranks accepted begin reply', async () => {
+  const x = await fixture();
+  try {
+    assert.equal(x.get('consult-controls').hidden, true);
+    x.emit({ ...snapshot('81'), warmTransferAvailable: true });
+    x.get('transfer-destination').value = '3002'; x.click('consult');
+    assert.equal(x.pending[0].input.operation, 'consult');
+    const owned = { originalId: '81', requestId: '12345678-1234-4234-8234-123456789abc', consultId: '82', originalAlive: true, consultConnected: true, phase: 'ready' };
+    x.emit({ ...snapshot('81','held'), warmTransferAvailable: true, consultation: owned });
+    x.reply(0, { ...snapshot('81'), warmTransferAvailable: true, consultation: { ...owned, consultId: null, phase: 'holding' } });
+    await tick();
+    assert.equal(x.get('consult-complete').disabled, false);
+    assert.equal(x.get('consult').hidden, true);
+    x.click('consult-complete');
+    assert.equal(x.pending[1].input.operation, 'consult-complete');
+    assert.equal(x.pending[1].input.requestId, owned.requestId);
+    x.emit({ ...snapshot('81','held'), warmTransferAvailable: true, consultation: { ...owned, phase: 'transferring' } });
+    x.reply(1, { ...snapshot('81','held'), warmTransferAvailable: true, consultation: owned });
+    await tick();
+    assert.equal(x.get('consult-complete').disabled, true);
+    assert.equal(x.get('consult-cancel').disabled, true);
+    assert.equal(x.get('consult-end').hidden, false);
+    x.click('consult-end');
+    assert.equal(x.pending[2].input.callId, '82');
+  } finally { x.cleanup(); }
+});
