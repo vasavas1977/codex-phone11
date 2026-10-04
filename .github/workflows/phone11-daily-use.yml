@@ -342,8 +342,139 @@ jobs:
             await client.end();
           }
           JS
-      - name: Require actual routing authorization and revocation race checks
-        run: pnpm exec vitest run tests/phone11-routing-write-authority.test.ts
+      - name: Require actual routing write and read authority checks
+        # Both suites reset this fixture; keep separate invocations sequential.
+        run: |
+          pnpm exec vitest run tests/phone11-routing-write-authority.test.ts
+          pnpm exec vitest run tests/phone11-routing-read-authority.test.ts
+
+
+  legacy-provisioning-authority-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: p11_legacy_prov_owner
+          POSTGRES_PASSWORD: p11-legacy-disposable-only-c9
+          POSTGRES_DB: phone11_legacy_prov_test
+        ports:
+          - "127.0.0.1:55444:5432"
+        options: >-
+          --health-cmd "pg_isready -U p11_legacy_prov_owner -d phone11_legacy_prov_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Dedicated synthetic fixture; the runtime role has no database/schema CREATE.
+      PHONE11_LEGACY_PROVISIONING_REQUIRE_POSTGRES: "1"
+      PHONE11_LEGACY_PROVISIONING_TEST_DATABASE_URL: postgres://p11_legacy_prov_runtime:p11-legacy-runtime-disposable-only-c9@127.0.0.1:55444/phone11_legacy_prov_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Admit and prepare only the disposable legacy provisioning service
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import pg from 'pg';
+          const id = process.env.PG_CONTAINER_ID;
+          assert.match(id ?? '', /^[a-f0-9]{64}$/);
+          for (const key of ['PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD','PGSSLMODE','PGSERVICE','PGSERVICEFILE']) {
+            assert.equal(process.env[key], undefined, 'Unexpected PostgreSQL fallback: ' + key);
+          }
+          assert.equal(process.env.PHONE11_LEGACY_PROVISIONING_REQUIRE_POSTGRES, '1');
+          const [container] = JSON.parse(execFileSync('docker', ['inspect', id], { encoding: 'utf8' }));
+          assert.equal(container.Id, id);
+          assert.equal(container.State.Running, true);
+          assert.equal(container.Config.Image, 'postgres:17-bookworm');
+          const env = new Map(container.Config.Env.map(value => {
+            const at = value.indexOf('='); return [value.slice(0, at), value.slice(at + 1)];
+          }));
+          assert.equal(env.get('POSTGRES_USER'), 'p11_legacy_prov_owner');
+          assert.equal(env.get('POSTGRES_DB'), 'phone11_legacy_prov_test');
+          assert.equal(env.get('POSTGRES_PASSWORD'), 'p11-legacy-disposable-only-c9');
+          assert.deepEqual(container.NetworkSettings.Ports['5432/tcp'], [{ HostIp: '127.0.0.1', HostPort: '55444' }]);
+          const url = new URL(process.env.PHONE11_LEGACY_PROVISIONING_TEST_DATABASE_URL);
+          assert.equal(url.protocol, 'postgres:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '55444');
+          assert.equal(url.pathname, '/phone11_legacy_prov_test');
+          assert.equal(url.username, 'p11_legacy_prov_runtime');
+          assert.equal(url.password, 'p11-legacy-runtime-disposable-only-c9');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          const client = new pg.Client({
+            host: '127.0.0.1', port: 55444, database: 'phone11_legacy_prov_test',
+            user: 'p11_legacy_prov_owner', password: 'p11-legacy-disposable-only-c9',
+            ssl: false, connectionTimeoutMillis: 3000, query_timeout: 10000,
+          });
+          try {
+            await client.connect();
+            const { rows: [identity] } = await client.query(
+              "SELECT current_database() db,current_user role,current_setting('server_version_num') version");
+            assert.equal(identity.db, 'phone11_legacy_prov_test');
+            assert.equal(identity.role, 'p11_legacy_prov_owner');
+            assert.ok(Number(identity.version) >= 170000 && Number(identity.version) < 180000);
+            const schemas = ['p11_legacy_prov_test','p11_legacy_prov_missing','p11_legacy_prov_partial'];
+            const existing = await client.query('SELECT nspname FROM pg_namespace WHERE nspname=ANY($1::text[])', [schemas]);
+            assert.equal(existing.rowCount, 0, 'Fixture schemas must be absent before setup');
+            const runtime = await client.query('SELECT rolname FROM pg_roles WHERE rolname=$1', ['p11_legacy_prov_runtime']);
+            assert.equal(runtime.rowCount, 0, 'Runtime role must be absent before setup');
+            // All DDL belongs to this admitted synthetic fixture owner.
+            await client.query(`
+              BEGIN;
+              CREATE ROLE p11_legacy_prov_runtime LOGIN PASSWORD 'p11-legacy-runtime-disposable-only-c9' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+              REVOKE CREATE ON DATABASE phone11_legacy_prov_test FROM PUBLIC;
+              REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+              CREATE SCHEMA p11_legacy_prov_test;
+              CREATE SCHEMA p11_legacy_prov_missing;
+              CREATE SCHEMA p11_legacy_prov_partial;
+              SET LOCAL search_path=p11_legacy_prov_test;
+              CREATE TABLE fixture_identity(pin text NOT NULL);
+              INSERT INTO fixture_identity VALUES ('c9f3c2-legacy-provisioning-disposable-v1');
+              CREATE TABLE tenants(id integer PRIMARY KEY,name text,plan text,status text);
+              CREATE TABLE organizations(id integer PRIMARY KEY,name text,plan text);
+              CREATE TABLE tenant_memberships(user_id integer,tenant_id integer,status text,role text,PRIMARY KEY(user_id,tenant_id));
+              INSERT INTO tenants VALUES (7,'Fixture7','business','active'),(8,'Fixture8','business','active');
+              INSERT INTO organizations SELECT id,name,plan FROM tenants;
+              INSERT INTO tenant_memberships VALUES (9,7,'active','admin'),(10,7,'active','owner'),(33,7,'active','member'),(11,8,'active','admin'),(44,8,'active','member');
+              CREATE TABLE subscriber(id serial PRIMARY KEY,username text NOT NULL,domain text NOT NULL,password text,ha1 text,ha1b text,UNIQUE(username,domain));
+              CREATE TABLE extensions(id serial PRIMARY KEY,org_id integer,tenant_id integer NOT NULL,user_id integer,extension_number text,display_name text,type text,sip_username text,sip_domain text,sip_password text,caller_id_name text,caller_id_number text,transport text,status text,deleted_at timestamptz,updated_at timestamptz);
+              CREATE TABLE sip_accounts(id serial PRIMARY KEY,tenant_id integer NOT NULL,org_id integer,extension_id integer,user_id integer,sip_username text CHECK(sip_username<>'4102'),sip_domain text,ha1 text,ha1b text,secret_ciphertext bytea,secret_iv bytea,secret_tag bytea,dek_id text,transport_preference text,status text,deleted_at timestamptz,updated_at timestamptz);
+              CREATE TABLE user_extensions(user_id integer,extension_id integer,is_primary boolean,UNIQUE(user_id,extension_id));
+              CREATE TABLE did_numbers(id serial PRIMARY KEY,org_id integer,tenant_id integer,number text,description text,destination_type text,destination_value text,status text);
+              CREATE TABLE p11_legacy_prov_missing.tenants AS TABLE tenants;
+              CREATE TABLE p11_legacy_prov_missing.tenant_memberships AS TABLE tenant_memberships;
+              CREATE TABLE p11_legacy_prov_partial.tenants AS TABLE tenants;
+              CREATE TABLE p11_legacy_prov_partial.tenant_memberships AS TABLE tenant_memberships;
+              CREATE TABLE p11_legacy_prov_partial.did_numbers(id serial PRIMARY KEY,org_id integer,tenant_id integer,number text,description text,destination_type text,status text);
+              GRANT USAGE ON SCHEMA p11_legacy_prov_test,p11_legacy_prov_missing,p11_legacy_prov_partial TO p11_legacy_prov_runtime;
+              GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA p11_legacy_prov_test,p11_legacy_prov_missing,p11_legacy_prov_partial TO p11_legacy_prov_runtime;
+              GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA p11_legacy_prov_test,p11_legacy_prov_partial TO p11_legacy_prov_runtime;
+              COMMIT;
+            `);
+          } finally {
+            await client.end();
+          }
+          JS
+      - name: Require actual no-DDL authenticated provisioning and rollback checks
+        run: |
+          pnpm exec vitest run tests/phone11-legacy-provisioning-write-authority.test.ts
+          pnpm exec vitest run tests/phone11-legacy-provisioning-authority-postgres.test.ts
+          pnpm exec vitest run tests/phone11-legacy-provisioning-read-no-ddl.test.ts
+          pnpm exec vitest run tests/phone11-legacy-provisioning-reads-postgres.test.ts
 
 
   host-eviction-postgres-tests:

@@ -26,9 +26,12 @@ Independent source and CI-fragment reviews are separate from hosted CI results.
 Hosted CI for this integrated follow-up is pending at this document's commit;
 the PR checks and private release receipt record its later exact-head result.
 
-This is a mutation-authority fix. Existing cached read authorization, external
-writers and deployed database privileges are not certified by these checks.
-The source writer inventory remains incomplete for commissioning: protected
+This is a mutation-authority fix. The separately reviewed
+[routing-read and authenticated legacy provisioning follow-up](PBX-READ-PROVISIONING-AUTHORITY-20261004.md)
+checks current read admission and prevents those provisioning writers from
+initializing schema before authorization. External writers and deployed database
+privileges remain outside these synthetic checks. The source writer inventory
+remains incomplete for commissioning: protected
 target-clone rehearsal, accountable active/rollback writers and operator review
 are still required by [PBX release gates](PBX-RELEASE-GATES-20261001.md).
 No production schema, routing flag or telephony provider was changed.

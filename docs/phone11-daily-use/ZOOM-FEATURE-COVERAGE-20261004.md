@@ -75,7 +75,12 @@ These changes do not close unchecked acceptance rows below.
    holds live authority through each mutation and reuses its transaction client
    for capability reads. Eight disposable PG17 checks are recorded. Its new
    hosted CI proof is pending at this document's commit; it is outside the
-   Build 116 source pin and does not commission routing.
+   Build 116 source pin and does not commission routing. The separate
+   [read and legacy provisioning authority follow-up](PBX-READ-PROVISIONING-AUTHORITY-20261004.md)
+   replaces cached facility-read admission and removes schema initialization
+   from three authenticated legacy writers and three legacy admin list reads.
+   Its synthetic checks do not close
+   production privileges, external writer ownership or operator commissioning.
 4. **Connect11:** own provider admission, media capability and authoritative
    host controls. Its 4 October read-only inventory of current main establishes
    plain-video permanent-member eviction source, but no end-for-all, remote
