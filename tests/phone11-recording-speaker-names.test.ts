@@ -95,16 +95,10 @@ beforeEach(() => {
   m.getItem.mockReset().mockResolvedValue(null);
   m.setItem.mockReset().mockResolvedValue(undefined);
 });
-it("defaults inbound and outbound calls to Me and the matched contact", () => {
-  expect(defaultCallSpeakerNames("inbound", "Somchai")).toEqual({
-    speaker1: "Somchai",
-    speaker2: "Me",
-  });
-  expect(defaultCallSpeakerNames("outbound", "Somchai")).toEqual({
-    speaker1: "Me",
-    speaker2: "Somchai",
-  });
-  expect(defaultCallSpeakerNames("outbound")).toEqual({ speaker1: "Me" });
+it("does not infer diarized identities from call direction", () => {
+  expect(defaultCallSpeakerNames("inbound", "Somchai")).toEqual({});
+  expect(defaultCallSpeakerNames("outbound", "Somchai")).toEqual({});
+  expect(defaultCallSpeakerNames("outbound")).toEqual({});
 });
 it("saves confirmed names and loads them when the same recording is reopened", async () => {
   render();

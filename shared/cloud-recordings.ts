@@ -1,4 +1,11 @@
 export type RecordingPolicyMode = "off" | "manual" | "automatic";
+/** Public, non-identifying result of verified stereo capture evidence. */
+export type VerifiedSpeakerRoleMap = {
+  schemaVersion: 1;
+  verified: true;
+  speaker1Role: "extension" | "remote";
+  speaker2Role: "extension" | "remote";
+};
 export type CloudRecordingStatus = "off" | "pending" | "recording" | "ready" | "failed";
 export type CloudSummaryStatus = "off" | "queued" | "processing" | "ready" | "failed";
 export interface CloudRecording {
@@ -10,6 +17,8 @@ export interface CloudRecording {
 }
 export interface CloudRecordingDetail extends CloudRecording {
   playbackPath?: string; transcript?: string;
+  /** Present only when the server verified the diarized stereo role map. */
+  speakerRoles?: VerifiedSpeakerRoleMap;
   participantNames?: { speaker1?: string; speaker2?: string };
   manualControls?: {canStart:boolean;canStop:boolean};
   summary?: { summary: string; actionItems: string[]; language: string };

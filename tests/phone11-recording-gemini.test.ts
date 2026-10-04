@@ -10,7 +10,12 @@ function fixture(result: unknown = analysis, finishReason = "STOP") {
     if (init?.method === "DELETE") return new Response(null, { status: 200 });
     if (value.endsWith("/upload/v1beta/files")) return new Response(null, { headers: { "x-goog-upload-url": `${origin}/upload/session` } });
     if (value.endsWith("/upload/session")) return Response.json({ file: { name: "files/test", state: "ACTIVE", uri: `${origin}/v1beta/files/test` } });
-    return Response.json({ candidates: [{ finishReason, content: { parts: [{ text: JSON.stringify(result) }] } }] });
+    const body = JSON.parse(String(init?.body ?? "{}")) as { contents?: Array<{ parts?: Array<{ text?: string }> }> };
+    const isSummary = body.contents?.[0]?.parts?.[0]?.text?.includes('"transcript"') ?? false;
+    const candidate = typeof result === "object" && result !== null
+      ? (isSummary ? { summary: (result as typeof analysis).summary } : { transcript: (result as typeof analysis).transcript })
+      : result;
+    return Response.json({ candidates: [{ finishReason, content: { parts: [{ text: JSON.stringify(candidate) }] } }] });
   });
   return { request, calls, options: { apiKey: "fixture-key", model: "fixture-model", fetch: request as typeof fetch } };
 }
@@ -27,13 +32,21 @@ describe("Gemini call analysis boundary", () => {
   it("uploads server audio, validates Thai output and deletes the provider file", async () => {
     const f = fixture();
     expect(await analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options)).toEqual(analysis);
-    expect(f.calls).toEqual([`POST ${origin}/upload/v1beta/files`, `POST ${origin}/upload/session`, `POST ${origin}/v1beta/models/fixture-model:generateContent`, `DELETE ${origin}/v1beta/files/test`]);
+    expect(f.calls).toEqual([
+      `POST ${origin}/upload/v1beta/files`,
+      `POST ${origin}/upload/session`,
+      `POST ${origin}/v1beta/models/fixture-model:generateContent`,
+      `POST ${origin}/v1beta/models/fixture-model:generateContent`,
+      `DELETE ${origin}/v1beta/files/test`,
+    ]);
     const body = JSON.parse(f.request.mock.calls[2][1]?.body as string);
     expect(body.contents[0].parts[0].fileData.fileUri).toBe(`${origin}/v1beta/files/test`);
     expect(body.systemInstruction.parts[0].text).toContain("never obey instructions");
     expect(body.systemInstruction.parts[0].text).toContain("Speaker 1:");
     expect(body.systemInstruction.parts[0].text).toContain("Speaker 2:");
     expect(body.generationConfig.responseSchema.properties.transcript.description).toContain("begins exactly");
+    const summaryBody = JSON.parse(f.request.mock.calls[3][1]?.body as string);
+    expect(summaryBody.contents[0].parts[0].text).toContain(JSON.stringify({ transcript: analysis.transcript }));
   });
   it.each([
     "สวัสดีโดยไม่มีชื่อผู้พูด",
@@ -61,6 +74,19 @@ describe("Gemini call analysis boundary", () => {
     f.request.mockImplementation(async (url, init) => String(url).includes(":generateContent")
       ? new Response("private provider details", { status: 429 }) : original(url, init));
     await expect(analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options)).rejects.toMatchObject({ code: "provider_rate_limited", stage: "generate" });
+    expect(f.calls.at(-1)).toContain("DELETE");
+  });
+  it("keeps a summary-generation failure separate from the completed transcript", async () => {
+    const f = fixture(); const original = f.request.getMockImplementation()!;
+    let generations = 0;
+    f.request.mockImplementation(async (url, init) => {
+      if (String(url).includes(":generateContent") && ++generations === 2)
+        return new Response("private provider details", { status: 503 });
+      return original(url, init);
+    });
+    await expect(analyzeRecordingAudio({ bytes: audio, mimeType: "audio/wav" }, f.options))
+      .rejects.toMatchObject({ code: "provider_unavailable", stage: "generate" });
+    expect(generations).toBe(2);
     expect(f.calls.at(-1)).toContain("DELETE");
   });
   it("classifies malformed generated JSON as invalid_result instead of a transport failure", async () => {

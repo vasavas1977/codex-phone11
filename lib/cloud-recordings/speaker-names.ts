@@ -4,6 +4,7 @@ import {
   mergeTranscriptSpeakerNames,
   type TranscriptSpeakerNames,
 } from "./transcript";
+import type { VerifiedSpeakerRoleMap } from "@/shared/cloud-recordings";
 
 export function speakerNamesStorageKey(ownerId: number, callUuid: string) {
   if (
@@ -39,19 +40,43 @@ export function normalizeAssignedSpeakerNames(
 }
 
 /**
- * Label two-party calls from their direction using only the private contact
- * match for the remote participant and the stable owner label "Me".
+ * Call direction and contacts identify participants, but not diarized labels.
+ * Keep this compatibility export closed until a verified stereo role map exists.
  */
 export function defaultCallSpeakerNames(
-  direction: "inbound" | "outbound",
-  contactName?: string,
+  _direction: "inbound" | "outbound",
+  _contactName?: string,
 ): TranscriptSpeakerNames {
-  const remote = normalizeAssignedSpeakerNames({
-    speaker1: contactName,
-  }).speaker1;
-  return direction === "inbound"
-    ? { ...(remote ? { speaker1: remote } : {}), speaker2: "Me" }
-    : { speaker1: "Me", ...(remote ? { speaker2: remote } : {}) };
+  return {};
+}
+
+/** Convert verified roles into device-local names without using call direction. */
+export function verifiedCallSpeakerNames(
+  roles: VerifiedSpeakerRoleMap | undefined,
+  identities: { extensionName?: string; remoteName?: string },
+): TranscriptSpeakerNames {
+  if (
+    !roles ||
+    roles.schemaVersion !== 1 ||
+    roles.verified !== true ||
+    roles.speaker1Role === roles.speaker2Role
+  )
+    return {};
+  const nameFor = (role: "extension" | "remote") =>
+    role === "extension" ? identities.extensionName : identities.remoteName;
+  const names = normalizeAssignedSpeakerNames({
+    speaker1: nameFor(roles.speaker1Role),
+    speaker2: nameFor(roles.speaker2Role),
+  });
+  if (
+    names.speaker1 &&
+    names.speaker2 &&
+    names.speaker1.localeCompare(names.speaker2, undefined, {
+      sensitivity: "accent",
+    }) === 0
+  )
+    return {};
+  return names;
 }
 
 export function validateAssignedSpeakerNames(input: TranscriptSpeakerNames) {

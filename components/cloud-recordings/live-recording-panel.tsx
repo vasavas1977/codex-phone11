@@ -7,8 +7,8 @@ import { useRecordingSpeakerNames } from "@/hooks/use-recording-speaker-names";
 import { useDeviceContacts } from "@/hooks/use-device-contacts";
 import { deviceContactName } from "@/lib/phone/device-contacts";
 import {
-  defaultCallSpeakerNames,
   normalizeAssignedSpeakerNames,
+  verifiedCallSpeakerNames,
 } from "@/lib/cloud-recordings/speaker-names";
 import { SpeakerNamesEditor } from "./speaker-names-editor";
 import { useColors } from "@/hooks/use-colors";
@@ -98,7 +98,10 @@ export function LiveRecordingPanel({
     ? deviceContactName(contacts.people, detail.number) || contactName
     : undefined;
   const automaticSpeakerNames = detail
-    ? defaultCallSpeakerNames(detail.direction, matchedContactName)
+    ? verifiedCallSpeakerNames(detail.speakerRoles, {
+        extensionName: "Me",
+        remoteName: matchedContactName,
+      })
     : undefined;
   const speakerNames = mergeTranscriptSpeakerNames(
     assigned.names,

@@ -248,7 +248,7 @@ it("renders server summary and transcript only when provided", () => {
   expect(transcriptHTML).toContain("Vasavas");
   expect(transcriptHTML).toContain("View full transcription");
 });
-it("automatically labels inbound voices with the contact and Me", () => {
+it("does not infer inbound speaker identities from direction or caller ID", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -283,13 +283,15 @@ it("automatically labels inbound voices with the contact and Me", () => {
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Somchai Contact");
-  expect(html).toContain("Me");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
+  expect(html).not.toContain("Somchai Contact");
+  expect(html).not.toContain("Me");
   expect(html).not.toContain("SERVER CALLER ID");
   expect(html).not.toContain("Server Extension");
 });
 
-it("automatically labels outbound voices with Me and the contact", () => {
+it("does not infer outbound speaker identities from direction", () => {
   mocks.identity = { id: 1, name: "Vasavas" };
   mocks.contacts = {
     people: [
@@ -320,8 +322,39 @@ it("automatically labels outbound voices with Me and the contact", () => {
       initialTab: "transcription",
     }),
   );
-  expect(html).toContain("Me");
+  expect(html).toContain("Speaker 1");
+  expect(html).toContain("Speaker 2");
+});
+
+it("uses contact and Me only after a verified stereo role map", () => {
+  mocks.identity = { id: 1, name: "Vasavas" };
+  mocks.contacts = {
+    people: [{
+      id: "contact-1",
+      name: "Somchai Contact",
+      phones: [{ number: "+66812345678", label: "Mobile", key: "+66812345678" }],
+    }],
+  };
+  mocks.cloud.detail = {
+    ...item,
+    number: "+66812345678",
+    direction: "inbound",
+    summaryStatus: "ready",
+    transcript: "Speaker 1: Hello\nSpeaker 2: Sawasdee",
+    speakerRoles: {
+      schemaVersion: 1,
+      verified: true,
+      speaker1Role: "remote",
+      speaker2Role: "extension",
+    },
+  };
+  const html = renderToStaticMarkup(createElement(LiveRecordingPanel, {
+    callUuid: item.callUuid,
+    full: true,
+    initialTab: "transcription",
+  }));
   expect(html).toContain("Somchai Contact");
+  expect(html).toContain("Me");
 });
 
 it("uses participant names only when the caller supplies a trusted identity map", () => {
@@ -386,9 +419,7 @@ it.each(["inbound", "outbound"] as const)(
       }),
     );
     expect(html).toContain("Verified participant");
-    expect(html).toContain(
-      direction === "inbound" ? "Me" : "Somchai Contact",
-    );
+    expect(html).toContain("Speaker 2");
     expect(html).not.toContain("Vasavas");
     expect(html).not.toContain("Server caller");
     expect(html).not.toContain("Server extension");
