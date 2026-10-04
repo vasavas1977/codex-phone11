@@ -8,7 +8,7 @@ import { router, protectedProcedure } from "../_core/trpc";
 import { query, withTransaction } from "./db";
 import { writeAuditLog } from "./audit";
 import { invalidateCache } from "./redis";
-import { hasRole, resolveTenantContext } from "./tenant-middleware";
+import { hasRole } from "./tenant-middleware";
 import { readManagementCapabilities, type ManagementCapabilities } from "./schema-capabilities";
 import type { PoolClient } from "pg";
 
@@ -119,11 +119,25 @@ const requireBusinessHoursAdmin = (ctx: any, requestedTenantId?: number) =>
 type TenantResourceTable = "ivr_menus" | "ring_groups" | "call_queues" | "time_conditions";
 
 async function requireTenantAdmin(ctx: any, requestedTenantId?: number) {
-  const tenant = await resolveTenantContext(ctx.user.id, requestedTenantId);
-  if (!hasRole(tenant.role, "admin")) {
-    throw new TRPCError({ code: "FORBIDDEN" });
+  // Reads admit current authority, like IVR, without reusing cached roles or
+  // tenant status. Preserve oldest active membership and explicit selection.
+  const memberships = await query(
+    `SELECT tm.tenant_id, tm.role FROM tenant_memberships tm
+     JOIN tenants t ON t.id = tm.tenant_id
+     WHERE tm.user_id = $1 AND tm.status = 'active' AND t.status = 'active'
+     ORDER BY tm.created_at ASC, tm.tenant_id ASC`,
+    [ctx.user.id],
+  );
+  if (memberships.rows.length === 0) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "User has no active tenant memberships" });
   }
-  return tenant;
+  const selected = requestedTenantId === undefined ? memberships.rows[0]
+    : memberships.rows.find((membership: { tenant_id: number }) => membership.tenant_id === requestedTenantId);
+  if (!selected) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "User does not have access to the requested tenant" });
+  }
+  if (!hasRole(selected.role, "admin")) throw new TRPCError({ code: "FORBIDDEN" });
+  return { tenantId: selected.tenant_id };
 }
 
 async function requireTenantResource(table: TenantResourceTable, id: number, tenantId: number, client: { query: typeof query } = { query }) {
