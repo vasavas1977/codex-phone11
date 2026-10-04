@@ -638,8 +638,9 @@ export async function assignExtensionToUser(
   tenantId: number,
   actorUserId?: number,
 ) {
-  const db = getPool();
-  await ensurePhoneProvisioningSchema(db);
+  // Authenticated writes require operator-prepared schema. Never perform
+  // global schema/seed writes before checking the transaction-held actor.
+  if (actorUserId === undefined) await ensurePhoneProvisioningSchema(getPool());
 
   await withTransaction(async (client) => {
     if (actorUserId !== undefined) await lockLegacyPhoneAdmin(client, actorUserId, tenantId);
@@ -737,8 +738,7 @@ export async function createExtension(input: {
   displayName?: string;
   actorUserId?: number;
 }) {
-  const db = getPool();
-  await ensurePhoneProvisioningSchema(db);
+  if (input.actorUserId === undefined) await ensurePhoneProvisioningSchema(getPool());
 
   const { orgId, extensionNumber, displayName } = input;
   return withTransaction(async (client) => {
@@ -874,8 +874,7 @@ export async function createDidNumber(input: {
   destinationValue?: string;
   actorUserId?: number;
 }) {
-  const db = getPool();
-  await ensurePhoneProvisioningSchema(db);
+  if (input.actorUserId === undefined) await ensurePhoneProvisioningSchema(getPool());
 
   return withTransaction(async (client) => {
     if (input.actorUserId !== undefined) await lockLegacyPhoneAdmin(client, input.actorUserId, input.orgId);
