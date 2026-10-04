@@ -146,5 +146,24 @@ jobs:
         run: |
           test -f modules/phone11-siprix/tests/native-runtime.test.mjs
           test -f modules/phone11-siprix/tests/native-runtime.m
+          test -f modules/phone11-siprix/tests/native-warm-runtime.test.mjs
+          test -f modules/phone11-siprix/tests/native-warm-runtime.m
+          test "$(uname -s)" = Darwin
+          xcrun --find clang
           node scripts/stage-siprix-sdk.mjs
-          node --test modules/phone11-siprix/tests/*.test.mjs
+          node --test --test-reporter=tap modules/phone11-siprix/tests/*.test.mjs | tee "$RUNNER_TEMP/phone11-native-results.tap"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = (Path(os.environ["RUNNER_TEMP"]) / "phone11-native-results.tap").read_text()
+          for key, expected in [("fail", 0), ("skipped", 0), ("cancelled", 0), ("todo", 0)]:
+              assert re.search(rf"^# {key} {expected}$", output, re.M), f"Native {key} gate failed"
+          count = re.search(r"^# tests (\d+)$", output, re.M)
+          assert count and int(count[1]) > 0, "Native tests did not execute"
+          required = ["all native selectors and delegate methods compile against the exact staged SDK header",
+                      "actual bridge lifecycle, callback, security, and call-control behavior with a mock SDK",
+                      "default-off native warm-transfer candidate uses pinned selectors and owned async lifecycle"]
+          for name in required:
+              assert re.search(rf"^ok \d+ - {re.escape(name)}$", output, re.M), f"Required native case did not execute: {name}"
+          print("Native bridge and warm-transfer source gates executed with zero skips")
+          PY

@@ -21,16 +21,27 @@ repository's Compose example. Admission fails when a mailbox is unmapped;
 completion rejects a WAV outside that admitted mailbox. The producer must run
 where the private FreeSWITCH volume
 and a **durable** outbox are mounted; a transient container layer is unsuitable.
-The root and outbox directory modes must be 0700. The hook must use a fixed
+The root and outbox directory modes must be 0700. The configured outbox's direct
+parent must already exist; the producer does not create an ancestor chain.
+Before admission or reviewed retirement, it syncs each private outbox directory
+and its direct parent, including on retries of existing directories. It checks
+opened-directory and current-path identity before and after synchronization;
+observed replacement or a sync failure stops before backend admission or expiry.
+Nested pending/archive directories additionally require a private parent.
+These filesystem checks do not establish crash or power-loss acceptance on the
+active host. The hook must use a fixed
 command path and pass input over stdin, never interpolate caller-controlled
 values into a shell command.
 
 1. Immediately before invoking the voicemail application, call `admit` with
    `{ "channelUuid": "<FreeSWITCH call UUID>", "tenantId": 1, "extension": "3001" }`.
    The tenant and extension must come from the authenticated PBX routing
-   decision. The producer asks the Phone11 backend for admission with
-   `x-fs-secret`, then writes `pending/<channelUuid>.json` as a private fsynced
-   file. It returns the backend-issued `message_uuid`. On any error, the hook
+   decision. The producer first persists a private UUID-bearing intent at
+   `pending/<channelUuid>.json`, then asks the Phone11 backend for idempotent
+   admission with `x-fs-secret` and that same request UUID. It durably replaces
+   the intent with the acknowledged admission before returning `message_uuid`.
+   An uncertain response retains the original intent for a same-UUID retry.
+   On any error, the hook
    must **not invoke mod_voicemail for the Phone11 inbox**. The owner and owner
    epoch stay server-side in `voicemail_deposit_admissions` and are rechecked
    on upload.

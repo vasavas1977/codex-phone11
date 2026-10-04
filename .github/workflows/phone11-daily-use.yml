@@ -26,6 +26,7 @@ on:
       - "desktop/**"
       - "tests/**"
       - "scripts/phone11-voicemail-helper-preflight.ts"
+      - "scripts/phone11-voicemail-producer.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "vitest.config.ts"
@@ -55,6 +56,7 @@ on:
       - "desktop/**"
       - "tests/**"
       - "scripts/phone11-voicemail-helper-preflight.ts"
+      - "scripts/phone11-voicemail-producer.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "vitest.config.ts"
@@ -111,6 +113,7 @@ jobs:
             lib/meetings/media-ownership.test.ts \
             lib/meetings/route-exit.test.ts \
             tests/phone11-voicemail-readiness.test.ts \
+            tests/phone11-voicemail-producer-durability.test.ts \
             tests/phone11-transfer-lifecycle.test.tsx \
             tests/phone11-voicemail-callback.test.tsx \
             server/meetings/meeting-host-removal-router.test.ts \
@@ -204,9 +207,13 @@ jobs:
       - name: Test transfer and voicemail consumer lifecycle
         run: |
           pnpm exec vitest run \
+            tests/phone11-siprix-engine.test.ts \
+            tests/phone11-active-call-navigation.test.tsx \
+            tests/phone11-current-call-banner.test.tsx \
             tests/phone11-transfer-lifecycle.test.tsx \
             tests/phone11-transfer-screen.test.tsx \
-            tests/phone11-voicemail-callback.test.tsx
+            tests/phone11-voicemail-callback.test.tsx \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-transfer-results.json"
       # Host removal remains default-off. This job exercises the
       # source contract only; the separate PG17 job exercises durable authority.
       - name: Test host removal authority service and provider receipt contract
@@ -235,7 +242,28 @@ jobs:
             tests/phone11-voicemail-durability.test.ts \
             tests/phone11-voicemail-readiness.test.ts \
             tests/phone11-voicemail-producer.test.ts \
-            tests/phone11-voicemail-lifecycle-rehearsal.test.ts
+            tests/phone11-voicemail-producer-durability.test.ts \
+            tests/phone11-voicemail-lifecycle-rehearsal.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-voicemail-results.json"
+      - name: Require executed completion regressions with zero skips
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          required = {
+              "phone11-transfer-results.json": ["tests/phone11-siprix-engine.test.ts", "tests/phone11-active-call-navigation.test.tsx", "tests/phone11-current-call-banner.test.tsx", "tests/phone11-transfer-lifecycle.test.tsx", "tests/phone11-transfer-screen.test.tsx", "tests/phone11-voicemail-callback.test.tsx"],
+              "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts"],
+          }
+          for report_name, suites in required.items():
+              report = json.loads((Path(os.environ["RUNNER_TEMP"]) / report_name).read_text())
+              assert report["success"] is True, report_name
+              for suite in suites:
+                  matches = [result for result in report["testResults"] if Path(result["name"]).resolve() == Path(suite).resolve()]
+                  assert len(matches) == 1, f"Required suite missing or duplicated: {suite}"
+                  assertions = matches[0]["assertionResults"]
+                  assert assertions and all(case["status"] == "passed" for case in assertions), f"Required suite has unexecuted or failed cases: {suite}"
+                  print(f"{suite}: {len(assertions)} passed, zero skips")
+          PY
       - name: Install Lua source test runtime
         run: |
           sudo apt-get update

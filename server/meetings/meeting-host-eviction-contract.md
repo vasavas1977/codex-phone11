@@ -62,6 +62,12 @@ is updated only by actual session events. Avatars reuse trusted workspace
 descriptors only on an exact authoritative tenant/user match, with initials
 otherwise; no HMAC identity or display-name matching is invented.
 
-Desktop wiring is deferred. Disposable PostgreSQL snapshot/revocation regressions
+The isolated desktop meeting window now uses the same admitted-access contract:
+fresh protected host queries, exact-frame main-process IPC, confirmed removal,
+operation-bound status/retry and trusted workspace photos. A lost connection,
+route or login owner permanently retires retained callbacks. Its access panel
+does not rewrite the SDK media roster on an acknowledgement. This is source
+wiring only; server removal remains default-off and desktop/provider/device
+acceptance is outstanding. Disposable PostgreSQL snapshot/revocation regressions
 must run with zero skips in the existing hosted lane; source/mock/consumer tests
 do not establish database, provider activation, native media or device acceptance.
