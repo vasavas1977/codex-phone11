@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  nameCallSummaryParticipants,
+  nameSummaryParticipants,
   transcriptSpeakerLabel,
   transcriptTurns,
 } from "../lib/cloud-recordings/transcript";
@@ -55,4 +57,48 @@ describe("Phone11 transcript speaker labels", () => {
       { speaker: "speaker2", text: "ดีว่า?" },
     ]);
   });
+  it("uses the same participant names throughout summaries and next steps", () => {
+    const names = { speaker1: "Me", speaker2: "Ping Ping Daughter" };
+    expect(
+      nameSummaryParticipants(
+        "Person 1 called Person 2. The caller asked the callee to reply.",
+        names,
+      ),
+    ).toBe(
+      "Me called Ping Ping Daughter. Me asked Ping Ping Daughter to reply.",
+    );
+    expect(
+      nameCallSummaryParticipants(
+        {
+          summary: "Speaker 1 thanked Speaker 2.",
+          actionItems: ["Participant 2 will call person 1."],
+          language: "en",
+        },
+        names,
+      ),
+    ).toEqual({
+      summary: "Me thanked Ping Ping Daughter.",
+      actionItems: ["Ping Ping Daughter will call Me."],
+      language: "en",
+    });
+  });
+
+  it("returns no summary for malformed payloads instead of throwing", () => {
+    expect(
+      nameCallSummaryParticipants({ summary: null, actionItems: [] }),
+    ).toBeUndefined();
+    expect(
+      nameCallSummaryParticipants({ summary: "Recap", actionItems: null }),
+    ).toBeUndefined();
+    expect(
+      nameCallSummaryParticipants({ summary: "Recap", actionItems: [42] }),
+    ).toBeUndefined();
+    expect(nameCallSummaryParticipants(null)).toBeUndefined();
+  });
+});
+
+it("rejects sparse summary items and an invalid summary language", () => {
+  expect(nameCallSummaryParticipants({ summary: "Recap", actionItems: new Array(1) })).toBeUndefined();
+  expect(nameCallSummaryParticipants({ summary: "Recap", actionItems: [], language: 42 })).toBeUndefined();
+  expect(nameCallSummaryParticipants(["Recap"])).toBeUndefined();
 });

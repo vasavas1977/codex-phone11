@@ -10,6 +10,12 @@ export type TranscriptSpeakerNames = {
   speaker2?: string;
 };
 
+export type CallSummary = {
+  summary: string;
+  actionItems: string[];
+  language?: string;
+};
+
 export type TranscriptTurn = {
   speaker: "speaker1" | "speaker2" | "unknown";
   text: string;
@@ -165,4 +171,51 @@ export function transcriptSpeakerLabel(
       : "Speaker 2";
   }
   return "Transcript";
+}
+
+/** Apply the transcript's participant identities to AI-generated prose too. */
+export function nameSummaryParticipants(
+  value: string,
+  names: TranscriptSpeakerNames = {},
+) {
+  const speaker1 = cleanName(names.speaker1) ?? "Speaker 1";
+  const speaker2 = cleanName(names.speaker2) ?? "Speaker 2";
+  return value
+    .replace(/\b(?:speaker|person|participant)\s*1\b/giu, speaker1)
+    .replace(/\b(?:speaker|person|participant)\s*2\b/giu, speaker2)
+    .replace(/\b(?:the\s+)?caller\b/giu, speaker1)
+    .replace(/\b(?:the\s+)?callee\b/giu, speaker2);
+}
+
+export function nameCallSummaryParticipants(
+  summary: unknown,
+  names: TranscriptSpeakerNames = {},
+): CallSummary | undefined {
+  if (!isCallSummary(summary)) return undefined;
+  return {
+    ...summary,
+    summary: nameSummaryParticipants(summary.summary, names),
+    actionItems: summary.actionItems.map((item) =>
+      nameSummaryParticipants(item, names),
+    ),
+  };
+}
+
+function isCallSummary(value: unknown): value is CallSummary {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.summary !== "string") return false;
+  if (!Array.isArray(candidate.actionItems)) return false;
+  for (let index = 0; index < candidate.actionItems.length; index += 1) {
+    if (
+      !(index in candidate.actionItems) ||
+      typeof candidate.actionItems[index] !== "string"
+    )
+      return false;
+  }
+  return (
+    candidate.language === undefined || typeof candidate.language === "string"
+  );
 }
