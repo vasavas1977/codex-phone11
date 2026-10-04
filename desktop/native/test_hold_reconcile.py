@@ -3,8 +3,10 @@
 import itertools
 import json
 import pathlib
+import queue
 import subprocess
 import tempfile
+import threading
 import time
 
 
@@ -61,7 +63,8 @@ def test_late_recovery_orderings() -> None:
             raise AssertionError("Unsafe recovery trace was accepted")
 
 
-def run_case(flags: list[str], phases: list[tuple[str, float]]) -> list[dict]:
+def run_case(flags: list[str], phases: list[tuple[str, float]], *,
+             wait_before_phase: dict[int, str] | None = None) -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="phone11-hold-reconcile-") as tmp:
         binary = pathlib.Path(tmp) / "helper"
         subprocess.run([
@@ -74,29 +77,95 @@ def run_case(flags: list[str], phases: list[tuple[str, float]]) -> list[dict]:
         assert process.stdin is not None
         assert process.stdout is not None
         assert process.stderr is not None
-        process.stdin.write("v1 init\nv1 provision\ninvalid.example\n1020\n1020\nfake-secret\nTLS\n")
-        process.stdin.flush()
-        initial = []
-        while not any(item.get("state") == "incoming" for item in initial):
-            initial.append(json.loads(process.stdout.readline()))
-        process.stdin.write("v1 answer 200\n")
-        process.stdin.flush()
-        while not any(item.get("state") == "connected" for item in initial):
-            initial.append(json.loads(process.stdout.readline()))
-        for commands, delay in phases:
-            process.stdin.write(commands)
+        output: queue.Queue[dict | Exception | None] = queue.Queue()
+        trace: list[dict] = []
+
+        def read_output() -> None:
+            try:
+                for line in process.stdout:
+                    output.put(json.loads(line))
+            except Exception as error:
+                output.put(error)
+            finally:
+                output.put(None)
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+
+        def next_event(deadline: float, label: str) -> dict | None:
+            try:
+                item = output.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty as error:
+                raise AssertionError(f"Timed out waiting for {label}: {trace}") from error
+            if isinstance(item, Exception):
+                raise AssertionError(f"Invalid helper output while waiting for {label}: {trace}") from item
+            if item is not None:
+                trace.append(item)
+            return item
+
+        def wait_for(label: str, ready) -> None:
+            deadline = time.monotonic() + 5
+            while not ready():
+                assert next_event(deadline, label) is not None, f"Helper EOF before {label}: {trace}"
+
+        def recovered_local() -> bool:
+            recovered = next((i for i, item in enumerate(trace) if
+                              item.get("event") == "hold_recovered" and
+                              item.get("callId") == "200" and
+                              item.get("code") == "state_confirmed" and
+                              item.get("holdControl") == "ready"), None)
+            return recovered is not None and any(
+                item.get("event") == "call" and item.get("callId") == "200" and
+                item.get("state") == "held" for item in trace[recovered + 1:])
+
+        try:
+            process.stdin.write("v1 init\nv1 provision\ninvalid.example\n1020\n1020\nfake-secret\nTLS\n")
             process.stdin.flush()
-            time.sleep(delay)
-        process.stdin.write("v1 shutdown\n")
-        process.stdin.close()
-        output = process.stdout.read()
-        errors = process.stderr.read()
-        assert process.wait(timeout=5) == 0
-        assert errors == "", errors
-        trace = initial + [json.loads(line) for line in output.splitlines()]
-        assert all(private not in json.dumps(trace) for private in
-                   ("fake-secret", "private-from", "private-to"))
-        return trace
+            wait_for("incoming call", lambda: any(item.get("state") == "incoming" for item in trace))
+            process.stdin.write("v1 answer 200\n")
+            process.stdin.flush()
+            wait_for("connected call", lambda: any(item.get("state") == "connected" for item in trace))
+            for index, (commands, delay) in enumerate(phases):
+                event = (wait_before_phase or {}).get(index)
+                if event == "hold_error":
+                    wait_for("blocked hold timeout", lambda: any(
+                        item.get("event") == "hold_error" and item.get("callId") == "200" and
+                        item.get("code") == "state_unconfirmed" and item.get("holdControl") == "blocked"
+                        for item in trace))
+                elif event == "hold_recovered_local":
+                    wait_for("authoritative local hold recovery", recovered_local)
+                else:
+                    assert event is None, f"Unknown phase event: {event}"
+                process.stdin.write(commands)
+                process.stdin.flush()
+                time.sleep(delay)
+            process.stdin.write("v1 shutdown\n")
+            process.stdin.close()
+            deadline = time.monotonic() + 5
+            while next_event(deadline, "helper shutdown") is not None:
+                pass
+            assert process.wait(timeout=5) == 0
+            errors = process.stderr.read()
+            assert errors == "", errors
+            assert all(private not in json.dumps(trace) for private in
+                       ("fake-secret", "private-from", "private-to"))
+            return trace
+        finally:
+            if not process.stdin.closed:
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            reader.join(timeout=1)
+            process.stdout.close()
+            process.stderr.close()
 
 
 def main() -> None:
@@ -129,12 +198,16 @@ def main() -> None:
     assert any(item.get("event") == "call" and item.get("state") == "terminated" for item in unchanged)
 
     late = run_case(["-DPHONE11_FAKE_HOLD_DELAYED_STATE"], [
-        ("v1 hold 200 1\n", 0.18),
-        ("v1 hold 200 0\n", 0.14),
+        ("v1 hold 200 1\n", 0),
+        ("v1 hold 200 0\n", 0),
         ("v1 hold 200 0\n", 0.02),
-    ])
+    ], wait_before_phase={1: "hold_error", 2: "hold_recovered_local"})
     assert [item["ok"] for item in late if "ok" in item] == [True, True, True, True, False, True, True], late
     assert_late_recovery(late)
+    error_index = next(i for i, item in enumerate(late) if item.get("event") == "hold_error")
+    recovery_index = next(i for i, item in enumerate(late) if item.get("event") == "hold_recovered")
+    rejected = [i for i, item in enumerate(late) if item.get("ok") is False]
+    assert len(rejected) == 1 and error_index < rejected[0] < recovery_index, late
     print("Phone11 Siprix hold reconciliation protocol test passed")
 
 
