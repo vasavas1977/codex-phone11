@@ -288,7 +288,7 @@ export function MeetingRoomState({
       }
     } catch {
       setFeedback(
-        `Could not update ${kind}. If access was denied, enable it in ${Platform.OS === "web" ? "your browser settings" : "iOS Settings"}, then check your meeting connection and retry.`,
+        `Could not update ${kind}. If access was denied, enable it in ${Platform.OS === "web" ? "your browser settings" : Platform.OS === "android" ? "Android Settings" : "iOS Settings"}, then check your meeting connection and retry.`,
       );
     } finally {
       setBusyControl(null);
