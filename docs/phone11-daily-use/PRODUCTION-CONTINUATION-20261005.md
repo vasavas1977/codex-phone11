@@ -23,6 +23,14 @@ the lead integrated changes and repeated focused checks.
   lifecycle/permission checks are mandatory. Ordinary prebuild reverses the
   trial wiring. Background wake, transfer and native SIP video remain unsupported.
   See [Android integration](ANDROID-FOREGROUND-INTEGRATION-20261005.md).
+- Browser meetings now have a reviewed video-only Share/Stop control. Capture
+  starts directly from the user's click, requires explicit interactive admission
+  and current SDK publication rights, and stops on permission loss, owner change,
+  reconnect or Leave. Late picker/publication results and cleanup failures retain
+  ownership until safely retired. The lead repeated 131 focused lifecycle,
+  receiver and UI checks after integration, with zero skips. These are mocked
+  source checks, not real browser/peer acceptance. See
+  [browser screen publishing](WEB-SCREEN-PUBLISHING-CANDIDATE-20261005.md).
 - Mobile CI now assembles ordinary and isolated trial APKs. The verifier checks
   application identity, debug/runtime metadata, audio permissions, native SDK
   libraries and actual DEX class definitions. Synthetic verifier tests do not
@@ -75,9 +83,9 @@ production SDK credential, formal signing or provider activation is claimed.
    verified room binding/enrollment, admitted-only issuance, authenticated trust
    and external restore-incarnation recovery remain unresolved. No host-control
    endpoint is invented or enabled by this batch.
-2. Finish participant screen publishing. Browser-only video capture is a
-   separate source slice with explicit user choice and actual publication-grant
-   checks. Native capture and the desktop source-picker permission boundary
+2. Accept the reviewed browser screen publisher with actual source selection,
+   remote viewing and cancellation/reconnect tests. Native capture and the
+   desktop source-picker permission boundary
    require separate implementation/acceptance. Admin screen policy, captions,
    recording/AI and waiting-room controls remain unimplemented or gated.
 3. Close PBX writer/principal, protected-clone and active/rollback evidence;
