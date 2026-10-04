@@ -536,6 +536,11 @@ export function MeetingRoomState({
               onPress={updateScreen}
               style={[styles.controlButton, screen.status === "sharing" && styles.activeControl, screenDisabled && styles.disabledControl]}
             >
+              <IconSymbol
+                name={screenActive ? "stop.fill" : "square.and.arrow.up"}
+                size={22}
+                color="#FFFFFF"
+              />
               <Text style={styles.controlText}>{screenActive ? "Stop sharing" : "Share screen"}</Text>
             </Pressable>
           )}
