@@ -5,8 +5,10 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import struct
 import subprocess
 import xml.etree.ElementTree as ET
+import zlib
 from zipfile import ZipFile
 
 PACKAGE = "ai.phone11.mobile"
@@ -17,6 +19,49 @@ ABIS = {"arm64-v8a", "armeabi-v7a"}
 LIBRARIES = {"libsiprix.so", "libsiprixMedia.so"}
 CLASSES = (b"Lai/phone11/siprix/Phone11SiprixModule;", b"Lai/phone11/siprix/Phone11SiprixPackage;",
            b"Lcom/siprix/voip/SiprixCore;")
+
+
+def defined_classes(dex: bytes) -> set[bytes]:
+    """Read class definitions, not descriptor references elsewhere in DEX."""
+    if len(dex) < 112 or not re.fullmatch(rb"dex\n0(?:35|37|38|39|40)\x00", dex[:8]):
+        raise ValueError("invalid_dex_header")
+    if (struct.unpack_from("<I", dex, 32)[0] != len(dex)
+            or struct.unpack_from("<I", dex, 36)[0] != 112
+            or struct.unpack_from("<I", dex, 40)[0] != 0x12345678
+            or dex[12:32] != hashlib.sha1(dex[32:]).digest()
+            or struct.unpack_from("<I", dex, 8)[0] != zlib.adler32(dex[12:]) & 0xFFFFFFFF):
+        raise ValueError("invalid_dex_integrity")
+    tables = []
+    for header, width in ((56, 4), (64, 4), (96, 32)):
+        count, offset = struct.unpack_from("<II", dex, header)
+        if offset < 112 or count > len(dex) // width or offset + count * width > len(dex):
+            raise ValueError("invalid_dex_table")
+        tables.append((count, offset))
+    (strings, string_offset), (types, type_offset), (classes, class_offset) = tables
+    definitions = set()
+    for row in range(classes):
+        type_index = struct.unpack_from("<I", dex, class_offset + row * 32)[0]
+        if type_index >= types:
+            raise ValueError("invalid_dex_class_type")
+        string_index = struct.unpack_from("<I", dex, type_offset + type_index * 4)[0]
+        if string_index >= strings:
+            raise ValueError("invalid_dex_descriptor_index")
+        position = struct.unpack_from("<I", dex, string_offset + string_index * 4)[0]
+        # Descriptor strings have a ULEB128 UTF-16 length then MUTF-8 bytes.
+        for _ in range(5):
+            if position >= len(dex):
+                raise ValueError("invalid_dex_string")
+            value = dex[position]
+            position += 1
+            if value < 128:
+                break
+        else:
+            raise ValueError("invalid_dex_string_length")
+        end = dex.find(b"\x00", position)
+        if end < 0:
+            raise ValueError("invalid_dex_string")
+        definitions.add(dex[position:end])
+    return definitions
 
 
 def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool) -> dict:
@@ -47,14 +92,14 @@ def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool) -> dict:
         dex_names = [name for name in names if re.fullmatch(r"classes(?:[2-9]|[1-9][0-9]+)?\.dex", name)]
         if not dex_names:
             raise ValueError("apk_dex_missing")
-        # DEX class descriptors establish packaging, not runtime execution.
-        dex = b"\n".join(archive.read(name) for name in dex_names)
+        # Actual DEX definitions establish packaging, not runtime execution.
+        definitions = set().union(*(defined_classes(archive.read(name)) for name in dex_names))
         if trial:
             if siprix != expected or any(archive.getinfo(name).file_size == 0 for name in siprix):
                 raise ValueError("trial_native_sdk_packaging_missing")
-            if not all(descriptor in dex for descriptor in CLASSES):
+            if not set(CLASSES) <= definitions:
                 raise ValueError("trial_bridge_or_sdk_classes_missing")
-        elif siprix or any(descriptor in dex for descriptor in CLASSES):
+        elif siprix or set(CLASSES) & definitions:
             raise ValueError("ordinary_apk_contains_uncommissioned_runtime")
     return {"schema": "phone11.android.debug-packaging.v1", "package": root.get("package"),
             "trial": trial, "apk_sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
