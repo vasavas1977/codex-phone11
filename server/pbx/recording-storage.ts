@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { sdk } from "../_core/sdk";
 import { requireIntegrationSecret } from "./integration-auth";
 import { findOwnedRecording, findOwnedVoicemail } from "./media-access";
+import { syncVoicemailDirectories } from "./voicemail-filesystem";
 
 const RECORDINGS_BASE = process.env.RECORDINGS_PATH || "/opt/phone11ai/recordings";
 const VOICEMAIL_BASE = process.env.VOICEMAIL_PATH || "/opt/phone11ai/voicemail";
@@ -58,17 +59,6 @@ export async function storeRecording(tenantId: number, callUuid: string, fileBuf
     }finally{await handle.close();}
   }
   return { filePath, fileSize: fileBuffer.length };
-}
-
-/** Persist every directory link up to the pre-provisioned durable media root. */
-async function syncVoicemailDirectories(directory: string, base: string): Promise<void> {
-  if (directory !== base && !directory.startsWith(base + path.sep))
-    throw new Error("Invalid voicemail directory");
-  for (let current = directory; ; current = path.dirname(current)) {
-    const handle = await fs.promises.open(current, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
-    try { await handle.sync(); } finally { await handle.close(); }
-    if (current === base) return;
-  }
 }
 
 /** Store a completed voicemail under a tenant-only directory. Metadata remains in PostgreSQL. */

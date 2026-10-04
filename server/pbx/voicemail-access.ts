@@ -1,9 +1,8 @@
 import { query } from "./db";
-import { access, lstat } from "node:fs/promises";
-import { constants } from "node:fs";
 import { VoicemailStorageUnavailableError, requireVoicemailStorage } from "./cdr-processor";
+import { probeVoicemailFilesystem } from "./voicemail-filesystem";
 
-/** Read-only checks. A writable directory does not prove the mount is durable. */
+/** Schema and required filesystem primitives; neither proves mount survival or PBX delivery. */
 export async function voicemailStorageStatus() {
   let schemaReady = false;
   try {
@@ -13,15 +12,9 @@ export async function voicemailStorageStatus() {
     if (!(error instanceof VoicemailStorageUnavailableError)) throw error;
   }
 
-  let mediaDirectoryWritable = false;
-  try {
-    const directory = process.env.VOICEMAIL_PATH || "/opt/phone11ai/voicemail";
-    const stat = await lstat(directory);
-    if (stat.isDirectory()) {
-      await access(directory, constants.W_OK);
-      mediaDirectoryWritable = true;
-    }
-  } catch { /* Missing or unwritable paths remain unavailable. */ }
+  const mediaDirectoryWritable = await probeVoicemailFilesystem(
+    process.env.VOICEMAIL_PATH || "/opt/phone11ai/voicemail",
+  );
 
   return { schemaReady, mediaDirectoryWritable };
 }
