@@ -36,9 +36,12 @@ function EnabledMeetingPrejoin({
   }, []);
   const requireActiveRoute = () => {
     if (!routeActive.current) throw new MeetingJoinFailure("post_connect_guard");
+    // Profile refreshes preserve this owner reference; a new sign-in does not,
+    // even when it belongs to the same numeric account.
+    if (getAuthSnapshot().user !== user) throw new MeetingJoinFailure("admission");
   };
   const openConnectedMeeting = async (meeting: { leave(): Promise<void> }) => {
-    if (!routeActive.current || getAuthSnapshot().user?.id !== user.id) {
+    if (!routeActive.current || getAuthSnapshot().user !== user) {
       // Stop only this attempt's session. Failed teardown remains owned by its
       // lifecycle for retry; never clear a newer meeting from the registry.
       await meeting.leave().catch(() => { throw new MeetingJoinFailure("room_cleanup"); });
@@ -56,14 +59,10 @@ function EnabledMeetingPrejoin({
         const joiningOwnerId = user.id;
         try {
           requireActiveRoute();
-          if (getAuthSnapshot().user?.id !== joiningOwnerId)
-            throw new MeetingJoinFailure("admission");
           if (Platform.OS === "web") {
             stage = "admission";
             const admission = await join.mutateAsync({ meetingId: preferences.meetingCode })
               .catch(error => { throw meetingAdmissionFailure(error); });
-            if (getAuthSnapshot().user?.id !== joiningOwnerId)
-              throw new MeetingJoinFailure("admission");
             requireActiveRoute();
             stage = "bindings";
             const { WebMeetingLifecycle } = await import("@/lib/meetings/web-session");
@@ -99,8 +98,6 @@ function EnabledMeetingPrejoin({
           const admission = await join.mutateAsync({
             meetingId: preferences.meetingCode,
           }).catch(error => { throw meetingAdmissionFailure(error); });
-          if (getAuthSnapshot().user?.id !== joiningOwnerId)
-            throw new MeetingJoinFailure("admission");
           requireActiveRoute();
           stage = "native_setup";
           const meeting = await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
