@@ -8,6 +8,7 @@ on:
       - "components/**"
       - "hooks/**"
       - "lib/**"
+      - "modules/phone11-siprix/**"
       - "scripts/**"
       - "docs/**"
       - "app.config.ts"
@@ -121,3 +122,29 @@ jobs:
       - name: Compile Android debug build
         working-directory: android
         run: ./gradlew :app:assembleDebug --stacktrace
+
+  siprix-bridge-regressions:
+    name: Compile and test the iOS Siprix bridge
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked native headers
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check pinned headers and actual bridge callbacks
+        run: |
+          test -f modules/phone11-siprix/tests/native-runtime.test.mjs
+          test -f modules/phone11-siprix/tests/native-runtime.m
+          node scripts/stage-siprix-sdk.mjs
+          node --test modules/phone11-siprix/tests/*.test.mjs

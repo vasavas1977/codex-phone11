@@ -110,7 +110,14 @@ jobs:
             tests/phone11-conference-auth-race.test.tsx \
             lib/meetings/media-ownership.test.ts \
             lib/meetings/route-exit.test.ts \
-            tests/phone11-voicemail-readiness.test.ts; do
+            tests/phone11-voicemail-readiness.test.ts \
+            tests/phone11-transfer-lifecycle.test.tsx \
+            tests/phone11-voicemail-callback.test.tsx \
+            server/meetings/meeting-host-removal-router.test.ts \
+            server/meetings/meeting-host-removal-lifetime.test.ts \
+            server/meetings/meeting-host-control-snapshot.test.ts \
+            lib/meetings/member-removal.test.ts \
+            lib/meetings/member-removal-panel.test.tsx; do
             test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
           done
           pnpm exec vitest run \
@@ -194,11 +201,22 @@ jobs:
             tests/phone11-wake-service.test.ts \
             tests/phone11-wake-routes.test.ts
           node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
-      # Host removal remains unmounted/default-off. This job exercises the
+      - name: Test transfer and voicemail consumer lifecycle
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-transfer-lifecycle.test.tsx \
+            tests/phone11-transfer-screen.test.tsx \
+            tests/phone11-voicemail-callback.test.tsx
+      # Host removal remains default-off. This job exercises the
       # source contract only; the separate PG17 job exercises durable authority.
       - name: Test host removal authority service and provider receipt contract
         run: |
           pnpm exec vitest run \
+            server/meetings/meeting-host-removal-router.test.ts \
+            server/meetings/meeting-host-removal-lifetime.test.ts \
+            server/meetings/meeting-host-control-snapshot.test.ts \
+            lib/meetings/member-removal.test.ts \
+            lib/meetings/member-removal-panel.test.tsx \
             server/meetings/meeting-host-eviction-service.test.ts \
             server/meetings/meeting-host-eviction-transport.test.ts \
             server/meetings/plain-video-eviction-service.test.ts \
