@@ -4,7 +4,7 @@
  * pre-record admission and atomically write one manifest after mod_voicemail
  * completes. This worker never derives ownership from a delayed file scan.
  */
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { open, lstat, readdir, realpath, link, mkdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const MAX_WAV_SIZE = 25 * 1024 * 1024;
 const MAX_MANIFEST_SIZE = 8192;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const PRODUCER_TEMP = /^\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/i;
 
 export type RelayManifest = {
   message_uuid: string;
@@ -47,29 +48,97 @@ function parseManifest(raw: string): RelayManifest {
   return value as RelayManifest;
 }
 
-async function syncDirectory(directory: string): Promise<void> {
+function assertSamePrivateDirectory(expected: Stats, current: Stats): void {
+  if (!current.isDirectory() || (current.mode & 0o077) !== 0 ||
+      current.dev !== expected.dev || current.ino !== expected.ino ||
+      current.mode !== expected.mode || current.uid !== expected.uid || current.gid !== expected.gid)
+    throw new Error("Voicemail quarantine directory changed or is not private");
+}
+
+function assertSamePrivateManifest(expected: Stats, current: Stats): void {
+  if (!current.isFile() || (current.mode & 0o077) !== 0 ||
+      current.dev !== expected.dev || current.ino !== expected.ino ||
+      current.size !== expected.size || current.mtimeMs !== expected.mtimeMs ||
+      current.mode !== expected.mode || current.uid !== expected.uid || current.gid !== expected.gid)
+    throw new Error("Voicemail manifest evidence changed");
+}
+
+async function syncDirectory(directory: string, expected: Stats): Promise<void> {
   const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { await handle.sync(); } finally { await handle.close(); }
+  try {
+    assertSamePrivateDirectory(expected, await handle.stat());
+    await handle.sync();
+    assertSamePrivateDirectory(expected, await lstat(directory));
+  } finally { await handle.close(); }
+}
+
+async function assertQuarantinePair(source: string, target: string, expected: Stats): Promise<void> {
+  const [current, preserved] = await Promise.all([lstat(source), lstat(target)]);
+  assertSamePrivateManifest(expected, current);
+  assertSamePrivateManifest(expected, preserved);
+  await assertKnownManifestLinks(source, expected);
+}
+
+/** Accept only links produced by publication or an interrupted quarantine move. */
+async function assertKnownManifestLinks(source: string, expected: Stats): Promise<void> {
+  const root = path.dirname(source);
+  const directory = await lstat(root);
+  assertSamePrivateDirectory(directory, directory);
+  const current = await lstat(source);
+  assertSamePrivateManifest(expected, current);
+  if (current.nlink === 1) return;
+  if (![2, 3].includes(current.nlink)) throw new Error("Conflicting voicemail manifest links");
+  let links = 1;
+  const quarantine = path.join(root, "quarantine");
+  try {
+    const retained = await lstat(path.join(quarantine, path.basename(source)));
+    if (retained.dev === expected.dev && retained.ino === expected.ino) {
+      assertSamePrivateManifest(expected, retained);
+      const parent = await lstat(quarantine);
+      assertSamePrivateDirectory(parent, parent);
+      links++;
+    }
+  } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+  let producerLinks = 0;
+  for (const name of (await readdir(root)).filter(name => PRODUCER_TEMP.test(name))) {
+    let retained: Stats;
+    try { retained = await lstat(path.join(root, name)); }
+    catch (error: any) { if (error?.code === "ENOENT") continue; throw error; }
+    if (retained.dev === expected.dev && retained.ino === expected.ino) {
+      assertSamePrivateManifest(expected, retained);
+      producerLinks++; links++;
+    }
+  }
+  const final = await lstat(source);
+  assertSamePrivateManifest(expected, final);
+  if (producerLinks > 1 || links !== current.nlink || final.nlink !== links)
+    throw new Error("Conflicting voicemail manifest links");
 }
 
 /** Preserve the first rejected manifest, including across callback retries. */
-async function quarantineManifest(outboxRoot: string, name: string): Promise<void> {
+async function quarantineManifest(outboxRoot: string, name: string, expected: Stats): Promise<void> {
+  const parent = await lstat(outboxRoot);
+  assertSamePrivateDirectory(parent, parent);
   const quarantine = path.join(outboxRoot, "quarantine");
-  await mkdir(quarantine, { recursive: true, mode: 0o700 });
+  try { await mkdir(quarantine, { mode: 0o700 }); }
+  catch (error: any) { if (error?.code !== "EEXIST") throw error; }
   const directory = await lstat(quarantine);
-  if (!directory.isDirectory() || (directory.mode & 0o077) !== 0) throw new Error("Voicemail quarantine is not private");
+  assertSamePrivateDirectory(directory, directory);
   const source = path.join(outboxRoot, name);
   const target = path.join(quarantine, name);
+  await assertKnownManifestLinks(source, expected);
   try { await link(source, target); }
-  catch (error: any) {
-    if (error?.code !== "EEXIST") throw error;
-    const [current, preserved] = await Promise.all([lstat(source), lstat(target)]);
-    if (current.dev !== preserved.dev || current.ino !== preserved.ino)
-      throw new Error("Conflicting voicemail quarantine evidence");
-  }
-  await syncDirectory(quarantine);
+  catch (error: any) { if (error?.code !== "EEXIST") throw error; }
+  await assertQuarantinePair(source, target, expected);
+  await syncDirectory(quarantine, directory);
+  // Persist the quarantine directory's entry before removing the retry source.
+  // Repeat for an existing directory: a prior interrupted move may not have
+  // established this parent barrier. Failure keeps both exact hardlinks.
+  await syncDirectory(outboxRoot, parent);
+  await assertQuarantinePair(source, target, expected);
+  assertSamePrivateDirectory(directory, await lstat(quarantine));
   await unlink(source);
-  await syncDirectory(outboxRoot);
+  await syncDirectory(outboxRoot, parent);
 }
 
 function uploadEndpoint(config: RelayConfig, manifest: RelayManifest): URL {
@@ -87,13 +156,18 @@ function uploadEndpoint(config: RelayConfig, manifest: RelayManifest): URL {
   return url;
 }
 
-async function readPrivateManifest(file: string): Promise<RelayManifest> {
+async function readPrivateManifest(file: string): Promise<{ manifest: RelayManifest; identity: Stats }> {
   const stat = await lstat(file);
   if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_MANIFEST_SIZE || (stat.mode & 0o077) !== 0)
     throw new Error("Manifest is not a private regular file");
+  await assertKnownManifestLinks(file, stat);
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    return parseManifest(await handle.readFile({ encoding: "utf8" }));
+    assertSamePrivateManifest(stat, await handle.stat());
+    const manifest = parseManifest(await handle.readFile({ encoding: "utf8" }));
+    assertSamePrivateManifest(stat, await handle.stat());
+    assertSamePrivateManifest(stat, await lstat(file));
+    return { manifest, identity: stat };
   } finally {
     await handle.close();
   }
@@ -133,7 +207,7 @@ export async function relayOnce(config: RelayConfig, send: typeof fetch = fetch)
   for (const name of entries) {
     const file = path.join(config.outboxRoot, name);
     try {
-      const manifest = await readPrivateManifest(file);
+      const { manifest, identity } = await readPrivateManifest(file);
       if (`${manifest.message_uuid}.json` !== name) throw new Error("Manifest identity mismatch");
       const audio = await readPrivateWav(config.sourceRoot, manifest.relative_wav_path);
       const response = await send(uploadEndpoint(config, manifest).toString(), {
@@ -143,10 +217,11 @@ export async function relayOnce(config: RelayConfig, send: typeof fetch = fetch)
         signal: AbortSignal.timeout(15_000),
       });
       if (response.status === 200 || response.status === 201) {
+        await assertKnownManifestLinks(file, identity);
         await unlink(file);
         delivered++;
       } else if ([400, 404, 409].includes(response.status)) {
-        await quarantineManifest(config.outboxRoot, name);
+        await quarantineManifest(config.outboxRoot, name, identity);
         quarantined++;
       } else {
         retry++;
