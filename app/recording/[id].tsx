@@ -790,7 +790,7 @@ export default function RecordingDetailScreen() {
           <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
             <Text style={[styles.modalTitle, { color: colors.foreground }]}>Edit Speaker</Text>
             <Text style={[styles.modalSubtitle, { color: colors.muted }]}>
-              Rename "{editSpeakerModal?.currentLabel}" to correct the speaker identification.
+              Rename &quot;{editSpeakerModal?.currentLabel}&quot; to correct the speaker identification.
             </Text>
             <Text style={[styles.modalFieldLabel, { color: colors.muted }]}>Label (e.g. Caller, Agent)</Text>
             <TextInput
