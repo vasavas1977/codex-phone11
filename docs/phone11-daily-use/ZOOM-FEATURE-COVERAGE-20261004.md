@@ -17,12 +17,13 @@ documentation-only updates and separately reviewed artifacts.
 
 - The [5 October production continuation](PRODUCTION-CONTINUATION-20261005.md)
   integrates camera/screen receiving, browser and desktop video-only screen
-  publishing, administrator read revocation, the Android Answer media barrier,
+  publishing, administrator read revocation, guarded voicemail confirmation,
+  first-time meeting setup, the Android Answer media barrier,
   the voicemail candidate-start
   prerequisite and isolated Android foreground runtime wiring. The corrected
   Android six-class SDK gate at `7697489` passed real hosted trial APK
   verification. The later seven-class inventory, including the consultation
-  helper, still requires its own hosted result. Its
+  helper, requires its own exact-head hosted receipt rather than the earlier one. Its
   source, separate cloud checks,
   old deployed releases and outstanding production gates are recorded separately.
   It does not close the unchecked acceptance rows below.

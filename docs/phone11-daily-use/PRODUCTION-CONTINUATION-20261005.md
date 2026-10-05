@@ -88,12 +88,59 @@ cloud results are recorded separately in PR 7 and private verification receipts.
   and 105 focused mocked entry/prejoin/owner/picker cases without skips. See
   [mobile meeting entry](MOBILE-MEETING-ENTRY-20261005.md).
 
+Three additional user-facing integration gaps were closed after the source audit:
+
+- First-time hosts can reach meeting setup without already having an admitted
+  room. Native capability alerts retain explicit setup and retry actions; web
+  opens setup directly because React Native Web does not implement native alerts.
+  Every retained action checks the exact current authenticated owner, chat owner
+  and selected workspace object. Server hosting, roster and admission checks
+  remain authoritative. Candidates `9582ed978112ef7a9b67218992e957e50bad2988`
+  and `ee6892ae060bb72fd26dc7f9f4d65da2c85ab4a3` passed independent review;
+  the final focused entry/creation set passed 191 mocked cases without skips.
+- Android builds with the separate consultation source gates can expose their
+  warm-only operation without requiring unsupported blind transfer. Ordinary
+  builds remain disabled. The current provider capability and selected operation
+  are checked separately; consultation defaults and recovery controls preserve
+  session, account, call-lifetime and duplicate-attempt guards. Candidate
+  `b76248dec702db53c29182501a6b0135b5805651` passed independent review and 405
+  calling/provider/UI cases without skips, plus independent TypeScript and
+  scoped lint. No native or configuration gate was enabled. See the
+  [warm-only UI boundary](ANDROID-WARM-ONLY-UI-20261005.md).
+
+- Administrator voicemail confirmation retires when its authenticated owner,
+  workspace, current extension or mailbox assignment changes. Native retained
+  buttons cannot submit stale actions. Web uses a visible confirmation dialog;
+  Cancel and close release its reservation so another row remains usable.
+  The corrected candidate `ed220dad2e1ba412b16c7ac287307c2f3cab34c4`
+  passed independent review of the complete two-commit stack, 122 focused cases
+  (including 73 confirmation cases) and four independent lifecycle diagnostics.
+  The reviewer reproduced the earlier web lock on the prior candidate and
+  verified the corrected behavior. No real mailbox setting was changed. See the
+  [voicemail confirmation boundary](../phone11-admin-voicemail-confirmation-boundary.md).
+
+At integrated implementation head
+`445664052016e7d1f264fd861ca9ceff106be559`, the lead ran 907 tests across
+25 distinct test files with no failures or skips, including the meeting entry,
+calling/transfer, media-ownership, administrator authority and voicemail fixes.
+Repository TypeScript, scoped ESLint (zero errors; existing warnings retained)
+and backend bundling passed. These are local source checks; fresh hosted CI,
+client artifacts, deployment and physical-device acceptance have separate
+receipts and do not follow from these results.
+
+The directory UI regression assertion was aligned with the already reviewed
+fresh selected-workspace authority helper rather than the earlier cached helper.
+Independent checks passed 34 cases; assertion probes rejected cached authority
+and an omitted workspace argument. The production query was not changed by this
+one-line test correction.
+
 The new Android consultation helper is also included in the exact trial DEX
 definition inventory and ordinary-build exclusion. Integration gate
 `1d0645187114d1855c3bac61bc3fd53542fe2d77` passed independent review, sixteen
 pinned-AAR parser cases and four temporary helper-specific negative checks.
 The older successful hosted six-class receipt below does not prove this new
-seven-class inventory; a fresh hosted APK result remains required.
+seven-class inventory. A fresh hosted APK result must be attributed to the
+exact combined head separately in PR 7 and private verification receipts.
 
 Cloud Mobile Native run **37252776802** passed at combined source
 `7697489b6975e02ca287161504d32b5e9b93eaf4`: ordinary APK exclusion, real

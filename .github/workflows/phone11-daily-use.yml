@@ -269,12 +269,22 @@ jobs:
             tests/phone11-android-call-permission.test.ts \
             tests/phone11-android-answer-media.test.ts \
             --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-interactive-media-results.json"
+      - name: Test first meeting entry and voicemail confirmation ownership
+        run: |
+          for suite in tests/phone11-meet-action.test.tsx tests/phone11-admin-voicemail-confirmation.test.tsx; do
+            test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
+          done
+          pnpm exec vitest run \
+            tests/phone11-meet-action.test.tsx \
+            tests/phone11-admin-voicemail-confirmation.test.tsx \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-setup-confirmation-results.json"
       - name: Require executed completion regressions with zero skips
         run: |
           python3 - <<'PY'
           import json, os
           from pathlib import Path
           required = {
+              "phone11-setup-confirmation-results.json": ["tests/phone11-meet-action.test.tsx", "tests/phone11-admin-voicemail-confirmation.test.tsx"],
               "phone11-transfer-results.json": ["tests/phone11-siprix-engine.test.ts", "tests/phone11-active-call-navigation.test.tsx", "tests/phone11-current-call-banner.test.tsx", "tests/phone11-transfer-lifecycle.test.tsx", "tests/phone11-transfer-screen.test.tsx", "tests/phone11-voicemail-callback.test.tsx"],
               "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts"],
               "phone11-interactive-media-results.json": ["lib/meetings/browser-screen-share.test.ts", "lib/meetings/web-session.test.ts", "tests/phone11-meeting-screen-share-ui.test.tsx", "tests/phone11-android-call-permission.test.ts", "tests/phone11-android-answer-media.test.ts"],
