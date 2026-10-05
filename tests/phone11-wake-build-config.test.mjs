@@ -149,6 +149,7 @@ function syntheticConfig(env) {
   }
   const android=plugin('plugins/with-phone11-android-runtime.js');
   const wake=plugin('plugins/with-phone11-voip-wake.js');
+  const screen=plugin('plugins/with-phone11-android-screen.js');
   const module={exports:{}};
   let environmentLoadBlocked=false;
   runInNewContext(compiled,{module,exports:module.exports,process:{env:{...env}},require:id=>{
@@ -156,6 +157,7 @@ function syntheticConfig(env) {
     if(id==='expo/config-plugins')return pluginApi;
     if(id==='./plugins/with-phone11-android-runtime.js')return android;
     if(id==='./plugins/with-phone11-voip-wake.js')return wake;
+    if(id==='./plugins/with-phone11-android-screen.js')return screen;
     throw new Error(`Unexpected config import: ${id}`);
   }});
   assert.equal(environmentLoadBlocked,true);
@@ -199,4 +201,39 @@ test('synthetic store platform guard leaves ordinary Android and the isolated fo
   assert.equal(trial.android.package,'ai.phone11.mobile.foregroundtrial');
   assert.equal(trial.extra.buildInfo.androidForegroundTrial,true);
   assert.equal(trial.extra.buildInfo.appStoreBuild,false);
+});
+
+
+test('synthetic screen guard defaults OFF and accepts explicit paired OFF without source activation',()=>{
+  for(const platform of ['android','ios',undefined]) {
+    const env=platform?{EAS_BUILD_PLATFORM:platform}:{};
+    for(const flags of [{},{PHONE11_ANDROID_SCREEN_TRANSACTION:'0',EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION:'0'}]) {
+      const config=syntheticConfig({...env,...flags});
+      assert.equal(config.extra.buildInfo.androidScreenTransactionSource,undefined);
+      assert.equal(config.android.package,'ai.phone11.mobile');
+      assert.ok(config.plugins.includes('./plugins/with-phone11-android-screen.js'));
+    }
+  }
+});
+
+test('synthetic screen guard preserves the actual explicit Android source-only ON setting',()=>{
+  const config=syntheticConfig({EAS_BUILD_PLATFORM:'android',PHONE11_APP_STORE_BUILD:'0',
+    PHONE11_ANDROID_SCREEN_TRANSACTION:'1',EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION:'1'});
+  assert.equal(config.extra.buildInfo.androidScreenTransactionSource,true);
+  assert.equal(config.extra.buildInfo.appStoreBuild,false);
+  assert.equal(config.extra.buildInfo.androidForegroundTrial,undefined);
+  assert.equal(config.android.package,'ai.phone11.mobile');
+});
+
+test('synthetic screen guard refuses mismatched flags, invalid values and unsupported ON platforms or stores',()=>{
+  for(const flags of [
+    {PHONE11_ANDROID_SCREEN_TRANSACTION:'1'},
+    {EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION:'1'},
+    {PHONE11_ANDROID_SCREEN_TRANSACTION:'true',EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION:'true'},
+    {PHONE11_ANDROID_SCREEN_TRANSACTION:'2',EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION:'2'},
+  ])assert.throws(()=>syntheticConfig({EAS_BUILD_PLATFORM:'android',...flags}),/matching explicit 0\/1 build flags/);
+  const flags={PHONE11_ANDROID_SCREEN_TRANSACTION:'1',EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION:'1'};
+  for(const environment of [{},{EAS_BUILD_PLATFORM:'ios'},{EAS_BUILD_PLATFORM:'android',PHONE11_APP_STORE_BUILD:'1'}]) {
+    assert.throws(()=>syntheticConfig({...flags,...environment}),/Android source-only and unavailable to store builds/);
+  }
 });
