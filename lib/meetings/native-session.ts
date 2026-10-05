@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 
-import { addAuthChangeListener, getAuthSnapshot } from "@/lib/_core/auth";
+import { addAuthChangeListener, getAuthSnapshot, type User } from "@/lib/_core/auth";
 
 import {
   BrowserMeetingConnectionFailure,
@@ -18,6 +18,7 @@ import { MediaOwnershipCoordinator, type MediaLease } from "./media-ownership";
 import { classifyRoomConstructionFailure } from "./room-construction-diagnostic";
 import {
   clearActiveNativeMeeting,
+  clearNativeMeetingForAuth,
   getActiveNativeMeeting,
   setActiveNativeMeeting,
 } from "./native-session-registry";
@@ -46,6 +47,13 @@ type NativeBindings = {
     stage: MeetingJoinStage,
   ) => MeetingJoinDiagnostic;
 };
+
+type NativeMeetingOwner = { user: User; retired: boolean };
+
+function authenticatedOwnerIsCurrent(owner: NativeMeetingOwner): boolean {
+  if (getAuthSnapshot().user !== owner.user) owner.retired = true;
+  return !owner.retired;
+}
 
 let bindingsPromise: Promise<NativeBindings> | undefined;
 /** The one authority for SIP and meeting microphone/camera ownership. */
@@ -172,13 +180,16 @@ export class NativeMeetingLifecycle {
     readonly ownerId: number,
     readonly receiveOnly: boolean,
     createRoom: () => BrowserRoom,
+    private readonly owner: NativeMeetingOwner,
   ) {
-    this.session = new BrowserMeetingSession(createRoom);
+    this.session = new BrowserMeetingSession(createRoom, {
+      isCurrentOwner: () => this.ownerIsCurrent(),
+    });
   }
 
   /** Existing LiveKit room only; this never constructs room, identity, or credentials. */
   get room(): BrowserRoom | undefined {
-    return this.session.getRoom();
+    return this.ownerIsCurrent() ? this.session.getRoom() : undefined;
   }
 
   get wasInterruptedBySip(): boolean {
@@ -215,13 +226,20 @@ export class NativeMeetingLifecycle {
     finally { if (this.audioRouteTask === task) this.audioRouteTask = undefined; }
   }
 
-  private ownerIsCurrent(): boolean {
-    return getAuthSnapshot().user?.id === this.ownerId;
+  /** Exact observed sign-in lifetime; retirement cannot be undone by same-ID restoration. */
+  ownerIsCurrent(): boolean {
+    return authenticatedOwnerIsCurrent(this.owner);
   }
 
   private watchAuthenticatedOwner(): void {
     this.unsubscribeOwner = addAuthChangeListener(() => {
-      if (!this.ownerIsCurrent()) void this.leave().catch(() => undefined);
+      if (!this.ownerIsCurrent()) {
+        // Hide an active retired room immediately, but keep ownerless cleanup
+        // custody when SDK/audio stop fails. Pending joins own their own drain.
+        const cleanup = getActiveNativeMeeting() === this
+          ? clearNativeMeetingForAuth() : this.leave();
+        void cleanup.catch(() => undefined);
+      }
     });
   }
 
@@ -230,10 +248,16 @@ export class NativeMeetingLifecycle {
     admission: NativeMeetingAdmission,
     preferences: NativeMeetingPreferences,
   ): Promise<NativeMeetingLifecycle> {
-    const owner = getAuthSnapshot().user;
-    if (!owner) return Promise.reject(new Error("Sign in before joining a meeting."));
+    const user = getAuthSnapshot().user;
+    if (!user) return Promise.reject(new Error("Sign in before joining a meeting."));
     if (!meetingId || hasLiveSipCall())
       return Promise.reject(new Error("Finish your Phone call before joining a meeting."));
+    const owner: NativeMeetingOwner = { user, retired: false };
+    // Observe before any queue/binding await, including null -> same-object
+    // restoration that would otherwise be invisible when the queue resumes.
+    const unsubscribePendingOwner = addAuthChangeListener(() => {
+      authenticatedOwnerIsCurrent(owner);
+    });
     const generation = ++this.joinGeneration;
     const previous = this.pendingJoin;
     // A connecting lifecycle is not yet in the registry. In particular, two
@@ -243,10 +267,13 @@ export class NativeMeetingLifecycle {
       await previous?.catch(() => undefined);
       if (generation !== this.joinGeneration)
         throw new MeetingJoinFailure("post_connect_guard");
-      return this.joinCurrent(generation, owner.id, meetingId, admission, preferences);
+      if (!authenticatedOwnerIsCurrent(owner))
+        throw new MeetingJoinFailure("admission");
+      return this.joinCurrent(generation, owner, meetingId, admission, preferences);
     })();
     this.pendingJoin = task;
     void task.finally(() => {
+      unsubscribePendingOwner();
       if (this.pendingJoin === task) this.pendingJoin = undefined;
     }).catch(() => undefined);
     return task;
@@ -254,12 +281,12 @@ export class NativeMeetingLifecycle {
 
   private static async joinCurrent(
     generation: number,
-    ownerId: number,
+    owner: NativeMeetingOwner,
     meetingId: string,
     admission: NativeMeetingAdmission,
     preferences: NativeMeetingPreferences,
   ): Promise<NativeMeetingLifecycle> {
-    if (getAuthSnapshot().user?.id !== ownerId)
+    if (!authenticatedOwnerIsCurrent(owner))
       throw new MeetingJoinFailure("admission");
     if (hasLiveSipCall())
       throw new Error("Finish your Phone call before joining a meeting.");
@@ -268,24 +295,27 @@ export class NativeMeetingLifecycle {
     try {
       const previous = getActiveNativeMeeting();
       if (previous) await previous.leave();
+      if (!authenticatedOwnerIsCurrent(owner))
+        throw new MeetingJoinFailure("admission");
+      if (generation !== this.joinGeneration)
+        throw new MeetingJoinFailure("post_connect_guard");
       bindings = await loadNativeBindings();
-    } catch {
+    } catch (error) {
+      if (error instanceof MeetingJoinFailure) throw error;
       throw new MeetingJoinFailure("bindings");
     }
-    if (getAuthSnapshot().user?.id !== ownerId)
-      throw new Error(
-        "Your Phone11 account changed before the meeting could connect.",
-      );
+    if (!authenticatedOwnerIsCurrent(owner))
+      throw new MeetingJoinFailure("admission");
     if (generation !== this.joinGeneration)
       throw new MeetingJoinFailure("post_connect_guard");
     const lifecycle = new NativeMeetingLifecycle(
       meetingId,
-      ownerId,
+      owner.user.id,
       admission.grant_profile === "listener",
       () => new bindings.Room(),
+      owner,
     );
     lifecycle.bindings = bindings;
-    lifecycle.watchAuthenticatedOwner();
     const hooks = {
       pauseForSip: () => {
         lifecycle.interruptedBySip = true;
@@ -312,6 +342,7 @@ export class NativeMeetingLifecycle {
         ? phone11MediaOwnership.resumeMeeting(meetingId, hooks)
         : phone11MediaOwnership.requestMeeting(meetingId, hooks);
     lifecycle.lease = request.lease;
+    lifecycle.watchAuthenticatedOwner();
     lifecycle.unsubscribe = lifecycle.session.subscribe(() => {
       const status = lifecycle.session.getSnapshot().status;
       // An external SDK disconnect can arrive while a capture operation is
@@ -401,6 +432,8 @@ export class NativeMeetingLifecycle {
         // Keep failed cleanup addressable by the next join/auth teardown.
         // The held media lease prevents SIP from racing a live local track.
         setActiveNativeMeeting(lifecycle);
+        if (!lifecycle.ownerIsCurrent())
+          void clearNativeMeetingForAuth().catch(() => undefined);
       }
       if (error instanceof MeetingJoinFailure) throw error;
       const failureStage =
