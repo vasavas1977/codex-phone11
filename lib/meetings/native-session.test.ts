@@ -871,6 +871,33 @@ describe("native meeting lifecycle", () => {
     expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
   });
 
+  it("retains failed auth cleanup custody across native replacement and SIP handoff", async () => {
+    const old = await native.NativeMeetingLifecycle.join("auth-retired-room", admission, preferences);
+    const room = mocks.rooms[0];
+    room.disconnect.mockRejectedValue(new Error("persistent old room stop failure"));
+    await expect(registry.clearNativeMeetingForAuth()).rejects.toThrow("persistent old room stop failure");
+    expect(registry.getActiveNativeMeeting(11)).toBeUndefined();
+    expect(registry.getActiveNativeMeeting()).toBe(old);
+    expect(native.phone11MediaOwnership.getSnapshot().owner?.kind).toBe("meeting");
+    mocks.authUser = { id: 11 };
+    await expect(native.NativeMeetingLifecycle.join("replacement-room", admission, preferences))
+      .rejects.toMatchObject({ name: "MeetingJoinFailure" });
+    expect(mocks.rooms).toHaveLength(1);
+    await expect(native.prepareSipMediaOwnership("incoming-while-cleanup-failed"))
+      .rejects.toMatchObject({ code: "pause-failed" });
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+    expect(native.phone11MediaOwnership.getSnapshot().meetingPause).toBe("failed");
+    expect(registry.getActiveNativeMeeting()).toBe(old);
+    expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+    room.disconnect.mockResolvedValue(undefined);
+    await registry.clearNativeMeetingForAuth();
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    const sip = await native.prepareSipMediaOwnership("incoming-after-clean-retry");
+    expect(native.phone11MediaOwnership.isCurrent(sip)).toBe(true);
+    expect(mocks.rooms).toHaveLength(1);
+    native.releaseSipMediaOwnership(sip);
+  });
+
   it("disconnects an authenticated owner immediately when a different account replaces it", async () => {
     await native.NativeMeetingLifecycle.join(
       "meeting-owner",

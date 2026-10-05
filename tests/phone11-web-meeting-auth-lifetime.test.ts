@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { WebMeetingLifecycle } from "../lib/meetings/web-session";
-import { getActiveNativeMeeting } from "../lib/meetings/native-session-registry";
+import { clearNativeMeetingForAuth, getActiveNativeMeeting } from "../lib/meetings/native-session-registry";
 
 const state = vi.hoisted(() => ({
   userId: 3001 as number | undefined,
@@ -351,6 +351,46 @@ it("retains failed owner cleanup, denies old screen controls and blocks replacem
   );
   expect(state.rooms).toHaveLength(2);
   expect(getActiveNativeMeeting()).toBe(current);
+});
+it("actual auth registry cleanup retains failed teardown and refuses a replacement until clean retry", async () => {
+  const old = await WebMeetingLifecycle.join(3001, "old-room", interactive, preferences);
+  state.disconnectError = new Error("held SDK cleanup failure");
+  replaceOwner(null);
+  await expect(clearNativeMeetingForAuth()).rejects.toThrow("held SDK cleanup failure");
+  expect(getActiveNativeMeeting()).toBe(old);
+  expect(getActiveNativeMeeting(3001)).toBeUndefined();
+  expect(old.room).toBeUndefined();
+  expect(old.session.getRoom()).toBe(state.rooms[0]);
+  replaceOwner({ id: 3001 });
+  await expect(WebMeetingLifecycle.join(3001, "replacement-room", interactive, preferences))
+    .rejects.toMatchObject({ name: "MeetingJoinFailure" });
+  expect(state.rooms).toHaveLength(1);
+  expect(getActiveNativeMeeting(3001)).toBeUndefined();
+  state.disconnectError = undefined;
+  const replacement = await WebMeetingLifecycle.join(3001, "replacement-room", interactive, preferences);
+  expect(state.rooms).toHaveLength(2);
+  expect(getActiveNativeMeeting(3001)).toBe(replacement);
+  expect(old.session.getRoom()).toBeUndefined();
+  await old.leave();
+  expect(getActiveNativeMeeting()).toBe(replacement);
+});
+it("auth cleanup pending drain stays hidden and a replacement waits for actual SDK acknowledgment", async () => {
+  const old = await WebMeetingLifecycle.join(3001, "old-room", interactive, preferences);
+  const stop = deferred();
+  state.disconnectWait = stop.promise;
+  replaceOwner(null);
+  const cleanup = clearNativeMeetingForAuth();
+  expect(getActiveNativeMeeting()).toBe(old);
+  expect(getActiveNativeMeeting(3001)).toBeUndefined();
+  replaceOwner({ id: 3001 });
+  const replacementTask = WebMeetingLifecycle.join(3001, "replacement-room", interactive, preferences);
+  await Promise.resolve();
+  expect(state.rooms).toHaveLength(1);
+  stop.resolve();
+  await cleanup;
+  const replacement = await replacementTask;
+  expect(state.rooms).toHaveLength(2);
+  expect(getActiveNativeMeeting(3001)).toBe(replacement);
 });
 it("a join waiting for the previous leave cannot borrow a replacement same-ID owner", async () => {
   await WebMeetingLifecycle.join(
