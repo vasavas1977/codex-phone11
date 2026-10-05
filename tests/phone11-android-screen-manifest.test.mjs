@@ -46,12 +46,14 @@ test('symlink CLI validates positive input and rejects missing file, invalid mod
     const script = fileURLToPath(new URL('../scripts/verify-phone11-android-screen-manifest.mjs', import.meta.url));
     const alias = path.join(scratch, 'aliased-verifier.mjs'), file = path.join(scratch, 'AndroidManifest.xml');
     symlinkSync(script, alias); writeFileSync(file, on);
-    const invoke = args => spawnSync(process.execPath, [alias, ...args], { encoding: 'utf8' });
+    const invoke = (args, preserve = false) => spawnSync(process.execPath, [...(preserve ? ['--preserve-symlinks-main'] : []), alias, ...args], { encoding: 'utf8' });
     const valid = invoke([file, 'on']); assert.equal(valid.status, 0, valid.stderr); assert.equal(JSON.parse(valid.stdout).serviceCount, 1);
     for (const args of [[path.join(scratch, 'missing.xml'), 'on'], [file, 'invalid'], [], [file], [file, 'on', 'extra']]) {
       const result = invoke(args); assert.equal(result.status, 1, result.stdout + result.stderr); assert.notEqual(result.stderr, '');
     }
-    writeFileSync(file, document()); assert.equal(invoke([file, 'on']).status, 1);
+    const preserved = invoke([file, 'on'], true); assert.equal(preserved.status, 0, preserved.stderr); assert.equal(JSON.parse(preserved.stdout).serviceCount, 1);
+    assert.equal(invoke([file, 'invalid'], true).status, 1);
+    writeFileSync(file, document()); assert.equal(invoke([file, 'on']).status, 1); assert.equal(invoke([file, 'on'], true).status, 1);
     assert.equal(invoke([file, 'off']).status, 0);
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

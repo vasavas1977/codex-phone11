@@ -1,8 +1,9 @@
 import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
 import { readFileSync, realpathSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-const require = createRequire(import.meta.url);
+import { pathToFileURL, fileURLToPath } from 'node:url';
+const canonicalScript = realpathSync(fileURLToPath(import.meta.url));
+const require = createRequire(canonicalScript);
 // Reuse Expo's pinned XML parser dependency, without executing an Expo mod.
 const expo = createRequire(require.resolve('expo/config-plugins'));
 const xml = createRequire(expo.resolve('@expo/config-plugins/build/utils/XML'));
@@ -79,7 +80,7 @@ export function verifyManifest(contents, mode) {
 let entry;
 try { entry = process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href; }
 catch { /* Imported by stdin/test launchers that have no real entry file. */ }
-if (import.meta.url === entry) {
+if (pathToFileURL(canonicalScript).href === entry) {
   try {
     if (process.argv.length !== 4) fail('usage: <manifest-path> <off|on>');
     console.log(JSON.stringify(verifyManifest(readFileSync(process.argv[2], 'utf8'), process.argv[3])));
