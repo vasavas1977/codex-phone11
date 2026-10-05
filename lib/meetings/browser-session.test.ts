@@ -106,6 +106,67 @@ describe('browser meeting session', () => {
   expect(session.getSnapshot().error).toBeTruthy(); expect([...r.events.values()].every(set => set.size === 0)).toBe(true);
  });
 
+ it('retires a public moved room immediately and refuses capture before teardown settles', async () => {
+  const r = room(), pending = deferred(), session = new BrowserMeetingSession(() => r.result);
+  await session.connect(credentials);
+  vi.mocked(r.result.disconnect).mockReturnValue(pending.promise);
+  r.emit('roomMoved'); expect(session.getSnapshot().status).toBe('connected');
+  r.emit('moved');
+  expect(session.getSnapshot()).toMatchObject({ status: 'disconnected', participants: [],
+   error: 'Meeting changed. Rejoin to request fresh access.' });
+  const leave = session.disconnect(); let stopped = false;
+  expect(session.disconnect()).toBe(leave);
+  void leave.then(() => { stopped = true; });
+  await expect(session.setMicrophone(true)).rejects.toThrow('not connected');
+  await expect(session.setCamera(true)).rejects.toThrow('not connected');
+  expect(r.result.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+  expect(r.result.localParticipant.setCameraEnabled).not.toHaveBeenCalled();
+  expect(stopped).toBe(false); pending.resolve(); await leave;
+  expect(r.result.disconnect).toHaveBeenCalledTimes(1);
+ });
+
+ it('ignores stale moved and reconnect callbacks after an explicit fresh-room connection', async () => {
+  const old = room(), next = room();
+  const session = new BrowserMeetingSession(vi.fn().mockReturnValueOnce(old.result).mockReturnValueOnce(next.result));
+  await session.connect(credentials);
+  const oldMoved = [...old.events.get('moved')!][0], oldReconnected = [...old.events.get('reconnected')!][0];
+  old.emit('moved'); await session.disconnect();
+  await session.connect({ ...credentials, token: 'fresh-admission' });
+  oldMoved(); oldReconnected();
+  expect(session.getSnapshot().status).toBe('connected');
+  expect(session.getRoom()).toBe(next.result); expect(next.result.disconnect).not.toHaveBeenCalled();
+  await session.setMicrophone(true); expect(next.result.localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true);
+  await session.disconnect();
+ });
+
+ it('keeps failed moved-room teardown addressable and retries without clearing its failure', async () => {
+  const r = room(), stop = vi.fn(), session = new BrowserMeetingSession(() => r.result);
+  r.result.localParticipant.trackPublications = new Map([['audio', { track: { stop } }]]);
+  await session.connect(credentials);
+  vi.mocked(r.result.disconnect).mockRejectedValueOnce(new Error('sendLeave failed'));
+  r.emit('moved');
+  await expect(session.disconnect()).rejects.toThrow('sendLeave failed');
+  expect(session.getRoom()).toBe(r.result); expect(session.getSnapshot().status).toBe('disconnected');
+  expect(session.getSnapshot().error).toBeTruthy(); expect(stop).toHaveBeenCalledTimes(1);
+  const failure = session.getSnapshot().error;
+  await expect(session.setCamera(true)).rejects.toThrow('not connected');
+  expect(session.getSnapshot().error).toBe(failure);
+  await session.disconnect(); expect(session.getRoom()).toBeUndefined();
+ });
+
+ it('never activates initial media if the provider moves the room before connect completes', async () => {
+  const r = room(), pending = deferred(), session = new BrowserMeetingSession(() => r.result);
+  vi.mocked(r.result.connect).mockReturnValue(pending.promise);
+  const connecting = session.connect({ ...credentials, microphone: true, camera: true });
+  r.emit('moved'); const cleanup = session.disconnect();
+  pending.resolve();
+  await expect(connecting).rejects.toMatchObject({ stage: 'post_connect_guard' }); await cleanup;
+  expect(session.getSnapshot().status).toBe('disconnected');
+  expect(r.result.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+  expect(r.result.localParticipant.setCameraEnabled).not.toHaveBeenCalled();
+  expect(session.getRoom()).toBeUndefined();
+ });
+
  it('waits for a late camera publish after external disconnection before cleanup completes', async () => {
   const r = room(), pending = deferred(), session = new BrowserMeetingSession(() => r.result);
   await session.connect(credentials);

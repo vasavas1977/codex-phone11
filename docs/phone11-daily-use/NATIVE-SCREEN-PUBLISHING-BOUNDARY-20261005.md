@@ -39,6 +39,8 @@ A bounded candidate should add a reversible Android-only, default-off build flag
 
 The public [meeting admission DTO](../../server/meetings/service.ts):17–33 and [native admission](../../lib/meetings/native-session.ts):26–31 do not expose room revision. Canonical admission storage already has revisions; define the current session-lifetime binding before promising that fence. Do not introduce a duplicate product store or infer host-operation authority from screen entitlement.
 
+The shared [meeting controller](../../lib/meetings/browser-session.ts) now retires the exact connected room on public LiveKit `RoomEvent.Moved` (`moved`, not the internal engine's `roomMoved`). It disables capture immediately and drains the existing teardown barrier; failures retain cleanup/media ownership for retry. A replacement room requires fresh admission and an explicit join. This bounded refusal does not add revision DTOs or establish native screen publishing support.
+
 ## iOS prerequisites and acceptance gates
 
 iOS needs a Broadcast Upload Extension target, exact App Group and extension identifiers, matching host/extension entitlements and provisioning, the two expected Info.plist keys, and a video-only SampleHandler. The extension protocol needs session-generation binding, start/frame readiness and stop acknowledgments, and extension termination on authority loss or closed host connection. A resolved empty track or closed socket alone is not proof that system broadcasting has started or ended. Phone11 currently implements none of these extension prerequisites.

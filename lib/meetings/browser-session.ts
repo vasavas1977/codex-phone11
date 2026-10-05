@@ -173,6 +173,18 @@ export class BrowserMeetingSession {
         if (this.capabilities.screen) { this.update({ status: 'connected' }); this.refresh(room!); }
         else { this.refresh(room!); this.update({ status: 'connected' }); }
       });
+      bind('moved', () => {
+        // Public RoomEvent.Moved changes rooms without a connection-state
+        // transition. Retire this admitted room before any queued capture or
+        // reconnect callback can act on the replacement provider room.
+        ++this.generation;
+        const stopping = this.disconnect();
+        this.update({ status: 'disconnected', participants: [],
+          error: 'Meeting changed. Rejoin to request fresh access.' });
+        // The native owner observes the snapshot and awaits this same barrier;
+        // failures retain the room and media lease for an explicit leave retry.
+        void stopping.catch(() => undefined);
+      });
       bind('disconnected', () => {
         this.update({ status: 'disconnected', participants: [], error: 'Meeting disconnected.' });
         // The SDK can signal disconnection while a native capture operation
@@ -398,6 +410,10 @@ export class BrowserMeetingSession {
   }
   private operation(action: (participant: BrowserLocalParticipant) => Promise<unknown>): Promise<void> {
     const generation = this.generation, room = this.room;
+    // Refuse newly requested capture immediately, rather than queuing behind a
+    // retiring room's still-pending publication. Preserve its teardown error.
+    if (!room || this.disconnectTask || this.snapshot.status !== 'connected')
+      return Promise.reject(new Error('Meeting is not connected'));
     const run = async () => {
       if (!room || room !== this.room || generation !== this.generation || this.snapshot.status !== 'connected') {
         const error = new Error('Meeting is not connected');

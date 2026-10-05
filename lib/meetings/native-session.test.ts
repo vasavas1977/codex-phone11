@@ -480,6 +480,56 @@ describe("native meeting lifecycle", () => {
     expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
   });
 
+  it("retires a moved native room immediately and holds audio through late publication and concurrent leave", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-moved", admission,
+      { microphone: false, camera: false });
+    const room = mocks.rooms[0];
+    let finishPublish!: () => void;
+    room.localParticipant.setCameraEnabled.mockImplementationOnce(async () => {
+      await new Promise<void>(resolve => { finishPublish = resolve; });
+    });
+    const publish = lifecycle.session.setCamera(true);
+    await vi.waitFor(() => expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledTimes(1));
+    room.emit("moved");
+    expect(lifecycle.session.getSnapshot().status).toBe("disconnected");
+    const leave = lifecycle.leave(); let left = false;
+    void leave.then(() => { left = true; });
+    await expect(lifecycle.session.setMicrophone(true)).rejects.toThrow("not connected");
+    await expect(lifecycle.session.setCamera(true)).rejects.toThrow("not connected");
+    expect(room.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledTimes(1);
+    expect(mocks.stopAudioSession).not.toHaveBeenCalled(); expect(left).toBe(false);
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({ kind: "meeting", id: "meeting-moved" });
+    finishPublish(); await expect(publish).rejects.toThrow("cancelled"); await leave;
+    expect(mocks.stopAudioSession).toHaveBeenCalled();
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+  });
+
+  it("keeps a failed moved-room cleanup owned and refuses SIP until a real disconnect retry succeeds", async () => {
+    const lifecycle = await native.NativeMeetingLifecycle.join("meeting-moved-failed", admission, preferences);
+    const room = mocks.rooms[0], stop = vi.fn();
+    room.localParticipant.trackPublications = new Map([["camera", { track: { stop } }]]);
+    room.disconnect.mockRejectedValue(new Error("sendLeave failed"));
+    room.emit("moved");
+    await expect(lifecycle.leave()).rejects.toThrow("sendLeave failed");
+    expect(stop).toHaveBeenCalled(); expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+    expect(registry.getActiveNativeMeeting()).toBe(lifecycle);
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({ kind: "meeting" });
+    const sip = native.phone11MediaOwnership.requestSip("sip:moved-cleanup-failed");
+    await expect(sip.ready).rejects.toMatchObject({ code: "pause-failed" });
+    expect(native.phone11MediaOwnership.getSnapshot().owner?.kind).not.toBe("sip");
+    expect(registry.getActiveNativeMeeting()).toBe(lifecycle);
+    expect(mocks.stopAudioSession).not.toHaveBeenCalled();
+    room.disconnect.mockResolvedValue(undefined);
+    await lifecycle.leave();
+    expect(registry.getActiveNativeMeeting()).toBeUndefined();
+    const retriedSip = native.phone11MediaOwnership.requestSip("sip:after-moved-cleanup");
+    await retriedSip.ready;
+    expect(native.phone11MediaOwnership.getSnapshot().owner).toMatchObject({ kind: "sip" });
+    native.releaseSipMediaOwnership(retriedSip.lease);
+  });
+
   it("rejects a timed-out SIP handoff without releasing still-publishing media", async () => {
     const lifecycle = await native.NativeMeetingLifecycle.join(
       "meeting-stuck-publish",
