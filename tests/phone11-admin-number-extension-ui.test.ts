@@ -55,7 +55,7 @@ describe("enterprise extension administration", () => {
   it("keeps the people directory limited to public identity and active tenant membership", () => {
     expect(hooks).toContain("useTenantPeople");
     expect(pbxRouter).toContain("people: protectedProcedure");
-    expect(pbxRouter).toContain("const tc = await getTenantAdminCtx(ctx);");
+    expect(pbxRouter).toMatch(/people:[\s\S]{0,240}getTenantAdminReadCtx\(ctx, input\?\.tenantId\)/);
     expect(pbxRouter).toContain("WHERE tm.tenant_id = $1 AND tm.status = 'active'");
     expect(pbxRouter).toContain("assigned_extension_numbers");
     expect(pbxRouter).not.toMatch(/people:[\s\S]{0,1800}secret_ciphertext/);
