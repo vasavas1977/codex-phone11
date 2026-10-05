@@ -95,6 +95,9 @@ jobs:
     name: Compile Android debug build
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    env:
+      PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
+      EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -124,6 +127,9 @@ jobs:
       - name: Prebuild Android project
         run: pnpm exec expo prebuild --clean --platform android --no-install
 
+      - name: Verify ordinary Android has no screen-transaction wiring
+        run: node scripts/verify-phone11-android-screen-manifest.mjs android/app/src/main/AndroidManifest.xml off
+
       - name: Stage the exact Android SDK for source compilation only
         shell: bash
         run: |
@@ -150,12 +156,94 @@ jobs:
         working-directory: android
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Verify ordinary merged manifest has no screen-transaction wiring
+        shell: bash
+        run: |
+          python3 - <<'PYMANIFEST'
+          from pathlib import Path
+          import subprocess
+          paths = [
+              Path('android/app/build/intermediates') / directory / 'debug/processDebugMainManifest/AndroidManifest.xml'
+              for directory in ('merged_manifest', 'merged_manifests')
+          ]
+          found = [path for path in paths if path.is_file()]
+          assert len(found) == 1, 'Expected one actual processDebugMainManifest output'
+          subprocess.run(['node', 'scripts/verify-phone11-android-screen-manifest.mjs', str(found[0]), 'off'], check=True)
+          PYMANIFEST
+
       - name: Verify ordinary APK excludes the unfinished calling runtime
         run: |
           python3 tests/phone11-android-apk.test.py
           python3 scripts/verify-phone11-android-apk.py \
             --apk android/app/build/outputs/apk/debug/app-debug.apk \
             --apkanalyzer "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+
+  android-screen-transaction-compile:
+    name: Compile isolated Android screen transaction
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      EAS_BUILD_PLATFORM: android
+      PHONE11_ANDROID_SCREEN_TRANSACTION: "1"
+      EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION: "1"
+      PHONE11_APP_STORE_BUILD: "0"
+      PHONE11_ANDROID_FOREGROUND_TRIAL: "0"
+      EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL: "0"
+      PHONE11_VOIP_WAKE_COMMISSIONED: "0"
+      PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          test "$(pnpm --version)" = "9.12.0"
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate isolated Android screen configuration
+        run: pnpm exec expo prebuild --clean --platform android --no-install
+      - name: Verify generated screen configuration
+        run: node scripts/verify-phone11-android-screen-manifest.mjs android/app/src/main/AndroidManifest.xml on
+      - name: Compile the actual patched WebRTC bridge and merge app manifest
+        working-directory: android
+        shell: bash
+        run: |
+          ./gradlew projects --console=plain > "$RUNNER_TEMP/phone11-screen-gradle-projects.log"
+          rg -F -- "Project ':livekit_react-native-webrtc'" "$RUNNER_TEMP/phone11-screen-gradle-projects.log"
+          ./gradlew :livekit_react-native-webrtc:compileDebugJavaWithJavac :app:processDebugMainManifest --no-daemon --console=plain --stacktrace
+      - name: Verify actual merged screen manifest
+        shell: bash
+        run: |
+          python3 - <<'PYMANIFEST'
+          from pathlib import Path
+          import subprocess
+          paths = [
+              Path('android/app/build/intermediates') / directory / 'debug/processDebugMainManifest/AndroidManifest.xml'
+              for directory in ('merged_manifest', 'merged_manifests')
+          ]
+          found = [path for path in paths if path.is_file()]
+          assert len(found) == 1, 'Expected one actual processDebugMainManifest output'
+          subprocess.run(['node', 'scripts/verify-phone11-android-screen-manifest.mjs', str(found[0]), 'on'], check=True)
+          PYMANIFEST
+      - name: Revert generated app configuration to default off
+        env:
+          PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
+          EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
+        run: |
+          pnpm exec expo prebuild --clean --platform android --no-install
+          node scripts/verify-phone11-android-screen-manifest.mjs android/app/src/main/AndroidManifest.xml off
 
   android-foreground-trial-assemble:
     name: Package isolated Android foreground calling trial

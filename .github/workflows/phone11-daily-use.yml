@@ -86,6 +86,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
       - name: Enable pinned package manager
         run: |
           corepack enable
@@ -298,7 +302,7 @@ jobs:
             --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-voicemail-results.json"
       - name: Test browser sharing and Android Answer media recovery
         run: |
-          for suite in lib/meetings/browser-screen-share.test.ts lib/meetings/web-session.test.ts lib/meetings/browser-session.test.ts lib/meetings/native-session-registry.test.ts lib/meetings/native-session.test.ts tests/phone11-web-meeting-auth-lifetime.test.ts tests/phone11-meeting-screen-share-ui.test.tsx tests/phone11-android-call-permission.test.ts tests/phone11-android-answer-media.test.ts; do
+          for suite in lib/meetings/browser-screen-share.test.ts lib/meetings/web-session.test.ts lib/meetings/browser-session.test.ts lib/meetings/native-session-registry.test.ts lib/meetings/native-session.test.ts tests/phone11-web-meeting-auth-lifetime.test.ts tests/phone11-meeting-screen-share-ui.test.tsx tests/phone11-android-call-permission.test.ts tests/phone11-android-answer-media.test.ts tests/phone11-android-screen-plugin.test.ts tests/phone11-android-screen-transaction.test.ts; do
             test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
           done
           pnpm exec vitest run \
@@ -311,7 +315,36 @@ jobs:
             tests/phone11-meeting-screen-share-ui.test.tsx \
             tests/phone11-android-call-permission.test.ts \
             tests/phone11-android-answer-media.test.ts \
+            tests/phone11-android-screen-plugin.test.ts \
+            tests/phone11-android-screen-transaction.test.ts \
             --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-interactive-media-results.json"
+      - name: Execute installed Android screen custody and manifest regressions
+        shell: bash
+        run: |
+          test -f tests/phone11-android-screen-native.test.mjs
+          test -f tests/phone11-android-screen-manifest.test.mjs
+          PHONE11_ANDROID_SCREEN_REQUIRE_INSTALLED_PATCH=1 node --test tests/phone11-android-screen-native.test.mjs tests/phone11-android-screen-manifest.test.mjs | tee "$RUNNER_TEMP/phone11-screen-native.tap"
+          python3 - <<'PYSCREEN'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ['RUNNER_TEMP']) / 'phone11-screen-native.tap').read_text()
+          def total(label):
+              values = re.findall(r'^# ' + label + r' (\d+)$', tap, re.MULTILINE)
+              assert len(values) == 1, f'Missing or duplicate TAP summary: {label}'
+              return int(values[0])
+          count = total('tests')
+          assert count > 0 and total('pass') == count
+          assert not re.search(r'^not ok(?:\s|$)', tap, re.MULTILINE), 'TAP contains a failed case'
+          assert all(total(label) == 0 for label in ('fail', 'cancelled', 'skipped', 'todo'))
+          for label in (
+              'actual patched native custody core executes nine cancellation/ACK/failure/retry scenarios',
+              'OFF permits the existing unrelated released projection service',
+              'ON accepts exactly one private video-only service and literal gate',
+          ):
+              required = re.findall(r'^ok \d+ - ' + re.escape(label) + r'$', tap, re.MULTILINE)
+              assert len(required) == 1, f'Required native/manifest case must execute exactly once: {label}'
+          print(f'Installed Android screen custody: {count} cases passed, zero skips')
+          PYSCREEN
       - name: Test first meeting entry and voicemail confirmation ownership
         run: |
           for suite in tests/phone11-meet-action.test.tsx tests/phone11-admin-voicemail-confirmation.test.tsx; do
@@ -330,7 +363,7 @@ jobs:
               "phone11-setup-confirmation-results.json": ["tests/phone11-meet-action.test.tsx", "tests/phone11-admin-voicemail-confirmation.test.tsx"],
               "phone11-transfer-results.json": ["tests/phone11-siprix-engine.test.ts", "tests/phone11-active-call-navigation.test.tsx", "tests/phone11-current-call-banner.test.tsx", "tests/phone11-transfer-lifecycle.test.tsx", "tests/phone11-transfer-screen.test.tsx", "tests/phone11-voicemail-callback.test.tsx"],
               "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-relay.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts", "tests/phone11-voicemail-bundle.test.ts"],
-              "phone11-interactive-media-results.json": ["lib/meetings/browser-screen-share.test.ts", "lib/meetings/web-session.test.ts", "lib/meetings/browser-session.test.ts", "lib/meetings/native-session-registry.test.ts", "lib/meetings/native-session.test.ts", "tests/phone11-web-meeting-auth-lifetime.test.ts", "tests/phone11-meeting-screen-share-ui.test.tsx", "tests/phone11-android-call-permission.test.ts", "tests/phone11-android-answer-media.test.ts"],
+              "phone11-interactive-media-results.json": ["lib/meetings/browser-screen-share.test.ts", "lib/meetings/web-session.test.ts", "lib/meetings/browser-session.test.ts", "lib/meetings/native-session-registry.test.ts", "lib/meetings/native-session.test.ts", "tests/phone11-web-meeting-auth-lifetime.test.ts", "tests/phone11-meeting-screen-share-ui.test.tsx", "tests/phone11-android-call-permission.test.ts", "tests/phone11-android-answer-media.test.ts", "tests/phone11-android-screen-plugin.test.ts", "tests/phone11-android-screen-transaction.test.ts"],
           }
           for report_name, suites in required.items():
               report = json.loads((Path(os.environ["RUNNER_TEMP"]) / report_name).read_text())
