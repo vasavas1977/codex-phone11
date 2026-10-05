@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { router } from "expo-router";
 import {
   ActivityIndicator,
@@ -17,6 +17,7 @@ import { ScreenContainer } from "@/components/screen-container";
 import { useColors } from "@/hooks/use-colors";
 import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
 import { trpc } from "@/lib/trpc";
+import { addAuthChangeListener, getAuthSnapshot } from "@/lib/_core/auth";
 
 type ExtensionRow = {
   id: number;
@@ -44,8 +45,56 @@ function AdminVoicemailContent() {
   const workspace = usePbxAdminWorkspace();
   const tenantId = workspace.selectedTenantId ?? 0;
   const [page, setPage] = useState(1);
-  const [pendingId, setPendingId] = useState<number | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const auth = useSyncExternalStore(
+    addAuthChangeListener,
+    getAuthSnapshot,
+    getAuthSnapshot,
+  );
+  const mounted = useRef(false);
+  const scope = useRef({ owner: auth.user, tenantId, page, active: true });
+  type Action = {
+    scope: typeof scope.current;
+    row: ExtensionRow;
+    enabled: boolean;
+    phase: "confirming" | "saving" | "finished";
+    active: boolean;
+  };
+  const pending = useRef<Action | null>(null);
+  const [feedback, setFeedback] = useState<{
+    action: Action;
+    error: string | null;
+  } | null>(null);
+  if (
+    !scope.current.active ||
+    scope.current.owner !== auth.user ||
+    scope.current.tenantId !== tenantId ||
+    scope.current.page !== page
+  ) {
+    scope.current.active = false;
+    if (pending.current) pending.current.active = false;
+    pending.current = null;
+    scope.current = { owner: auth.user, tenantId, page, active: true };
+  }
+  useLayoutEffect(() => {
+    mounted.current = true;
+    if (!scope.current.active)
+      scope.current = { ...scope.current, active: true };
+    const unsubscribe = addAuthChangeListener(() => {
+      const latest = getAuthSnapshot();
+      if (latest.user !== scope.current.owner || latest.loading) {
+        scope.current.active = false;
+        if (pending.current) pending.current.active = false;
+        pending.current = null;
+      }
+    });
+    return () => {
+      mounted.current = false;
+      scope.current.active = false;
+      if (pending.current) pending.current.active = false;
+      pending.current = null;
+      unsubscribe();
+    };
+  }, []);
   const utils = trpc.useUtils();
   const status = trpc.pbx.voicemail.storageStatus.useQuery(
     { tenantId },
@@ -70,41 +119,135 @@ function AdminVoicemailContent() {
   const rows = (extensions.data?.data ?? []) as ExtensionRow[];
   const personalRows = rows.filter((item) => item.type === "user");
 
-  const save = async (item: ExtensionRow, enabled: boolean) => {
-    if (!tenantId || pendingId !== null) return;
-    setPendingId(item.id);
-    setSaveError(null);
+  const queryInput = {
+    tenantId,
+    page,
+    pageSize: 50,
+    sortBy: "extension_number" as const,
+    sortOrder: "asc" as const,
+  };
+  const sameRow = (a: ExtensionRow, b: ExtensionRow) =>
+    a.id === b.id &&
+    a.extension_number === b.extension_number &&
+    a.user_id === b.user_id &&
+    a.status === b.status &&
+    a.type === b.type &&
+    a.voicemail_enabled === b.voicemail_enabled &&
+    a.user_name === b.user_name &&
+    a.display_name === b.display_name;
+  const latestQuery = useRef({ failed: false });
+  latestQuery.current.failed = extensions.isError;
+  const current = (action: Action) => {
+    const latest = getAuthSnapshot();
+    if (
+      !mounted.current ||
+      !action.active ||
+      !action.scope.active ||
+      scope.current !== action.scope ||
+      latest.loading ||
+      !latest.user ||
+      latest.user !== action.scope.owner ||
+      !action.scope.tenantId ||
+      latestQuery.current.failed
+    )
+      return false;
+    const cached = utils.pbx.extensions.list.getData({
+      ...queryInput,
+      tenantId: action.scope.tenantId,
+      page: action.scope.page,
+    });
+    const row = (cached?.data as ExtensionRow[] | undefined)?.find(
+      (item) => item.id === action.row.id,
+    );
+    return Boolean(
+      row &&
+      sameRow(row, action.row) &&
+      row.type === "user" &&
+      (!action.enabled || (row.status === "active" && Boolean(row.user_id))),
+    );
+  };
+  // Retire observed replacement rows permanently, even if the old values later return.
+  if (pending.current && !current(pending.current)) {
+    pending.current.active = false;
+    pending.current = null;
+  }
+  if (feedback?.action.active && !current(feedback.action))
+    feedback.action.active = false;
+  const pendingId = pending.current?.row.id ?? null;
+  const saveError =
+    feedback && current(feedback.action) ? feedback.error : null;
+  const cancel = (action: Action) => {
+    if (pending.current !== action || action.phase !== "confirming") return;
+    const wasCurrent = current(action);
+    action.active = false;
+    pending.current = null;
+    if (wasCurrent) setFeedback(null);
+  };
+  const save = async (action: Action) => {
+    if (
+      pending.current !== action ||
+      action.phase !== "confirming" ||
+      !current(action)
+    )
+      return;
+    action.phase = "saving";
+    setFeedback({ action, error: null });
     try {
       await update.mutateAsync({
-        id: item.id,
-        tenantId,
-        voicemailEnabled: enabled,
+        id: action.row.id,
+        tenantId: action.scope.tenantId,
+        voicemailEnabled: action.enabled,
       });
-      await utils.pbx.extensions.list.invalidate();
+      if (!current(action)) return;
+      await utils.pbx.extensions.list.invalidate({
+        ...queryInput,
+        tenantId: action.scope.tenantId,
+        page: action.scope.page,
+      });
     } catch (error) {
-      setSaveError(
-        error instanceof Error
-          ? error.message
-          : "Mailbox setting could not be saved.",
-      );
+      if (current(action))
+        setFeedback({
+          action,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Mailbox setting could not be saved.",
+        });
     } finally {
-      setPendingId(null);
+      action.phase = "finished";
+      if (pending.current === action) {
+        pending.current = null;
+        if (current(action))
+          setFeedback((value) =>
+            value?.action === action ? { ...value } : value,
+          );
+      }
     }
   };
-
   const change = (item: ExtensionRow) => {
-    const enable = item.voicemail_enabled !== true;
-    if (!enable) {
-      void save(item, false);
+    if (pending.current) return;
+    const action: Action = {
+      scope: scope.current,
+      row: { ...item },
+      enabled: item.voicemail_enabled !== true,
+      phase: "confirming",
+      active: true,
+    };
+    if (!current(action)) return;
+    pending.current = action; // Reserve before Alert or mutation, independently of React state.
+    setFeedback({ action, error: null });
+    if (!action.enabled) {
+      void save(action);
       return;
     }
     Alert.alert(
       "Enable voicemail mailbox?",
       "This enables the PBX mailbox. Inbox delivery still needs a completed-message relay and a real voicemail test.",
       [
-        { text: "Cancel", style: "cancel" },
-        { text: "Enable", onPress: () => void save(item, true) },
+        { text: "Cancel", style: "cancel", onPress: () => cancel(action) },
+        { text: "Enable", onPress: () => void save(action) },
       ],
+      { cancelable: true, onDismiss: () => cancel(action) },
     );
   };
 
@@ -170,8 +313,9 @@ function AdminVoicemailContent() {
                   : "Not writable"}
               </Text>
               <Text style={[styles.note, { color: colors.muted }]}>
-                These checks do not confirm message delivery or long-term storage.
-                Leave a test voicemail and play it back to check the full flow.
+                These checks do not confirm message delivery or long-term
+                storage. Leave a test voicemail and play it back to check the
+                full flow.
               </Text>
             </>
           )}
