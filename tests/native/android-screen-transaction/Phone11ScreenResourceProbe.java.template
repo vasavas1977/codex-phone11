@@ -1,0 +1,21 @@
+package com.oney.WebRTCModule;
+import java.util.*;
+/** Actual attachment/disposal bodies with pinned SDK ownership semantics; no JNI. */
+public class Phone11ScreenResourceProbe {
+ static class Track {boolean disposed;int disposals;void setEnabled(boolean b){if(disposed)throw new IllegalStateException("disposed track");}void dispose(){if(disposed)throw new IllegalStateException("double disposal");disposed=true;disposals++;}}
+ static class MediaStream {Track track;boolean preserved,disposed,fail;String getId(){return "stream";}boolean addTrack(Track t){track=t;return true;}boolean addPreservedTrack(Track t){track=t;preserved=true;return true;}void dispose(){if(fail)throw new IllegalStateException("stream failure");if(disposed)throw new IllegalStateException("double stream disposal");if(track!=null&&!preserved)track.dispose();disposed=true;}}
+ static class Capturer {void stopCapture(){}void dispose(){}}static class Texture {void stopListening(){}void dispose(){}}static class Source {void dispose(){}}
+ static class Factory {MediaStream last;MediaStream createLocalMediaStream(String id){return last=new MediaStream();}}
+ static class Module {Factory mFactory=new Factory();Map<String,MediaStream>localStreams=new HashMap<>();}static class Media {void forgetPhone11Track(String id){}}
+ static class WritableMap {void putString(String key,String value){}void putMap(String key,WritableMap value){}}static class Arguments {static WritableMap createMap(){return new WritableMap();}}
+ Object permission;Track track=new Track();Capturer capturer=new Capturer();Texture texture=new Texture();Source source=new Source();Module module=new Module();Media media=new Media();String streamId,trackId="track";boolean captureStartAttempted=true,captureStopped,capturerDisposed,textureStopped,textureDisposed,sourceDisposed,trackDisposed;
+ WritableMap attach(){WritableMap info=new WritableMap();
+@@ATTACH@@
+ }
+@@DISPOSE@@
+ static void check(boolean value){if(!value)throw new AssertionError("disposal custody incorrect");}
+ public static void main(String[]args)throws Exception{
+  Phone11ScreenResourceProbe p=new Phone11ScreenResourceProbe();p.attach();p.disposeCapture();p.disposeCapture();check(p.trackDisposed&&p.track.disposals==1&&p.module.localStreams.isEmpty());System.out.println("PASS one track disposal");
+  p=new Phone11ScreenResourceProbe();p.attach();p.module.mFactory.last.fail=true;try{p.disposeCapture();throw new AssertionError("failed stream accepted");}catch(IllegalStateException expected){}check(!p.track.disposed&&p.streamId!=null&&!p.module.localStreams.isEmpty());p.module.mFactory.last.fail=false;p.disposeCapture();check(p.trackDisposed&&p.track.disposals==1&&p.module.localStreams.isEmpty());System.out.println("PASS partial stream disposal retry");
+ }
+}

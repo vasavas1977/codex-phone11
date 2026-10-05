@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
   return {
     authUser: { id: 11 } as { id: number; name?: string } | null,
     listeners,
+    sipListeners: new Set<() => void>(),
     rooms,
     lifecycleEvents,
     platformOS: "ios" as "ios" | "android",
@@ -26,6 +27,12 @@ const mocks = vi.hoisted(() => {
     bindingsLoad: undefined as Promise<void> | undefined,
     bindingsLoadEntered: vi.fn(),
     registerGlobals: vi.fn(),
+    screenBridge: {
+      phone11ScreenSupported: vi.fn(async () => true),
+      phone11ScreenBegin: vi.fn(async () => ({ streamId: "native-screen", track: { id: "screen", kind: "video", remote: false, readyState: "live" } })),
+      phone11ScreenCancel: vi.fn(async () => {}),
+      phone11ScreenStop: vi.fn(async () => {}),
+    },
     ConnectionError: undefined as unknown as new (
       message: string,
       reason: number,
@@ -39,7 +46,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("react-native", () => ({ Platform: { get OS() { return mocks.platformOS; } } }));
+vi.mock("react-native", () => ({ NativeModules: { WebRTCModule: mocks.screenBridge }, Platform: { get OS() { return mocks.platformOS; } } }));
 vi.mock("@/lib/_core/auth", () => ({
   getAuthSnapshot: () => ({
     user: mocks.authUser,
@@ -52,7 +59,7 @@ vi.mock("@/lib/_core/auth", () => ({
   },
 }));
 vi.mock("@/lib/sip/call-store", () => ({
-  useSipCallStore: { getState: () => mocks.sipState },
+  useSipCallStore: { getState: () => mocks.sipState, subscribe: (listener: () => void) => { mocks.sipListeners.add(listener); return () => mocks.sipListeners.delete(listener); } },
 }));
 function nativeBindingsMock() {
   return {
@@ -81,6 +88,12 @@ vi.mock("livekit-client", () => {
   mocks.ConnectionError = ConnectionError;
   return {
     ConnectionError,
+    Track: { Source: { ScreenShare: "screen_share" }, sourceToProto: () => 3 },
+    LocalVideoTrack: class {
+      kind = "video"; source = "screen_share";
+      constructor(readonly mediaStreamTrack: any) {}
+      stop() { this.mediaStreamTrack.readyState = "ended"; }
+    },
     ConnectionErrorReason: {
       NotAllowed: 0,
       ServerUnreachable: 1,
@@ -96,6 +109,10 @@ vi.mock("livekit-client", () => {
       localParticipant = {
         identity: "local",
         name: "Local",
+        permissions: { canPublish: true, canPublishSources: [3] },
+        trackPublications: new Map(),
+        publishTrack: vi.fn(async (track: any) => { this.localParticipant.trackPublications.set("screen", { track, isMuted: false }); }),
+        unpublishTrack: vi.fn(async (track: any) => { this.localParticipant.trackPublications.delete("screen"); }),
         isMicrophoneEnabled: false,
         isCameraEnabled: false,
         setMicrophoneEnabled: vi.fn(async (enabled: boolean) => {
@@ -130,6 +147,13 @@ vi.mock("livekit-client", () => {
   };
 });
 
+vi.mock("@livekit/react-native-webrtc", () => ({
+  MediaStream: class {
+    constructor(readonly data: any) {}
+    getVideoTracks() { return this.data.tracks.map((info: any) => ({ ...info, addEventListener: vi.fn(), removeEventListener: vi.fn() })); }
+    getAudioTracks() { return []; }
+  },
+}));
 let native: typeof import("./native-session");
 let registry: typeof import("./native-session-registry");
 
@@ -141,15 +165,21 @@ const preferences = { microphone: true, camera: true };
 
 beforeEach(async () => {
   vi.resetModules();
+  vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION", "0");
   vi.clearAllMocks();
   mocks.authUser = { id: 11 };
   mocks.listeners.clear();
+  mocks.sipListeners.clear();
   mocks.rooms.length = 0;
   mocks.lifecycleEvents.length = 0;
   mocks.platformOS = "ios";
   mocks.roomConstructorError = undefined;
   mocks.bindingsLoad = undefined;
   mocks.sipState = { incomingCall: null, activeCalls: {} };
+  mocks.screenBridge.phone11ScreenSupported.mockResolvedValue(true);
+  mocks.screenBridge.phone11ScreenBegin.mockResolvedValue({ streamId: "native-screen", track: { id: "screen", kind: "video", remote: false, readyState: "live" } });
+  mocks.screenBridge.phone11ScreenCancel.mockResolvedValue(undefined);
+  mocks.screenBridge.phone11ScreenStop.mockResolvedValue(undefined);
   mocks.startAudioSession.mockImplementation(async () => {
     mocks.lifecycleEvents.push("audio-start");
   });
@@ -171,7 +201,7 @@ beforeEach(async () => {
   registry = await import("./native-session-registry");
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("native meeting lifecycle", () => {
 
@@ -1187,4 +1217,88 @@ describe("native meeting lifecycle", () => {
       }),
     ).toThrow("pause-failed");
   });
+});
+
+function screenDeferred<T>() { let resolve!: (value: T) => void, reject!: (error: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
+const screenTick = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+async function screenJoin(grant_profile: "interactive" | "listener" | undefined = "interactive") {
+  mocks.platformOS = "android"; vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION", "1");
+  return native.NativeMeetingLifecycle.join("screen-room", { ...admission, grant_profile }, { microphone: false, camera: false });
+}
+describe("Android screen transaction uses original native lifecycle authority", () => {
+  it("ordinary Android and iOS never ask native support or expose sharing", async () => {
+    mocks.platformOS = "android";
+    const ordinary = await native.NativeMeetingLifecycle.join("ordinary", admission, preferences);
+    expect(ordinary.session.getSnapshot().screenShare).toBeUndefined(); await ordinary.leave();
+    mocks.platformOS = "ios"; vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION", "1");
+    const ios = await native.NativeMeetingLifecycle.join("ios", admission, preferences);
+    expect(ios.session.getSnapshot().screenShare).toBeUndefined(); expect(mocks.screenBridge.phone11ScreenSupported).not.toHaveBeenCalled(); await ios.leave();
+  });
+  it.each(["listener", "missing"])("%s admission cannot use the native screen API", async grant => {
+    const life = grant === "listener" ? await screenJoin("listener") : await (async () => { mocks.platformOS = "android"; vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION", "1"); return native.NativeMeetingLifecycle.join("screen-room", admission, preferences); })();
+    expect(life.session.getSnapshot().screenShare).toBeUndefined(); await expect(life.session.startScreenShare()).rejects.toThrow("unavailable");
+    expect(mocks.screenBridge.phone11ScreenBegin).not.toHaveBeenCalled(); await life.leave();
+  });
+  it("rejects an ON source build without the installed native gate", async () => {
+    mocks.screenBridge.phone11ScreenSupported.mockResolvedValue(false);
+    await expect(screenJoin()).rejects.toMatchObject({ stage: "bindings" }); expect(mocks.rooms).toHaveLength(0);
+  });
+  it("requires explicit Share and publishes one video using the existing room", async () => {
+    const life = await screenJoin(); expect(life.session.getSnapshot().screenShare?.available).toBe(true);
+    expect(mocks.screenBridge.phone11ScreenBegin).not.toHaveBeenCalled(); await life.session.startScreenShare();
+    expect(mocks.screenBridge.phone11ScreenBegin).toHaveBeenCalledWith(expect.any(String), expect.stringMatching(/^phone11-room-/));
+    expect(mocks.rooms).toHaveLength(1); const room = mocks.rooms[0];
+    expect(room.localParticipant.publishTrack).toHaveBeenCalledWith(expect.objectContaining({ kind: "video", source: "screen_share" }));
+    await life.leave(); expect(mocks.screenBridge.phone11ScreenCancel).toHaveBeenCalled();
+  });
+  it.each(["same-owner", "null-restore", "leave", "reconnect", "permission"])("%s retires a pending chooser before late consent", async reason => {
+    const pending = screenDeferred<any>(); mocks.screenBridge.phone11ScreenBegin.mockReturnValue(pending.promise);
+    mocks.screenBridge.phone11ScreenCancel.mockImplementation(async () => { pending.reject(new Error("native chooser retired")); });
+    const life = await screenJoin(), share = life.session.startScreenShare(), rejected = expect(share).rejects.toThrow();
+    let leaving: Promise<void> | undefined;
+    if (reason === "same-owner") { mocks.authUser = { id: 11 }; [...mocks.listeners].forEach(fn => fn()); }
+    if (reason === "null-restore") { const original = mocks.authUser; mocks.authUser = null; [...mocks.listeners].forEach(fn => fn()); mocks.authUser = original; [...mocks.listeners].forEach(fn => fn()); }
+    if (reason === "leave") leaving = life.leave();
+    if (reason === "reconnect") mocks.rooms[0].emit("reconnecting");
+    if (reason === "permission") { mocks.rooms[0].localParticipant.permissions.canPublish = false; mocks.rooms[0].emit("participantPermissionsChanged"); }
+    expect(mocks.screenBridge.phone11ScreenCancel).toHaveBeenCalled(); await rejected; await leaving; await screenTick();
+    pending.resolve({ streamId: "late", track: { id: "late", kind: "video", remote: false, readyState: "live" } });
+    expect(mocks.rooms[0].localParticipant.publishTrack).not.toHaveBeenCalled();
+    await life.leave();
+  });
+  it("SIP handoff waits for native destruction ACK and never resumes capture", async () => {
+    const life = await screenJoin(); await life.session.startScreenShare();
+    const ack = screenDeferred<void>(); mocks.screenBridge.phone11ScreenCancel.mockReturnValue(ack.promise);
+    const sip = native.phone11MediaOwnership.requestSip("sip:screen"); let ready = false; void sip.ready.then(() => { ready = true; });
+    await screenTick(); expect(ready).toBe(false); expect(mocks.screenBridge.phone11ScreenCancel).toHaveBeenCalled();
+    ack.resolve(undefined); await sip.ready; expect(mocks.screenBridge.phone11ScreenBegin).toHaveBeenCalledTimes(1);
+    native.phone11MediaOwnership.release(sip.lease); await life.leave();
+  });
+  it("failed native destruction retains lease and cleanup custody until retry", async () => {
+    const life = await screenJoin(); await life.session.startScreenShare();
+    mocks.screenBridge.phone11ScreenCancel.mockRejectedValue(new Error("destroy not acknowledged"));
+    mocks.screenBridge.phone11ScreenStop.mockRejectedValue(new Error("destroy not acknowledged"));
+    await expect(life.leave()).rejects.toThrow("destroy not acknowledged");
+    expect(native.phone11MediaOwnership.getSnapshot().owner?.kind).toBe("meeting"); expect(registry.getActiveNativeMeeting()).toBe(life);
+    await expect(life.session.startScreenShare()).rejects.toThrow("unavailable");
+    mocks.screenBridge.phone11ScreenCancel.mockResolvedValue(undefined); mocks.screenBridge.phone11ScreenStop.mockResolvedValue(undefined);
+    await life.leave(); expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull(); expect(registry.getActiveNativeMeeting()).toBeUndefined();
+  });
+  it("late publication after logout drains the same track and original lease", async () => {
+    const life = await screenJoin(), publish = screenDeferred<void>(), room = mocks.rooms[0];
+    room.localParticipant.publishTrack.mockImplementation(async (track: any) => { await publish.promise; room.localParticipant.trackPublications.set("screen", { track }); });
+    const share = life.session.startScreenShare(), rejected = expect(share).rejects.toThrow(); await screenTick();
+    mocks.authUser = null; [...mocks.listeners].forEach(fn => fn()); expect(mocks.screenBridge.phone11ScreenCancel).toHaveBeenCalled();
+    expect(native.phone11MediaOwnership.getSnapshot().owner?.kind).toBe("meeting"); publish.resolve(undefined);
+    await rejected; await life.leave(); expect(room.localParticipant.trackPublications.size).toBe(0); expect(native.phone11MediaOwnership.getSnapshot().owner).toBeNull();
+  });
+});
+
+it("live SIP state retires native consent immediately even before coordinated handoff", async () => {
+  const pending = screenDeferred<any>(); mocks.screenBridge.phone11ScreenBegin.mockReturnValue(pending.promise);
+  mocks.screenBridge.phone11ScreenCancel.mockImplementation(async () => { pending.reject(new Error("SIP interrupted chooser")); });
+  const life = await screenJoin(), sharing = life.session.startScreenShare(), rejected = expect(sharing).rejects.toThrow();
+  mocks.sipState.activeCalls = { live: { status: "connected" } }; [...mocks.sipListeners].forEach(fn => fn());
+  expect(mocks.screenBridge.phone11ScreenCancel).toHaveBeenCalled(); await rejected;
+  expect(mocks.rooms[0].localParticipant.publishTrack).not.toHaveBeenCalled(); await life.leave(); expect(mocks.sipListeners.size).toBe(0);
 });

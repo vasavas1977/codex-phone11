@@ -60,6 +60,8 @@ export interface BrowserScreenAdapter {
   isAllowed(room: BrowserRoom): boolean;
   /** Must invoke the browser picker synchronously, before returning its promise. */
   capture(room: BrowserRoom): Promise<readonly BrowserScreenTrack[]>;
+  /** Native consent retirement runs immediately, before waiting for a chooser. */
+  cancelCapture?(): Promise<void>;
   publish(room: BrowserRoom, track: BrowserScreenTrack): Promise<unknown>;
   unpublish(room: BrowserRoom, track: BrowserScreenTrack): Promise<unknown>;
   isPublished(room: BrowserRoom, track: BrowserScreenTrack): boolean;
@@ -405,6 +407,11 @@ export class BrowserMeetingSession {
     let resolve!: () => void, reject!: (error: unknown) => void;
     const task = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
     this.screenStopTask = task;
+    let cancellation: Promise<void>;
+    try { cancellation = this.capabilities.screen.cancelCapture?.() ?? Promise.resolve(); }
+    catch (error) { cancellation = Promise.reject(error); }
+    // Observe failure now, even while an ordinary chooser remains pending.
+    void cancellation.catch(() => undefined);
     // Stop capture synchronously, including a screen whose publish is still pending.
     for (const [track, entry] of this.screenTracks) {
       track.mediaStreamTrack.removeEventListener('ended', entry.ended);
@@ -412,6 +419,7 @@ export class BrowserMeetingSession {
     }
     if (pending.length || this.screenTracks.size) this.updateScreen('stopping');
     const run = async () => {
+      const cancellationResult = await cancellation.then(() => undefined, error => ({ error }));
       await Promise.allSettled(pending);
       const entries = [...this.screenTracks];
       const results = await Promise.allSettled(entries.map(async ([track, entry]) => {
@@ -420,9 +428,9 @@ export class BrowserMeetingSession {
         this.screenTracks.delete(track);
       }));
       const failed = results.find(result => result.status === 'rejected');
-      if (failed?.status === 'rejected') {
+      if (cancellationResult || failed?.status === 'rejected') {
         this.updateScreen('stopping', 'Screen sharing could not finish stopping. Retry cleanup before leaving.');
-        throw failed.reason;
+        throw cancellationResult?.error ?? (failed as PromiseRejectedResult).reason;
       }
       this.updateScreen('idle');
     };

@@ -1,0 +1,12 @@
+package com.oney.WebRTCModule;
+import java.util.*;import java.util.concurrent.*;import java.util.concurrent.atomic.*;import java.util.function.*;
+/** Entire actual service body with controlled Android scheduling/service doubles. */
+class Handler {static Queue<Runnable>q=new ArrayDeque<>();Handler(Object l){}boolean post(Runnable r){q.add(r);return true;}boolean postDelayed(Runnable r,long t){return true;}static void drain(){int n=100;while(!q.isEmpty()){if(--n==0)throw new AssertionError("queue stuck");q.remove().run();}}}
+class Looper {static Object getMainLooper(){return new Object();}}interface IBinder {}
+class Build {static class VERSION {static int SDK_INT=36;}static class VERSION_CODES {static int O=26,Q=29;}}
+class ServiceInfo {static int FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION=32;}class ComponentName {}
+class Intent {String operation;Intent(Context c,Class<?>x){}void putExtra(String k,String v){operation=v;}String getStringExtra(String k){return operation;}}
+class Context {int requests,stops;Intent submitted;boolean launchThrows;ComponentName startForegroundService(Intent i){requests++;submitted=i;if(launchThrows)throw new IllegalStateException("submission failed");return new ComponentName();}ComponentName startService(Intent i){return startForegroundService(i);}boolean stopService(Intent i){stops++;return false;}}
+class Service extends Context {static int START_NOT_STICKY=2;int foreground,selfStops;boolean foregroundThrows;public void onCreate(){}public IBinder onBind(Intent i){return null;}public int onStartCommand(Intent i,int f,int id){return 0;}public void onDestroy(){}void startForeground(int id,Object n,int t){foreground++;if(foregroundThrows)throw new IllegalStateException("foreground failed");}void startForeground(int id,Object n){startForeground(id,n,32);}void stopSelf(){selfStops++;}}
+class MediaProjectionService {static int NOTIFICATION_ID=100;}class MediaProjectionNotification {static void createNotificationChannel(Context c){}static Object buildMediaProjectionNotification(Context c){return new Object();}}
+@@SERVICE@@

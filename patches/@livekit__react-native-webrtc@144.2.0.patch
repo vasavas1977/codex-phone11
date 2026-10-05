@@ -38,7 +38,7 @@ diff --git a/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenCaptureBri
 new file mode 100644
 --- /dev/null
 +++ b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenCaptureBridge.java
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,295 @@
 +package com.oney.WebRTCModule;
 +
 +import android.app.Activity;
@@ -66,6 +66,9 @@ new file mode 100644
 +    private static final Set<String> cancelledOperations = Collections.synchronizedSet(new HashSet<>());
 +    private static final java.util.concurrent.atomic.AtomicInteger nextRequest = new java.util.concurrent.atomic.AtomicInteger(40000);
 +    private static volatile Phone11ScreenCaptureBridge custody;
++    private static final Object OPERATIONS = new Object();
++    private volatile boolean invalidated;
++    private final java.util.concurrent.atomic.AtomicInteger hostGeneration = new java.util.concurrent.atomic.AtomicInteger();
 +    private final Set<Integer> ownedRequests = Collections.synchronizedSet(new HashSet<>());
 +
 +    private volatile Phone11ScreenTransaction<WritableMap> active;
@@ -87,8 +90,9 @@ new file mode 100644
 +        } catch (PackageManager.NameNotFoundException error) { return false; }
 +    }
 +    void begin(String operation, String lifetime, Promise promise) {
++        final int host = hostGeneration.get();
 +        ThreadUtils.runOnExecutor(() -> {
-+            if (!enabled() || operation == null || lifetime == null ||
++            if (invalidated || host != hostGeneration.get() || !enabled() || operation == null || lifetime == null ||
 +                !operation.matches("[A-Za-z0-9_-]{1,120}") || !lifetime.matches("[A-Za-z0-9_-]{1,120}") ||
 +                active != null || cancelledOperations.contains(operation) || consumedOperations.size() >= 1000 || !consumedOperations.add(operation)) {
 +                promise.reject("screen_unavailable", "Screen sharing is unavailable"); return;
@@ -104,14 +108,23 @@ new file mode 100644
 +                promise.reject("screen_unavailable", "A current foreground Activity is required"); return;
 +            }
 +            if (nextRequest.get() > 65000) { promise.reject("screen_unavailable", "Consent request budget exhausted"); return; }
-+            Resources owned = new Resources(activity);
-+            Phone11ScreenTransaction<WritableMap> transaction = new Phone11ScreenTransaction<>(operation, lifetime,
-+                ThreadUtils::runOnExecutor, owned);
-+            owned.transaction = transaction;
-+            active = transaction; custody = this; resources = owned; consentActivity = activity;
-+            consentRequest = nextRequest.getAndIncrement(); ownedRequests.add(consentRequest);
-+            final int request = consentRequest;
-+            awaitingChooser = true;
++            final Resources owned;
++            final Phone11ScreenTransaction<WritableMap> transaction;
++            final int request;
++            synchronized (OPERATIONS) {
++                // Cancel/invalidate can arrive while Activity lookup runs. Publication and
++                // retirement share this monitor; a no-slot cancel ACK fences later publication.
++                if (invalidated || host != hostGeneration.get() || cancelledOperations.contains(operation) || active != null) {
++                    promise.reject("screen_cancelled", "Screen operation retired before consent"); return;
++                }
++                owned = new Resources(activity);
++                transaction = new Phone11ScreenTransaction<>(operation, lifetime, ThreadUtils::runOnExecutor, owned);
++                owned.transaction = transaction;
++                active = transaction; custody = this; resources = owned; consentActivity = activity;
++                consentRequest = nextRequest.getAndIncrement(); ownedRequests.add(consentRequest);
++                request = consentRequest;
++                awaitingChooser = false;
++            }
 +            transaction.result().whenComplete((data, error) -> {
 +                if (error != null) {
 +                    promise.reject("screen_cancelled", "Screen capture did not start");
@@ -122,11 +135,14 @@ new file mode 100644
 +            UiThreadUtil.runOnUiThread(() -> {
 +                try {
 +                    transaction.requireCurrent();
-+                    if (context.getCurrentActivity() != activity || activity.isFinishing() || activity.isDestroyed())
++                    if (host != hostGeneration.get() || context.getLifecycleState() != com.facebook.react.common.LifecycleState.RESUMED ||
++                        context.getCurrentActivity() != activity || activity.isFinishing() || activity.isDestroyed())
 +                        throw new IllegalStateException("Activity changed");
 +                    MediaProjectionManager manager = (MediaProjectionManager) activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE);
 +                    if (manager == null) throw new IllegalStateException("Projection unavailable");
-+                    activity.startActivityForResult(manager.createScreenCaptureIntent(), request);
++                    Intent chooser = manager.createScreenCaptureIntent();
++                    awaitingChooser = true; // Only the actual owned OS Activity transition is exempt.
++                    activity.startActivityForResult(chooser, request);
 +                } catch (RuntimeException error) { retire(transaction); }
 +            });
 +        });
@@ -161,20 +177,27 @@ new file mode 100644
 +        });
 +    }
 +    void cancel(String operation, Promise promise) {
-+        if (operation == null || !operation.matches("[A-Za-z0-9_-]{1,120}") || (cancelledOperations.size() >= 1000 && !cancelledOperations.contains(operation))) {
-+            promise.reject("screen_stale", "Invalid screen operation"); return;
++        final Phone11ScreenTransaction<WritableMap> transaction;
++        synchronized (OPERATIONS) {
++            if (operation == null || !operation.matches("[A-Za-z0-9_-]{1,120}") || (cancelledOperations.size() >= 1000 && !cancelledOperations.contains(operation))) {
++                promise.reject("screen_stale", "Invalid screen operation"); return;
++            }
++            cancelledOperations.add(operation);
++            transaction = active;
++            if (transaction == null) { promise.resolve(null); return; }
++            if (!transaction.operation.equals(operation)) { promise.reject("screen_stale", "Screen operation changed"); return; }
++            transaction.retire(); // Atomic with slot publication, before queued cleanup.
++            consentResult = null;
 +        }
-+        cancelledOperations.add(operation); // Also fences a begin still queued on the executor.
-+        Phone11ScreenTransaction<WritableMap> transaction = active;
-+        if (transaction == null) { promise.resolve(null); return; }
-+        if (!transaction.operation.equals(operation)) { promise.reject("screen_stale", "Screen operation changed"); return; }
-+        transaction.retire(); // Before waiting for the executor, result or foreground service.
-+        consentResult = null;
 +        stop(transaction, promise);
 +    }
 +    private void retire(Phone11ScreenTransaction<WritableMap> transaction) {
 +        transaction.retire();
-+        if (active == transaction) consentResult = null;
++        if (active == transaction) {
++            consentResult = null;
++            Resources owned = resources;
++            if (owned != null) owned.notifyEnded();
++        }
 +        stop(transaction, null);
 +    }
 +    private void stop(Phone11ScreenTransaction<WritableMap> transaction, Promise promise) {
@@ -190,7 +213,10 @@ new file mode 100644
 +            } else if (promise != null) promise.reject("screen_stop_failed", "Screen cleanup must be retried");
 +        });
 +    }
-+    void invalidate() { stopOwnedTrack(); context.removeLifecycleEventListener(this); }
++    void invalidate() {
++        synchronized (OPERATIONS) { invalidated = true; if (active != null) active.retire(); }
++        stopOwnedTrack(); context.removeLifecycleEventListener(this);
++    }
 +    boolean owns(String trackId) { return resources != null && trackId.equals(resources.trackId); }
 +    void stopOwnedTrack() { Phone11ScreenTransaction<WritableMap> transaction = active; if (transaction != null) retire(transaction); }
 +    @Override public void onHostResume() {
@@ -198,11 +224,22 @@ new file mode 100644
 +        if (transaction != null && consentResult != null) acceptConsent(transaction);
 +    }
 +    @Override public void onHostPause() {
-+        // Only this operation's own pending OS consent transition is exempt.
-+        Phone11ScreenTransaction<WritableMap> transaction = active;
-+        if (transaction != null && !awaitingChooser) retire(transaction);
++        final Phone11ScreenTransaction<WritableMap> transaction;
++        synchronized (OPERATIONS) {
++            if (awaitingChooser) return;
++            hostGeneration.incrementAndGet(); transaction = active;
++            if (transaction != null) transaction.retire();
++        }
++        if (transaction != null) retire(transaction);
 +    }
-+    @Override public void onHostDestroy() { stopOwnedTrack(); }
++    @Override public void onHostDestroy() {
++        final Phone11ScreenTransaction<WritableMap> transaction;
++        synchronized (OPERATIONS) {
++            hostGeneration.incrementAndGet(); transaction = active;
++            if (transaction != null) transaction.retire();
++        }
++        if (transaction != null) retire(transaction);
++    }
 +
 +    private final class Resources implements Phone11ScreenTransaction.Resources<WritableMap> {
 +        final Activity activity;
@@ -216,6 +253,10 @@ new file mode 100644
 +        VideoTrack track;
 +        String streamId;
 +        boolean captureStartAttempted, captureStopped, capturerDisposed, textureStopped, textureDisposed, sourceDisposed, trackDisposed;
++        private boolean ended;
++        synchronized void notifyEnded() {
++            if (track != null && !ended) { ended = true; new TrackCapturerEventsEmitter(module, trackId).onCapturerEnded(); }
++        }
 +        Resources(Activity activity) { this.activity = activity; }
 +        @Override public CompletableFuture<Void> startForeground() {
 +            transaction.requireCurrent();
@@ -233,7 +274,6 @@ new file mode 100644
 +            DisplayMetrics metrics = DisplayUtils.getDisplayMetrics(activity);
 +            capturer = new ScreenCapturerAndroid(oneUse, new MediaProjection.Callback() {
 +                @Override public void onStop() {
-+                    new TrackCapturerEventsEmitter(module, trackId).onCapturerEnded();
 +                    retire(transaction);
 +                }
 +            });
@@ -266,7 +306,10 @@ new file mode 100644
 +            // Register only for RTP lookup; transaction resources retain disposal custody.
 +            media.registerTrack(track, source, null, null);
 +            MediaStream stream = module.mFactory.createLocalMediaStream(UUID.randomUUID().toString());
-+            streamId = stream.getId(); module.localStreams.put(streamId, stream); stream.addTrack(track);
++            streamId = stream.getId(); module.localStreams.put(streamId, stream);
++            // MediaStream.dispose disposes ordinary attached video tracks. This transaction
++            // owns the track's one disposal; the pinned preserved-track API only detaches it.
++            if (!stream.addPreservedTrack(track)) throw new IllegalStateException("Screen stream refused video");
 +            WritableMap data = Arguments.createMap(); data.putString("streamId", streamId); data.putMap("track", info);
 +            return data;
 +        }
@@ -295,7 +338,7 @@ diff --git a/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenProjection
 new file mode 100644
 --- /dev/null
 +++ b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenProjectionService.java
-@@ -0,0 +1,121 @@
+@@ -0,0 +1,122 @@
 +package com.oney.WebRTCModule;
 +
 +import android.app.Service;
@@ -339,10 +382,11 @@ new file mode 100644
 +                MediaProjectionNotification.createNotificationChannel(context);
 +                Intent intent = new Intent(context, Phone11ScreenProjectionService.class);
 +                intent.putExtra("operation", record.operation);
++                // Submission may throw after contacting Android. Retain uncertain custody.
++                record.requested = true;
 +                ComponentName name = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
 +                    ? context.startForegroundService(intent) : context.startService(intent);
 +                if (name == null) throw new IllegalStateException("Projection service refused");
-+                record.requested = true;
 +            } catch (RuntimeException error) { record.started.completeExceptionally(error); }
 +        });
 +        MAIN.postDelayed(() -> record.started.completeExceptionally(

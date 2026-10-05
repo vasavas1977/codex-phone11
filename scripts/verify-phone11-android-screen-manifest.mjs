@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
 // Reuse Expo's pinned XML parser dependency, without executing an Expo mod.
@@ -61,9 +61,13 @@ export function verifyManifest(contents, mode) {
   for (const [kind, nodes] of Object.entries(found)) if (nodes.length !== expected) fail(`expected ${expected} owned ${kind}`);
   if (mode === 'on') {
     const owned = found.service[0];
+    for (const component of [app, owned]) {
+      const enabled = component.attributes.get(`${android}:enabled`);
+      if (enabled !== undefined && enabled !== 'true') fail('application and owned service must be provably enabled');
+    }
     if (owned.attributes.get(`${android}:exported`) !== 'false' ||
         owned.attributes.get(`${android}:foregroundServiceType`) !== 'mediaProjection' ||
-        owned.attributes.get(`${android}:enabled`) === 'false' || owned.children.length)
+        owned.children.length)
       fail('service must be enabled, private, video projection only, without filters');
     const gate = found.metadata[0];
     if (gate.attributes.get(`${android}:value`) !== 'true' || gate.attributes.has(`${android}:resource`)) fail('metadata gate must be literal true');
@@ -72,7 +76,10 @@ export function verifyManifest(contents, mode) {
   }
   return { mode, serviceCount: found.service.length, metadataCount: found.metadata.length, permissionCount: found.permission.length };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+let entry;
+try { entry = process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href; }
+catch { /* Imported by stdin/test launchers that have no real entry file. */ }
+if (import.meta.url === entry) {
   try {
     if (process.argv.length !== 4) fail('usage: <manifest-path> <off|on>');
     console.log(JSON.stringify(verifyManifest(readFileSync(process.argv[2], 'utf8'), process.argv[3])));

@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+import { NativeModules, Platform } from "react-native";
 
 import { addAuthChangeListener, getAuthSnapshot, type User } from "@/lib/_core/auth";
 
@@ -23,6 +23,7 @@ import {
   setActiveNativeMeeting,
 } from "./native-session-registry";
 import { useSipCallStore } from "../sip/call-store";
+import { createAndroidScreenAdapter, type AndroidScreenBinding } from "./android-screen-transaction";
 
 export type NativeMeetingAdmission = Readonly<{
   url: string;
@@ -35,7 +36,9 @@ export type NativeMeetingPreferences = Readonly<{
   camera: boolean;
 }>;
 
+let screenLifetimeSequence = 0;
 type NativeBindings = {
+  screen?: AndroidScreenBinding;
   Room: new () => BrowserRoom;
   configureMeetingAudio: () => Promise<void>;
   startAudioSession: () => Promise<void>;
@@ -79,7 +82,7 @@ async function loadNativeBindings(): Promise<NativeBindings> {
       import("@livekit/react-native"),
       import("livekit-client"),
     ])
-      .then(([native, client]) => {
+      .then(async ([native, client]) => {
         if (
           typeof native.registerGlobals !== "function" ||
           typeof client.Room !== "function"
@@ -89,7 +92,30 @@ async function loadNativeBindings(): Promise<NativeBindings> {
         // Phone11 owns SIP and CallKit. Do not let the SDK automatically
         // configure the shared iOS audio session outside our lease boundary.
         native.registerGlobals({ autoConfigureAudioSession: false });
+        let screen: AndroidScreenBinding | undefined;
+        if (Platform.OS === "android" && process.env.EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION === "1") {
+          const bridge = NativeModules.WebRTCModule;
+          if (!bridge || typeof bridge.phone11ScreenSupported !== "function" ||
+              typeof bridge.phone11ScreenBegin !== "function" || typeof bridge.phone11ScreenCancel !== "function" ||
+              typeof bridge.phone11ScreenStop !== "function" || await bridge.phone11ScreenSupported() !== true)
+            throw new Error("Android screen transaction requires a current source build.");
+          const webRTC = await import("@livekit/react-native-webrtc");
+          screen = {
+            bridge,
+            screenSource: client.Track.sourceToProto(client.Track.Source.ScreenShare),
+            createVideoTrack(data) {
+              const stream = new webRTC.MediaStream({ streamId: data.streamId, streamReactTag: data.streamId,
+                tracks: [data.track as ConstructorParameters<typeof webRTC.MediaStreamTrack>[0]] });
+              const video = stream.getVideoTracks();
+              if (video.length !== 1 || stream.getAudioTracks().length) throw new Error("Expected native video only");
+              const track = new client.LocalVideoTrack(video[0] as unknown as MediaStreamTrack, undefined, false);
+              track.source = client.Track.Source.ScreenShare;
+              return track;
+            },
+          };
+        }
         return {
+          screen,
           Room: client.Room as unknown as NativeBindings["Room"],
           // expo-audio can leave the shared iOS session in playback mode. The
           // manually managed LiveKit session must restore duplex meeting audio
@@ -172,6 +198,7 @@ export class NativeMeetingLifecycle {
   private roomStopped = false;
   private unsubscribe?: () => void;
   private unsubscribeOwner?: () => void;
+  private unsubscribeScreenSip?: () => void;
   private bindings?: NativeBindings;
   private interruptedBySip = false;
 
@@ -181,9 +208,14 @@ export class NativeMeetingLifecycle {
     readonly receiveOnly: boolean,
     createRoom: () => BrowserRoom,
     private readonly owner: NativeMeetingOwner,
+    screen?: AndroidScreenBinding,
+    interactiveScreenAdmission = false,
   ) {
     this.session = new BrowserMeetingSession(createRoom, {
       isCurrentOwner: () => this.ownerIsCurrent(),
+      screen: screen && interactiveScreenAdmission ? createAndroidScreenAdapter(screen,
+        `phone11-room-${Date.now()}-${++screenLifetimeSequence}`, room => this.canChangeAudioOutput() &&
+          room === this.session.getRoom() && getActiveNativeMeeting() === this) : undefined,
     });
   }
 
@@ -234,6 +266,8 @@ export class NativeMeetingLifecycle {
   private watchAuthenticatedOwner(): void {
     this.unsubscribeOwner = addAuthChangeListener(() => {
       if (!this.ownerIsCurrent()) {
+        // Native chooser retirement must precede the registry helper's queued drain.
+        void this.session.stopScreenShare().catch(() => undefined);
         // Hide an active retired room immediately, but keep ownerless cleanup
         // custody when SDK/audio stop fails. Pending joins own their own drain.
         const cleanup = getActiveNativeMeeting() === this
@@ -314,6 +348,8 @@ export class NativeMeetingLifecycle {
       admission.grant_profile === "listener",
       () => new bindings.Room(),
       owner,
+      bindings.screen,
+      admission.grant_profile === "interactive",
     );
     lifecycle.bindings = bindings;
     const hooks = {
@@ -343,6 +379,11 @@ export class NativeMeetingLifecycle {
         : phone11MediaOwnership.requestMeeting(meetingId, hooks);
     lifecycle.lease = request.lease;
     lifecycle.watchAuthenticatedOwner();
+    if (bindings.screen && admission.grant_profile === "interactive") {
+      lifecycle.unsubscribeScreenSip = useSipCallStore.subscribe(() => {
+        if (hasLiveSipCall()) void lifecycle.session.stopScreenShare().catch(() => undefined);
+      });
+    }
     lifecycle.unsubscribe = lifecycle.session.subscribe(() => {
       const status = lifecycle.session.getSnapshot().status;
       // An external SDK disconnect can arrive while a capture operation is
@@ -425,6 +466,7 @@ export class NativeMeetingLifecycle {
         );
       }
       setActiveNativeMeeting(lifecycle);
+      lifecycle.session.refreshScreenCapability();
       return lifecycle;
     } catch (error) {
       try { await lifecycle.leave(); }
@@ -449,9 +491,13 @@ export class NativeMeetingLifecycle {
   /** Stop tracks and audio before making the SIP session eligible to own media. */
   async leave(): Promise<void> {
     this.leaving = true;
+    // Retire native consent synchronously before queued route/SDK work can settle.
+    const screensStopped = this.session.stopScreenShare();
+    void screensStopped.catch(() => undefined);
     try {
       await this.audioRouteTask?.catch(() => undefined);
       await this.session.disconnect();
+      await screensStopped;
       this.roomStopped = true;
       await this.releaseAfterMediaStops();
     } catch (error) {
@@ -490,6 +536,8 @@ export class NativeMeetingLifecycle {
         this.unsubscribe = undefined;
         this.unsubscribeOwner?.();
         this.unsubscribeOwner = undefined;
+        this.unsubscribeScreenSip?.();
+        this.unsubscribeScreenSip = undefined;
         clearActiveNativeMeeting(this);
       }
     })();
