@@ -34,14 +34,18 @@ function scopeMatches(scope: TransferScope): boolean {
     !!scope.account && !!account && account.enabled && account.ownerUserId === scope.owner.id &&
     sameSipAccount(scope.account, account) && scope.callId === call?.id && scope.callIdentity === callIdentity(call);
 }
+const returnablePhases = ["holding", "held_ready", "calling", "switching", "ready", "return_failed", "consultation_failed", "transfer_failed"];
 type TransferView = { scope: TransferScope; destination: string; pending: boolean; confirmed: boolean; error: string; mode: "blind" | "warm" };
-const emptyView = (scope: TransferScope): TransferView => ({ scope, destination: "", pending: false, confirmed: false, error: "", mode: "blind" });
+const emptyView = (scope: TransferScope, mode: TransferView["mode"]): TransferView => ({ scope, destination: "", pending: false, confirmed: false, error: "", mode });
 
 export default function TransferCallScreen() {
   const { callId } = useLocalSearchParams<{ callId?: string }>();
   const insets = useSafeAreaInsets();
   const colors = useColors();
   const { transferCall, supportsBlindTransfer, hasAttemptedBlindTransfer, supportsWarmTransfer, consultation, beginConsultation, cancelConsultation, completeConsultation } = useSip();
+  const blindSupported = supportsBlindTransfer() === true;
+  const warmSupported = supportsWarmTransfer?.() === true;
+  const defaultMode: TransferView["mode"] = blindSupported ? "blind" : "warm";
   const owner = useSyncExternalStore(addAuthChangeListener, getAuthSnapshot, getAuthSnapshot).user;
   const account = useSipAccountStore(state => state.account);
   const call = useSipCallStore(state => resolveCurrentCall(state, callId));
@@ -56,8 +60,14 @@ export default function TransferCallScreen() {
     currentScope.current = nextScope;
   }
   const scope = nextScope;
-  const [savedView, setView] = useState<TransferView>(() => emptyView(scope));
-  const view = savedView.scope === scope ? savedView : emptyView(scope);
+  const [savedView, setView] = useState<TransferView>(() => emptyView(scope, defaultMode));
+  const scopedView = savedView.scope === scope ? savedView : emptyView(scope, defaultMode);
+  // Capability changes select an available mode before a new request. Keep the
+  // submitted mode while pending so its progress still describes that request.
+  const view: TransferView = !scopedView.pending && ((scopedView.mode === "blind" && !blindSupported) ||
+    (scopedView.mode === "warm" && !warmSupported)) ? { ...scopedView, mode: defaultMode } : scopedView;
+  const currentView = useRef(view);
+  currentView.current = view;
   const { destination, pending, confirmed, error } = view;
   const current = () => {
     if (!mounted.current || currentScope.current !== scope || !scope.active) return false;
@@ -79,6 +89,13 @@ export default function TransferCallScreen() {
     };
   }, []);
 
+  const chooseMode = (mode: TransferView["mode"]) => {
+    if (!current() || scope.locked || (mode === "warm" ? supportsWarmTransfer?.() !== true : !supportsBlindTransfer())) return;
+    const next = { ...currentView.current, mode };
+    currentView.current = next;
+    setView(next);
+  };
+
   const backToCall = () => {
     if (!current()) return;
     if (router.canGoBack()) router.back();
@@ -86,12 +103,11 @@ export default function TransferCallScreen() {
     else router.replace("/(tabs)/recents");
   };
 
-  if (!supportsBlindTransfer()) return <FeatureUnavailable
+  if (!blindSupported && !warmSupported) return <FeatureUnavailable
     title="Call transfer is unavailable"
     description="This Phone11 build cannot transfer calls. Your current call stays available."
   />;
 
-  const warmSupported = supportsWarmTransfer?.() === true;
   const warm = call ? consultation?.(call.id) : null;
   const connected = call?.status === "active" && !call.isHeld;
   const attempted = !!call && hasAttemptedBlindTransfer(call.id);
@@ -99,9 +115,11 @@ export default function TransferCallScreen() {
   const validTarget = /^\+?[0-9*#]{1,32}$/.test(target);
   const submit = async () => {
     const liveCall = resolveCurrentCall(useSipCallStore.getState(), callId);
-    if (!current() || !supportsBlindTransfer() || !liveCall || liveCall.status !== "active" || liveCall.isHeld ||
+    const modeSupported = view.mode === "warm" ? supportsWarmTransfer?.() === true : supportsBlindTransfer() === true;
+    if (!current() || currentView.current.mode !== view.mode || !modeSupported ||
+        !liveCall || liveCall.status !== "active" || liveCall.isHeld ||
         !validTarget || scope.locked || scope.confirmed || hasAttemptedBlindTransfer(liveCall.id) ||
-        (view.mode === "warm" && supportsWarmTransfer?.() !== true)) return;
+        consultation?.(liveCall.id)) return;
     scope.locked = true;
     setView({ ...view, pending: true, error: "" });
     try {
@@ -126,7 +144,9 @@ export default function TransferCallScreen() {
   const warmAction = async (complete: boolean) => {
     const liveWarm = call ? consultation?.(call.id) : null;
     if (!current() || !call || !warm || scope.locked || supportsWarmTransfer?.() !== true ||
-        liveWarm?.requestId !== warm.requestId || (complete && liveWarm.phase !== "ready")) return;
+        liveWarm?.requestId !== warm.requestId ||
+        (complete ? liveWarm.phase !== "ready" || hasAttemptedBlindTransfer(call.id)
+          : !returnablePhases.includes(liveWarm.phase))) return;
     const requestId = warm.requestId;
     scope.locked = true; setView({ ...view,pending:true,error:"" });
     try {
@@ -164,7 +184,7 @@ export default function TransferCallScreen() {
         <Text accessibilityLiveRegion="polite" style={[styles.body,{ color: colors.muted }]}>{warmMessage}</Text>
         {!!error && <Text accessibilityLiveRegion="polite" style={[styles.body,{ color: colors.error }]}>{error}</Text>}
         {warm.phase === "ready" && <Pressable accessibilityRole="button" accessibilityLabel="Complete consultation transfer" disabled={pending || attempted} onPress={() => warmAction(true)} style={[styles.action,{ backgroundColor: colors.primary, opacity: pending || attempted ? 0.5 : 1 }]}><Text style={styles.actionText}>Complete transfer</Text></Pressable>}
-        {["holding","held_ready","calling","switching","ready","return_failed","consultation_failed","transfer_failed"].includes(warm.phase) && <Pressable accessibilityRole="button" accessibilityLabel="Return to original call" disabled={pending} onPress={() => warmAction(false)} style={[styles.action,{ backgroundColor: colors.primary,opacity:pending ? 0.5 : 1 }]}><Text style={styles.actionText}>Return to original call</Text></Pressable>}
+        {returnablePhases.includes(warm.phase) && <Pressable accessibilityRole="button" accessibilityLabel="Return to original call" disabled={pending} onPress={() => warmAction(false)} style={[styles.action,{ backgroundColor: colors.primary,opacity:pending ? 0.5 : 1 }]}><Text style={styles.actionText}>Return to original call</Text></Pressable>}
         {warm.phase === "returned" && <Pressable accessibilityRole="button" accessibilityLabel="Open original call controls" onPress={backToCall} style={[styles.action,{backgroundColor:colors.primary}]}><Text style={styles.actionText}>Open original call</Text></Pressable>}
         <Text style={[styles.note,{color:colors.muted}]}>This Siprix trial limits each call to 60 seconds. Returning to call controls keeps this consultation open until you choose Return to original call.</Text>
       </> : confirmed ? <>
@@ -175,9 +195,9 @@ export default function TransferCallScreen() {
         {!!error && <Text accessibilityLiveRegion="polite" style={[styles.body, { color: colors.error }]}>{error}</Text>}
         <Pressable accessibilityRole="button" accessibilityLabel="Return to call controls" style={[styles.action, { backgroundColor: colors.primary }]} onPress={backToCall}><Text style={styles.actionText}>Return to call</Text></Pressable>
       </> : <>
-        {warmSupported && <View style={styles.progress}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Choose blind transfer" disabled={pending} onPress={() => { if (current()) setView({...view,mode:"blind"}); }}><Text style={{color:colors.primary}}>Transfer now</Text></Pressable>
-          <Pressable accessibilityRole="button" accessibilityLabel="Choose consultation transfer" disabled={pending} onPress={() => { if (current()) setView({...view,mode:"warm"}); }}><Text style={{color:colors.primary}}>Call first</Text></Pressable>
+        {blindSupported && warmSupported && <View style={styles.progress}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Choose blind transfer" disabled={pending} onPress={() => chooseMode("blind")}><Text style={{color:colors.primary}}>Transfer now</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Choose consultation transfer" disabled={pending} onPress={() => chooseMode("warm")}><Text style={{color:colors.primary}}>Call first</Text></Pressable>
         </View>}
         <Text style={[styles.body, { color: colors.muted }]}>{view.mode === "warm" ? "Call the destination first. Your original caller is held while you consult; complete transfer only after the destination connects." : "Enter an extension or phone number. Phone11 will transfer this call without first calling the destination."}</Text>
         <TextInput accessibilityLabel="Transfer destination" value={destination} onChangeText={value => { if (current()) setView({ ...view, destination: value }); }} editable={!pending} keyboardType="phone-pad" autoCapitalize="none" maxLength={32} placeholder="Extension or phone number" placeholderTextColor={colors.muted} style={[styles.input, { borderColor: colors.muted, color: colors.foreground, backgroundColor: colors.surface }]} />

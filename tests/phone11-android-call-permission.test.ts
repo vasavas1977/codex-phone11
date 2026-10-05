@@ -10,6 +10,7 @@ const m = vi.hoisted(() => ({
   callListeners: new Set<() => void>(),
   effects: [] as (() => void | (() => void))[], order: [] as string[],
   check: vi.fn(), request: vi.fn(), prepare: vi.fn(), release: vi.fn(),
+  warmSupported: false, blindSupported: false,
   initialize: vi.fn(), makeCall: vi.fn(), answerCall: vi.fn(), hangupCall: vi.fn(),
   systemAnswer: vi.fn(), reportOutgoing: vi.fn(), loadAccount: vi.fn(),
 }));
@@ -40,12 +41,12 @@ vi.mock("../lib/push/enrollment-lifecycle", () => ({ createVoipEnrollmentLifecyc
 vi.mock("../lib/sip/video-runtime", () => ({ getVideoBridge: vi.fn() }));
 vi.mock("../lib/meetings/native-session", () => ({ prepareSipMediaOwnership: m.prepare, releaseSipMediaOwnership: m.release, phone11MediaOwnership: { isCurrent: () => true } }));
 vi.mock("../lib/sip/engine", () => ({ sipEngine: { initialize: m.initialize, makeCall: m.makeCall, answerCall: m.answerCall, hangupCall: m.hangupCall } }));
-vi.mock("../lib/sip/siprix-engine", () => ({ siprixEngine: { consultation: vi.fn(), remainingConsultation: vi.fn() } }));
+vi.mock("../lib/sip/siprix-engine", () => ({ siprixEngine: { consultation: vi.fn(), remainingConsultation: vi.fn(), supportsWarmTransfer: () => m.warmSupported, supportsBlindTransfer: () => m.blindSupported } }));
 vi.mock("../lib/sip/native-call", () => ({ nativeCallManager: { initialize: vi.fn(async () => {}),
   answerIncomingCall: m.systemAnswer, reportOutgoingCall: m.reportOutgoing, reportCallConnected: vi.fn(),
 }, registerVoipPush: vi.fn(async () => {}) }));
 
-type Actions = { makeCall(destination: string, video?: boolean): Promise<string | null>; answerCall(id: string, video?: boolean): Promise<void> };
+type Actions = { supportsWarmTransfer(): boolean; supportsBlindTransfer(): boolean; makeCall(destination: string, video?: boolean): Promise<string | null>; answerCall(id: string, video?: boolean): Promise<void> };
 function provider(): Actions {
   m.index = 0;
   return (SipProvider({ children: null }).props as { value: Actions }).value;
@@ -62,6 +63,7 @@ const ring = (historyId = "ring-lifetime-1"): SipCall => ({
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  m.warmSupported = false; m.blindSupported = false;
   m.platform.OS = "android"; m.owner = { id: 17 }; m.loading = false;
   m.account = { id: "assigned", ownerUserId: 17, tenantId: 4, username: "1001", password: "synthetic-only",
     domain: "sip.example.test", displayName: "Test", port: 5061, transport: "TLS", srtp: true, enabled: true };
@@ -311,3 +313,33 @@ it("rejects a duplicate after unmount during callback-first command progression 
   command.resolve("outgoing-1"); await first;
   expect(m.makeCall).toHaveBeenCalledOnce(); expect(m.request).toHaveBeenCalledOnce();
 });
+
+
+it.each([[true, false], [false, true], [true, true], [false, false]])(
+  "actual provider exposes the gated Android warm=%s engine independently of blind=%s",
+  (warm, blind) => {
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", "1");
+    m.warmSupported = warm; m.blindSupported = blind;
+    const actions = provider();
+    expect(actions.supportsWarmTransfer()).toBe(warm);
+    expect(actions.supportsBlindTransfer()).toBe(false);
+  },
+);
+it.each(["ordinary", "consultation-off", "consultation-unset", "wrong-engine", "web"])(
+  "actual provider rejects Android warm capability for %s despite an engine claim", condition => {
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", "1"); m.warmSupported = true;
+    if (condition === "ordinary") vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL", "0");
+    if (condition === "consultation-off") vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", "0");
+    if (condition === "consultation-unset") vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", undefined);
+    if (condition === "wrong-engine") vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "pjsip");
+    if (condition === "web") m.platform.OS = "web";
+    expect(provider().supportsWarmTransfer()).toBe(false);
+  },
+);
+it.each([[true, false], [false, true], [true, true], [false, false]])(
+  "actual provider preserves independent iOS warm=%s and blind=%s", (warm, blind) => {
+    m.platform.OS = "ios"; m.warmSupported = warm; m.blindSupported = blind;
+    const actions = provider();
+    expect(actions.supportsWarmTransfer()).toBe(warm); expect(actions.supportsBlindTransfer()).toBe(blind);
+  },
+);

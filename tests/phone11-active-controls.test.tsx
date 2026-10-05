@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   back: vi.fn(),
   replace: vi.fn(),
   push: vi.fn(),
-  transferAvailable: false,
+  transferAvailable: false, warmAvailable: false, warm: null as any,
 }));
 vi.mock("react-native", () => ({
   Alert: { alert: mocks.alert },
@@ -92,10 +92,11 @@ vi.mock("../lib/sip/sip-provider", () => ({
     setSpeaker: mocks.speaker,
     sendDtmf: mocks.dtmf,
     supportsBlindTransfer: () => mocks.transferAvailable,
+    supportsWarmTransfer: () => mocks.warmAvailable, consultation: () => mocks.warm,
   }),
 }));
 vi.mock("../lib/sip/call-store", () => ({
-  useSipCallStore: (select: any) => select(mocks.state),
+  useSipCallStore: Object.assign((select: any) => select(mocks.state), { getState: () => mocks.state }),
 }));
 vi.mock("../lib/sip/diagnostics-store", () => ({
   useSipDiagnosticsStore: { getState: () => ({ addEvent: vi.fn() }) },
@@ -113,7 +114,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.press.clear();
   mocks.params = { callId: "call-1" };
-  mocks.transferAvailable = false;
+  mocks.transferAvailable = false; mocks.warmAvailable = false; mocks.warm = null;
   mocks.state = {
     activeCalls: {
       "call-1": {
@@ -228,3 +229,26 @@ it.each(["#ffffff", "#0d0f14"])(
     expect(html).not.toContain("sip:");
   },
 );
+
+it.each([[false, true], [true, false], [true, true], [false, false]])(
+  "actual active screen offers transfer independently for blind=%s warm=%s", (blind, warm) => {
+    mocks.transferAvailable = blind; mocks.warmAvailable = warm;
+    renderToStaticMarkup(<ActiveCallScreen />);
+    expect(mocks.press.has("Transfer call")).toBe(blind || warm);
+  },
+);
+it("opens warm-only held-call recovery", async () => {
+  mocks.warmAvailable = true; mocks.warm = { requestId: "request", phase: "return_failed" };
+  mocks.state.activeCalls["call-1"].status = "held"; mocks.state.activeCalls["call-1"].isHeld = true;
+  renderToStaticMarkup(<ActiveCallScreen />); await mocks.press.get("Open consultation controls")!.run();
+  expect(mocks.push).toHaveBeenCalledWith({ pathname: "/call/transfer", params: { callId: "call-1" } });
+});
+it.each(["capability", "held", "ended", "reused"])("rejects retained warm-only navigation after %s", async boundary => {
+  mocks.warmAvailable = true; mocks.state.activeCalls["call-1"].history = { id: "original" };
+  renderToStaticMarkup(<ActiveCallScreen />); const open = mocks.press.get("Transfer call")!.run;
+  if (boundary === "capability") mocks.warmAvailable = false;
+  if (boundary === "held") mocks.state.activeCalls["call-1"].isHeld = true;
+  if (boundary === "ended") mocks.state.activeCalls = {};
+  if (boundary === "reused") mocks.state.activeCalls["call-1"] = { ...mocks.state.activeCalls["call-1"], history: { id: "replacement" } };
+  await open(); expect(mocks.push).not.toHaveBeenCalled();
+});

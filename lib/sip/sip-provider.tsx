@@ -494,7 +494,10 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     transferCall: async (id, dest) => {
       await sipEngine.transferCall(id, dest);
     },
-    supportsWarmTransfer: () => Platform.OS === "ios" && process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" && siprixEngine.supportsWarmTransfer(),
+    supportsWarmTransfer: () => process.env.EXPO_PUBLIC_SIP_ENGINE === "siprix" &&
+      (Platform.OS === "ios" || (isAndroidForegroundTrial() &&
+        process.env.EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE === "1")) &&
+      siprixEngine.supportsWarmTransfer(),
     consultation: id => siprixEngine.consultation(id),
     remainingConsultation: id => siprixEngine.remainingConsultation(id),
     beginConsultation: (id,dest) => siprixEngine.beginConsultation(id,dest),

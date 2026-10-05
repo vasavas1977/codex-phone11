@@ -160,7 +160,7 @@ it("does not resend a retained Submit after its confirmed result", async () => {
 });
 
 function warmSubmit() {
-  m.warmSupported=true; render(); m.presses.get("Choose consultation transfer").onPress(); render(); edit();
+  m.supported=false; m.warmSupported=true; render(); edit();
   return m.presses.get("Start consultation call").onPress;
 }
 it("starts the real consultation path only when native capability is enabled",async()=>{
@@ -216,4 +216,75 @@ it("keeps pending transfer uncertain and offers restoration after authoritative 
   expect(render()).toContain("server may still complete"); expect(m.presses.has("Return to original call")).toBe(false);
   m.warm={...m.warm,phase:"transfer_failed"}; expect(render()).toContain("Transfer failed");
   expect(m.presses.has("Return to original call")).toBe(true); expect(m.presses.has("Complete consultation transfer")).toBe(false);
+});
+
+it.each([[false, true, "Start consultation call"], [true, false, "Confirm blind transfer"], [true, true, "Confirm blind transfer"], [false, false, null]])(
+  "actual transfer screen chooses an available mode for blind=%s warm=%s", async (blind, warm, label) => {
+    m.supported = blind; m.warmSupported = warm;
+    const html = render();
+    if (!label) {
+      expect(html).toContain("Call transfer is unavailable"); expect(m.inputs.size).toBe(0); return;
+    }
+    expect(m.presses.has(label)).toBe(true);
+    expect(m.presses.has("Choose blind transfer")).toBe(blind && warm);
+    expect(m.presses.has("Choose consultation transfer")).toBe(blind && warm);
+    if (!blind) expect(html).not.toContain("Transfer now");
+    edit(); await m.presses.get(label).onPress();
+    expect(m.transfer).toHaveBeenCalledTimes(blind ? 1 : 0);
+    expect(m.begin).toHaveBeenCalledTimes(blind ? 0 : 1);
+  },
+);
+it("rejects retained blind Submit after selecting warm and retained warm Submit after selecting blind", async () => {
+  m.warmSupported = true; const blind = callback();
+  m.presses.get("Choose consultation transfer").onPress();
+  await blind(); expect(m.transfer).not.toHaveBeenCalled(); render();
+  const warm = m.presses.get("Start consultation call").onPress;
+  await blind(); expect(m.transfer).not.toHaveBeenCalled();
+  m.presses.get("Choose blind transfer").onPress(); render();
+  await warm(); expect(m.begin).not.toHaveBeenCalled();
+  await m.presses.get("Confirm blind transfer").onPress(); expect(m.transfer).toHaveBeenCalledOnce();
+});
+it("selects warm when blind capability disappears without dispatching a retained blind Submit", async () => {
+  m.warmSupported = true; const blind = callback(); m.supported = false;
+  render(); await blind(); expect(m.transfer).not.toHaveBeenCalled();
+  expect(m.presses.has("Confirm blind transfer")).toBe(false);
+  await m.presses.get("Start consultation call").onPress(); expect(m.begin).toHaveBeenCalledOnce();
+});
+it("coalesces duplicate warm Submit while begin is pending and retains one consultation attempt", async () => {
+  const result = deferred(); m.begin.mockReturnValueOnce(result.promise);
+  const submit = warmSubmit(); const pending = submit(); await submit(); expect(m.begin).toHaveBeenCalledOnce();
+  expect(render()).toContain("Starting consultation");
+  m.warm = { requestId: "request", phase: "returned", attempted: true }; result.resolve(); await pending;
+  await submit(); expect(m.begin).toHaveBeenCalledOnce();
+  expect(render()).toContain("One consultation attempt");
+  expect(m.presses.has("Start consultation call")).toBe(false);
+});
+it.each(["logout", "credentials", "endedCall", "reusedCallId"])("retires warm-only pending begin after %s", async key => {
+  const result = deferred(); m.begin.mockReturnValueOnce(result.promise);
+  const pending = warmSubmit()(); boundaries[key as keyof typeof boundaries]();
+  const before = JSON.stringify(m.frame.values, (_key, value) => typeof value === "function" ? "function" : value);
+  result.resolve(); await pending;
+  expect(JSON.stringify(m.frame.values, (_key, value) => typeof value === "function" ? "function" : value)).toBe(before);
+});
+it.each(["calling", "consultation_failed", "return_failed", "transfer_failed"])("warm-only recovery remains reachable in phase %s", async phase => {
+  m.supported = false; m.warmSupported = true; m.attempted = true;
+  m.calls["11"] = { ...m.calls["11"], status: "held", isHeld: true };
+  m.warm = { requestId: "recovery", phase, attempted: true }; render();
+  expect(m.presses.has("Complete consultation transfer")).toBe(false);
+  await m.presses.get("Return to original call").onPress(); expect(m.cancel).toHaveBeenCalledWith("11", "recovery");
+  expect(m.transfer).not.toHaveBeenCalled();
+});
+it("rechecks warm recovery phase, capability and attempt before retained actions", async () => {
+  m.supported = false; m.warmSupported = true; m.warm = { requestId: "request", phase: "ready", attempted: true };
+  render(); const complete = m.presses.get("Complete consultation transfer").onPress;
+  const cancel = m.presses.get("Return to original call").onPress;
+  m.warm = { ...m.warm, phase: "transferring" }; await cancel(); expect(m.cancel).not.toHaveBeenCalled();
+  m.warm = { ...m.warm, phase: "ready" }; m.attempted = true; await complete(); expect(m.complete).not.toHaveBeenCalled();
+  m.attempted = false; m.warmSupported = false; await complete(); await cancel();
+  expect(m.cancel).not.toHaveBeenCalled(); expect(m.complete).not.toHaveBeenCalled();
+});
+it.each(Object.keys(boundaries))("retires warm-only recovery after %s", async key => {
+  m.supported = false; m.warmSupported = true; m.warm = { requestId: "request", phase: "return_failed", attempted: true };
+  render(); const cancel = m.presses.get("Return to original call").onPress;
+  boundaries[key as keyof typeof boundaries](); await cancel(); expect(m.cancel).not.toHaveBeenCalled();
 });

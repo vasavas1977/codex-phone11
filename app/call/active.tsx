@@ -30,7 +30,7 @@ export default function ActiveCallScreen() {
     type?: string;
     callId?: string;
   }>();
-  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf, supportsBlindTransfer, consultation, remainingConsultation } = useSip();
+  const { hangupCall, setMute, setHold, setSpeaker, sendDtmf, supportsBlindTransfer, supportsWarmTransfer, consultation, remainingConsultation } = useSip();
   const routedCall = useSipCallStore((state) => resolveCurrentCall(state, requestedCallId));
   const roleId = requestedCallId ?? routedCall?.id;
   const remaining = roleId ? remainingConsultation?.(roleId) : null;
@@ -117,7 +117,20 @@ export default function ActiveCallScreen() {
   );
   const warm = call ? consultation?.(call.id) : null;
   const hasConsultation = !!warm && !["returned","completed"].includes(warm.phase);
-  const canTransfer = !remaining && Boolean(hasConsultation || (call && call.status === "active" && !held && supportsBlindTransfer?.()));
+  const transferSupported = supportsBlindTransfer?.() === true || supportsWarmTransfer?.() === true;
+  const canTransfer = !remaining && transferSupported && Boolean(hasConsultation || (call && call.status === "active" && !held));
+  const openTransfer = () => {
+    const liveCall = resolveCurrentCall(useSipCallStore.getState(), requestedCallId);
+    const lifetime = (value: typeof call) => value?.history?.id ?? value?.startTime ?? value;
+    if (!call || !liveCall || liveCall.id !== call.id || lifetime(liveCall) !== lifetime(call) ||
+        remainingConsultation?.(liveCall.id) ||
+        !(supportsBlindTransfer?.() === true || supportsWarmTransfer?.() === true)) return;
+    const liveWarm = consultation?.(liveCall.id);
+    const recovering = !!liveWarm && !["returned", "completed"].includes(liveWarm.phase);
+    if (!(liveCall.status === "active" || liveCall.status === "held") ||
+        (!recovering && (liveCall.status !== "active" || liveCall.isHeld))) return;
+    router.push({ pathname: "/call/transfer", params: { callId: liveCall.id } });
+  };
   const control = async (operation: () => Promise<void>) => {
     if (!controlsReady) return;
     try {
@@ -352,7 +365,7 @@ export default function ActiveCallScreen() {
             hasConsultation ? "Consultation" : "Transfer",
             hasConsultation ? "Open consultation controls" : "Transfer call",
             "phone.arrow.up.right",
-            () => router.push({ pathname: "/call/transfer", params: { callId: call!.id } }),
+            openTransfer,
             false,
           )}
         </View>
