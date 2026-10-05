@@ -121,7 +121,7 @@ export function hasRole(userRole: string, requiredRole: string): boolean {
   return userLevel >= requiredLevel;
 }
 
-/** Recheck admin write authority without the membership cache. */
+/** Recheck admin read/write authority without the membership cache. */
 export async function requireLiveTenantAdminMembership(
   userId: number,
   tenantId: number,

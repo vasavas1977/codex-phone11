@@ -102,6 +102,18 @@ jobs:
             tests/device-contacts-hook.test.ts \
             tests/phone11-directory.test.ts \
             tests/phone11-directory-ui.test.tsx
+      - name: Require fresh PBX read authority after cache invalidation races
+        run: |
+          test -f tests/phone11-pbx-admin-read-revocation.test.ts
+          pnpm exec vitest run tests/phone11-pbx-admin-read-revocation.test.ts --reporter=json --outputFile=/tmp/phone11-pbx-read-authority.json
+          python3 - <<'PYREAD'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('/tmp/phone11-pbx-read-authority.json').read_text())
+          matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path('tests/phone11-pbx-admin-read-revocation.test.ts').resolve()]
+          assert len(matches) == 1 and matches[0]['assertionResults'], 'Required PBX read-authority suite must run'
+          assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'PBX read-authority cases must pass without skips'
+          PYREAD
       - name: Test media, push, PBX authorization, and durable chat state
         run: |
           for suite in \

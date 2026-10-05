@@ -68,6 +68,13 @@ async function getTenantAdminCtx(ctx: any, requestedTenantId?: number) {
   return tenant;
 }
 
+/** Legacy dashboard reads retain tenant selection but never cached authority. */
+async function getTenantAdminLegacyReadCtx(ctx: any) {
+  const tenant = await getTenantAdminCtx(ctx);
+  const liveRole = await requireLiveTenantAdminMembership(ctx.user!.id, tenant.tenantId);
+  return { ...tenant, role: liveRole };
+}
+
 async function getTenantAdminReadCtx(ctx: any, requestedTenantId?: number) {
   const tenant = await getTenantAdminCtx(ctx, requestedTenantId);
   if (requestedTenantId === undefined && tenant.memberships.length !== 1) {
@@ -76,7 +83,10 @@ async function getTenantAdminReadCtx(ctx: any, requestedTenantId?: number) {
       message: "Select a workspace before viewing phone administration",
     });
   }
-  return tenant;
+  // A concurrent cache fill can publish a role after revocation invalidation.
+  // Resolve the workspace as before, then admit reads using current DB authority.
+  const liveRole = await requireLiveTenantAdminMembership(ctx.user!.id, tenant.tenantId);
+  return { ...tenant, role: liveRole };
 }
 
 async function attachMemberPhotoDescriptors<T extends { id: number }>(
@@ -405,8 +415,7 @@ export const pbxRouter = router({
       // The legacy self-service portal reads global schema availability. An
       // admin page supplying a workspace must prove a current admin role.
       if (input?.tenantId !== undefined) {
-        const tc = await getTenantAdminReadCtx(ctx, input.tenantId);
-        await requireLiveTenantAdminMembership(ctx.user!.id, tc.tenantId);
+        await getTenantAdminReadCtx(ctx, input.tenantId);
       }
       return readManagementCapabilities();
     }),
@@ -1506,7 +1515,6 @@ export const pbxRouter = router({
       }).optional())
       .query(async ({ ctx, input }) => {
         const tc = await getTenantAdminReadCtx(ctx, input?.tenantId);
-        await requireLiveTenantAdminMembership(ctx.user!.id, tc.tenantId);
         const p = buildPaginationSQL(input || {});
         if (!(await phoneNumberSchemaAvailable())) {
           return {
@@ -1796,7 +1804,7 @@ export const pbxRouter = router({
   // ========================================================================
   fraudControls: router({
     get: protectedProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantAdminCtx(ctx);
+      const tc = await getTenantAdminLegacyReadCtx(ctx);
       const result = await query(
         `SELECT * FROM fraud_controls WHERE tenant_id = $1`,
         [tc.tenantId],
@@ -2082,7 +2090,7 @@ export const pbxRouter = router({
           .optional(),
       )
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminLegacyReadCtx(ctx);
         return queryAuditLogs({
           tenantId: tc.tenantId,
           resourceType: input?.resourceType,
@@ -2100,7 +2108,7 @@ export const pbxRouter = router({
   // ========================================================================
   dashboard: router({
     stats: protectedProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantAdminCtx(ctx);
+      const tc = await getTenantAdminLegacyReadCtx(ctx);
       const phoneNumbersAvailable = await phoneNumberSchemaAvailable();
 
       const [
@@ -2158,7 +2166,7 @@ export const pbxRouter = router({
         z.object({ limit: z.number().min(1).max(50).default(10) }).optional(),
       )
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminLegacyReadCtx(ctx);
         const result = await query(
           `SELECT * FROM call_records WHERE tenant_id = $1 ORDER BY started_at DESC LIMIT $2`,
           [tc.tenantId, input?.limit || 10],
@@ -2176,7 +2184,7 @@ export const pbxRouter = router({
           .optional(),
       )
       .query(async ({ ctx, input }) => {
-        const tc = await getTenantAdminCtx(ctx);
+        const tc = await getTenantAdminLegacyReadCtx(ctx);
         return getCallStats(tc.tenantId, input?.period || "today");
       }),
   }),
