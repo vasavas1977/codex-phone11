@@ -27,6 +27,10 @@ on:
       - "tests/**"
       - "scripts/phone11-voicemail-helper-preflight.ts"
       - "scripts/phone11-voicemail-producer.ts"
+      - "scripts/phone11-voicemail-relay.ts"
+      - "scripts/phone11-voicemail-runner.sh"
+      - "scripts/phone11-voicemail-bundle*.ts"
+      - "scripts/phone11-pbx-*.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "vitest.config.ts"
@@ -57,6 +61,10 @@ on:
       - "tests/**"
       - "scripts/phone11-voicemail-helper-preflight.ts"
       - "scripts/phone11-voicemail-producer.ts"
+      - "scripts/phone11-voicemail-relay.ts"
+      - "scripts/phone11-voicemail-runner.sh"
+      - "scripts/phone11-voicemail-bundle*.ts"
+      - "scripts/phone11-pbx-*.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - "vitest.config.ts"
@@ -243,6 +251,7 @@ jobs:
             server/meetings/connect11-plain-video-facade.test.ts
       - name: Test guarded voicemail routing and durable producer lifecycle
         run: |
+          test -f tests/phone11-voicemail-bundle.test.ts
           pnpm exec vitest run \
             tests/phone11-voicemail-dialplan.test.ts \
             tests/phone11-voicemail-dialplan-route.test.ts \
@@ -256,6 +265,7 @@ jobs:
             tests/phone11-voicemail-producer.test.ts \
             tests/phone11-voicemail-producer-durability.test.ts \
             tests/phone11-voicemail-lifecycle-rehearsal.test.ts \
+            tests/phone11-voicemail-bundle.test.ts \
             --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-voicemail-results.json"
       - name: Test browser sharing and Android Answer media recovery
         run: |
@@ -286,7 +296,7 @@ jobs:
           required = {
               "phone11-setup-confirmation-results.json": ["tests/phone11-meet-action.test.tsx", "tests/phone11-admin-voicemail-confirmation.test.tsx"],
               "phone11-transfer-results.json": ["tests/phone11-siprix-engine.test.ts", "tests/phone11-active-call-navigation.test.tsx", "tests/phone11-current-call-banner.test.tsx", "tests/phone11-transfer-lifecycle.test.tsx", "tests/phone11-transfer-screen.test.tsx", "tests/phone11-voicemail-callback.test.tsx"],
-              "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts"],
+              "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts", "tests/phone11-voicemail-bundle.test.ts"],
               "phone11-interactive-media-results.json": ["lib/meetings/browser-screen-share.test.ts", "lib/meetings/web-session.test.ts", "tests/phone11-meeting-screen-share-ui.test.tsx", "tests/phone11-android-call-permission.test.ts", "tests/phone11-android-answer-media.test.ts"],
           }
           for report_name, suites in required.items():
@@ -337,6 +347,26 @@ jobs:
           npm --prefix desktop/app test
           npm --prefix desktop/app run typecheck
           PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build
+
+      - name: Require desktop helper provenance regressions without skips
+        shell: bash
+        run: |
+          test -f desktop/app/test/helper-source-receipt.test.ts
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/helper-source-receipt.test.ts) | tee "$RUNNER_TEMP/phone11-helper-provenance.tap"
+          python3 - <<'PYPROVENANCE'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ["RUNNER_TEMP"]) / "phone11-helper-provenance.tap").read_text()
+          counts = {}
+          for name in ("tests", "pass", "fail", "cancelled", "skipped", "todo"):
+              values = re.findall(r"^# " + name + r" (\d+)$", tap, re.M)
+              assert len(values) == 1, f"Missing or duplicate TAP summary: {name}"
+              counts[name] = int(values[0])
+          assert counts["tests"] > 0 and counts["pass"] == counts["tests"], counts
+          assert all(counts[name] == 0 for name in ("fail", "cancelled", "skipped", "todo")), counts
+          assert not re.search(r"^not ok(?: |$)", tap, re.M), "Failed provenance case"
+          print(f"Helper provenance: {counts['pass']} passed, zero skips")
+          PYPROVENANCE
 
   routing-authority-postgres-tests:
     runs-on: ubuntu-24.04
@@ -759,6 +789,22 @@ jobs:
           tests/phone11-pbx-advanced-migration.test.ts
           tests/phone11-pbx-schema-preflight.test.ts
           tests/phone11-time-condition-postgres.test.ts
+          --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-pbx-base-prerequisite-results.json"
+      - name: Require executed PBX base-prerequisite PostgreSQL regressions
+        run: |
+          python3 - <<'PYPBX'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "phone11-pbx-base-prerequisite-results.json").read_text())
+          assert report["success"] is True
+          for name in ("tests/phone11-pbx-advanced-migration.test.ts", "tests/phone11-pbx-schema-preflight.test.ts"):
+              assert Path(name).is_file(), name
+              matches = [suite for suite in report["testResults"] if Path(suite["name"]).resolve() == Path(name).resolve()]
+              assert len(matches) == 1, name
+              cases = matches[0]["assertionResults"]
+              assert cases and all(case["status"] == "passed" for case in cases), name
+              print(f"{name}: {len(cases)} passed, zero skips")
+          PYPBX
 
   chat-postgres-tests:
     runs-on: ubuntu-24.04
