@@ -197,7 +197,10 @@ The minimal safe continuation is:
    rehearsal. Use clone-only credentials and authenticate application tests
    as the intended restricted role; bootstrap-superuser tests cannot prove
    runtime-role behavior.
-3. Pin the SQL digests below and independently review one clone operator plan.
+3. Pin the exact current source commit and freshly calculated SQL/preflight
+   digests, following the [5 October prerequisite guard](PBX-BASE-PREREQUISITE-GUARD-20261005.md),
+   and independently review one clone operator plan. The historical advanced
+   SQL and preflight digests below are invalid for that guard or new plans.
    Run the legacy-default prerequisite on its own fresh idle connection with
    exact clone database/schema pins and the explicit reviewed acknowledgement;
    run advanced routing as a separate later transaction. Both files own their
@@ -212,7 +215,11 @@ The minimal safe continuation is:
    schema/access/route action. Restoring DEFAULT 1 is not a substitute for a
    reviewed data and schema rollback.
 
-| Current source gate | SHA-256 |
+The following pins belong to this historical snapshot and its original receipts.
+The advanced SQL and preflight changed under the 5 October prerequisite guard;
+do not retag these hashes or receipts as current-guard evidence.
+
+| Historical source gate | SHA-256 |
 | --- | --- |
 | `server/pbx/extension-tenant-legacy-default-prerequisites.sql` | `2deb0b79fa7d00aea093ba7c00099a99f8df7a756700c001579c94439207bed8` |
 | `server/pbx/extension-tenant-prerequisites.sql` | `73c632bb49e6d45645c3cfbd85923ef6ab6db386e531647e74f103c6efd41749` |
