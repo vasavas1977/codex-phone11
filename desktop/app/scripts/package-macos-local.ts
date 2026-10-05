@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { packager } from '@electron/packager';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
 import { assertCommittedDesktopSource } from './committed-source';
+import { verifyMacHelperSourceReceipt } from './helper-source-receipt';
 
 const appRoot = resolve(__dirname, '..');
 const repoRoot = resolve(appRoot, '..', '..');
@@ -16,6 +17,10 @@ async function main(): Promise<void> {
   if (process.platform !== 'darwin' || process.arch !== 'arm64') throw new Error('Local package requires macOS arm64');
   if (!stage || !output || !isAbsolute(stage) || !isAbsolute(output))
     throw new Error('Set absolute PHONE11_RESOURCE_STAGE and PHONE11_PACKAGE_OUTPUT');
+  const nativeReceipt = process.env.PHONE11_MAC_NATIVE_RECEIPT;
+  const inputReceipt = process.env.PHONE11_MAC_INPUT_RECEIPT;
+  if (!nativeReceipt || !inputReceipt || !isAbsolute(nativeReceipt) || !isAbsolute(inputReceipt))
+    throw new Error('Set absolute PHONE11_MAC_NATIVE_RECEIPT and PHONE11_MAC_INPUT_RECEIPT');
   const stageReal = await realpath(stage);
   const outputReal = await realpath(output);
   const sourceReal = await realpath(repoRoot);
@@ -32,6 +37,9 @@ async function main(): Promise<void> {
   const origin = new URL(config.apiOrigin);
   if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' ||
       origin.search || origin.hash) throw new Error('Invalid HTTPS API origin');
+  assertCommittedDesktopSource(repoRoot);
+  const provenance = await verifyMacHelperSourceReceipt({ repoRoot, stageRoot: stageReal,
+    nativeReceiptPath: nativeReceipt, inputReceiptPath: inputReceipt });
   const manifest = await readFile(join(stageReal, 'helper-integrity.json'));
   const pin = createHash('sha256').update(manifest).digest('hex');
   if (!(await verifyPackagedHelper(helperExecutable(stageReal, 'darwin'), stageReal, pin, 'darwin')))
@@ -42,6 +50,7 @@ async function main(): Promise<void> {
   });
   // Package committed app metadata/source, adding only the newly built dist.
   assertCommittedDesktopSource(repoRoot);
+  await provenance.assertCurrent();
   const exportRoot = await mkdtemp(join(tmpdir(), 'phone11-committed-app-'));
   let appPath: string;
   try {
@@ -60,6 +69,8 @@ async function main(): Promise<void> {
     });
   } finally { await rm(exportRoot, { recursive: true, force: true }); }
   const appBundle = join(appPath, 'Phone11-Desktop-Trial.app');
+  await provenance.assertCurrent();
+  assertCommittedDesktopSource(repoRoot);
   const packagedResources = join(appBundle, 'Contents', 'Resources');
   // Packager's extraResource copy rewrites framework symlinks to absolute staging
   // paths. macOS ditto preserves the relative links inside the bundled frameworks.
@@ -71,6 +82,7 @@ async function main(): Promise<void> {
   // external staging directory must not be bundled.
   execFileSync('/usr/bin/ditto', [join(stageReal, 'helper'), join(packaged, 'helper')],
     { stdio: 'inherit' });
+  await provenance.assertCurrent(helperExecutable(packaged, 'darwin'));
   if (!(await verifyPackagedHelper(helperExecutable(packaged, 'darwin'), packaged, pin, 'darwin')))
     throw new Error('Packaged helper integrity verification failed');
   if (!(await readFile(join(packagedResources, 'app.asar'))).includes(pin))
@@ -90,6 +102,8 @@ async function main(): Promise<void> {
     { stdio: 'inherit' });
   if (!(await verifyPackagedHelper(helperExecutable(packaged, 'darwin'), packaged, pin, 'darwin')))
     throw new Error('Siprix helper integrity changed during ad-hoc signing');
+  await provenance.assertCurrent(helperExecutable(packaged, 'darwin'));
+  assertCommittedDesktopSource(repoRoot);
   process.stdout.write(`${appBundle}\n`);
 }
 void main().catch(error => { process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1; });

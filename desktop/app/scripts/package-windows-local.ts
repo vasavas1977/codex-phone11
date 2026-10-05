@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { packager } from '@electron/packager';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
 import { assertCommittedDesktopSource } from './committed-source';
+import { verifyWindowsHelperSourceReceipt } from './helper-source-receipt';
 
 const sdkRevision = '38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f';
 const sdkDllHashes: Record<string, string> = {
@@ -17,8 +18,7 @@ const appRoot = resolve(__dirname, '..');
 const repoRoot = resolve(appRoot, '..', '..');
 const sha = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
-function requireAbsolute(name: string): string {
-  const value = process.env[name];
+function requireAbsolute(name: string, value: string | undefined): string {
   if (!value || !isAbsolute(value)) throw new Error(`${name} must be an absolute path`);
   return resolve(value);
 }
@@ -37,9 +37,10 @@ async function requireX64Pe(path: string, dll: boolean): Promise<void> {
 async function main(): Promise<void> {
   if (process.platform !== 'darwin' || process.arch !== 'arm64')
     throw new Error('This cross-package path requires macOS arm64');
-  const sdk = await realpath(requireAbsolute('PHONE11_SIPRIX_SDK_ROOT'));
-  const helper = await realpath(requireAbsolute('PHONE11_WINDOWS_HELPER_EXE'));
-  const output = await realpath(requireAbsolute('PHONE11_PACKAGE_OUTPUT'));
+  const sdk = await realpath(requireAbsolute('PHONE11_SIPRIX_SDK_ROOT', process.env.PHONE11_SIPRIX_SDK_ROOT));
+  const helper = await realpath(requireAbsolute('PHONE11_WINDOWS_HELPER_EXE', process.env.PHONE11_WINDOWS_HELPER_EXE));
+  const receipt = await realpath(requireAbsolute('PHONE11_WINDOWS_HELPER_RECEIPT', process.env.PHONE11_WINDOWS_HELPER_RECEIPT));
+  const output = await realpath(requireAbsolute('PHONE11_PACKAGE_OUTPUT', process.env.PHONE11_PACKAGE_OUTPUT));
   if (!(await lstat(output)).isDirectory()) throw new Error('PHONE11_PACKAGE_OUTPUT must be a directory');
   const repoReal = await realpath(repoRoot);
   const apiOrigin = process.env.PHONE11_API_ORIGIN;
@@ -49,11 +50,14 @@ async function main(): Promise<void> {
       origin.search || origin.hash || origin.toString() !== apiOrigin)
     throw new Error('PHONE11_API_ORIGIN must be an HTTPS origin without a path or credentials');
   const within = (root: string, path: string): boolean => path === root || path.startsWith(`${root}${sep}`);
-  if ([sdk, helper, output].some(path => within(repoReal, path)) || within(sdk, output) ||
-      within(output, sdk) || within(output, helper))
+  if ([sdk, helper, receipt, output].some(path => within(repoReal, path)) || within(sdk, output) ||
+      within(output, sdk) || within(output, helper) || within(output, receipt))
     throw new Error('Vendor inputs and output must stay outside the source tree and each other');
   const revision = execFileSync('git', ['-C', sdk, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   if (revision !== sdkRevision) throw new Error(`SiprixUA SDK must be pinned to ${sdkRevision}`);
+  assertCommittedDesktopSource(repoRoot);
+  const provenance = await verifyWindowsHelperSourceReceipt({ repoRoot, sdkRoot: sdk, sdkRevision,
+    helperPath: helper, receiptPath: receipt });
   const lib = join(sdk, 'win', 'siprix.framework', 'lib');
   const files: Record<string, string> = {};
   await requireX64Pe(helper, false);
@@ -75,6 +79,7 @@ async function main(): Promise<void> {
     const manifest = Buffer.from(JSON.stringify({ platform: 'win32', files, symlinks: {} }, null, 2) + '\n');
     await writeFile(join(stage, 'helper-integrity.json'), manifest);
     const pin = sha(manifest);
+    await provenance.assertCurrent(helperExecutable(stage, 'win32'));
     if (!(await verifyPackagedHelper(helperExecutable(stage, 'win32'), stage, pin, 'win32')))
       throw new Error('Staged Windows helper integrity verification failed');
     assertCommittedDesktopSource(repoRoot);
@@ -83,6 +88,7 @@ async function main(): Promise<void> {
       stdio: 'inherit',
     });
     assertCommittedDesktopSource(repoRoot);
+    await provenance.assertCurrent(helperExecutable(stage, 'win32'));
     const archive = execFileSync('git', ['archive', 'HEAD', 'desktop/app'], { cwd: repoRoot, maxBuffer: 20_000_000 });
     execFileSync('/usr/bin/tar', ['-xf', '-', '-C', exportRoot], { input: archive });
     const exportedApp = join(exportRoot, 'desktop', 'app');
@@ -95,6 +101,8 @@ async function main(): Promise<void> {
     const resources = join(appPath, 'resources');
     await cp(stage, join(resources, 'phone11'), { recursive: true });
     const packaged = join(resources, 'phone11');
+    await provenance.assertCurrent(helperExecutable(packaged, 'win32'));
+    assertCommittedDesktopSource(repoRoot);
     if (!(await verifyPackagedHelper(helperExecutable(packaged, 'win32'), packaged, pin, 'win32')))
       throw new Error('Packaged Windows helper integrity verification failed');
     if (!(await readFile(join(resources, 'app.asar'))).includes(pin))
