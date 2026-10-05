@@ -94,6 +94,44 @@ describe("unsigned offline voicemail bundle", () => {
     await symlink(path.resolve(sourceFiles[0]), file);
     await expect(buildVoicemailBundle(source, path.join(root, "symlink-source-output"), revision)).rejects.toThrow("Source input");
   });
+  it.each([
+    'import { marker } from "./extra.js"; export const extraMarker = marker;',
+    'import "./extra.js";',
+    'import { marker } from "../extra.js"; export const extraMarker = marker;',
+    'export { marker } from "./extra.js";',
+    'import { marker } from "unrecorded-package"; export const extraMarker = marker;',
+    'import "node:not-a-real-builtin";',
+    'export const unknownImport = import("./extra.js");',
+    'export const unknownImport = (name: string) => import(name);',
+    'export const unknownRequire = require("./extra.js");',
+    'export const unknownRequire = (name: string) => require(name);',
+    'export const unknownResolve = require.resolve("./extra.js");',
+    'type Extra = import("./extra.js").Marker; export const extraType: Extra = {} as Extra;',
+  ])("refuses uncaptured dependencies before filesystem resolution: %s", async addition => {
+    const source = await sourceCopy();
+    const file = path.join(source, sourceFiles[0]);
+    await writeFile(file, (await readFile(file, "utf8")) + "\n" + addition + "\n");
+    // There is intentionally no extra.js/package: refusal must precede any read/resolution attempt.
+    await expect(buildVoicemailBundle(source, path.join(root, "uncaptured-output-" + sha256(addition)), revision)).rejects.toThrow(/dependency|Unsupported/);
+  });
+  it("refuses an unvalidated symlink dependency rather than following it", async () => {
+    const source = await sourceCopy();
+    const target = path.join(root, "outside-entry.js");
+    await writeFile(target, 'export const marker = "outside";', { mode: 0o666 });
+    await symlink(target, path.join(source, "extra.js"));
+    const file = path.join(source, sourceFiles[0]);
+    await writeFile(file, (await readFile(file, "utf8")) + '\nimport { marker } from "./extra.js"; export const extraMarker = marker;\n');
+    await expect(buildVoicemailBundle(source, path.join(root, "symlink-dependency-output"), revision)).rejects.toThrow("Non-builtin dependency refused");
+  });
+  it("changing an unrelated local file cannot change artifacts with the same captured inputs", async () => {
+    const source = await sourceCopy();
+    const unrecorded = path.join(source, "extra.js");
+    await writeFile(unrecorded, 'export const marker = "VERSION_A";');
+    const first = await buildVoicemailBundle(source, path.join(root, "unrelated-A"), revision);
+    await writeFile(unrecorded, 'export const marker = "VERSION_B";');
+    const second = await buildVoicemailBundle(source, path.join(root, "unrelated-B"), revision);
+    expect(first.manifestSha256).toBe(second.manifestSha256);
+  });
   it("emits syntactically valid unsigned programs without launching them", () => {
     for (const name of ["producer.mjs", "relay.mjs"])
       expect(execFileSync(process.execPath, ["--check", path.join(baseline, name)], { encoding: "utf8" })).toBe("");

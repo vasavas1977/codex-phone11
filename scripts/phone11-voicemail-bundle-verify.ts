@@ -63,9 +63,10 @@ export async function verifyVoicemailBundle(bundle: string, plan: string, manife
   exactKeys(manifest, ["schema", "sourceRevision", "builder", "runtimePaths", "inputs", "artifacts"]);
   requireContract(raw.equals(Buffer.from(canonicalJson(manifest))), "Manifest must be canonical");
   requireContract(manifest.schema === bundleSchema && typeof manifest.sourceRevision === "string" && /^[a-f0-9]{40}$/.test(manifest.sourceRevision), "Invalid source revision");
-  exactKeys(manifest.builder, ["esbuildVersion", "nodeTarget"]);
+  exactKeys(manifest.builder, ["esbuildVersion", "typescriptVersion", "nodeTarget"]);
   requireContract(typeof manifest.builder.esbuildVersion === "string" && /^\d+\.\d+\.\d+$/.test(manifest.builder.esbuildVersion) &&
     manifest.builder.nodeTarget === "node22", "Wrong builder target");
+  requireContract(typeof manifest.builder.typescriptVersion === "string" && /^\d+\.\d+\.\d+$/.test(manifest.builder.typescriptVersion), "Wrong dependency parser");
   checkRuntimePaths(manifest.runtimePaths);
   exactKeys(manifest.inputs, sourceFiles);
   requireContract(Object.values(manifest.inputs).every(hash), "Invalid input digests");

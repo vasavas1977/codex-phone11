@@ -4,12 +4,37 @@ import { build, version } from "esbuild";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { isBuiltin } from "node:module";
+import ts from "typescript";
 import { reviewedHelpers } from "./phone11-voicemail-helper-preflight";
 import { artifactModes, bundleSchema, canonicalJson, readArtifact, requireContract, runtimePaths,
   sha256, sourceFiles, type ArtifactName, type BundleManifest } from "./phone11-voicemail-bundle-contract";
 
+function builtin(specifier: string): boolean {
+  return specifier.startsWith("node:") && isBuiltin(specifier);
+}
+/** esbuild cannot resolve a computed import/require; refuse it before compiling captured bytes. */
+function checkDependencySyntax(contents: string, file: string): void {
+  const source = ts.createSourceFile(file, contents, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+  const check = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier)
+      requireContract(ts.isStringLiteral(node.moduleSpecifier) && builtin(node.moduleSpecifier.text), "Non-builtin dependency refused");
+    requireContract(!ts.isImportEqualsDeclaration(node) && !ts.isImportTypeNode(node), "Unsupported dependency syntax");
+    if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      requireContract(expression.kind !== ts.SyntaxKind.ImportKeyword &&
+        !(ts.isIdentifier(expression) && expression.text === "require") &&
+        !(ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "require"),
+      "Dynamic/CommonJS dependency refused");
+    }
+    ts.forEachChild(node, check);
+  };
+  check(source);
+}
+
 export async function buildVoicemailBundle(sourceRoot: string, destination: string, sourceRevision: string) {
   requireContract(/^[a-f0-9]{40}$/.test(sourceRevision), "Exact source revision required");
+  requireContract(process.versions.node.split(".")[0] === "22", "Node 22 build runtime required");
   requireContract(path.isAbsolute(sourceRoot) && path.isAbsolute(destination), "Absolute build paths required");
   requireContract(sourceRoot === path.resolve(sourceRoot) && destination === path.resolve(destination), "Build paths must be normalized");
   requireContract(await realpath(sourceRoot) === path.resolve(sourceRoot), "Source root must be resolved");
@@ -32,10 +57,18 @@ export async function buildVoicemailBundle(sourceRoot: string, destination: stri
   const artifacts = {} as Record<ArtifactName, Buffer>;
   for (const name of ["producer", "relay"] as const) {
     const file = `scripts/phone11-voicemail-${name}.ts`;
+    const contents = bytes.get(file)!.toString("utf8");
+    checkDependencySyntax(contents, file);
     const result = await build({
-      stdin: { contents: bytes.get(file)!.toString("utf8"), sourcefile: file, resolveDir: sourceRoot, loader: "ts" },
+      stdin: { contents, sourcefile: file, loader: "ts" },
       absWorkingDir: sourceRoot, bundle: true, platform: "node", format: "esm", target: "node22",
       write: false, sourcemap: false, legalComments: "none", charset: "utf8", metafile: true, logLevel: "silent",
+      plugins: [{ name: "captured-inputs-only", setup(builder) {
+        builder.onResolve({ filter: /.*/ }, args => builtin(args.path)
+          ? { path: args.path, external: true }
+          : { errors: [{ text: "Non-builtin dependency refused" }] });
+        builder.onLoad({ filter: /.*/ }, () => ({ errors: [{ text: "Uncaptured filesystem input refused" }] }));
+      } }],
     });
     requireContract(result.outputFiles?.length === 1 && Object.values(result.metafile!.outputs).every(output =>
       output.imports.every(item => item.external && item.path.startsWith("node:"))), "Unexpected bundle dependency");
@@ -45,7 +78,7 @@ export async function buildVoicemailBundle(sourceRoot: string, destination: stri
   artifacts["phone11_legacy_voicemail.lua"] = bytes.get("infra/configs/freeswitch/scripts/phone11_legacy_voicemail.lua")!;
   artifacts["phone11_voicemail_deposit.lua"] = bytes.get("infra/configs/freeswitch/scripts/phone11_voicemail_deposit.lua")!;
   const manifest: BundleManifest = {
-    schema: bundleSchema, sourceRevision, builder: { esbuildVersion: version, nodeTarget: "node22" }, runtimePaths, inputs,
+    schema: bundleSchema, sourceRevision, builder: { esbuildVersion: version, typescriptVersion: ts.version, nodeTarget: "node22" }, runtimePaths, inputs,
     artifacts: Object.fromEntries(Object.entries(artifacts).map(([name, value]) =>
       [name, { sha256: sha256(value), size: value.length, mode: artifactModes[name as ArtifactName] }])) as BundleManifest["artifacts"],
   };

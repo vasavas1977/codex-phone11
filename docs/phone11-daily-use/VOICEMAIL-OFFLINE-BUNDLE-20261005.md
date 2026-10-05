@@ -24,16 +24,24 @@ The build refuses an existing output directory. It reads stable, single-link,
 locally owned source files, refuses symlink inputs and group/other-writable
 files, and requires both deploy/infra helper copies to match the existing
 reviewed helper hashes. Producer/relay are bundled as Node 22 ESM using the
-installed esbuild version; only Node built-in external imports are accepted.
+installed esbuild version. Captured entry bytes are the only compiler source
+inputs: an on-resolve gate refuses every dependency except an actual `node:`
+built-in supported by the required Node 22 build runtime, and an on-load gate
+refuses additional filesystem inputs. The installed TypeScript parser rejects
+dynamic `import()`, direct `require()`/`require.resolve()` syntax and non-built-in static
+imports/exports before compilation; it does not resolve or read dependencies.
 The bundle contains exactly `producer.mjs`, `relay.mjs`, `runner.sh`, both Lua
 helpers and canonical `manifest.json`. The manifest records actual input and
-artifact hashes, sizes, modes, build-tool version and fixed runtime paths.
+artifact hashes, sizes, modes, compiler/parser versions and fixed runtime paths.
 No timestamps or output-directory paths enter the manifest. Identical inputs
-with the same compiler version produce identical bytes.
+with the same compiler/parser versions produce identical bytes.
+This closes compiler dependency resolution; it is not a sandbox for runtime
+filesystem operations in the packaged programs. Tool version labels do not
+authenticate the installed compiler/parser or prove build causality.
 
 The source revision is a **caller-supplied label**, not authenticated Git
-provenance. Independently review the revision, actual input digests and compiler
-version before retaining the printed manifest hash. The verifier checks that
+provenance. Independently review the revision, actual input digests and tool
+versions before retaining the printed manifest hash. The verifier checks that
 separately supplied hash; copying a changed manifest alongside changed artifacts
 does not satisfy the original pin. Neither tool signs the bundle. Local build
 completion is not a durable-storage receipt.

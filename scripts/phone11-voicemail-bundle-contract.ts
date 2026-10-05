@@ -34,7 +34,7 @@ export type ArtifactName = keyof typeof artifactModes;
 export type BundleManifest = {
   schema: typeof bundleSchema;
   sourceRevision: string;
-  builder: { esbuildVersion: string; nodeTarget: "node22" };
+  builder: { esbuildVersion: string; typescriptVersion: string; nodeTarget: "node22" };
   runtimePaths: typeof runtimePaths;
   inputs: Record<string, string>;
   artifacts: Record<ArtifactName, { sha256: string; size: number; mode: string }>;
