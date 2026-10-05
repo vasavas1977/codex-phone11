@@ -241,6 +241,21 @@ describe.skipIf(!connectionString)(
       await admin.end();
     });
 
+    it.each(["IMMEDIATE", "DEFERRED"])("refuses a full otherwise-ready schema with a deferrable extension PK initially %s", async (timing) => {
+      const client = await database.connect();
+      try {
+        await client.query(`ALTER TABLE extensions DROP CONSTRAINT extensions_pkey;
+          ALTER TABLE extensions ADD CONSTRAINT extensions_pkey PRIMARY KEY(id) DEFERRABLE INITIALLY ${timing}`);
+        expect(await inspectPbxSchema(client)).toMatchObject({
+          overall: "incompatible", base: { status: "incompatible", issues: ["base:primary_keys"] },
+          phoneConfig: { status: "compatible", issues: [] }, advanced: { status: "absent" },
+        });
+      } finally {
+        await client.query("ALTER TABLE extensions DROP CONSTRAINT extensions_pkey; ALTER TABLE extensions ADD PRIMARY KEY(id)");
+        client.release();
+      }
+    });
+
     it("moves from ready-for-migration to compatible and remains read-only", async () => {
       const client = await database.connect();
       try {

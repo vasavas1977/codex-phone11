@@ -777,6 +777,29 @@ describe.skipIf(!connectionString)("enforced base prerequisite boundary", () => 
     });
   });
 
+  it.each([
+    ["extensions", "IMMEDIATE"], ["extensions", "DEFERRED"],
+    ["tenants", "IMMEDIATE"], ["tenants", "DEFERRED"],
+  ])("refuses a deferrable %s PK initially %s at the prerequisite guard", async (table, timing) => {
+    await fixture(async (client) => {
+      if (table === "tenants") await client.query("ALTER TABLE extensions DROP CONSTRAINT tenant_fk");
+      await client.query(`ALTER TABLE ${table} DROP CONSTRAINT ${table}_pkey;
+        ALTER TABLE ${table} ADD CONSTRAINT ${table}_pkey PRIMARY KEY(id) DEFERRABLE INITIALLY ${timing}`);
+      // A separate usable unique key permits a valid tenant FK while the required PK is deferrable.
+      if (table === "tenants") await client.query(`ALTER TABLE tenants ADD CONSTRAINT tenants_id_unique UNIQUE(id);
+        ALTER TABLE extensions ADD CONSTRAINT tenant_fk FOREIGN KEY(tenant_id) REFERENCES tenants(id)`);
+      const before = await baseCatalog(client);
+      const { inspectPbxSchema } = await import("../scripts/phone11-pbx-schema-preflight");
+      expect((await inspectPbxSchema(client)).base.issues).toContain("base:primary_keys");
+      await expect(client.query(await readFile(migrationUrl, "utf8"))).rejects.toMatchObject({
+        code: "55000", message: "Phone11 advanced PBX migration requires enforced extension tenant prerequisites",
+      });
+      await client.query("ROLLBACK");
+      expect(await baseCatalog(client)).toEqual(before);
+      expect((await client.query("SELECT to_regclass('ivr_menus') name")).rows[0].name).toBeNull();
+    });
+  });
+
   it("accepts ALWAYS-enabled RI enforcement and preserves exact valid FK on replay", async () => {
     await fixture(async (client) => {
       await client.query(`DO $$DECLARE n text; r text; BEGIN

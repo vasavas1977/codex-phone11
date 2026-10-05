@@ -398,11 +398,17 @@ export async function inspectPbxSchema(
                AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d
                  WHERE d.adrelid=b.extensions_oid AND d.adnum=b.tenant_id) AS tenant_column_ready,
                EXISTS (SELECT 1 FROM pg_catalog.pg_constraint p
+                 JOIN pg_catalog.pg_index ix ON ix.indexrelid=p.conindid AND ix.indrelid=p.conrelid
                  WHERE p.conrelid=b.extensions_oid AND p.contype='p'
-                   AND p.conkey=ARRAY[b.extension_id]::smallint[] AND p.convalidated)
+                   AND p.conkey=ARRAY[b.extension_id]::smallint[] AND p.convalidated AND NOT p.condeferrable
+                   AND ix.indisunique AND ix.indimmediate AND ix.indisvalid AND ix.indisready AND ix.indislive
+                   AND ix.indnkeyatts=1 AND ix.indexprs IS NULL AND ix.indpred IS NULL)
                AND EXISTS (SELECT 1 FROM pg_catalog.pg_constraint p
+                 JOIN pg_catalog.pg_index ix ON ix.indexrelid=p.conindid AND ix.indrelid=p.conrelid
                  WHERE p.conrelid=b.tenants_oid AND p.contype='p'
-                   AND p.conkey=ARRAY[b.tenants_id]::smallint[] AND p.convalidated) AS primary_keys_ready,
+                   AND p.conkey=ARRAY[b.tenants_id]::smallint[] AND p.convalidated AND NOT p.condeferrable
+                   AND ix.indisunique AND ix.indimmediate AND ix.indisvalid AND ix.indisready AND ix.indislive
+                   AND ix.indnkeyatts=1 AND ix.indexprs IS NULL AND ix.indpred IS NULL) AS primary_keys_ready,
                (SELECT count(*)=1 FROM pg_catalog.pg_constraint f
                  WHERE f.conrelid=b.extensions_oid AND f.contype='f' AND b.tenant_id=ANY(f.conkey))
                AND EXISTS (
