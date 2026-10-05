@@ -1289,6 +1289,14 @@ describe("default-off warm transfer native candidate", () => {
     expect(bridge.continueConsultation).not.toHaveBeenCalled();
     expect(bridge.makeCall).toHaveBeenCalledOnce();
   });
+  it.each(["+66812345678", "1".repeat(32), "+" + "1".repeat(32)])("preserves the shared consultation destination boundary %s", async target => {
+    await warmReady(); await engine.beginConsultation("11", target);
+    expect(bridge.beginConsultation).toHaveBeenCalledWith("11", target, expect.any(String));
+  });
+  it.each(["66+812345678", "++66812345678", "+", "1".repeat(33), "+" + "1".repeat(33)])("rejects malformed or overlong shared consultation destination %s before native work", async target => {
+    await warmReady(); await expect(engine.beginConsultation("11", target)).rejects.toThrow("phone number or extension");
+    expect(bridge.beginConsultation).not.toHaveBeenCalled(); expect(bridge.createTransferRequestId).not.toHaveBeenCalled();
+  });
   it("starts a consultation using a native UUID and does not optimistically hold or create a second call",async()=>{
     await warmReady(); expect(engine.supportsWarmTransfer()).toBe(true);
     await engine.beginConsultation("11","3003");

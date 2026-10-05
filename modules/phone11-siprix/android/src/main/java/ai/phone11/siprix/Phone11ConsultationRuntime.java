@@ -35,7 +35,7 @@ final class Phone11ConsultationRuntime {
   });}
   void begin(Map<String,Object> call,String destination,String request,boolean pendingHold){
     uuid(request);
-    if(destination==null||!destination.matches("[0-9*#]{1,32}"))fail("E_INVALID_ARGUMENT");
+    if(destination==null||!destination.matches("[+]?[0-9*#]{1,32}"))fail("E_INVALID_ARGUMENT");
     if(consult!=null||!host.current(call)||!host.registered()||pendingHold||!"connected".equals(call.get("state"))||hold(call)!=0||Boolean.TRUE.equals(call.get("consultationAttempted"))||Boolean.TRUE.equals(call.get("transferAttempted")))fail("E_CALL_STATE");
     original=call;endingOriginal=false;consultTerminated=false;original.put("consultationAttempted",true);original.put("consultationRequestId",request);original.put("consultationDestination",destination);
     // Reserve before SDK command: even an inline callback cannot synthesize acceptance.
