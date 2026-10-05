@@ -273,13 +273,17 @@ it("does not open a direct invitation from another selected workspace", () => {
   expect(state.onJoin).toBeUndefined();
 });
 
-it("offers creation before this account has any admitted room", () => {
-  state.capabilitiesAvailable = false;
+it.each([false, true])("offers the channel creation picker with no admitted room when joining capability is %s", available => {
+  state.capabilitiesAvailable = available;
+  state.availableRooms = [];
   renderToStaticMarkup(createElement(ConferenceScreen));
   expect(state.createButton.accessibilityLabel).toBe("New meeting");
   state.createButton.onPress();
   expect(state.push).toHaveBeenCalledWith("/conference/create");
   expect(state.onJoin).toBeUndefined();
+  expect(state.admit).not.toHaveBeenCalled();
+  expect(state.webJoin).not.toHaveBeenCalled();
+  expect(state.nativeJoin).not.toHaveBeenCalled();
 });
 
 it.each(["session", "workspace"])(
