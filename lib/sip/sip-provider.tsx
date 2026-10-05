@@ -11,6 +11,7 @@ import { createRegistrationLifecycle } from "./registration-lifecycle";
 import { createVoipEnrollmentLifecycle } from "../push/enrollment-lifecycle";
 import { getVideoBridge } from "./video-runtime";
 import {
+  phone11MediaOwnership,
   prepareSipMediaOwnership,
   releaseSipMediaOwnership,
 } from "../meetings/native-session";
@@ -42,6 +43,13 @@ interface SipContextValue {
   completeConsultation: (callId: string, requestId: string) => Promise<void>;
   hasAttemptedBlindTransfer: (callId: string) => boolean;
 }
+
+type AndroidIncomingMediaPreparation = {
+  generation: number;
+  current: (incomingOnly?: boolean) => boolean;
+  task: Promise<MediaLease>;
+  lease?: MediaLease;
+};
 
 const SipContext = createContext<SipContextValue>({
   reconnectPhone: async () => {},
@@ -78,15 +86,24 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
   const nativeStackInitialized = useRef(false);
   const nativeStackInitPromise = useRef<Promise<void> | null>(null);
   const sipMediaLease = useRef<MediaLease | undefined>(undefined);
+  const androidIncomingMedia = useRef<AndroidIncomingMediaPreparation | undefined>(undefined);
+  const androidIncomingGeneration = useRef(0);
   const androidCallPermission = useRef<ReturnType<typeof createAndroidCallPermissionGate> | null>(null);
   if (!androidCallPermission.current) androidCallPermission.current = createTrialPermissionGate();
+  const retireAllAndroidIncomingMedia = useCallback(() => {
+    androidIncomingMedia.current = undefined;
+    ++androidIncomingGeneration.current;
+  }, []);
   useEffect(() => {
     // Recreate on effect setup so React's development cleanup/setup rehearsal
     // does not leave a disposed gate in the still-mounted provider.
     const gate = createTrialPermissionGate();
     androidCallPermission.current = gate;
-    return () => { gate.dispose(); };
-  }, []);
+    return () => {
+      gate.dispose();
+      retireAllAndroidIncomingMedia();
+    };
+  }, [retireAllAndroidIncomingMedia]);
   const { loadAccount } = useSipAccountStore();
 
   const ensureAccountLoaded = useCallback(async () => {
@@ -158,6 +175,76 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     await nativeStackInitPromise.current;
   }, [ensureSipRegistered]);
 
+  const retireAndroidIncomingMedia = useCallback(() => {
+    const preparation = androidIncomingMedia.current;
+    if (!preparation || (preparation.current(false) &&
+      (!preparation.lease || phone11MediaOwnership.isCurrent(preparation.lease)))) return;
+    androidIncomingMedia.current = undefined;
+    ++androidIncomingGeneration.current;
+    // A retired ring may release only its own prepared lease. A connected
+    // original/consultation keeps the one SIP lease through SDK termination.
+    const active = Object.values(useSipCallStore.getState().activeCalls)
+      .some(call => call.status !== "disconnected");
+    if (!active && preparation.lease && sipMediaLease.current === preparation.lease) {
+      releaseSipMediaOwnership(preparation.lease);
+      sipMediaLease.current = undefined;
+    }
+  }, []);
+
+  const prepareAndroidIncomingMedia = useCallback((callId: string): Promise<MediaLease> => {
+    retireAndroidIncomingMedia();
+    const existing = androidIncomingMedia.current;
+    if (existing?.current()) return existing.task.then(lease => {
+      if (!existing.current() || !phone11MediaOwnership.isCurrent(lease))
+        throw new Error("This incoming call's media ownership changed.");
+      return lease;
+    });
+    const owner = getAuthSnapshot().user;
+    const account = useSipAccountStore.getState().account;
+    const incoming = useSipCallStore.getState().incomingCall;
+    const historyId = incoming?.history?.id;
+    const startedAt = incoming?.startTime?.getTime();
+    const generation = ++androidIncomingGeneration.current;
+    const preparation: AndroidIncomingMediaPreparation = {
+      generation,
+      current: (incomingOnly = true) => {
+        const auth = getAuthSnapshot();
+        const phone = useSipAccountStore.getState().account;
+        const calls = useSipCallStore.getState();
+        const live = calls.incomingCall?.id === callId ? calls.incomingCall
+          : incomingOnly ? undefined : calls.activeCalls[callId];
+        if (androidIncomingMedia.current !== preparation || androidIncomingGeneration.current !== generation ||
+          !owner || auth.loading || auth.user !== owner || !account || phone !== account ||
+          !account.enabled || account.ownerUserId !== owner.id || live?.id !== callId ||
+          (incomingOnly ? live.status !== "incoming" : live.status === "disconnected") ||
+          (live.history?.ownerUserId !== undefined && live.history.ownerUserId !== owner.id)) return false;
+        return historyId ? live.history?.id === historyId
+          : startedAt !== undefined ? live.startTime?.getTime() === startedAt : live === incoming;
+      },
+      // Install the exact record before SDK/coordinator preparation can yield.
+      task: Promise.resolve().then(async () => {
+        let lease: MediaLease | undefined;
+        try {
+          if (!preparation.current() || sipMediaLease.current)
+            throw new Error("This incoming call's media ownership changed.");
+          lease = await prepareSipMediaOwnership(callId);
+          if (!preparation.current() || !phone11MediaOwnership.isCurrent(lease) ||
+            (sipMediaLease.current && sipMediaLease.current !== lease))
+            throw new Error("This incoming call's media ownership changed.");
+          preparation.lease = lease;
+          sipMediaLease.current = lease;
+          return lease;
+        } catch (error) {
+          if (lease) releaseSipMediaOwnership(lease);
+          if (androidIncomingMedia.current === preparation) androidIncomingMedia.current = undefined;
+          throw error;
+        }
+      }),
+    };
+    androidIncomingMedia.current = preparation;
+    return preparation.task;
+  }, [retireAndroidIncomingMedia]);
+
   useEffect(() => {
     const lifecycle = createRegistrationLifecycle({
       snapshot: () => {
@@ -179,14 +266,15 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       }),
     }, Platform.OS !== "web" && AppState.currentState === "active");
     registrationLifecycle.current = lifecycle;
-    const unsubAccount = useSipAccountStore.subscribe(lifecycle.changed);
-    const unsubAuth = addAuthChangeListener(lifecycle.changed);
+    const changed = () => { retireAndroidIncomingMedia(); lifecycle.changed(); };
+    const unsubAccount = useSipAccountStore.subscribe(changed);
+    const unsubAuth = addAuthChangeListener(changed);
     const appState = AppState.addEventListener("change", state => lifecycle.setActive(Platform.OS !== "web" && state === "active"));
     lifecycle.start();
 
     let prevIncomingId: string | null = null;
     const unsubIncoming = useSipCallStore.subscribe((state) => {
-      lifecycle.changed();
+      changed();
       const incomingCall = state.incomingCall;
       if (incomingCall && incomingCall.id !== prevIncomingId) {
         prevIncomingId = incomingCall.id;
@@ -194,14 +282,28 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
         // track and released its audio session. Never display CallKit first.
         void (async () => {
           try {
-            const lease = await prepareSipMediaOwnership(incomingCall.id);
+            const androidTrial = isAndroidForegroundTrial();
+            const lease = androidTrial ? await prepareAndroidIncomingMedia(incomingCall.id)
+              : await prepareSipMediaOwnership(incomingCall.id);
             const current = useSipCallStore.getState().incomingCall;
+            if (androidTrial) {
+              const preparation = androidIncomingMedia.current;
+              if (preparation?.lease !== lease || !preparation.current(false) || !phone11MediaOwnership.isCurrent(lease)) {
+                retireAndroidIncomingMedia();
+                return;
+              }
+              // Another authoritative answer callback may already have moved
+              // this same lifetime to active. Keep its lease without displaying it again.
+              if (!preparation.current()) return;
+            }
             if (current?.id !== incomingCall.id || current.status === "disconnected") {
               releaseSipMediaOwnership(lease);
               return;
             }
-            releaseSipMediaOwnership(sipMediaLease.current);
-            sipMediaLease.current = lease;
+            if (!androidTrial) {
+              releaseSipMediaOwnership(sipMediaLease.current);
+              sipMediaLease.current = lease;
+            }
             nativeCallManager.displayIncomingCall(
               current.id,
               current.remoteNumber,
@@ -228,6 +330,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
+      retireAllAndroidIncomingMedia();
       lifecycle.stop();
       if (registrationLifecycle.current === lifecycle) registrationLifecycle.current = null;
       unsubAccount();
@@ -241,7 +344,7 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
       nativeStackInitialized.current = false;
       nativeStackInitPromise.current = null;
     };
-  }, [loadAccount, ensureNativeStackInitialized]);
+  }, [loadAccount, ensureNativeStackInitialized, prepareAndroidIncomingMedia, retireAndroidIncomingMedia, retireAllAndroidIncomingMedia]);
 
   useEffect(() => {
     const snapshot = () => {
@@ -350,6 +453,19 @@ export function SipProvider({ children }: { children: React.ReactNode }) {
             throw error;
           }
           return;
+        }
+        if (assertCurrent) {
+          try {
+            const lease = await prepareAndroidIncomingMedia(id);
+            assertCurrent();
+            const preparation = androidIncomingMedia.current;
+            if (preparation?.lease !== lease || !preparation.current() ||
+              sipMediaLease.current !== lease || !phone11MediaOwnership.isCurrent(lease))
+              throw new Error("This incoming call's media ownership changed.");
+          } catch (error) {
+            retireAndroidIncomingMedia();
+            throw error;
+          }
         }
         commandStarted?.();
         await sipEngine.answerCall(id, video);

@@ -38,7 +38,7 @@ vi.mock("../lib/sip/diagnostics-store", () => ({ useSipDiagnosticsStore: { getSt
 vi.mock("../lib/sip/registration-lifecycle", () => ({ createRegistrationLifecycle: vi.fn() }));
 vi.mock("../lib/push/enrollment-lifecycle", () => ({ createVoipEnrollmentLifecycle: vi.fn() }));
 vi.mock("../lib/sip/video-runtime", () => ({ getVideoBridge: vi.fn() }));
-vi.mock("../lib/meetings/native-session", () => ({ prepareSipMediaOwnership: m.prepare, releaseSipMediaOwnership: m.release }));
+vi.mock("../lib/meetings/native-session", () => ({ prepareSipMediaOwnership: m.prepare, releaseSipMediaOwnership: m.release, phone11MediaOwnership: { isCurrent: () => true } }));
 vi.mock("../lib/sip/engine", () => ({ sipEngine: { initialize: m.initialize, makeCall: m.makeCall, answerCall: m.answerCall, hangupCall: m.hangupCall } }));
 vi.mock("../lib/sip/siprix-engine", () => ({ siprixEngine: { consultation: vi.fn(), remainingConsultation: vi.fn() } }));
 vi.mock("../lib/sip/native-call", () => ({ nativeCallManager: { initialize: vi.fn(async () => {}),
@@ -168,12 +168,12 @@ it("denied Answer preserves the ringing call and existing lease, and can retry",
   await actions.answerCall("incoming-1");
   expect(m.answerCall).toHaveBeenCalledOnce(); expect(m.answerCall).toHaveBeenCalledWith("incoming-1", undefined);
 });
-it("coalesces repeated Answer taps without acquiring or releasing the ringing lease", async () => {
+it("coalesces repeated Answer taps through one current incoming media preparation", async () => {
   m.incoming = ring(); const permission = deferred<string>(); m.request.mockReturnValue(permission.promise);
   const actions = provider(), first = actions.answerCall("incoming-1"), duplicate = actions.answerCall("incoming-1");
   await vi.waitFor(() => expect(m.request).toHaveBeenCalledOnce()); permission.resolve("granted");
   await Promise.all([first, duplicate]);
-  expect(m.answerCall).toHaveBeenCalledOnce(); expect(m.prepare).not.toHaveBeenCalled(); expect(m.release).not.toHaveBeenCalled();
+  expect(m.answerCall).toHaveBeenCalledOnce(); expect(m.prepare).toHaveBeenCalledOnce(); expect(m.release).not.toHaveBeenCalled();
 });
 it.each(["logout", "owner-replaced", "account-replaced", "terminated", "replaced-id", "replaced-lifetime", "answered"])("does not answer after %s during the prompt", async change => {
   m.incoming = ring(); const permission = deferred<string>(); m.request.mockReturnValue(permission.promise);
