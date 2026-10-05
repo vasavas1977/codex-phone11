@@ -250,7 +250,84 @@ Hosted CI for this follow-up is separate from the earlier failed run. No new
 APK, signed client, real capture, SIP call, provider or physical-device result is
 established by the local checks. The earlier package/runtime pins remain intact.
 
+## Release safeguard follow-up
+
+Desktop packagers now require source-bound native-helper receipts rather than
+accepting only a self-consistent helper manifest. Corrected candidate
+`9aebaa8a88f9af67b0dc2138ff266a2b1b78825a` binds the Windows copied helper and
+runtime libraries, anchored manifest leaf, retained manifest digest and exact
+current source after the final awaited packaging check. macOS checks its existing
+native provenance and linked input receipt against the current source and retained
+SDK inputs. Older helper receipts retain their original revision and cannot be
+retagged to this source. Independent review reproduced and corrected stale HEAD,
+late DLL, copied-parent and manifest replacement paths, then passed 33 focused
+executions on the final candidate. The author and lead each passed all 88 receipt
+and adjacent committed-source cases with no failures or skips. These checks are
+offline fixtures, including the actual Windows success tail; they do not build or
+run a packaged client. Receipt custody, compiler causality and concurrent-writer
+atomicity remain separate limitations. See the
+[desktop helper provenance boundary](DESKTOP-HELPER-SOURCE-PROVENANCE-20261005.md).
+
+The unsigned offline voicemail bundle now packages the existing producer, relay,
+fixed runner and both reviewed Lua helpers without installing or starting them.
+Independent review found an unrecorded compiler-input path; corrected candidate
+`0626809c41451d5f2c7ce4de9e25c917fcaccb79` compiles captured entry bytes only,
+permits actual Node built-ins and refuses additional filesystem dependencies.
+The source-revision field remains a caller-supplied label; the independently
+retained manifest digest and release-operator custody are still required.
+Independent review passed all 76 bundle cases, reproduced refusal of the original
+extra-input case and checked a valid CLI bundle plus negative custody cases.
+The lead integrated the corrected stack and passed 143 bundle, producer,
+durability, helper and lifecycle cases across five files without skips. The
+runtime plan is caller-attested: host/storage/secret/deposit/commissioning and
+rollout acceptance remain false. See the
+[offline bundle boundary](VOICEMAIL-OFFLINE-BUNDLE-20261005.md).
+
+PBX preflight and the locked, before-DDL migration guard now agree on enforced
+base prerequisites: normal persistent relations, exact integer keys, no default
+or generated tenant assignment, validated immediate same-schema foreign-key
+guards, origin-enabled RI triggers, and nondeferrable primary keys with usable
+backing indexes. Independent review caught a deferrable-key false-readiness
+case before integration. Corrected candidate
+`a332322ebce9cc0571a29978a2d1843be513b5f7` passed independent review and all
+117 local PostgreSQL/mock/readiness cases without skips. The lead repeated the
+same 117 cases on the integrated branch using a fresh, task-owned PostgreSQL
+17.11 cluster and stopped it afterward. Actual deferrable-key
+cases now refuse at the initial prerequisite guard before any routing DDL.
+The current SQL/preflight hashes invalidate earlier rehearsal plans; existing
+historical receipts retain their original pins. No legacy schema is silently
+repaired and no production migration is performed. See
+[base prerequisite checks](PBX-BASE-PREREQUISITE-GUARD-20261005.md).
+
+Daily-use CI requires the new voicemail bundle suite, both actual PostgreSQL
+base-prerequisite suites, and the desktop helper receipt suite to execute with
+nonempty, passing assertions and zero skips. The explicit Bash shell preserves
+test-process failure through `tee`; runner and relay inputs trigger both event
+watch lists. Independent review of workflow blob
+`44a97b1bd7a69ab9e0bd388ed35b44bc062ee785` rejected 22 JSON and 19 TAP negative
+fixtures and preserved a synthetic producer exit 17. The lead executed the
+actual PBX report gate against the integrated 57 migration and 23 preflight
+cases. These offline checks are separate from fresh hosted workflow results.
+
+At integrated implementation head
+`3a0a4c7e0296077c06ed90c35b401f51a06cd9ac`, the lead passed 348 executed cases
+across ten focused test files: 143 voicemail, 117 PBX and 88 desktop provenance
+and committed-source cases. All passed without skips. Full repository TypeScript,
+scoped ESLint and backend bundling also passed. ESLint emitted only the existing
+Node configuration-type warning. These current local checks do not retag earlier
+hosted CI, signed mobile builds or desktop packages. Fresh hosted results belong
+to the final pushed revision and are recorded separately in PR 7 and private
+verification receipts.
+
 ## Live and package boundary
+
+After the owner signed in, a fresh read-only portal check confirmed extension
+3001 in the Phone11 workspace, workspace status enabled, and hosting enabled
+for 3001 and 1020 in the Test channel and their direct chat. The deployed admin
+overview still disables advanced phone-system sections. Its voicemail-admin
+route is absent and shows the unmatched-route page. The browser was restored
+to the signed-in admin overview. No settings or memberships were changed;
+these reads do not establish current-source deployment or provider acceptance.
 
 Fresh public reads observed API build `team-chat-media-d41fc504` and static portal
 source `63203c8910ff09ba59eeb6dfcba1f58c769bface`. Neither matches this candidate.
@@ -293,6 +370,15 @@ production SDK credential, formal signing or provider activation is claimed.
    Phone11 scheduling or bot-recording consumer API is verified. Canonical
    privileged SQL and note11 capture Edge Functions are not handset consumer
    endpoints; capture completion does not confer playback/publication authority.
+   The later coordination receipt pins draft shared-platform PR 480 at
+   `3cf250f69a3b3c3da2d3d2a735d9fd41baca4c8e`: private room publication/playback
+   reuses owner-only canonical recording and conversation identities and a
+   scalar object/null SQL descriptor. A fresh read confirmed the same open draft
+   head and its passing publication/playback job; overall hosted checks remain
+   in progress. No deployed authenticated Phone11 consumer endpoint is established.
+   A real custody issuer, constrained gateway principal and reviewed application
+   binding remain prerequisites. Synthetic receipts confer no runtime authority;
+   Phone11 introduces no duplicate chat, event, recording or transcript store.
 5. Confirm SDK production coverage and formal mobile/macOS/Windows distribution,
    then accept exact-build calls, two-phone meeting speech/video, background
    ringing, notifications, reconnect and cleanup. Trial packages and old call
