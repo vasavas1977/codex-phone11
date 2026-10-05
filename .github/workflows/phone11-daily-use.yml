@@ -108,7 +108,8 @@ jobs:
           count = total('tests')
           assert count > 0 and total('pass') == count
           assert all(total(label) == 0 for label in ('fail', 'cancelled', 'skipped', 'todo'))
-          assert 'actual installed micromatch/chokidar resolutions contain this exact maintained patch' in tap
+          installed = re.findall(r'^ok \d+ - actual installed micromatch/chokidar resolutions contain this exact maintained patch$', tap, re.MULTILINE)
+          assert len(installed) == 1, 'Required installed-consumer case must execute exactly once'
           print(f'Installed braces consumer regressions: {count} passed, zero skips')
           PYBRACES
       - name: Test phone readiness, actual call entry, controls, and directory
