@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fsPromises, { mkdtemp, mkdir, writeFile, copyFile, cp, chmod, symlink, rm } from 'node:fs/promises';
-import { writeFileSync, unlinkSync, symlinkSync } from 'node:fs';
+import { writeFileSync, unlinkSync, symlinkSync, renameSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -298,11 +298,16 @@ for (const mutation of ['native-receipt', 'input-receipt', 'sdk-header', 'sdk-ex
   });
 
 
-for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'copied-sdk-dll', 'copied-media-dll', 'copied-extra', 'copied-missing', 'copied-symlink'])
-  test(`actual Windows success tail ${mutation === 'none' ? 'accepts current inputs' : `rejects persistent ${mutation} during final lstat`}`, async () => {
+for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'copied-sdk-dll', 'copied-media-dll', 'copied-extra', 'copied-missing', 'copied-symlink', 'copied-parent-symlink', 'aliased-base'])
+  test(`actual Windows success tail ${mutation === 'none' ? 'accepts current inputs' : mutation === 'aliased-base' ? 'accepts aliased base inputs' : `rejects persistent ${mutation} during final lstat`}`, async () => {
     const f = await fixture(), original = fsPromises.lstat;
     try {
-      const appPath = join(f.root, 'fixture-package'), resources = join(appPath, 'resources');
+      let base = f.root;
+      if (mutation === 'aliased-base') {
+        const actual = join(f.root, 'actual-base'); await mkdir(actual);
+        base = join(f.root, 'base-alias'); await symlink(actual, base);
+      }
+      const appPath = join(base, 'fixture-package'), resources = join(appPath, 'resources');
       const packaged = join(resources, 'phone11'), helperDir = join(packaged, 'helper/win');
       await mkdir(helperDir, { recursive: true });
       const files: Record<string, string> = {};
@@ -330,6 +335,10 @@ for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sd
           if (mutation === 'copied-media-dll') writeFileSync(join(helperDir, 'siprixMedia.dll'), 'changed');
           if (mutation === 'copied-extra') writeFileSync(join(helperDir, 'shadow.dll'), 'unlisted');
           if (mutation === 'copied-missing') unlinkSync(join(helperDir, 'siprix.dll'));
+          if (mutation === 'copied-parent-symlink') {
+            const external = join(f.root, 'outside-helper');
+            renameSync(join(packaged, 'helper'), external); symlinkSync(external, join(packaged, 'helper'));
+          }
           if (mutation === 'copied-symlink') {
             unlinkSync(join(helperDir, 'siprix.dll'));
             symlinkSync(join(f.sdkRoot, 'win/siprix.framework/lib/siprix.dll'), join(helperDir, 'siprix.dll'));
@@ -348,8 +357,11 @@ for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sd
         'verifyPackagedHelper', 'pin', 'readFile', 'join', 'resources', 'lstat', 'appPath', 'process', source.slice(start, end));
       const attempt = tail(provenance, helperExecutable, assertCommittedDesktopSource, f.repoRoot, verifyPackagedHelper,
         pin, fsPromises.readFile, join, resources, fsPromises.lstat, appPath, { stdout: { write: (value: string) => outputs.push(value) } });
-      if (mutation === 'none') { await attempt; assert.deepEqual(outputs, [`${appPath}\n`]); }
+      if (mutation === 'none' || mutation === 'aliased-base') { await attempt; assert.deepEqual(outputs, [`${appPath}\n`]); }
       else { await assert.rejects(attempt); assert.deepEqual(outputs, []); }
       assert.equal(inspected, true, 'mutation boundary actually ran');
+      if (mutation === 'copied-parent-symlink')
+        assert.equal(await verifyPackagedHelper(helperExecutable(packaged, 'win32'), packaged, pin, 'win32'), false,
+          'the loader integrity gate also rejects the persistent parent alias');
     } finally { fsPromises.lstat = original; syncBuiltinESMExports(); await f.cleanup(); }
   });

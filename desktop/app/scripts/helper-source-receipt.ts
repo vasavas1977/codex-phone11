@@ -127,6 +127,7 @@ export async function verifyWindowsHelperSourceReceipt(options: {
       const copiedFiles = { 'phone11_siprix_helper.exe': helper.sha256, 'siprix.dll': vendor['siprix.dll'],
         'siprixMedia.dll': vendor['siprixMedia.dll'] };
       requireValue(isAbsolute(copiedDirectory) && lstatSync(copiedDirectory).isDirectory() &&
+        realpathSync(copiedDirectory) === join(realpathSync(dirname(dirname(copiedDirectory))), 'helper', 'win') &&
         resolve(helperPath) === resolve(join(copiedDirectory, 'phone11_siprix_helper.exe')) &&
         isDeepStrictEqual(readdirSync(copiedDirectory).sort(), Object.keys(copiedFiles).sort()),
         'copied Windows helper inventory mismatch');
