@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { lstat, readFile, readlink, readdir, realpath } from 'node:fs/promises';
+import { lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
@@ -27,6 +28,43 @@ function record(value: unknown, message: string): Record<string, unknown> {
 }
 async function requireDigest(path: string, expected: unknown, message: string): Promise<void> {
   requireValue(hash(expected) && sha(await readFile(path)) === expected, message);
+}
+// No awaits in the final pass: local JavaScript callbacks cannot replace an already checked input.
+// This is still a sequence of filesystem reads, not an atomic snapshot against external writers.
+function requireDigestSync(path: string, expected: unknown, message: string): void {
+  const info = lstatSync(path);
+  requireValue(info.isFile() && info.size > 0 && info.size <= 100_000_000 &&
+    hash(expected) && sha(readFileSync(path)) === expected, message);
+}
+function requireReceiptSync(path: string, bytes: Buffer, message: string): void {
+  const info = lstatSync(path);
+  requireValue(info.isFile() && info.size > 0 && info.size <= 2_000_000 &&
+    sha(readFileSync(path)) === sha(bytes), message);
+}
+function requireTreeSync(root: string, files: Record<string, unknown>, links: Record<string, unknown>): void {
+  const rootReal = realpathSync(root), actualFiles: string[] = [], actualLinks: string[] = [];
+  let bytes = 0;
+  function scan(dir: string): void {
+    for (const entry of readdirSync(dir)) {
+      const path = join(dir, entry), key = relative(root, path).split(sep).join('/'), info = lstatSync(path);
+      if (info.isDirectory()) scan(path);
+      else if (info.isFile()) {
+        bytes += info.size;
+        requireValue(bytes <= 500_000_000, 'final inventory is unbounded');
+        requireDigestSync(path, files[key], `final inventory bytes mismatch: ${key}`);
+        actualFiles.push(key);
+      } else if (info.isSymbolicLink()) {
+        const target = realpathSync(path);
+        requireValue(readlinkSync(path) === links[key] && (target === rootReal || target.startsWith(rootReal + sep)),
+          `final inventory link mismatch: ${key}`);
+        actualLinks.push(key);
+      } else throw new Error('Helper source receipt: unsupported final inventory entry');
+      requireValue(actualFiles.length + actualLinks.length <= 5000, 'final inventory is unbounded');
+    }
+  }
+  scan(root);
+  requireValue(isDeepStrictEqual(actualFiles.sort(), Object.keys(files).sort()) &&
+    isDeepStrictEqual(actualLinks.sort(), Object.keys(links).sort()), 'final inventory set mismatch');
 }
 function sourceBinding(repoRoot: string): { sourceSha: string; assertCurrent(): void; digest(path: string): string } {
   const sourceSha = git(repoRoot, 'rev-parse', 'HEAD');
@@ -79,8 +117,19 @@ export async function verifyWindowsHelperSourceReceipt(options: {
     const info = await lstat(helperPath);
     requireValue(info.isFile() && info.size === helper.bytes, 'helper size mismatch');
     await requireDigest(helperPath, helper.sha256, 'helper bytes mismatch');
+    requireReceiptSync(options.receiptPath, bytes, 'receipt changed during packaging');
+    requireDigestSync(join(options.sdkRoot, 'win/siprix.framework/include/Siprix.h'), inputs.headerSha256, 'SDK header mismatch');
+    for (const name of ['siprix.lib', 'siprix.dll', 'siprixMedia.dll'])
+      requireDigestSync(join(options.sdkRoot, 'win/siprix.framework/lib', name), vendor[name], `SDK input mismatch: ${name}`);
+    requireValue(lstatSync(helperPath).size === helper.bytes, 'helper size mismatch');
+    requireDigestSync(helperPath, helper.sha256, 'helper bytes mismatch');
+    requireValue(git(options.sdkRoot, 'rev-parse', 'HEAD') === options.sdkRevision &&
+      !git(options.sdkRoot, 'status', '--porcelain') &&
+      !git(options.sdkRoot, 'ls-files', '--others', '--'), 'SDK checkout is not pinned and unchanged');
+    source.assertCurrent();
   }
   await assertCurrent();
+  source.assertCurrent();
   return { sourceSha: source.sourceSha, assertCurrent };
 }
 
@@ -177,7 +226,29 @@ export async function verifyMacHelperSourceReceipt(options: {
         'unexpected Mac framework input');
       await requireDigest(join(sdkRoot, 'macos', relative), files[path], 'consumed Mac framework mismatch');
     }
+    requireReceiptSync(options.nativeReceiptPath, nativeBytes, 'Mac receipt changed during packaging');
+    requireReceiptSync(options.inputReceiptPath, inputBytes, 'Mac receipt changed during packaging');
+    for (const path of paths) requireDigestSync(join(options.repoRoot, path), nativeInputs[path], `Mac source changed: ${path}`);
+    requireDigestSync(join(options.repoRoot, 'desktop/native/test_bootstrap.py'), source.digest('desktop/native/test_bootstrap.py'),
+      'Mac bootstrap source changed');
+    requireDigestSync(join(sdkRoot, 'macos/siprix.framework/Headers/SiprixCpp.h'), input.headerSha256, 'Mac SDK header mismatch');
+    requireDigestSync(join(resources, 'helper-integrity.json'), native.manifestSha256, 'Mac full manifest mismatch');
+    requireDigestSync(join(resources, 'config.json'), native.configSha256, 'Mac config bytes mismatch');
+    const helperRoot = join(resources, 'helper/mac');
+    requireValue(realpathSync(helperRoot) === join(realpathSync(resources), 'helper/mac'), 'Mac helper root changed');
+    requireTreeSync(helperRoot, files, links);
+    requireValue(lstatSync(helperPath).size === native.helperBinaryBytes && (lstatSync(helperPath).mode & 0o111) !== 0,
+      'Mac helper size or executable mode mismatch');
+    requireDigestSync(helperPath, native.helperBinarySha256, 'Mac helper bytes mismatch');
+    for (const framework of ['siprix.framework', 'siprixMedia.framework']) {
+      const prefix = frameworkPrefix + framework + '/';
+      requireTreeSync(join(sdkRoot, 'macos', framework),
+        Object.fromEntries(Object.entries(files).filter(([path]) => path.startsWith(prefix)).map(([path, value]) => [path.slice(prefix.length), value])),
+        Object.fromEntries(Object.entries(links).filter(([path]) => path.startsWith(prefix)).map(([path, value]) => [path.slice(prefix.length), value])));
+    }
+    source.assertCurrent();
   }
   await assertCurrent();
+  source.assertCurrent();
   return { sourceSha: source.sourceSha, assertCurrent };
 }

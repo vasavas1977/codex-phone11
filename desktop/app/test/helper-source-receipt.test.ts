@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, copyFile, cp, chmod, symlink, rm } from 'node:fs/promises';
+import fsPromises, { mkdtemp, mkdir, writeFile, copyFile, cp, chmod, symlink, rm } from 'node:fs/promises';
+import { writeFileSync, unlinkSync, symlinkSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -227,3 +229,69 @@ test('Mac rejects absent native receipt without inventing a producer attestation
   const f = await macFixture(); try { await rm(f.nativeReceiptPath); await assert.rejects(verifyMacHelperSourceReceipt(f)); }
   finally { await f.cleanup(); }
 });
+
+
+async function rejectHeadDuringCheck(gate: Awaited<ReturnType<typeof verifyWindowsHelperSourceReceipt>>, repoRoot: string): Promise<void> {
+  const attempt = gate.assertCurrent();
+  queueMicrotask(() => git(repoRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+    'commit', '--allow-empty', '-qm', 'persistent new HEAD during awaits'));
+  await assert.rejects(attempt, /packaging source changed/);
+}
+test('Windows rejects persistent HEAD change during awaited final gate', async () => {
+  const f = await fixture(); try { await rejectHeadDuringCheck(await verifyWindowsHelperSourceReceipt(f), f.repoRoot); }
+  finally { await f.cleanup(); }
+});
+test('Mac rejects persistent HEAD change during awaited final gate', async () => {
+  const f = await macFixture(); try { await rejectHeadDuringCheck(await verifyMacHelperSourceReceipt(f), f.repoRoot); }
+  finally { await f.cleanup(); }
+});
+
+// Mutate only after the last awaited input was read, so earlier checks cannot detect the change.
+async function afterRead(path: string, mutate: () => void, attempt: () => Promise<void>): Promise<void> {
+  const original = fsPromises.readFile;
+  let changed = false;
+  fsPromises.readFile = (async (...args: Parameters<typeof original>) => {
+    const bytes = await original(...args);
+    if (!changed && args[0] === path) { changed = true; mutate(); }
+    return bytes;
+  }) as typeof original;
+  syncBuiltinESMExports();
+  try { await assert.rejects(attempt()); assert.equal(changed, true, 'mutation hook actually ran'); }
+  finally { fsPromises.readFile = original; syncBuiltinESMExports(); }
+}
+for (const mutation of ['receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'helper'])
+  test(`Windows rejects persistent ${mutation} replacement after awaited input checks`, async () => {
+    const f = await fixture(); try {
+      const gate = await verifyWindowsHelperSourceReceipt(f);
+      await afterRead(f.helperPath, () => {
+        if (mutation === 'receipt') writeFileSync(f.receiptPath, '{}');
+        if (mutation === 'sdk-head') git(f.sdkRoot, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+          'commit', '--allow-empty', '-qm', 'persistent SDK HEAD');
+        if (mutation === 'sdk-header') writeFileSync(join(f.sdkRoot, 'win/siprix.framework/include/Siprix.h'), 'changed');
+        if (mutation === 'sdk-dll') writeFileSync(join(f.sdkRoot, 'win/siprix.framework/lib/siprix.dll'), 'changed');
+        if (mutation === 'helper') writeFileSync(f.helperPath, 'changed');
+      }, () => gate.assertCurrent());
+    } finally { await f.cleanup(); }
+  });
+for (const mutation of ['native-receipt', 'input-receipt', 'sdk-header', 'sdk-extra-file', 'sdk-link', 'sdk-framework',
+  'copied-helper', 'copied-config', 'lock'])
+  test(`Mac rejects persistent ${mutation} replacement after awaited input checks`, async () => {
+    const f = await macFixture(); try {
+      const gate = await verifyMacHelperSourceReceipt(f);
+      const lastInput = join(f.input.sdkInputView, 'macos/siprixMedia.framework/siprixMedia');
+      await afterRead(lastInput, () => {
+        if (mutation === 'native-receipt') writeFileSync(f.nativeReceiptPath, '{}');
+        if (mutation === 'input-receipt') writeFileSync(f.inputReceiptPath, '{}');
+        if (mutation === 'sdk-header') writeFileSync(join(f.input.sdkInputView, 'macos/siprix.framework/Headers/SiprixCpp.h'), 'changed');
+        if (mutation === 'sdk-extra-file') writeFileSync(join(f.input.sdkInputView, 'macos/siprix.framework/Headers/memory'), 'shadow include');
+        if (mutation === 'sdk-link') {
+          const link = join(f.input.sdkInputView, 'macos/siprix.framework/alias');
+          unlinkSync(link); symlinkSync('Headers/SiprixCpp.h', link);
+        }
+        if (mutation === 'sdk-framework') writeFileSync(lastInput, 'changed');
+        if (mutation === 'copied-helper') writeFileSync(f.helperPath, 'changed');
+        if (mutation === 'copied-config') writeFileSync(join(f.stageRoot, 'config.json'), '{}');
+        if (mutation === 'lock') writeFileSync(join(f.repoRoot, 'desktop/app/package-lock.json'), 'changed');
+      }, () => gate.assertCurrent());
+    } finally { await f.cleanup(); }
+  });
