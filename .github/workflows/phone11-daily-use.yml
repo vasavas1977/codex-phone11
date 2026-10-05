@@ -33,6 +33,7 @@ on:
       - "scripts/phone11-pbx-*.ts"
       - "package.json"
       - "pnpm-lock.yaml"
+      - "patches/**"
       - "vitest.config.ts"
       - ".github/workflows/phone11-daily-use.yml"
       - ".github/workflows/phone11-siprix-ios-build.yml"
@@ -67,6 +68,7 @@ on:
       - "scripts/phone11-pbx-*.ts"
       - "package.json"
       - "pnpm-lock.yaml"
+      - "patches/**"
       - "vitest.config.ts"
       - ".github/workflows/phone11-daily-use.yml"
 
@@ -88,6 +90,27 @@ jobs:
           corepack prepare pnpm@9.12.0 --activate
       - name: Install locked source dependencies
         run: pnpm install --frozen-lockfile
+      - name: Require maintained braces patch through actual installed consumers
+        shell: bash
+        run: |
+          test "$(pnpm --version)" = "9.12.0"
+          test -f patches/braces@3.0.3.patch
+          test -f tests/phone11-braces-depth-mitigation.test.mjs
+          PHONE11_BRACES_REQUIRE_INSTALLED_PATCH=1 node --test tests/phone11-braces-depth-mitigation.test.mjs | tee "$RUNNER_TEMP/phone11-braces-mitigation.tap"
+          python3 - <<'PYBRACES'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ['RUNNER_TEMP']) / 'phone11-braces-mitigation.tap').read_text()
+          def total(label):
+              values = re.findall(r'^# ' + label + r' (\d+)$', tap, re.MULTILINE)
+              assert len(values) == 1, f'Missing or ambiguous TAP {label}'
+              return int(values[0])
+          count = total('tests')
+          assert count > 0 and total('pass') == count
+          assert all(total(label) == 0 for label in ('fail', 'cancelled', 'skipped', 'todo'))
+          assert 'actual installed micromatch/chokidar resolutions contain this exact maintained patch' in tap
+          print(f'Installed braces consumer regressions: {count} passed, zero skips')
+          PYBRACES
       - name: Test phone readiness, actual call entry, controls, and directory
         run: |
           pnpm exec vitest run \
@@ -134,6 +157,7 @@ jobs:
             lib/meetings/route-exit.test.ts \
             tests/phone11-voicemail-readiness.test.ts \
             tests/phone11-voicemail-producer-durability.test.ts \
+            tests/phone11-voicemail-relay.test.ts \
             tests/phone11-transfer-lifecycle.test.tsx \
             tests/phone11-voicemail-callback.test.tsx \
             server/meetings/meeting-host-removal-router.test.ts \
@@ -264,17 +288,20 @@ jobs:
             tests/phone11-voicemail-readiness.test.ts \
             tests/phone11-voicemail-producer.test.ts \
             tests/phone11-voicemail-producer-durability.test.ts \
+            tests/phone11-voicemail-relay.test.ts \
             tests/phone11-voicemail-lifecycle-rehearsal.test.ts \
             tests/phone11-voicemail-bundle.test.ts \
             --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-voicemail-results.json"
       - name: Test browser sharing and Android Answer media recovery
         run: |
-          for suite in lib/meetings/browser-screen-share.test.ts lib/meetings/web-session.test.ts tests/phone11-meeting-screen-share-ui.test.tsx tests/phone11-android-call-permission.test.ts tests/phone11-android-answer-media.test.ts; do
+          for suite in lib/meetings/browser-screen-share.test.ts lib/meetings/web-session.test.ts lib/meetings/browser-session.test.ts tests/phone11-web-meeting-auth-lifetime.test.ts tests/phone11-meeting-screen-share-ui.test.tsx tests/phone11-android-call-permission.test.ts tests/phone11-android-answer-media.test.ts; do
             test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
           done
           pnpm exec vitest run \
             lib/meetings/browser-screen-share.test.ts \
             lib/meetings/web-session.test.ts \
+            lib/meetings/browser-session.test.ts \
+            tests/phone11-web-meeting-auth-lifetime.test.ts \
             tests/phone11-meeting-screen-share-ui.test.tsx \
             tests/phone11-android-call-permission.test.ts \
             tests/phone11-android-answer-media.test.ts \
@@ -296,8 +323,8 @@ jobs:
           required = {
               "phone11-setup-confirmation-results.json": ["tests/phone11-meet-action.test.tsx", "tests/phone11-admin-voicemail-confirmation.test.tsx"],
               "phone11-transfer-results.json": ["tests/phone11-siprix-engine.test.ts", "tests/phone11-active-call-navigation.test.tsx", "tests/phone11-current-call-banner.test.tsx", "tests/phone11-transfer-lifecycle.test.tsx", "tests/phone11-transfer-screen.test.tsx", "tests/phone11-voicemail-callback.test.tsx"],
-              "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts", "tests/phone11-voicemail-bundle.test.ts"],
-              "phone11-interactive-media-results.json": ["lib/meetings/browser-screen-share.test.ts", "lib/meetings/web-session.test.ts", "tests/phone11-meeting-screen-share-ui.test.tsx", "tests/phone11-android-call-permission.test.ts", "tests/phone11-android-answer-media.test.ts"],
+              "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-relay.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts", "tests/phone11-voicemail-bundle.test.ts"],
+              "phone11-interactive-media-results.json": ["lib/meetings/browser-screen-share.test.ts", "lib/meetings/web-session.test.ts", "lib/meetings/browser-session.test.ts", "tests/phone11-web-meeting-auth-lifetime.test.ts", "tests/phone11-meeting-screen-share-ui.test.tsx", "tests/phone11-android-call-permission.test.ts", "tests/phone11-android-answer-media.test.ts"],
           }
           for report_name, suites in required.items():
               report = json.loads((Path(os.environ["RUNNER_TEMP"]) / report_name).read_text())
