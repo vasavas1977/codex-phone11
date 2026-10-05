@@ -267,12 +267,19 @@ inline ErrorCode Call_TransferAttended(ISiprixModule* m, CallId original, CallId
   return ErrorCode::EOK;
 }
 inline unsigned transferInvocations = 0;
+#ifdef PHONE11_FAKE_TRANSFER_AFTER_END
+// Only the End-race protocol fixture uses this flag. Call_Bye releases the
+// exact pending callback after termination and any replacement incoming call.
+inline CallId deferredTransferCall = 0;
+#endif
 inline ErrorCode Call_TransferBlind(ISiprixModule* m, CallId id, const char*) {
   if (id != 200 || !m->accepted || m->held) return ErrorCode::ENotIncoming;
 #ifdef PHONE11_FAKE_TRANSFER_REFUSED
   return ++transferInvocations == 1 ? ErrorCode::ENotIncoming : ErrorCode::EOK;
 #endif
-#ifdef PHONE11_FAKE_TRANSFER_SYNC
+#ifdef PHONE11_FAKE_TRANSFER_AFTER_END
+  deferredTransferCall = id;
+#elif defined(PHONE11_FAKE_TRANSFER_SYNC)
   if (transferredCallback) transferredCallback(id, 0);
 #else
 #ifndef PHONE11_FAKE_TRANSFER_DROP
@@ -339,6 +346,17 @@ inline ErrorCode Call_Bye(ISiprixModule* m, CallId id) {
   if (incomingCallback) incomingCallback(id, 1, false, "private-from", "private-to");
 #elif defined(PHONE11_FAKE_TRANSFER_NEW_CALL)
   if (incomingCallback) incomingCallback(id + 1, 1, false, "private-from", "private-to");
+#endif
+#ifdef PHONE11_FAKE_TRANSFER_AFTER_END
+  if (deferredTransferCall == id && transferredCallback) {
+    deferredTransferCall = 0;
+    unsigned delivered = 0;
+    transferredCallback(id, 0); ++delivered;
+    transferredCallback(id, 0); ++delivered; // duplicate retired lifetime
+    transferredCallback(id + 1, 0); ++delivered; // wrong/new incoming lifetime
+    // A test-only receipt proves the suppression assertions are not vacuous.
+    std::fprintf(stderr, "transferAfterEndCallbacks=%u\n", delivered);
+  }
 #endif
   return ErrorCode::EOK;
 }
