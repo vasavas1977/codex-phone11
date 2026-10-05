@@ -62,6 +62,13 @@ type RelationRow = {
   has_inheritance: boolean;
 };
 
+type BasePrerequisiteRow = {
+  tenant_column_ready: boolean | null;
+  primary_keys_ready: boolean | null;
+  tenant_fk_ready: boolean | null;
+  origin_session_ready: boolean | null;
+};
+
 type RoutingIndexRow = {
   table_name: string;
   index_name: string;
@@ -348,7 +355,7 @@ export async function inspectPbxSchema(
   ])];
   let transactionStarted = false;
   try {
-    await client.query("BEGIN TRANSACTION READ ONLY");
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     transactionStarted = true;
     const columnsResult = await client.query<ColumnRow>(
       `
@@ -368,6 +375,55 @@ export async function inspectPbxSchema(
         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname=pg_catalog.current_schema() AND c.relname=ANY($1::text[])`,
       [[...new Set([...Object.keys(baseSchema), ...Object.keys(advancedSchema)])]],
+    );
+    // One catalog snapshot; this observation does not reserve a future migration.
+    const basePrerequisiteResult = await client.query<BasePrerequisiteRow>(
+      `WITH base AS (
+          SELECT e.oid AS extensions_oid,t.oid AS tenants_oid,
+                 ei.attnum AS extension_id,ti.attnum AS tenants_id,et.attnum AS tenant_id,
+                 et.attnotnull,et.attidentity,et.attgenerated
+          FROM pg_catalog.pg_namespace n
+          JOIN pg_catalog.pg_class e ON e.relnamespace=n.oid AND e.relname='extensions'
+          JOIN pg_catalog.pg_class t ON t.relnamespace=n.oid AND t.relname='tenants'
+          LEFT JOIN pg_catalog.pg_attribute ei ON ei.attrelid=e.oid AND ei.attname='id'
+            AND NOT ei.attisdropped AND ei.atttypid='pg_catalog.int4'::pg_catalog.regtype
+          LEFT JOIN pg_catalog.pg_attribute ti ON ti.attrelid=t.oid AND ti.attname='id'
+            AND NOT ti.attisdropped AND ti.atttypid='pg_catalog.int4'::pg_catalog.regtype
+          LEFT JOIN pg_catalog.pg_attribute et ON et.attrelid=e.oid AND et.attname='tenant_id'
+            AND NOT et.attisdropped AND et.atttypid='pg_catalog.int4'::pg_catalog.regtype
+          WHERE n.nspname=pg_catalog.current_schema()
+        )
+        SELECT b.tenant_id IS NOT NULL AND b.attnotnull
+               AND b.attidentity='' AND b.attgenerated=''
+               AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d
+                 WHERE d.adrelid=b.extensions_oid AND d.adnum=b.tenant_id) AS tenant_column_ready,
+               EXISTS (SELECT 1 FROM pg_catalog.pg_constraint p
+                 WHERE p.conrelid=b.extensions_oid AND p.contype='p'
+                   AND p.conkey=ARRAY[b.extension_id]::smallint[] AND p.convalidated)
+               AND EXISTS (SELECT 1 FROM pg_catalog.pg_constraint p
+                 WHERE p.conrelid=b.tenants_oid AND p.contype='p'
+                   AND p.conkey=ARRAY[b.tenants_id]::smallint[] AND p.convalidated) AS primary_keys_ready,
+               (SELECT count(*)=1 FROM pg_catalog.pg_constraint f
+                 WHERE f.conrelid=b.extensions_oid AND f.contype='f' AND b.tenant_id=ANY(f.conkey))
+               AND EXISTS (
+                 SELECT 1 FROM pg_catalog.pg_constraint f
+                 WHERE f.conrelid=b.extensions_oid AND f.contype='f'
+                   AND f.confrelid=b.tenants_oid AND f.conkey=ARRAY[b.tenant_id]::smallint[]
+                   AND f.confkey=ARRAY[b.tenants_id]::smallint[] AND f.convalidated
+                   AND NOT f.condeferrable AND f.confupdtype='a' AND f.confdeltype='a'
+                   AND (SELECT count(*)=4 AND pg_catalog.bool_and(
+                     tr.tgisinternal AND tr.tgenabled IN ('O','A') AND pn.nspname='pg_catalog'
+                     AND ((tr.tgrelid=b.extensions_oid AND tr.tgtype=5 AND fn.proname='RI_FKey_check_ins')
+                       OR (tr.tgrelid=b.extensions_oid AND tr.tgtype=17 AND fn.proname='RI_FKey_check_upd')
+                       OR (tr.tgrelid=b.tenants_oid AND tr.tgtype=9 AND fn.proname='RI_FKey_noaction_del')
+                       OR (tr.tgrelid=b.tenants_oid AND tr.tgtype=17 AND fn.proname='RI_FKey_noaction_upd')))
+                     FROM pg_catalog.pg_trigger tr
+                     JOIN pg_catalog.pg_proc fn ON fn.oid=tr.tgfoid
+                     JOIN pg_catalog.pg_namespace pn ON pn.oid=fn.pronamespace
+                     WHERE tr.tgconstraint=f.oid)
+               ) AS tenant_fk_ready,
+               pg_catalog.current_setting('session_replication_role')='origin' AS origin_session_ready
+        FROM base b`,
     );
     const routingIndexesResult = await client.query<RoutingIndexRow>(
       `
@@ -448,6 +504,16 @@ export async function inspectPbxSchema(
 
     const rows = columnsResult.rows;
     const baseIssues = checkColumns(rows, baseSchema);
+    const prerequisite = basePrerequisiteResult.rows.length === 1
+      ? basePrerequisiteResult.rows[0] : undefined;
+    for (const [field, issue] of [
+      ["tenant_column_ready", "extensions.tenant_id:prerequisite"],
+      ["primary_keys_ready", "base:primary_keys"],
+      ["tenant_fk_ready", "extensions.tenant_id:effective_foreign_key"],
+      ["origin_session_ready", "base:session_replication_role"],
+    ] as const) {
+      if (prerequisite?.[field] !== true) baseIssues.push(issue);
+    }
     const phoneConfigIssues = checkColumns(rows, phoneConfigSchema);
     const relations = new Map(relationsResult.rows.map((row) => [row.table_name, row]));
     const relationIssue = (table: string) => {

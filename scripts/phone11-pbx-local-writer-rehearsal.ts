@@ -183,14 +183,17 @@ async function main() {
       CREATE TABLE pbx_unsafe_order.tenants(id INTEGER PRIMARY KEY);
       CREATE TABLE pbx_unsafe_order.extensions(id INTEGER PRIMARY KEY,tenant_id INTEGER DEFAULT 1,
         extension_number TEXT NOT NULL,display_name TEXT,deleted_at TIMESTAMPTZ)`);
-    await runMigration(advanced, { database: config.database, schema: "pbx_unsafe_order" });
+    await assert.rejects(
+      runMigration(advanced, { database: config.database, schema: "pbx_unsafe_order" }),
+      (error: unknown) => (error as { code?: string }).code === "55000",
+    );
     const unsafe = (await operator.query(`SELECT a.attnotnull,pg_get_expr(d.adbin,d.adrelid) default_expression,
       to_regclass('pbx_unsafe_order.ivr_menus') IS NOT NULL advanced_installed,
       (SELECT count(*)::int FROM pg_constraint c WHERE c.conrelid=a.attrelid AND c.contype='f') tenant_fks
       FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
       WHERE a.attrelid='pbx_unsafe_order.extensions'::regclass AND a.attname='tenant_id'`)).rows[0];
-    assert.deepEqual(unsafe, { attnotnull: false, default_expression: "1", advanced_installed: true, tenant_fks: 0 });
-    record("raw advanced SQL accepts legacy base prestate; prerequisite preflight/operator gate remains required", "observed_gap");
+    assert.deepEqual(unsafe, { attnotnull: false, default_expression: "1", advanced_installed: false, tenant_fks: 0 });
+    record("raw advanced SQL refuses legacy base prestate before DDL", "passed", "55000");
     await operator.query("DROP SCHEMA pbx_unsafe_order CASCADE");
     assert.deepEqual(await catalog(operator), before);
     assert.equal((await operator.query("SELECT to_regclass('public.ivr_menus') name")).rows[0].name, null);

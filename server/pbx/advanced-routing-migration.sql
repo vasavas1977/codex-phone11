@@ -29,6 +29,7 @@ DECLARE
   advanced_kind "char";
   advanced_persistence "char";
   advanced_partition boolean;
+  base_prerequisite record;
 BEGIN
   actual_schema := pg_catalog.current_schema();
   PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
@@ -78,6 +79,62 @@ BEGIN
      WHERE c.oid IN (extensions_oid, tenants_oid) AND c.relispartition
   ) THEN
     RAISE EXCEPTION 'Phone11 advanced PBX migration refuses inherited or partitioned base tables'
+      USING ERRCODE = '55000';
+  END IF;
+  -- Observe the same base prerequisite as the read-only preflight, now under
+  -- exact relation locks. Refuse unsafe ordering; never repair the base here.
+  WITH base AS (
+          SELECT e.oid AS extensions_oid,t.oid AS tenants_oid,
+                 ei.attnum AS extension_id,ti.attnum AS tenants_id,et.attnum AS tenant_id,
+                 et.attnotnull,et.attidentity,et.attgenerated
+          FROM pg_catalog.pg_namespace n
+          JOIN pg_catalog.pg_class e ON e.relnamespace=n.oid AND e.relname='extensions'
+          JOIN pg_catalog.pg_class t ON t.relnamespace=n.oid AND t.relname='tenants'
+          LEFT JOIN pg_catalog.pg_attribute ei ON ei.attrelid=e.oid AND ei.attname='id'
+            AND NOT ei.attisdropped AND ei.atttypid='pg_catalog.int4'::pg_catalog.regtype
+          LEFT JOIN pg_catalog.pg_attribute ti ON ti.attrelid=t.oid AND ti.attname='id'
+            AND NOT ti.attisdropped AND ti.atttypid='pg_catalog.int4'::pg_catalog.regtype
+          LEFT JOIN pg_catalog.pg_attribute et ON et.attrelid=e.oid AND et.attname='tenant_id'
+            AND NOT et.attisdropped AND et.atttypid='pg_catalog.int4'::pg_catalog.regtype
+          WHERE n.nspname=expected_schema
+        )
+        SELECT b.tenant_id IS NOT NULL AND b.attnotnull
+               AND b.attidentity='' AND b.attgenerated=''
+               AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d
+                 WHERE d.adrelid=b.extensions_oid AND d.adnum=b.tenant_id) AS tenant_column_ready,
+               EXISTS (SELECT 1 FROM pg_catalog.pg_constraint p
+                 WHERE p.conrelid=b.extensions_oid AND p.contype='p'
+                   AND p.conkey=ARRAY[b.extension_id]::smallint[] AND p.convalidated)
+               AND EXISTS (SELECT 1 FROM pg_catalog.pg_constraint p
+                 WHERE p.conrelid=b.tenants_oid AND p.contype='p'
+                   AND p.conkey=ARRAY[b.tenants_id]::smallint[] AND p.convalidated) AS primary_keys_ready,
+               (SELECT count(*)=1 FROM pg_catalog.pg_constraint f
+                 WHERE f.conrelid=b.extensions_oid AND f.contype='f' AND b.tenant_id=ANY(f.conkey))
+               AND EXISTS (
+                 SELECT 1 FROM pg_catalog.pg_constraint f
+                 WHERE f.conrelid=b.extensions_oid AND f.contype='f'
+                   AND f.confrelid=b.tenants_oid AND f.conkey=ARRAY[b.tenant_id]::smallint[]
+                   AND f.confkey=ARRAY[b.tenants_id]::smallint[] AND f.convalidated
+                   AND NOT f.condeferrable AND f.confupdtype='a' AND f.confdeltype='a'
+                   AND (SELECT count(*)=4 AND pg_catalog.bool_and(
+                     tr.tgisinternal AND tr.tgenabled IN ('O','A') AND pn.nspname='pg_catalog'
+                     AND ((tr.tgrelid=b.extensions_oid AND tr.tgtype=5 AND fn.proname='RI_FKey_check_ins')
+                       OR (tr.tgrelid=b.extensions_oid AND tr.tgtype=17 AND fn.proname='RI_FKey_check_upd')
+                       OR (tr.tgrelid=b.tenants_oid AND tr.tgtype=9 AND fn.proname='RI_FKey_noaction_del')
+                       OR (tr.tgrelid=b.tenants_oid AND tr.tgtype=17 AND fn.proname='RI_FKey_noaction_upd')))
+                     FROM pg_catalog.pg_trigger tr
+                     JOIN pg_catalog.pg_proc fn ON fn.oid=tr.tgfoid
+                     JOIN pg_catalog.pg_namespace pn ON pn.oid=fn.pronamespace
+                     WHERE tr.tgconstraint=f.oid)
+               ) AS tenant_fk_ready,
+               pg_catalog.current_setting('session_replication_role')='origin' AS origin_session_ready
+        INTO base_prerequisite
+        FROM base b;
+  IF base_prerequisite.tenant_column_ready IS DISTINCT FROM true
+     OR base_prerequisite.primary_keys_ready IS DISTINCT FROM true
+     OR base_prerequisite.tenant_fk_ready IS DISTINCT FROM true
+     OR base_prerequisite.origin_session_ready IS DISTINCT FROM true THEN
+    RAISE EXCEPTION 'Phone11 advanced PBX migration requires enforced extension tenant prerequisites'
       USING ERRCODE = '55000';
   END IF;
   -- CREATE TABLE IF NOT EXISTS does not validate an existing relation. Lock
@@ -307,6 +364,7 @@ DECLARE
   advanced_kind "char";
   advanced_persistence "char";
   advanced_partition boolean;
+  base_prerequisite record;
   guarded_index record;
   index_ok boolean;
 BEGIN

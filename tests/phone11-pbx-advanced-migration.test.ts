@@ -48,6 +48,15 @@ describe("advanced PBX migration contract", () => {
       expect(sql).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
     }
 
+    const preflight = await readFile(new URL("../scripts/phone11-pbx-schema-preflight.ts", import.meta.url), "utf8");
+    const catalogQuery = (source: string) => source.slice(source.indexOf("WITH base AS ("), source.indexOf("FROM base b") + "FROM base b".length)
+      .replace("INTO base_prerequisite", "")
+      .replace("n.nspname=expected_schema", "n.nspname=pg_catalog.current_schema()")
+      .replace(/\s+/g, " ").trim();
+    expect(catalogQuery(sql)).toBe(catalogQuery(preflight));
+    expect(sql.indexOf("IF base_prerequisite.tenant_column_ready")).toBeLessThan(sql.indexOf("ALTER TABLE extensions ADD COLUMN"));
+    expect(sql.indexOf("LOCK TABLE %I.extensions")).toBeLessThan(sql.indexOf("WITH base AS ("));
+
     expect(sql).toContain("REFERENCES tenants(id) ON DELETE CASCADE");
     expect(sql).toContain("REFERENCES extensions(id) ON DELETE CASCADE");
     expect(sql).toContain("phone11_validate_advanced_pbx_member");
@@ -703,4 +712,108 @@ describe.skipIf(!connectionString)("advanced PBX migration target hardening", ()
       expect(catalog.rows[0].n).toBe(0);
     });
   }, 15000);
+});
+
+describe.skipIf(!connectionString)("enforced base prerequisite boundary", () => {
+  const admin = new Pool({ connectionString, ssl: false });
+  afterAll(async () => { await admin.end(); });
+
+  async function fixture(run: (client: PoolClient, schema: string) => Promise<void>) {
+    const schema = `pbx_base_guard_${randomBytes(8).toString("hex")}`;
+    const client = await admin.connect();
+    try {
+      await client.query(`CREATE SCHEMA ${schema}; SET search_path=${schema};
+        SET phone11.expected_database='phone11_pbx_test'; SET phone11.expected_schema='${schema}';
+        CREATE TABLE tenants(id integer PRIMARY KEY, alternate integer UNIQUE);
+        CREATE TABLE extensions(id integer PRIMARY KEY, tenant_id integer NOT NULL,
+          extension_number text NOT NULL, display_name text, deleted_at timestamptz,
+          CONSTRAINT tenant_fk FOREIGN KEY(tenant_id) REFERENCES tenants(id));`);
+      await run(client, schema);
+    } finally {
+      await client.query("ROLLBACK; SET session_replication_role=origin; SET search_path=public");
+      await client.query(`DROP SCHEMA ${schema} CASCADE; DROP SCHEMA IF EXISTS ${schema}_other CASCADE`);
+      client.release();
+    }
+  }
+
+  async function baseCatalog(client: PoolClient) {
+    return (await client.query(`SELECT
+      (SELECT jsonb_agg(row(a.attname,a.atttypid,a.attnotnull,a.attidentity,a.attgenerated,
+        pg_get_expr(d.adbin,d.adrelid)) ORDER BY a.attnum) FROM pg_attribute a
+        LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+        WHERE a.attrelid='extensions'::regclass AND a.attnum>0 AND NOT a.attisdropped) columns,
+      (SELECT jsonb_agg(row(c.oid,c.xmin::text,pg_get_constraintdef(c.oid)) ORDER BY c.oid)
+        FROM pg_constraint c WHERE c.conrelid IN ('extensions'::regclass,'tenants'::regclass)) constraints,
+      (SELECT jsonb_agg(row(t.oid,t.tgenabled) ORDER BY t.oid) FROM pg_trigger t
+        WHERE t.tgrelid IN ('extensions'::regclass,'tenants'::regclass)) triggers`)).rows[0];
+  }
+
+  it.each([
+    ["legacy default with NOT NULL", "ALTER TABLE extensions ALTER COLUMN tenant_id SET DEFAULT 1"],
+    ["NOT NULL legacy default without FK", "ALTER TABLE extensions DROP CONSTRAINT tenant_fk; ALTER TABLE extensions ALTER COLUMN tenant_id SET DEFAULT 1"],
+    ["nullable legacy default without FK", "ALTER TABLE extensions DROP CONSTRAINT tenant_fk; ALTER TABLE extensions ALTER COLUMN tenant_id DROP NOT NULL; ALTER TABLE extensions ALTER COLUMN tenant_id SET DEFAULT 1"],
+    ["missing FK", "ALTER TABLE extensions DROP CONSTRAINT tenant_fk"],
+    ["unvalidated FK", "ALTER TABLE extensions DROP CONSTRAINT tenant_fk; ALTER TABLE extensions ADD CONSTRAINT tenant_fk FOREIGN KEY(tenant_id) REFERENCES tenants(id) NOT VALID"],
+    ["wrong referenced schema", "CREATE SCHEMA OTHER_SCHEMA; CREATE TABLE OTHER_SCHEMA.tenants(id integer PRIMARY KEY); ALTER TABLE extensions DROP CONSTRAINT tenant_fk; ALTER TABLE extensions ADD CONSTRAINT tenant_fk FOREIGN KEY(tenant_id) REFERENCES OTHER_SCHEMA.tenants(id)"],
+    ["wrong referenced column", "ALTER TABLE extensions DROP CONSTRAINT tenant_fk; ALTER TABLE extensions ADD CONSTRAINT tenant_fk FOREIGN KEY(tenant_id) REFERENCES tenants(alternate)"],
+    ["deferrable FK", "ALTER TABLE extensions ALTER CONSTRAINT tenant_fk DEFERRABLE"],
+    ["cascading FK", "ALTER TABLE extensions DROP CONSTRAINT tenant_fk; ALTER TABLE extensions ADD CONSTRAINT tenant_fk FOREIGN KEY(tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"],
+    ["disabled child RI", "ALTER TABLE extensions DISABLE TRIGGER ALL"],
+    ["disabled parent RI", "ALTER TABLE tenants DISABLE TRIGGER ALL"],
+    ["replica-only RI", "DO $$DECLARE n text; BEGIN FOR n IN SELECT tgname FROM pg_trigger WHERE tgrelid='extensions'::regclass LOOP EXECUTE format('ALTER TABLE extensions ENABLE REPLICA TRIGGER %I',n); END LOOP; END$$"],
+    ["duplicate tenant FK", "ALTER TABLE extensions ADD CONSTRAINT duplicate_fk FOREIGN KEY(tenant_id) REFERENCES tenants(id)"],
+    ["missing extension PK", "ALTER TABLE extensions DROP CONSTRAINT extensions_pkey"],
+    ["replica session", "SET session_replication_role=replica"],
+  ])("preflight and raw SQL refuse %s without base repair or advanced DDL", async (_name, mutation) => {
+    await fixture(async (client, schema) => {
+      await client.query(mutation.replaceAll("OTHER_SCHEMA", `${schema}_other`));
+      const before = await baseCatalog(client);
+      const { inspectPbxSchema } = await import("../scripts/phone11-pbx-schema-preflight");
+      expect((await inspectPbxSchema(client)).base.status).toBe("incompatible");
+      await expect(client.query(await readFile(migrationUrl, "utf8"))).rejects.toMatchObject({ code: "55000" });
+      await client.query("ROLLBACK");
+      expect(await baseCatalog(client)).toEqual(before);
+      expect((await client.query("SELECT to_regclass('ivr_menus') name")).rows[0].name).toBeNull();
+    });
+  });
+
+  it("accepts ALWAYS-enabled RI enforcement and preserves exact valid FK on replay", async () => {
+    await fixture(async (client) => {
+      await client.query(`DO $$DECLARE n text; r text; BEGIN
+        FOR n,r IN SELECT tgname,c.relname FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+          WHERE t.tgconstraint=(SELECT oid FROM pg_constraint WHERE conrelid='extensions'::regclass AND conname='tenant_fk')
+        LOOP EXECUTE format('ALTER TABLE %I ENABLE ALWAYS TRIGGER %I',r,n); END LOOP; END$$`);
+      const before = (await client.query("SELECT oid,xmin::text FROM pg_constraint WHERE conrelid='extensions'::regclass AND conname='tenant_fk'")).rows[0];
+      const { inspectPbxSchema } = await import("../scripts/phone11-pbx-schema-preflight");
+      expect((await inspectPbxSchema(client)).base.status).toBe("compatible");
+      const sql = await readFile(migrationUrl, "utf8");
+      await client.query(sql); await client.query(sql);
+      expect((await client.query("SELECT oid,xmin::text FROM pg_constraint WHERE conrelid='extensions'::regclass AND conname='tenant_fk'")).rows[0]).toEqual(before);
+    });
+  });
+
+  it("rechecks a concurrently committed default after waiting for the base lock", async () => {
+    await fixture(async (client, schema) => {
+      const mutator = await admin.connect();
+      try {
+        await mutator.query(`BEGIN; ALTER TABLE ${schema}.extensions ALTER COLUMN tenant_id SET DEFAULT 1`);
+        const pid = (await client.query("SELECT pg_backend_pid() pid")).rows[0].pid;
+        const migration = client.query(await readFile(migrationUrl, "utf8"));
+        const outcome = migration.then(() => null, (error: unknown) => error);
+        const deadline = Date.now() + 2500;
+        let blocked = false;
+        while (Date.now() < deadline) {
+          const result = await mutator.query("SELECT cardinality(pg_blocking_pids($1))>0 blocked", [pid]);
+          if (result.rows[0].blocked) { blocked = true; break; }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(blocked).toBe(true);
+        await mutator.query("COMMIT");
+        expect(await outcome).toMatchObject({ code: "55000" });
+        await client.query("ROLLBACK");
+        expect((await client.query("SELECT to_regclass('ivr_menus') name")).rows[0].name).toBeNull();
+        expect((await client.query("SELECT column_default FROM information_schema.columns WHERE table_schema=$1 AND table_name='extensions' AND column_name='tenant_id'", [schema])).rows[0].column_default).toBe("1");
+      } finally { await mutator.query("ROLLBACK"); mutator.release(); }
+    });
+  });
 });

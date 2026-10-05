@@ -40,6 +40,11 @@ function columnRows(
   );
 }
 
+const validPrerequisite = {
+  tenant_column_ready: true, primary_keys_ready: true,
+  tenant_fk_ready: true, origin_session_ready: true,
+};
+
 function mockClient(
   columnResult: QueryResultRow[],
   relationOverrides: Record<string, Partial<{
@@ -47,6 +52,7 @@ function mockClient(
   }>> = {},
 ) {
   const query = vi.fn(async (sql: string) => {
+    if (sql.includes("AS tenant_column_ready")) return { rows: [validPrerequisite] };
     if (sql.includes("information_schema.columns"))
       return { rows: columnResult };
     if (sql.includes("c.relkind AS relkind"))
@@ -77,10 +83,35 @@ describe("PBX schema preflight", () => {
       advanced: { status: "absent", presentTables: [], issues: [] },
     });
     expect(result.advanced.missingTables).toEqual(Object.keys(advancedSchema));
-    expect(database.query.mock.calls[0][0]).toBe("BEGIN TRANSACTION READ ONLY");
+    expect(database.query.mock.calls[0][0]).toBe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     expect(database.query.mock.calls.at(-1)?.[0]).toBe("ROLLBACK");
     for (const [sql] of database.query.mock.calls.slice(1, -1))
-      expect(sql.trim()).toMatch(/^SELECT/i);
+      expect(sql.trim()).toMatch(/^(SELECT|WITH)\b/i);
+  });
+
+  it.each([
+    ["tenant_column_ready", "extensions.tenant_id:prerequisite"],
+    ["primary_keys_ready", "base:primary_keys"],
+    ["tenant_fk_ready", "extensions.tenant_id:effective_foreign_key"],
+    ["origin_session_ready", "base:session_replication_role"],
+  ] as const)("fails closed when %s is not exactly true", async (field, issue) => {
+    for (const invalid of [false, null, undefined, "true"]) {
+      const database = mockClient(columnRows(requiredSchema));
+      const original = database.query.getMockImplementation()!;
+      database.query.mockImplementation(async (sql) => sql.includes("AS tenant_column_ready")
+        ? { rows: [{ ...validPrerequisite, [field]: invalid }] } as never : original(sql));
+      const result = await inspectPbxSchema(database as never);
+      expect(result.base.issues).toContain(issue);
+      expect(result.overall).toBe("incompatible");
+    }
+  });
+
+  it.each([{ rows: [] }, { rows: [validPrerequisite, validPrerequisite] }])("refuses missing or ambiguous prerequisite rows %j", async ({ rows }) => {
+    const database = mockClient(columnRows(requiredSchema));
+    const original = database.query.getMockImplementation()!;
+    database.query.mockImplementation(async (sql) => sql.includes("AS tenant_column_ready")
+      ? { rows } as never : original(sql));
+    expect((await inspectPbxSchema(database as never)).base.status).toBe("incompatible");
   });
 
   it("reports missing or mistyped base columns and a partial advanced schema as incompatible", async () => {
