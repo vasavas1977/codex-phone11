@@ -1,4 +1,4 @@
-import { Alert, Pressable } from "react-native";
+import { Alert, Platform, Pressable } from "react-native";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { router } from "expo-router";
 import { useAuth } from "@/hooks/use-auth";
@@ -26,13 +26,16 @@ export function MeetAction() {
   const unavailableReason = capabilities.data?.available === false
     ? capabilities.data.reason
     : undefined;
+  const webSetup = Platform.OS === "web";
   const label = available
     ? "Meet"
-    : checking
-      ? "Checking meeting availability"
-      : capabilities.error
-        ? "Retry meeting availability"
-        : "Open meeting setup";
+    : webSetup
+      ? "Open meeting setup"
+      : checking
+        ? "Checking meeting availability"
+        : capabilities.error
+          ? "Retry meeting availability"
+          : "Open meeting setup";
 
   // Native alerts retain callbacks after this render. A new sign-in (even for
   // the same account) or replacement workspace must retire every old action.
@@ -51,7 +54,9 @@ export function MeetAction() {
 
   const onPress = () => {
     if (!currentContext()) return;
-    if (available) {
+    // React Native Web's Alert is a no-op. The setup route presents its own
+    // availability state and keeps hosting/admission checks authoritative.
+    if (webSetup || available) {
       openSetup();
       return;
     }
@@ -99,9 +104,11 @@ export function MeetAction() {
       accessibilityLabel={label}
       accessibilityHint={available
         ? "Open meeting setup and your available video meetings."
-        : checking
-          ? "Show meeting availability, retry the check, or open meeting setup."
-          : "Show meeting availability or open setup to choose a channel and participants. Joining and hosting are checked separately."}
+        : webSetup
+          ? "Open meeting setup to choose a channel and participants. Joining and hosting are checked separately."
+          : checking
+            ? "Show meeting availability, retry the check, or open meeting setup."
+            : "Show meeting availability or open setup to choose a channel and participants. Joining and hosting are checked separately."}
       accessibilityState={{ busy: checking }}
       onPress={onPress}
       style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}

@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { MeetAction } from "../components/meet-action";
 const { renderToStaticMarkup } = createRequire(import.meta.url)("react-dom/server");
 const state = vi.hoisted(() => ({
+  platform: "ios",
   user: { id: 1 } as { id: number } | null,
   currentUser: null as { id: number } | null,
   authLoading: false,
@@ -23,6 +24,7 @@ vi.mock("../lib/trpc", () => ({
 }));
 vi.mock("expo-router", () => ({ router: { push: state.push } }));
 vi.mock("react-native", () => ({
+  Platform: { get OS() { return state.platform; } },
   Alert: { alert: state.alert },
   Pressable: ({ children, accessibilityLabel }: any) => createElement("button", { "aria-label": accessibilityLabel }, children),
 }));
@@ -30,6 +32,7 @@ vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: ({ name }: any) => 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.platform = "ios";
   state.user = { id: 1 };
   state.currentUser = state.user;
   state.authLoading = false;
@@ -183,5 +186,40 @@ describe.each(replacements)("retained actions after %s", (_name, replace) => {
     oldRetry();
     expect(state.push).not.toHaveBeenCalled();
     expect(state.result.refetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("web meeting setup entry", () => {
+  it.each(["available", "unavailable", "loading", "error"])("opens setup directly with truthful accessibility during %s", status => {
+    state.platform = "web";
+    state.result = { data: { available: status === "available" || status === "loading" || status === "error" },
+      isFetching: status === "loading", error: status === "error" ? new Error("offline") : undefined, refetch: vi.fn() };
+    const props = pressableProps();
+    expect(props.accessibilityLabel).toBe(status === "available" ? "Meet" : "Open meeting setup");
+    expect(props.accessibilityHint).toContain("Open meeting setup");
+    if (status !== "available") {
+      expect(props.accessibilityHint).toContain("Joining and hosting are checked separately");
+      expect(props.accessibilityHint).not.toMatch(/retry|available video meetings|Show/i);
+    }
+    expect(props.accessibilityState?.busy).toBe(status === "loading");
+    props.onPress();
+    expect(state.push).toHaveBeenCalledOnce();
+    expect(state.push).toHaveBeenCalledWith("/conference");
+    expect(state.alert).not.toHaveBeenCalled();
+    expect(state.result.refetch).not.toHaveBeenCalled();
+  });
+
+  describe.each(replacements)("retained web tap after %s", (_name, replace) => {
+    it.each(["available", "unavailable", "loading", "error"])("drops the old %s action", status => {
+      state.platform = "web";
+      state.result = { data: { available: status === "available" }, isLoading: status === "loading",
+        error: status === "error" ? new Error("offline") : undefined, refetch: vi.fn() };
+      const oldPress = pressableProps().onPress;
+      replace();
+      oldPress();
+      expect(state.push).not.toHaveBeenCalled();
+      expect(state.alert).not.toHaveBeenCalled();
+      expect(state.result.refetch).not.toHaveBeenCalled();
+    });
   });
 });
