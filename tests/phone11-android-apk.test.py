@@ -21,6 +21,7 @@ spec.loader.exec_module(check)
 PINNED_TRIAL_DEFINITIONS = (
     b"Lai/phone11/siprix/Phone11SiprixModule;", b"Lai/phone11/siprix/Phone11SiprixPackage;",
     b"Lai/phone11/siprix/Phone11ForegroundTrial;", b"Lai/phone11/siprix/Phone11CallRuntime;",
+    b"Lai/phone11/siprix/Phone11ConsultationRuntime;",
     b"Lai/phone11/siprix/SiprixAndroidAdapter;", b"Lcom/siprix/SiprixCore;",
 )
 

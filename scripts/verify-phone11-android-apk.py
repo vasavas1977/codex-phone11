@@ -19,6 +19,7 @@ ABIS = {"arm64-v8a", "armeabi-v7a"}
 LIBRARIES = {"libsiprix.so", "libsiprixMedia.so"}
 CLASSES = (b"Lai/phone11/siprix/Phone11SiprixModule;", b"Lai/phone11/siprix/Phone11SiprixPackage;",
            b"Lai/phone11/siprix/Phone11ForegroundTrial;", b"Lai/phone11/siprix/Phone11CallRuntime;",
+           b"Lai/phone11/siprix/Phone11ConsultationRuntime;",
            b"Lai/phone11/siprix/SiprixAndroidAdapter;",
            b"Lcom/siprix/SiprixCore;")
 
