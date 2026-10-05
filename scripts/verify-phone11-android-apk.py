@@ -20,7 +20,7 @@ LIBRARIES = {"libsiprix.so", "libsiprixMedia.so"}
 CLASSES = (b"Lai/phone11/siprix/Phone11SiprixModule;", b"Lai/phone11/siprix/Phone11SiprixPackage;",
            b"Lai/phone11/siprix/Phone11ForegroundTrial;", b"Lai/phone11/siprix/Phone11CallRuntime;",
            b"Lai/phone11/siprix/SiprixAndroidAdapter;",
-           b"Lcom/siprix/voip/SiprixCore;")
+           b"Lcom/siprix/SiprixCore;")
 
 
 def defined_classes(dex: bytes) -> set[bytes]:
@@ -104,8 +104,10 @@ def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool) -> dict:
                 inventory = {"missing": sorted(expected - siprix),
                              "unexpected": sorted(siprix - expected), "empty": sorted(empty)}
                 raise ValueError("trial_native_sdk_packaging_missing: " + json.dumps(inventory, sort_keys=True))
-            if not set(CLASSES) <= definitions:
-                raise ValueError("trial_bridge_or_sdk_classes_missing")
+            missing = set(CLASSES) - definitions
+            if missing:
+                raise ValueError("trial_bridge_or_sdk_classes_missing: " +
+                                 json.dumps({"missing": sorted(name.decode("ascii") for name in missing)}, sort_keys=True))
         elif siprix or set(CLASSES) & definitions:
             raise ValueError("ordinary_apk_contains_uncommissioned_runtime")
     return {"schema": "phone11.android.debug-packaging.v1", "package": root.get("package"),
