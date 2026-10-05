@@ -319,6 +319,57 @@ hosted CI, signed mobile builds or desktop packages. Fresh hosted results belong
 to the final pushed revision and are recorded separately in PR 7 and private
 verification receipts.
 
+## Authentication, voicemail and dependency follow-up
+
+Three additional corrected source stacks passed independent review before
+integration. The lead repeated 457 Vitest cases across nineteen files with zero
+failures or skips: 160 voicemail cases and 297 authentication, meeting, native/SIP
+and Android media cases. Full repository TypeScript, scoped ESLint and backend
+bundling passed. ESLint retains one preexisting array-type warning and the
+existing Node configuration-type warning; no lint errors were reported.
+
+Corrected web stack `fb274fab7dc0755ace0db789f4976f15dbaee533` captures the exact
+observed authentication lifetime before queued work and fences late media work.
+Independent review found that the original logout helper erased cleanup custody
+before awaiting a failed SDK stop. The corrected registry hides retired rooms
+from owner-facing routes while retaining their exact cleanup lifecycle for retry;
+web/native replacement joins and SIP handoff remain blocked until media drains.
+The reviewer repeated 298 cases, including the original real-helper failure
+probe. This is client lifecycle protection, not provider token revocation or
+administrator screen-policy enforcement. See
+[web authentication lifetime](WEB-MEETING-AUTH-LIFETIME-20261005.md).
+
+Voicemail candidate `3b29d1f9a5db607b6ed827a8117af289409155be` persists both the
+quarantine directory and its parent before retiring the source manifest, then
+checks captured manifest/directory identities during cleanup. Failed sync or
+conflicting/replaced evidence remains retryable. Producer and fixed runner bytes
+are unchanged; changed relay bytes require fresh bundle pins. Independent review
+passed 36 checked-in cases and seven additional real-file failure probes; this
+does not establish commissioned-volume power-loss durability or exclusive host
+custody. See
+[quarantine durability](VOICEMAIL-RELAY-QUARANTINE-DURABILITY-20261005.md).
+
+Corrected maintained dependency stack
+`0d4ab0653a728237309dc300b75899460ca8ede7` keeps `braces@3.0.3` and applies a
+bounded structural-depth/cycle patch. Independent review found and corrected
+exponential traversal of compact shared-node trees in the first candidate;
+completed-subtree heights now preserve longest-path checks without repeating
+all DAG paths. The lead and independent reviewer each passed 115 focused cases
+through an actual offline, frozen pnpm 9.12.0 sixteen-package consumer install,
+with zero downloads or skips. All 764 registered unchanged upstream tests also
+passed. This is a maintained mitigation, not an official fixed version or a
+clean vulnerability scan; it does not bound every resource-exhaustion class.
+A full Phone11 dependency install and hosted result are separate gates. See
+[maintained dependency boundary](BRACES-DEPTH-MITIGATION-20261005.md).
+
+Daily-use workflow blob `b5507b1b56f10d047b0542ccac82c9136b773646` now requires
+23 nonempty completion suites to pass without skips and a separately executed,
+passing installed-consumer dependency case. Independent review rejected missing,
+duplicated, unexecuted and contradictory report fixtures and confirmed that
+Bash preserves test failure through `tee`. Both event path lists watch patch
+files. Exact-head hosted results are recorded separately in PR 7 and private
+receipts; earlier green runs do not establish this new batch.
+
 ## Live and package boundary
 
 After the owner signed in, a fresh read-only portal check confirmed extension
