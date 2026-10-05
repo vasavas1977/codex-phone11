@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -240,6 +241,7 @@ function AdminVoicemailContent() {
       void save(action);
       return;
     }
+    if (Platform.OS === "web") return; // The guarded Modal below supplies web confirmation.
     Alert.alert(
       "Enable voicemail mailbox?",
       "This enables the PBX mailbox. Inbox delivery still needs a completed-message relay and a real voicemail test.",
@@ -251,8 +253,72 @@ function AdminVoicemailContent() {
     );
   };
 
+  const webConfirmation =
+    Platform.OS === "web" &&
+    feedback?.action.phase === "confirming" &&
+    pending.current === feedback.action &&
+    current(feedback.action)
+      ? feedback.action
+      : null;
+
   return (
     <ScreenContainer>
+      {webConfirmation ? (
+        <Modal
+          visible
+          transparent
+          animationType="fade"
+          onRequestClose={() => cancel(webConfirmation)}
+          onDismiss={() => cancel(webConfirmation)}
+        >
+          <View style={styles.confirmationBackdrop}>
+            <View
+              accessibilityViewIsModal
+              style={[
+                styles.card,
+                styles.confirmationCard,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              <Text
+                accessibilityRole="header"
+                style={[styles.sectionTitle, { color: colors.foreground }]}
+              >
+                Enable voicemail mailbox?
+              </Text>
+              <Text style={[styles.intro, { color: colors.foreground }]}>
+                Extension{" "}
+                {webConfirmation.row.extension_number || webConfirmation.row.id}
+              </Text>
+              <Text style={[styles.intro, { color: colors.muted }]}>
+                This enables the PBX mailbox. Inbox delivery still needs a
+                completed-message relay and a real voicemail test.
+              </Text>
+              <View style={styles.confirmationActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel voicemail mailbox confirmation"
+                  onPress={() => cancel(webConfirmation)}
+                  style={[styles.button, { borderColor: colors.border }]}
+                >
+                  <Text style={{ color: colors.foreground }}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Confirm enable voicemail mailbox"
+                  onPress={() => void save(webConfirmation)}
+                  style={[styles.button, { borderColor: colors.primary }]}
+                >
+                  <Text style={{ color: colors.primary }}>Enable</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      ) : null}
       <ScrollView
         contentContainerStyle={[
           styles.content,
@@ -532,6 +598,20 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 16,
     paddingBottom: 48,
+  },
+  confirmationBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 20,
+  },
+  confirmationCard: { width: "100%", maxWidth: 480 },
+  confirmationActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 12,
+    marginTop: 8,
   },
   contentDesktop: { maxWidth: 1080, paddingHorizontal: 32, paddingTop: 30 },
   backButton: {

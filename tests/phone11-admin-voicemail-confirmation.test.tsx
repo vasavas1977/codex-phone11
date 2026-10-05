@@ -13,6 +13,8 @@ const m = vi.hoisted(() => ({
     user: { id: number } | null;
     loading: boolean;
   },
+  platform: "ios",
+  modal: null as any,
   tenant: 18,
   rows: [] as any[],
   cache: true,
@@ -65,7 +67,15 @@ function element({ children }: any) {
 vi.mock("react-native", () => ({
   ActivityIndicator: () => null,
   Alert: { alert: m.alert },
-  Platform: { OS: "ios" },
+  Platform: {
+    get OS() {
+      return m.platform;
+    },
+  },
+  Modal: (props: any) => {
+    m.modal = props;
+    return props.visible ? element(props) : null;
+  },
   StyleSheet: { create: (value: unknown) => value },
   Text: element,
   View: element,
@@ -146,6 +156,7 @@ function row() {
 }
 function render() {
   m.frame.index = 0;
+  m.modal = null;
   m.presses.clear();
   const html = renderToStaticMarkup(createElement(AdminVoicemail));
   for (const effect of m.frame.effects.splice(0)) effect();
@@ -186,6 +197,8 @@ beforeEach(() => {
   m.presses.clear();
   m.listeners.clear();
   m.auth = { user: { id: 7 }, loading: false };
+  m.platform = "ios";
+  m.modal = null;
   m.tenant = 18;
   m.rows = [row()];
   m.cache = true;
@@ -418,6 +431,161 @@ it("unmount cleanup retires old confirmation across a fresh component mount", as
   await flush();
   expect(m.mutate).not.toHaveBeenCalled();
   confirm()();
+  await flush();
+  expect(m.mutate).toHaveBeenCalledTimes(1);
+});
+function webConfirmation() {
+  m.platform = "web";
+  render();
+  press()();
+  render();
+  expect(m.modal?.visible).toBe(true);
+  expect(m.alert).not.toHaveBeenCalled();
+  return m.presses.get("Confirm enable voicemail mailbox")
+    .onPress as () => void;
+}
+it("web opens a real confirmation and never enables merely by opening or closing it", async () => {
+  webConfirmation();
+  expect(m.mutate).not.toHaveBeenCalled();
+  expect(render()).toContain("Enable voicemail mailbox?");
+  m.presses.get("Cancel voicemail mailbox confirmation").onPress();
+  await flush();
+  render();
+  expect(m.modal).toBeNull();
+  expect(m.mutate).not.toHaveBeenCalled();
+  expect(m.presses.get("Enable voicemail for extension 1001").disabled).toBe(
+    false,
+  );
+});
+it.each(["cancel", "requestClose", "dismiss"])(
+  "web %s closes confirmation and unlocks a different enabled mailbox",
+  async (mode) => {
+    m.rows.push({
+      ...row(),
+      id: 102,
+      extension_number: "1002",
+      voicemail_enabled: true,
+    });
+    const enable = webConfirmation();
+    expect(m.presses.get("Disable voicemail for extension 1002").disabled).toBe(
+      true,
+    );
+    const close =
+      mode === "cancel"
+        ? m.presses.get("Cancel voicemail mailbox confirmation").onPress
+        : mode === "requestClose"
+          ? m.modal.onRequestClose
+          : m.modal.onDismiss;
+    close();
+    render();
+    expect(m.modal).toBeNull();
+    expect(m.presses.get("Disable voicemail for extension 1002").disabled).toBe(
+      false,
+    );
+    enable();
+    expect(m.mutate).not.toHaveBeenCalled();
+    m.presses.get("Disable voicemail for extension 1002").onPress();
+    await flush();
+    expect(m.mutate).toHaveBeenCalledWith({
+      id: 102,
+      tenantId: 18,
+      voicemailEnabled: false,
+    });
+  },
+);
+it("web confirms once, keeps other controls busy until completion, and unlocks afterward", async () => {
+  m.rows.push({
+    ...row(),
+    id: 102,
+    extension_number: "1002",
+    voicemail_enabled: true,
+  });
+  const result = deferred();
+  m.mutate.mockReturnValueOnce(result.promise);
+  const enable = webConfirmation(),
+    close = m.modal.onRequestClose;
+  enable();
+  enable();
+  close();
+  render();
+  expect(m.modal).toBeNull();
+  expect(m.mutate).toHaveBeenCalledTimes(1);
+  expect(m.presses.get("Disable voicemail for extension 1002").disabled).toBe(
+    true,
+  );
+  result.resolve();
+  await flush();
+  render();
+  expect(m.presses.get("Disable voicemail for extension 1002").disabled).toBe(
+    false,
+  );
+  expect(m.invalidate).toHaveBeenCalledWith({
+    tenantId: 18,
+    page: 1,
+    pageSize: 50,
+    sortBy: "extension_number",
+    sortOrder: "asc",
+  });
+});
+it("web failure retains an error and permits an explicit fresh confirmed retry", async () => {
+  m.mutate.mockRejectedValueOnce(new Error("web save failed"));
+  webConfirmation()();
+  await flush();
+  expect(render()).toContain("web save failed");
+  expect(m.modal).toBeNull();
+  expect(m.presses.get("Enable voicemail for extension 1001").disabled).toBe(
+    false,
+  );
+  webConfirmation()();
+  await flush();
+  expect(m.mutate).toHaveBeenCalledTimes(2);
+  expect(render()).not.toContain("web save failed");
+});
+it.each(Object.keys(boundaries))(
+  "web confirmation retires after %s without relying on Alert",
+  async (key) => {
+    const enable = webConfirmation();
+    boundaries[key as keyof typeof boundaries]();
+    enable();
+    await flush();
+    expect(m.mutate).not.toHaveBeenCalled();
+    expect(m.invalidate).not.toHaveBeenCalled();
+    expect(m.retiredWrites).toBe(0);
+    if (!m.retired) {
+      render();
+      expect(m.modal).toBeNull();
+    }
+  },
+);
+it("web row reassignment closes the old dialog and permits a fresh confirmation for its new assignment", async () => {
+  const enable = webConfirmation();
+  m.rows = [{ ...row(), user_id: 8 }];
+  render();
+  expect(m.modal).toBeNull();
+  expect(m.presses.get("Enable voicemail for extension 1001").disabled).toBe(
+    false,
+  );
+  enable();
+  expect(m.mutate).not.toHaveBeenCalled();
+  webConfirmation()();
+  await flush();
+  expect(m.mutate).toHaveBeenCalledTimes(1);
+});
+it("web repeated row presses cannot open another confirmation while one is visible", async () => {
+  m.platform = "web";
+  render();
+  const change = press();
+  change();
+  change();
+  render();
+  expect(m.modal?.visible).toBe(true);
+  expect(m.alert).not.toHaveBeenCalled();
+  expect(m.mutate).not.toHaveBeenCalled();
+  m.presses.get("Cancel voicemail mailbox confirmation").onPress();
+  change();
+  render();
+  expect(m.modal?.visible).toBe(true);
+  m.presses.get("Confirm enable voicemail mailbox").onPress();
   await flush();
   expect(m.mutate).toHaveBeenCalledTimes(1);
 });
