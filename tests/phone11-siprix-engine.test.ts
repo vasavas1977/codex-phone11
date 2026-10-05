@@ -181,6 +181,42 @@ describe("Siprix native adapter", () => {
     expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.createAccount).not.toHaveBeenCalled();
     expect(bridge.registerAccount).not.toHaveBeenCalled(); expect(runtime.listeners.size).toBe(0);
   });
+  it.each(["public-only", "native-only", "unknown-native", "missing-method", "direct-transfer-claim"])("rejects unmatched Android consultation candidate %s before SDK work", async condition => {
+    const value: Record<string, unknown> = { ...foregroundTrial(), consultationSourceCandidate: true };
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", condition === "native-only" ? "0" : "1");
+    if (condition === "public-only") value.consultationSourceCandidate = false;
+    if (condition === "unknown-native") value.consultationSourceCandidate = "true";
+    if (condition === "direct-transfer-claim") value.transfer = true;
+    runtime.modules.Phone11Siprix = { ...bridge, ...(condition === "missing-method" ? { completeConsultation: undefined } : {}), getForegroundCapabilities: async () => value };
+    await expect(engine.initialize()).rejects.toThrow("Android foreground trial capability");
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.createAccount).not.toHaveBeenCalled();
+  });
+  it("ignores an unsupported warm snapshot in the legacy Android foreground trial", async () => {
+    const value = foregroundTrial(); snapshot.warmTransferAvailable = true;
+    runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: async () => value };
+    await ready(); expect(engine.supportsWarmTransfer()).toBe(false);
+  });
+  it("admits the separately gated Android consultation through the shared single OS-call contract", async () => {
+    const value = { ...foregroundTrial(), consultationSourceCandidate: true };
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", "1");
+    snapshot.warmTransferAvailable = true;
+    runtime.modules.Phone11Siprix = { ...bridge, transferCall: undefined, getForegroundCapabilities: async () => value };
+    await ready(); expect(engine.supportsWarmTransfer()).toBe(true); expect(engine.supportsBlindTransfer()).toBe(false);
+    await engine.makeCall("2002"); emit({ type: "callConnected", call: newCall({ state: "connected", historyId: "original" }) });
+    await engine.beginConsultation("11", "3003"); expect(bridge.beginConsultation).toHaveBeenCalledOnce();
+    const request = bridge.beginConsultation.mock.calls[0][2];
+    const original = newCall({ state: "held", holdState: 1, held: true, historyId: "original", consultationAttempted: true, consultationRequestId: request, consultationPhase: "held_ready" });
+    emit({ type: "callHeld", call: original }); await Promise.resolve(); await Promise.resolve();
+    expect(bridge.continueConsultation).toHaveBeenCalledWith("11", request);
+    emit({ type: "consultationChanged", call: { ...original, consultationPhase: "calling", consultationCallId: "12" } });
+    emit({ type: "consultationChanged", call: newCall({ id: "12", callId: "12", historyId: "consult", consultationParentId: "11", consultationRequestId: request, muted: true }) });
+    emit({ type: "callConnected", call: newCall({ id: "12", callId: "12", state: "connected", historyId: "consult", consultationParentId: "11", consultationRequestId: request, muted: true }) });
+    expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledTimes(1);
+    expect(runtime.callManager.reportCallConnected).toHaveBeenCalledTimes(1);
+    expect(bridge.handleNativeAudioSession).not.toHaveBeenCalled();
+    expect(Object.keys(useSipCallStore.getState().activeCalls).sort()).toEqual(["11", "12"]);
+    await engine.cancelConsultation("11", request); expect(bridge.cancelConsultation).toHaveBeenCalledWith("11", request);
+  });
   it("cannot activate Android using a public flag without the Siprix engine build selection", async () => {
     foregroundTrial(); vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "pjsip");
     await expect(engine.initialize()).rejects.toThrow("no PJSIP fallback");

@@ -11,8 +11,10 @@ import java.util.*;
 /** Exact Android 1.1.0 binding. No credentials retained in Java state, services, logging, or push. */
 public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
   private final Context context; private final Handler main=new Handler(Looper.getMainLooper());
+  private final boolean consultationEnabled;
   private SiprixCore core; private Callbacks activeCallbacks;
-  public SiprixAndroidAdapter(Context context){this.context=context.getApplicationContext();}
+  public SiprixAndroidAdapter(Context context){this(context,false);}
+  public SiprixAndroidAdapter(Context context,boolean consultationEnabled){this.context=context.getApplicationContext();this.consultationEnabled=consultationEnabled;}
   private static void ok(int code){if(code!=SiprixCore.kOK)throw new Phone11CallRuntime.Failure("E_SIPRIX_"+code);}
   private SiprixCore sdk(){if(core==null)throw new Phone11CallRuntime.Failure("E_NOT_INITIALIZED");return core;}
   private void microphone(){Phone11ForegroundTrial.requireMicrophone(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED);}
@@ -22,7 +24,7 @@ public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
     if(version==null||!version.trim().matches("(?:Siprix: ?)?1\\.1\\.0 from 20260905_1222"))throw new Phone11CallRuntime.Failure("E_SDK_VERSION");
     activeCallbacks=new Callbacks(listener);core.setModelListener(activeCallbacks);
     IniData config=new IniData();config.setLogLevelFile(IniData.LogLevel.NONE);config.setLogLevelIde(IniData.LogLevel.NONE);
-    config.setTlsVerifyServer(true);config.setSingleCallMode(true);config.setEnableVideoCall(false);
+    config.setTlsVerifyServer(true);config.setSingleCallMode(!consultationEnabled);config.setEnableVideoCall(false);
     config.setUseProximity(false);config.setUseTelState(false);config.setUseVolChange(false);
     config.setUnregOnDestroy(true);config.setBrandName("Phone11");ok(core.initialize(config));return version;
   }
@@ -60,6 +62,8 @@ public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
   public void rejectVideo(int id){ok(sdk().callAcceptVideoUpgrade(id,false));}
   public int holdState(int id){SiprixCore.IdOutArg out=new SiprixCore.IdOutArg();ok(sdk().callGetHoldState(id,out));return out.value;}
   public void toggleHold(int id){ok(sdk().callHold(id));}
+  public void switchCall(int id){ok(sdk().mixerSwitchToCall(id));}
+  public void transferAttended(int original,int consult){ok(sdk().callTransferAttended(original,consult));}
   public void dtmf(int id,String digits){ok(sdk().callSendDtmf(id,digits));}
   public boolean speaker(){return sdk().dvcGetSelAudioDevice()==SiprixCore.AudioDevice.SpeakerPhone;}
   public void speaker(boolean value){SiprixCore.AudioDevice desired=value?SiprixCore.AudioDevice.SpeakerPhone:SiprixCore.AudioDevice.Earpiece;boolean found=false;for(int i=0;i<sdk().dvcGetAudioDevices();i++)found|=sdk().dvcGetAudioDevice(i)==desired;
@@ -80,8 +84,8 @@ public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
     public void onCallVideoUpgradeRequested(int n){enqueue(()->listener.videoUpgrade(n));}
     public void onSubscriptionState(int n,SubscrData.SubscrState state,String response){}
     public void onPlayerState(int n,SiprixCore.PlayerState state){}
-    public void onCallTransferred(int n,int status){} public void onCallRedirected(int n,int related,String to){}
-    public void onCallVideoUpgraded(int n,boolean video){enqueue(()->listener.connected(n,video));} public void onCallSwitched(int n){}
+    public void onCallTransferred(int n,int status){enqueue(()->listener.transferred(n,status));} public void onCallRedirected(int n,int related,String to){enqueue(()->listener.redirected(n,related));}
+    public void onCallVideoUpgraded(int n,boolean video){enqueue(()->listener.connected(n,video));} public void onCallSwitched(int n){enqueue(()->listener.switched(n));}
     public void onMessageSentState(int n,boolean success,String response){} public void onMessageIncoming(int n,int account,String from,String body){}
     public void onSipNotify(int n,String header,String body){} public void onVuMeterLevel(int mic,int speaker){}
   }

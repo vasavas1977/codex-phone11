@@ -16,9 +16,10 @@ public final class Phone11ForegroundTrial {
   public static void requireMicrophone(boolean granted) {
     if (!granted) throw new Phone11CallRuntime.Failure("E_MICROPHONE_PERMISSION");
   }
-  public static Map<String, Object> capabilities() {
+  public static Map<String, Object> capabilities() {return capabilities(false);}
+  public static Map<String, Object> capabilities(boolean consultation) {
     return Phone11CallRuntime.map("foregroundAudioTrial", true, "sdkVersion", "1.1.0",
       "sdkBuild", "20260905_1222", "trialCallLimitSeconds", 60, "backgroundCalling", false,
-      "closedAppCalling", false, "wake", false, "transfer", false, "video", false);
+      "closedAppCalling", false, "wake", false, "transfer", false, "consultationSourceCandidate", consultation, "video", false);
   }
 }

@@ -27,9 +27,9 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
     catch(RuntimeException failure){promise.reject("E_INVALID_ARGUMENT","Invalid Phone11 Android state or arguments");}
   });}
   private void acquire(){if(attemptedLease)return;attemptedLease=true;
-    if(runtime==null)runtime=new Phone11CallRuntime(new SiprixAndroidAdapter(getReactApplicationContext()),event->{
+    if(runtime==null)runtime=new Phone11CallRuntime(new SiprixAndroidAdapter(getReactApplicationContext(),BuildConfig.CONSULTATION_SOURCE_ENABLED),event->{
       if(eventContext!=null&&eventContext.hasActiveReactInstance())eventContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit("Phone11SiprixEvent",Arguments.makeNativeMap(event));
-    });lease=runtime.acquire();if(lease!=0)eventContext=getReactApplicationContext();}
+    },BuildConfig.CONSULTATION_SOURCE_ENABLED,(delay,task)->main.postDelayed(task,delay));lease=runtime.acquire();if(lease!=0)eventContext=getReactApplicationContext();}
   private void sourceGate(){
     if(!BuildConfig.FOREGROUND_SOURCE_ENABLED)throw new Phone11CallRuntime.Failure("E_ANDROID_SOURCE_GATE");
     try{ApplicationInfo app=getReactApplicationContext().getPackageManager().getApplicationInfo(getReactApplicationContext().getPackageName(),PackageManager.GET_META_DATA);
@@ -50,12 +50,18 @@ public final class Phone11SiprixModule extends ReactContextBaseJavaModule {
   @ReactMethod public void setHold(String id,boolean held,Promise p){perform(p,()->{runtime.hold(lease,id,held);return null;});}
   @ReactMethod public void sendDtmf(String id,String digits,Promise p){perform(p,()->{runtime.dtmf(lease,id,digits);return null;});}
   @ReactMethod public void setSpeaker(boolean enabled,Promise p){perform(p,()->{runtime.speaker(lease,enabled);return null;});}
+  private void consultationGate(){sourceGate();if(!BuildConfig.CONSULTATION_SOURCE_ENABLED)throw new Phone11CallRuntime.Failure("E_UNSUPPORTED");}
+  @ReactMethod public void createTransferRequestId(Promise p){perform(p,()->{consultationGate();foregroundGate();return runtime.createTransferRequestId(lease);});}
+  @ReactMethod public void beginConsultation(String id,String destination,String request,Promise p){perform(p,()->{consultationGate();foregroundGate();runtime.beginConsultation(lease,id,destination,request);return null;});}
+  @ReactMethod public void continueConsultation(String id,String request,Promise p){perform(p,()->{consultationGate();foregroundGate();runtime.continueConsultation(lease,id,request);return null;});}
+  @ReactMethod public void cancelConsultation(String id,String request,Promise p){perform(p,()->{consultationGate();runtime.cancelConsultation(lease,id,request);return null;});}
+  @ReactMethod public void completeConsultation(String id,String request,String transfer,Promise p){perform(p,()->{consultationGate();foregroundGate();runtime.completeConsultation(lease,id,request,transfer);return null;});}
   @ReactMethod public void destroy(Promise p){perform(p,()->{runtime.destroy(lease);return null;});}
   @ReactMethod public void getCapabilities(Promise p){perform(p,()->Phone11CallRuntime.map("registrationAvailable",false,"foregroundSourceCandidate",true,"closedAppCalling",false,"reason","android_native_acceptance_required"));}
   // This is a build contract for a trial candidate, not wake or media acceptance.
   @ReactMethod public void getForegroundCapabilities(Promise p){main.post(()->{
     if(invalidated){p.reject("E_STALE_BRIDGE","Phone session changed");return;}
-    try{sourceGate();p.resolve(Arguments.makeNativeMap(Phone11ForegroundTrial.capabilities()));}
+    try{sourceGate();p.resolve(Arguments.makeNativeMap(Phone11ForegroundTrial.capabilities(BuildConfig.CONSULTATION_SOURCE_ENABLED)));}
     catch(Phone11CallRuntime.Failure failure){p.reject(failure.code,"Android foreground trial is not enabled");}
     catch(RuntimeException failure){p.reject("E_ANDROID_SOURCE_GATE","Android foreground trial configuration is unavailable");}
   });}

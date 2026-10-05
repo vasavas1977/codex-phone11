@@ -24,13 +24,21 @@ function unsupported(feature: string): Error {
 }
 
 type AndroidTrialBridge = Phone11SiprixModule & { getForegroundCapabilities?: () => Promise<Record<string, unknown>> };
-async function requireAndroidForegroundTrial(bridge: AndroidTrialBridge): Promise<void> {
+async function requireAndroidForegroundTrial(bridge: AndroidTrialBridge): Promise<boolean> {
   const capabilities = await bridge.getForegroundCapabilities?.();
   if (!capabilities || capabilities.foregroundAudioTrial !== true || capabilities.sdkVersion !== "1.1.0"
       || capabilities.sdkBuild !== "20260905_1222" || capabilities.trialCallLimitSeconds !== 60
       || ["backgroundCalling", "closedAppCalling", "wake", "transfer", "video"].some(key => capabilities[key] !== false)) {
     throw new Error("Android foreground Siprix trial native/build capability is unavailable");
   }
+  const requested = process.env.EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE === "1";
+  const consultation = capabilities.consultationSourceCandidate === true;
+  const methods = [bridge.createTransferRequestId, bridge.beginConsultation, bridge.continueConsultation, bridge.cancelConsultation, bridge.completeConsultation];
+  if (requested ? !consultation || methods.some(method => typeof method !== "function")
+    : capabilities.consultationSourceCandidate !== undefined && capabilities.consultationSourceCandidate !== false) {
+    throw new Error("Android consultation source capability does not match this build");
+  }
+  return requested && consultation;
 }
 
 function nativeCall(call: SiprixCall) {
@@ -94,6 +102,7 @@ export class SiprixEngine {
   private connected = new Set<string>();
   private audioActive = false;
   private warmTransferAvailable = false;
+  private androidConsultationAllowed = false;
   private consultationContinuations = new Set<string>();
   private deferredCallKitEnds = new Map<string, { originalId: string; requestId: string; accountId: string; historyId: string }>();
   private transferAttempts = new Set<string>();
@@ -171,7 +180,7 @@ export class SiprixEngine {
       }
       if (Platform.OS === "android") {
         const owner = getAuthSnapshot().user;
-        try { await requireAndroidForegroundTrial(bridge); }
+        try { this.androidConsultationAllowed = await requireAndroidForegroundTrial(bridge); }
         catch (error) {
           if (revision !== this.revision || owner !== getAuthSnapshot().user || !sameAccount(account, useSipAccountStore.getState().account)) return;
           const failure = this.failure("Android foreground trial capability", error);
@@ -348,7 +357,7 @@ export class SiprixEngine {
     const account = snapshot.accounts.find(item => item.accountId === session.accountId);
     if (account) this.registration(account, true);
     else useSipAccountStore.getState().setRegistrationState("unregistered");
-    this.warmTransferAvailable = snapshot.warmTransferAvailable === true && !snapshot.nativeWake;
+    this.warmTransferAvailable = snapshot.warmTransferAvailable === true && !snapshot.nativeWake && (Platform.OS !== "android" || this.androidConsultationAllowed);
     const present = new Set(snapshot.calls.map(call => call.callId));
     for (const id of this.calls.keys()) if (!present.has(id)) this.endCall(id);
     for (const call of [...snapshot.calls].sort((a,b) => Number(!!a.consultationParentId) - Number(!!b.consultationParentId))) {
@@ -793,6 +802,7 @@ export class SiprixEngine {
     this.deferredCallKitEnds.clear();
     this.transferAttempts.clear();
     this.warmTransferAvailable = false;
+    this.androidConsultationAllowed = false;
     this.consultationContinuations.clear();
     this.terminated.clear();
     this.connected.clear();

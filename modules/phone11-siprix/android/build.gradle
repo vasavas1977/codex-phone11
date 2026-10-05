@@ -7,12 +7,17 @@ def expectedSha = '3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9
 def expectedApiSha = '4929fc4b157bb65b9739a8d872079975d369501c9b55ece7b4506a9c5ac6a1b0'
 def sdkApiJar = layout.buildDirectory.file('phone11-siprix-api/classes.jar')
 def sourceEnabled = findProperty('phone11AndroidForegroundSourceEnabled') == 'true'
+def consultationEnabled = findProperty('phone11AndroidConsultationSourceEnabled') == 'true'
+if (consultationEnabled && !sourceEnabled) throw new GradleException('Android consultation source requires the explicit foreground source gate')
 android {
   namespace 'ai.phone11.siprix'
   compileSdkVersion rootProject.ext.compileSdkVersion
   defaultConfig { minSdkVersion 24 }
   buildFeatures { buildConfig true }
-  defaultConfig { buildConfigField 'boolean', 'FOREGROUND_SOURCE_ENABLED', sourceEnabled.toString() }
+  defaultConfig {
+    buildConfigField 'boolean', 'FOREGROUND_SOURCE_ENABLED', sourceEnabled.toString()
+    buildConfigField 'boolean', 'CONSULTATION_SOURCE_ENABLED', consultationEnabled.toString()
+  }
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17

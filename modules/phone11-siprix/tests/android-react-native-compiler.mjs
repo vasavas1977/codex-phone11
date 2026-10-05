@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { verifySdk } from "../android/verify-sdk.mjs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("actual React Native 0.81.5 + pinned Siprix + Android API compile both native gate configurations", () => {
+test("actual React Native 0.81.5 + pinned Siprix + Android API compile the three valid foreground/consultation gate configurations", () => {
   const aar = process.env.PHONE11_SIPRIX_ANDROID_AAR;
   const androidJar = process.env.PHONE11_ANDROID_API_JAR;
   const reactAar = process.env.PHONE11_REACT_ANDROID_AAR;
@@ -31,12 +31,12 @@ test("actual React Native 0.81.5 + pinned Siprix + Android API compile both nati
     }
     const source = path.join(root, "android/src/main/java/ai/phone11/siprix");
     const files = readdirSync(source).filter(name => name.endsWith(".java")).map(name => path.join(source, name));
-    for (const enabled of [false, true]) {
+    for (const [enabled,consultation] of [[false,false],[true,false],[true,true]]) {
       const buildConfig = path.join(directory, "BuildConfig.java");
-      writeFileSync(buildConfig, `package ai.phone11.siprix; public final class BuildConfig {public static final boolean FOREGROUND_SOURCE_ENABLED=${enabled};}`);
+      writeFileSync(buildConfig, `package ai.phone11.siprix; public final class BuildConfig {public static final boolean FOREGROUND_SOURCE_ENABLED=${enabled};public static final boolean CONSULTATION_SOURCE_ENABLED=${consultation};}`);
       execFileSync("javac", ["-Xlint:all", "-Werror", "-cp", [sdkJar, reactJar, androidJar, kotlinJar, fbjniJar, inferJar, kotlinAnnotations, jsr305Jar].join(path.delimiter),
-        "-d", path.join(directory, `gate-${enabled}`), ...files, buildConfig], { encoding: "utf8", cwd: directory });
+        "-d", path.join(directory, `gate-${enabled}-${consultation}`), ...files, buildConfig], { encoding: "utf8", cwd: directory });
     }
-    console.log("PASS actual React Native 0.81.5 declarations and exact SDK/Android APIs, gates false/true; no declaration stubs, Gradle/APK/runtime/device claim.");
+    console.log("PASS actual React Native 0.81.5 declarations and exact SDK/Android APIs, gates OFF/OFF, ON/OFF, ON/ON; no declaration stubs, Gradle/APK/runtime/device claim.");
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
