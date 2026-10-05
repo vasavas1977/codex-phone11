@@ -4,7 +4,115 @@ Full Zoom-style production is not complete. This follow-up records a reviewed
 source batch and current release boundaries; it does not mark the feature
 coverage checklist accepted.
 
-## Integrated source batch
+## Latest reviewed source additions
+
+The combined branch now contains these independently reviewed source candidates.
+Their implementation pins are recorded here; the current combined head and its
+cloud results are recorded separately in PR 7 and private verification receipts.
+
+- PBX administrator reads require a fresh membership check. Twelve admin read
+  paths no longer admit a removed or demoted administrator from a stale cache
+  refill. Legacy workspace selection and query filters are preserved. Candidate
+  `8555851fc5a2fb2cd37585789f02fe06b44a6bce` passed independent review; the lead
+  repeated 23 focused revocation cases and 109 adjacent authorization cases.
+  One existing optional database case was skipped. The focused 23-case CI gate
+  requires zero skips. These mocks do not establish production database role
+  changes or a lock held throughout every subsequent read. See
+  [administrator read authority](PBX-ADMIN-READ-REVOCATION-20261005.md).
+- Desktop meetings now have an explicit video-only Share/Stop control and a
+  cancellable window/screen chooser. Capture requires the exact main frame,
+  interactive admission, current session/room, user gesture, SDK publication
+  rights and no SIP owner. Opaque choices are single-use and revalidated before
+  granting capture. Late tracks, publication and failed cleanup remain owned;
+  reconnect never restarts sharing automatically. Candidate
+  `26a529aa85c457794811cd192fe2239d416c178e` passed independent review and 34
+  new cases without skips. The lead repeated the complete desktop suite: 198
+  passed and one explicitly opt-in Chromium application test was skipped.
+  Desktop TypeScript and JavaScript bundling passed. No Electron application,
+  OS picker, real capture or packaged-client acceptance was performed. A separate
+  source-only packaging audit passed nine existing tests and rejected 27 dirty,
+  untracked or ignored source cases; the bundle graph includes the new modules.
+  Fresh client artifacts remain required. See
+  [desktop screen publishing](DESKTOP-SCREEN-PUBLISHING-20261005.md).
+- Desktop fake-SDK transfer tests wait for actual protocol frames instead of
+  fixed sleeps. End-race callbacks are released only after termination, with
+  a receipt proving they ran; strict reply/event and privacy assertions remain.
+  Candidate `99ee070b8db6e6e0f2152b11c52808695a73292f` changes test code only.
+  The lead reviewed the exact diff and repeated all eleven scenarios plus the
+  adjacent accept/end, controls, hold, consultation and redirect checks.
+- The strict Android APK verifier now uses the actual pinned SDK class
+  `com.siprix.SiprixCore`. It still requires DEX definitions, not reference-only
+  strings. Candidate `2869041cb4d26069f52ef6d85d520ec61ee83461` passed independent
+  review and sixteen parser/pinned-AAR cases without skips.
+- Android now has a separate, default-off consultation/attended-transfer source
+  candidate. It preserves one process/media owner, exact original/consultation
+  identities, callback-confirmed hold and focus, one uncertain REFER attempt,
+  cancellation recovery and quarantined cleanup. Generic blind transfer remains
+  unsupported. Independent review caught and corrected the leading `+` target
+  mismatch before integration. Corrected candidate
+  `0c971b6ae352466c8b8df381f86425a430b363ca` passed independent review; the lead
+  repeated 372 native state assertions, 344 shared calling regressions and
+  actual pinned Siprix/Android 35/React Native 0.81.5 compilation in OFF/OFF,
+  ON/OFF and ON/ON gate combinations. These checks had no skips. No runtime,
+  physical attended transfer or microphone/audio acceptance follows from them.
+  Existing ordinary and isolated trial builds keep consultation off. See the
+  [Android consultation boundary](../phone11-android-consultation-source-boundary.md).
+- A public LiveKit room move retires the original admitted mobile/shared
+  session immediately and refuses new microphone/camera operations. Tracked
+  teardown must finish before media ownership can pass to SIP; failed cleanup
+  stays addressable for an explicit Leave retry. No automatic fresh admission
+  is inferred from a provider room move. Candidate
+  `d6b7452804b50bc1bbf6b559601b84b8a090e502` passed independent source review,
+  117 focused lifecycle regressions and four independent temporary capture-race
+  probes, plus existing media-ownership cases. Real provider moves and native
+  audio acknowledgment still require endpoint acceptance.
+- Android Answer shares the incoming observer's exact media preparation and
+  waits for tracked meeting teardown and audio-stop acknowledgment before the
+  native SDK command. Session, account, call lifetime and active SIP lease are
+  rechecked after asynchronous work. Failed cleanup refuses Answer and preserves
+  explicit retry; duplicate actions and stale callbacks cannot bypass the barrier.
+  iOS and ordinary paths retain their behavior. Candidate
+  `74b37f3db492a29a533429a416f5bbac90578d77` passed independent review and 395
+  actual-provider, meeting lifecycle, ownership, permission and calling mocks
+  without skips. The lead repeated those checks plus five lease-state cases.
+  The CI addition requires all sixteen new provider cases, with nonempty results
+  and zero skips; its independently exercised five-suite gate passed 125 cases.
+  Repository TypeScript and backend bundling are checked separately. See the
+  [Android Answer media boundary](../phone11-android-answer-media-boundary.md).
+- General mobile Meet entry no longer offers opaque UUID choices for multiple
+  unlabelled rooms. It directs the current signed-in user to named Team Chat
+  invitations; selected channel/direct invitations still use their exact room,
+  tenant and title. An active Phone call gives fixed, actionable recovery copy
+  and refuses admission/media work; explicit retry requests fresh admission.
+  Candidate `eb85aef3228c5d2a40c509cb1f32f74116998b8f` passed independent review
+  and 105 focused mocked entry/prejoin/owner/picker cases without skips. See
+  [mobile meeting entry](MOBILE-MEETING-ENTRY-20261005.md).
+
+The new Android consultation helper is also included in the exact trial DEX
+definition inventory and ordinary-build exclusion. Integration gate
+`1d0645187114d1855c3bac61bc3fd53542fe2d77` passed independent review, sixteen
+pinned-AAR parser cases and four temporary helper-specific negative checks.
+The older successful hosted six-class receipt below does not prove this new
+seven-class inventory; a fresh hosted APK result remains required.
+
+Cloud Mobile Native run **37252776802** passed at combined source
+`7697489b6975e02ca287161504d32b5e9b93eaf4`: ordinary APK exclusion, real
+SDK-linked trial assembly and strict trial verification all passed. The hosted
+verifier reported trial APK SHA-256
+`19eee3f2aa864428f006a5515e513b28282dbddc2aebda85012140f522b90c2e`
+and exactly four SDK library entries across the two ARM ABIs. The APK was not
+uploaded, downloaded, locally inspected or installed. Daily-use, release guards
+and owned-auth runs passed at that source; desktop helper protocol CI failed the
+fixed-delay test described above. Its corrected source requires a fresh cloud
+run. Neither that older CI head nor its packaging receipt covers the later
+desktop publisher or administrator-read changes.
+
+Native screen publishing still needs a cancellable Android consent transaction
+with acknowledged startup/stop, or an iOS ReplayKit extension/App Group protocol.
+The pinned RN bridge does not supply these ownership primitives. See the exact
+[native capture boundary](NATIVE-SCREEN-PUBLISHING-BOUNDARY-20261005.md).
+
+## Earlier integrated source batch
 
 Source `acc93c2fa6ea15c4dc48e424c0624fbbf1f8a07a` is on draft PR 7.
 Three independent GPT-6.1 Sol High workers contributed implementation and review;
@@ -62,7 +170,7 @@ existing behavior. This source guard does not establish production licensing or
 store distribution. See [store boundary](STORE-DISTRIBUTION-BOUNDARY-20261005.md)
 and the separate [dependency advisory](DEPENDENCY-ADVISORY-20261005.md).
 
-## Reviewed follow-up candidate
+## Earlier reviewed follow-up candidate
 
 Combined implementation and CI-gate source:
 `bc560157768263fbdd88b02d8cfc4ecc4f33e228`.
@@ -115,11 +223,15 @@ production SDK credential, formal signing or provider activation is claimed.
    enforcement. Exact wire/digest fixtures, control-revision conflict handling,
    verified room binding/enrollment, admitted-only issuance, authenticated trust
    and external restore-incarnation recovery remain unresolved. No host-control
-   endpoint is invented or enabled by this batch.
-2. Accept the reviewed browser screen publisher with actual source selection,
-   remote viewing and cancellation/reconnect tests. Native capture and the
-   desktop source-picker permission boundary
-   require separate implementation/acceptance. Admin screen policy, captions,
+   endpoint is invented or enabled by this batch. Connect11's reversible
+   preparation packet now has cross-runtime synthetic digest vectors, proposed
+   raw-body rejection cases, lifetime enrollment and end-only revision rules.
+   It remains outside git and unpublished; strict decoder, host authority and
+   endpoint implementation are not established by byte/hash checks.
+2. Accept the reviewed browser and desktop screen publishers with actual source
+   selection, remote viewing and cancellation/reconnect tests. Native capture
+   requires the separate primitives and platform gates described above. Admin
+   screen policy, captions,
    recording/AI and waiting-room controls remain unimplemented or gated.
 3. Close PBX writer/principal, protected-clone and active/rollback evidence;
    stage both exact Lua helpers with ingestion off, rehearse legacy deposit and
