@@ -221,7 +221,7 @@ jobs:
         shell: bash
         run: |
           ./gradlew projects --console=plain > "$RUNNER_TEMP/phone11-screen-gradle-projects.log"
-          rg -F -- "Project ':livekit_react-native-webrtc'" "$RUNNER_TEMP/phone11-screen-gradle-projects.log"
+          grep -F -- "Project ':livekit_react-native-webrtc'" "$RUNNER_TEMP/phone11-screen-gradle-projects.log"
           ./gradlew :livekit_react-native-webrtc:compileDebugJavaWithJavac :app:processDebugMainManifest --no-daemon --console=plain --stacktrace
       - name: Verify actual merged screen manifest
         shell: bash
