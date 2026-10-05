@@ -150,7 +150,8 @@
     "patchedDependencies": {
       "braces@3.0.3": "patches/braces@3.0.3.patch",
       "livekit-client@2.22.3": "patches/livekit-client@2.22.3.patch",
-      "react-native-pjsip@2.7.4": "patches/react-native-pjsip@2.7.4.patch"
+      "react-native-pjsip@2.7.4": "patches/react-native-pjsip@2.7.4.patch",
+      "@livekit/react-native-webrtc@144.2.0": "patches/@livekit__react-native-webrtc@144.2.0.patch"
     }
   }
 }

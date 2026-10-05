@@ -5,6 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
+  '@livekit/react-native-webrtc@144.2.0':
+    hash: ftuiu45qgjtdhbtnrynkj7cgcu
+    path: patches/@livekit__react-native-webrtc@144.2.0.patch
   braces@3.0.3:
     hash: z5dn2cikq3bclbpyfwz5ssf4ay
     path: patches/braces@3.0.3.patch
@@ -30,10 +33,10 @@ importers:
         version: 1.5.0
       '@livekit/react-native':
         specifier: 3.0.0
-        version: 3.0.0(@livekit/react-native-webrtc@144.2.0(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1))(livekit-client@2.22.3(patch_hash=3xvkeotbxeycdqx5fushnmvuie)(@types/dom-mediacapture-record@1.0.22))(react-dom@19.1.0(react@19.1.0))(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(tslib@2.8.1)
+        version: 3.0.0(@livekit/react-native-webrtc@144.2.0(patch_hash=ftuiu45qgjtdhbtnrynkj7cgcu)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1))(livekit-client@2.22.3(patch_hash=3xvkeotbxeycdqx5fushnmvuie)(@types/dom-mediacapture-record@1.0.22))(react-dom@19.1.0(react@19.1.0))(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(tslib@2.8.1)
       '@livekit/react-native-webrtc':
         specifier: 144.2.0
-        version: 144.2.0(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1)
+        version: 144.2.0(patch_hash=ftuiu45qgjtdhbtnrynkj7cgcu)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1)
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
@@ -8488,7 +8491,7 @@ snapshots:
     dependencies:
       '@bufbuild/protobuf': 1.10.1
 
-  '@livekit/react-native-webrtc@144.2.0(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1)':
+  '@livekit/react-native-webrtc@144.2.0(patch_hash=ftuiu45qgjtdhbtnrynkj7cgcu)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1)':
     dependencies:
       base64-js: 1.5.1
       debug: 4.3.4(supports-color@8.1.1)
@@ -8496,11 +8499,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@livekit/react-native@3.0.0(@livekit/react-native-webrtc@144.2.0(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1))(livekit-client@2.22.3(patch_hash=3xvkeotbxeycdqx5fushnmvuie)(@types/dom-mediacapture-record@1.0.22))(react-dom@19.1.0(react@19.1.0))(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(tslib@2.8.1)':
+  '@livekit/react-native@3.0.0(@livekit/react-native-webrtc@144.2.0(patch_hash=ftuiu45qgjtdhbtnrynkj7cgcu)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1))(livekit-client@2.22.3(patch_hash=3xvkeotbxeycdqx5fushnmvuie)(@types/dom-mediacapture-record@1.0.22))(react-dom@19.1.0(react@19.1.0))(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(tslib@2.8.1)':
     dependencies:
       '@livekit/components-react': 2.9.24(livekit-client@2.22.3(patch_hash=3xvkeotbxeycdqx5fushnmvuie)(@types/dom-mediacapture-record@1.0.22))(react-dom@19.1.0(react@19.1.0))(react@19.1.0)(tslib@2.8.1)
       '@livekit/mutex': 1.1.1
-      '@livekit/react-native-webrtc': 144.2.0(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1)
+      '@livekit/react-native-webrtc': 144.2.0(patch_hash=ftuiu45qgjtdhbtnrynkj7cgcu)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(supports-color@8.1.1)
       array.prototype.at: 1.2.0
       base64-js: 1.5.1
       events: 3.3.0

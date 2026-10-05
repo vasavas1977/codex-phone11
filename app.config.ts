@@ -6,6 +6,8 @@ import { withInfoPlist } from "expo/config-plugins";
 const { wakeBuildSettings } = require("./plugins/with-phone11-voip-wake.js");
 const { androidRuntimeBuildSettings } = require("./plugins/with-phone11-android-runtime.js");
 const androidTrial = androidRuntimeBuildSettings();
+const { androidScreenBuildSettings } = require("./plugins/with-phone11-android-screen.js");
+const androidScreen = androidScreenBuildSettings();
 const wakeSettings = wakeBuildSettings();
 const chatCommissioned = process.env.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED ?? "0";
 if (!["0", "1"].includes(chatCommissioned)) throw new Error("Invalid chat notification build flag");
@@ -130,6 +132,7 @@ const config: ExpoConfig = {
     // plugin peers LiveKit RN2 and therefore cannot be used with the
     // namespaced WebRTC framework required beside Siprix.
     "./plugins/with-phone11-livekit.js",
+    "./plugins/with-phone11-android-screen.js",
     // Explicit manual host integration; ordinary builds also remove stale trial wiring.
     "./plugins/with-phone11-android-runtime.js",
     "@config-plugins/react-native-webrtc",
@@ -184,6 +187,7 @@ const config: ExpoConfig = {
     },
     buildInfo: {
       sipEngine,
+      ...(androidScreen.enabled ? { androidScreenTransactionSource: true } : {}),
       ...(androidTrial.enabled ? { androidSipSdkVersion: "1.1.0-20260905_1222-trial", androidForegroundTrial: true } : {}),
       sipSdkVersion: sipEngine === "siprix"
         ? `1.0.40-${siprixLicenseConfigured ? "licensed" : "trial"}`
