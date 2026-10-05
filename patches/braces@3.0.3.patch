@@ -142,25 +142,29 @@ index 8bcf872..1e0634e 100644
      const invalidBlock = options.escapeInvalid && utils.isInvalidBrace(parent);
      const invalidNode = node.invalid === true && options.escapeInvalid === true;
 diff --git a/lib/utils.js b/lib/utils.js
-index d19311f..6fe265f 100644
 --- a/lib/utils.js
 +++ b/lib/utils.js
-@@ -1,5 +1,46 @@
+@@ -1,4 +1,60 @@
  'use strict';
-
++
 +// Maintained depth-only mitigation for GHSA-vfj7-8cjw-p6xm, not an upstream release.
 +// A stricter finite threshold is honored; no option can raise the ceiling.
 +exports.maxDepth = options => Number.isFinite(options.maxDepth)
 +  ? Math.min(100, options.maxDepth)
 +  : 100;
 +
-+// Check the whole structural path before a recursive walker can short-circuit
-+// (invalid/range/value nodes) or restart stringify with a new depth counter.
-+// Track ancestors, not all visited nodes: shared DAG children remain valid and
-+// must be checked on every path, including their longest path from the root.
++// Preflight every structural subtree before recursive walkers short-circuit.
++// Completed subtree heights make shared DAG paths linear in nodes and edges;
++// check that height at every incoming depth so aliases cannot hide a long path.
 +exports.assertDepth = (ast, maxDepth) => {
 +  const active = new Set();
-+  const stack = [{ node: ast, depth: ast.type === 'root' ? 0 : 1 }];
++  const heights = new Map();
++  const stack = [{ node: ast, depth: ast.type === 'root' ? 0 : 1, height: 0 }];
++  const check = depth => {
++    if (depth > maxDepth) {
++      throw new RangeError(`AST depth (${depth}), exceeds max depth (${maxDepth})`);
++    }
++  };
 +
 +  while (stack.length) {
 +    const frame = stack[stack.length - 1];
@@ -169,26 +173,35 @@ index d19311f..6fe265f 100644
 +        stack.pop();
 +        continue;
 +      }
-+      if (frame.depth > maxDepth) {
-+        throw new RangeError(`AST depth (${frame.depth}), exceeds max depth (${maxDepth})`);
-+      }
-+      if (active.has(frame.node)) {
-+        throw new RangeError('AST node chain contains a cycle');
-+      }
++      check(frame.depth);
 +      active.add(frame.node);
 +      frame.children = frame.node.nodes[Symbol.iterator]();
 +    }
 +
 +    const child = frame.children.next();
 +    if (child.done) {
++      heights.set(frame.node, frame.height);
 +      active.delete(frame.node);
 +      stack.pop();
-+    } else {
-+      stack.push({ node: child.value, depth: child.value.nodes ? frame.depth + 1 : frame.depth });
++      if (stack.length) {
++        const parent = stack[stack.length - 1];
++        parent.height = Math.max(parent.height, frame.height + 1);
++      }
++    } else if (child.value.nodes) {
++      if (active.has(child.value)) {
++        throw new RangeError('AST node chain contains a cycle');
++      }
++      const depth = frame.depth + 1;
++      const height = heights.get(child.value);
++      if (height !== undefined) {
++        check(depth + height);
++        frame.height = Math.max(frame.height, height + 1);
++      } else {
++        stack.push({ node: child.value, depth, height: 0 });
++      }
 +    }
 +  }
 +};
-+
+
  exports.isInteger = num => {
    if (typeof num === 'number') {
-     return Number.isInteger(num);

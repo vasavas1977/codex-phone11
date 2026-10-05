@@ -24,8 +24,13 @@ A shared **iterative** AST preflight checks the entire structural path before
 invalid, dollar, value or range short-circuits. This closes a proposal gap:
 a direct AST of depth 199 with an invalid subtree at depth 100 was accepted by
 expansion when nested stringify restarted its counter. Ancestor tracking rejects
-node cycles without rejecting shared DAG nodes; every path is checked so a
-previously visited shallow alias cannot hide a deeper path.
+node cycles without rejecting shared DAG nodes. Completed subtree heights are
+memoized, and each incoming depth is checked against its cached height: a shallow
+alias cannot hide a deeper path. Independent review reproduced exponential
+preflight work on a compact 36-object value-short-circuit DAG in the initial
+candidate. The corrected cache makes that traversal linear in structural nodes
+and edges; three bounded subprocess regressions preserve released output for
+80-level compact DAGs without enumerating their paths.
 
 The maximum is 100 structural levels. Finite numeric `maxDepth` uses
 `Math.min(100, value)`: stricter fractional thresholds are honored before the
@@ -52,7 +57,7 @@ The focused suite checks 100/101, mixed syntax, stricter fractional and impossib
 options, deep/cyclic/direct ASTs, invalid subtrees, longest-path DAG aliases,
 stringify `escapeInvalid`, 6,000 seeded shallow compatibility comparisons,
 actual micromatch 4.0.8 compilation and an actual chokidar 3.6.0 temporary-file watch.
-Scratch-only execution registers 111 tests; it makes no installed-resolution claim.
+Scratch-only execution registers 114 tests; it makes no installed-resolution claim.
 
 All 12 unchanged published upstream test files at the npm gitHead execute 764
 registered tests on original, proposal and patched sources, with zero failures.
@@ -63,7 +68,7 @@ by upstream are not counted as executed tests; this is not the proposal author's
 retained separately for independent review.
 
 Exact cached pnpm 9.12.0 generated patch hash
-`x2ql2lyeuvtglld7b3cdikerua`. Its full offline lock-only regeneration also rewrote
+`z5dn2cikq3bclbpyfwz5ssf4ay`. Its full offline lock-only regeneration also rewrote
 unrelated peer keys; that raw result was retained, and only its braces patch
 entry, snapshot and two consumer references were carried onto the original
 lock. Reversing those four braces-specific changes yields the byte-identical
@@ -74,14 +79,15 @@ A separate owned three-package consumer fixture uses the exact 16-package
 subset of this lock and read-only copies of already-local CAS inputs. Actual
 pnpm 9.12.0 `--offline --frozen-lockfile --ignore-scripts` installation applies the
 patch with zero downloads, without modifying main node_modules or shared cache.
-All 112 tests pass with the required installed-resolution mode: both consumers'
+All 115 tests pass with the required installed-resolution mode: both consumers'
 actual braces files match this exact patch and reject hostile inputs. An initial
 newly resolved fixture selected uncached picomatch 2.3.2 and failed offline;
 using the existing lock's exact 2.3.1 subset resolved that fixture mismatch.
 This subset proof does not claim a full Phone11 frozen install or hosted CI pass.
 
-The hosted/full-project gate must run at the candidate checkout, after its real
-frozen install with scripts disabled:
+The standalone security gate runs at the candidate checkout with scripts
+disabled. Daily-use hosted CI preserves its existing normal frozen install and
+native source postinstall, then runs the same required installed-consumer test:
 
 ```sh
 test "$(pnpm --version)" = "9.12.0"
@@ -89,7 +95,7 @@ pnpm install --frozen-lockfile --ignore-scripts
 PHONE11_BRACES_REQUIRE_INSTALLED_PATCH=1 node --test tests/phone11-braces-depth-mitigation.test.mjs
 ```
 
-Require 112 passed tests, zero failed/cancelled/skipped/todo. Do not omit the
+Require 115 passed tests, zero failed/cancelled/skipped/todo. Do not omit the
 installed-resolution flag: the test then verifies actual installed micromatch
 and chokidar resolution and source bytes, rather than only a scratch patch.
 A retained scanner finding is expected while version 3.0.3 remains affected;

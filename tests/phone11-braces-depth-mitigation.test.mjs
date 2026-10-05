@@ -77,6 +77,28 @@ const astChain = (depth, leaf = { type: 'text', value: 'a' }) => {
 const guarded = error => (error instanceof SyntaxError || error instanceof RangeError)
   && /(?:depth|cycle)/.test(error.message) && !/call stack/i.test(error.message);
 
+for (const method of recursive) {
+  test(`${method} compact value-short-circuit DAG completes without repeating every path`, () => {
+    const make = () => {
+      let node = { type: 'text', value: 'x' };
+      for (let index = 0; index < 80; index++) node = { type: 'paren', value: 'x', nodes: [node, node] };
+      return { type: 'root', nodes: [node] };
+    };
+    const expected = original[method](make());
+    const script = `
+      const braces = require(process.argv[1]);
+      let node = { type: 'text', value: 'x' };
+      for (let index = 0; index < 80; index++) node = { type: 'paren', value: 'x', nodes: [node, node] };
+      console.log(JSON.stringify(braces[process.argv[2]]({ type: 'root', nodes: [node] })));
+    `;
+    const result = spawnSync(process.execPath, ['-e', script, patchedDirectory, method], {
+      encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024,
+    });
+    assert.equal(result.status, 0, result.error?.message || result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), expected);
+  });
+}
+
 test('manifest and every locked braces edge retain version3.0.3 and bind the generated patch hash', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   assert.equal(manifest.pnpm.patchedDependencies['braces@3.0.3'], 'patches/braces@3.0.3.patch');
