@@ -17,6 +17,7 @@ export type MeetingJoinStage = (typeof meetingJoinStages)[number];
 
 /** Coarse admission/SDK categories only. Raw errors can contain credentials. */
 export const meetingJoinReasons = [
+  "phone_call_active",
   "unauthorized",
   "forbidden",
   "not_found",

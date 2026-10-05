@@ -21,11 +21,13 @@ function EnabledMeetingPrejoin({
   user,
   admittedMeetings,
   initialMeetingCode,
+  onOpenInvitations,
   onBack,
 }: {
   user: { id: number; name?: string | null };
   admittedMeetings: readonly AdmittedMeeting[];
   initialMeetingCode?: string;
+  onOpenInvitations?: () => void;
   onBack: () => void;
 }) {
   const join = trpc.meetings.join.useMutation();
@@ -54,6 +56,7 @@ function EnabledMeetingPrejoin({
       authenticatedDisplayName={user.name ?? ""}
       admittedMeetings={admittedMeetings}
       initialMeetingCode={initialMeetingCode}
+      onOpenInvitations={onOpenInvitations}
       onJoin={async (preferences) => {
         let stage: MeetingJoinStage = "bindings";
         const joiningOwnerId = user.id;
@@ -93,7 +96,7 @@ function EnabledMeetingPrejoin({
               (call) => call.status !== "disconnected",
             );
           if (sipBusy)
-            throw new Error("Finish your Phone call before joining a meeting.");
+            throw new MeetingJoinFailure("audio_start", { reason: "phone_call_active" });
           stage = "admission";
           const admission = await join.mutateAsync({
             meetingId: preferences.meetingCode,
@@ -234,6 +237,9 @@ export default function ConferenceScreen() {
           initialMeetingCode={requestedMeeting}
           user={user}
           admittedMeetings={displayedMeetings}
+          onOpenInvitations={!fromConversation ? () => {
+            if (getAuthSnapshot().user === user) router.push("/(tabs)/teamchat");
+          } : undefined}
           onBack={() =>
             router.canGoBack() ? router.back() : router.replace("/(tabs)")
           }

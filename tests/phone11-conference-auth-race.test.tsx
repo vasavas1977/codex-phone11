@@ -28,6 +28,10 @@ const state = vi.hoisted(() => ({
   push: vi.fn(),
   createButton: null as any,
   capabilitiesAvailable: true,
+  availableRooms: [{ meetingId: "admitted-id" }],
+  tenantRooms: [] as { meetingId: string; tenantId: number; title?: string }[],
+  prejoinProps: null as any,
+  sipState: { incomingCall: null, activeCalls: {} } as { incomingCall: { status: string } | null; activeCalls: Record<string, { status: string }> },
   routeCleanups: [] as (() => void)[],
 }));
 
@@ -66,14 +70,16 @@ vi.mock("@/lib/trpc", () => ({
   trpc: { meetings: {
     join: { useMutation: () => ({ mutateAsync: state.admit }) },
     capabilities: { useQuery: () => ({ data: { available: state.capabilitiesAvailable }, isLoading: false, isFetching: false }) },
-    available: { useQuery: () => ({ data: [{ meetingId: "admitted-id" }], isLoading: false, isFetching: false,
+    available: { useQuery: () => ({ data: state.availableRooms, isLoading: false, isFetching: false,
       error: state.generalMeetingsError ? new Error("Global list unavailable") : null }) },
-    availableForTenant: { useQuery: () => ({ data: [], isLoading: false, isFetching: false }) },
+    availableForTenant: { useQuery: () => ({ data: state.tenantRooms, isLoading: false, isFetching: false }) },
     availableMeetingForTenant: { useQuery: () => ({ data: state.exactMeeting, isLoading: false, isFetching: false }) },
   } },
 }));
 vi.mock("@/components/meetings/meeting-prejoin", () => ({
-  MeetingPrejoin: ({ onJoin, onBack }: { onJoin?: typeof state.onJoin; onBack: () => void }) => {
+  MeetingPrejoin: (props: any) => {
+    const { onJoin, onBack } = props;
+    state.prejoinProps = props;
     state.onJoin = onJoin;
     state.onBack = onBack;
     return createElement("div", null, "Meeting prejoin");
@@ -85,7 +91,7 @@ vi.mock("@/components/screen-container", () => ({
 vi.mock("@/lib/meetings/web-session", () => ({ WebMeetingLifecycle: { join: state.webJoin } }));
 vi.mock("@/lib/meetings/native-session", () => ({ NativeMeetingLifecycle: { join: state.nativeJoin } }));
 vi.mock("@/lib/sip/call-store", () => ({
-  useSipCallStore: { getState: () => ({ incomingCall: null, activeCalls: {} }) },
+  useSipCallStore: { getState: () => state.sipState },
 }));
 
 beforeEach(() => {
@@ -106,6 +112,10 @@ beforeEach(() => {
   state.push.mockClear();
   state.createButton = null;
   state.capabilitiesAvailable = true;
+  state.availableRooms = [{ meetingId: "admitted-id" }];
+  state.tenantRooms = [];
+  state.prejoinProps = null;
+  state.sipState = { incomingCall: null, activeCalls: {} };
   state.routeCleanups = [];
   const admission = new Promise<{ url: string; token: string }>(resolve => {
     state.resolveAdmission = resolve;
@@ -206,6 +216,55 @@ it("opens a direct invitation from exact admission even if the general list fail
   state.generalMeetingsError = true;
   renderToStaticMarkup(createElement(ConferenceScreen));
   expect(state.onJoin).toBeTypeOf("function");
+  expect(state.prejoinProps.initialMeetingCode).toBe("admitted-id");
+  expect(state.prejoinProps.admittedMeetings).toEqual([{ meetingId: "admitted-id", title: undefined }]);
+  expect(state.prejoinProps.onOpenInvitations).toBeUndefined();
+});
+
+it("preserves the safe title for the exact admitted channel invitation", () => {
+  state.params = { meetingId: "admitted-id", tenantId: "1", source: "channel" };
+  state.tenantRooms = [{ meetingId: "admitted-id", tenantId: 1, title: "Planning team" }];
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  expect(state.prejoinProps.admittedMeetings).toEqual([{ meetingId: "admitted-id", title: "Planning team" }]);
+  expect(state.prejoinProps.initialMeetingCode).toBe("admitted-id");
+  expect(state.prejoinProps.onOpenInvitations).toBeUndefined();
+});
+
+it("routes ordinary multiple-room entry to existing Team Chat invitations without choosing a first room", () => {
+  state.params = { meetingId: "" };
+  state.availableRooms = [{ meetingId: "first-opaque-id" }, { meetingId: "second-opaque-id" }];
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  expect(state.prejoinProps.initialMeetingCode).toBe("");
+  expect(state.prejoinProps.admittedMeetings).toEqual(state.availableRooms);
+  state.prejoinProps.onOpenInvitations();
+  expect(state.push).toHaveBeenCalledWith("/(tabs)/teamchat");
+  expect(state.admit).not.toHaveBeenCalled();
+  state.push.mockClear(); state.currentUserId = 3002;
+  state.prejoinProps.onOpenInvitations(); expect(state.push).not.toHaveBeenCalled();
+});
+
+it("keeps ordinary entry unavailable when there are no admitted rooms", () => {
+  state.params = { meetingId: "" }; state.availableRooms = [];
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  expect(state.onJoin).toBeUndefined();
+  expect(state.prejoinProps.unavailableReason).toBe("There are no admitted meetings for this account.");
+});
+
+it.each(["incoming", "active"])("preserves actionable typed %s Phone-call refusal and requests fresh admission after the call ends", async kind => {
+  state.platform = "ios";
+  if (kind === "incoming") state.sipState.incomingCall = { status: "ringing" };
+  else state.sipState.activeCalls.call = { status: "connected" };
+  renderToStaticMarkup(createElement(ConferenceScreen));
+  const failure = await state.onJoin!(preferences).catch(error => error);
+  expect(failure).toMatchObject({ stage: "audio_start", reason: "phone_call_active" });
+  expect(failure).not.toHaveProperty("cause");
+  expect(state.admit).not.toHaveBeenCalled(); expect(state.nativeJoin).not.toHaveBeenCalled();
+  expect(state.push).not.toHaveBeenCalled();
+  state.sipState = { incomingCall: null, activeCalls: {} };
+  state.admit.mockResolvedValueOnce({ url: "wss://fresh.invalid", token: "fresh-token" });
+  await state.onJoin!(preferences);
+  expect(state.admit).toHaveBeenCalledOnce(); expect(state.nativeJoin).toHaveBeenCalledOnce();
+  expect(state.push).toHaveBeenCalledWith("/conference/room");
 });
 
 it("does not open a direct invitation from another selected workspace", () => {

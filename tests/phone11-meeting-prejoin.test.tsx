@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     | { onPress: () => unknown; disabled: boolean },
   choices: {} as Record<string, () => unknown>,
   switches: {} as Record<string, { value: boolean; onValueChange: (value: boolean) => void }>,
+  openInvitations: undefined as (() => void) | undefined,
 }));
 
 vi.mock("react", async () => {
@@ -57,6 +58,7 @@ vi.mock("react-native", () => ({
       mocks.joinButton = { onPress, disabled: Boolean(disabled) };
     if (accessibilityLabel?.startsWith("Select admitted meeting "))
       mocks.choices[accessibilityLabel] = onPress;
+    if (accessibilityLabel === "Open Team Chat invitations") mocks.openInvitations = onPress;
     return createElement("button", { disabled, "aria-label": accessibilityLabel }, children);
   },
   ScrollView: element,
@@ -98,6 +100,7 @@ beforeEach(() => {
   mocks.joinButton = undefined;
   mocks.choices = {};
   mocks.switches = {};
+  mocks.openInvitations = undefined;
 });
 
 function render(onJoin: () => Promise<void>, props: Partial<MeetingPrejoinProps> = {}) {
@@ -127,6 +130,7 @@ it("shows the authenticated name read-only and joins an admitted meeting without
   expect(html).toContain("Your camera and microphone stay off until you join.");
   expect(html).toContain("Join muted");
   expect(html).toContain("Join with video off");
+  expect(html).not.toContain("12345678");
   expect(mocks.joinButton?.disabled).toBe(false);
 
   await mocks.joinButton?.onPress();
@@ -188,19 +192,61 @@ it("shows only the exact linked admitted meeting when multiple meetings are avai
   });
 });
 
-it("keeps the generic chooser when no meeting ID was supplied", () => {
+it("offers named Team Chat invitations instead of opaque multiple-room choices", () => {
   const firstId = "11111111-1111-4111-8111-111111111111";
   const secondId = "22222222-2222-4222-8222-222222222222";
+  const onJoin = vi.fn(), openInvitations = vi.fn();
   const html = renderToStaticMarkup(createElement(MeetingPrejoin, {
     admittedMeetings: [{ meetingId: firstId }, { meetingId: secondId }],
-    onJoin: vi.fn().mockResolvedValue(undefined),
+    onJoin, onOpenInvitations: openInvitations,
     onBack: () => undefined,
   }));
 
-  expect(html).toContain("Select an admitted meeting.");
-  expect(html).toContain("Meeting 1 · 11111111…11111");
-  expect(html).toContain("Meeting 2 · 22222222…22222");
-  expect(Object.keys(mocks.choices)).toHaveLength(2);
+  expect(html).toContain("Choose your meeting in Team Chat");
+  expect(html).toContain("Open a meeting invitation in Team Chat");
+  expect(html).not.toContain(firstId); expect(html).not.toContain(secondId);
+  expect(html).not.toMatch(/11111111|22222222|Select admitted|Meeting code/);
+  expect(Object.keys(mocks.choices)).toHaveLength(0);
+  expect(onJoin).not.toHaveBeenCalled(); mocks.openInvitations!();
+  expect(openInvitations).toHaveBeenCalledOnce();
+});
+
+it("requires a named invitation when only some generic rooms have safe titles", () => {
+  const onJoin = vi.fn();
+  const html = render(onJoin, { admittedMeetings: [
+    { meetingId: "opaque-untitled" }, { meetingId: "opaque-titled", title: "Team planning" },
+  ], onOpenInvitations: vi.fn() });
+  expect(html).toContain("Choose your meeting in Team Chat");
+  expect(html).not.toContain("opaque-"); expect(Object.keys(mocks.choices)).toHaveLength(0);
+  expect(onJoin).not.toHaveBeenCalled();
+});
+
+it("keeps safe named generic choices explicit and never renders their opaque IDs", async () => {
+  const onJoin = vi.fn().mockResolvedValue(undefined);
+  const props = { admittedMeetings: [
+    { meetingId: "opaque-planning", title: "Team planning" },
+    { meetingId: "opaque-support", title: "Support" },
+  ] };
+  const html = render(onJoin, props);
+  expect(html).toContain("Team planning"); expect(html).toContain("Support");
+  expect(html).not.toContain("opaque-"); expect(mocks.joinButton?.disabled).toBe(true);
+  mocks.choices["Select admitted meeting 2, Support"](); render(onJoin, props);
+  await mocks.joinButton?.onPress();
+  expect(onJoin).toHaveBeenCalledWith({ meetingCode: "opaque-support", microphoneEnabled: false, cameraEnabled: false });
+});
+
+it("shows fixed Phone-call recovery guidance and clears it on an explicit successful retry", async () => {
+  const onJoin = vi.fn().mockRejectedValueOnce(new MeetingJoinFailure("audio_start",
+    { reason: "phone_call_active" }, new Error("token=private wss://private.invalid")))
+    .mockResolvedValueOnce(undefined);
+  render(onJoin); await mocks.joinButton?.onPress();
+  const html = render(onJoin);
+  expect(html).toContain("Finish your Phone call before joining this meeting, then try again.");
+  expect(html).not.toContain("private"); expect(html).not.toContain("wss://");
+  expect(mocks.joinButton?.disabled).toBe(false);
+  await mocks.joinButton?.onPress();
+  expect(render(onJoin)).not.toContain("Finish your Phone call");
+  expect(onJoin).toHaveBeenCalledTimes(2);
 });
 
 it("shows a tenant-verified linked title without other choices and joins by opaque meeting ID", async () => {
@@ -277,13 +323,14 @@ it("requires an explicit choice when a stale link has one different admitted mee
 
   const first = renderStaleLink();
   expect(first).toContain("That meeting is no longer available.");
-  expect(first).toContain("Meeting 1 · 11111111…11111");
+  expect(first).toContain("Your meeting");
+  expect(first).not.toContain(available);
   expect(mocks.joinButton?.disabled).toBe(true);
   expect(onJoin).not.toHaveBeenCalled();
 
-  mocks.choices[`Select admitted meeting 1, ID ${available}`]();
+  mocks.choices["Select admitted meeting 1"]();
   const selected = renderStaleLink();
-  expect(selected).toContain("Meeting 1 · 11111111…11111 · Selected");
+  expect(selected).toContain("Your meeting · Selected");
   expect(mocks.joinButton?.disabled).toBe(false);
   await mocks.joinButton?.onPress();
   expect(onJoin).toHaveBeenCalledWith({

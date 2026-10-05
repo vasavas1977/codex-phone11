@@ -20,6 +20,8 @@ import { MeetingJoinFailure, meetingJoinFailureReference } from "@/lib/meetings/
 /** Fixed copy from typed milestones only; never inspect a raw error or cause. */
 function joinFailureMessage(error: unknown): string {
   if (error instanceof MeetingJoinFailure) {
+    if (error.stage === "audio_start" && error.reason === "phone_call_active")
+      return "Finish your Phone call before joining this meeting, then try again.";
     switch (error.stage) {
       case "admission":
         if (error.reason === "unavailable")
@@ -55,6 +57,8 @@ export interface MeetingPrejoinProps {
   onJoin?: (preferences: MeetingJoinPreferences) => Promise<void>;
   unavailableReason?: string;
   onRetryAvailability?: () => void;
+  /** Opens existing named invitations; never selects an opaque room for the user. */
+  onOpenInvitations?: () => void;
   checkingAvailability?: boolean;
   joinLabel?: string;
   onBack: () => void;
@@ -68,6 +72,7 @@ export function MeetingPrejoin({
   onJoin,
   unavailableReason,
   onRetryAvailability,
+  onOpenInvitations,
   checkingAvailability = false,
   joinLabel = "Join meeting",
   onBack,
@@ -89,8 +94,13 @@ export function MeetingPrejoin({
   const [error, setError] = useState<string | null>(null);
   const [failureReference, setFailureReference] = useState<string | null>(null);
   const joinInFlight = useRef(false);
+  const needsNamedInvitation = !deepLinkedMeeting && (admittedMeetings?.length ?? 0) > 1 &&
+    admittedMeetings!.some(meeting => !safeMeetingTitle(meeting.title));
   const unavailable =
     unavailableReason ||
+    (needsNamedInvitation
+      ? "Open a meeting invitation in Team Chat to join the right conversation."
+      : null) ||
     (!onJoin
       ? "Video meetings are not connected for this account yet. Ask your administrator to enable meetings."
       : null);
@@ -142,11 +152,19 @@ export function MeetingPrejoin({
               accessibilityRole="header"
               style={[styles.title, { color: colors.foreground }]}
             >
-              Meetings aren’t available
+              {needsNamedInvitation ? "Choose your meeting in Team Chat" : "Meetings aren’t available"}
             </Text>
             <Text style={[styles.description, { color: colors.muted }]}>
               {unavailable}
             </Text>
+            {needsNamedInvitation && onOpenInvitations && <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open Team Chat invitations"
+              onPress={onOpenInvitations}
+              style={[styles.retry, { borderColor: colors.primary }]}
+            >
+              <Text style={[styles.retryText, { color: colors.primary }]}>Open Team Chat</Text>
+            </Pressable>}
             {onRetryAvailability && (
               <Pressable
                 accessibilityRole="button"
@@ -278,7 +296,7 @@ export function MeetingPrejoin({
                             accessibilityRole="button"
                             accessibilityLabel={title
                               ? `Select admitted meeting ${index + 1}, ${title}`
-                              : `Select admitted meeting ${index + 1}, ID ${meeting.meetingId}`}
+                              : `Select admitted meeting ${index + 1}`}
                             accessibilityState={{ selected }}
                             disabled={joining}
                             onPress={() => setMeetingCode(meeting.meetingId)}
@@ -295,7 +313,7 @@ export function MeetingPrejoin({
                             ]}
                           >
                             <Text style={{ color: colors.foreground }}>
-                              {title ?? `Meeting ${index + 1} · ${meeting.meetingId.slice(0, 8)}…${meeting.meetingId.slice(-5)}`}{selected ? " · Selected" : ""}
+                              {title ?? "Your meeting"}{selected ? " · Selected" : ""}
                             </Text>
                           </Pressable>
                         );
