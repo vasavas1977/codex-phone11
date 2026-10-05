@@ -79,7 +79,7 @@ function sourceBinding(repoRoot: string): { sourceSha: string; assertCurrent(): 
     { cwd: repoRoot, maxBuffer: 4_000_000 })) };
 }
 
-export type HelperReceiptGate = { sourceSha: string; assertCurrent(helperPath?: string, copiedDirectory?: string): Promise<void> };
+export type HelperReceiptGate = { sourceSha: string; assertCurrent(helperPath?: string, copiedDirectory?: string, pinnedManifestSha256?: string): Promise<void> };
 
 /** Consumes the existing trusted-manual Windows workflow receipt, not a newly minted manifest. */
 export async function verifyWindowsHelperSourceReceipt(options: {
@@ -105,7 +105,7 @@ export async function verifyWindowsHelperSourceReceipt(options: {
     inputs.cmakeSha256 === source.digest('desktop/native/CMakeLists.txt'), 'native input source mismatch');
   const vendor = record(inputs.vendorSha256, 'missing vendor inputs');
   requireValue(Object.keys(vendor).sort().join(',') === 'siprix.dll,siprix.lib,siprixMedia.dll', 'invalid vendor input set');
-  async function assertCurrent(helperPath = options.helperPath, copiedDirectory?: string): Promise<void> {
+  async function assertCurrent(helperPath = options.helperPath, copiedDirectory?: string, pinnedManifestSha256?: string): Promise<void> {
     source.assertCurrent();
     requireValue(sha(await readReceipt(options.receiptPath)) === sha(bytes), 'receipt changed during packaging');
     requireValue(git(options.sdkRoot, 'rev-parse', 'HEAD') === options.sdkRevision &&
@@ -123,11 +123,18 @@ export async function verifyWindowsHelperSourceReceipt(options: {
       requireDigestSync(join(options.sdkRoot, 'win/siprix.framework/lib', name), vendor[name], `SDK input mismatch: ${name}`);
     requireValue(lstatSync(helperPath).size === helper.bytes, 'helper size mismatch');
     requireDigestSync(helperPath, helper.sha256, 'helper bytes mismatch');
-    if (copiedDirectory !== undefined) {
+    if (copiedDirectory !== undefined || pinnedManifestSha256 !== undefined) {
+      requireValue(copiedDirectory !== undefined && isAbsolute(copiedDirectory) && hash(pinnedManifestSha256),
+        'copied Windows directory and manifest pin are required together');
+      const resourcesReal = realpathSync(dirname(dirname(copiedDirectory)));
+      const manifestPath = join(dirname(dirname(copiedDirectory)), 'helper-integrity.json');
+      requireValue(realpathSync(manifestPath) === join(resourcesReal, 'helper-integrity.json'),
+        'copied Windows manifest escapes resource anchor');
+      requireDigestSync(manifestPath, pinnedManifestSha256, 'copied Windows manifest mismatch');
       const copiedFiles = { 'phone11_siprix_helper.exe': helper.sha256, 'siprix.dll': vendor['siprix.dll'],
         'siprixMedia.dll': vendor['siprixMedia.dll'] };
       requireValue(isAbsolute(copiedDirectory) && lstatSync(copiedDirectory).isDirectory() &&
-        realpathSync(copiedDirectory) === join(realpathSync(dirname(dirname(copiedDirectory))), 'helper', 'win') &&
+        realpathSync(copiedDirectory) === join(resourcesReal, 'helper', 'win') &&
         resolve(helperPath) === resolve(join(copiedDirectory, 'phone11_siprix_helper.exe')) &&
         isDeepStrictEqual(readdirSync(copiedDirectory).sort(), Object.keys(copiedFiles).sort()),
         'copied Windows helper inventory mismatch');

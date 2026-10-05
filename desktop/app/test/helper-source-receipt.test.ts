@@ -298,7 +298,7 @@ for (const mutation of ['native-receipt', 'input-receipt', 'sdk-header', 'sdk-ex
   });
 
 
-for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'copied-sdk-dll', 'copied-media-dll', 'copied-extra', 'copied-missing', 'copied-symlink', 'copied-parent-symlink', 'aliased-base'])
+for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'copied-sdk-dll', 'copied-media-dll', 'copied-extra', 'copied-missing', 'copied-symlink', 'copied-parent-symlink', 'aliased-base', 'manifest-bytes', 'manifest-leaf-link', 'manifest-missing'])
   test(`actual Windows success tail ${mutation === 'none' ? 'accepts current inputs' : mutation === 'aliased-base' ? 'accepts aliased base inputs' : `rejects persistent ${mutation} during final lstat`}`, async () => {
     const f = await fixture(), original = fsPromises.lstat;
     try {
@@ -335,6 +335,13 @@ for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sd
           if (mutation === 'copied-media-dll') writeFileSync(join(helperDir, 'siprixMedia.dll'), 'changed');
           if (mutation === 'copied-extra') writeFileSync(join(helperDir, 'shadow.dll'), 'unlisted');
           if (mutation === 'copied-missing') unlinkSync(join(helperDir, 'siprix.dll'));
+          if (mutation === 'manifest-bytes') writeFileSync(join(packaged, 'helper-integrity.json'), '{}');
+          if (mutation === 'manifest-missing') unlinkSync(join(packaged, 'helper-integrity.json'));
+          if (mutation === 'manifest-leaf-link') {
+            const external = join(f.root, 'outside-manifest');
+            renameSync(join(packaged, 'helper-integrity.json'), external);
+            symlinkSync(external, join(packaged, 'helper-integrity.json'));
+          }
           if (mutation === 'copied-parent-symlink') {
             const external = join(f.root, 'outside-helper');
             renameSync(join(packaged, 'helper'), external); symlinkSync(external, join(packaged, 'helper'));
@@ -357,11 +364,15 @@ for (const mutation of ['none', 'head', 'receipt', 'sdk-head', 'sdk-header', 'sd
         'verifyPackagedHelper', 'pin', 'readFile', 'join', 'resources', 'lstat', 'appPath', 'process', source.slice(start, end));
       const attempt = tail(provenance, helperExecutable, assertCommittedDesktopSource, f.repoRoot, verifyPackagedHelper,
         pin, fsPromises.readFile, join, resources, fsPromises.lstat, appPath, { stdout: { write: (value: string) => outputs.push(value) } });
-      if (mutation === 'none' || mutation === 'aliased-base') { await attempt; assert.deepEqual(outputs, [`${appPath}\n`]); }
+      if (mutation === 'none' || mutation === 'aliased-base') {
+        await attempt; assert.deepEqual(outputs, [`${appPath}\n`]);
+        assert.equal(await verifyPackagedHelper(helperExecutable(packaged, 'win32'), packaged, pin, 'win32'), true,
+          'accepted copied inputs still satisfy the actual loader verifier');
+      }
       else { await assert.rejects(attempt); assert.deepEqual(outputs, []); }
       assert.equal(inspected, true, 'mutation boundary actually ran');
-      if (mutation === 'copied-parent-symlink')
+      if (mutation.startsWith('copied-') || mutation.startsWith('manifest-'))
         assert.equal(await verifyPackagedHelper(helperExecutable(packaged, 'win32'), packaged, pin, 'win32'), false,
-          'the loader integrity gate also rejects the persistent parent alias');
+          'the actual loader also rejects the persistent copied-input substitution');
     } finally { fsPromises.lstat = original; syncBuiltinESMExports(); await f.cleanup(); }
   });

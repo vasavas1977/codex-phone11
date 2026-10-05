@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     const manifest = Buffer.from(JSON.stringify({ platform: 'win32', files, symlinks: {} }, null, 2) + '\n');
     await writeFile(join(stage, 'helper-integrity.json'), manifest);
     const pin = sha(manifest);
-    await provenance.assertCurrent(helperExecutable(stage, 'win32'), join(stage, 'helper/win'));
+    await provenance.assertCurrent(helperExecutable(stage, 'win32'), join(stage, 'helper/win'), pin);
     if (!(await verifyPackagedHelper(helperExecutable(stage, 'win32'), stage, pin, 'win32')))
       throw new Error('Staged Windows helper integrity verification failed');
     assertCommittedDesktopSource(repoRoot);
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
       stdio: 'inherit',
     });
     assertCommittedDesktopSource(repoRoot);
-    await provenance.assertCurrent(helperExecutable(stage, 'win32'), join(stage, 'helper/win'));
+    await provenance.assertCurrent(helperExecutable(stage, 'win32'), join(stage, 'helper/win'), pin);
     const archive = execFileSync('git', ['archive', 'HEAD', 'desktop/app'], { cwd: repoRoot, maxBuffer: 20_000_000 });
     execFileSync('/usr/bin/tar', ['-xf', '-', '-C', exportRoot], { input: archive });
     const exportedApp = join(exportRoot, 'desktop', 'app');
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
       throw new Error('Packaged Windows main does not contain the pinned manifest hash');
     if (!(await lstat(join(appPath, 'Phone11-Desktop-Trial.exe'))).isFile())
       throw new Error('Windows Electron executable is missing');
-    await provenance.assertCurrent(helperExecutable(packaged, 'win32'), join(packaged, 'helper/win'));
+    await provenance.assertCurrent(helperExecutable(packaged, 'win32'), join(packaged, 'helper/win'), pin);
     assertCommittedDesktopSource(repoRoot);
     process.stdout.write(`${appPath}\n`);
   } finally {
