@@ -463,6 +463,20 @@ error-bearing files that matched base `6ed24449` byte for byte; its raw failure
 and scope comparison are retained. This is not a claim of clean whole-repository
 lint or a reason to weaken the required release checks.
 
+The first fresh `602391bd` hosted run passed all ten daily-use jobs: 25 strict
+suites executed 986 cases without skips, with 115 installed braces cases and
+29 installed native/manifest cases also passing. Its desktop, authentication
+and release-guard workflows passed. Mobile exposed two separate CI failures:
+three synthetic configuration cases rejected the newly imported screen plugin,
+and the screen compile job could not find `rg` before reaching compilation.
+The corrected synthetic harness loads the actual plugin through its existing
+restricted VM and retains filesystem/environment/import denials; ten actual
+configuration cases then passed without skips. The project guard uses portable
+`grep -F --` with independently verified present/missing-project behavior.
+Neither correction changes native capture source or enables a flag. Old run
+receipts retain `602391bd`; the failed ON job is not compilation or merged
+manifest proof, and final hosted acceptance requires a fresh corrected run.
+
 ## Live and package boundary
 
 After the owner signed in, a fresh read-only portal check confirmed extension
