@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { lstat, readFile, readlink, readdir, realpath } from 'node:fs/promises';
 import { lstatSync, readFileSync, readlinkSync, readdirSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { helperExecutable, verifyPackagedHelper } from '../src/helper-verifier';
 
@@ -79,7 +79,7 @@ function sourceBinding(repoRoot: string): { sourceSha: string; assertCurrent(): 
     { cwd: repoRoot, maxBuffer: 4_000_000 })) };
 }
 
-export type HelperReceiptGate = { sourceSha: string; assertCurrent(helperPath?: string): Promise<void> };
+export type HelperReceiptGate = { sourceSha: string; assertCurrent(helperPath?: string, copiedDirectory?: string): Promise<void> };
 
 /** Consumes the existing trusted-manual Windows workflow receipt, not a newly minted manifest. */
 export async function verifyWindowsHelperSourceReceipt(options: {
@@ -105,7 +105,7 @@ export async function verifyWindowsHelperSourceReceipt(options: {
     inputs.cmakeSha256 === source.digest('desktop/native/CMakeLists.txt'), 'native input source mismatch');
   const vendor = record(inputs.vendorSha256, 'missing vendor inputs');
   requireValue(Object.keys(vendor).sort().join(',') === 'siprix.dll,siprix.lib,siprixMedia.dll', 'invalid vendor input set');
-  async function assertCurrent(helperPath = options.helperPath): Promise<void> {
+  async function assertCurrent(helperPath = options.helperPath, copiedDirectory?: string): Promise<void> {
     source.assertCurrent();
     requireValue(sha(await readReceipt(options.receiptPath)) === sha(bytes), 'receipt changed during packaging');
     requireValue(git(options.sdkRoot, 'rev-parse', 'HEAD') === options.sdkRevision &&
@@ -123,6 +123,16 @@ export async function verifyWindowsHelperSourceReceipt(options: {
       requireDigestSync(join(options.sdkRoot, 'win/siprix.framework/lib', name), vendor[name], `SDK input mismatch: ${name}`);
     requireValue(lstatSync(helperPath).size === helper.bytes, 'helper size mismatch');
     requireDigestSync(helperPath, helper.sha256, 'helper bytes mismatch');
+    if (copiedDirectory !== undefined) {
+      const copiedFiles = { 'phone11_siprix_helper.exe': helper.sha256, 'siprix.dll': vendor['siprix.dll'],
+        'siprixMedia.dll': vendor['siprixMedia.dll'] };
+      requireValue(isAbsolute(copiedDirectory) && lstatSync(copiedDirectory).isDirectory() &&
+        resolve(helperPath) === resolve(join(copiedDirectory, 'phone11_siprix_helper.exe')) &&
+        isDeepStrictEqual(readdirSync(copiedDirectory).sort(), Object.keys(copiedFiles).sort()),
+        'copied Windows helper inventory mismatch');
+      for (const [name, digest] of Object.entries(copiedFiles))
+        requireDigestSync(join(copiedDirectory, name), digest, `copied Windows input mismatch: ${name}`);
+    }
     requireValue(git(options.sdkRoot, 'rev-parse', 'HEAD') === options.sdkRevision &&
       !git(options.sdkRoot, 'status', '--porcelain') &&
       !git(options.sdkRoot, 'ls-files', '--others', '--'), 'SDK checkout is not pinned and unchanged');

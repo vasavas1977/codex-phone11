@@ -79,7 +79,7 @@ async function main(): Promise<void> {
     const manifest = Buffer.from(JSON.stringify({ platform: 'win32', files, symlinks: {} }, null, 2) + '\n');
     await writeFile(join(stage, 'helper-integrity.json'), manifest);
     const pin = sha(manifest);
-    await provenance.assertCurrent(helperExecutable(stage, 'win32'));
+    await provenance.assertCurrent(helperExecutable(stage, 'win32'), join(stage, 'helper/win'));
     if (!(await verifyPackagedHelper(helperExecutable(stage, 'win32'), stage, pin, 'win32')))
       throw new Error('Staged Windows helper integrity verification failed');
     assertCommittedDesktopSource(repoRoot);
@@ -88,7 +88,7 @@ async function main(): Promise<void> {
       stdio: 'inherit',
     });
     assertCommittedDesktopSource(repoRoot);
-    await provenance.assertCurrent(helperExecutable(stage, 'win32'));
+    await provenance.assertCurrent(helperExecutable(stage, 'win32'), join(stage, 'helper/win'));
     const archive = execFileSync('git', ['archive', 'HEAD', 'desktop/app'], { cwd: repoRoot, maxBuffer: 20_000_000 });
     execFileSync('/usr/bin/tar', ['-xf', '-', '-C', exportRoot], { input: archive });
     const exportedApp = join(exportRoot, 'desktop', 'app');
@@ -101,14 +101,14 @@ async function main(): Promise<void> {
     const resources = join(appPath, 'resources');
     await cp(stage, join(resources, 'phone11'), { recursive: true });
     const packaged = join(resources, 'phone11');
-    await provenance.assertCurrent(helperExecutable(packaged, 'win32'));
-    assertCommittedDesktopSource(repoRoot);
     if (!(await verifyPackagedHelper(helperExecutable(packaged, 'win32'), packaged, pin, 'win32')))
       throw new Error('Packaged Windows helper integrity verification failed');
     if (!(await readFile(join(resources, 'app.asar'))).includes(pin))
       throw new Error('Packaged Windows main does not contain the pinned manifest hash');
     if (!(await lstat(join(appPath, 'Phone11-Desktop-Trial.exe'))).isFile())
       throw new Error('Windows Electron executable is missing');
+    await provenance.assertCurrent(helperExecutable(packaged, 'win32'), join(packaged, 'helper/win'));
+    assertCommittedDesktopSource(repoRoot);
     process.stdout.write(`${appPath}\n`);
   } finally {
     await rm(stage, { recursive: true, force: true });
