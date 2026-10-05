@@ -65,7 +65,12 @@ export interface BrowserScreenAdapter {
   isPublished(room: BrowserRoom, track: BrowserScreenTrack): boolean;
   publishedTracks(room: BrowserRoom): readonly BrowserScreenTrack[];
 }
-export interface BrowserSessionCapabilities { languageAttribute?: string; screen?: BrowserScreenAdapter }
+export interface BrowserSessionCapabilities {
+  languageAttribute?: string;
+  screen?: BrowserScreenAdapter;
+  /** Optional local session lifetime guard; this never grants provider authority. */
+  isCurrentOwner?: () => boolean;
+}
 const refreshEvents = ['participantConnected', 'participantDisconnected', 'participantNameChanged',
   'participantAttributesChanged', 'activeSpeakersChanged', 'trackMuted', 'trackUnmuted',
   'trackPublished', 'trackUnpublished', 'localTrackPublished', 'localTrackUnpublished',
@@ -86,6 +91,10 @@ export class BrowserMeetingSession {
   private screenTasks = new Set<Promise<void>>();
   private screenStopTask?: Promise<void>;
   private screenTracks = new Map<BrowserScreenTrack, { room: BrowserRoom; ended: () => void }>();
+  private ownerIsCurrent(): boolean {
+    try { return !this.capabilities.isCurrentOwner || this.capabilities.isCurrentOwner() === true; }
+    catch { return false; }
+  }
   constructor(private readonly createRoom: () => BrowserRoom,
     private readonly capabilities: BrowserSessionCapabilities = {}) {
     if (capabilities.screen) this.snapshot.screenShare = { available: false, status: 'idle', error: null };
@@ -102,6 +111,10 @@ export class BrowserMeetingSession {
     this.listeners.forEach(listener => listener());
   }
   private refresh(room: BrowserRoom) {
+    if (!this.ownerIsCurrent()) {
+      void this.disconnect().catch(() => undefined);
+      return;
+    }
     const map = (p: BrowserParticipant, local: boolean): MeetingParticipant => Object.freeze({
       identity: p.identity, name: p.name || p.identity, local, speaking: !!p.isSpeaking,
       microphone: !!p.isMicrophoneEnabled, camera: !!p.isCameraEnabled,
@@ -150,14 +163,20 @@ export class BrowserMeetingSession {
     try {
       if (this.capabilities.screen) await screensStopped;
       if (previous) await this.stopRoom(previous);
-      if (generation !== this.generation) throw new Error('Meeting connection cancelled');
+      if (generation !== this.generation || !this.ownerIsCurrent()) throw new Error('Meeting connection cancelled');
       stage = 'room_create';
       room = this.createRoom();
       this.room = room;
-      const current = () => generation === this.generation && room === this.room;
+      const current = () => generation === this.generation && room === this.room && this.ownerIsCurrent();
       const bindings: Array<[string, (...args: unknown[]) => void]> = [];
       const bind = (event: string, fn: (...args: unknown[]) => void) => {
-        const listener = (...args: unknown[]) => { if (current()) fn(...args); };
+        const listener = (...args: unknown[]) => {
+          if (generation === this.generation && room === this.room && !this.ownerIsCurrent()) {
+            void this.disconnect().catch(() => undefined);
+            return;
+          }
+          if (current()) fn(...args);
+        };
         bindings.push([event, listener]); room!.on(event, listener);
       };
       this.cleanup = () => bindings.forEach(([event, fn]) => room!.off(event, fn));
@@ -193,6 +212,7 @@ export class BrowserMeetingSession {
         void this.disconnect().catch(() => undefined);
       });
       stage = 'signal_connect';
+      if (!current()) throw new Error('Meeting connection cancelled');
       await room.connect(options.url, options.token);
       stage = 'post_connect_guard';
       if (!current()) throw new Error('Meeting connection cancelled');
@@ -213,6 +233,7 @@ export class BrowserMeetingSession {
       stage = 'participant_refresh';
       this.refresh(room);
       stage = 'post_connect_guard';
+      if (!current()) throw new Error('Meeting connection cancelled');
       this.update({ status: 'connected', error: unavailable.length ? unavailable.join(' ') : null });
       if (this.snapshot.screenShare) this.updateScreen('idle');
     } catch (error) {
@@ -241,6 +262,7 @@ export class BrowserMeetingSession {
     // reentrantly from its subscription to an external disconnect event.
     const task = Promise.resolve().then(() => this.disconnectInternal());
     this.disconnectTask = task;
+    if (!this.ownerIsCurrent()) this.update({ status: 'disconnected', participants: [], error: 'Meeting disconnected.' });
     if (this.capabilities.screen) void this.stopScreenShare().catch(() => undefined);
     void task.finally(() => {
       if (this.disconnectTask === task) this.disconnectTask = undefined;
@@ -304,7 +326,7 @@ export class BrowserMeetingSession {
     }
   }
   private screenAllowed(room: BrowserRoom | undefined): boolean {
-    if (!room || room !== this.room || this.receiveOnly || this.snapshot.status !== 'connected') return false;
+    if (!room || room !== this.room || this.receiveOnly || this.snapshot.status !== 'connected' || !this.ownerIsCurrent()) return false;
     try { return this.capabilities.screen?.isAllowed(room) === true; }
     catch { return false; }
   }
@@ -412,20 +434,33 @@ export class BrowserMeetingSession {
     const generation = this.generation, room = this.room;
     // Refuse newly requested capture immediately, rather than queuing behind a
     // retiring room's still-pending publication. Preserve its teardown error.
+    if (!this.ownerIsCurrent()) {
+      void this.disconnect().catch(() => undefined);
+      return Promise.reject(new Error('Meeting is not connected'));
+    }
     if (!room || this.disconnectTask || this.snapshot.status !== 'connected')
       return Promise.reject(new Error('Meeting is not connected'));
     const run = async () => {
-      if (!room || room !== this.room || generation !== this.generation || this.snapshot.status !== 'connected') {
+      if (!room || room !== this.room || generation !== this.generation || this.snapshot.status !== 'connected' || !this.ownerIsCurrent()) {
+        if (room === this.room && generation === this.generation && !this.ownerIsCurrent())
+          void this.disconnect().catch(() => undefined);
         const error = new Error('Meeting is not connected');
         if (generation === this.generation) this.fail(error);
         throw error;
       }
       try {
         await action(room.localParticipant);
-        if (generation !== this.generation || room !== this.room) {
+        if (generation !== this.generation || room !== this.room || !this.ownerIsCurrent()) {
+          if (generation === this.generation && room === this.room && !this.ownerIsCurrent())
+            void this.disconnect().catch(() => undefined);
           await room.disconnect(true); throw new Error('Meeting operation cancelled');
         }
-        this.refresh(room); this.update({ error: null });
+        this.refresh(room);
+        if (!this.ownerIsCurrent()) {
+          void this.disconnect().catch(() => undefined);
+          throw new Error('Meeting operation cancelled');
+        }
+        this.update({ error: null });
       } catch (error) { if (generation === this.generation) this.fail(error); throw error; }
     };
     this.pendingMediaOperations += 1;

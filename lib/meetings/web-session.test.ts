@@ -4,6 +4,7 @@ import { getActiveNativeMeeting } from "./native-session-registry";
 
 const state = vi.hoisted(() => ({
   userId: 3001 as number | undefined,
+  authUser: { id: 3001 } as { id: number } | null,
   listeners: new Set<() => void>(),
   rooms: [] as any[],
   connectError: undefined as Error | undefined,
@@ -12,7 +13,11 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/_core/auth", () => ({
-  getAuthSnapshot: () => ({ user: state.userId ? { id: state.userId } : null }),
+  getAuthSnapshot: () => {
+    if (!state.userId) state.authUser = null;
+    else if (state.authUser?.id !== state.userId) state.authUser = { id: state.userId };
+    return { user: state.authUser };
+  },
   addAuthChangeListener: (listener: () => void) => {
     state.listeners.add(listener);
     return () => state.listeners.delete(listener);
@@ -59,6 +64,7 @@ const admission = { url: "wss://server-issued.invalid", token: "server-issued-to
 beforeEach(async () => {
   await getActiveNativeMeeting()?.leave();
   state.userId = 3001;
+  state.authUser = { id: 3001 };
   state.connectError = undefined;
   state.connectWait = undefined;
   state.disconnectError = undefined;

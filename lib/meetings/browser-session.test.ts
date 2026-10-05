@@ -268,3 +268,66 @@ describe('browser meeting session', () => {
   expect(next.result.connect).not.toHaveBeenCalled();
  });
 });
+
+describe('optional current-owner guard', () => {
+ it.each(['false', 'throws'] as const)('refuses room creation when the guard %s', async mode => {
+  const r = room(), create = vi.fn(() => r.result);
+  const session = new BrowserMeetingSession(create, { isCurrentOwner: () => {
+   if (mode === 'throws') throw new Error('private identity failure'); return false;
+  } });
+  await expect(session.connect({ ...credentials, microphone: true, camera: true })).rejects.toMatchObject({ name: 'BrowserMeetingConnectionFailure' });
+  expect(create).not.toHaveBeenCalled(); expect(r.result.connect).not.toHaveBeenCalled();
+  expect(session.getSnapshot().error).not.toContain('private'); await session.disconnect();
+ });
+ it('checks ownership after network admission before initial capture', async () => {
+  let owner = true; const r = room(), network = deferred(); vi.mocked(r.result.connect).mockReturnValue(network.promise);
+  const session = new BrowserMeetingSession(() => r.result, { isCurrentOwner: () => owner });
+  const pending = session.connect({ ...credentials, microphone: true, camera: true }).catch(error => error);
+  owner = false; network.resolve(); expect(await pending).toMatchObject({ stage: 'post_connect_guard' });
+  expect(r.result.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalledWith(true);
+  expect(r.result.localParticipant.setCameraEnabled).not.toHaveBeenCalledWith(true);
+  expect(r.result.disconnect).toHaveBeenCalledWith(true); await session.disconnect();
+ });
+ it('checks ownership after initial microphone completion before camera publication', async () => {
+  let owner = true; const r = room(), microphone = deferred();
+  vi.mocked(r.result.localParticipant.setMicrophoneEnabled).mockImplementation(async enabled => { if (enabled) await microphone.promise; });
+  const session = new BrowserMeetingSession(() => r.result, { isCurrentOwner: () => owner });
+  const pending = session.connect({ ...credentials, microphone: true, camera: true }).catch(error => error);
+  await vi.waitFor(() => expect(r.result.localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true));
+  owner = false; microphone.resolve(); expect(await pending).toMatchObject({ name: 'BrowserMeetingConnectionFailure' });
+  expect(r.result.localParticipant.setCameraEnabled).not.toHaveBeenCalledWith(true);
+  expect(r.result.disconnect).toHaveBeenCalledWith(true); await session.disconnect();
+ });
+ it('retires a revoked owner synchronously before queued controls or reconnect callbacks', async () => {
+  let owner = true; const r = room(), stop = deferred();
+  const session = new BrowserMeetingSession(() => r.result, { isCurrentOwner: () => owner }); await session.connect(credentials);
+  vi.mocked(r.result.disconnect).mockReturnValue(stop.promise); owner = false;
+  await expect(session.setMicrophone(true)).rejects.toThrow('not connected');
+  expect(session.getSnapshot()).toMatchObject({ status: 'disconnected', participants: [] });
+  r.emit('reconnected'); r.emit('participantConnected');
+  await expect(session.setCamera(true)).rejects.toThrow('not connected');
+  expect(r.result.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalledWith(true);
+  expect(r.result.localParticipant.setCameraEnabled).not.toHaveBeenCalledWith(true);
+  stop.resolve(); await session.disconnect();
+ });
+ it('drains late publication and refuses a queued camera after owner loss', async () => {
+  let owner = true; const r = room(), microphone = deferred();
+  const session = new BrowserMeetingSession(() => r.result, { isCurrentOwner: () => owner }); await session.connect(credentials);
+  vi.mocked(r.result.localParticipant.setMicrophoneEnabled).mockImplementation(async enabled => { if (enabled) await microphone.promise; });
+  const first = session.setMicrophone(true).catch(error => error), second = session.setCamera(true).catch(error => error);
+  await vi.waitFor(() => expect(r.result.localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true));
+  owner = false; microphone.resolve();
+  expect(await first).toBeInstanceOf(Error); expect(await second).toBeInstanceOf(Error); await session.disconnect();
+  expect(r.result.localParticipant.setCameraEnabled).not.toHaveBeenCalledWith(true);
+  expect(vi.mocked(r.result.disconnect).mock.calls.length).toBeGreaterThan(1);
+  expect(session.getSnapshot().status).toBe('disconnected');
+ });
+ it('retains the room after failed owner cleanup and permits only cleanup retry', async () => {
+  let owner = true; const r = room(), session = new BrowserMeetingSession(() => r.result, { isCurrentOwner: () => owner });
+  await session.connect(credentials); vi.mocked(r.result.disconnect).mockRejectedValue(new Error('SDK stop failed')); owner = false;
+  r.emit('participantConnected'); expect(session.getSnapshot().status).toBe('disconnected');
+  await expect(session.disconnect()).rejects.toThrow('SDK stop failed'); expect(session.getRoom()).toBe(r.result);
+  await expect(session.setCamera(true)).rejects.toThrow('not connected');
+  vi.mocked(r.result.disconnect).mockResolvedValue(undefined); await session.disconnect(); expect(session.getRoom()).toBeUndefined();
+ });
+});

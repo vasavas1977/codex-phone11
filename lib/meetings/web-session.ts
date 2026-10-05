@@ -1,10 +1,16 @@
-import { addAuthChangeListener, getAuthSnapshot } from "@/lib/_core/auth";
+import { addAuthChangeListener, getAuthSnapshot, type User } from "@/lib/_core/auth";
 
 import type { LocalParticipant, LocalTrack } from "livekit-client";
 import { BrowserMeetingConnectionFailure, BrowserMeetingSession, type BrowserRoom, type BrowserScreenAdapter } from "./browser-session";
 import { MeetingJoinFailure, safeMeetingJoinHttpStatus, type MeetingJoinStage } from "./join-failure";
 import { clearActiveNativeMeeting, getActiveNativeMeeting, setActiveNativeMeeting } from "./native-session-registry";
 import type { NativeMeetingAdmission, NativeMeetingPreferences } from "./native-session";
+
+type WebMeetingOwner = { user: User; retired: boolean };
+function ownerIsCurrent(owner: WebMeetingOwner): boolean {
+  if (getAuthSnapshot().user !== owner.user) owner.retired = true;
+  return !owner.retired;
+}
 
 /** Connected provider permissions, not the unconsumed tenant policy model or host authority. */
 function screenAdapter(client: typeof import("livekit-client")): BrowserScreenAdapter | undefined {
@@ -46,21 +52,24 @@ export class WebMeetingLifecycle {
     readonly meetingId: string,
     readonly receiveOnly: boolean,
     createRoom: () => BrowserRoom,
+    private readonly owner: WebMeetingOwner,
     screen?: BrowserScreenAdapter,
   ) {
-    this.session = new BrowserMeetingSession(createRoom, { screen: screen && {
+    this.session = new BrowserMeetingSession(createRoom, { isCurrentOwner: () => ownerIsCurrent(this.owner), screen: screen && {
       ...screen,
-      isAllowed: room => getAuthSnapshot().user?.id === ownerId && getActiveNativeMeeting(ownerId) === this && screen.isAllowed(room),
+      isAllowed: room => ownerIsCurrent(this.owner) && getActiveNativeMeeting(ownerId) === this && screen.isAllowed(room),
     } });
     this.unsubscribeOwner = addAuthChangeListener(() => {
-      if (getAuthSnapshot().user?.id !== ownerId) void this.leave().catch(() => undefined);
+      if (!ownerIsCurrent(this.owner)) void this.leave().catch(() => undefined);
     });
     this.unsubscribeSession = this.session.subscribe(() => {
       if (this.session.getSnapshot().status === "disconnected") void this.leave().catch(() => undefined);
     });
   }
 
-  get room(): BrowserRoom | undefined { return this.session.getRoom(); }
+  // Keep failed teardown reachable inside the controller without exposing the
+  // old room's tracks to a newly signed-in UI that has the same numeric ID.
+  get room(): BrowserRoom | undefined { return ownerIsCurrent(this.owner) ? this.session.getRoom() : undefined; }
 
   static join(
     expectedOwnerId: number,
@@ -68,20 +77,27 @@ export class WebMeetingLifecycle {
     admission: NativeMeetingAdmission,
     preferences: NativeMeetingPreferences,
   ): Promise<WebMeetingLifecycle> {
-    if (!expectedOwnerId || !meetingId || getAuthSnapshot().user?.id !== expectedOwnerId)
+    const user = getAuthSnapshot().user;
+    if (!expectedOwnerId || !meetingId || !user || user.id !== expectedOwnerId)
       return Promise.reject(new MeetingJoinFailure("admission"));
+    const owner: WebMeetingOwner = { user, retired: false };
+    // Subscribe before the first await: a logout retires even a queued join,
+    // including a later restoration of the exact same user object.
+    const unsubscribePendingOwner = addAuthChangeListener(() => { ownerIsCurrent(owner); });
     const generation = ++this.joinGeneration;
     const previous = this.pendingJoin;
     // A connecting room is not yet in the active registry. Wait for its
     // guarded completion and teardown before another room can capture media.
     const task = (async () => {
       await previous?.catch(() => undefined);
+      if (!ownerIsCurrent(owner)) throw new MeetingJoinFailure("admission");
       if (generation !== this.joinGeneration)
         throw new MeetingJoinFailure("post_connect_guard");
-      return this.joinCurrent(generation, expectedOwnerId, meetingId, admission, preferences);
+      return this.joinCurrent(generation, owner, meetingId, admission, preferences);
     })();
     this.pendingJoin = task;
     void task.finally(() => {
+      unsubscribePendingOwner();
       if (this.pendingJoin === task) this.pendingJoin = undefined;
     }).catch(() => undefined);
     return task;
@@ -89,24 +105,26 @@ export class WebMeetingLifecycle {
 
   private static async joinCurrent(
     generation: number,
-    expectedOwnerId: number,
+    owner: WebMeetingOwner,
     meetingId: string,
     admission: NativeMeetingAdmission,
     preferences: NativeMeetingPreferences,
   ): Promise<WebMeetingLifecycle> {
-    if (!expectedOwnerId || !meetingId || getAuthSnapshot().user?.id !== expectedOwnerId)
+    if (!meetingId || !ownerIsCurrent(owner))
       throw new MeetingJoinFailure("admission");
-    const ownerId = expectedOwnerId;
+    const ownerId = owner.user.id;
     let stage: MeetingJoinStage = "bindings";
     let lifecycle: WebMeetingLifecycle | undefined;
     try {
       await getActiveNativeMeeting()?.leave();
+      if (!ownerIsCurrent(owner)) throw new MeetingJoinFailure("admission");
+      if (generation !== this.joinGeneration) throw new MeetingJoinFailure("post_connect_guard");
       const client = await import("livekit-client");
       if (typeof client.Room !== "function") throw new Error("Web meeting client unavailable");
-      if (getAuthSnapshot().user?.id !== ownerId) throw new MeetingJoinFailure("admission");
+      if (!ownerIsCurrent(owner)) throw new MeetingJoinFailure("admission");
       if (generation !== this.joinGeneration) throw new MeetingJoinFailure("post_connect_guard");
       lifecycle = new WebMeetingLifecycle(ownerId, meetingId, admission.grant_profile === "listener",
-        () => new client.Room() as unknown as BrowserRoom,
+        () => new client.Room() as unknown as BrowserRoom, owner,
         admission.grant_profile === "interactive" ? screenAdapter(client) : undefined);
       stage = "signal_connect";
       await lifecycle.session.connect({
@@ -116,7 +134,7 @@ export class WebMeetingLifecycle {
         camera: preferences.camera,
         receiveOnly: lifecycle.receiveOnly,
       });
-      if (generation !== this.joinGeneration || getAuthSnapshot().user?.id !== ownerId)
+      if (generation !== this.joinGeneration || !ownerIsCurrent(owner))
         throw new MeetingJoinFailure("post_connect_guard");
       setActiveNativeMeeting(lifecycle);
       // Refresh the capability only after this exact lifecycle is registered as owner.
