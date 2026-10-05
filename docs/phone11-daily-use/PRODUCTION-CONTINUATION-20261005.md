@@ -370,6 +370,99 @@ Bash preserves test failure through `tee`. Both event path lists watch patch
 files. Exact-head hosted results are recorded separately in PR 7 and private
 receipts; earlier green runs do not establish this new batch.
 
+The subsequent frozen head `6ed24449ea3527ea2888c1b3f423c4f094a7eb63`, tree
+`209200abfd58b90b4d7162c1ecfa8c59cc706ac4`, passed all twenty jobs across five
+fresh hosted workflows. Daily-use and desktop jobs executed merge
+`82c299f4119236f21010d81492cbd3a7b1b0ee6b`, whose entire tree matches that head;
+mobile jobs executed the head directly. Authentication and release-guard logs
+show the same merge checkout. This evidence retains those pins after any later
+source or documentation change.
+
+- [Daily-use](https://github.com/vasavas1977/codex-phone11/actions/runs/37340234095)
+  preserved the normal full frozen pnpm 9.12 install and native postinstall.
+  The actual installed dependency consumer passed 115 cases, and all 23 strict
+  completion suites passed 927 cases, with zero failures or skips. Disposable
+  PostgreSQL migration/preflight passed 57/23; the desktop helper passed 87.
+  One optional Chromium history case skipped outside the strict completion gate.
+- [Mobile](https://github.com/vasavas1977/codex-phone11/actions/runs/37340234175)
+  passed 3,903 broad Vitest cases with 546 skips and 196 Node cases with eleven
+  platform skips. Dedicated iOS header/mock-native gates passed fourteen cases
+  without skips. Actual ordinary Android compilation and APK runtime-exclusion
+  verification passed; the isolated foreground trial compiled and passed its
+  seven-class/four-ARM-library verifier. Ordinary parser tests retained one
+  explicit unstaged-SDK skip; trial parser tests passed all sixteen.
+- [Desktop](https://github.com/vasavas1977/codex-phone11/actions/runs/37340234065)
+  passed pinned macOS/Windows SDK compilation/bootstrap and fake-SDK protocol
+  checks. Two expected PR-only Windows staging/receipt steps skipped. This is
+  helper CI, not full-client or signed-distribution acceptance.
+- [Authentication](https://github.com/vasavas1977/codex-phone11/actions/runs/37340234045)
+  passed 82/95/78/39 cases across four executions. The first two each skipped
+  the optional rendered-app case; database fixtures do not prove deployed login.
+  [Release guards](https://github.com/vasavas1977/codex-phone11/actions/runs/37340234225)
+  passed both Python suites, containing eleven and thirty-nine checks.
+
+Private raw logs, exact checkout/tree records and fresh APK verifier hashes are
+retained. This establishes source CI and debug packaging only. No APK was
+downloaded or installed by the audit, and no deployment, provider operation,
+voicemail commissioning, production SDK license or physical-device acceptance
+is established by these results.
+
+The subsequent native authentication candidate
+`56700c9e74976d668e067600ea6bad5940f27ba1` binds queued joins, SDK media and
+audio/output work to the original observed sign-in object and sticky retirement.
+Five new failures reproduced against the prior source; 288 focused and adjacent
+cases then passed without skips. Independent review repeated those cases and
+passed four additional controller race/failed-cleanup probes. The integrated
+three files matched the reviewed candidate byte for byte. Failed cleanup remains
+hidden from owner-facing routes while retaining registry and media-lease custody;
+this is not provider-token revocation or physical-native acceptance. See
+[native authentication lifetime](NATIVE-MEETING-AUTH-LIFETIME-20261005.md).
+
+The subsequent Android screen-consent candidate
+`f0a38374242a063676ba8c0e6af4d22b7396cdec`, tree
+`f73717e694c76c7dc7625e023b3ccfbadaf40ff8`, passed complementary independent
+native/session and configuration reviews. Three reproduced native custody
+defects were corrected: track double disposal, cancellation before operation
+publication, and queued work surviving module invalidation. Manifest validation
+also rejects disabled capture components and validates direct and symlink CLI
+entry paths. Capture cancellation precedes queued authentication, route and
+registry cleanup; uncertain native teardown retains its lease and requires
+acknowledged cleanup before replacement or SIP acquisition.
+
+All twenty integrated candidate files matched the frozen source byte for byte.
+Root verification passed 399 focused cases across fourteen suites and 29 Node
+native/manifest cases, with zero skips, plus full TypeScript and backend
+compilation. The four native Node cases execute 22 Java scenarios against actual
+extracted bridge/service code with JNI-free doubles. Independent native review
+also compiled all 39 patched bridge Java sources against the actual pinned SDK;
+this is not a full app or JNI/capture acceptance result. Configuration review
+passed 37 cases, validated Android OFF/ON/OFF source manifests and recomputed
+equality of all 22 generated iOS native files against base `6ed24449`.
+
+The package patch remains default off. Ordinary Android screen publishing and
+iOS screen publishing remain unsupported; no build flag, device, provider or
+production configuration was enabled. See the
+[Android screen-consent boundary](ANDROID-SCREEN-CONSENT-TRANSACTION-20261005.md).
+The reviewed CI configuration requires 25 nonempty completion suites and the
+installed-patch native/manifest tests with zero skips. A separate sixth mobile
+job compiles the actual patched Android bridge with screen configuration ON and
+validates its merged manifest, then restores generated OFF configuration.
+Ordinary builds separately validate generated and merged OFF manifests. These
+CI definitions are source checks until a fresh exact-source hosted run finishes;
+the earlier twenty-job `6ed24449` receipt is not evidence for this new batch.
+
+The recording speaker-rename copy also received a two-quote JSX escaping fix
+without changing displayed text or behavior. Afterward, direct installed ESLint
+passed the normal Expo app/components scope (131 files, zero errors, 33 retained
+warnings) and the changed meeting/configuration files (zero errors, four
+warnings); full TypeScript was repeated and passed. The Expo launcher initially
+aborted an automatic ambient-package-manager dependency refresh before module
+purge, so validation used the installed linter without refreshing dependencies.
+An exploratory whole-repository lint failed on generated outputs and 88 tracked
+error-bearing files that matched base `6ed24449` byte for byte; its raw failure
+and scope comparison are retained. This is not a claim of clean whole-repository
+lint or a reason to weaken the required release checks.
+
 ## Live and package boundary
 
 After the owner signed in, a fresh read-only portal check confirmed extension
