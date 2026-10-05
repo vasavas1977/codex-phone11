@@ -8,6 +8,8 @@ export const MEETING_CHANNELS = Object.freeze({ open: 'phone11:meeting-open',
   hostControls: 'phone11:meeting-host-controls', removeMember: 'phone11:meeting-remove-member',
   removalStatus: 'phone11:meeting-removal-status', memberPhoto: 'phone11:meeting-member-photo',
   retireControls: 'phone11:meeting-retire-controls',
+  screenState: 'phone11:meeting-screen-state', screenChoices: 'phone11:meeting-screen-choices',
+  screenChoose: 'phone11:meeting-screen-choose', screenCancel: 'phone11:meeting-screen-cancel',
   leaveNow: 'phone11:meeting-leave-now', left: 'phone11:meeting-left' });
 export type PublicMeetingState = Readonly<{ revision: string;
   meetings: readonly Readonly<{ meetingId: string; title?: string }>[];

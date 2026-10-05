@@ -1,5 +1,5 @@
 import { ipcRenderer } from 'electron';
-import { ConnectionState, Participant, Room, RoomEvent, Track, supportsAudioOutputSelection } from 'livekit-client';
+import { ConnectionState, Participant, Room, RoomEvent, Track, supportsAudioOutputSelection, type LocalTrack } from 'livekit-client';
 import { MeetingAudioOutputSequence } from './meeting-audio-output-sequence';
 import { directMeetingOptionLabel, MEETING_CHANNELS, type PublicMeetingState, type PublicMeetingDirectPage, type MeetingPhotoScope, type MeetingProfilePhoto } from './meeting-channels';
 import { MeetingMediaLifecycle, PrejoinCameraPreview } from './meeting-media-lifecycle';
@@ -11,6 +11,8 @@ import { DesktopMeetingRemovalClient, removalRow, type DesktopRemovalView } from
 import type { RemovalMember } from '../../../lib/meetings/member-removal';
 import { MAX_MEETING_AVATAR_BYTES, meetingPhotoBytesMatch } from './meeting-channels';
 import type { DesktopMeetingGrant, DesktopMeetingChannelDetails, DesktopMeetingDirectDetails, DesktopMeetingDirectChat } from '../../src/authenticated-provider';
+import { DesktopMeetingScreenShare, screenPublishingPermitted, type ScreenShareView } from './meeting-screen-share';
+import type { ScreenChoices } from './meeting-screen-picker';
 
 // This isolated preload is the only Chromium world that receives a media grant.
 // The static page has no script and no bridge exposing the token or Room.
@@ -70,6 +72,107 @@ let activeSpeakerSid: string | null = null;
 const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const status = (message: string) => { el('status').textContent = message; };
 const error = (message: string) => { el('prejoin-error').textContent = message; };
+let screenOwner: DesktopMeetingScreenShare<LocalTrack> | null = null;
+let screenScope: { revision: string; roomRevision: string } | null = null;
+let screenConnected = false;
+let screenChoices: (ScreenChoices & { revision: string; roomRevision: string }) | null = null;
+let screenListeners: (() => void) | null = null;
+
+function renderScreen(view: ScreenShareView): void {
+  const active = view.status !== 'idle';
+  const button = el<HTMLButtonElement>('share-screen');
+  button.hidden = !view.available && !active;
+  button.disabled = active ? view.status === 'stopping' && !view.error : !view.available;
+  button.textContent = active ? 'Stop sharing' : 'Share screen';
+  button.setAttribute('aria-pressed', String(view.status === 'sharing'));
+  el('screen-status').textContent = view.error ?? (view.status === 'sharing' ? 'You are sharing your screen · screen audio off' :
+    view.status === 'choosing' ? 'Choose a screen or window. Nothing is shared until you select it.' :
+    view.status === 'publishing' ? 'Starting screen sharing…' : view.status === 'stopping' ? 'Stopping screen sharing…' : '');
+  if (screenScope) ipcRenderer.send(MEETING_CHANNELS.screenState, { ...screenScope,
+    available: view.available && (view.status === 'idle' || view.status === 'choosing') });
+}
+
+function screenAllowed(active: Room): boolean {
+  const permissions = active.localParticipant.permissions;
+  const source = Track.sourceToProto(Track.Source.ScreenShare);
+  return room === active && screenPublishingPermitted({ interactive: canPublish,
+    connected: screenConnected && active.state === ConnectionState.Connected,
+    secure: globalThis.isSecureContext === true, captureApi: typeof navigator.mediaDevices?.getDisplayMedia === 'function', permissions, source });
+}
+
+function hideScreenChoices(): void {
+  const wasOpen = screenChoices !== null;
+  screenChoices = null; el('screen-picker').hidden = true; el('screen-choice-list').replaceChildren();
+  if (wasOpen && !el('share-screen').hidden) el('share-screen').focus();
+}
+function chooseScreen(handle: string | null): void {
+  const choices = screenChoices;
+  if (!choices || !screenScope || choices.revision !== screenScope.revision || choices.roomRevision !== screenScope.roomRevision) return;
+  const request = choices.request;
+  hideScreenChoices();
+  if (handle === null) { void screenOwner?.stop().catch(() => undefined); return; }
+  void ipcRenderer.invoke(MEETING_CHANNELS.screenChoose, { ...screenScope, request, handle }).catch(() => {
+    void screenOwner?.stop().catch(() => undefined);
+  });
+}
+function showScreenChoices(choices: (ScreenChoices & { revision: string; roomRevision: string }) | null): void {
+  hideScreenChoices();
+  if (!choices) return;
+  if (!screenOwner || screenOwner.getSnapshot().status !== 'choosing' || !screenScope ||
+      choices.revision !== screenScope.revision || choices.roomRevision !== screenScope.roomRevision || !screenOwner.getSnapshot().available) {
+    if (screenScope) ipcRenderer.send(MEETING_CHANNELS.screenCancel, screenScope);
+    return;
+  }
+  screenChoices = choices;
+  const list = el('screen-choice-list');
+  for (const choice of choices.choices) {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = choice.name;
+    button.addEventListener('click', () => { if (screenChoices === choices) chooseScreen(choice.handle); });
+    list.append(button);
+  }
+  el('screen-picker').hidden = false; el('screen-cancel').focus();
+}
+
+function startScreenOwner(active: Room, scope: MeetingPhotoScope, current: () => boolean): void {
+  screenScope = { revision: revision!, roomRevision: scope.roomRevision }; screenConnected = true;
+  const owner = new DesktopMeetingScreenShare<LocalTrack>({
+    allowed: () => screenAllowed(active), capture: () => active.localParticipant.createScreenTracks({ audio: false }),
+    publish: track => active.localParticipant.publishTrack(track),
+    unpublish: track => active.localParticipant.unpublishTrack(track, true),
+    publications: () => [...active.localParticipant.trackPublications.values()].flatMap(publication =>
+      publication.track && (publication.source === Track.Source.ScreenShare || publication.source === Track.Source.ScreenShareAudio) ? [publication.track] : []),
+    isPublished: track => [...active.localParticipant.trackPublications.values()].some(publication => publication.track === track && !publication.isMuted),
+    cancelCapture: () => { hideScreenChoices(); if (screenScope) ipcRenderer.send(MEETING_CHANNELS.screenCancel, screenScope); },
+  }, () => room === active && current(), renderScreen);
+  screenOwner = owner;
+  const refresh = () => { if (screenOwner === owner) owner.refresh(); };
+  const reconnecting = () => { screenConnected = false; refresh(); };
+  const reconnected = () => { screenConnected = true; refresh(); };
+  const stateChanged = () => { if (active.state !== ConnectionState.Connected) reconnecting(); else refresh(); };
+  const moved = () => {
+    screenConnected = false;
+    void owner.retire().catch(() => undefined);
+    // A provider room move has no new Phone11 admission scope. Rejoin through main.
+    void ipcRenderer.invoke(MEETING_CHANNELS.finished).catch(() => undefined);
+  };
+  const bindings: [RoomEvent, () => void][] = [
+    [RoomEvent.Reconnecting, reconnecting], [RoomEvent.SignalReconnecting, reconnecting],
+    [RoomEvent.Moved, moved],
+    [RoomEvent.Reconnected, reconnected], [RoomEvent.ConnectionStateChanged, stateChanged],
+    [RoomEvent.ParticipantPermissionsChanged, refresh], [RoomEvent.LocalTrackPublished, refresh], [RoomEvent.LocalTrackUnpublished, refresh],
+  ];
+  bindings.forEach(([event, listener]) => active.on(event, listener));
+  screenListeners = () => bindings.forEach(([event, listener]) => active.off(event, listener));
+  owner.refresh();
+}
+
+function updateScreenShare(): void {
+  const owner = screenOwner;
+  if (!owner) return;
+  const view = owner.getSnapshot();
+  // start() invokes getDisplayMedia directly from this click; no IPC await or media queue precedes it.
+  void (view.status === 'idle' ? owner.start() : owner.stop()).catch(() => undefined);
+}
 
 function showChat(open: boolean, focus = true): void {
   if (open) showAccess(false, false);
@@ -723,6 +826,13 @@ function leave(): Promise<void> {
   invalidateMeetingList();
   el<HTMLButtonElement>('refresh-meetings').disabled = true;
   const active = room;
+  screenConnected = false;
+  screenListeners?.(); screenListeners = null;
+  const screensStopped = screenOwner?.retire();
+  // Attach immediately even while another media operation is still draining.
+  const screenCleanup = screensStopped ? Promise.allSettled([screensStopped]) : Promise.resolve([]);
+  // Main cancels its pending picker immediately; the owner still drains late capture/publication.
+  if (screenScope) ipcRenderer.send(MEETING_CHANNELS.screenState, { ...screenScope, available: false });
   room = null;
   canPublish = false;
   clearAccess();
@@ -738,10 +848,13 @@ function leave(): Promise<void> {
     // In-flight getUserMedia/publish must settle before disconnect and the main-process ack.
     await mediaLifecycle.cancelAndDrain();
     await prejoinCamera.stopAndDrain();
+    const screenResults = await screenCleanup;
     if (active) {
       try { await active.disconnect(true); } catch { /* Window teardown remains authoritative. */ }
     }
+    if (screenResults.some(result => result.status === 'rejected')) throw new Error('Screen cleanup requires window closure');
     clearParticipantUi();
+    screenOwner = null; screenScope = null; hideScreenChoices(); renderScreen({ available: false, status: 'idle', error: null });
     busy = false;
     el('remote-audio').replaceChildren();
     el('room').hidden = true;
@@ -754,7 +867,7 @@ function closeMeeting(): void {
   status('Leaving…');
   // Invalidate pending admission/media now. The main owner bounds the cleanup
   // wait and destroys this window if an OS prompt or connection never settles.
-  void leave();
+  void leave().catch(() => undefined);
   void ipcRenderer.invoke(MEETING_CHANNELS.finished).catch(() => undefined);
 }
 
@@ -842,7 +955,7 @@ async function join(): Promise<void> {
       // That failure belongs to the retry path below, not permanent teardown.
       if (connected && room === next && current()) {
         status('Meeting disconnected');
-        void leave();
+        void leave().catch(() => undefined);
         void ipcRenderer.invoke(MEETING_CHANNELS.finished).catch(() => undefined);
       }
     });
@@ -853,6 +966,7 @@ async function join(): Promise<void> {
     clearChat();
     const chatRoom = next;
     const photoScope = grant.photoScope;
+    if (photoScope && canPublish) startScreenOwner(chatRoom, photoScope, current);
     if (photoScope) startAccess(chatRoom, photoScope, current);
     if (photoScope) meetingPhotos = new DesktopMeetingPhotos(chatRoom, photoScope,
       () => room === chatRoom && current(),
@@ -1345,6 +1459,10 @@ async function load(): Promise<void> {
   });
   el<HTMLButtonElement>('mic').addEventListener('click', () => { void toggle('mic'); });
   el<HTMLButtonElement>('camera').addEventListener('click', () => { void toggle('camera'); });
+  el<HTMLButtonElement>('share-screen').addEventListener('click', updateScreenShare);
+  el('screen-cancel').addEventListener('click', () => chooseScreen(null));
+  el('screen-picker').addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); chooseScreen(null); } });
+  ipcRenderer.on(MEETING_CHANNELS.screenChoices, (_event, choices) => showScreenChoices(choices));
   el<HTMLButtonElement>('chat').addEventListener('click', () => { if (meetingChat) showChat(!chatOpen); });
   el<HTMLButtonElement>('close-chat').addEventListener('click', () => showChat(false));
   el('chat-panel').addEventListener('keydown', event => {
@@ -1368,7 +1486,7 @@ async function load(): Promise<void> {
     }).catch(() => undefined);
   });
   ipcRenderer.on(MEETING_CHANNELS.leaveNow, () => {
-    void leave().finally(() => ipcRenderer.send(MEETING_CHANNELS.left));
+    void leave().finally(() => ipcRenderer.send(MEETING_CHANNELS.left)).catch(() => undefined);
   });
   await refreshMeetings();
 }

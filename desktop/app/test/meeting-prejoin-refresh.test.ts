@@ -34,7 +34,7 @@ async function harness() {
     destroyed = false;
     webContents = Object.assign(new EventEmitter(), {
       mainFrame: { url: '' },
-      session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} },
+      session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, setDisplayMediaRequestHandler() {} },
       getURL: () => this.webContents.mainFrame.url,
       isDestroyed: () => this.destroyed,
       setWindowOpenHandler() {},

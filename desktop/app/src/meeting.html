@@ -41,6 +41,11 @@
       <button id="join" type="button" disabled>Join meeting</button><button id="cancel" type="button">Cancel</button><p id="prejoin-error" role="alert"></p></div>
   </section>
   <section id="room" hidden>
+    <section id="screen-picker" class="screen-picker" role="dialog" aria-labelledby="screen-picker-title" aria-describedby="screen-picker-help" tabindex="-1" hidden>
+      <h2 id="screen-picker-title">Share a screen or window</h2>
+      <p id="screen-picker-help">Select what everyone in this meeting can see. Screen audio is off.</p>
+      <div id="screen-choice-list"></div><button id="screen-cancel" type="button">Cancel</button>
+    </section>
     <div class="meeting-layout-tools" role="group" aria-label="Video layout">
       <button id="layout-gallery" type="button" aria-pressed="true">Gallery</button>
       <button id="layout-speaker" type="button" aria-pressed="false">Speaker</button>
@@ -78,7 +83,7 @@
     <div id="remote-audio" hidden></div>
     <div class="meeting-bottom"><div><strong id="participant-count">You</strong><span id="media-note">Connecting audio…</span></div><nav aria-label="Meeting controls">
       <label class="meeting-output" for="audio-output">Speaker <select id="audio-output" aria-label="Meeting speaker" disabled><option value="default">System default</option></select></label>
-      <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="chat" type="button" aria-pressed="false" aria-controls="chat-panel">Chat</button><button id="manage-access" type="button" aria-pressed="false" aria-controls="access-panel" hidden>Manage access</button><button id="leave" class="danger" type="button">Leave</button>
-    </nav></div><p id="audio-output-status" role="status" aria-live="polite"></p>
+      <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="share-screen" type="button" aria-pressed="false" aria-describedby="screen-status" hidden>Share screen</button><button id="chat" type="button" aria-pressed="false" aria-controls="chat-panel">Chat</button><button id="manage-access" type="button" aria-pressed="false" aria-controls="access-panel" hidden>Manage access</button><button id="leave" class="danger" type="button">Leave</button>
+    </nav></div><p id="screen-status" role="status" aria-live="polite"></p><p id="audio-output-status" role="status" aria-live="polite"></p>
   </section>
 </main></body></html>

@@ -32,3 +32,13 @@ export function permitMeetingMedia(permission: string, mediaTypes: readonly stri
 export function permitMeetingSpeakerSelection(permission: string, exactFrame: boolean, phoneBusy: boolean): boolean {
   return permission === 'speaker-selection' && exactFrame && !phoneBusy;
 }
+
+/** Display capture is separate from camera/microphone and only exists after interactive admission. */
+export function permitMeetingScreen(permission: string, exactFrame: boolean, interactive: boolean, phoneBusy: boolean): boolean {
+  return permission === 'display-capture' && exactFrame && interactive && !phoneBusy;
+}
+export function permitMeetingDisplayRequest(input: { exactFrame: boolean; interactive: boolean; phoneBusy: boolean;
+  userGesture: boolean; videoRequested: boolean; audioRequested: boolean }): boolean {
+  return input.exactFrame && input.interactive && !input.phoneBusy && input.userGesture &&
+    input.videoRequested && !input.audioRequested;
+}

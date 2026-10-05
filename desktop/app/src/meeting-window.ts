@@ -1,12 +1,13 @@
-import { BrowserWindow, ipcMain, nativeImage, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, desktopCapturer, ipcMain, nativeImage, webContents, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AuthenticatedDesktopProvider, DesktopMeetingGrant, DesktopMeetingDirectCursor } from '../../src/authenticated-provider';
 import type { DesktopHelperSupervisor } from '../../src/helper-supervisor';
 import { appendDirectMeetingPage, MAX_MEETING_AVATAR_BYTES, MAX_MEETING_PHOTO_PEOPLE, MEETING_CHANNELS, type PublicMeetingState, type MeetingPhotoScope, type MeetingProfilePhoto } from './meeting-channels';
-import { permitMeetingMedia, permitMeetingSpeakerSelection, phoneMediaBusy, validMeetingFrame } from './meeting-boundary';
+import { permitMeetingDisplayRequest, permitMeetingMedia, permitMeetingScreen, permitMeetingSpeakerSelection, phoneMediaBusy, validMeetingFrame } from './meeting-boundary';
 import { DesktopMeetingMemberRemoval } from './meeting-member-removal';
+import { MeetingScreenPicker } from './meeting-screen-picker';
 
 const meetingPath = join(__dirname, 'meeting.html');
 const meetingUrl = pathToFileURL(meetingPath).href;
@@ -39,6 +40,23 @@ export class DesktopMeetingWindow {
   private joinedMeetingId: string | null = null;
   private memberRemoval: DesktopMeetingMemberRemoval | null = null;
   private controlsRetired = false;
+  private screenAdmission: { session: NonNullable<ReturnType<AuthenticatedDesktopProvider['currentSession']>>;
+    scope: MeetingPhotoScope; interactive: boolean } | null = null;
+  private screenReady = false;
+  private readonly screenPicker = new MeetingScreenPicker(
+    () => desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 }, fetchWindowIcons: false }),
+    () => randomUUID(), choices => {
+      const wc = this.win?.webContents;
+      if (wc && !wc.isDestroyed()) wc.send(MEETING_CHANNELS.screenChoices,
+        choices && this.photoScope ? { ...choices, revision: this.revision, roomRevision: this.photoScope.roomRevision } : null);
+    });
+
+  private screenCurrent(): boolean {
+    const admission = this.screenAdmission;
+    return !!admission && admission.interactive && this.screenReady && this.current() &&
+      this.provider.currentSession() === admission.session && this.photoScope === admission.scope &&
+      this.joined && !!this.joinedMeetingId && !this.closing && !this.phoneBusy();
+  }
 
   private retireControls(): void {
     this.controlsRetired = true;
@@ -47,6 +65,7 @@ export class DesktopMeetingWindow {
   }
 
   private clearPhotos(): void {
+    this.screenReady = false; this.screenAdmission = null; this.screenPicker.cancel();
     this.retireControls();
     this.joinedMeetingId = null;
     this.photoAbort.abort();
@@ -108,14 +127,33 @@ export class DesktopMeetingWindow {
       const allowedFrame = exactFrame(sender) && details.requestingUrl === meetingUrl;
       callback(permitMeetingMedia(permission, Array.isArray(types) ? types : undefined,
         allowedFrame, this.phoneBusy()) ||
-        permitMeetingSpeakerSelection(permission, allowedFrame, this.phoneBusy()));
+        permitMeetingSpeakerSelection(permission, allowedFrame, this.phoneBusy()) ||
+        permitMeetingScreen(permission, allowedFrame && details.isMainFrame, this.screenCurrent(), this.phoneBusy()));
     });
-    win.webContents.session.setPermissionCheckHandler((sender, permission) =>
+    win.webContents.session.setPermissionCheckHandler((sender, permission, _origin, details) =>
       permitMeetingMedia(permission, ['audio', 'video'], exactFrame(sender), this.phoneBusy()) ||
-      permitMeetingSpeakerSelection(permission, exactFrame(sender), this.phoneBusy()));
+      permitMeetingSpeakerSelection(permission, exactFrame(sender), this.phoneBusy()) ||
+      permitMeetingScreen(permission, exactFrame(sender) && details.isMainFrame && details.requestingUrl === meetingUrl,
+        this.screenCurrent(), this.phoneBusy()));
+    win.webContents.session.setDisplayMediaRequestHandler((request, callback) => {
+      const frame = request.frame;
+      const admission = this.screenAdmission;
+      const valid = () => {
+        try { return !!frame && admission === this.screenAdmission && this.screenCurrent() && validMeetingFrame({
+          sender: webContents.fromFrame(frame), senderFrame: frame, owner: wc, frameUrl: frame.url,
+          localUrl: meetingUrl, expectedRevision: this.revision,
+          currentRevision: this.provider.currentSession()?.revision ?? null, closing: !!this.closing }); }
+        catch { return false; }
+      };
+      if (!permitMeetingDisplayRequest({ exactFrame: valid(), interactive: this.screenCurrent(), phoneBusy: this.phoneBusy(),
+        userGesture: request.userGesture, videoRequested: request.videoRequested, audioRequested: request.audioRequested })) {
+        try { callback({}); } catch { /* The requesting frame has already been destroyed. */ } return;
+      }
+      this.screenPicker.request(valid, source => callback(source ? { video: source } : {}));
+    }, { useSystemPicker: false });
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
-    wc.on('will-navigate', event => { this.retireControls(); event.preventDefault(); });
-    wc.on('will-redirect', event => { this.retireControls(); event.preventDefault(); });
+    wc.on('will-navigate', event => { event.preventDefault(); this.retireControls(); void this.close(); });
+    wc.on('will-redirect', event => { event.preventDefault(); this.retireControls(); void this.close(); });
     wc.on('will-attach-webview', event => event.preventDefault());
     win.on('close', event => {
       if (this.acceptingClose) return;
@@ -139,6 +177,27 @@ export class DesktopMeetingWindow {
   }
 
   registerIpc(): void {
+    const screenScope = (event: IpcMainInvokeEvent, input: unknown, keys: number): input is Record<string, unknown> => {
+      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== keys ||
+          !this.valid(event) || !this.photoScope || !this.screenAdmission) return false;
+      const values = input as Record<string, unknown>;
+      return values.revision === this.revision && values.roomRevision === this.photoScope.roomRevision;
+    };
+    ipcMain.on(MEETING_CHANNELS.screenState, (event, input: unknown) => {
+      if (!screenScope(event, input, 3) || typeof input.available !== 'boolean') return;
+      this.screenReady = input.available;
+      if (!this.screenCurrent()) this.screenPicker.cancel();
+    });
+    ipcMain.on(MEETING_CHANNELS.screenCancel, (event, input: unknown) => {
+      if (screenScope(event, input, 2)) this.screenPicker.cancel();
+    });
+    ipcMain.handle(MEETING_CHANNELS.screenChoose, async (event, input: unknown) => {
+      if (!screenScope(event, input, 4) || typeof input.request !== 'string' || !uuid.test(input.request) ||
+          (input.handle !== null && (typeof input.handle !== 'string' || !uuid.test(input.handle))))
+        throw new Error('Screen selection is unavailable');
+      if (!this.screenCurrent()) { this.screenPicker.cancel(); return; }
+      await this.screenPicker.choose(input.request, input.handle as string | null);
+    });
     const controls = (event: IpcMainInvokeEvent, input: unknown, row = false): DesktopMeetingMemberRemoval => {
       if (!input || typeof input !== 'object' || Array.isArray(input) || !this.valid(event) ||
           !this.joined || !this.joinedMeetingId || !this.revision || !this.photoScope || this.phoneBusy() || this.controlsRetired)
@@ -399,6 +458,7 @@ export class DesktopMeetingWindow {
         const session = this.provider.currentSession()!;
         this.clearPhotos();
         this.photoScope = { roomRevision: randomUUID(), ownerId: Number(session.userId), tenantId: session.tenantId };
+        this.screenAdmission = { session, scope: this.photoScope, interactive: admission.grantProfile === 'interactive' };
         this.joinedMeetingId = meetingId;
         this.controlsRetired = false;
         return { ...admission, photoScope: this.photoScope };
